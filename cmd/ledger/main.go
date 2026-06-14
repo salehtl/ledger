@@ -36,6 +36,10 @@ func main() {
 	}
 	defer st.Close()
 
+	if err := st.EnsureBudgetConfig(); err != nil {
+		log.Fatalf("ensure budget config: %v", err)
+	}
+
 	webFS, err := web.FS()
 	if err != nil {
 		log.Fatalf("web assets: %v", err)
@@ -91,6 +95,7 @@ func main() {
 	srv.SetIngest(st, cfg.IMAP.Enabled())
 	srv.SetReprocessor(processor)
 	srv.SetCategoryStore(st)
+	srv.SetBudgetStore(st)
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
 		result, ok := cat.Categorize(ctx, merchantRaw)
 		if !ok {
@@ -123,7 +128,11 @@ func main() {
 		dialer := ingest.NewIMAPDialer(cfg.IMAP)
 		worker := ingest.New(dialer, st, interval, log.Default())
 		worker.SetPostProcess(func(ctx context.Context) (int, error) {
-			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
+			n, err := processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
+			if n > 0 {
+				srv.Broadcast("tx")
+			}
+			return n, err
 		})
 		go worker.Run(ctx)
 		log.Printf("ingest+parse enabled for %s (mailbox %s, poll %s)", cfg.IMAP.Username, cfg.IMAP.Folder, interval)
