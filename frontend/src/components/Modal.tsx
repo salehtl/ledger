@@ -1,6 +1,7 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     dialogRef.current?.focus();
@@ -14,13 +15,13 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
         className="window modal-window"
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="title-bar">
-          <div className="title-bar-text" id="modal-title">{title}</div>
+          <div className="title-bar-text" id={titleId}>{title}</div>
           <div className="title-bar-controls">
             <button aria-label="Close" onClick={onClose} />
           </div>
