@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -19,16 +20,28 @@ import (
 	"ledger/internal/config"
 	"ledger/internal/importer"
 	"ledger/internal/ingest"
+	"ledger/internal/monitor"
 	"ledger/internal/parse"
+	"ledger/internal/push"
 	"ledger/internal/server"
 	"ledger/internal/store"
 	"ledger/internal/web"
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "import" {
-		runImport(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "vapid-keys":
+			priv, pub, err := push.GenerateKeys()
+			if err != nil {
+				log.Fatalf("vapid-keys: %v", err)
+			}
+			fmt.Printf("LEDGER_VAPID_PRIVATE=%s\nLEDGER_VAPID_PUBLIC=%s\n", priv, pub)
+			return
+		}
 	}
 
 	configPath := flag.String("config", "", "path to config.toml (optional; defaults apply if empty)")
@@ -121,6 +134,74 @@ func main() {
 		return result.CategoryID, status, true
 	})
 
+	// VAPID push sender (optional — only enabled when both keys are set).
+	var pushSend *push.Sender
+	if priv := os.Getenv("LEDGER_VAPID_PRIVATE"); priv != "" {
+		pub := os.Getenv("LEDGER_VAPID_PUBLIC")
+		subscriber := "mailto:" + cfg.IMAP.Username
+		if subscriber == "mailto:" {
+			subscriber = "mailto:admin@localhost"
+		}
+		if s, err := push.New(priv, pub, subscriber); err == nil {
+			pushSend = s
+			srv.SetPushStore(st)
+			srv.SetPushSender(pushSend)
+			log.Printf("push: VAPID enabled")
+		} else {
+			log.Printf("push: disabled (%v)", err)
+		}
+	} else {
+		log.Printf("push: disabled (set LEDGER_VAPID_PRIVATE + LEDGER_VAPID_PUBLIC to enable)")
+	}
+
+	// SSE hub — broadcasts new transactions and drift alerts.
+	hub := server.NewHub()
+	srv.SetHub(hub)
+
+	// Wire processor to broadcast SSE events on successful inserts.
+	processor.SetOnInsert(func(txID, amountFils int64, merchant, direction string) {
+		hub.BroadcastEvent("new_transaction", map[string]any{
+			"id":           txID,
+			"merchant_raw": merchant,
+			"amount":       amountFils,
+			"direction":    direction,
+		})
+		if pushSend != nil {
+			subs, _ := st.SelectPushSubs()
+			payload, _ := json.Marshal(map[string]string{
+				"title": "New transaction",
+				"body":  merchant,
+			})
+			for _, sub := range subs {
+				go func(s store.PushSubRow) {
+					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+				}(sub)
+			}
+		}
+	})
+
+	// Drift monitor — check parse-success rates and alert on drift.
+	driftWindow, werr := cfg.Monitoring.ParseDriftWindow()
+	if werr != nil {
+		log.Fatalf("monitoring.drift_window: %v", werr)
+	}
+	mon := monitor.New(st, driftWindow, cfg.Monitoring.DriftMin, func(alerts []monitor.DriftAlert) {
+		hub.BroadcastEvent("drift_alert", alerts)
+		if pushSend != nil && len(alerts) > 0 {
+			subs, _ := st.SelectPushSubs()
+			payload, _ := json.Marshal(map[string]string{
+				"title": "Parse drift alert",
+				"body":  alerts[0].FromAddr + " parse-success dropped",
+			})
+			for _, sub := range subs {
+				go func(s store.PushSubRow) {
+					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+				}(sub)
+			}
+		}
+	})
+	srv.SetDriftMonitor(mon)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -151,6 +232,8 @@ func main() {
 			log.Fatalf("http server: %v", err)
 		}
 	}()
+
+	go mon.Start(ctx)
 
 	<-ctx.Done()
 	log.Println("shutting down")
