@@ -28,4 +28,9 @@ describe("Dashboard", () => {
     wrap(<Dashboard />);
     expect(await screen.findByText(/income/i)).toBeInTheDocument();
   });
+  it("shows error state when /api/summary fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("err", { status: 500 })));
+    wrap(<Dashboard />);
+    expect(await screen.findByText(/couldn't load summary/i)).toBeInTheDocument();
+  });
 });

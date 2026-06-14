@@ -11,7 +11,7 @@ import { EmptyState } from "../components/EmptyState";
 export function Dashboard() {
   const q = useQuery({ queryKey: ["summary"], queryFn: () => getJSON<Summary>("/api/summary?period=current") });
   if (q.isLoading) return <Skeleton rows={6} />;
-  if (q.error) return <EmptyState icon="alert" title="Couldn't load summary" hint="Check your connection and try again." />;
+  if (q.isError) return <EmptyState icon="alert" title="Couldn't load summary" hint="Check your connection and try again." />;
   const s = q.data!;
   const monthPct = Math.round(s.month_progress * 100);
   return (
