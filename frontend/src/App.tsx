@@ -10,16 +10,18 @@ import { Review } from "./views/Review";
 import { Transactions } from "./views/Transactions";
 import { SettingsDrawer } from "./views/SettingsDrawer";
 import { useLiveEvents } from "./hooks/useLiveEvents";
+import { useOnline } from "./hooks/useOnline";
 
 const TITLES: Record<Tab, string> = {
   dashboard: "Dashboard",
   review: "Review",
-  transactions: "Transactions",
+  transactions: "History",
 };
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
+  const online = useOnline();
   useLiveEvents();
 
   const review = useQuery({
@@ -29,7 +31,7 @@ export function App() {
 
   return (
     <>
-      <AppWindow title={TITLES[tab]}>
+      <AppWindow title={TITLES[tab]} online={online}>
         {tab === "dashboard" && <Dashboard />}
         {tab === "review" && <Review />}
         {tab === "transactions" && <Transactions />}
