@@ -153,3 +153,52 @@ func TestSyncOnceDialErrorPropagates(t *testing.T) {
 		t.Fatal("expected dial error to propagate")
 	}
 }
+
+func TestRunStopsOnContextCancel(t *testing.T) {
+	st := newTestStore(t)
+	mb := mailboxWith(42, msg(100, "a@bank.com"))
+	w := New(&fakeDialer{mb: mb}, st, 10*time.Millisecond, quietLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	cancel()
+
+	select {
+	case <-done:
+		// Run returned promptly after cancel.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within 2s of context cancel")
+	}
+}
+
+func TestRunIngestsThenKeepsRunningOnError(t *testing.T) {
+	st := newTestStore(t)
+	mb := mailboxWith(42, msg(100, "a@bank.com"))
+	w := New(&fakeDialer{mb: mb}, st, 5*time.Millisecond, quietLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		n, _ := st.CountIngest()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("message was not ingested within 2s")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	mb.fetchErr = errors.New("transient")
+	mb.messages[101] = msg(101, "b@bank.com")
+	mb.uids = append(mb.uids, 101)
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+}
