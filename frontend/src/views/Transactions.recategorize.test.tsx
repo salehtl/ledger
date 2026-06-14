@@ -26,7 +26,7 @@ function wrap(ui: React.ReactNode) {
 describe("Transactions", () => {
   it("shows a human status pill and a count", async () => {
     wrap(<Transactions />);
-    expect(await screen.findByText("Needs review")).toBeInTheDocument();
+    expect(await screen.findByText("Needs review", { selector: ".pill" })).toBeInTheDocument();
     expect(screen.getByText(/1 transaction/i)).toBeInTheDocument();
   });
 

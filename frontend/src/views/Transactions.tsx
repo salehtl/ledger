@@ -33,11 +33,17 @@ export function Transactions() {
   const set = (patch: Partial<TxnFilters>) => setFilters((f) => ({ ...f, ...patch }));
 
   const categorize = async (txn: Txn, body: { category_id: number; make_rule: boolean }) => {
-    await postJSON(`/api/transactions/${txn.ID}/categorize`, { ...body, merchant_raw: txn.MerchantRaw });
-    setActive(null);
-    qc.invalidateQueries({ queryKey: ["transactions"] });
-    qc.invalidateQueries({ queryKey: ["summary"] });
-    show({ message: `Categorized ${txn.MerchantRaw || "transaction"}`, tone: "success" });
+    const name = txn.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${txn.ID}/categorize`, { ...body, merchant_raw: txn.MerchantRaw });
+      setActive(null);
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["summary"] });
+      qc.invalidateQueries({ queryKey: ["review"] });
+      show({ message: `Categorized ${name}`, tone: "success" });
+    } catch {
+      show({ message: `Couldn't categorize ${name}`, tone: "error" });
+    }
   };
 
   const rows = q.data ?? [];
@@ -47,7 +53,7 @@ export function Transactions() {
         <select value={filters.status} onChange={(e) => set({ status: e.target.value })}>
           <option value="">All statuses</option>
           <option value="confirmed">Confirmed</option>
-          <option value="needs_review">Needs Review</option>
+          <option value="needs_review">Needs review</option>
           <option value="transfer">Transfer</option>
           <option value="ignored">Ignored</option>
         </select>
@@ -55,7 +61,11 @@ export function Transactions() {
         <input type="date" aria-label="To" value={filters.to} onChange={(e) => set({ to: e.target.value })} />
       </div>
 
-      {q.isLoading ? <Skeleton rows={6} /> : rows.length === 0 ? (
+      {q.isError ? (
+        <EmptyState icon="alert" title="Couldn't load transactions" hint="Check your connection and try again." />
+      ) : q.isLoading ? (
+        <Skeleton rows={6} />
+      ) : rows.length === 0 ? (
         <EmptyState icon="table" title="No transactions" hint="Try widening the date range or clearing filters." />
       ) : (
         <>
