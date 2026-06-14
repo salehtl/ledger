@@ -12,3 +12,6 @@
 # Local secrets / env
 *.env
 ledger.env
+
+# Frontend
+frontend/node_modules
