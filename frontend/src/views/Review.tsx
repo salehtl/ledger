@@ -19,8 +19,9 @@ export function Review() {
     await postJSON(`/api/transactions/${id}/status`, { status });
     invalidate();
   };
-  const categorize = async (id: number, body: { category_id: number; make_rule: boolean }) => {
-    await postJSON(`/api/transactions/${id}/categorize`, body);
+  const categorize = async (txn: Txn, body: { category_id: number; make_rule: boolean }) => {
+    // merchant_raw is required by the server to write a rule when make_rule is set.
+    await postJSON(`/api/transactions/${txn.ID}/categorize`, { ...body, merchant_raw: txn.MerchantRaw });
     setActive(null);
     invalidate();
   };
@@ -45,7 +46,7 @@ export function Review() {
         <CategorizeDialog
           txn={active}
           categories={cats.data}
-          onSubmit={(body) => categorize(active.ID, body)}
+          onSubmit={(body) => categorize(active, body)}
           onClose={() => setActive(null)}
         />
       )}
