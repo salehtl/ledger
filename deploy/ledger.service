@@ -1,0 +1,28 @@
+[Unit]
+Description=Ledger budgeting service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ledger -config /etc/ledger/config.toml
+EnvironmentFile=-/etc/ledger/ledger.env
+User=ledger
+Restart=on-failure
+RestartSec=5
+StateDirectory=ledger
+# --- sandboxing ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/ledger
+
+[Install]
+WantedBy=multi-user.target

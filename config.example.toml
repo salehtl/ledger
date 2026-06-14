@@ -1,0 +1,39 @@
+# ledger configuration. Secrets NEVER live here — they come from the
+# environment / systemd credentials (see deploy/README.md).
+
+[server]
+listen   = "127.0.0.1:8080"   # bound to localhost; Tailscale/Caddy fronts HTTPS
+data_dir = "/var/lib/ledger"  # SQLite file lives here (ledger.db)
+
+# --- The sections below are consumed by later milestones (§7 of the build ---
+# --- plan). They are inert in Milestone 1 and shown here for reference.   ---
+
+# [imap]
+# host          = "imap.example.com"
+# port          = 993
+# username      = "bankmail@example.com"
+# auth          = "oauth2"          # "oauth2" | "app_password"
+# folder        = "INBOX"
+# read_only     = true
+# use_idle      = true
+# poll_interval = "60s"
+
+# [ai]
+# enabled               = true
+# model                 = "claude-..."
+# auto_accept_threshold = 0.85
+# auto_rule             = false
+# allow_ai_extraction   = true
+
+# [budget]
+# currency       = "AED"
+# monthly_income = 0
+# income_source  = "config"
+# need_pct       = 0.50
+# want_pct       = 0.30
+# saving_pct     = 0.20
+# freeze_history = false
+
+# [monitoring]
+# drift_window = "7d"
+# drift_min    = 0.80
