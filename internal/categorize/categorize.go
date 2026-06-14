@@ -3,7 +3,6 @@ package categorize
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -57,7 +56,7 @@ type Categorizer struct {
 	catsByName map[string]Category // keyed by strings.ToLower(name)
 	ai         AICategorizer
 	threshold  float64
-	autoRule   bool
+	autoRule   bool // when true, AI-proposed rules are written back automatically (used by Processor in M4)
 	compiled   map[string]*regexp.Regexp // keyed by Rule.Pattern for regex rules
 }
 
@@ -166,6 +165,3 @@ func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Resul
 	}
 	return res, true
 }
-
-// Ensure fmt is used (imported for potential future use in error formatting).
-var _ = fmt.Sprintf
