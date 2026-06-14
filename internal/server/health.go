@@ -6,18 +6,24 @@ import (
 	"time"
 )
 
-// healthResponse is the JSON shape of /api/health. The ingest section is present
-// only when an ingest source has been wired (SetIngest).
 type healthResponse struct {
 	Status string        `json:"status"`
 	DB     string        `json:"db"`
 	Ingest *ingestHealth `json:"ingest,omitempty"`
+	Drift  []driftHealth `json:"drift,omitempty"`
 }
 
 type ingestHealth struct {
 	Configured bool   `json:"configured"`
 	Count      int    `json:"count"`
 	LastAt     string `json:"last_at,omitempty"`
+}
+
+type driftHealth struct {
+	FromAddr    string  `json:"from_addr"`
+	SuccessRate float64 `json:"success_rate"`
+	Threshold   float64 `json:"threshold"`
+	Alert       bool    `json:"alert"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +43,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			ih.LastAt = at.UTC().Format(time.RFC3339)
 		}
 		resp.Ingest = ih
+	}
+	if s.driftMon != nil {
+		for _, a := range s.driftMon.Alerts() {
+			resp.Drift = append(resp.Drift, driftHealth{
+				FromAddr:    a.FromAddr,
+				SuccessRate: a.SuccessRate,
+				Threshold:   a.Threshold,
+				Alert:       true,
+			})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
