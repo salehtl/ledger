@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -61,5 +62,60 @@ func TestSelectBudgetConfigNoRow(t *testing.T) {
 	// Without EnsureBudgetConfig, the singleton row does not exist.
 	if _, err := st.SelectBudgetConfig(); err != sql.ErrNoRows {
 		t.Errorf("err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func seedTx(t *testing.T, st *Store, postedAt, direction string, amount int64, catID int64, status string) {
+	t.Helper()
+	_, err := st.DB.Exec(
+		`INSERT INTO transactions
+		   (posted_at, amount, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
+		 VALUES (?, ?, 'AED', ?, 'M', ?, ?, ?, 'email', '2026-06-01', '2026-06-01')`,
+		postedAt, amount, direction, catID, status,
+		postedAt+direction+itoa(amount),
+	)
+	if err != nil {
+		t.Fatalf("seedTx: %v", err)
+	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestSelectMonthSpend(t *testing.T) {
+	st := openTestStore(t)
+	var grocID int64
+	st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&grocID)
+
+	seedTx(t, st, "2026-06-10", "debit", 50000, grocID, "confirmed")
+	seedTx(t, st, "2026-06-12", "credit", 10000, grocID, "confirmed")
+	seedTx(t, st, "2026-06-15", "debit", 99999, grocID, "needs_review")
+	seedTx(t, st, "2026-05-30", "debit", 77777, grocID, "confirmed")
+
+	rows, err := st.SelectMonthSpend("2026-06", false)
+	if err != nil {
+		t.Fatalf("SelectMonthSpend: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(rows), rows)
+	}
+	for _, r := range rows {
+		if r.Bucket != "need" {
+			t.Errorf("bucket = %q, want need", r.Bucket)
+		}
+	}
+}
+
+func TestSelectMonthIncome(t *testing.T) {
+	st := openTestStore(t)
+	var salaryID int64
+	st.DB.QueryRow(`SELECT id FROM categories WHERE name='Salary'`).Scan(&salaryID)
+	seedTx(t, st, "2026-06-01", "credit", 2000000, salaryID, "confirmed")
+	seedTx(t, st, "2026-06-01", "credit", 500000, salaryID, "needs_review")
+	got, err := st.SelectMonthIncome("2026-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 2000000 {
+		t.Errorf("income = %d, want 2000000", got)
 	}
 }
