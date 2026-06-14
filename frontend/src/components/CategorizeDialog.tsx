@@ -1,6 +1,10 @@
-import { useState } from "react";
+// frontend/src/components/CategorizeDialog.tsx
+import { useMemo, useState } from "react";
 import type { Category, Txn } from "../api/types";
 import { Money } from "./Money";
+import { Modal } from "./Modal";
+
+const BUCKET_LABELS: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
 export function CategorizeDialog(props: {
   txn: Txn;
@@ -10,31 +14,53 @@ export function CategorizeDialog(props: {
 }) {
   const [catID, setCatID] = useState<number | null>(null);
   const [makeRule, setMakeRule] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const matched = props.categories.filter((c) => !q || c.Name.toLowerCase().includes(q));
+    const byBucket = new Map<string, Category[]>();
+    for (const c of matched) {
+      const list = byBucket.get(c.Bucket) ?? [];
+      list.push(c);
+      byBucket.set(c.Bucket, list);
+    }
+    return [...byBucket.entries()];
+  }, [props.categories, query]);
+
   return (
-    <div className="drawer-backdrop" onClick={props.onClose}>
-      <div className="window" style={{ maxWidth: 360, margin: "20vh auto" }} onClick={(e) => e.stopPropagation()}>
-        <div className="title-bar"><div className="title-bar-text">Categorize</div></div>
-        <div className="window-body">
-          <p>{props.txn.MerchantRaw || "—"} · <Money fils={-props.txn.AmountFils} /></p>
-          <div style={{ maxHeight: 240, overflowY: "auto" }}>
-            {props.categories.map((c) => (
-              <label key={c.ID} style={{ display: "block", padding: "6px 0" }}>
+    <Modal title="Categorize" onClose={props.onClose}>
+      <p className="dialog-txn">{props.txn.MerchantRaw || "—"} · <Money fils={-props.txn.AmountFils} /></p>
+      <input
+        className="search"
+        type="search"
+        placeholder="Search categories…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <div className="cat-list">
+        {groups.map(([bucket, list]) => (
+          <fieldset key={bucket} className="cat-group">
+            <legend>{BUCKET_LABELS[bucket] ?? bucket}</legend>
+            {list.map((c) => (
+              <label key={c.ID} className="cat-option">
                 <input type="radio" name="cat" value={c.ID} onChange={() => setCatID(c.ID)} /> {c.Name}
               </label>
             ))}
-          </div>
-          <label style={{ display: "block", margin: "8px 0" }}>
-            <input type="checkbox" checked={makeRule} onChange={(e) => setMakeRule(e.target.checked)} /> Save as rule
-          </label>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button onClick={props.onClose}>Cancel</button>
-            <button
-              disabled={catID === null}
-              onClick={() => catID !== null && props.onSubmit({ category_id: catID, make_rule: makeRule })}
-            >OK</button>
-          </div>
-        </div>
+          </fieldset>
+        ))}
+        {groups.length === 0 && <p className="muted">No matching categories.</p>}
       </div>
-    </div>
+      <label className="rule-toggle">
+        <input type="checkbox" checked={makeRule} onChange={(e) => setMakeRule(e.target.checked)} /> Save as rule
+      </label>
+      <div className="dialog-actions">
+        <button onClick={props.onClose}>Cancel</button>
+        <button
+          disabled={catID === null}
+          onClick={() => catID !== null && props.onSubmit({ category_id: catID, make_rule: makeRule })}
+        >OK</button>
+      </div>
+    </Modal>
   );
 }
