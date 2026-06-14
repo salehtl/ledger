@@ -58,6 +58,7 @@ type Server struct {
 	catStore       CategoryStore
 	recatFn        CategorizeFunc
 	budgetStore    BudgetStore
+	hub            *hub
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -65,6 +66,7 @@ func New(store HealthChecker, webFS fs.FS) *Server {
 	s := &Server{
 		mux:   http.NewServeMux(),
 		store: store,
+		hub:   newHub(),
 	}
 	s.routes(webFS)
 	return s
@@ -103,6 +105,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
+	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
