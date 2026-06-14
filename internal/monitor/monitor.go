@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -81,6 +82,7 @@ func (m *Monitor) check() {
 	since := time.Now().Add(-m.window)
 	stats, err := m.store.SelectDriftStats(since, 3) // ignore senders with < 3 emails
 	if err != nil {
+		log.Printf("monitor: drift stats query failed: %v", err)
 		return
 	}
 	var alerts []DriftAlert
