@@ -75,3 +75,20 @@ func TestOpenIsIdempotent(t *testing.T) {
 		t.Errorf("insert after reopen: %v", err)
 	}
 }
+
+func TestOpenSeedsDefaultCategories(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatalf("SelectCategories: %v", err)
+	}
+	if len(cats) == 0 {
+		t.Error("Open must seed default categories")
+	}
+}
