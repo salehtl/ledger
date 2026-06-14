@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ledger</title>
+  <style>
+    body { font-family: Tahoma, "Trebuchet MS", sans-serif; background: #245EDC;
+           color: #fff; margin: 0; display: grid; place-items: center; min-height: 100vh; }
+    .card { background: #ECE9D8; color: #000; border: 1px solid #0058E6;
+            border-radius: 6px; padding: 16px 20px; min-width: 240px;
+            box-shadow: inset 1px 1px #fff, inset -1px -1px #808080; }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    #health { font-family: monospace; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>ledger</h1>
+    <div>Skeleton is live. Real PWA arrives in Milestone 7.</div>
+    <div id="health">checking /api/health…</div>
+  </div>
+  <script>
+    fetch("/api/health")
+      .then(function (r) { return r.json(); })
+      .then(function (j) { document.getElementById("health").textContent =
+        "health: " + j.status + " (db: " + j.db + ")"; })
+      .catch(function () { document.getElementById("health").textContent =
+        "health: unreachable"; });
+  </script>
+</body>
+</html>
