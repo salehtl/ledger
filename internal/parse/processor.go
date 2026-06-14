@@ -36,7 +36,7 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
 		}
-		_, ierr := p.store.InsertTransaction(store.TransactionRow{
+		_, _, ierr := p.store.InsertTransaction(store.TransactionRow{
 			PostedAt:    res.Txn.PostedAt,
 			AmountFils:  res.Txn.AmountFils,
 			Currency:    res.Txn.Currency,
