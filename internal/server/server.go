@@ -49,6 +49,19 @@ type CategoryStore interface {
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
 }
 
+// PushStore is the subset of the store needed by push-subscription handlers.
+type PushStore interface {
+	InsertPushSub(store.PushSubRow) error
+	SelectPushSubs() ([]store.PushSubRow, error)
+	DeletePushSub(endpoint string) error
+}
+
+// PushSender delivers web push notifications.
+type PushSender interface {
+	Send(ctx context.Context, endpoint, p256dh, auth string, payload []byte) error
+	PublicKey() string
+}
+
 // Server holds the router and its dependencies.
 type Server struct {
 	mux            *http.ServeMux
@@ -59,8 +72,10 @@ type Server struct {
 	catStore       CategoryStore
 	recatFn        CategorizeFunc
 	budgetStore    BudgetStore
-	hub            *Hub               // SSE fan-out hub
+	hub            *Hub                // SSE fan-out hub
 	driftMon       DriftStatusProvider // optional drift monitor for /api/health
+	pushStore      PushStore
+	pushSender     PushSender
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -100,6 +115,12 @@ func (s *Server) SetHub(h *Hub) { s.hub = h }
 // SetDriftMonitor wires the drift monitor into /api/health.
 func (s *Server) SetDriftMonitor(m DriftStatusProvider) { s.driftMon = m }
 
+// SetPushStore wires the push subscription store.
+func (s *Server) SetPushStore(ps PushStore) { s.pushStore = ps }
+
+// SetPushSender wires the VAPID push sender.
+func (s *Server) SetPushSender(ps PushSender) { s.pushSender = ps }
+
 // BroadcastEvent is a convenience wrapper over the hub (no-op if hub is nil).
 func (s *Server) BroadcastEvent(eventType string, data any) {
 	if s.hub != nil {
@@ -125,6 +146,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
+	s.mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
+	s.mux.HandleFunc("DELETE /api/push/subscribe", s.handlePushUnsubscribe)
+	s.mux.HandleFunc("GET /api/push/vapid-public", s.handleVapidPublicKey)
 	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
