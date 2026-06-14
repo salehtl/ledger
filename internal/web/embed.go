@@ -1,6 +1,6 @@
 // Package web embeds the built frontend bundle so the single binary serves the
-// SPA from its own filesystem. In Milestone 1 this is a placeholder shell; the
-// Vite build output replaces dist/ in Milestone 7.
+// SPA from its own filesystem. The dist/ directory is produced by the Vite build
+// in frontend/ (run `bun run build` there before `go build`).
 package web
 
 import (
