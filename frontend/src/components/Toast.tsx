@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useReducer, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, type ReactNode } from "react";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -23,13 +23,34 @@ const ToastContext = createContext<Ctx | null>(null);
 
 let nextId = 1;
 
+function ToastItem({ toast, dispatch }: { toast: Toast; dispatch: React.Dispatch<Action> }) {
+  useEffect(() => {
+    const id = setTimeout(() => dispatch({ type: "remove", id: toast.id }), 5000);
+    return () => clearTimeout(id);
+  }, [toast.id, dispatch]);
+
+  return (
+    <div className={`toast toast-${toast.tone ?? "info"}`}>
+      <span className="toast-msg">{toast.message}</span>
+      {toast.action && (
+        <button
+          className="toast-action"
+          onClick={() => { toast.action!.onAction(); dispatch({ type: "remove", id: toast.id }); }}
+        >
+          {toast.action.label}
+        </button>
+      )}
+      <button className="toast-close" aria-label="Dismiss" onClick={() => dispatch({ type: "remove", id: toast.id })}>×</button>
+    </div>
+  );
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, dispatch] = useReducer(toastReducer, []);
 
   const show = useCallback((t: Omit<Toast, "id">) => {
     const id = nextId++;
     dispatch({ type: "add", toast: { ...t, id } });
-    setTimeout(() => dispatch({ type: "remove", id }), 5000);
   }, []);
 
   // Memoize the context value so it stays stable across re-renders caused by toasts changing.
@@ -41,18 +62,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toast-stack" role="region" aria-label="Notifications">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.tone ?? "info"}`}>
-            <span className="toast-msg">{t.message}</span>
-            {t.action && (
-              <button
-                className="toast-action"
-                onClick={() => { t.action!.onAction(); dispatch({ type: "remove", id: t.id }); }}
-              >
-                {t.action.label}
-              </button>
-            )}
-            <button className="toast-close" aria-label="Dismiss" onClick={() => dispatch({ type: "remove", id: t.id })}>×</button>
-          </div>
+          <ToastItem key={t.id} toast={t} dispatch={dispatch} />
         ))}
       </div>
     </ToastContext.Provider>
