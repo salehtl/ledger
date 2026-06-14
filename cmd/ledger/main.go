@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"ledger/internal/categorize"
 	"ledger/internal/config"
 	"ledger/internal/ingest"
 	"ledger/internal/parse"
@@ -40,18 +41,76 @@ func main() {
 		log.Fatalf("web assets: %v", err)
 	}
 
-	// Parse layer: register bank templates, build the cascade + processor.
-	// AI extraction stays disabled in M3 (real client arrives in M4).
+	// Build categorizer from live store data.
+	storeCats, err := st.SelectCategories()
+	if err != nil {
+		log.Fatalf("select categories: %v", err)
+	}
+	storeRules, err := st.SelectRules()
+	if err != nil {
+		log.Fatalf("select rules: %v", err)
+	}
+	domainCats := make([]categorize.Category, len(storeCats))
+	for i, c := range storeCats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	domainRules := make([]categorize.Rule, len(storeRules))
+	for i, r := range storeRules {
+		domainRules[i] = categorize.Rule{
+			MatchType:  r.MatchType,
+			Pattern:    r.Pattern,
+			CategoryID: r.CategoryID,
+			Priority:   r.Priority,
+		}
+	}
+
+	// Pick AI clients based on config.
+	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
+	var aiExt parse.Extractor = parse.DisabledExtractor{}
+	if cfg.AI.Enabled {
+		aiCat = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model)
+		if cfg.AI.AllowAIExtraction {
+			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model)
+		}
+		log.Printf("ai: enabled (model=%s, threshold=%.2f, auto_rule=%v, allow_extraction=%v)",
+			cfg.AI.Model, cfg.AI.AutoAcceptThreshold, cfg.AI.AutoRule, cfg.AI.AllowAIExtraction)
+	} else {
+		log.Printf("ai: disabled (set ai.enabled=true + LEDGER_AI_API_KEY to activate)")
+	}
+
+	cat := categorize.New(domainRules, domainCats, aiCat, cfg.AI.AutoAcceptThreshold, cfg.AI.AutoRule)
+
 	cascade := &parse.Cascade{
 		Parsers:   []parse.BankParser{parse.DIBParser{}},
 		Heuristic: parse.HeuristicParser{},
-		AI:        parse.DisabledExtractor{},
+		AI:        aiExt,
 	}
-	processor := parse.NewProcessor(st, cascade)
+	processor := parse.NewProcessorWithCategorizer(st, cascade, cat)
 
 	srv := server.New(st, webFS)
 	srv.SetIngest(st, cfg.IMAP.Enabled())
 	srv.SetReprocessor(processor)
+	srv.SetCategoryStore(st)
+	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
+		result, ok := cat.Categorize(ctx, merchantRaw)
+		if !ok {
+			return 0, "", false
+		}
+		status := "needs_review"
+		if result.AboveThreshold {
+			status = "confirmed"
+		}
+		if result.ProposedRule != nil {
+			_ = st.InsertRule(store.RuleRow{
+				MatchType:  result.ProposedRule.MatchType,
+				Pattern:    result.ProposedRule.Pattern,
+				CategoryID: result.ProposedRule.CategoryID,
+				Priority:   result.ProposedRule.Priority,
+				Source:     "ai_confirmed",
+			})
+		}
+		return result.CategoryID, status, true
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
