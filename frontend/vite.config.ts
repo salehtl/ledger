@@ -1,13 +1,34 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
-  plugins: [react()],
-  build: {
-    outDir: "../internal/web/dist",
-    emptyOutDir: true,
-  },
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "autoUpdate",
+      includeAssets: ["icon-192.png", "icon-512.png"],
+      manifest: {
+        name: "ledger",
+        short_name: "ledger",
+        description: "Personal budgeting",
+        theme_color: "#0058E6",
+        background_color: "#245EDC",
+        display: "standalone",
+        start_url: "/",
+        icons: [
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        ],
+      },
+      workbox: {
+        navigateFallback: "/index.html",
+        globPatterns: ["**/*.{js,css,html,png,woff2}"],
+      },
+    }),
+  ],
+  build: { outDir: "../internal/web/dist", emptyOutDir: true },
   test: {
     globals: true,
     environment: "jsdom",
