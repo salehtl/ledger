@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+
+	"ledger/internal/store"
 )
 
 func TestGetCategories(t *testing.T) {
@@ -77,5 +81,32 @@ func TestPostCategorySpendingMissingBucket(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (spending needs bucket)", w.Code)
+	}
+}
+
+func TestPutCategory(t *testing.T) {
+	srv, st := newTestServer(t)
+	id, _ := st.InsertCategory(store.CategoryRow{Name: "Coffee", Kind: "spending", Bucket: "want", IsActive: true})
+	body := `{"name":"Coffee","kind":"spending","bucket":"need","apply_to_past":true}`
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	cats, _ := st.SelectCategories()
+	for _, c := range cats {
+		if c.ID == id && c.Bucket != "need" {
+			t.Errorf("bucket = %q, want need", c.Bucket)
+		}
+	}
+}
+
+func TestPutCategoryRejectsSpendingWithoutBucket(t *testing.T) {
+	srv, st := newTestServer(t)
+	id, _ := st.InsertCategory(store.CategoryRow{Name: "Z", Kind: "spending", Bucket: "want", IsActive: true})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(`{"name":"Z","kind":"spending","bucket":""}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
