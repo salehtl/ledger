@@ -22,7 +22,8 @@ type BudgetStore interface {
 // SetBudgetStore wires the summary + budget handlers.
 func (s *Server) SetBudgetStore(b BudgetStore) { s.budgetStore = b }
 
-// budgetJSON is the snake_case wire shape for PUT /api/budget request bodies.
+// budgetJSON is the snake_case wire shape for /api/budget (both GET and PUT),
+// keeping the budget config consistent with the rest of the snake_case API.
 type budgetJSON struct {
 	MonthlyIncome int64   `json:"monthly_income"`
 	NeedPct       float64 `json:"need_pct"`
@@ -81,7 +82,14 @@ func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cfg)
+	json.NewEncoder(w).Encode(budgetJSON{
+		MonthlyIncome: cfg.MonthlyIncome,
+		NeedPct:       cfg.NeedPct,
+		WantPct:       cfg.WantPct,
+		SavingPct:     cfg.SavingPct,
+		IncomeSource:  cfg.IncomeSource,
+		FreezeHistory: cfg.FreezeHistory,
+	})
 }
 
 func (s *Server) handlePutBudget(w http.ResponseWriter, r *http.Request) {
