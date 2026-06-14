@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -91,14 +92,14 @@ func TestAnthropicCategorizerSendsOnlyMerchant(t *testing.T) {
 	userContent := req.Messages[0].Content
 
 	// Must contain the merchant name
-	if !containsStr(userContent, "MCDONALDS") {
+	if !strings.Contains(userContent, "MCDONALDS") {
 		t.Errorf("user message should contain merchant name; got: %q", userContent)
 	}
 
 	// Must NOT contain amount or account info patterns
 	sensitivePatterns := []string{"amount", "account", "balance", "AED", "USD", "1234", "5678"}
 	for _, pat := range sensitivePatterns {
-		if containsStr(userContent, pat) {
+		if strings.Contains(userContent, pat) {
 			t.Errorf("user message should not contain %q; got: %q", pat, userContent)
 		}
 	}
@@ -125,17 +126,4 @@ func TestAnthropicCategorizerHTTPError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for HTTP 503 response, got nil")
 	}
-}
-
-// containsStr is a simple case-sensitive substring check.
-func containsStr(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
 }
