@@ -27,20 +27,30 @@ export function Review() {
   };
   const act = async (txn: Txn, status: string, verb: string) => {
     const name = txn.MerchantRaw || "transaction";
-    await setStatus(txn.ID, status);
-    show({
-      message: `${verb} ${name}`,
-      action: { label: "Undo", onAction: () => setStatus(txn.ID, "needs_review") },
-    });
+    try {
+      await setStatus(txn.ID, status);
+      show({
+        message: `${verb} ${name}`,
+        action: { label: "Undo", onAction: () => { void setStatus(txn.ID, "needs_review"); } },
+      });
+    } catch {
+      show({ message: `Couldn't update ${name}`, tone: "error" });
+    }
   };
   const categorize = async (txn: Txn, body: { category_id: number; make_rule: boolean }) => {
-    await postJSON(`/api/transactions/${txn.ID}/categorize`, { ...body, merchant_raw: txn.MerchantRaw });
-    setActive(null);
-    invalidate();
-    show({ message: `Categorized ${txn.MerchantRaw || "transaction"}`, tone: "success" });
+    const name = txn.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${txn.ID}/categorize`, { ...body, merchant_raw: txn.MerchantRaw });
+      setActive(null);
+      invalidate();
+      show({ message: `Categorized ${txn.MerchantRaw || "transaction"}`, tone: "success" });
+    } catch {
+      show({ message: `Couldn't categorize ${name}`, tone: "error" });
+    }
   };
 
   if (items.isLoading) return <Skeleton rows={4} />;
+  if (items.isError) return <EmptyState icon="alert" title="Couldn't load review" hint="Check your connection and try again." />;
   const rows = items.data ?? [];
   if (rows.length === 0) {
     return <EmptyState icon="tick" title="All caught up" hint="No transactions need review right now." />;

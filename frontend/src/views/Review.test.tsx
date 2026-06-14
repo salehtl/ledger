@@ -29,6 +29,16 @@ function wrap(ui: React.ReactNode) {
 }
 
 describe("Review", () => {
+  it("shows error state when /api/review fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/review") return new Response("error", { status: 500 });
+      if (url === "/api/categories") return new Response(JSON.stringify(cats));
+      return new Response("{}");
+    }));
+    wrap(<Review />);
+    expect(await screen.findByText(/couldn't load review/i)).toBeInTheDocument();
+  });
+
   it("renders labeled Transfer and Ignore actions", async () => {
     wrap(<Review />);
     expect(await screen.findByRole("button", { name: /transfer/i })).toBeInTheDocument();
