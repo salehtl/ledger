@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"ledger/internal/categorize"
@@ -112,6 +113,7 @@ func (imp *Importer) Run(ctx context.Context, rows []RawRow, m MapConfig, fileNa
 		}
 
 		if dryRun {
+			// Dry-run does not check fingerprint dedup; RowsSkipped will be 0 even for already-imported rows.
 			if status == "confirmed" {
 				res.RowsAdded++
 			} else {
@@ -131,8 +133,11 @@ func (imp *Importer) Run(ctx context.Context, rows []RawRow, m MapConfig, fileNa
 			continue
 		}
 		if catID != 0 {
-			_ = imp.store.UpdateTransactionCategory(txID, catID, status)
-			res.RowsAdded++
+			if err := imp.store.UpdateTransactionCategory(txID, catID, status); err != nil {
+				res.RowsError++
+			} else {
+				res.RowsAdded++
+			}
 		} else {
 			res.RowsReview++
 		}
@@ -174,7 +179,7 @@ func (imp *Importer) Run(ctx context.Context, rows []RawRow, m MapConfig, fileNa
 		_ = imp.store.EnsureBudgetConfig()
 		if cfg, err := imp.store.SelectBudgetConfig(); err == nil {
 			if m.Budget.MonthlyIncome > 0 {
-				cfg.MonthlyIncome = int64(m.Budget.MonthlyIncome*100 + 0.5)
+				cfg.MonthlyIncome = int64(math.Round(m.Budget.MonthlyIncome * 100))
 			}
 			if m.Budget.NeedPct > 0 {
 				cfg.NeedPct = m.Budget.NeedPct
