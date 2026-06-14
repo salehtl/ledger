@@ -34,14 +34,14 @@ func TestInsertTransactionAndFingerprintDedup(t *testing.T) {
 	row := txnRow()
 	row.IngestID = ingestID
 
-	ins1, err := st.InsertTransaction(row)
+	_, ins1, err := st.InsertTransaction(row)
 	if err != nil {
 		t.Fatalf("insert1: %v", err)
 	}
 	if !ins1 {
 		t.Error("first insert should be new")
 	}
-	ins2, err := st.InsertTransaction(row) // identical → same fingerprint
+	_, ins2, err := st.InsertTransaction(row) // identical → same fingerprint
 	if err != nil {
 		t.Fatalf("insert2: %v", err)
 	}

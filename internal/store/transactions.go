@@ -34,10 +34,11 @@ func (r TransactionRow) Fingerprint() string {
 }
 
 // InsertTransaction writes a transaction idempotently (INSERT OR IGNORE on the
-// UNIQUE fingerprint index). Returns true if a new row was created.
+// UNIQUE fingerprint index). Returns (rowID, created, error).
+// rowID is the new row's ID when created=true, and 0 when the fingerprint already existed.
 // A zero IngestID is stored as NULL; non-zero values must reference an existing
 // ingest_log row (PRAGMA foreign_keys=ON is active).
-func (s *Store) InsertTransaction(r TransactionRow) (bool, error) {
+func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
@@ -48,10 +49,17 @@ func (s *Store) InsertTransaction(r TransactionRow) (bool, error) {
 		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil {
+		return 0, false, err
+	}
+	if n == 0 {
+		return 0, false, nil
+	}
+	id, err := res.LastInsertId()
+	return id, true, err
 }
 
 // nullableID maps a zero rowid to SQL NULL (0 is never a valid ingest_log id).
