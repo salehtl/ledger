@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -134,4 +135,37 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// FindTransferMatch looks for an existing transaction that could be the other leg
+// of a self-transfer: same amount, opposite direction, within `window` of `postedAt`,
+// and not already marked as a transfer. Returns (matchID, true, nil) on hit.
+func (s *Store) FindTransferMatch(txID, amountFils int64, direction string, postedAt time.Time, window time.Duration) (int64, bool, error) {
+	opp := "credit"
+	if direction == "credit" {
+		opp = "debit"
+	}
+	start := postedAt.Add(-window).UTC().Format(time.RFC3339Nano)
+	end := postedAt.Add(window).UTC().Format(time.RFC3339Nano)
+	postedStr := postedAt.UTC().Format(time.RFC3339Nano)
+
+	var matchID int64
+	err := s.DB.QueryRow(`
+		SELECT id FROM transactions
+		 WHERE id != ?
+		   AND amount = ?
+		   AND direction = ?
+		   AND posted_at >= ?
+		   AND posted_at <= ?
+		   AND status != 'transfer'
+		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
+		 LIMIT 1
+	`, txID, amountFils, opp, start, end, postedStr).Scan(&matchID)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return matchID, true, nil
 }
