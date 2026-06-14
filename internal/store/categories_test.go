@@ -238,3 +238,51 @@ func TestSelectNeedsReview(t *testing.T) {
 		t.Errorf("Status = %q, want needs_review", items[0].Status)
 	}
 }
+
+func TestSelectTransactions(t *testing.T) {
+	st := newTestStore(t)
+	// Seed ingest row
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "u1", FromAddr: "x@y.com",
+		Subject: "s", ParseStatus: "parsed", RawBody: []byte("r"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var ingestID int64
+	st.DB.QueryRow("SELECT id FROM ingest_log LIMIT 1").Scan(&ingestID)
+
+	row := txnRow()
+	row.IngestID = ingestID
+	st.InsertTransaction(row) // status="needs_review" from txnRow()
+
+	// No filters — returns all
+	all, err := st.SelectTransactions("", "", "")
+	if err != nil {
+		t.Fatalf("SelectTransactions(): %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("no filter: got %d, want 1", len(all))
+	}
+
+	// Status filter match
+	matched, _ := st.SelectTransactions("needs_review", "", "")
+	if len(matched) != 1 {
+		t.Errorf("status=needs_review: got %d, want 1", len(matched))
+	}
+
+	// Status filter miss
+	missed, _ := st.SelectTransactions("confirmed", "", "")
+	if len(missed) != 0 {
+		t.Errorf("status=confirmed: got %d, want 0", len(missed))
+	}
+
+	// Date range filter: from after posted_at → no results
+	after, _ := st.SelectTransactions("", "2030-01-01", "")
+	if len(after) != 0 {
+		t.Errorf("from=2030: got %d, want 0", len(after))
+	}
+
+	// Date range filter: to before posted_at → no results
+	before, _ := st.SelectTransactions("", "", "2020-01-01")
+	if len(before) != 0 {
+		t.Errorf("to=2020: got %d, want 0", len(before))
+	}
+}
