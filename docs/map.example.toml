@@ -1,0 +1,63 @@
+# map.example.toml — Column and category mapping for `ledger import`.
+# Copy this file to map.toml and edit to match your export format.
+#
+# Usage:
+#   ledger import --file all-transactions.csv --map map.toml --dry-run
+#   ledger import --file all-transactions.csv --map map.toml
+
+# ── Date parsing ─────────────────────────────────────────────────────────────
+# Go reference time: Mon Jan 2 15:04:05 MST 2006
+# Common formats:
+#   "02/01/2006"  = DD/MM/YYYY  (default)
+#   "2006-01-02"  = ISO 8601
+#   "01/02/2006"  = MM/DD/YYYY (US)
+#   "2/1/2006"    = M/D/YYYY
+date_format = "02/01/2006"
+
+# ── Currency ─────────────────────────────────────────────────────────────────
+currency = "AED"   # applied to all rows
+
+# ── Direction mode ───────────────────────────────────────────────────────────
+# "sign"    → single Amount column; negative = debit, positive = credit (default)
+# "columns" → separate Debit and Credit columns (columns.debit / columns.credit)
+direction_mode = "sign"
+
+# Skip rows where the amount resolves to zero
+skip_zero_amounts = true
+
+# ── Column mapping ──────────────────────────────────────────────────────────
+# The exact header names in your CSV or XLSX file.
+[columns]
+date        = "Date"           # required — e.g. "Date", "Transaction Date"
+description = "Description"    # required — maps to merchant_raw
+amount      = "Amount"         # required when direction_mode = "sign"
+# debit     = "Debit"          # required when direction_mode = "columns"
+# credit    = "Credit"         # required when direction_mode = "columns"
+category    = "Category"       # optional — if present, maps to canonical category name
+
+# ── Category name mapping ─────────────────────────────────────────────────────
+# Maps your export's category names to ledger's canonical category names.
+# Unmapped names are used as-is and create a new "spending / want" category.
+# Format: "Source Name" = "Canonical Name"
+[categories]
+"Food & Dining"       = "Dining"
+"Bills & Utilities"   = "Utilities"
+"Transportation"      = "Transport"
+"Health & Fitness"    = "Healthcare"
+"Rent & Housing"      = "Rent"
+"Personal Care"       = "Shopping"
+"Entertainment"       = "Entertainment"
+"Travel"              = "Travel"
+"Shopping"            = "Shopping"
+"Savings"             = "Savings"
+"Salary"              = "Salary"
+"Transfers"           = "Transfers"
+"Reimbursements"      = "Reimbursements"
+
+# ── Budget seeding (optional) ─────────────────────────────────────────────────
+# If set, seeds budget_config from this import (safe to omit).
+# [budget]
+# monthly_income = 25000.00   # in AED; converted to fils internally
+# need_pct       = 0.50
+# want_pct       = 0.30
+# saving_pct     = 0.20

@@ -6,14 +6,18 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"ledger/internal/categorize"
 	"ledger/internal/config"
+	"ledger/internal/importer"
 	"ledger/internal/ingest"
 	"ledger/internal/parse"
 	"ledger/internal/server"
@@ -22,6 +26,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "import" {
+		runImport(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "", "path to config.toml (optional; defaults apply if empty)")
 	flag.Parse()
 
@@ -149,5 +158,81 @@ func main() {
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
+	}
+}
+
+func runImport(args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	filePath := fs.String("file", "", "path to CSV or XLSX file (required)")
+	mapPath := fs.String("map", "map.toml", "path to map.toml column-mapping file")
+	dryRun := fs.Bool("dry-run", false, "validate and report without writing to the database")
+	configPath := fs.String("config", "", "path to config.toml (optional; uses defaults if empty)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("import flags: %v", err)
+	}
+	if *filePath == "" {
+		log.Fatal("import: --file is required")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	st, err := store.Open(cfg.Server.DataDir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	m, err := importer.LoadMap(*mapPath)
+	if err != nil {
+		log.Fatalf("map: %v", err)
+	}
+
+	rows, err := importer.ReadFile(*filePath)
+	if err != nil {
+		log.Fatalf("read file: %v", err)
+	}
+
+	// Build rules-only categorizer from live store data.
+	storeCats, _ := st.SelectCategories()
+	storeRules, _ := st.SelectRules()
+	domainCats := make([]categorize.Category, len(storeCats))
+	for i, c := range storeCats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	domainRules := make([]categorize.Rule, len(storeRules))
+	for i, r := range storeRules {
+		domainRules[i] = categorize.Rule{
+			MatchType:  r.MatchType,
+			Pattern:    r.Pattern,
+			CategoryID: r.CategoryID,
+			Priority:   r.Priority,
+		}
+	}
+	cat := categorize.New(domainRules, domainCats, categorize.DisabledAI{}, 0.85, false)
+
+	imp := importer.New(st, cat)
+	result, err := imp.Run(context.Background(), rows, m, filepath.Base(*filePath), *dryRun)
+	if err != nil {
+		log.Fatalf("import: %v", err)
+	}
+
+	mode := "COMMITTED"
+	if *dryRun {
+		mode = "DRY RUN"
+	}
+	fmt.Printf("\n[%s] %s\n", mode, *filePath)
+	fmt.Printf("  Total rows:         %d\n", result.RowsTotal)
+	fmt.Printf("  Added (confirmed):  %d\n", result.RowsAdded)
+	fmt.Printf("  Review queue:       %d\n", result.RowsReview)
+	fmt.Printf("  Skipped (dedup):    %d\n", result.RowsSkipped)
+	fmt.Printf("  Errors:             %d\n", result.RowsError)
+	if !*dryRun {
+		fmt.Printf("  Rules derived:      %d\n", result.DerivedRules)
+	}
+	if result.RowsError > 0 {
+		fmt.Fprintln(os.Stderr, "\nWARNING: some rows had errors — check output above")
+		os.Exit(1)
 	}
 }
