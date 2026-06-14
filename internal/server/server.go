@@ -39,6 +39,7 @@ type CategoryStore interface {
 	InsertCategory(store.CategoryRow) (int64, error)
 	SelectRules() ([]store.RuleRow, error)
 	InsertRule(store.RuleRow) error
+	DeleteRule(id int64) error
 	SelectNeedsReview() ([]store.ReviewItem, error)
 	SelectTransactions(status, from, to string) ([]store.ReviewItem, error)
 	UpdateTransactionCategory(txID, catID int64, status string) error
@@ -96,6 +97,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
+	s.mux.HandleFunc("POST /api/rules", s.handlePostRule)
+	s.mux.HandleFunc("DELETE /api/rules/{id}", s.handleDeleteRule)
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
