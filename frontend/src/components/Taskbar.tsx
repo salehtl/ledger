@@ -16,7 +16,7 @@ export function Taskbar(props: {
 }) {
   return (
     <nav className="taskbar">
-      <button className="menu-btn" aria-label="menu" onClick={props.onMenu}>
+      <button className="menu-btn" aria-label="Settings menu" onClick={props.onMenu}>
         <Icon name="gear" alt="" />
         <span className="tab-label">Settings</span>
       </button>
