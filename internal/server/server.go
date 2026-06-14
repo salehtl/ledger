@@ -43,6 +43,8 @@ type CategoryStore interface {
 	SelectTransactions(status, from, to string) ([]store.ReviewItem, error)
 	UpdateTransactionCategory(txID, catID int64, status string) error
 	UpdateTransactionStatus(txID int64, status string) error
+	UpdateCategory(store.CategoryRow) error
+	SnapshotBucketForCategory(categoryID int64, bucket string) error
 }
 
 // Server holds the router and its dependencies.
@@ -88,6 +90,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/reprocess", s.handleReprocess)
 	s.mux.HandleFunc("GET /api/categories", s.handleGetCategories)
 	s.mux.HandleFunc("POST /api/categories", s.handlePostCategory)
+	s.mux.HandleFunc("PUT /api/categories/{id}", s.handlePutCategory)
 	s.mux.HandleFunc("GET /api/review", s.handleGetReview)
 	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
