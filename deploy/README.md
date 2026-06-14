@@ -67,3 +67,67 @@ sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F).db'"
 ```
 
 Backups contain financial data — encrypt them if they leave the box (Milestone 8 covers Litestream + encryption).
+
+## 5. Dedicated mailbox (Milestone 2 — ingest)
+
+ledger reads a **dedicated mailbox** that contains *only* forwarded bank mail, so its
+credential can never reach your personal email (§9). Recommended: a fresh Gmail.
+
+### 5a. Create the mailbox + app password
+
+1. Create a new Gmail used for nothing else, e.g. `salehledgerbank@gmail.com`.
+2. Enable **2-Step Verification** (Google Account → Security). Use standard 2SV,
+   **not** Advanced Protection (which disables app passwords).
+3. Generate a 16-character **App Password** (Security → App passwords). Copy it once.
+4. IMAP is on by default for new Gmail accounts; host is `imap.gmail.com:993`.
+
+### 5b. Forward bank mail from your primary inbox
+
+In **iCloud Mail → Settings → Rules** (icloud.com), add one rule per bank sender:
+
+> If a message **is from** `alerts@emiratesnbd.com` → **Forward to** `salehledgerbank@gmail.com`
+
+Repeat for each bank sender. (You can add senders later as you discover them.)
+
+### 5c. Configure ledger on dinosaur
+
+Point config at the mailbox (no secret here):
+
+```toml
+# in /etc/ledger/config.toml
+[imap]
+host          = "imap.gmail.com"
+port          = 993
+username      = "salehledgerbank@gmail.com"
+auth          = "app_password"
+folder        = "INBOX"
+read_only     = true
+poll_interval = "60s"
+```
+
+Put the secret in the root-only env file the unit already loads:
+
+```bash
+sudo install -m 0600 /dev/stdin /etc/ledger/ledger.env <<'EOF'
+LEDGER_IMAP_APP_PASSWORD=xxxxxxxxxxxxxxxx
+EOF
+sudo chown ledger:ledger /etc/ledger/ledger.env
+sudo systemctl restart ledger
+```
+
+> The systemd unit reads `EnvironmentFile=-/etc/ledger/ledger.env`. For stronger
+> protection, switch to systemd's encrypted credential store (`LoadCredential=` /
+> `systemd-creds`) later — the env file is the simplest secure default.
+
+### 5d. Verify ingestion
+
+```bash
+journalctl -u ledger -f          # expect "ingest enabled ..." then "ingest: N new message(s)"
+curl -s http://127.0.0.1:8080/api/health    # ingest.configured=true, count rises as mail arrives
+sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
+  "SELECT count(*), max(created_at) FROM ingest_log;"
+```
+
+Send a test email from one of the configured bank senders (or wait for a real
+transaction alert) and confirm `ingest_log` grows. Because the mailbox is opened
+read-only (`EXAMINE`), ledger can never delete or modify the mail.

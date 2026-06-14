@@ -8,15 +8,17 @@ data_dir = "/var/lib/ledger"  # SQLite file lives here (ledger.db)
 # --- The sections below are consumed by later milestones (§7 of the build ---
 # --- plan). They are inert in Milestone 1 and shown here for reference.   ---
 
-# [imap]
-# host          = "imap.example.com"
-# port          = 993
-# username      = "bankmail@example.com"
-# auth          = "oauth2"          # "oauth2" | "app_password"
-# folder        = "INBOX"
-# read_only     = true
-# use_idle      = true
-# poll_interval = "60s"
+[imap]
+host          = "imap.gmail.com"        # dedicated mailbox provider
+port          = 993                     # implicit TLS (IMAPS); cert is verified
+username      = "salehledgerbank@gmail.com"
+auth          = "app_password"          # "app_password" (only supported in M2) | "oauth2" (later)
+folder        = "INBOX"
+read_only     = true                    # opened with EXAMINE; the app can never alter mail
+use_idle      = false                   # reserved; Milestone 2 is poll-only
+poll_interval = "60s"
+# Secret is NEVER stored here. Set it in the environment / systemd:
+#   LEDGER_IMAP_APP_PASSWORD = the 16-char Gmail App Password
 
 # [ai]
 # enabled               = true
