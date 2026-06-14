@@ -88,6 +88,7 @@ button.card { font: inherit; cursor: pointer; }
 .card-merchant { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-sub { font-size: 12px; color: #666; }
 .review-card { flex-wrap: wrap; }
+.txn-card { /* history-row card variant — styling hook, inherits .card */ }
 .card-actions { display: flex; gap: 6px; width: 100%; }
 .card-actions .action { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; }
 
@@ -124,6 +125,8 @@ button.card { font: inherit; cursor: pointer; }
 /* toast stack */
 .toast-stack { position: fixed; left: 0; right: 0; bottom: calc(var(--touch) + 8px); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 60; pointer-events: none; }
 .toast { pointer-events: auto; display: flex; align-items: center; gap: 12px; max-width: 92vw; background: #323232; color: #fff; padding: 10px 12px; box-shadow: 1px 1px 4px #0006; animation: slide-up .18s ease-out; }
+.toast-msg { flex: 1; }
+.toast-info { /* default tone — inherits .toast */ }
 .toast-success { background: #1d6b1d; }
 .toast-error { background: #a11; }
 .toast-action { background: none; border: 0; color: #9cf; font-weight: 700; min-height: auto; }
