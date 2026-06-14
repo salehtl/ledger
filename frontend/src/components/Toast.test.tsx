@@ -33,6 +33,6 @@ describe("ToastProvider", () => {
     expect(screen.getByText("Ignored Spinneys")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /undo/i }));
     expect((globalThis as Record<string, unknown>).__undo).toBeTruthy();
-    expect(((globalThis as Record<string, () => void> & { __undo: ReturnType<typeof vi.fn> }).__undo)).toHaveBeenCalled();
+    expect(((globalThis as unknown as Record<string, () => void> & { __undo: ReturnType<typeof vi.fn> }).__undo)).toHaveBeenCalled();
   });
 });
