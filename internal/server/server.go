@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"ledger/internal/monitor"
 	"ledger/internal/store"
 )
 
@@ -58,6 +59,8 @@ type Server struct {
 	catStore       CategoryStore
 	recatFn        CategorizeFunc
 	budgetStore    BudgetStore
+	hub            *Hub               // SSE fan-out hub
+	driftMon       DriftStatusProvider // optional drift monitor for /api/health
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -86,6 +89,24 @@ func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 // SetRecategorizeFn wires the bulk-categorize function used by POST /api/recategorize.
 func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
 
+// DriftStatusProvider surfaces the monitor's current alert list for /api/health.
+type DriftStatusProvider interface {
+	Alerts() []monitor.DriftAlert
+}
+
+// SetHub wires the SSE hub. Required for GET /api/events.
+func (s *Server) SetHub(h *Hub) { s.hub = h }
+
+// SetDriftMonitor wires the drift monitor into /api/health.
+func (s *Server) SetDriftMonitor(m DriftStatusProvider) { s.driftMon = m }
+
+// BroadcastEvent is a convenience wrapper over the hub (no-op if hub is nil).
+func (s *Server) BroadcastEvent(eventType string, data any) {
+	if s.hub != nil {
+		s.hub.BroadcastEvent(eventType, data)
+	}
+}
+
 func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("POST /api/reprocess", s.handleReprocess)
@@ -103,6 +124,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
+	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
