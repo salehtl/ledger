@@ -52,7 +52,7 @@ func TestPostCategorizeWithRule(t *testing.T) {
 	}
 
 	srv := newTestServerWithStore(t, st)
-	body, _ := json.Marshal(map[string]any{"category_id": catID, "make_rule": true})
+	body, _ := json.Marshal(map[string]any{"category_id": catID, "make_rule": true, "merchant_raw": "DAPPER DAN GENTS SAL"})
 	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/categorize", txID), bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, r)
