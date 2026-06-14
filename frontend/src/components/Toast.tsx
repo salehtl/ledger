@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, type ReactNode } from "react";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -21,8 +21,6 @@ export function toastReducer(state: State, action: Action): State {
 interface Ctx { show: (t: Omit<Toast, "id">) => void; }
 const ToastContext = createContext<Ctx | null>(null);
 
-let nextId = 1;
-
 function ToastItem({ toast, dispatch }: { toast: Toast; dispatch: React.Dispatch<Action> }) {
   useEffect(() => {
     const id = setTimeout(() => dispatch({ type: "remove", id: toast.id }), 5000);
@@ -35,7 +33,7 @@ function ToastItem({ toast, dispatch }: { toast: Toast; dispatch: React.Dispatch
       {toast.action && (
         <button
           className="toast-action"
-          onClick={() => { toast.action!.onAction(); dispatch({ type: "remove", id: toast.id }); }}
+          onClick={() => { try { toast.action!.onAction(); } finally { dispatch({ type: "remove", id: toast.id }); } }}
         >
           {toast.action.label}
         </button>
@@ -47,14 +45,14 @@ function ToastItem({ toast, dispatch }: { toast: Toast; dispatch: React.Dispatch
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, dispatch] = useReducer(toastReducer, []);
+  const nextId = useRef(1);
 
   const show = useCallback((t: Omit<Toast, "id">) => {
-    const id = nextId++;
+    const id = nextId.current++;
     dispatch({ type: "add", toast: { ...t, id } });
   }, []);
 
-  // Memoize the context value so it stays stable across re-renders caused by toasts changing.
-  // This prevents consumers (like Trigger) from re-rendering when only toasts change.
+  // Memoize the context value so show stays a stable reference.
   const ctx = useMemo(() => ({ show }), [show]);
 
   return (

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { toastReducer, ToastProvider, useToast } from "./Toast";
 
@@ -24,6 +24,9 @@ function Trigger() {
 }
 
 describe("ToastProvider", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it("shows a toast and fires its action", () => {
     render(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));

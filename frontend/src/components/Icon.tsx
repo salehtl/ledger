@@ -21,7 +21,7 @@ export function Icon({ name, size = 20, alt = "" }: { name: IconName; size?: num
       width={size}
       height={size}
       alt={alt}
-      aria-hidden={alt === "" ? "true" : undefined}
+      aria-hidden={alt === "" ? true : undefined}
     />
   );
 }
