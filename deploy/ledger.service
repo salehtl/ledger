@@ -10,6 +10,8 @@ User=ledger
 Restart=on-failure
 RestartSec=5
 StateDirectory=ledger
+# Financial data — keep the data dir owner-only (systemd defaults to 0755).
+StateDirectoryMode=0700
 # --- sandboxing ---
 NoNewPrivileges=true
 ProtectSystem=strict
