@@ -20,6 +20,7 @@ type TransactionRow struct {
 	Status      string
 	Confidence  float64
 	Tier        string
+	Source      string // "email" | "import" | "manual"; defaults to "email" if empty
 	IngestID    int64
 }
 
@@ -39,14 +40,18 @@ func (r TransactionRow) Fingerprint() string {
 // A zero IngestID is stored as NULL; non-zero values must reference an existing
 // ingest_log row (PRAGMA foreign_keys=ON is active).
 func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
+	source := r.Source
+	if source == "" {
+		source = "email"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
 		   (posted_at, amount, currency, direction, merchant_raw, status, confidence,
 		    fingerprint, source, ingest_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'email', ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, r.Currency, r.Direction,
-		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), nullableID(r.IngestID), now, now,
+		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), source, nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
 		return 0, false, err
