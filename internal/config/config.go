@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Server ServerConfig `toml:"server"`
 	IMAP   IMAPConfig   `toml:"imap"`
+	AI     AIConfig     `toml:"ai"`
 }
 
 // ServerConfig controls the HTTP listener and on-disk data location.
@@ -36,6 +37,17 @@ type IMAPConfig struct {
 	UseIDLE      bool   `toml:"use_idle"`
 	PollInterval string `toml:"poll_interval"`
 	AppPassword  string `toml:"-"` // secret — env only, never from TOML
+}
+
+// AIConfig holds settings for the Anthropic AI client (categorization + extraction fallback).
+// The API key is NEVER read from TOML; it comes from LEDGER_AI_API_KEY.
+type AIConfig struct {
+	Enabled             bool    `toml:"enabled"`
+	Model               string  `toml:"model"`
+	AutoAcceptThreshold float64 `toml:"auto_accept_threshold"`
+	AutoRule            bool    `toml:"auto_rule"`
+	AllowAIExtraction   bool    `toml:"allow_ai_extraction"`
+	APIKey              string  `toml:"-"` // env only
 }
 
 // Enabled reports whether IMAP ingestion is configured.
@@ -60,6 +72,11 @@ func defaults() Config {
 			ReadOnly:     true,
 			UseIDLE:      false,
 			PollInterval: "60s",
+		},
+		AI: AIConfig{
+			Model:               "claude-haiku-4-5-20251001",
+			AutoAcceptThreshold: 0.85,
+			AllowAIExtraction:   true,
 		},
 	}
 }
@@ -87,6 +104,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("LEDGER_IMAP_APP_PASSWORD"); v != "" {
 		cfg.IMAP.AppPassword = v
+	}
+	if v := os.Getenv("LEDGER_AI_API_KEY"); v != "" {
+		cfg.AI.APIKey = v
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -121,6 +141,9 @@ func (c Config) validate() error {
 		if _, err := c.IMAP.Interval(); err != nil {
 			return fmt.Errorf("imap.poll_interval invalid: %w", err)
 		}
+	}
+	if c.AI.Enabled && c.AI.APIKey == "" {
+		return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
 	}
 	return nil
 }
