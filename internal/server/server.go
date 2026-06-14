@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"io/fs"
 	"net/http"
 	"time"
@@ -21,12 +22,19 @@ type IngestStatus interface {
 	LastIngestAt() (time.Time, bool, error)
 }
 
+// Reprocessor re-runs the parse cascade over retained raw email. bank is an
+// optional sender/bank filter ("" = all).
+type Reprocessor interface {
+	Reprocess(ctx context.Context, bank string) (int, error)
+}
+
 // Server holds the router and its dependencies.
 type Server struct {
 	mux            *http.ServeMux
 	store          HealthChecker
 	ingest         IngestStatus
 	imapConfigured bool
+	reprocessor    Reprocessor
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -46,8 +54,12 @@ func (s *Server) SetIngest(src IngestStatus, configured bool) {
 	s.imapConfigured = configured
 }
 
+// SetReprocessor enables POST /api/reprocess.
+func (s *Server) SetReprocessor(r Reprocessor) { s.reprocessor = r }
+
 func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+	s.mux.HandleFunc("POST /api/reprocess", s.handleReprocess)
 	// Everything else is the SPA bundle.
 	s.mux.Handle("/", http.FileServer(http.FS(webFS)))
 }
