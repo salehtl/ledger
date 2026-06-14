@@ -156,11 +156,13 @@ func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Resul
 	}
 	if conf >= c.threshold {
 		res.AboveThreshold = true
-		res.ProposedRule = &Rule{
-			MatchType:  "contains",
-			Pattern:    strings.ToLower(merchantRaw),
-			CategoryID: cat.ID,
-			Priority:   100,
+		if c.autoRule {
+			res.ProposedRule = &Rule{
+				MatchType:  "contains",
+				Pattern:    strings.ToLower(merchantRaw),
+				CategoryID: cat.ID,
+				Priority:   100,
+			}
 		}
 	}
 	return res, true
