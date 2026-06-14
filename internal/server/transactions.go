@@ -42,6 +42,7 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 			Source:     "manual",
 		})
 	}
+	s.hub.broadcast("tx")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -124,6 +125,7 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
+	s.hub.broadcast("tx")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
