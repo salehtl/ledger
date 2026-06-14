@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -10,8 +9,9 @@ import (
 )
 
 type categorizeReq struct {
-	CategoryID int64 `json:"category_id"`
-	MakeRule   bool  `json:"make_rule"`
+	CategoryID  int64  `json:"category_id"`
+	MerchantRaw string `json:"merchant_raw"`
+	MakeRule    bool   `json:"make_rule"`
 }
 
 func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
@@ -33,24 +33,35 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	if req.MakeRule {
-		// Look up merchant_raw from the concrete *store.Store via type assertion
-		if st, ok := s.catStore.(*store.Store); ok {
-			var merchant string
-			st.DB.QueryRow("SELECT COALESCE(merchant_raw,'') FROM transactions WHERE id=?", txID).Scan(&merchant)
-			if merchant != "" {
-				_ = s.catStore.InsertRule(store.RuleRow{
-					MatchType:  "contains",
-					Pattern:    merchant,
-					CategoryID: req.CategoryID,
-					Priority:   100,
-					Source:     "manual",
-				})
-			}
-		}
+	if req.MakeRule && req.MerchantRaw != "" {
+		_ = s.catStore.InsertRule(store.RuleRow{
+			MatchType:  "contains",
+			Pattern:    req.MerchantRaw,
+			CategoryID: req.CategoryID,
+			Priority:   100,
+			Source:     "manual",
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintln(w, `{"ok":true}`)
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"transactions unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	items, err := s.catStore.SelectTransactions(q.Get("status"), q.Get("from"), q.Get("to"))
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if items == nil {
+		items = []store.ReviewItem{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
 }
 
 var validStatuses = map[string]bool{
@@ -88,5 +99,5 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintln(w, `{"ok":true}`)
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
