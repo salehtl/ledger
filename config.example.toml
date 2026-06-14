@@ -23,12 +23,15 @@ poll_interval = "60s"
 # --- The sections below are consumed by later milestones (§7 of the build ---
 # --- plan). They are inert today and shown here for reference.            ---
 
-# [ai]
-# enabled               = true
-# model                 = "claude-..."
-# auto_accept_threshold = 0.85
-# auto_rule             = false
-# allow_ai_extraction   = true
+[ai]
+# Set enabled=true and LEDGER_AI_API_KEY env var to activate AI categorization.
+# AI never auto-confirms without reaching auto_accept_threshold.
+enabled               = false
+model                 = "claude-haiku-4-5-20251001"   # cheapest model; good for single merchants
+auto_accept_threshold = 0.85                           # >= this → confirmed + rule proposed
+auto_rule             = false                          # true = write rule without user tap
+allow_ai_extraction   = true                           # let AI be the last-resort parse tier
+# Secret: LEDGER_AI_API_KEY=sk-ant-...
 
 # [budget]
 # currency       = "AED"
