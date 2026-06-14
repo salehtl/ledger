@@ -5,23 +5,45 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"ledger/internal/categorize"
 	"ledger/internal/config"
+	"ledger/internal/importer"
 	"ledger/internal/ingest"
+	"ledger/internal/monitor"
 	"ledger/internal/parse"
+	"ledger/internal/push"
 	"ledger/internal/server"
 	"ledger/internal/store"
 	"ledger/internal/web"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "vapid-keys":
+			priv, pub, err := push.GenerateKeys()
+			if err != nil {
+				log.Fatalf("vapid-keys: %v", err)
+			}
+			fmt.Printf("LEDGER_VAPID_PRIVATE=%s\nLEDGER_VAPID_PUBLIC=%s\n", priv, pub)
+			return
+		}
+	}
+
 	configPath := flag.String("config", "", "path to config.toml (optional; defaults apply if empty)")
 	flag.Parse()
 
@@ -117,6 +139,74 @@ func main() {
 		return result.CategoryID, status, true
 	})
 
+	// VAPID push sender (optional — only enabled when both keys are set).
+	var pushSend *push.Sender
+	if priv := os.Getenv("LEDGER_VAPID_PRIVATE"); priv != "" {
+		pub := os.Getenv("LEDGER_VAPID_PUBLIC")
+		subscriber := "mailto:" + cfg.IMAP.Username
+		if subscriber == "mailto:" {
+			subscriber = "mailto:admin@localhost"
+		}
+		if s, err := push.New(priv, pub, subscriber); err == nil {
+			pushSend = s
+			srv.SetPushStore(st)
+			srv.SetPushSender(pushSend)
+			log.Printf("push: VAPID enabled")
+		} else {
+			log.Printf("push: disabled (%v)", err)
+		}
+	} else {
+		log.Printf("push: disabled (set LEDGER_VAPID_PRIVATE + LEDGER_VAPID_PUBLIC to enable)")
+	}
+
+	// SSE hub — broadcasts new transactions and drift alerts.
+	hub := server.NewHub()
+	srv.SetHub(hub)
+
+	// Wire processor to broadcast SSE events on successful inserts.
+	processor.SetOnInsert(func(txID, amountFils int64, merchant, direction string) {
+		hub.BroadcastEvent("new_transaction", map[string]any{
+			"id":           txID,
+			"merchant_raw": merchant,
+			"amount":       amountFils,
+			"direction":    direction,
+		})
+		if pushSend != nil {
+			subs, _ := st.SelectPushSubs()
+			payload, _ := json.Marshal(map[string]string{
+				"title": "New transaction",
+				"body":  merchant,
+			})
+			for _, sub := range subs {
+				go func(s store.PushSubRow) {
+					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+				}(sub)
+			}
+		}
+	})
+
+	// Drift monitor — check parse-success rates and alert on drift.
+	driftWindow, werr := cfg.Monitoring.ParseDriftWindow()
+	if werr != nil {
+		log.Fatalf("monitoring.drift_window: %v", werr)
+	}
+	mon := monitor.New(st, driftWindow, cfg.Monitoring.DriftMin, func(alerts []monitor.DriftAlert) {
+		hub.BroadcastEvent("drift_alert", alerts)
+		if pushSend != nil && len(alerts) > 0 {
+			subs, _ := st.SelectPushSubs()
+			payload, _ := json.Marshal(map[string]string{
+				"title": "Parse drift alert",
+				"body":  alerts[0].FromAddr + " parse-success dropped",
+			})
+			for _, sub := range subs {
+				go func(s store.PushSubRow) {
+					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+				}(sub)
+			}
+		}
+	})
+	srv.SetDriftMonitor(mon)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -128,11 +218,7 @@ func main() {
 		dialer := ingest.NewIMAPDialer(cfg.IMAP)
 		worker := ingest.New(dialer, st, interval, log.Default())
 		worker.SetPostProcess(func(ctx context.Context) (int, error) {
-			n, err := processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
-			if n > 0 {
-				srv.Broadcast("tx")
-			}
-			return n, err
+			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
 		})
 		go worker.Run(ctx)
 		log.Printf("ingest+parse enabled for %s (mailbox %s, poll %s)", cfg.IMAP.Username, cfg.IMAP.Folder, interval)
@@ -152,11 +238,89 @@ func main() {
 		}
 	}()
 
+	go mon.Start(ctx)
+
 	<-ctx.Done()
 	log.Println("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
+	}
+}
+
+func runImport(args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	filePath := fs.String("file", "", "path to CSV or XLSX file (required)")
+	mapPath := fs.String("map", "map.toml", "path to map.toml column-mapping file")
+	dryRun := fs.Bool("dry-run", false, "validate and report without writing to the database")
+	configPath := fs.String("config", "", "path to config.toml (optional; uses defaults if empty)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("import flags: %v", err)
+	}
+	if *filePath == "" {
+		log.Fatal("import: --file is required")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	st, err := store.Open(cfg.Server.DataDir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	m, err := importer.LoadMap(*mapPath)
+	if err != nil {
+		log.Fatalf("map: %v", err)
+	}
+
+	rows, err := importer.ReadFile(*filePath)
+	if err != nil {
+		log.Fatalf("read file: %v", err)
+	}
+
+	// Build rules-only categorizer from live store data.
+	storeCats, _ := st.SelectCategories()
+	storeRules, _ := st.SelectRules()
+	domainCats := make([]categorize.Category, len(storeCats))
+	for i, c := range storeCats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	domainRules := make([]categorize.Rule, len(storeRules))
+	for i, r := range storeRules {
+		domainRules[i] = categorize.Rule{
+			MatchType:  r.MatchType,
+			Pattern:    r.Pattern,
+			CategoryID: r.CategoryID,
+			Priority:   r.Priority,
+		}
+	}
+	cat := categorize.New(domainRules, domainCats, categorize.DisabledAI{}, 0.85, false)
+
+	imp := importer.New(st, cat)
+	result, err := imp.Run(context.Background(), rows, m, filepath.Base(*filePath), *dryRun)
+	if err != nil {
+		log.Fatalf("import: %v", err)
+	}
+
+	mode := "COMMITTED"
+	if *dryRun {
+		mode = "DRY RUN"
+	}
+	fmt.Printf("\n[%s] %s\n", mode, *filePath)
+	fmt.Printf("  Total rows:         %d\n", result.RowsTotal)
+	fmt.Printf("  Added (confirmed):  %d\n", result.RowsAdded)
+	fmt.Printf("  Review queue:       %d\n", result.RowsReview)
+	fmt.Printf("  Skipped (dedup):    %d\n", result.RowsSkipped)
+	fmt.Printf("  Errors:             %d\n", result.RowsError)
+	if !*dryRun {
+		fmt.Printf("  Rules derived:      %d\n", result.DerivedRules)
+	}
+	if result.RowsError > 0 {
+		fmt.Fprintln(os.Stderr, "\nWARNING: some rows had errors — check output above")
+		os.Exit(1)
 	}
 }

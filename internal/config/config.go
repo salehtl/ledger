@@ -6,6 +6,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -14,9 +16,10 @@ import (
 // Config is the subset of config.toml that Milestone 1 needs. Later milestones
 // extend this struct; unknown TOML sections are ignored by the decoder.
 type Config struct {
-	Server ServerConfig `toml:"server"`
-	IMAP   IMAPConfig   `toml:"imap"`
-	AI     AIConfig     `toml:"ai"`
+	Server     ServerConfig     `toml:"server"`
+	IMAP       IMAPConfig       `toml:"imap"`
+	AI         AIConfig         `toml:"ai"`
+	Monitoring MonitoringConfig `toml:"monitoring"`
 }
 
 // ServerConfig controls the HTTP listener and on-disk data location.
@@ -50,6 +53,26 @@ type AIConfig struct {
 	APIKey              string  `toml:"-"` // env only
 }
 
+// MonitoringConfig controls the drift detection window and threshold.
+type MonitoringConfig struct {
+	DriftWindow string  `toml:"drift_window"` // e.g. "7d", "24h"
+	DriftMin    float64 `toml:"drift_min"`    // 0.0–1.0; alert if success rate drops below this
+}
+
+// ParseDriftWindow parses the drift_window string. Supports "Nd" for days in
+// addition to standard time.ParseDuration formats.
+func (c MonitoringConfig) ParseDriftWindow() (time.Duration, error) {
+	s := strings.TrimSpace(c.DriftWindow)
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil {
+			return 0, fmt.Errorf("drift_window %q: expected integer days", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // Enabled reports whether IMAP ingestion is configured.
 func (c IMAPConfig) Enabled() bool { return c.Host != "" }
 
@@ -77,6 +100,10 @@ func defaults() Config {
 			Model:               "claude-haiku-4-5-20251001",
 			AutoAcceptThreshold: 0.85,
 			AllowAIExtraction:   true,
+		},
+		Monitoring: MonitoringConfig{
+			DriftWindow: "7d",
+			DriftMin:    0.80,
 		},
 	}
 }
@@ -144,6 +171,9 @@ func (c Config) validate() error {
 	}
 	if c.AI.Enabled && c.AI.APIKey == "" {
 		return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
+	}
+	if _, err := c.Monitoring.ParseDriftWindow(); err != nil {
+		return fmt.Errorf("monitoring.drift_window invalid: %w", err)
 	}
 	return nil
 }

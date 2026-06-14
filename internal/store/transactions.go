@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -20,6 +21,7 @@ type TransactionRow struct {
 	Status      string
 	Confidence  float64
 	Tier        string
+	Source      string // "email" | "import" | "manual"; defaults to "email" if empty
 	IngestID    int64
 }
 
@@ -39,14 +41,18 @@ func (r TransactionRow) Fingerprint() string {
 // A zero IngestID is stored as NULL; non-zero values must reference an existing
 // ingest_log row (PRAGMA foreign_keys=ON is active).
 func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
+	source := r.Source
+	if source == "" {
+		source = "email"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
 		   (posted_at, amount, currency, direction, merchant_raw, status, confidence,
 		    fingerprint, source, ingest_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'email', ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, r.Currency, r.Direction,
-		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), nullableID(r.IngestID), now, now,
+		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), source, nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
 		return 0, false, err
@@ -129,4 +135,37 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// FindTransferMatch looks for an existing transaction that could be the other leg
+// of a self-transfer: same amount, opposite direction, within `window` of `postedAt`,
+// and not already marked as a transfer. Returns (matchID, true, nil) on hit.
+func (s *Store) FindTransferMatch(txID, amountFils int64, direction string, postedAt time.Time, window time.Duration) (int64, bool, error) {
+	opp := "credit"
+	if direction == "credit" {
+		opp = "debit"
+	}
+	start := postedAt.Add(-window).UTC().Format(time.RFC3339Nano)
+	end := postedAt.Add(window).UTC().Format(time.RFC3339Nano)
+	postedStr := postedAt.UTC().Format(time.RFC3339Nano)
+
+	var matchID int64
+	err := s.DB.QueryRow(`
+		SELECT id FROM transactions
+		 WHERE id != ?
+		   AND amount = ?
+		   AND direction = ?
+		   AND posted_at >= ?
+		   AND posted_at <= ?
+		   AND status != 'transfer'
+		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
+		 LIMIT 1
+	`, txID, amountFils, opp, start, end, postedStr).Scan(&matchID)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return matchID, true, nil
 }
