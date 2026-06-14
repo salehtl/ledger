@@ -111,3 +111,52 @@ func TestDIBUnrecognizedReturnsError(t *testing.T) {
 		t.Error("expected error when anchors absent")
 	}
 }
+
+const dibTransferOut = `إشعار تحويل
+عزيزي المتعامل,
+إشعار تحويل من الحساب بتاريخ 20-08-2025 بالتفاصيل التالية.
+المبلغ
+AED 300.00
+من حساب
+001-520-XXXX081-01
+حساب جاري
+المعاملة
+MB FUND TRANSFER DEBIT
+الحالة
+تمت بنجاح`
+
+const dibTransferIn = `إشعار تحويل
+عزيزي المتعامل,
+إشعار تحويل فى الحساب بتاريخ 20-08-2025 بالتفاصيل التالية.
+المبلغ
+AED 900.00
+من حساب
+001-580-XXXX081-01
+حساب جاري
+المعاملة
+IB FUNDS TRANSFER CREDIT
+الحالة
+تمت بنجاح`
+
+func TestDIBTransferOutgoingIsDebit(t *testing.T) {
+	got, err := DIBParser{}.Parse(dibTransferOut)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Direction != DirectionDebit {
+		t.Errorf("direction = %q, want debit (outgoing transfer / desc suffix DEBIT)", got.Direction)
+	}
+	if !got.IsTransfer {
+		t.Error("expected IsTransfer = true")
+	}
+}
+
+func TestDIBTransferIncomingIsCredit(t *testing.T) {
+	got, err := DIBParser{}.Parse(dibTransferIn)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Direction != DirectionCredit {
+		t.Errorf("direction = %q, want credit (incoming transfer / desc suffix CREDIT)", got.Direction)
+	}
+}
