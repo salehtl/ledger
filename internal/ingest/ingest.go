@@ -119,3 +119,27 @@ func (w *Worker) syncOnce(ctx context.Context) (int, error) {
 	}
 	return inserted, nil
 }
+
+// Run polls the mailbox every interval until ctx is cancelled. Transient errors
+// are logged and retried on the next cycle; the worker never crashes the process.
+func (w *Worker) Run(ctx context.Context) {
+	w.log.Printf("ingest worker started (poll every %s)", w.interval)
+	for {
+		n, err := w.syncOnce(ctx)
+		switch {
+		case ctx.Err() != nil:
+			w.log.Printf("ingest worker stopping")
+			return
+		case err != nil:
+			w.log.Printf("ingest sync error: %v", err)
+		case n > 0:
+			w.log.Printf("ingest: %d new message(s)", n)
+		}
+		select {
+		case <-ctx.Done():
+			w.log.Printf("ingest worker stopping")
+			return
+		case <-time.After(w.interval):
+		}
+	}
+}
