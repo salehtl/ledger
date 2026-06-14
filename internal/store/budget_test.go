@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -46,8 +47,19 @@ func TestEnsureBudgetConfigIdempotent(t *testing.T) {
 	if err := st.EnsureBudgetConfig(); err != nil {
 		t.Fatal(err)
 	}
-	cfg, _ := st.SelectBudgetConfig()
+	cfg, err := st.SelectBudgetConfig()
+	if err != nil {
+		t.Fatalf("SelectBudgetConfig: %v", err)
+	}
 	if cfg.MonthlyIncome != 2000000 || cfg.NeedPct != 0.6 || !cfg.FreezeHistory {
 		t.Errorf("Ensure clobbered user values: %+v", cfg)
+	}
+}
+
+func TestSelectBudgetConfigNoRow(t *testing.T) {
+	st := openTestStore(t)
+	// Without EnsureBudgetConfig, the singleton row does not exist.
+	if _, err := st.SelectBudgetConfig(); err != sql.ErrNoRows {
+		t.Errorf("err = %v, want sql.ErrNoRows", err)
 	}
 }
