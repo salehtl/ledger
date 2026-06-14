@@ -54,6 +54,7 @@ type Server struct {
 	reprocessor    Reprocessor
 	catStore       CategoryStore
 	recatFn        CategorizeFunc
+	budgetStore    BudgetStore
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -92,6 +93,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
+	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
+	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
 	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
