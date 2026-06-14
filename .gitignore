@@ -1,0 +1,14 @@
+# Build artifacts
+/ledger
+/dist
+/web/dist
+
+# Local runtime data (never commit the DB — it holds financial data)
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# Local secrets / env
+*.env
+ledger.env
