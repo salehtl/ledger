@@ -44,7 +44,12 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	return &Store{DB: db}, nil
+	st := &Store{DB: db}
+	if err := st.SeedDefaultCategories(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("seed categories: %w", err)
+	}
+	return st, nil
 }
 
 // Close releases the connection pool.
