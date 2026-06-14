@@ -31,7 +31,7 @@ type ReviewItem struct {
 	MerchantRaw string
 	Status      string
 	Confidence  float64
-	Tier        string
+	Source      string
 }
 
 // nullableStr maps an empty string to SQL NULL.
@@ -233,7 +233,7 @@ func scanReviewItems(rows interface {
 		var r ReviewItem
 		if err := rows.Scan(
 			&r.ID, &r.PostedAt, &r.AmountFils, &r.Currency, &r.Direction,
-			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Tier,
+			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 		); err != nil {
 			return nil, err
 		}
