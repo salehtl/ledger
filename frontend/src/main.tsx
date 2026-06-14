@@ -1,3 +1,5 @@
+import "xp.css/dist/XP.css";
+import "./styles/theme.css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 
