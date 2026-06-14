@@ -48,11 +48,12 @@ type Dialer interface {
 // Worker ingests the mailbox into the store. It depends on a Dialer (the I/O
 // seam) and the concrete store. now is injectable for deterministic tests.
 type Worker struct {
-	dialer   Dialer
-	store    *store.Store
-	interval time.Duration
-	log      *log.Logger
-	now      func() time.Time
+	dialer      Dialer
+	store       *store.Store
+	interval    time.Duration
+	log         *log.Logger
+	now         func() time.Time
+	postProcess func(ctx context.Context) (int, error)
 }
 
 // New builds a Worker. interval is the poll cadence; logger receives operational
@@ -65,6 +66,13 @@ func New(d Dialer, st *store.Store, interval time.Duration, logger *log.Logger) 
 		log:      logger,
 		now:      time.Now,
 	}
+}
+
+// SetPostProcess registers a hook run at the end of each sync (e.g. the parse
+// processor). It runs even when no new messages arrived, so a restart still
+// processes any leftover unparsed rows.
+func (w *Worker) SetPostProcess(fn func(ctx context.Context) (int, error)) {
+	w.postProcess = fn
 }
 
 // syncOnce dials, examines the mailbox read-only, and writes any not-yet-seen
@@ -115,6 +123,13 @@ func (w *Worker) syncOnce(ctx context.Context) (int, error) {
 		}
 		if ok {
 			inserted++
+		}
+	}
+	if w.postProcess != nil {
+		if n, err := w.postProcess(ctx); err != nil {
+			w.log.Printf("post-process error: %v", err)
+		} else if n > 0 {
+			w.log.Printf("parsed %d new transaction(s)", n)
 		}
 	}
 	return inserted, nil

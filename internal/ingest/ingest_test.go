@@ -228,3 +228,17 @@ func TestRunIngestsThenKeepsRunningOnError(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 }
+
+func TestSyncOnceRunsPostProcessHook(t *testing.T) {
+	st := newTestStore(t)
+	mb := mailboxWith(7, msg(1, "a@bank.com"))
+	w := New(&fakeDialer{mb: mb}, st, time.Minute, quietLogger())
+	called := 0
+	w.SetPostProcess(func(ctx context.Context) (int, error) { called++; return 0, nil })
+	if _, err := w.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Errorf("post-process hook called %d times, want 1", called)
+	}
+}
