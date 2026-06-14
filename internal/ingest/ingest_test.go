@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 // fakeMailbox is a scripted, in-memory Mailbox.
 type fakeMailbox struct {
+	mu          sync.Mutex
 	uidValidity uint32
 	messages    map[uint32]Message
 	uids        []uint32
@@ -20,17 +22,43 @@ type fakeMailbox struct {
 	closed      bool
 }
 
-func (f *fakeMailbox) Examine(ctx context.Context) (uint32, error) { return f.uidValidity, nil }
+func (f *fakeMailbox) Examine(ctx context.Context) (uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.uidValidity, nil
+}
 func (f *fakeMailbox) ListUIDs(ctx context.Context) ([]uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]uint32(nil), f.uids...), nil
 }
 func (f *fakeMailbox) Fetch(ctx context.Context, uid uint32) (Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fetchErr != nil {
 		return Message{}, f.fetchErr
 	}
 	return f.messages[uid], nil
 }
-func (f *fakeMailbox) Close() error { f.closed = true; return nil }
+func (f *fakeMailbox) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *fakeMailbox) addMessage(m Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages[m.UID] = m
+	f.uids = append(f.uids, m.UID)
+}
+
+func (f *fakeMailbox) setFetchErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchErr = err
+}
 
 // fakeDialer hands out a fixed mailbox.
 type fakeDialer struct {
@@ -125,8 +153,7 @@ func TestSyncOnceInsertsOnlyNew(t *testing.T) {
 	if _, err := w.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	mb.messages[101] = msg(101, "c@bank.com")
-	mb.uids = append(mb.uids, 101)
+	mb.addMessage(msg(101, "c@bank.com"))
 	n, err := w.syncOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -196,9 +223,8 @@ func TestRunIngestsThenKeepsRunningOnError(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	mb.fetchErr = errors.New("transient")
-	mb.messages[101] = msg(101, "b@bank.com")
-	mb.uids = append(mb.uids, 101)
+	mb.setFetchErr(errors.New("transient"))
+	mb.addMessage(msg(101, "b@bank.com"))
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 }
