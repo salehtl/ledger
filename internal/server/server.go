@@ -92,8 +92,12 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
+	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
 	// Everything else is the SPA bundle.
-	s.mux.Handle("/", http.FileServer(http.FS(webFS)))
+	s.mux.Handle("/", spaHandler(webFS))
 }
 
 // ServeHTTP makes Server an http.Handler.

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"testing/fstest"
+	mapfs "testing/fstest"
 	"time"
 )
 
@@ -14,9 +14,9 @@ type fakeChecker struct{ err error }
 
 func (f fakeChecker) Ping() error { return f.err }
 
-func testFS() fstest.MapFS {
-	return fstest.MapFS{
-		"index.html": &fstest.MapFile{Data: []byte("<html>ledger</html>")},
+func testFS() mapfs.MapFS {
+	return mapfs.MapFS{
+		"index.html": &mapfs.MapFile{Data: []byte("<html>ledger</html>")},
 	}
 }
 
