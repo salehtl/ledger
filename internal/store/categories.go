@@ -241,3 +241,28 @@ func scanReviewItems(rows interface {
 	}
 	return out, rows.Err()
 }
+
+// UpdateCategory overwrites name/kind/bucket for one category.
+func (s *Store) UpdateCategory(c CategoryRow) error {
+	_, err := s.DB.Exec(
+		`UPDATE categories SET name=?, kind=?, bucket=? WHERE id=?`,
+		c.Name, c.Kind, nullableStr(c.Bucket), c.ID,
+	)
+	return err
+}
+
+// SnapshotBucketForCategory stamps bucket_snapshot onto every transaction of a
+// category (used by the "apply to past" action when freeze_history is on).
+func (s *Store) SnapshotBucketForCategory(categoryID int64, bucket string) error {
+	_, err := s.DB.Exec(
+		`UPDATE transactions SET bucket_snapshot=? WHERE category_id=?`,
+		nullableStr(bucket), categoryID,
+	)
+	return err
+}
+
+// DeleteRule removes one rule by id.
+func (s *Store) DeleteRule(id int64) error {
+	_, err := s.DB.Exec(`DELETE FROM rules WHERE id=?`, id)
+	return err
+}
