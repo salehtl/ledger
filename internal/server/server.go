@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"net/http"
 	"time"
+
+	"ledger/internal/store"
 )
 
 // HealthChecker is the minimal dependency the health endpoint needs. The store
@@ -28,6 +30,18 @@ type Reprocessor interface {
 	Reprocess(ctx context.Context, bank string) (int, error)
 }
 
+// CategoryStore is the subset of store methods the category/review/transaction handlers need.
+type CategoryStore interface {
+	SelectCategories() ([]store.CategoryRow, error)
+	InsertCategory(store.CategoryRow) (int64, error)
+	SelectRules() ([]store.RuleRow, error)
+	InsertRule(store.RuleRow) error
+	SelectNeedsReview() ([]store.ReviewItem, error)
+	SelectTransactions(status, from, to string) ([]store.ReviewItem, error)
+	UpdateTransactionCategory(txID, catID int64, status string) error
+	UpdateTransactionStatus(txID int64, status string) error
+}
+
 // Server holds the router and its dependencies.
 type Server struct {
 	mux            *http.ServeMux
@@ -35,6 +49,7 @@ type Server struct {
 	ingest         IngestStatus
 	imapConfigured bool
 	reprocessor    Reprocessor
+	catStore       CategoryStore
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -57,9 +72,18 @@ func (s *Server) SetIngest(src IngestStatus, configured bool) {
 // SetReprocessor enables POST /api/reprocess.
 func (s *Server) SetReprocessor(r Reprocessor) { s.reprocessor = r }
 
+// SetCategoryStore wires the category/review/transaction handlers.
+func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
+
 func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("POST /api/reprocess", s.handleReprocess)
+	s.mux.HandleFunc("GET /api/categories", s.handleGetCategories)
+	s.mux.HandleFunc("POST /api/categories", s.handlePostCategory)
+	s.mux.HandleFunc("GET /api/review", s.handleGetReview)
+	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
+	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
+	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	// Everything else is the SPA bundle.
 	s.mux.Handle("/", http.FileServer(http.FS(webFS)))
 }
