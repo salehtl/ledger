@@ -172,5 +172,8 @@ func (c Config) validate() error {
 	if c.AI.Enabled && c.AI.APIKey == "" {
 		return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
 	}
+	if _, err := c.Monitoring.ParseDriftWindow(); err != nil {
+		return fmt.Errorf("monitoring.drift_window invalid: %w", err)
+	}
 	return nil
 }
