@@ -30,6 +30,9 @@ type Reprocessor interface {
 	Reprocess(ctx context.Context, bank string) (int, error)
 }
 
+// CategorizeFunc is called by POST /api/recategorize for each needs_review transaction.
+type CategorizeFunc func(ctx context.Context, merchantRaw string) (categoryID int64, status string, ok bool)
+
 // CategoryStore is the subset of store methods the category/review/transaction handlers need.
 type CategoryStore interface {
 	SelectCategories() ([]store.CategoryRow, error)
@@ -50,6 +53,7 @@ type Server struct {
 	imapConfigured bool
 	reprocessor    Reprocessor
 	catStore       CategoryStore
+	recatFn        CategorizeFunc
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -75,6 +79,9 @@ func (s *Server) SetReprocessor(r Reprocessor) { s.reprocessor = r }
 // SetCategoryStore wires the category/review/transaction handlers.
 func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 
+// SetRecategorizeFn wires the bulk-categorize function used by POST /api/recategorize.
+func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
+
 func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("POST /api/reprocess", s.handleReprocess)
@@ -84,6 +91,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
+	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
 	// Everything else is the SPA bundle.
 	s.mux.Handle("/", http.FileServer(http.FS(webFS)))
 }
