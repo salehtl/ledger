@@ -21,15 +21,27 @@ func txnRow() TransactionRow {
 }
 
 func TestInsertTransactionAndFingerprintDedup(t *testing.T) {
-	st := newTestStore(t) // helper from ingest_test.go in the same package
-	ins1, err := st.InsertTransaction(txnRow())
+	st := newTestStore(t)
+	// Seed a real ingest_log row so transactions.ingest_id satisfies the FK.
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "seed", FromAddr: "DIB.notification@dib.ae",
+		Subject: "n", ParseStatus: "parsed", RawBody: []byte("raw"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var ingestID int64
+	if err := st.DB.QueryRow("SELECT id FROM ingest_log WHERE message_uid='seed'").Scan(&ingestID); err != nil {
+		t.Fatal(err)
+	}
+	row := txnRow()
+	row.IngestID = ingestID
+
+	ins1, err := st.InsertTransaction(row)
 	if err != nil {
 		t.Fatalf("insert1: %v", err)
 	}
 	if !ins1 {
 		t.Error("first insert should be new")
 	}
-	ins2, err := st.InsertTransaction(txnRow()) // identical → same fingerprint
+	ins2, err := st.InsertTransaction(row) // identical → same fingerprint
 	if err != nil {
 		t.Fatalf("insert2: %v", err)
 	}
@@ -40,6 +52,12 @@ func TestInsertTransactionAndFingerprintDedup(t *testing.T) {
 	st.DB.QueryRow("SELECT COUNT(*) FROM transactions").Scan(&n)
 	if n != 1 {
 		t.Errorf("transactions count = %d, want 1", n)
+	}
+	// Linkage is persisted.
+	var linked int64
+	st.DB.QueryRow("SELECT ingest_id FROM transactions LIMIT 1").Scan(&linked)
+	if linked != ingestID {
+		t.Errorf("ingest_id = %d, want %d", linked, ingestID)
 	}
 }
 

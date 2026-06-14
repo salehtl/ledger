@@ -35,23 +35,31 @@ func (r TransactionRow) Fingerprint() string {
 
 // InsertTransaction writes a transaction idempotently (INSERT OR IGNORE on the
 // UNIQUE fingerprint index). Returns true if a new row was created.
-// ingest_id is stored only when a corresponding ingest_log row exists; callers
-// that hold a verified ingest_log id should use InsertTransactionLinked.
+// A zero IngestID is stored as NULL; non-zero values must reference an existing
+// ingest_log row (PRAGMA foreign_keys=ON is active).
 func (s *Store) InsertTransaction(r TransactionRow) (bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
 		   (posted_at, amount, currency, direction, merchant_raw, status, confidence,
-		    fingerprint, source, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'email', ?, ?)`,
+		    fingerprint, source, ingest_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'email', ?, ?, ?)`,
 		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, r.Currency, r.Direction,
-		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), now, now,
+		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// nullableID maps a zero rowid to SQL NULL (0 is never a valid ingest_log id).
+func nullableID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 // IngestForParse is one ingest_log row the processor will run the cascade over.
