@@ -147,3 +147,50 @@ func TestIMAPRejectsReadOnlyFalse(t *testing.T) {
 		t.Fatal("expected error when read_only = false")
 	}
 }
+
+func writeTOML(t *testing.T, content string) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(f, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestAIConfigDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Enabled {
+		t.Error("AI must default to disabled")
+	}
+	if cfg.AI.AutoAcceptThreshold != 0.85 {
+		t.Errorf("auto_accept_threshold default = %v, want 0.85", cfg.AI.AutoAcceptThreshold)
+	}
+	if cfg.AI.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("model default = %q, want claude-haiku-4-5-20251001", cfg.AI.Model)
+	}
+}
+
+func TestAIConfigEnvAPIKey(t *testing.T) {
+	t.Setenv("LEDGER_AI_API_KEY", "sk-test-key")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.APIKey != "sk-test-key" {
+		t.Errorf("APIKey = %q, want sk-test-key", cfg.AI.APIKey)
+	}
+}
+
+func TestAIConfigEnabledRequiresAPIKey(t *testing.T) {
+	f := writeTOML(t, `
+[ai]
+enabled = true
+`)
+	_, err := Load(f)
+	if err == nil {
+		t.Error("expected error when AI enabled but no API key")
+	}
+}
