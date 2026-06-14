@@ -171,6 +171,12 @@ func TestAIConfigDefaults(t *testing.T) {
 	if cfg.AI.Model != "claude-haiku-4-5-20251001" {
 		t.Errorf("model default = %q, want claude-haiku-4-5-20251001", cfg.AI.Model)
 	}
+	if !cfg.AI.AllowAIExtraction {
+		t.Error("AllowAIExtraction must default to true")
+	}
+	if cfg.AI.AutoRule {
+		t.Error("AutoRule must default to false")
+	}
 }
 
 func TestAIConfigEnvAPIKey(t *testing.T) {
