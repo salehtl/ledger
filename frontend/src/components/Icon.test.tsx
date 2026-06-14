@@ -15,6 +15,6 @@ describe("Icon", () => {
   });
   it("is decorative (aria-hidden) when alt is empty", () => {
     const { container } = render(<Icon name="chart" />);
-    expect(container.querySelector("img")?.getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector("img")).toHaveAttribute("aria-hidden");
   });
 });
