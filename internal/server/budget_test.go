@@ -61,7 +61,7 @@ func TestPutThenGetBudget(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/budget", nil))
-	var got store.BudgetConfig
+	var got budgetJSON
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	if got.MonthlyIncome != 3000000 || got.NeedPct != 0.6 || !got.FreezeHistory {
 		t.Errorf("round-trip mismatch: %+v", got)
