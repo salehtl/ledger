@@ -12,8 +12,10 @@ import (
 )
 
 var (
-	tagRe = regexp.MustCompile(`(?s)<[^>]+>`)
-	wsRe  = regexp.MustCompile(`[ \t\x{00a0}]+`)
+	tagRe    = regexp.MustCompile(`(?s)<[^>]+>`)
+	wsRe     = regexp.MustCompile(`[ \t\x{00a0}]+`)
+	scriptRe = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	styleRe  = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 )
 
 // BodyText parses a raw RFC822 message, extracts the best text part (preferring
@@ -86,8 +88,8 @@ func BodyText(raw []byte) (string, error) {
 }
 
 func stripHTML(s string) string {
-	s = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(s, " ")
-	s = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(s, " ")
+	s = scriptRe.ReplaceAllString(s, " ")
+	s = styleRe.ReplaceAllString(s, " ")
 	s = strings.ReplaceAll(s, "<br>", "\n")
 	s = strings.ReplaceAll(s, "<br/>", "\n")
 	s = strings.ReplaceAll(s, "</p>", "\n")
