@@ -155,3 +155,122 @@ func TestProcessorCategorizes(t *testing.T) {
 		t.Errorf("category_id = %v, want %d", catIDGot, shoppingID)
 	}
 }
+
+func TestProcessorSetsTransferStatusFromIsTransfer(t *testing.T) {
+	st := procTestStore(t)
+
+	cascade := &Cascade{
+		Parsers:   []BankParser{stubTransferParser{}},
+		Heuristic: HeuristicParser{},
+		AI:        DisabledExtractor{},
+	}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID:  "xfer-1",
+		FromAddr:    "stub@bank.com",
+		Subject:     "transfer",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: stub@bank.com\r\nSubject: transfer\r\n\r\ntransfer"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewProcessor(st, cascade)
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	if err := st.DB.QueryRow(`SELECT status FROM transactions LIMIT 1`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "transfer" {
+		t.Errorf("status = %q, want transfer (IsTransfer=true should set status=transfer)", status)
+	}
+}
+
+// stubTransferParser is a BankParser that always returns IsTransfer=true.
+type stubTransferParser struct{}
+
+func (stubTransferParser) Bank() string { return "stub" }
+func (stubTransferParser) Matches(from, subject string) bool {
+	return from == "stub@bank.com"
+}
+func (stubTransferParser) Parse(_ string) (ParsedTxn, error) {
+	return ParsedTxn{
+		PostedAt:    time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC),
+		AmountFils:  10000,
+		Currency:    "AED",
+		Direction:   "debit",
+		MerchantRaw: "Internal Transfer",
+		IsTransfer:  true,
+		Confidence:  1.0,
+	}, nil
+}
+
+func TestProcessorCrossMatchTransfer(t *testing.T) {
+	st := procTestStore(t)
+
+	// Insert a credit "leg" transaction directly as needs_review.
+	_, _, err := st.InsertTransaction(store.TransactionRow{
+		PostedAt:    time.Date(2025, 8, 19, 12, 0, 0, 0, time.UTC),
+		AmountFils:  50000,
+		Currency:    "AED",
+		Direction:   "credit",
+		MerchantRaw: "DIB Transfer",
+		Status:      "needs_review",
+		Source:      "email",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Process the debit leg via the processor — it should cross-match the credit.
+	cascade := &Cascade{
+		Parsers:   []BankParser{stubDebitLegParser{}},
+		Heuristic: HeuristicParser{},
+		AI:        DisabledExtractor{},
+	}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID:  "debit-leg",
+		FromAddr:    "debit@bank.com",
+		Subject:     "transfer",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: debit@bank.com\r\nSubject: transfer\r\n\r\nbody"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewProcessor(st, cascade)
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both the credit leg and the new debit should be status=transfer.
+	var count int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transactions WHERE status = 'transfer'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("transfer-status count = %d, want 2 (both legs auto-matched)", count)
+	}
+}
+
+// stubDebitLegParser returns a debit transaction matching the credit leg above (same amount, within 2h).
+type stubDebitLegParser struct{}
+
+func (stubDebitLegParser) Bank() string { return "debit" }
+func (stubDebitLegParser) Matches(from, _ string) bool {
+	return from == "debit@bank.com"
+}
+func (stubDebitLegParser) Parse(_ string) (ParsedTxn, error) {
+	return ParsedTxn{
+		PostedAt:    time.Date(2025, 8, 19, 12, 30, 0, 0, time.UTC), // 30 min after credit
+		AmountFils:  50000,
+		Currency:    "AED",
+		Direction:   "debit",
+		MerchantRaw: "DIB Transfer",
+		Confidence:  1.0,
+	}, nil
+}

@@ -42,6 +42,6 @@ allow_ai_extraction   = true                           # let AI be the last-reso
 # saving_pct     = 0.20
 # freeze_history = false
 
-# [monitoring]
-# drift_window = "7d"
-# drift_min    = 0.80
+[monitoring]
+drift_window = "7d"   # rolling window for per-sender parse-success tracking
+drift_min    = 0.80   # alert if a sender's parse-success drops below this fraction

@@ -1,86 +1,96 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
-// hub is a minimal in-process SSE fan-out. Each subscriber gets a buffered
-// channel; broadcast never blocks (a full buffer drops the event — clients
-// re-fetch on the next event anyway).
-type hub struct {
-	mu   sync.Mutex
-	subs map[chan string]struct{}
+// Hub maintains a set of SSE subscriber channels and fan-outs JSON payloads.
+type Hub struct {
+	mu      sync.RWMutex
+	clients map[chan []byte]struct{}
 }
 
-func newHub() *hub {
-	return &hub{subs: make(map[chan string]struct{})}
-}
+// NewHub creates an empty Hub.
+func NewHub() *Hub { return &Hub{clients: make(map[chan []byte]struct{})} }
 
-func (h *hub) subscribe() chan string {
-	ch := make(chan string, 8)
+// Subscribe registers a new client. Returns the event channel and an unsubscribe
+// function the caller must invoke (typically via defer) when done.
+func (h *Hub) Subscribe() (chan []byte, func()) {
+	ch := make(chan []byte, 16)
 	h.mu.Lock()
-	h.subs[ch] = struct{}{}
+	h.clients[ch] = struct{}{}
 	h.mu.Unlock()
-	return ch
-}
-
-func (h *hub) unsubscribe(ch chan string) {
-	h.mu.Lock()
-	if _, ok := h.subs[ch]; ok {
-		delete(h.subs, ch)
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.clients, ch)
 		close(ch)
+		h.mu.Unlock()
 	}
-	h.mu.Unlock()
 }
 
-func (h *hub) broadcast(event string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for ch := range h.subs {
+// Broadcast sends data to all connected clients. Slow clients that haven't
+// drained their channel are silently skipped rather than blocking the sender.
+func (h *Hub) Broadcast(data []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.clients {
 		select {
-		case ch <- event:
-		default: // slow client; drop
+		case ch <- data:
+		default:
 		}
 	}
 }
 
+// BroadcastEvent serialises {type, data} and broadcasts it to all subscribers.
+func (h *Hub) BroadcastEvent(eventType string, data any) {
+	payload, err := json.Marshal(map[string]any{"type": eventType, "data": data})
+	if err != nil {
+		return
+	}
+	h.Broadcast(payload)
+}
+
+// handleEvents serves GET /api/events as a Server-Sent Events stream.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if s.hub == nil {
+		http.Error(w, "events not configured", http.StatusServiceUnavailable)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, `{"error":"streaming unsupported"}`, http.StatusInternalServerError)
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch := s.hub.subscribe()
-	defer s.hub.unsubscribe(ch)
+	ch, unsub := s.hub.Subscribe()
+	defer unsub()
 
-	// Initial comment so EventSource fires `open`.
-	fmt.Fprint(w, ": connected\n\n")
+	fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
 	flusher.Flush()
+
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case ev, ok := <-ch:
+		case <-heartbeat.C:
+			fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
+			flusher.Flush()
+		case data, ok := <-ch:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "event: %s\ndata: {}\n\n", ev)
+			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}
-	}
-}
-
-// Broadcast sends a named SSE event to all connected clients. Safe to call from
-// any goroutine (e.g. the ingest worker after parsing new transactions).
-func (s *Server) Broadcast(event string) {
-	if s.hub != nil {
-		s.hub.broadcast(event)
 	}
 }

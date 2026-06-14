@@ -2,6 +2,7 @@ package parse
 
 import (
 	"context"
+	"time"
 
 	"ledger/internal/categorize"
 	"ledger/internal/store"
@@ -13,6 +14,7 @@ type Processor struct {
 	store       *store.Store
 	cascade     *Cascade
 	categorizer *categorize.Categorizer
+	onInsert    func(txID, amountFils int64, merchant, direction string)
 }
 
 func NewProcessor(st *store.Store, c *Cascade) *Processor {
@@ -23,6 +25,12 @@ func NewProcessor(st *store.Store, c *Cascade) *Processor {
 // extracted transaction and auto-confirms rule hits.
 func NewProcessorWithCategorizer(st *store.Store, c *Cascade, cat *categorize.Categorizer) *Processor {
 	return &Processor{store: st, cascade: c, categorizer: cat}
+}
+
+// SetOnInsert registers a callback invoked after each successful transaction
+// insert. Used by main.go to broadcast SSE events.
+func (p *Processor) SetOnInsert(fn func(txID, amountFils int64, merchant, direction string)) {
+	p.onInsert = fn
 }
 
 // ProcessPending selects ingest rows per opts, runs the cascade over each, writes
@@ -45,6 +53,10 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
 		}
+		txStatus := "needs_review"
+		if res.Txn.IsTransfer {
+			txStatus = "transfer"
+		}
 		txID, inserted, ierr := p.store.InsertTransaction(store.TransactionRow{
 			PostedAt:    res.Txn.PostedAt,
 			AmountFils:  res.Txn.AmountFils,
@@ -52,7 +64,7 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			Direction:   res.Txn.Direction,
 			MerchantRaw: res.Txn.MerchantRaw,
 			Last4:       res.Txn.Last4,
-			Status:      "needs_review",
+			Status:      txStatus,
 			Confidence:  res.Txn.Confidence,
 			Tier:        res.Tier,
 			IngestID:    row.ID,
@@ -61,8 +73,22 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", ierr.Error())
 			continue
 		}
-		if inserted && p.categorizer != nil {
-			p.categorizeTransaction(ctx, txID, res.Txn.MerchantRaw)
+		if inserted {
+			if p.categorizer != nil {
+				p.categorizeTransaction(ctx, txID, res.Txn.MerchantRaw)
+			}
+			// Auto-match opposite transfer leg within 2 hours.
+			if txStatus != "transfer" {
+				if matchID, found, _ := p.store.FindTransferMatch(
+					txID, res.Txn.AmountFils, res.Txn.Direction, res.Txn.PostedAt, 2*time.Hour,
+				); found {
+					_ = p.store.UpdateTransactionStatus(txID, "transfer")
+					_ = p.store.UpdateTransactionStatus(matchID, "transfer")
+				}
+			}
+			if p.onInsert != nil {
+				p.onInsert(txID, res.Txn.AmountFils, res.Txn.MerchantRaw, res.Txn.Direction)
+			}
 		}
 		if err := p.store.MarkParsed(row.ID, res.Status, res.Tier, ""); err != nil {
 			return created, err

@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+func mustParseTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
 func txnRow() TransactionRow {
 	return TransactionRow{
 		PostedAt:    time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC),
