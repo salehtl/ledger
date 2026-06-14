@@ -5,8 +5,8 @@
 listen   = "127.0.0.1:8080"   # bound to localhost; Tailscale/Caddy fronts HTTPS
 data_dir = "/var/lib/ledger"  # SQLite file lives here (ledger.db)
 
-# --- The sections below are consumed by later milestones (§7 of the build ---
-# --- plan). They are inert in Milestone 1 and shown here for reference.   ---
+# --- IMAP ingest (active as of Milestone 2). Leave [imap] unset/host empty ---
+# --- to run without ingestion (API + PWA only).                           ---
 
 [imap]
 host          = "imap.gmail.com"        # dedicated mailbox provider
@@ -19,6 +19,9 @@ use_idle      = false                   # reserved; Milestone 2 is poll-only
 poll_interval = "60s"
 # Secret is NEVER stored here. Set it in the environment / systemd:
 #   LEDGER_IMAP_APP_PASSWORD = the 16-char Gmail App Password
+
+# --- The sections below are consumed by later milestones (§7 of the build ---
+# --- plan). They are inert today and shown here for reference.            ---
 
 # [ai]
 # enabled               = true
