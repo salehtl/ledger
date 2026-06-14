@@ -1,6 +1,7 @@
 // Command ledger is the single binary: it loads config, opens the SQLite store,
-// and serves the API + embedded PWA over HTTP. It binds to localhost and is
-// fronted by Tailscale/Caddy for HTTPS (see deploy/README.md).
+// starts the IMAP ingest worker (when configured), and serves the API + embedded
+// PWA over HTTP. It binds to localhost and is fronted by Tailscale/Caddy for
+// HTTPS (see deploy/README.md).
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"ledger/internal/config"
+	"ledger/internal/ingest"
 	"ledger/internal/server"
 	"ledger/internal/store"
 	"ledger/internal/web"
@@ -39,6 +41,25 @@ func main() {
 	}
 
 	srv := server.New(st, webFS)
+	srv.SetIngest(st, cfg.IMAP.Enabled())
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Start the ingest worker when a mailbox is configured.
+	if cfg.IMAP.Enabled() {
+		interval, err := cfg.IMAP.Interval()
+		if err != nil {
+			log.Fatalf("imap poll_interval: %v", err)
+		}
+		dialer := ingest.NewIMAPDialer(cfg.IMAP)
+		worker := ingest.New(dialer, st, interval, log.Default())
+		go worker.Run(ctx)
+		log.Printf("ingest enabled for %s (mailbox %s, poll %s)", cfg.IMAP.Username, cfg.IMAP.Folder, interval)
+	} else {
+		log.Printf("ingest disabled (no imap.host configured)")
+	}
+
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           srv,
@@ -52,8 +73,6 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 
 	log.Println("shutting down")
