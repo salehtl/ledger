@@ -286,3 +286,46 @@ func TestSelectTransactions(t *testing.T) {
 		t.Errorf("to=2020: got %d, want 0", len(before))
 	}
 }
+
+func TestUpdateCategory(t *testing.T) {
+	st := openTestStore(t)
+	id, err := st.InsertCategory(CategoryRow{Name: "Coffee", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateCategory(CategoryRow{ID: id, Name: "Coffee", Kind: "spending", Bucket: "need", IsActive: true}); err != nil {
+		t.Fatalf("UpdateCategory: %v", err)
+	}
+	cats, _ := st.SelectCategories()
+	var found bool
+	for _, c := range cats {
+		if c.ID == id {
+			found = true
+			if c.Bucket != "need" {
+				t.Errorf("bucket = %q, want need", c.Bucket)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("updated category missing")
+	}
+}
+
+func TestDeleteRule(t *testing.T) {
+	st := openTestStore(t)
+	cat, _ := st.InsertCategory(CategoryRow{Name: "X", Kind: "spending", Bucket: "want", IsActive: true})
+	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "amzn", CategoryID: cat, Priority: 100, Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := st.SelectRules()
+	if len(rules) != 1 {
+		t.Fatalf("setup: %d rules", len(rules))
+	}
+	if err := st.DeleteRule(rules[0].ID); err != nil {
+		t.Fatalf("DeleteRule: %v", err)
+	}
+	rules, _ = st.SelectRules()
+	if len(rules) != 0 {
+		t.Errorf("after delete: %d rules", len(rules))
+	}
+}
