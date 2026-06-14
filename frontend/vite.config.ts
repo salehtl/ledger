@@ -12,5 +12,11 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // Run test files sequentially in a single fork — the sandbox blocks
+    // vitest's default parallel worker spawning, which otherwise silently
+    // runs only the first file.
+    fileParallelism: false,
+    pool: "forks",
+    poolOptions: { forks: { singleFork: true } },
   },
 });
