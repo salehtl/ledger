@@ -9,11 +9,7 @@ import { useLiveEvents } from "../hooks/useLiveEvents";
 import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
 import { Insights } from "../screens/Insights";
-
-// Phase B placeholder — replaced by real screens in Phases C–F.
-function Placeholder({ title }: { title: string }) {
-  return <h1 className="text-xl font-semibold">{title}</h1>;
-}
+import { Settings } from "../screens/Settings";
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
@@ -32,7 +28,7 @@ export function AppShell() {
         {tab === "home" && <Home />}
         {tab === "transactions" && <Transactions />}
         {tab === "insights" && <Insights />}
-        {tab === "settings" && <Placeholder title="Settings" />}
+        {tab === "settings" && <Settings />}
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
     </div>
