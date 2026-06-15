@@ -11,7 +11,7 @@ export function BottomNav({
         return (
           <button
             key={t.id}
-            aria-label={t.label}
+            aria-label={t.id === "transactions" && reviewCount > 0 ? `Transactions, ${reviewCount} need review` : t.label}
             aria-current={isActive ? "page" : undefined}
             onClick={() => onNavigate(t.id)}
             className={`min-h-14 flex flex-col items-center justify-center gap-0.5 text-xs ${isActive ? "text-accent" : "text-muted"}`}

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Settings, pctsValid } from "./Settings";
+import { ToastProvider } from "../components/Toast";
 import type { BudgetConfig } from "../api/types";
 
 const budget: BudgetConfig = { monthly_income: 1500000, need_pct: 0.5, want_pct: 0.3, saving_pct: 0.2, income_source: "config", freeze_history: false };
@@ -15,7 +16,7 @@ beforeEach(() => {
 
 function wrap() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><Settings /></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ToastProvider><Settings /></ToastProvider></QueryClientProvider>);
 }
 
 describe("pctsValid", () => {

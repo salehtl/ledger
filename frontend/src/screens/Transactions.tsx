@@ -43,6 +43,8 @@ export function Transactions() {
     qc.invalidateQueries({ queryKey: ["transactions"] });
     qc.invalidateQueries({ queryKey: ["summary"] });
     qc.invalidateQueries({ queryKey: ["review"] });
+    qc.invalidateQueries({ queryKey: ["insights-categories"] });
+    qc.invalidateQueries({ queryKey: ["insights-trend"] });
   };
 
   const setStatus = async (t: Txn, newStatus: string) => {
