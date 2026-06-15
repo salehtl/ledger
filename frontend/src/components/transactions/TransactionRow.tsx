@@ -1,18 +1,9 @@
 // frontend/src/components/transactions/TransactionRow.tsx
 import type { Txn } from "../../api/types";
 import { Money } from "../Money";
-import { Pill, type Tone } from "../ui/Pill";
-import { statusLabel } from "../../lib/format";
+import { Pill } from "../ui/Pill";
+import { statusLabel, statusTone } from "../../lib/format";
 import { ArrowLeftRight, X, Tag } from "lucide-react";
-
-function statusTone(status: string): Tone {
-  switch (status) {
-    case "confirmed": return "good";
-    case "needs_review": return "warn";
-    case "ignored": return "muted";
-    default: return "neutral";
-  }
-}
 
 export function TransactionRow({ txn, onOpen, onStatus }: {
   txn: Txn;
