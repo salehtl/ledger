@@ -44,7 +44,22 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	period := now.Format("2006-01")
+	period := r.URL.Query().Get("period")
+	computeAt := now
+	if period == "" {
+		period = now.Format("2006-01")
+	} else {
+		t, parseErr := time.Parse("2006-01", period)
+		if parseErr != nil {
+			http.Error(w, "bad period", http.StatusBadRequest)
+			return
+		}
+		// For past months use end-of-month to get 100% progress; for current keep now.
+		if period != now.Format("2006-01") {
+			// Last moment of the requested month
+			computeAt = t.AddDate(0, 1, 0).Add(-time.Second)
+		}
+	}
 
 	income := cfg.MonthlyIncome
 	if cfg.IncomeSource == "categories" {
@@ -66,7 +81,7 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	if recent == nil {
 		recent = []store.ReviewItem{}
 	}
-	sum := budget.Compute(cfg, income, spend, recent, now)
+	sum := budget.Compute(cfg, income, spend, recent, computeAt)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sum)
 }
