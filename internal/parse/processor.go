@@ -14,6 +14,7 @@ type Processor struct {
 	store       *store.Store
 	cascade     *Cascade
 	categorizer *categorize.Categorizer
+	provider    func(ctx context.Context) (*categorize.Categorizer, bool)
 	onInsert    func(txID, amountFils int64, merchant, direction string)
 }
 
@@ -25,6 +26,24 @@ func NewProcessor(st *store.Store, c *Cascade) *Processor {
 // extracted transaction and auto-confirms rule hits.
 func NewProcessorWithCategorizer(st *store.Store, c *Cascade, cat *categorize.Categorizer) *Processor {
 	return &Processor{store: st, cascade: c, categorizer: cat}
+}
+
+// SetCategorizerProvider installs a per-batch categorizer resolver. The bool it
+// returns is whether auto-categorization is enabled; false skips it entirely.
+func (p *Processor) SetCategorizerProvider(f func(ctx context.Context) (*categorize.Categorizer, bool)) {
+	p.provider = f
+}
+
+// resolveCategorizer returns the categorizer for this batch and whether to run it.
+// Provider wins over the static categorizer when both are set.
+func (p *Processor) resolveCategorizer(ctx context.Context) (*categorize.Categorizer, bool) {
+	if p.provider != nil {
+		return p.provider(ctx)
+	}
+	if p.categorizer != nil {
+		return p.categorizer, true
+	}
+	return nil, false
 }
 
 // SetOnInsert registers a callback invoked after each successful transaction
@@ -41,6 +60,7 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 	if err != nil {
 		return 0, err
 	}
+	cz, autoCat := p.resolveCategorizer(ctx)
 	created := 0
 	for _, row := range rows {
 		text, berr := BodyText(row.RawBody)
@@ -74,8 +94,8 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			continue
 		}
 		if inserted {
-			if p.categorizer != nil {
-				p.categorizeTransaction(ctx, txID, res.Txn.MerchantRaw)
+			if autoCat && cz != nil {
+				p.categorizeWith(ctx, cz, txID, res.Txn.MerchantRaw)
 			}
 			// Auto-match opposite transfer leg within 2 hours.
 			if txStatus != "transfer" {
@@ -98,8 +118,8 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 	return created, nil
 }
 
-func (p *Processor) categorizeTransaction(ctx context.Context, txID int64, merchantRaw string) {
-	result, ok := p.categorizer.Categorize(ctx, merchantRaw)
+func (p *Processor) categorizeWith(ctx context.Context, cz *categorize.Categorizer, txID int64, merchantRaw string) {
+	result, ok := cz.Categorize(ctx, merchantRaw)
 	if !ok {
 		return
 	}
