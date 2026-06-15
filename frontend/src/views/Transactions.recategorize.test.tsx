@@ -6,7 +6,7 @@ import { Transactions } from "./Transactions";
 import type { Txn, Category } from "../api/types";
 
 const txns: Txn[] = [
-  { ID: 7, PostedAt: "2026-06-09", AmountFils: 2500, Currency: "AED", Direction: "debit", MerchantRaw: "NOON", Status: "needs_review", Confidence: 0, Source: "email" },
+  { ID: 7, PostedAt: "2026-06-09", AmountFils: 2500, Currency: "AED", Direction: "debit", MerchantRaw: "NOON", Status: "needs_review", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "" },
 ];
 const cats: Category[] = [{ ID: 1, Name: "Shopping", Kind: "spending", Bucket: "want", IsActive: true }];
 
