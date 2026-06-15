@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getJSON } from '../api/client'
 import { ArrowLeft, Loader2 } from 'lucide-react'
@@ -10,7 +11,7 @@ interface ReviewSwipeProps {
 }
 
 export function ReviewSwipe({ onClose }: ReviewSwipeProps) {
-  const config = loadSwipeConfig()
+  const [config] = useState(loadSwipeConfig)
 
   const txns = useQuery({
     queryKey: ['review'],
