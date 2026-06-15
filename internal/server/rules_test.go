@@ -87,3 +87,15 @@ func TestSetRuleActiveUnset503(t *testing.T) {
 		t.Fatalf("code=%d want 503", rec.Code)
 	}
 }
+
+func TestSetRuleActiveBadID(t *testing.T) {
+	stub := &stubRuleActive{}
+	srv := New(nil, fstest())
+	srv.SetRuleActiveStore(stub)
+	req := httptest.NewRequest("PUT", "/api/rules/abc/active", strings.NewReader(`{"active":true}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d want 400", rec.Code)
+	}
+}

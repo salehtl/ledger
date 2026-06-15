@@ -57,3 +57,31 @@ func TestSettingsUnset503(t *testing.T) {
 		t.Fatalf("code=%d want 503", rec.Code)
 	}
 }
+
+func TestPutSettingsClampsThreshold(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+	body := `{"auto_categorize":false,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":2.0}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.AIThreshold != 0.85 {
+		t.Fatalf("AIThreshold=%v, want 0.85 (clamped)", stub.s.AIThreshold)
+	}
+}
+
+func TestPutSettingsBadJSON(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader("not json"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d want 400", rec.Code)
+	}
+}

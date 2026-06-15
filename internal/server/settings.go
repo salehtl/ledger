@@ -25,12 +25,12 @@ type settingsDTO struct {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if s.settingsStore == nil {
-		http.Error(w, "settings unavailable", http.StatusServiceUnavailable)
+		http.Error(w, `{"error":"settings unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	a, err := s.settingsStore.SelectAppSettings()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -39,12 +39,12 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if s.settingsStore == nil {
-		http.Error(w, "settings unavailable", http.StatusServiceUnavailable)
+		http.Error(w, `{"error":"settings unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	var dto settingsDTO
 	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}
 	if dto.AIThreshold <= 0 || dto.AIThreshold > 1 {
@@ -54,7 +54,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		AutoCategorize: dto.AutoCategorize, AIEnabled: dto.AIEnabled,
 		AIAutoAccept: dto.AIAutoAccept, AIThreshold: dto.AIThreshold,
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
