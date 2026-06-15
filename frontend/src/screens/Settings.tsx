@@ -7,6 +7,13 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { useToast } from "../components/Toast";
 import { Trash2 } from "lucide-react";
+import {
+  loadSwipeConfig,
+  saveSwipeConfig,
+  DEFAULT_SWIPE_CONFIG,
+  type SwipeConfig,
+  type SwipeDirection,
+} from '../lib/swipe'
 
 export function pctsValid(need: number, want: number, saving: number): boolean {
   return Math.abs(need + want + saving - 1.0) < 0.001;
@@ -23,6 +30,7 @@ export function Settings() {
 
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
+  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
   const cfg = draft ?? budget.data ?? null;
   const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
@@ -51,6 +59,18 @@ export function Settings() {
     catch { show({ message: "Couldn't delete rule", tone: "error" }); }
   };
   const catName = (id: number) => cats.data?.find((c) => c.ID === id)?.Name ?? `#${id}`;
+
+  const setSwipeDir = (dir: SwipeDirection, value: string) => {
+    const next: SwipeConfig = { ...swipeCfg }
+    if (value === 'transfer') {
+      next[dir] = { ...DEFAULT_SWIPE_CONFIG.up }
+    } else {
+      const template = Object.values(DEFAULT_SWIPE_CONFIG).find(a => a.bucket === value)
+      if (template) next[dir] = { ...template }
+    }
+    setSwipeCfg(next)
+    saveSwipeConfig(next)
+  }
 
   const field = "w-full px-3 py-2 rounded-lg border border-border bg-surface text-sm";
 
@@ -119,6 +139,48 @@ export function Settings() {
             ))}
           </ul>
         )}
+      </Card>
+
+      {/* Swipe Directions */}
+      <Card>
+        <h2 className="font-semibold mb-1">Swipe Directions</h2>
+        <p className="text-sm text-[--muted] mb-4">
+          Customize what each swipe direction means when reviewing transactions.
+        </p>
+        <div className="space-y-3">
+          {(['left', 'right', 'up', 'down'] as const).map(dir => {
+            const dirLabel: Record<SwipeDirection, string> = {
+              left: '← Left', right: '→ Right', up: '↑ Up', down: '↓ Down',
+            }
+            const current = swipeCfg[dir]
+            const value = current.statusOverride === 'transfer' ? 'transfer' : current.bucket ?? ''
+            return (
+              <div key={dir} className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium text-[--fg] w-20">{dirLabel[dir]}</span>
+                <select
+                  value={value}
+                  onChange={e => setSwipeDir(dir, e.target.value)}
+                  className={field}
+                >
+                  <option value="want">Want</option>
+                  <option value="need">Need</option>
+                  <option value="saving">Save</option>
+                  <option value="transfer">Transfer</option>
+                </select>
+              </div>
+            )
+          })}
+        </div>
+        <Button
+          variant="ghost"
+          className="mt-3 text-sm"
+          onClick={() => {
+            setSwipeCfg(DEFAULT_SWIPE_CONFIG)
+            saveSwipeConfig(DEFAULT_SWIPE_CONFIG)
+          }}
+        >
+          Reset to defaults
+        </Button>
       </Card>
 
       <Card>
