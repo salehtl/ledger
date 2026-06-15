@@ -51,3 +51,51 @@ func TestPostRuleRequiresFields(t *testing.T) {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
+
+type stubRuleActive struct {
+	id     int64
+	active bool
+	called bool
+}
+
+func (s *stubRuleActive) SetRuleActive(id int64, active bool) error {
+	s.id, s.active, s.called = id, active, true
+	return nil
+}
+
+func TestSetRuleActive(t *testing.T) {
+	stub := &stubRuleActive{}
+	srv := New(nil, fstest())
+	srv.SetRuleActiveStore(stub)
+	req := httptest.NewRequest("PUT", "/api/rules/7/active", strings.NewReader(`{"active":false}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !stub.called || stub.id != 7 || stub.active != false {
+		t.Fatalf("stub got id=%d active=%v called=%v", stub.id, stub.active, stub.called)
+	}
+}
+
+func TestSetRuleActiveUnset503(t *testing.T) {
+	srv := New(nil, fstest())
+	req := httptest.NewRequest("PUT", "/api/rules/7/active", strings.NewReader(`{"active":false}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code=%d want 503", rec.Code)
+	}
+}
+
+func TestSetRuleActiveBadID(t *testing.T) {
+	stub := &stubRuleActive{}
+	srv := New(nil, fstest())
+	srv.SetRuleActiveStore(stub)
+	req := httptest.NewRequest("PUT", "/api/rules/abc/active", strings.NewReader(`{"active":true}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d want 400", rec.Code)
+	}
+}
