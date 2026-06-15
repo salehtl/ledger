@@ -6,6 +6,7 @@ import { BottomNav } from "../components/ui/BottomNav";
 import { TABS, type TabId } from "./nav";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
+import { Home } from "../screens/Home";
 
 // Phase B placeholder — replaced by real screens in Phases C–F.
 function Placeholder({ title }: { title: string }) {
@@ -26,7 +27,10 @@ export function AppShell() {
         <div role="status" className="bg-warn/15 text-warn text-sm text-center py-1">Offline — showing last loaded data</div>
       )}
       <main className="flex-1 max-w-screen-sm w-full mx-auto px-4 pt-4 pb-24">
-        {TABS.map((t) => (tab === t.id ? <Placeholder key={t.id} title={t.label} /> : null))}
+        {tab === "home" && <Home />}
+        {tab === "transactions" && <Placeholder title="Transactions" />}
+        {tab === "insights" && <Placeholder title="Insights" />}
+        {tab === "settings" && <Placeholder title="Settings" />}
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
     </div>
