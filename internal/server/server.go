@@ -72,6 +72,7 @@ type Server struct {
 	catStore       CategoryStore
 	recatFn        CategorizeFunc
 	budgetStore    BudgetStore
+	insightsStore  InsightsStore
 	hub            *Hub                // SSE fan-out hub
 	driftMon       DriftStatusProvider // optional drift monitor for /api/health
 	pushStore      PushStore
@@ -145,6 +146,8 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
+	s.mux.HandleFunc("GET /api/insights/categories", s.handleGetCategorySpend)
+	s.mux.HandleFunc("GET /api/insights/trend", s.handleGetTrend)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.handlePushUnsubscribe)

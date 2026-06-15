@@ -9,7 +9,7 @@ export function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-export type Tone = "good" | "warn" | "muted" | "neutral";
+export type Tone = "good" | "warn" | "bad" | "muted" | "neutral";
 
 export function statusTone(status: string): Tone {
   switch (status) {

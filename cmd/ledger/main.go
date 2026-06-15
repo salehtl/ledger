@@ -118,6 +118,7 @@ func main() {
 	srv.SetReprocessor(processor)
 	srv.SetCategoryStore(st)
 	srv.SetBudgetStore(st)
+	srv.SetInsightsStore(st)
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
 		result, ok := cat.Categorize(ctx, merchantRaw)
 		if !ok {
