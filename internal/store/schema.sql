@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS rules (
   category_id INTEGER NOT NULL REFERENCES categories(id),
   priority    INTEGER NOT NULL DEFAULT 100,
   source      TEXT NOT NULL,                   -- 'manual' | 'ai_confirmed'
+  is_active   INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL
 );
 
@@ -78,6 +79,15 @@ CREATE TABLE IF NOT EXISTS budget_config (
   saving_pct      REAL NOT NULL DEFAULT 0.20,
   income_source   TEXT NOT NULL DEFAULT 'config',  -- 'config' | 'categories'
   freeze_history  INTEGER NOT NULL DEFAULT 0
+);
+
+-- Runtime app settings (singleton). Controls categorization behavior.
+CREATE TABLE IF NOT EXISTS app_settings (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  auto_categorize INTEGER NOT NULL DEFAULT 1,
+  ai_enabled      INTEGER NOT NULL DEFAULT 0,
+  ai_auto_accept  INTEGER NOT NULL DEFAULT 0,
+  ai_threshold    REAL    NOT NULL DEFAULT 0.85
 );
 
 -- Web push subscriptions
