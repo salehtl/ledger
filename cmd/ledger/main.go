@@ -331,23 +331,31 @@ func runImport(args []string) {
 		log.Fatalf("read file: %v", err)
 	}
 
-	// Build rules-only categorizer from live store data.
-	storeCats, _ := st.SelectCategories()
-	storeRules, _ := st.SelectActiveRules()
-	domainCats := make([]categorize.Category, len(storeCats))
-	for i, c := range storeCats {
-		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	// Build rules-only categorizer from live store data, but only when
+	// auto_categorize is enabled — if not, imported rows land in needs_review.
+	var cat *categorize.Categorizer
+	importSettings, err := st.SelectAppSettings()
+	if err != nil {
+		log.Printf("import: settings read failed, skipping categorization: %v", err)
 	}
-	domainRules := make([]categorize.Rule, len(storeRules))
-	for i, r := range storeRules {
-		domainRules[i] = categorize.Rule{
-			MatchType:  r.MatchType,
-			Pattern:    r.Pattern,
-			CategoryID: r.CategoryID,
-			Priority:   r.Priority,
+	if err == nil && importSettings.AutoCategorize {
+		storeCats, _ := st.SelectCategories()
+		storeRules, _ := st.SelectActiveRules()
+		domainCats := make([]categorize.Category, len(storeCats))
+		for i, c := range storeCats {
+			domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
 		}
+		domainRules := make([]categorize.Rule, len(storeRules))
+		for i, r := range storeRules {
+			domainRules[i] = categorize.Rule{
+				MatchType:  r.MatchType,
+				Pattern:    r.Pattern,
+				CategoryID: r.CategoryID,
+				Priority:   r.Priority,
+			}
+		}
+		cat = categorize.New(domainRules, domainCats, categorize.DisabledAI{}, 0.85, false)
 	}
-	cat := categorize.New(domainRules, domainCats, categorize.DisabledAI{}, 0.85, false)
 
 	imp := importer.New(st, cat)
 	result, err := imp.Run(context.Background(), rows, m, filepath.Base(*filePath), *dryRun)
