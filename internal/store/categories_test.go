@@ -311,6 +311,30 @@ func TestUpdateCategory(t *testing.T) {
 	}
 }
 
+func TestRuleActiveToggleAndSelect(t *testing.T) {
+	st := openTestStore(t)
+	cats, _ := st.SelectCategories()
+	cat := cats[0]
+	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: cat.ID, Priority: 100, Source: "manual"}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	all, _ := st.SelectRules()
+	if len(all) != 1 || !all[0].IsActive {
+		t.Fatalf("new rule should be active by default: %+v", all)
+	}
+	if err := st.SetRuleActive(all[0].ID, false); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	active, _ := st.SelectActiveRules()
+	if len(active) != 0 {
+		t.Fatalf("disabled rule must be excluded from SelectActiveRules, got %d", len(active))
+	}
+	all2, _ := st.SelectRules()
+	if all2[0].IsActive {
+		t.Fatalf("SelectRules should report is_active=false after toggle")
+	}
+}
+
 func TestDeleteRule(t *testing.T) {
 	st := openTestStore(t)
 	cat, _ := st.InsertCategory(CategoryRow{Name: "X", Kind: "spending", Bucket: "want", IsActive: true})
