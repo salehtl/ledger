@@ -10,6 +10,7 @@ const budget: BudgetConfig = { monthly_income: 1500000, need_pct: 0.5, want_pct:
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/budget")) return new Response(JSON.stringify(budget));
+    if (url === "/api/settings") return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85 }));
     return new Response("[]");
   }));
 });
