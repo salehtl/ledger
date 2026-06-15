@@ -208,6 +208,50 @@ func (stubTransferParser) Parse(_ string) (ParsedTxn, error) {
 	}, nil
 }
 
+func TestProcessorCategorizerProvider(t *testing.T) {
+	// A processor with NO static categorizer but a provider that returns (nil,false)
+	// must not categorize: transactions stay needs_review, uncategorized.
+	st := procTestStore(t)
+	cascade := dibCascade()
+	p := NewProcessor(st, cascade)
+
+	called := false
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
+		called = true
+		return nil, false // auto-categorize OFF
+	})
+
+	// Seed one parseable DIB ingest row.
+	html := "<p>إشعار مشتريات</p><p>إشعار مشتريات بتاريخ 19-08-2025 16:18</p>" +
+		"<p>المبلغ</p><p>AED 50.00</p><p>الدفع الى</p><p>STARBUCKS</p>"
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "prov-test-1", FromAddr: "DIB.notification@dib.ae",
+		Subject: "DIB Notification", ParseStatus: "unparsed",
+		RawBody: dibEmail(html), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if !called {
+		t.Fatal("provider should be consulted once per batch")
+	}
+	items, err := st.SelectNeedsReview()
+	if err != nil {
+		t.Fatalf("SelectNeedsReview: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected an uncategorized needs_review transaction")
+	}
+	for _, it := range items {
+		if it.CategoryID != nil {
+			t.Fatalf("auto_categorize OFF must leave category unset, got %v", it.CategoryID)
+		}
+	}
+}
+
 func TestProcessorCrossMatchTransfer(t *testing.T) {
 	st := procTestStore(t)
 
