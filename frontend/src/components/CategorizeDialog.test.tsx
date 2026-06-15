@@ -8,7 +8,7 @@ const cats: Category[] = [
   { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
   { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
 ];
-const txn: Txn = { ID: 9, PostedAt: "2026-06-10", AmountFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "CARREFOUR", Status: "needs_review", Confidence: 0, Source: "email" };
+const txn: Txn = { ID: 9, PostedAt: "2026-06-10", AmountFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "CARREFOUR", Status: "needs_review", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "" };
 
 describe("CategorizeDialog", () => {
   it("submits the chosen category + make_rule flag", () => {
