@@ -1,5 +1,4 @@
-import "xp.css/dist/XP.css";
-import "./styles/theme.css";
+import "./styles/app.css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
