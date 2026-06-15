@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,20 +32,38 @@ type Monitor struct {
 	store     DriftStore
 	window    time.Duration
 	threshold float64
+	senders   []string // from_addr substrings to evaluate; empty = all
 	alerts    []DriftAlert
 	mu        sync.RWMutex
 	onChange  func([]DriftAlert)
 }
 
-// New creates a Monitor. onChange is called (without the lock held) whenever the
-// alert list changes. onChange may be nil.
-func New(st DriftStore, window time.Duration, threshold float64, onChange func([]DriftAlert)) *Monitor {
+// New creates a Monitor. senders is an allowlist of from_addr substrings to
+// drift-check (empty/nil = every sender). onChange is called (without the lock
+// held) whenever the alert list changes. onChange may be nil.
+func New(st DriftStore, window time.Duration, threshold float64, senders []string, onChange func([]DriftAlert)) *Monitor {
 	return &Monitor{
 		store:     st,
 		window:    window,
 		threshold: threshold,
+		senders:   senders,
 		onChange:  onChange,
 	}
+}
+
+// senderAllowed reports whether a sender should be drift-checked. With no
+// allowlist configured, every sender is checked.
+func (m *Monitor) senderAllowed(from string) bool {
+	if len(m.senders) == 0 {
+		return true
+	}
+	f := strings.ToLower(from)
+	for _, sub := range m.senders {
+		if strings.Contains(f, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Start runs the drift-check loop until ctx is cancelled. Call as a goroutine.
@@ -87,6 +106,9 @@ func (m *Monitor) check() {
 	}
 	var alerts []DriftAlert
 	for _, s := range stats {
+		if !m.senderAllowed(s.FromAddr) {
+			continue
+		}
 		rate := s.SuccessRate()
 		if rate < m.threshold {
 			alerts = append(alerts, DriftAlert{
