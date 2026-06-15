@@ -42,6 +42,10 @@ func (s *Server) handleGetCategorySpend(w http.ResponseWriter, r *http.Request) 
 	if period == "" {
 		period = time.Now().UTC().Format("2006-01")
 	}
+	if _, err := time.Parse("2006-01", period); err != nil {
+		http.Error(w, "bad period", http.StatusBadRequest)
+		return
+	}
 	cfg, err := s.insightsStore.SelectBudgetConfig()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
