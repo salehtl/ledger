@@ -1,11 +1,12 @@
-import { Icon, type IconName } from "./Icon";
-
-export function EmptyState({ icon, title, hint }: { icon?: IconName; title: string; hint?: string }) {
+import { type LucideIcon } from "lucide-react";
+// icon accepts a LucideIcon component (new screens) or a legacy string (old views, removed in Phase F).
+export function EmptyState({ icon: Icon, title, hint }: { icon?: LucideIcon | string; title: string; hint?: string }) {
+  const isComponent = typeof Icon === "function";
   return (
-    <div className="empty">
-      {icon && <Icon name={icon} size={40} alt="" />}
-      <p className="empty-title">{title}</p>
-      {hint && <p className="empty-hint">{hint}</p>}
+    <div className="text-center py-10 px-4 text-muted">
+      {isComponent && <Icon className="mx-auto mb-2" size={36} aria-hidden />}
+      <p className="font-semibold text-fg">{title}</p>
+      {hint && <p className="text-sm mt-1">{hint}</p>}
     </div>
   );
 }
