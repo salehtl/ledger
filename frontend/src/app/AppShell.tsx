@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { Txn } from "../api/types";
 import { BottomNav } from "../components/ui/BottomNav";
-import { TABS, type TabId } from "./nav";
+import { type TabId } from "./nav";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
 import { Home } from "../screens/Home";
