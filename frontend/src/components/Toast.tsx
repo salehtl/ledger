@@ -22,10 +22,12 @@ interface Ctx { show: (t: Omit<Toast, "id">) => void; }
 const ToastContext = createContext<Ctx | null>(null);
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
   useEffect(() => {
-    const id = setTimeout(() => onDismiss(), 5000);
+    const id = setTimeout(() => onDismissRef.current(), 5000);
     return () => clearTimeout(id);
-  }, [toast.id, onDismiss]);
+  }, []); // mount-only; ref keeps the latest callback
 
   const tone = toast.tone === "success" ? "bg-good" : toast.tone === "error" ? "bg-bad" : "bg-fg";
   return (
@@ -59,7 +61,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={ctx}>
       {children}
-      <div className="fixed inset-x-0 bottom-20 z-40 flex flex-col items-center gap-2 px-4 pointer-events-none" role="region" aria-label="Notifications">
+      <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] z-40 flex flex-col items-center gap-2 px-4 pointer-events-none" role="region" aria-label="Notifications">
         {toasts.map((t) => (
           <ToastItem key={t.id} toast={t} onDismiss={() => dispatch({ type: "remove", id: t.id })} />
         ))}
