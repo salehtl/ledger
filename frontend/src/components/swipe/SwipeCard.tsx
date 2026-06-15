@@ -87,7 +87,7 @@ export function SwipeCard({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onTransitionEnd={flying ? onExitComplete : undefined}
+      onTransitionEnd={flying ? (e) => { if (e.propertyName === 'opacity') onExitComplete() } : undefined}
     >
       {/* Directional color overlay */}
       {action && (
