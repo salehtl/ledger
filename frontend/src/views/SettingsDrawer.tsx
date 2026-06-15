@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON, del } from "../api/client";
 import type { BudgetConfig, Category, Rule } from "../api/types";
+import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 
 export function pctsValid(need: number, want: number, saving: number): boolean {
   return Math.abs(need + want + saving - 1.0) < 0.001;
@@ -16,12 +17,17 @@ export function SettingsDrawer({ onClose }: { onClose: () => void }) {
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
 
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
+  const [error, setError] = useState("");
   const cfg = draft ?? budget.data ?? null;
   const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
   const saveBudget = async () => {
     if (!cfg) return;
-    if (!pctsValid(cfg.need_pct, cfg.want_pct, cfg.saving_pct)) { alert("Percentages must sum to 100%."); return; }
+    if (!pctsValid(cfg.need_pct, cfg.want_pct, cfg.saving_pct)) {
+      setError("Need / Want / Saving must add up to 100%.");
+      return;
+    }
+    setError("");
     await postJSON("/api/budget", cfg, "PUT");
     setDraft(null);
     qc.invalidateQueries({ queryKey: ["budget"] });
@@ -49,22 +55,38 @@ export function SettingsDrawer({ onClose }: { onClose: () => void }) {
         {cfg && (
           <fieldset>
             <legend>Budget</legend>
-            <label>Monthly income (fils)
-              <input type="number" value={cfg.monthly_income}
-                onChange={(e) => patch({ monthly_income: Number(e.target.value) })} />
+            <label>Monthly income (AED)
+              <input
+                type="number" min="0" step="0.01"
+                value={filsToDirhams(cfg.monthly_income)}
+                onChange={(e) => patch({ monthly_income: dirhamsToFils(Number(e.target.value)) })}
+              />
             </label>
             <label>Income source
               <select value={cfg.income_source} onChange={(e) => patch({ income_source: e.target.value })}>
-                <option value="config">Config figure</option>
+                <option value="config">Use the figure above</option>
                 <option value="categories">Sum income categories</option>
               </select>
             </label>
             <div className="field-row">
-              <label>Need % <input type="number" step="0.05" value={cfg.need_pct} onChange={(e) => patch({ need_pct: Number(e.target.value) })} /></label>
-              <label>Want % <input type="number" step="0.05" value={cfg.want_pct} onChange={(e) => patch({ want_pct: Number(e.target.value) })} /></label>
-              <label>Saving % <input type="number" step="0.05" value={cfg.saving_pct} onChange={(e) => patch({ saving_pct: Number(e.target.value) })} /></label>
+              <label>Need %
+                <input type="number" min="0" max="100" step="1"
+                  value={fractionToPercent(cfg.need_pct)}
+                  onChange={(e) => patch({ need_pct: percentToFraction(Number(e.target.value)) })} />
+              </label>
+              <label>Want %
+                <input type="number" min="0" max="100" step="1"
+                  value={fractionToPercent(cfg.want_pct)}
+                  onChange={(e) => patch({ want_pct: percentToFraction(Number(e.target.value)) })} />
+              </label>
+              <label>Saving %
+                <input type="number" min="0" max="100" step="1"
+                  value={fractionToPercent(cfg.saving_pct)}
+                  onChange={(e) => patch({ saving_pct: percentToFraction(Number(e.target.value)) })} />
+              </label>
             </div>
             <label><input type="checkbox" checked={cfg.freeze_history} onChange={(e) => patch({ freeze_history: e.target.checked })} /> Freeze history</label>
+            {error && <p className="form-error" role="alert">{error}</p>}
             <button onClick={saveBudget}>Save budget</button>
           </fieldset>
         )}
