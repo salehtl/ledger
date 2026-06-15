@@ -138,6 +138,7 @@ func main() {
 	srv.SetReprocessor(processor)
 	srv.SetCategoryStore(st)
 	srv.SetSettingsStore(st)
+	srv.SetRuleActiveStore(st)
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
