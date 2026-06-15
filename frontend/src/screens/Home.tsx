@@ -27,7 +27,10 @@ export function Home() {
 
   const summary = useQuery({ queryKey: ["summary", period], queryFn: () => getJSON<Summary>(`/api/summary?period=${period}`) });
   const catSpend = useQuery({ queryKey: ["insights-categories", period], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${period}`) });
+  // trend is always the trailing 6 months from today, independent of the selected period
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
+
+  const heroLabel = period === currentPeriod() ? "Spent this month" : `Spent in ${monthLabel(period)} ${period.slice(0, 4)}`;
 
   if (summary.isLoading) return <Skeleton rows={8} />;
   if (summary.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load your spending" hint="Check your connection and try again." />;
@@ -58,7 +61,7 @@ export function Home() {
 
       {/* hero: spent vs budget */}
       <Card>
-        <p className="text-sm text-muted">Spent this month</p>
+        <p className="text-sm text-muted">{heroLabel}</p>
         <p className="text-3xl font-bold tnum"><Money fils={spent} /></p>
         <p className="text-sm text-muted mt-1">spent of <span className="tnum"><Money fils={budget} /></span> budget</p>
         <div className="mt-3"><ProgressBar pct={pct} /></div>
