@@ -144,6 +144,9 @@ func main() {
 		if serr != nil {
 			return 0, "", false
 		}
+		if !settings.AutoCategorize {
+			return 0, "", false
+		}
 		ruleRows, rerr := st.SelectActiveRules()
 		if rerr != nil {
 			return 0, "", false
@@ -328,7 +331,7 @@ func runImport(args []string) {
 
 	// Build rules-only categorizer from live store data.
 	storeCats, _ := st.SelectCategories()
-	storeRules, _ := st.SelectRules()
+	storeRules, _ := st.SelectActiveRules()
 	domainCats := make([]categorize.Category, len(storeCats))
 	for i, c := range storeCats {
 		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}

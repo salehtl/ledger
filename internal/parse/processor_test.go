@@ -215,9 +215,9 @@ func TestProcessorCategorizerProvider(t *testing.T) {
 	cascade := dibCascade()
 	p := NewProcessor(st, cascade)
 
-	called := false
+	calls := 0
 	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
-		called = true
+		calls++
 		return nil, false // auto-categorize OFF
 	})
 
@@ -235,8 +235,8 @@ func TestProcessorCategorizerProvider(t *testing.T) {
 	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
-	if !called {
-		t.Fatal("provider should be consulted once per batch")
+	if calls != 1 {
+		t.Fatalf("provider should be resolved once per batch, called %d times", calls)
 	}
 	items, err := st.SelectNeedsReview()
 	if err != nil {
