@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON, del } from "../api/client";
-import type { BudgetConfig, Category, Rule } from "../api/types";
+import type { AppSettings, BudgetConfig, Category, Rule } from "../api/types";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -20,6 +20,13 @@ export function Settings() {
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
+  const saveSettings = async (next: AppSettings) => {
+    try {
+      await postJSON("/api/settings", next, "PUT");
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    } catch { show({ message: "Couldn't save settings", tone: "error" }); }
+  };
 
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
@@ -49,6 +56,12 @@ export function Settings() {
   const deleteRule = async (id: number) => {
     try { await del(`/api/rules/${id}`); qc.invalidateQueries({ queryKey: ["rules"] }); }
     catch { show({ message: "Couldn't delete rule", tone: "error" }); }
+  };
+  const toggleRule = async (r: Rule) => {
+    try {
+      await postJSON(`/api/rules/${r.ID}/active`, { active: !r.IsActive }, "PUT");
+      qc.invalidateQueries({ queryKey: ["rules"] });
+    } catch { show({ message: "Couldn't update rule", tone: "error" }); }
   };
   const catName = (id: number) => cats.data?.find((c) => c.ID === id)?.Name ?? `#${id}`;
 
@@ -91,6 +104,37 @@ export function Settings() {
         </Card>
       )}
 
+      {settings.data && (
+        <Card>
+          <p className="text-sm font-medium mb-3">Categorization</p>
+          <label className="flex items-center justify-between gap-3 text-sm py-1.5">
+            <span>Auto-categorize new transactions
+              <span className="block text-xs text-muted">Off = everything waits in Needs review for you to categorize.</span>
+            </span>
+            <input type="checkbox" aria-label="Auto-categorize"
+              checked={settings.data.auto_categorize}
+              onChange={(e) => saveSettings({ ...settings.data!, auto_categorize: e.target.checked })} />
+          </label>
+          <label className="flex items-center justify-between gap-3 text-sm py-1.5">
+            <span>AI suggestions
+              <span className="block text-xs text-muted">Let AI propose a category when no rule matches.</span>
+            </span>
+            <input type="checkbox" aria-label="AI suggestions"
+              checked={settings.data.ai_enabled}
+              onChange={(e) => saveSettings({ ...settings.data!, ai_enabled: e.target.checked })} />
+          </label>
+          <label className="flex items-center justify-between gap-3 text-sm py-1.5">
+            <span>AI auto-accept
+              <span className="block text-xs text-muted">Auto-confirm confident AI suggestions instead of just suggesting.</span>
+            </span>
+            <input type="checkbox" aria-label="AI auto-accept"
+              disabled={!settings.data.ai_enabled}
+              checked={settings.data.ai_auto_accept}
+              onChange={(e) => saveSettings({ ...settings.data!, ai_auto_accept: e.target.checked })} />
+          </label>
+        </Card>
+      )}
+
       <Card>
         <p className="text-sm font-medium mb-3">Categories → buckets</p>
         <div className="space-y-2">
@@ -112,9 +156,15 @@ export function Settings() {
         ) : (
           <ul className="space-y-2">
             {(rules.data ?? []).map((r) => (
-              <li key={r.ID} className="flex items-center justify-between gap-3 text-sm">
+              <li key={r.ID} className={`flex items-center justify-between gap-3 text-sm ${r.IsActive ? "" : "opacity-50"}`}>
                 <span className="min-w-0 truncate">{r.MatchType}: "{r.Pattern}" → {catName(r.CategoryID)}</span>
-                <button aria-label="Delete rule" className="text-muted hover:text-bad" onClick={() => deleteRule(r.ID)}><Trash2 size={16} /></button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs text-muted">
+                    <input type="checkbox" aria-label={`Rule ${r.ID} active`} checked={r.IsActive} onChange={() => toggleRule(r)} />
+                    on
+                  </label>
+                  <button aria-label="Delete rule" className="text-muted hover:text-bad" onClick={() => deleteRule(r.ID)}><Trash2 size={16} /></button>
+                </div>
               </li>
             ))}
           </ul>
