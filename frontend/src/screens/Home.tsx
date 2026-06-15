@@ -91,31 +91,33 @@ export function Home() {
                 </span>
                 <span className="tnum text-muted"><Money fils={b.spent} /> / <Money fils={b.target} /></span>
               </div>
-              <ProgressBar pct={b.pct_used} />
+              <ProgressBar pct={b.pct_used} label={`${BUCKET_LABEL[b.bucket] ?? b.bucket} budget used`} />
             </div>
           ))}
         </div>
       </Card>
 
-      {/* recent stream */}
-      <Card>
-        <p className="text-sm font-medium mb-2">Recent</p>
-        {s.recent.length === 0 ? (
-          <EmptyState title="No recent activity" hint="New transactions will appear here." />
-        ) : (
-          <ul className="divide-y divide-border">
-            {s.recent.map((t) => (
-              <li key={t.ID} className="py-2 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
-                  <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
-                </div>
-                <span className="tnum"><Money fils={t.Direction === "credit" ? t.AmountFils : -t.AmountFils} /></span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      {/* recent stream — only meaningful for the current month */}
+      {period === currentPeriod() && (
+        <Card>
+          <p className="text-sm font-medium mb-2">Recent</p>
+          {s.recent.length === 0 ? (
+            <EmptyState title="No recent activity" hint="New transactions will appear here." />
+          ) : (
+            <ul className="divide-y divide-border">
+              {s.recent.map((t) => (
+                <li key={t.ID} className="py-2 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
+                    <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
+                  </div>
+                  <span className="tnum"><Money fils={t.Direction === "credit" ? t.AmountFils : -t.AmountFils} /></span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

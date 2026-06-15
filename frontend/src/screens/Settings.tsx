@@ -5,6 +5,7 @@ import type { BudgetConfig, Category, Rule } from "../api/types";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { useToast } from "../components/Toast";
 import { Trash2 } from "lucide-react";
 
 export function pctsValid(need: number, want: number, saving: number): boolean {
@@ -15,6 +16,7 @@ const BUCKETS = ["need", "want", "saving"] as const;
 
 export function Settings() {
   const qc = useQueryClient();
+  const { show } = useToast();
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
@@ -38,13 +40,15 @@ export function Settings() {
     }
   };
   const reassign = async (c: Category, bucket: string) => {
-    await postJSON(`/api/categories/${c.ID}`, { name: c.Name, kind: c.Kind, bucket }, "PUT");
-    qc.invalidateQueries({ queryKey: ["categories"] });
-    qc.invalidateQueries({ queryKey: ["summary"] });
+    try {
+      await postJSON(`/api/categories/${c.ID}`, { name: c.Name, kind: c.Kind, bucket }, "PUT");
+      qc.invalidateQueries({ queryKey: ["categories"] });
+      qc.invalidateQueries({ queryKey: ["summary"] });
+    } catch { show({ message: "Couldn't move category", tone: "error" }); }
   };
   const deleteRule = async (id: number) => {
-    await del(`/api/rules/${id}`);
-    qc.invalidateQueries({ queryKey: ["rules"] });
+    try { await del(`/api/rules/${id}`); qc.invalidateQueries({ queryKey: ["rules"] }); }
+    catch { show({ message: "Couldn't delete rule", tone: "error" }); }
   };
   const catName = (id: number) => cats.data?.find((c) => c.ID === id)?.Name ?? `#${id}`;
 

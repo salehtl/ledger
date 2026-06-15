@@ -28,3 +28,5 @@ body { background: var(--color-bg); color: var(--color-fg); font-family: var(--f
        -webkit-text-size-adjust: 100%; }
 /* tabular figures for money everywhere */
 .tnum { font-variant-numeric: tabular-nums; }
+.money-neg { color: var(--color-bad); }
+.money-zero { color: var(--color-muted); }
