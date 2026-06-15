@@ -10,9 +10,11 @@ import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
 import { Insights } from "../screens/Insights";
 import { Settings } from "../screens/Settings";
+import { ReviewSwipe } from "../screens/ReviewSwipe";
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
+  const [inSwipeMode, setInSwipeMode] = useState(false);
   const online = useOnline();
   useLiveEvents();
 
@@ -26,11 +28,12 @@ export function AppShell() {
       )}
       <main className="flex-1 max-w-screen-sm w-full mx-auto px-4 pt-4 pb-24">
         {tab === "home" && <Home />}
-        {tab === "transactions" && <Transactions />}
+        {tab === "transactions" && <Transactions onOpenSwipeMode={() => setInSwipeMode(true)} />}
         {tab === "insights" && <Insights />}
         {tab === "settings" && <Settings />}
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
+      {inSwipeMode && <ReviewSwipe onClose={() => setInSwipeMode(false)} />}
     </div>
   );
 }

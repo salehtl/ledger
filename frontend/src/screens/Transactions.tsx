@@ -19,7 +19,7 @@ const FILTERS = [
   { value: "confirmed" as const, label: "Confirmed" },
 ];
 
-export function Transactions() {
+export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void }) {
   const qc = useQueryClient();
   const { show } = useToast();
   const [filter, setFilter] = useState<Filter>("all");
@@ -72,6 +72,15 @@ export function Transactions() {
       <h1 className="text-xl font-semibold">Transactions</h1>
       <div className="flex flex-col gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
+        {filter === "needs_review" && onOpenSwipeMode && (
+          <button
+            onClick={onOpenSwipeMode}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[--accent] text-white text-sm font-medium hover:opacity-90 transition-opacity self-start"
+          >
+            <span>⚡</span>
+            Swipe Mode
+          </button>
+        )}
         <input
           type="search"
           placeholder="Search merchant…"
