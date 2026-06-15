@@ -32,8 +32,12 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     makeRule: true,
   })
 
-  // Active queue: full list minus IDs skipped this session
-  const queue = transactions.filter(t => !state.skippedIds.has(t.ID))
+  // Freeze the transaction list at mount time. Live refetches update the
+  // query cache but shouldn't shift the index mid-session.
+  const [frozenTxns] = useState(() => transactions)
+
+  // Active queue: frozen list minus IDs skipped this session
+  const queue = frozenTxns.filter(t => !state.skippedIds.has(t.ID))
   const current = queue[state.index] ?? null
   const next = queue[state.index + 1] ?? null
 
