@@ -7,6 +7,7 @@ import { type TabId } from "./nav";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
 import { Home } from "../screens/Home";
+import { Transactions } from "../screens/Transactions";
 
 // Phase B placeholder — replaced by real screens in Phases C–F.
 function Placeholder({ title }: { title: string }) {
@@ -28,7 +29,7 @@ export function AppShell() {
       )}
       <main className="flex-1 max-w-screen-sm w-full mx-auto px-4 pt-4 pb-24">
         {tab === "home" && <Home />}
-        {tab === "transactions" && <Placeholder title="Transactions" />}
+        {tab === "transactions" && <Transactions />}
         {tab === "insights" && <Placeholder title="Insights" />}
         {tab === "settings" && <Placeholder title="Settings" />}
       </main>
