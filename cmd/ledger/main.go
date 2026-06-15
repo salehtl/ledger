@@ -107,7 +107,7 @@ func main() {
 	cat := categorize.New(domainRules, domainCats, aiCat, cfg.AI.AutoAcceptThreshold, cfg.AI.AutoRule)
 
 	cascade := &parse.Cascade{
-		Parsers:   []parse.BankParser{parse.DIBParser{}},
+		Parsers:   []parse.BankParser{parse.DIBParser{}, parse.ENBDParser{}},
 		Heuristic: parse.HeuristicParser{},
 		AI:        aiExt,
 	}
@@ -191,7 +191,7 @@ func main() {
 	if werr != nil {
 		log.Fatalf("monitoring.drift_window: %v", werr)
 	}
-	mon := monitor.New(st, driftWindow, cfg.Monitoring.DriftMin, func(alerts []monitor.DriftAlert) {
+	mon := monitor.New(st, driftWindow, cfg.Monitoring.DriftMin, cfg.Monitoring.Senders, func(alerts []monitor.DriftAlert) {
 		hub.BroadcastEvent("drift_alert", alerts)
 		if pushSend != nil && len(alerts) > 0 {
 			subs, _ := st.SelectPushSubs()
