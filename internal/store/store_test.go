@@ -103,3 +103,26 @@ func TestMigrateAddsRuleIsActive(t *testing.T) {
 		t.Fatalf("rules.is_active missing")
 	}
 }
+
+func TestMigrateAddsRuleIsActiveAndSettings(t *testing.T) {
+	st := openTestStore(t) // Open already runs schema + migrate
+	// rules.is_active must exist and default to 1
+	var dflt int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('rules') WHERE name='is_active'`).Scan(&dflt); err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	if dflt != 1 {
+		t.Fatalf("rules.is_active column missing")
+	}
+	// app_settings singleton must be ensurable
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatalf("EnsureAppSettings: %v", err)
+	}
+	var n int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM app_settings WHERE id=1`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("app_settings singleton not present, got %d", n)
+	}
+}
