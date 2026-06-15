@@ -51,7 +51,7 @@ export function Transactions() {
     try {
       await postJSON(`/api/transactions/${t.ID}/status`, { status: newStatus });
       invalidate();
-      show({ message: `${verb} ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: "needs_review" }).then(invalidate); } } });
+      show({ message: `${verb} ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: "needs_review" }).then(invalidate).catch(() => show({ message: `Couldn’t undo`, tone: "error" })); } } });
     } catch { show({ message: `Couldn't update ${name}`, tone: "error" }); }
   };
 
