@@ -44,6 +44,10 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	st := &Store{DB: db}
 	if err := st.SeedDefaultCategories(); err != nil {
 		db.Close()
@@ -57,3 +61,23 @@ func (s *Store) Close() error { return s.DB.Close() }
 
 // Ping verifies the database is reachable (used by /api/health).
 func (s *Store) Ping() error { return s.DB.Ping() }
+
+// migrate applies idempotent column additions that CREATE TABLE IF NOT EXISTS
+// cannot perform on pre-existing tables.
+func migrate(db *sql.DB) error {
+	return addColumnIfMissing(db, "rules", "is_active", "INTEGER NOT NULL DEFAULT 1")
+}
+
+func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, table, column,
+	).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl)
+	return err
+}

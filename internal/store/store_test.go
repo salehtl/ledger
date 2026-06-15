@@ -44,7 +44,7 @@ func TestOpenAppliesFullSchema(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"accounts", "budget_config", "categories", "import_log",
+		"accounts", "app_settings", "budget_config", "categories", "import_log",
 		"ingest_log", "push_subscriptions", "rules", "transactions",
 	}
 	if len(got) != len(want) {
@@ -90,5 +90,16 @@ func TestOpenSeedsDefaultCategories(t *testing.T) {
 	}
 	if len(cats) == 0 {
 		t.Error("Open must seed default categories")
+	}
+}
+
+func TestMigrateAddsRuleIsActive(t *testing.T) {
+	st := openTestStore(t)
+	var c int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('rules') WHERE name='is_active'`).Scan(&c); err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	if c != 1 {
+		t.Fatalf("rules.is_active missing")
 	}
 }
