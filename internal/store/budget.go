@@ -124,9 +124,11 @@ func (s *Store) SelectMonthIncome(period string) (int64, error) {
 // SelectRecent returns the newest n transactions as ReviewItems for the dashboard list.
 func (s *Store) SelectRecent(n int) ([]ReviewItem, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, posted_at, amount, currency, direction,
-		        COALESCE(merchant_raw,''), status, COALESCE(confidence,0), COALESCE(source,'')
-		   FROM transactions ORDER BY posted_at DESC LIMIT ?`, n,
+		`SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
+		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
+		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
+		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+		  ORDER BY t.posted_at DESC LIMIT ?`, n,
 	)
 	if err != nil {
 		return nil, err

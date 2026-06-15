@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // CategoryRow represents a row in the categories table.
 type CategoryRow struct {
@@ -23,15 +26,18 @@ type RuleRow struct {
 
 // ReviewItem is a flattened transaction row returned for manual review.
 type ReviewItem struct {
-	ID          int64
-	PostedAt    string
-	AmountFils  int64
-	Currency    string
-	Direction   string
-	MerchantRaw string
-	Status      string
-	Confidence  float64
-	Source      string
+	ID           int64
+	PostedAt     string
+	AmountFils   int64
+	Currency     string
+	Direction    string
+	MerchantRaw  string
+	Status       string
+	Confidence   float64
+	Source       string
+	CategoryID   *int64 // nil when uncategorized
+	CategoryName string // "" when uncategorized
+	Bucket       string // "" when uncategorized or category has no bucket
 }
 
 // nullableStr maps an empty string to SQL NULL.
@@ -182,10 +188,11 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 // SelectNeedsReview returns transactions with status='needs_review', newest first.
 func (s *Store) SelectNeedsReview() ([]ReviewItem, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, posted_at, amount, currency, direction,
-		        COALESCE(merchant_raw,''),
-		        status, COALESCE(confidence,0), COALESCE(source,'')
-		 FROM transactions WHERE status='needs_review' ORDER BY posted_at DESC`,
+		`SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
+		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
+		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
+		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+		  WHERE t.status='needs_review' ORDER BY t.posted_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -197,24 +204,25 @@ func (s *Store) SelectNeedsReview() ([]ReviewItem, error) {
 // SelectTransactions returns transactions matching optional status and date filters.
 // Empty status matches all. from/to are RFC3339 or date strings (SQLite text compare).
 func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error) {
-	q := `SELECT id, posted_at, amount, currency, direction,
-	             COALESCE(merchant_raw,''),
-	             status, COALESCE(confidence,0), COALESCE(source,'')
-	      FROM transactions WHERE 1=1`
+	q := `SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
+	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
+	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
+	      FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+	      WHERE 1=1`
 	var args []any
 	if status != "" {
-		q += " AND status=?"
+		q += " AND t.status=?"
 		args = append(args, status)
 	}
 	if from != "" {
-		q += " AND posted_at >= ?"
+		q += " AND t.posted_at >= ?"
 		args = append(args, from)
 	}
 	if to != "" {
-		q += " AND posted_at <= ?"
+		q += " AND t.posted_at <= ?"
 		args = append(args, to)
 	}
-	q += " ORDER BY posted_at DESC"
+	q += " ORDER BY t.posted_at DESC"
 	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -231,11 +239,17 @@ func scanReviewItems(rows interface {
 	var out []ReviewItem
 	for rows.Next() {
 		var r ReviewItem
+		var catID sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.PostedAt, &r.AmountFils, &r.Currency, &r.Direction,
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
+			&catID, &r.CategoryName, &r.Bucket,
 		); err != nil {
 			return nil, err
+		}
+		if catID.Valid {
+			id := catID.Int64
+			r.CategoryID = &id
 		}
 		out = append(out, r)
 	}

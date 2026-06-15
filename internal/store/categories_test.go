@@ -329,3 +329,49 @@ func TestDeleteRule(t *testing.T) {
 		t.Errorf("after delete: %d rules", len(rules))
 	}
 }
+
+func mustTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+func TestSelectTransactionsIncludesCategory(t *testing.T) {
+	st := openTestStore(t)
+	cats, _ := st.SelectCategories()
+	var groceries CategoryRow
+	for _, c := range cats {
+		if c.Name == "Groceries" {
+			groceries = c
+		}
+	}
+	if groceries.ID == 0 {
+		t.Fatal("Groceries not found in seed")
+	}
+	id, _, err := st.InsertTransaction(TransactionRow{
+		PostedAt: mustTime("2026-06-10T09:00:00Z"), AmountFils: 5000, Currency: "AED",
+		Direction: "debit", MerchantRaw: "SPINNEYS", Status: "confirmed", Source: "email",
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := st.UpdateTransactionCategory(id, groceries.ID, "confirmed"); err != nil {
+		t.Fatalf("setcategory: %v", err)
+	}
+	items, err := st.SelectTransactions("", "", "")
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	got := items[0]
+	if got.CategoryID == nil || *got.CategoryID != groceries.ID {
+		t.Fatalf("CategoryID = %v, want %d", got.CategoryID, groceries.ID)
+	}
+	if got.CategoryName != "Groceries" || got.Bucket != "need" {
+		t.Fatalf("CategoryName/Bucket = %q/%q, want Groceries/need", got.CategoryName, got.Bucket)
+	}
+}

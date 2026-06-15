@@ -33,7 +33,7 @@ func TestGetSummary(t *testing.T) {
 	_ = st.UpdateBudgetConfig(store.BudgetConfig{
 		MonthlyIncome: 2000000, NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2, IncomeSource: "config",
 	})
-	req := httptest.NewRequest(http.MethodGet, "/api/summary?period=current", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -48,6 +48,24 @@ func TestGetSummary(t *testing.T) {
 	}
 	if s.Income != 2000000 {
 		t.Errorf("income = %d", s.Income)
+	}
+}
+
+func TestSummaryHonorsPeriodParam(t *testing.T) {
+	srv, st := newTestServer(t)
+	_ = st.UpdateBudgetConfig(store.BudgetConfig{
+		MonthlyIncome: 2000000, NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2, IncomeSource: "config",
+	})
+	req := httptest.NewRequest("GET", "/api/summary?period=2026-05", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["period"] != "2026-05" {
+		t.Fatalf("period = %v, want 2026-05", got["period"])
 	}
 }
 
@@ -75,5 +93,29 @@ func TestPutBudgetRejectsBadPcts(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/budget", strings.NewReader(body)))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for pcts summing > 1", rec.Code)
+	}
+}
+
+func TestSummaryBadPeriodReturns400(t *testing.T) {
+	srv, st := newTestServer(t)
+	_ = st.UpdateBudgetConfig(store.BudgetConfig{
+		MonthlyIncome: 2000000, NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2, IncomeSource: "config",
+	})
+	req := httptest.NewRequest("GET", "/api/summary?period=not-a-month", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", rec.Code)
+	}
+}
+
+func TestCategorySpendBadPeriodReturns400(t *testing.T) {
+	srv := New(nil, fstest())
+	srv.SetInsightsStore(stubInsights{})
+	req := httptest.NewRequest("GET", "/api/insights/categories?period=not-a-month", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", rec.Code)
 	}
 }
