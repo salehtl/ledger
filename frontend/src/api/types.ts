@@ -1,5 +1,11 @@
 export interface Category { ID: number; Name: string; Kind: string; Bucket: string; IsActive: boolean; }
-export interface Rule { ID: number; MatchType: string; Pattern: string; CategoryID: number; Priority: number; Source: string; }
+export interface Rule { ID: number; MatchType: string; Pattern: string; CategoryID: number; Priority: number; Source: string; IsActive: boolean; }
+export interface AppSettings {
+  auto_categorize: boolean;
+  ai_enabled: boolean;
+  ai_auto_accept: boolean;
+  ai_threshold: number;
+}
 export interface Txn {
   ID: number; PostedAt: string; AmountFils: number; Currency: string;
   Direction: string; MerchantRaw: string; Status: string; Confidence: number; Source: string;
