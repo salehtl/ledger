@@ -25,6 +25,8 @@ beforeEach(() => {
     if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
     return new Response("[]");
   }));
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 function wrap() {
