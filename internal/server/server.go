@@ -75,8 +75,10 @@ type Server struct {
 	insightsStore  InsightsStore
 	hub            *Hub                // SSE fan-out hub
 	driftMon       DriftStatusProvider // optional drift monitor for /api/health
-	pushStore      PushStore
-	pushSender     PushSender
+	pushStore       PushStore
+	pushSender      PushSender
+	settingsStore   SettingsStore
+	ruleActiveStore RuleActiveStore
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -140,9 +142,12 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
 	s.mux.HandleFunc("POST /api/rules", s.handlePostRule)
 	s.mux.HandleFunc("DELETE /api/rules/{id}", s.handleDeleteRule)
+	s.mux.HandleFunc("PUT /api/rules/{id}/active", s.handleSetRuleActive)
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)

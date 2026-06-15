@@ -22,6 +22,7 @@ type RuleRow struct {
 	CategoryID int64
 	Priority   int
 	Source     string // "manual" | "ai_confirmed"
+	IsActive   bool
 }
 
 // ReviewItem is a flattened transaction row returned for manual review.
@@ -146,23 +147,42 @@ func (s *Store) InsertRule(r RuleRow) error {
 
 // SelectRules returns all rules ordered by priority ascending (lower = higher priority).
 func (s *Store) SelectRules() ([]RuleRow, error) {
-	rows, err := s.DB.Query(
-		`SELECT id, match_type, pattern, category_id, priority, source
+	return scanRules(s.DB.Query(
+		`SELECT id, match_type, pattern, category_id, priority, source, is_active
 		 FROM rules ORDER BY priority ASC`,
-	)
-	if err != nil {
-		return nil, err
+	))
+}
+
+// SelectActiveRules returns only enabled rules, priority ascending — for the categorizer.
+func (s *Store) SelectActiveRules() ([]RuleRow, error) {
+	return scanRules(s.DB.Query(
+		`SELECT id, match_type, pattern, category_id, priority, source, is_active
+		 FROM rules WHERE is_active=1 ORDER BY priority ASC`,
+	))
+}
+
+func scanRules(rows *sql.Rows, qerr error) ([]RuleRow, error) {
+	if qerr != nil {
+		return nil, qerr
 	}
 	defer rows.Close()
 	var out []RuleRow
 	for rows.Next() {
 		var r RuleRow
-		if err := rows.Scan(&r.ID, &r.MatchType, &r.Pattern, &r.CategoryID, &r.Priority, &r.Source); err != nil {
+		var active int
+		if err := rows.Scan(&r.ID, &r.MatchType, &r.Pattern, &r.CategoryID, &r.Priority, &r.Source, &active); err != nil {
 			return nil, err
 		}
+		r.IsActive = active == 1
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetRuleActive enables/disables a rule.
+func (s *Store) SetRuleActive(id int64, active bool) error {
+	_, err := s.DB.Exec(`UPDATE rules SET is_active=? WHERE id=?`, boolToInt(active), id)
+	return err
 }
 
 // UpdateTransactionCategory sets category_id and status on one transaction.
