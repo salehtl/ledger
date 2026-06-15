@@ -20,7 +20,7 @@ func TestMonitor_NoAlerts_HighRate(t *testing.T) {
 	fake := &fakeDriftStore{stats: []store.DriftStat{
 		{FromAddr: "alerts@bank.com", Total: 10, Parsed: 9},
 	}}
-	m := monitor.New(fake, 7*24*time.Hour, 0.80, nil)
+	m := monitor.New(fake, 7*24*time.Hour, 0.80, nil, nil)
 	alerts := m.Check()
 	if len(alerts) != 0 {
 		t.Errorf("got %d alerts, want 0 (rate 0.90 > threshold 0.80)", len(alerts))
@@ -31,7 +31,7 @@ func TestMonitor_Alert_LowRate(t *testing.T) {
 	fake := &fakeDriftStore{stats: []store.DriftStat{
 		{FromAddr: "alerts@bank.com", Total: 10, Parsed: 5},
 	}}
-	m := monitor.New(fake, 7*24*time.Hour, 0.80, nil)
+	m := monitor.New(fake, 7*24*time.Hour, 0.80, nil, nil)
 	alerts := m.Check()
 	if len(alerts) != 1 {
 		t.Fatalf("got %d alerts, want 1", len(alerts))
@@ -52,7 +52,7 @@ func TestMonitor_OnChange_FiredOnlyWhenAlertListChanges(t *testing.T) {
 	fake := &fakeDriftStore{stats: []store.DriftStat{
 		{FromAddr: "alerts@bank.com", Total: 10, Parsed: 5},
 	}}
-	m := monitor.New(fake, 7*24*time.Hour, 0.80, func(a []monitor.DriftAlert) { fired++ })
+	m := monitor.New(fake, 7*24*time.Hour, 0.80, nil, func(a []monitor.DriftAlert) { fired++ })
 
 	m.Check() // first check: empty → 1 alert → changed
 	if fired != 1 {
@@ -74,10 +74,26 @@ func TestMonitor_Alerts_ThreadSafe(t *testing.T) {
 	fake := &fakeDriftStore{stats: []store.DriftStat{
 		{FromAddr: "a@b.com", Total: 5, Parsed: 2},
 	}}
-	m := monitor.New(fake, time.Hour, 0.80, nil)
+	m := monitor.New(fake, time.Hour, 0.80, nil, nil)
 	m.Check()
 	got := m.Alerts()
 	if len(got) != 1 {
 		t.Errorf("Alerts() = %d, want 1", len(got))
+	}
+}
+
+func TestMonitor_AllowlistSkipsUnlistedSenders(t *testing.T) {
+	fake := &fakeDriftStore{stats: []store.DriftStat{
+		{FromAddr: "OnlineBanking@emiratesnbd.com", Total: 10, Parsed: 0}, // bank, below threshold → alert
+		{FromAddr: "no-reply@accounts.google.com", Total: 10, Parsed: 0},  // noise, not in allowlist → skipped
+		{FromAddr: "salehtl@icloud.com", Total: 10, Parsed: 0},            // noise → skipped
+	}}
+	m := monitor.New(fake, time.Hour, 0.80, []string{"dib.ae", "emiratesnbd.com"}, nil)
+	alerts := m.Check()
+	if len(alerts) != 1 {
+		t.Fatalf("got %d alerts, want 1 (only the bank sender)", len(alerts))
+	}
+	if alerts[0].FromAddr != "OnlineBanking@emiratesnbd.com" {
+		t.Errorf("alert from %q, want the ENBD sender", alerts[0].FromAddr)
 	}
 }

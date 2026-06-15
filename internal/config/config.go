@@ -55,8 +55,9 @@ type AIConfig struct {
 
 // MonitoringConfig controls the drift detection window and threshold.
 type MonitoringConfig struct {
-	DriftWindow string  `toml:"drift_window"` // e.g. "7d", "24h"
-	DriftMin    float64 `toml:"drift_min"`    // 0.0–1.0; alert if success rate drops below this
+	DriftWindow string   `toml:"drift_window"` // e.g. "7d", "24h"
+	DriftMin    float64  `toml:"drift_min"`    // 0.0–1.0; alert if success rate drops below this
+	Senders     []string `toml:"senders"`      // from_addr substrings to drift-check; empty = all senders
 }
 
 // ParseDriftWindow parses the drift_window string. Supports "Nd" for days in
@@ -104,6 +105,9 @@ func defaults() Config {
 		Monitoring: MonitoringConfig{
 			DriftWindow: "7d",
 			DriftMin:    0.80,
+			// Only drift-check senders we actually have parsers for; this keeps
+			// non-bank noise (Google/iCloud forwards) from raising false alerts.
+			Senders: []string{"dib.ae", "emiratesnbd.com"},
 		},
 	}
 }
