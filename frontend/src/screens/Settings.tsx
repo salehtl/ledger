@@ -28,10 +28,14 @@ export function Settings() {
     if (!cfg) return;
     if (!pctsValid(cfg.need_pct, cfg.want_pct, cfg.saving_pct)) { setError("Need / Want / Saving must add up to 100%."); return; }
     setError("");
-    await postJSON("/api/budget", cfg, "PUT");
-    setDraft(null);
-    qc.invalidateQueries({ queryKey: ["budget"] });
-    qc.invalidateQueries({ queryKey: ["summary"] });
+    try {
+      await postJSON("/api/budget", cfg, "PUT");
+      setDraft(null);
+      qc.invalidateQueries({ queryKey: ["budget"] });
+      qc.invalidateQueries({ queryKey: ["summary"] });
+    } catch {
+      setError("Couldn’t save — please try again.");
+    }
   };
   const reassign = async (c: Category, bucket: string) => {
     await postJSON(`/api/categories/${c.ID}`, { name: c.Name, kind: c.Kind, bucket }, "PUT");
