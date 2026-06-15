@@ -9,15 +9,10 @@ import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { DonutChart } from "../components/charts/DonutChart";
 import { TrendBars } from "../components/charts/TrendBars";
-import { donutSlices, trendSeries, trailingPeriods, monthLabel } from "../lib/insights";
+import { donutSlices, trendSeries, trailingPeriods, monthLabel, currentPeriod } from "../lib/insights";
 import { AlertTriangle } from "lucide-react";
 
 const BUCKET_TONE: Record<string, Tone> = { need: "neutral", want: "warn", saving: "good" };
-
-function currentPeriod(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 export function Insights() {
   const [period] = useState(currentPeriod());
@@ -44,7 +39,9 @@ export function Insights() {
 
       <Card>
         <p className="text-sm font-medium mb-2">6-month spending trend</p>
-        <TrendBars points={points} activePeriod={period} />
+        {trend.isError
+          ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
+          : <TrendBars points={points} activePeriod={period} />}
       </Card>
 
       <Card className="!p-0">

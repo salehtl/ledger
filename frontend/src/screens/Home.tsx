@@ -10,16 +10,11 @@ import { EmptyState } from "../components/EmptyState";
 import { DonutChart } from "../components/charts/DonutChart";
 import { TrendBars } from "../components/charts/TrendBars";
 import {
-  totalSpent, totalBudget, donutSlices, trendSeries, trailingPeriods, monthLabel, bucketColor,
+  totalSpent, totalBudget, donutSlices, trendSeries, trailingPeriods, monthLabel, bucketColor, currentPeriod,
 } from "../lib/insights";
 import { AlertTriangle } from "lucide-react";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
-
-function currentPeriod(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 export function Home() {
   const [period, setPeriod] = useState(currentPeriod());
@@ -77,7 +72,9 @@ export function Home() {
         </Card>
         <Card>
           <p className="text-sm font-medium mb-2">6-month trend</p>
-          <TrendBars points={points} activePeriod={period} />
+          {trend.isError
+            ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
+            : <TrendBars points={points} activePeriod={period} />}
         </Card>
       </div>
 

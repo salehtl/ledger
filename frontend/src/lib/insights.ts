@@ -44,6 +44,12 @@ export function trendSeries(totals: MonthlyTotal[], periods: string[]): TrendPoi
   });
 }
 
+/** The current month as "YYYY-MM" (local time). */
+export function currentPeriod(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
 /** The trailing `n` period strings ("YYYY-MM"), oldest first, ending at `end` (a YYYY-MM). */
 export function trailingPeriods(end: string, n: number): string[] {
   const [y, m] = end.split("-").map(Number);
