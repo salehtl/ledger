@@ -347,6 +347,9 @@ func TestSelectTransactionsIncludesCategory(t *testing.T) {
 			groceries = c
 		}
 	}
+	if groceries.ID == 0 {
+		t.Fatal("Groceries not found in seed")
+	}
 	id, _, err := st.InsertTransaction(TransactionRow{
 		PostedAt: mustTime("2026-06-10T09:00:00Z"), AmountFils: 5000, Currency: "AED",
 		Direction: "debit", MerchantRaw: "SPINNEYS", Status: "confirmed", Source: "email",
