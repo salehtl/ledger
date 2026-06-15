@@ -1,3 +1,4 @@
+// frontend/src/components/CategorizeDialog.test.tsx
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { CategorizeDialog } from "./CategorizeDialog";
@@ -22,5 +23,12 @@ describe("CategorizeDialog", () => {
   it("disables OK until a category is chosen", () => {
     render(<CategorizeDialog txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
     expect(screen.getByRole("button", { name: /ok/i })).toBeDisabled();
+  });
+
+  it("filters categories by the search box", () => {
+    render(<CategorizeDialog txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "din" } });
+    expect(screen.getByLabelText("Dining")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Groceries")).not.toBeInTheDocument();
   });
 });
