@@ -18,23 +18,23 @@ func (s *Server) SetRuleActiveStore(r RuleActiveStore) { s.ruleActiveStore = r }
 
 func (s *Server) handleSetRuleActive(w http.ResponseWriter, r *http.Request) {
 	if s.ruleActiveStore == nil {
-		http.Error(w, "rules unavailable", http.StatusServiceUnavailable)
+		http.Error(w, `{"error":"rules unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"bad id"}`, http.StatusBadRequest)
 		return
 	}
 	var body struct {
 		Active bool `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}
 	if err := s.ruleActiveStore.SetRuleActive(id, body.Active); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
