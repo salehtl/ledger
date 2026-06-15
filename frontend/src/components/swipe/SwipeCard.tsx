@@ -1,5 +1,5 @@
 // frontend/src/components/swipe/SwipeCard.tsx
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Heart, Home, PiggyBank, ArrowLeftRight, type LucideIcon } from 'lucide-react'
 import { Money } from '../Money'
 import type { Txn } from '../../api/types'
@@ -43,11 +43,16 @@ export function SwipeCard({
   onTripleTap,
   onExitComplete,
 }: SwipeCardProps) {
-  const { state, onPointerDown, onPointerMove, onPointerUp, reset } =
+  const { state, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, reset } =
     useSwipeGesture(onDirectionCommit, onTripleTap)
 
+  const exitedRef = useRef(false)
+
   // Reset gesture state when the card's transaction changes
-  useEffect(() => { reset() }, [txn.ID, reset])
+  useEffect(() => {
+    reset()
+    exitedRef.current = false
+  }, [txn.ID, reset])
 
   const { dx, dy, dragging } = state
 
@@ -87,7 +92,13 @@ export function SwipeCard({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onTransitionEnd={flying ? (e) => { if (e.propertyName === 'opacity') onExitComplete() } : undefined}
+      onPointerCancel={onPointerCancel}
+      onTransitionEnd={flying ? (e) => {
+        if (e.propertyName === 'opacity' && e.target === e.currentTarget && !exitedRef.current) {
+          exitedRef.current = true
+          onExitComplete()
+        }
+      } : undefined}
     >
       {/* Directional color overlay */}
       {action && (

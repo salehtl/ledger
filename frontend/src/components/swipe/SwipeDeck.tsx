@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCircle } from 'lucide-react'
 import { postJSON } from '../../api/client'
@@ -23,8 +23,6 @@ interface DeckState {
 
 export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CONFIG }: SwipeDeckProps) {
   const qc = useQueryClient()
-  // Holds the txn ID to POST as transfer after the card exit animation completes
-  const pendingTransferRef = useRef<number | null>(null)
 
   const [state, setState] = useState<DeckState>({
     index: 0,
@@ -49,13 +47,16 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     const action = config[dir]
     if (!action) return
     if (action.statusOverride === 'transfer') {
-      // Transfer: skip SubcategoryPanel, record ID, trigger exit animation
-      pendingTransferRef.current = current?.ID ?? null
+      if (current) {
+        postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
+          .then(invalidate)
+          .catch(() => { /* user can fix from list */ })
+      }
       setState(s => ({ ...s, flyDirection: dir }))
     } else {
       setState(s => ({ ...s, pendingDirection: dir }))
     }
-  }, [config, current])
+  }, [config, current, invalidate])
 
   const handleCategorySelect = useCallback(async (categoryId: number) => {
     if (!current) return
@@ -75,15 +76,8 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   }, [current, state.pendingDirection, state.makeRule, invalidate])
 
   const handleExitComplete = useCallback(() => {
-    const transferId = pendingTransferRef.current
-    pendingTransferRef.current = null
-    if (transferId !== null) {
-      postJSON(`/api/transactions/${transferId}/status`, { status: 'transfer' })
-        .then(invalidate)
-        .catch(() => { /* swallowed — user can fix from list */ })
-    }
     setState(s => ({ ...s, flyDirection: null, index: s.index + 1 }))
-  }, [invalidate])
+  }, [])
 
   const handleTripleTap = useCallback(() => {
     if (!current) return

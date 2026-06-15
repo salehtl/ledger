@@ -16,6 +16,7 @@ interface UseSwipeGestureResult {
   onPointerDown: (e: React.PointerEvent) => void
   onPointerMove: (e: React.PointerEvent) => void
   onPointerUp: (e: React.PointerEvent) => void
+  onPointerCancel: () => void
   reset: () => void
 }
 
@@ -89,5 +90,9 @@ export function useSwipeGesture(
     startRef.current = null
   }, [])
 
-  return { state, onPointerDown, onPointerMove, onPointerUp, reset }
+  const onPointerCancel = useCallback(() => {
+    reset()
+  }, [reset])
+
+  return { state, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, reset }
 }
