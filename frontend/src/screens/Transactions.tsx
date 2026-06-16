@@ -2,7 +2,8 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
-import { monthRange } from "../lib/transactions";
+import { monthRange, txnTotals } from "../lib/transactions";
+import { formatFils } from "../lib/money";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -12,7 +13,7 @@ import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
 import { useToast } from "../components/Toast";
 import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
-import { currentPeriod } from "../lib/insights";
+import { monthLabel, currentPeriod } from "../lib/insights";
 
 type Filter = "all" | "needs_review" | "confirmed";
 const FILTERS = [
@@ -51,6 +52,8 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
     const term = search.trim().toLowerCase();
     return term ? data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term)) : data;
   }, [q.data, search]);
+
+  const totals = useMemo(() => txnTotals(rows), [rows]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -134,14 +137,24 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
       ) : rows.length === 0 ? (
         <EmptyState icon={ListOrdered} title="No transactions" hint="Try a different filter or search." />
       ) : (
-        <Card className="!p-0">
-          <p className="text-xs text-muted px-4 pt-3">{rows.length} transaction{rows.length === 1 ? "" : "s"}</p>
-          <ul className="divide-y divide-border px-4">
-            {rows.map((t) => (
-              <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
-            ))}
-          </ul>
-        </Card>
+        <>
+          <div className="flex items-center justify-between px-1">
+            <p className="text-sm text-muted">
+              {month ? `${monthLabel(month)} ${month.slice(0, 4)}` : "All time"} ·{" "}
+              {rows.length} transaction{rows.length === 1 ? "" : "s"}
+            </p>
+            {totals.spentFils > 0 && (
+              <p className="text-sm text-muted tnum">{formatFils(totals.spentFils)} spent</p>
+            )}
+          </div>
+          <Card className="!p-0">
+            <ul className="divide-y divide-border px-4">
+              {rows.map((t) => (
+                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
+              ))}
+            </ul>
+          </Card>
+        </>
       )}
 
       {active && cats.data && (
