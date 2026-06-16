@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"ledger/internal/anthropic"
 )
 
 func TestAnthropicExtractorSuccess(t *testing.T) {
@@ -20,7 +22,7 @@ func TestAnthropicExtractorSuccess(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		client:   srv.Client(),
+		retry:    anthropic.New(srv.Client()),
 	}
 
 	p, err := ex.Extract(context.Background(), "some email body")
@@ -51,7 +53,7 @@ func TestAnthropicExtractorSuccess(t *testing.T) {
 
 func TestAnthropicExtractorHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusBadRequest) // non-retryable: surfaces immediately
 	}))
 	defer srv.Close()
 
@@ -59,7 +61,7 @@ func TestAnthropicExtractorHTTPError(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		client:   srv.Client(),
+		retry:    anthropic.New(srv.Client()),
 	}
 
 	_, err := ex.Extract(context.Background(), "some email body")

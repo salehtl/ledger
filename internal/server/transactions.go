@@ -65,32 +65,6 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(items)
 }
 
-func (s *Server) handleRecategorize(w http.ResponseWriter, r *http.Request) {
-	if s.catStore == nil {
-		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-	items, err := s.catStore.SelectNeedsReview()
-	if err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
-		return
-	}
-	processed := 0
-	if s.recatFn != nil {
-		for _, item := range items {
-			catID, status, ok := s.recatFn(r.Context(), item.MerchantRaw)
-			if !ok {
-				continue
-			}
-			if err := s.catStore.UpdateTransactionCategory(item.ID, catID, status); err == nil {
-				processed++
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"processed": processed})
-}
-
 // handleClearCategorization moves every transaction back to needs_review and
 // clears its category, leaving learned rules intact. Destructive bulk reset
 // exposed in the Settings "Danger zone".

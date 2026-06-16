@@ -48,7 +48,7 @@ export function AppShell() {
           {tab === "home" && <Home period={anchor} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} onOpenSwipeMode={() => setInSwipeMode(true)} />}
           {tab === "insights" && <Insights scope={scope} />}
-          {tab === "settings" && <Settings />}
+          {tab === "settings" && <Settings scope={scope} />}
         </div>
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
