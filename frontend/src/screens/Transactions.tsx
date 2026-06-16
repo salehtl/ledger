@@ -2,8 +2,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
-import { monthRange, txnTotals } from "../lib/transactions";
-import { formatFils } from "../lib/money";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -12,8 +10,9 @@ import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
 import { useToast } from "../components/Toast";
+import { txnTotals } from "../lib/transactions";
+import { formatFils } from "../lib/money";
 import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
-import { monthLabel, currentPeriod } from "../lib/insights";
 
 type Filter = "all" | "needs_review" | "confirmed";
 const FILTERS = [
@@ -22,25 +21,21 @@ const FILTERS = [
   { value: "confirmed" as const, label: "Confirmed" },
 ];
 
-export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void }) {
+export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?: string; onOpenSwipeMode?: () => void }) {
   const qc = useQueryClient();
   const { show } = useToast();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  const [month, setMonth] = useState("");
   const [active, setActive] = useState<Txn | null>(null);
 
   const status = filter === "all" ? "" : filter;
   const q = useQuery({
-    queryKey: ["transactions", status, month],
+    queryKey: ["transactions", status, from ?? "", to ?? ""],
     queryFn: () => {
       const params = new URLSearchParams();
       if (status) params.set("status", status);
-      if (month) {
-        const { from, to } = monthRange(month);
-        params.set("from", from);
-        params.set("to", to);
-      }
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const qs = params.toString();
       return getJSON<Txn[]>(qs ? `/api/transactions?${qs}` : "/api/transactions");
     },
@@ -52,7 +47,6 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
     const term = search.trim().toLowerCase();
     return term ? data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term)) : data;
   }, [q.data, search]);
-
   const totals = useMemo(() => txnTotals(rows), [rows]);
 
   const invalidate = () => {
@@ -69,7 +63,7 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
     try {
       await postJSON(`/api/transactions/${t.ID}/status`, { status: newStatus });
       invalidate();
-      show({ message: `${verb} ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: "needs_review" }).then(invalidate).catch(() => show({ message: `Couldn’t undo`, tone: "error" })); } } });
+      show({ message: `${verb} ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: "needs_review" }).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
     } catch { show({ message: `Couldn't update ${name}`, tone: "error" }); }
   };
 
@@ -85,27 +79,6 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
 
   return (
     <div className="space-y-4">
-      {/* title + month scope (mirrors the Home header) */}
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Transactions</h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setMonth(month ? "" : currentPeriod())}
-            className="text-xs text-muted hover:text-fg transition-colors"
-          >
-            {month ? "All time" : "This month"}
-          </button>
-          <input
-            type="month"
-            aria-label="Month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            className="bg-surface border border-border rounded-lg px-2 py-1 text-sm tnum"
-          />
-        </div>
-      </div>
-
-      {/* status filter + swipe entry (right-aligned so it never reflows search) */}
       <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
         {filter === "needs_review" && onOpenSwipeMode && (
@@ -118,7 +91,6 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
         )}
       </div>
 
-      {/* search */}
       <div className="relative">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
         <input
@@ -135,14 +107,11 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
       ) : q.isLoading ? (
         <Skeleton rows={8} />
       ) : rows.length === 0 ? (
-        <EmptyState icon={ListOrdered} title="No transactions" hint="Try a different filter or search." />
+        <EmptyState icon={ListOrdered} title="No transactions" hint="Try a different period, filter, or search." />
       ) : (
         <>
           <div className="flex items-center justify-between px-1">
-            <p className="text-sm text-muted">
-              {month ? `${monthLabel(month)} ${month.slice(0, 4)}` : "All time"} ·{" "}
-              {rows.length} transaction{rows.length === 1 ? "" : "s"}
-            </p>
+            <p className="text-sm text-muted">{rows.length} transaction{rows.length === 1 ? "" : "s"}</p>
             {totals.spentFils > 0 && (
               <p className="text-sm text-muted tnum">{formatFils(totals.spentFils)} spent</p>
             )}

@@ -29,9 +29,9 @@ beforeEach(() => {
   }));
 });
 
-function wrap() {
+function wrap(props: { from?: string; to?: string } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><ToastProvider><Transactions /></ToastProvider></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ToastProvider><Transactions {...props} /></ToastProvider></QueryClientProvider>);
 }
 
 describe("Transactions", () => {
@@ -58,22 +58,9 @@ describe("Transactions", () => {
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
   });
 
-  it("scopes the list to a selected month", async () => {
-    wrap();
-    await screen.findByText("SPINNEYS");
-    // sample rows are June 2026; selecting May yields none
-    fireEvent.change(screen.getByLabelText(/^month$/i), { target: { value: "2026-05" } });
+  it("scopes to the from/to bounds it is given", async () => {
+    wrap({ from: "2026-05-01", to: "2026-05-32" }); // May → no June rows
     expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
     expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
-  });
-
-  it("clears the month scope with All time", async () => {
-    wrap();
-    await screen.findByText("SPINNEYS");
-    fireEvent.change(screen.getByLabelText(/^month$/i), { target: { value: "2026-05" } });
-    await screen.findByText(/no transactions/i);
-    fireEvent.click(screen.getByRole("button", { name: /all time/i }));
-    expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
-    expect(screen.getByText("NETFLIX")).toBeInTheDocument();
   });
 });
