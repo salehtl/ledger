@@ -32,6 +32,32 @@ export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
   up:    { bucket: null, statusOverride: 'transfer', label: 'Transfer', colorClass: 'bg-amber-500', textClass: 'text-amber-700', icon: 'ArrowLeftRight' },
 }
 
+/** Canonical bucket identity for an action, used to theme it consistently. */
+export type BucketKey = 'need' | 'want' | 'saving' | 'transfer'
+
+export function bucketKey(a: SwipeAction): BucketKey {
+  if (a.statusOverride === 'transfer') return 'transfer'
+  return (a.bucket as BucketKey) ?? 'transfer'
+}
+
+/**
+ * Source of truth for swipe colors, derived from the bucket — not from the
+ * action's persisted colorClass — so the palette applies even to configs saved
+ * before a redesign, and Need/Want/Save/Transfer never collide. Matches the
+ * app's bucket tokens (need=blue, save=green) with a distinct violet for Want
+ * and a neutral slate for Transfer (which isn't real spending).
+ */
+export const BUCKET_COLOR: Record<BucketKey, string> = {
+  need: '#2563eb',
+  want: '#7c3aed',
+  saving: '#059669',
+  transfer: '#64748b',
+}
+
+export function actionColor(a: SwipeAction): string {
+  return BUCKET_COLOR[bucketKey(a)]
+}
+
 const STORAGE_KEY = 'ledger-swipe-config'
 
 /**
