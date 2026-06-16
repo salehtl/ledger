@@ -1,3 +1,5 @@
+import type { CategoryUsage } from "./types";
+
 async function parseOrThrow(res: Response) {
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
@@ -21,4 +23,12 @@ export async function postJSON<T = unknown>(url: string, body: unknown, method =
 
 export async function del(url: string): Promise<void> {
   await parseOrThrow(await fetch(url, { method: "DELETE" }));
+}
+
+export function getCategoryUsage(id: number): Promise<CategoryUsage> {
+  return getJSON<CategoryUsage>(`/api/categories/${id}/usage`);
+}
+
+export function deleteCategory(id: number): Promise<void> {
+  return del(`/api/categories/${id}`);
 }
