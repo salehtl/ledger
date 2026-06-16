@@ -82,7 +82,7 @@ export interface CategoryDelta {
   prevSpent: number;
   delta: number;            // spent - prevSpent
   deltaPct: number | null;  // prevSpent > 0 ? delta / prevSpent : null
-  isNew: boolean;           // prevSpent === 0 && spent > 0
+  isNew: boolean;           // had no entry in the previous period (not merely zero spend)
 }
 
 /** Pair each category's spend with its previous-month spend. Includes "gone" categories (present last month only) with spent 0. */
@@ -103,7 +103,7 @@ export function categoryDeltas(cur: CategorySpend[], prev: CategorySpend[]): Cat
     if (!curIds.has(p.category_id)) {
       out.push({
         category_id: p.category_id, name: p.name, bucket: p.bucket,
-        spent: 0, prevSpent: p.spent, delta: -p.spent, deltaPct: -1, isNew: false,
+        spent: 0, prevSpent: p.spent, delta: -p.spent, deltaPct: -1 /* -p.spent / p.spent: a complete drop */, isNew: false,
       });
     }
   }
@@ -134,7 +134,8 @@ export function bucketComparison(cur: CategorySpend[], prev: CategorySpend[]): B
 export function topMovers(deltas: CategoryDelta[], n = 3): CategoryDelta[] {
   return deltas
     .filter((d) => d.delta !== 0)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+    // Tie-break on category_id so ordering is deterministic across data refreshes.
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.category_id - b.category_id)
     .slice(0, n);
 }
 
