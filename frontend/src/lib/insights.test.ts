@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
-  totalProjection, paceStatus, paceTone, categoryDeltas,
+  totalProjection, paceStatus, paceTone, categoryDeltas, withShare, bucketComparison,
 } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
 
@@ -102,5 +102,35 @@ describe("categoryDeltas", () => {
     expect(travel.prevSpent).toBe(600);
     expect(travel.delta).toBe(-600);
     expect(travel.deltaPct).toBe(-1);
+  });
+});
+
+describe("withShare", () => {
+  it("adds a pct field as a fraction of total", () => {
+    const rows = withShare([{ spent: 250 }, { spent: 750 }], 1000);
+    expect(rows[0].pct).toBeCloseTo(0.25);
+    expect(rows[1].pct).toBeCloseTo(0.75);
+  });
+  it("uses 0 when total is 0", () => {
+    expect(withShare([{ spent: 0 }], 0)[0].pct).toBe(0);
+  });
+});
+
+describe("bucketComparison", () => {
+  it("sums by bucket in need/want/saving order with deltas", () => {
+    const cur: CategorySpend[] = [
+      { category_id: 1, name: "A", bucket: "need", spent: 100 },
+      { category_id: 2, name: "B", bucket: "need", spent: 50 },
+      { category_id: 3, name: "C", bucket: "want", spent: 200 },
+    ];
+    const prev: CategorySpend[] = [
+      { category_id: 1, name: "A", bucket: "need", spent: 120 },
+      { category_id: 3, name: "C", bucket: "want", spent: 150 },
+    ];
+    const res = bucketComparison(cur, prev);
+    expect(res.map((b) => b.bucket)).toEqual(["need", "want", "saving"]);
+    expect(res[0]).toMatchObject({ bucket: "need", spent: 150, prevSpent: 120, delta: 30 });
+    expect(res[1]).toMatchObject({ bucket: "want", spent: 200, prevSpent: 150, delta: 50 });
+    expect(res[2]).toMatchObject({ bucket: "saving", spent: 0, prevSpent: 0, delta: 0 });
   });
 });
