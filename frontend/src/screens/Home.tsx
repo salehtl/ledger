@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { Summary, CategorySpend, MonthlyTotal } from "../api/types";
@@ -10,15 +9,16 @@ import { EmptyState } from "../components/EmptyState";
 import { DonutChart } from "../components/charts/DonutChart";
 import { TrendBars } from "../components/charts/TrendBars";
 import {
-  totalSpent, totalBudget, donutSlices, trendSeries, trailingPeriods, monthLabel, bucketColor, currentPeriod,
+  totalSpent, totalBudget, donutSlices, trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
 import { AlertTriangle } from "lucide-react";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
-export function Home() {
-  const [period, setPeriod] = useState(currentPeriod());
-  const periods = trailingPeriods(period, 6);
+export function Home({ period = currentPeriod() }: { period?: string }) {
+  // The 6-month trend is always the trailing 6 real months (it matches the
+  // static /api/insights/trend), independent of the selected scope.
+  const periods = trailingPeriods(currentPeriod(), 6);
 
   const summary = useQuery({ queryKey: ["summary", period], queryFn: () => getJSON<Summary>(`/api/summary?period=${period}`) });
   const catSpend = useQuery({ queryKey: ["insights-categories", period], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${period}`) });
@@ -39,21 +39,6 @@ export function Home() {
 
   return (
     <div className="space-y-4">
-      {/* period selector */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{monthLabel(period)} {period.slice(0, 4)}</h1>
-        <select
-          aria-label="Period"
-          value={period}
-          onChange={(e) => setPeriod(e.target.value)}
-          className="bg-surface border border-border rounded-lg px-2 py-1 text-sm"
-        >
-          {periods.slice().reverse().map((p) => (
-            <option key={p} value={p}>{monthLabel(p)} {p.slice(0, 4)}</option>
-          ))}
-        </select>
-      </div>
-
       {/* hero: spent vs budget */}
       <Card>
         <p className="text-sm text-muted">{heroLabel}</p>
