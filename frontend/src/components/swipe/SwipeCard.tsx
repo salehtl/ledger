@@ -88,7 +88,7 @@ export function SwipeCard({
         userSelect: 'none',
         willChange: 'transform',
       }}
-      className="relative w-full bg-white rounded-3xl shadow-2xl cursor-grab active:cursor-grabbing overflow-hidden"
+      className="relative w-full bg-surface rounded-3xl shadow-2xl cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -116,15 +116,15 @@ export function SwipeCard({
       {/* Card body */}
       <div className="p-6 flex flex-col items-center gap-5">
         {/* Merchant avatar */}
-        <div className="w-20 h-20 rounded-2xl bg-slate-100 flex items-center justify-center">
-          <span className="text-3xl font-bold text-slate-400">
+        <div className="w-20 h-20 rounded-2xl bg-bg flex items-center justify-center">
+          <span className="text-3xl font-bold text-muted">
             {(txn.MerchantRaw || '?').charAt(0).toUpperCase()}
           </span>
         </div>
 
         <div className="text-center">
-          <h2 className="text-xl font-semibold text-[--fg] truncate max-w-64">{txn.MerchantRaw || '—'}</h2>
-          <p className="text-sm text-[--muted] mt-0.5">{date}</p>
+          <h2 className="text-xl font-semibold text-fg truncate max-w-64">{txn.MerchantRaw || '—'}</h2>
+          <p className="text-sm text-muted mt-0.5">{date}</p>
         </div>
 
         {/* Money doesn't accept className; wrap in a styled span */}
@@ -133,7 +133,7 @@ export function SwipeCard({
         </span>
 
         {/* Direction hint strip */}
-        <div className="w-full grid grid-cols-3 gap-2 text-center text-xs text-[--muted] mt-1">
+        <div className="w-full grid grid-cols-3 gap-2 text-center text-xs text-muted mt-1">
           <div className="flex flex-col items-center gap-1">
             <span className="text-lg">←</span>
             <span>{config.left.label}</span>
@@ -147,7 +147,7 @@ export function SwipeCard({
             <span>{config.right.label}</span>
           </div>
         </div>
-        <p className="text-xs text-[--muted]">↑ {config.up.label} · tap ×3 to skip</p>
+        <p className="text-xs text-muted">↑ {config.up.label} · tap ×3 to skip</p>
       </div>
     </div>
   )

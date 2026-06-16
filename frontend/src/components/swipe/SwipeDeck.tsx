@@ -101,9 +101,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   if (done) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-5 text-center px-8">
-        <CheckCircle size={72} className="text-green-500" />
-        <h2 className="text-2xl font-bold text-[--fg]">All caught up!</h2>
-        <p className="text-[--muted]">
+        <CheckCircle size={72} className="text-good" />
+        <h2 className="text-2xl font-bold text-fg">All caught up!</h2>
+        <p className="text-muted">
           {state.index} transaction{state.index !== 1 ? 's' : ''} categorized this session
         </p>
       </div>
@@ -117,12 +117,12 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     <div className="flex-1 flex flex-col w-full max-w-sm mx-auto px-4">
       {/* Progress bar */}
       <div className="mb-6">
-        <p className="text-sm text-center text-[--muted] mb-2">
+        <p className="text-sm text-center text-muted mb-2">
           {state.index + 1} of {total}
         </p>
-        <div className="h-1.5 bg-[--border] rounded-full overflow-hidden">
+        <div className="h-1.5 bg-border rounded-full overflow-hidden">
           <div
-            className="h-full bg-[--accent] rounded-full transition-all duration-300"
+            className="h-full bg-accent rounded-full transition-all duration-300"
             style={{ width: `${progress * 100}%` }}
           />
         </div>
@@ -133,7 +133,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         {next && (
           <div
             aria-hidden
-            className="absolute inset-0 bg-white rounded-3xl shadow-lg"
+            className="absolute inset-0 bg-surface rounded-3xl shadow-lg"
             style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
           />
         )}
