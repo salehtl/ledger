@@ -29,15 +29,38 @@ export function Settings() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
   const saveSettings = async (next: AppSettings) => {
     try {
-      await postJSON("/api/settings", next, "PUT");
+      // Send only the writable fields — ai_key_present is read-only (env-only).
+      await postJSON("/api/settings", {
+        auto_categorize: next.auto_categorize, ai_enabled: next.ai_enabled,
+        ai_auto_accept: next.ai_auto_accept, ai_threshold: next.ai_threshold,
+      }, "PUT");
       qc.invalidateQueries({ queryKey: ["settings"] });
     } catch { show({ message: "Couldn't save settings", tone: "error" }); }
+  };
+
+  const runCategorization = async () => {
+    setRecatBusy(true);
+    try {
+      const res = await postJSON<{ processed: number }>("/api/recategorize", {});
+      show({
+        message: res.processed > 0 ? `Categorized ${res.processed} transaction${res.processed === 1 ? "" : "s"}` : "Nothing needed categorizing",
+        tone: "success",
+      });
+      for (const k of ["transactions", "review", "summary", "insights-categories", "insights-trend"]) {
+        qc.invalidateQueries({ queryKey: [k] });
+      }
+    } catch {
+      show({ message: "Couldn't run categorization", tone: "error" });
+    } finally {
+      setRecatBusy(false);
+    }
   };
 
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
   const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
   const [managerOpen, setManagerOpen] = useState(false);
+  const [recatBusy, setRecatBusy] = useState(false);
   const cfg = draft ?? budget.data ?? null;
   const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
@@ -143,6 +166,20 @@ export function Settings() {
               checked={settings.data.ai_auto_accept}
               onChange={(e) => saveSettings({ ...settings.data!, ai_auto_accept: e.target.checked })} />
           </label>
+
+          <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-border">
+            <span className="text-sm">Anthropic API key</span>
+            {settings.data.ai_key_present
+              ? <span className="text-xs font-medium text-good">Loaded</span>
+              : <span className="text-xs text-muted text-right">Not set · add LEDGER_AI_API_KEY to the env file and restart</span>}
+          </div>
+
+          <div className="mt-4">
+            <Button variant="secondary" onClick={runCategorization} disabled={recatBusy}>
+              {recatBusy ? "Categorizing…" : "Run categorization now"}
+            </Button>
+            <p className="text-xs text-muted mt-1.5">Re-runs your rules{settings.data.ai_enabled ? " and AI" : ""} over everything in Needs review.</p>
+          </div>
         </Card>
       )}
 
