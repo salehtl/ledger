@@ -39,6 +39,15 @@ export function scopeAnchor(scope: Scope): string {
   return currentPeriod();
 }
 
+export interface InsightsFocus { period: string; note: string; }
+
+/** The single month Insights evaluates, plus a qualifier when the scope spans more than one month. */
+export function insightsFocus(scope: Scope): InsightsFocus {
+  if (scope.kind === "month") return { period: scope.period, note: "" };
+  if (scope.kind === "range") return { period: scope.to, note: "latest in range" };
+  return { period: currentPeriod(), note: "current month" };
+}
+
 /** Human label: "Jun 2026" · "Mar–Jun 2026" · "Dec 2025 – Feb 2026" · "All time". */
 export function scopeLabel(scope: Scope): string {
   if (scope.kind === "all") return "All time";
