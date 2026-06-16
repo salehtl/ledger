@@ -111,6 +111,56 @@ func TestPutCategoryRejectsSpendingWithoutBucket(t *testing.T) {
 	}
 }
 
+func TestDeleteCategoryClean(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+
+	id, err := st.InsertCategory(store.CategoryRow{Name: "Temp", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+
+	r := httptest.NewRequest("DELETE", "/api/categories/"+strconv.FormatInt(id, 10), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body)
+	}
+	var count int
+	st.DB.QueryRow(`SELECT count(*) FROM categories WHERE id=?`, id).Scan(&count)
+	if count != 0 {
+		t.Fatalf("category not deleted (count=%d)", count)
+	}
+}
+
+func TestDeleteCategoryInUse(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+
+	id, err := st.InsertCategory(store.CategoryRow{Name: "Temp", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	// Reference it from a rule so it is "in use".
+	if err := st.InsertRule(store.RuleRow{MatchType: "contains", Pattern: "x", CategoryID: id, Priority: 100, Source: "manual"}); err != nil {
+		t.Fatalf("InsertRule: %v", err)
+	}
+
+	r := httptest.NewRequest("DELETE", "/api/categories/"+strconv.FormatInt(id, 10), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["rules"] == nil || resp["error"] != "in use" {
+		t.Fatalf("unexpected 409 body: %+v", resp)
+	}
+}
+
 func TestGetCategoryUsage(t *testing.T) {
 	st := newTestServerStore(t)
 	srv := newTestServerWithStore(t, st)
