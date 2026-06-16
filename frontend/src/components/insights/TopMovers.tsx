@@ -17,7 +17,7 @@ export function TopMovers({ movers, hasPrev }: { movers: CategoryDelta[]; hasPre
             <li key={m.category_id} className="flex items-center justify-between gap-3 text-sm">
               <span className="truncate">{m.name}</span>
               <span className="flex items-center gap-2">
-                <span className="tnum text-muted"><Money fils={m.delta} /></span>
+                <span className="tnum text-muted"><Money fils={Math.abs(m.delta)} /></span>
                 <DeltaBadge delta={m.delta} deltaPct={m.deltaPct} isNew={m.isNew} isGone={m.spent === 0 && m.prevSpent > 0} />
               </span>
             </li>

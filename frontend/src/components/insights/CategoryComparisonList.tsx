@@ -2,11 +2,10 @@ import { Card } from "../ui/Card";
 import { Money } from "../Money";
 import { Pill, type Tone } from "../ui/Pill";
 import { EmptyState } from "../EmptyState";
-import type { CategoryDelta } from "../../lib/insights";
+import { BUCKET_LABEL, type CategoryDelta } from "../../lib/insights";
 import { DeltaBadge } from "./DeltaBadge";
 
 const BUCKET_TONE: Record<string, Tone> = { need: "neutral", want: "warn", saving: "good" };
-const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
 export function CategoryComparisonList({ rows }: { rows: (CategoryDelta & { pct: number })[] }) {
   return (
