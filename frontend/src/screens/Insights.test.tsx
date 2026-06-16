@@ -38,7 +38,8 @@ describe("Insights", () => {
   });
   it("lists categories by spend with the biggest-changes block", async () => {
     wrap();
-    expect(await screen.findByText("Groceries")).toBeInTheDocument();
+    // "Groceries" appears in both the donut legend and the category list.
+    expect((await screen.findAllByText("Groceries")).length).toBeGreaterThan(0);
     expect(screen.getByText("Biggest changes")).toBeInTheDocument();
     expect(screen.getByText("By category")).toBeInTheDocument();
   });

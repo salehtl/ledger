@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
   totalProjection, paceStatus, paceTone, categoryDeltas, withShare, bucketComparison,
-  topMovers, savingsRate,
+  topMovers, savingsRate, shadeVar,
 } from "./insights";
 import type { CategoryDelta } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
@@ -31,6 +31,40 @@ describe("donutSlices", () => {
     const slices = donutSlices(cats, 2);
     expect(slices.map((s) => s.name)).toEqual(["Groceries", "Dining", "Other"]);
     expect(slices[2].value).toBe(4000); // 3000 + 1000
+  });
+
+  it("shades categories within a bucket so same-bucket slices stay distinct", () => {
+    const cats: CategorySpend[] = [
+      { category_id: 1, name: "Rent", bucket: "need", spent: 5000 },
+      { category_id: 2, name: "Groceries", bucket: "need", spent: 3000 },
+      { category_id: 3, name: "Dining", bucket: "want", spent: 2000 },
+    ];
+    const [rent, groceries, dining] = donutSlices(cats, 6);
+    // Biggest in a bucket keeps the base hue at full strength.
+    expect(rent.color).toBe("color-mix(in srgb, var(--color-need) 100%, white)");
+    // Second-biggest need is the same hue, lightened — so it's distinct from the first.
+    expect(groceries.color).toContain("var(--color-need)");
+    expect(groceries.color).not.toBe(rent.color);
+    // A different bucket uses its own hue.
+    expect(dining.color).toContain("var(--color-want)");
+  });
+
+  it("colors 'Other' muted", () => {
+    const cats: CategorySpend[] = [
+      { category_id: 1, name: "A", bucket: "need", spent: 5000 },
+      { category_id: 2, name: "B", bucket: "want", spent: 1000 },
+    ];
+    const slices = donutSlices(cats, 1);
+    expect(slices[slices.length - 1]).toMatchObject({ name: "Other", color: "var(--color-muted)" });
+  });
+});
+
+describe("shadeVar", () => {
+  it("returns the base color unchanged at t=0", () => {
+    expect(shadeVar("var(--color-need)", 0)).toBe("color-mix(in srgb, var(--color-need) 100%, white)");
+  });
+  it("mixes toward white as t grows", () => {
+    expect(shadeVar("var(--color-want)", 0.2)).toBe("color-mix(in srgb, var(--color-want) 80%, white)");
   });
 });
 
