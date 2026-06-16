@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
+import { monthRange } from "../lib/transactions";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -24,12 +25,23 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
   const { show } = useToast();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [month, setMonth] = useState("");
   const [active, setActive] = useState<Txn | null>(null);
 
   const status = filter === "all" ? "" : filter;
   const q = useQuery({
-    queryKey: ["transactions", status],
-    queryFn: () => getJSON<Txn[]>(status ? `/api/transactions?status=${status}` : "/api/transactions"),
+    queryKey: ["transactions", status, month],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (month) {
+        const { from, to } = monthRange(month);
+        params.set("from", from);
+        params.set("to", to);
+      }
+      const qs = params.toString();
+      return getJSON<Txn[]>(qs ? `/api/transactions?${qs}` : "/api/transactions");
+    },
   });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
 
@@ -72,6 +84,10 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
       <h1 className="text-xl font-semibold">Transactions</h1>
       <div className="flex flex-col gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
+        <input type="month" aria-label="Month" value={month} onChange={(e) => setMonth(e.target.value)} />
+        {month && (
+          <button onClick={() => setMonth("")}>All time</button>
+        )}
         {filter === "needs_review" && onOpenSwipeMode && (
           <button
             onClick={onOpenSwipeMode}
