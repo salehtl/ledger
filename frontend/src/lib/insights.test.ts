@@ -146,6 +146,10 @@ describe("topMovers", () => {
     const res = topMovers([delta(1, 300), delta(2, -900), delta(3, 0), delta(4, 100)], 2);
     expect(res.map((m) => m.category_id)).toEqual([2, 1]);
   });
+  it("breaks ties deterministically by category_id", () => {
+    const res = topMovers([delta(5, 200), delta(2, -200), delta(8, 200)], 3);
+    expect(res.map((m) => m.category_id)).toEqual([2, 5, 8]);
+  });
 });
 
 describe("savingsRate", () => {
