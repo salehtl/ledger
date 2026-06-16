@@ -6,6 +6,7 @@ import { CategoryManager } from "./CategoryManager";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { Dialog } from "../components/ui/Dialog";
 import { useToast } from "../components/Toast";
 import { Trash2 } from "lucide-react";
 import {
@@ -27,6 +28,7 @@ export function Settings() {
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
+  const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
   const saveSettings = async (next: AppSettings) => {
     try {
       // Send only the writable fields — ai_key_present is read-only (env-only).
@@ -61,6 +63,25 @@ export function Settings() {
   const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
   const [managerOpen, setManagerOpen] = useState(false);
   const [recatBusy, setRecatBusy] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
+  const txnCount = txns.data?.length ?? 0;
+
+  const clearCategorization = async () => {
+    setClearBusy(true);
+    try {
+      const res = await postJSON<{ cleared: number }>("/api/categorization/clear", {});
+      show({ message: `Cleared ${res.cleared} transaction${res.cleared === 1 ? "" : "s"}`, tone: "success" });
+      for (const k of ["transactions", "review", "summary", "insights-categories", "insights-trend"]) {
+        qc.invalidateQueries({ queryKey: [k] });
+      }
+      setClearOpen(false);
+    } catch {
+      show({ message: "Couldn't clear categorization", tone: "error" });
+    } finally {
+      setClearBusy(false);
+    }
+  };
   const cfg = draft ?? budget.data ?? null;
   const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
@@ -257,11 +278,31 @@ export function Settings() {
         </Button>
       </Card>
 
+      <Card className="border-bad/40">
+        <p className="text-sm font-medium text-bad mb-1">Danger zone</p>
+        <p className="text-xs text-muted mb-3">Clearing categorization moves every transaction back to Needs review and removes its category. Your learned rules are kept.</p>
+        <Button variant="danger" onClick={() => setClearOpen(true)}>Clear all categorization</Button>
+      </Card>
+
       <Card>
         <p className="text-sm font-medium mb-1">About</p>
         <p className="text-xs text-muted">Icons by Lucide (ISC). Charts by Recharts (MIT).</p>
       </Card>
       {managerOpen && <CategoryManager onClose={() => setManagerOpen(false)} />}
+      {clearOpen && (
+        <Dialog title="Clear all categorization?" onClose={() => setClearOpen(false)}>
+          <p className="text-sm mb-4">
+            This moves {txnCount} transaction{txnCount === 1 ? "" : "s"} back to Needs review and clears their categories.
+            Learned rules are kept. This can't be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setClearOpen(false)}>Cancel</Button>
+            <Button variant="danger" onClick={clearCategorization} disabled={clearBusy}>
+              {clearBusy ? "Clearing…" : "Clear"}
+            </Button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }
