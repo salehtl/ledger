@@ -81,6 +81,7 @@ type Server struct {
 	pushSender      PushSender
 	settingsStore   SettingsStore
 	ruleActiveStore RuleActiveStore
+	aiKeyPresent    bool
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -108,6 +109,11 @@ func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 
 // SetRecategorizeFn wires the bulk-categorize function used by POST /api/recategorize.
 func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
+
+// SetAIKeyPresent records whether an Anthropic API key was loaded at startup.
+// It is reported (as a bool, never the value) by GET /api/settings so the UI
+// can show whether AI categorization can run. The key itself stays env-only.
+func (s *Server) SetAIKeyPresent(present bool) { s.aiKeyPresent = present }
 
 // DriftStatusProvider surfaces the monitor's current alert list for /api/health.
 type DriftStatusProvider interface {

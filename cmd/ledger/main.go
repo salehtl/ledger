@@ -147,6 +147,7 @@ func main() {
 	srv.SetReprocessor(processor)
 	srv.SetCategoryStore(st)
 	srv.SetSettingsStore(st)
+	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
 	srv.SetRuleActiveStore(st)
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
