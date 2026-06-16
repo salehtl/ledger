@@ -27,26 +27,20 @@ export function monthLabel(period: string): string {
 
 export interface DonutSlice { name: string; value: number; color: string; }
 
-/** Lighten a CSS color toward white by fraction `t` (0 = unchanged, 1 = white). */
-export function shadeVar(cssColor: string, t: number): string {
-  const pct = Math.round((1 - t) * 100);
-  return `color-mix(in srgb, ${cssColor} ${pct}%, white)`;
-}
-
 /**
- * Top `topN` categories by spend; everything else folded into "Other".
- * Each category is a tint of its bucket's hue — the biggest spender in a bucket
- * keeps the base color, smaller ones lighten — so same-bucket slices stay
- * distinct while the donut still reads as its overall bucket mix.
+ * Distinct per-category donut colors, assigned by spend rank. The donut shows
+ * individual categories (not buckets), so each gets its own hue rather than a
+ * shade of its bucket — the need/want/saving grouping lives in the bucket Pills
+ * and dots elsewhere. Evenly-saturated hues that read well on the white surface.
  */
+export const CATEGORY_PALETTE = ["#4f46e5", "#0891b2", "#d97706", "#db2777", "#16a34a", "#7c3aed"];
+
+/** Top `topN` categories by spend, each a distinct palette color; the rest folded into a muted "Other". */
 export function donutSlices(cats: CategorySpend[], topN = 6): DonutSlice[] {
   const sorted = [...cats].sort((a, b) => b.spent - a.spent);
-  const rank: Record<string, number> = {};
-  const head = sorted.slice(0, topN).map((c) => {
-    const k = rank[c.bucket] ?? 0;
-    rank[c.bucket] = k + 1;
-    return { name: c.name, value: c.spent, color: shadeVar(bucketColor(c.bucket), Math.min(k * 0.16, 0.55)) };
-  });
+  const head = sorted.slice(0, topN).map((c, i) => ({
+    name: c.name, value: c.spent, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
+  }));
   const rest = sorted.slice(topN).reduce((s, c) => s + c.spent, 0);
   if (rest > 0) head.push({ name: "Other", value: rest, color: "var(--color-muted)" });
   return head;
