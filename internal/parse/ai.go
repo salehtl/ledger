@@ -1,13 +1,14 @@
 package parse
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
+
+	"ledger/internal/anthropic"
 )
 
 // ErrAIUnavailable means no AI extractor is configured/enabled. The cascade
@@ -70,7 +71,7 @@ type AnthropicExtractor struct {
 	apiKey   string
 	model    string
 	endpoint string
-	client   *http.Client
+	retry    *anthropic.Retrier
 }
 
 // NewAnthropicExtractor builds the real AI extractor.
@@ -79,7 +80,7 @@ func NewAnthropicExtractor(apiKey, model string) *AnthropicExtractor {
 		apiKey:   apiKey,
 		model:    model,
 		endpoint: "https://api.anthropic.com/v1/messages",
-		client:   &http.Client{},
+		retry:    anthropic.New(nil),
 	}
 }
 
@@ -95,15 +96,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 		return ParsedTxn{}, fmt.Errorf("ai: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return ParsedTxn{}, fmt.Errorf("ai: create request: %w", err)
-	}
-	req.Header.Set("x-api-key", a.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("content-type", "application/json")
-
-	resp, err := a.client.Do(req)
+	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, body)
 	if err != nil {
 		return ParsedTxn{}, fmt.Errorf("ai: http request: %w", err)
 	}
