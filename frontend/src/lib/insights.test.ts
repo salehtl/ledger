@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
+  totalProjection, paceStatus, paceTone,
 } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
 
@@ -44,5 +45,28 @@ describe("helpers", () => {
   it("maps buckets to colors and months to short labels", () => {
     expect(bucketColor("need")).toBe("var(--color-need)");
     expect(monthLabel("2026-01")).toBe("Jan");
+  });
+});
+
+describe("pace", () => {
+  const b = (over: Partial<BucketSummary>): BucketSummary => ({
+    bucket: "need", target: 0, spent: 0, remaining: 0, pct_used: 0, projection: 0, ...over,
+  });
+
+  it("sums bucket projections", () => {
+    expect(totalProjection([b({ projection: 300000 }), b({ projection: 240000 })])).toBe(540000);
+  });
+
+  it("classifies pace as under / over / overbudget", () => {
+    expect(paceStatus(100, 1000, 800)).toBe("under"); // projected within budget
+    expect(paceStatus(100, 1000, 1200)).toBe("over"); // projected to overspend
+    expect(paceStatus(1000, 1000, 1000)).toBe("overbudget"); // already at/over target
+    expect(paceStatus(0, 0, 0)).toBe("under"); // no target set
+  });
+
+  it("maps a pace status to a tone", () => {
+    expect(paceTone("under")).toBe("good");
+    expect(paceTone("over")).toBe("warn");
+    expect(paceTone("overbudget")).toBe("bad");
   });
 });

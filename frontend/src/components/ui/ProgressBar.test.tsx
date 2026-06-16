@@ -14,4 +14,14 @@ describe("ProgressBar", () => {
     const { getByRole } = render(<ProgressBar pct={1.0} />);
     expect((getByRole("progressbar").firstChild as HTMLElement).className).toContain("bg-bad");
   });
+  it("honors a tone override", () => {
+    const { getByRole } = render(<ProgressBar pct={0.1} tone="warn" />);
+    expect((getByRole("progressbar").firstChild as HTMLElement).className).toContain("bg-warn");
+  });
+  it("draws a pace marker at the given fraction", () => {
+    const { getByRole } = render(<ProgressBar pct={0.6} pace={0.5} />);
+    const marker = getByRole("progressbar").querySelector("[data-pace]") as HTMLElement;
+    expect(marker).not.toBeNull();
+    expect(marker.style.left).toBe("50%");
+  });
 });
