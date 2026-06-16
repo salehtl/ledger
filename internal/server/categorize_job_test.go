@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -190,4 +192,54 @@ func TestCategorizeJob_RejectsConcurrentRun(t *testing.T) {
 	waitCategorizeIdle(t, srv)
 }
 
-var _ = json.Marshal // keep encoding/json imported for endpoint tests added later
+
+func TestHandleCategorizeStatus(t *testing.T) {
+	srv := newTestServerWithStore(t, newTestServerStore(t))
+	r := httptest.NewRequest("GET", "/api/categorize/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "idle" {
+		t.Errorf("status=%v, want idle", resp["status"])
+	}
+}
+
+func TestHandleCategorizeRunAndConflict(t *testing.T) {
+	st := newTestServerStore(t)
+	seedNeedsReview(t, st, "A", 1000)
+	catID := shoppingID(t, st)
+	srv := newTestServerWithStore(t, st)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once int32
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) {
+		if atomic.AddInt32(&once, 1) == 1 {
+			entered <- struct{}{}
+			<-release
+		}
+		return catID, "confirmed", true
+	})
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/categorize/run", strings.NewReader(`{}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("run status=%d body=%s", w.Code, w.Body)
+	}
+	<-entered
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, httptest.NewRequest("POST", "/api/categorize/run", strings.NewReader(`{}`)))
+	if w2.Code != http.StatusConflict {
+		t.Errorf("second run status=%d, want 409", w2.Code)
+	}
+	w3 := httptest.NewRecorder()
+	srv.ServeHTTP(w3, httptest.NewRequest("POST", "/api/categorize/stop", nil))
+	if w3.Code != http.StatusOK {
+		t.Errorf("stop status=%d, want 200", w3.Code)
+	}
+	close(release)
+	waitCategorizeIdle(t, srv)
+}

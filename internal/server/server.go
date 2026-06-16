@@ -31,7 +31,7 @@ type Reprocessor interface {
 	Reprocess(ctx context.Context, bank string) (int, error)
 }
 
-// CategorizeFunc is called by POST /api/recategorize for each needs_review transaction.
+// CategorizeFunc is called by POST /api/categorize/run for each needs_review transaction.
 type CategorizeFunc func(ctx context.Context, merchantRaw string) (categoryID int64, status string, ok bool)
 
 // CategoryStore is the subset of store methods the category/review/transaction handlers need.
@@ -109,7 +109,7 @@ func (s *Server) SetReprocessor(r Reprocessor) { s.reprocessor = r }
 // SetCategoryStore wires the category/review/transaction handlers.
 func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 
-// SetRecategorizeFn wires the bulk-categorize function used by POST /api/recategorize.
+// SetRecategorizeFn wires the bulk-categorize function used by POST /api/categorize/run.
 func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
 
 // SetAIKeyPresent records whether an Anthropic API key was loaded at startup.
@@ -153,7 +153,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
-	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("POST /api/categorize/run", s.handleCategorizeRun)
+	s.mux.HandleFunc("POST /api/categorize/stop", s.handleCategorizeStop)
+	s.mux.HandleFunc("GET /api/categorize/status", s.handleCategorizeStatus)
 	s.mux.HandleFunc("POST /api/categorization/clear", s.handleClearCategorization)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)

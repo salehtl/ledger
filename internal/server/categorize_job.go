@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"sync"
 	"time"
 
@@ -115,4 +117,41 @@ func (s *Server) categorizeStatus() (status string, processed, total int) {
 		return "running", j.processed, j.total
 	}
 	return "idle", j.processed, j.total
+}
+
+type categorizeRunReq struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (s *Server) handleCategorizeRun(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil || s.recatFn == nil {
+		http.Error(w, `{"error":"categorize unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req categorizeRunReq
+	_ = json.NewDecoder(r.Body).Decode(&req) // empty/absent body = all time
+	started, err := s.startCategorize(req.From, req.To)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if !started {
+		http.Error(w, `{"error":"already running"}`, http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"started": true})
+}
+
+func (s *Server) handleCategorizeStop(w http.ResponseWriter, r *http.Request) {
+	s.stopCategorize()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"stopped": true})
+}
+
+func (s *Server) handleCategorizeStatus(w http.ResponseWriter, r *http.Request) {
+	status, processed, total := s.categorizeStatus()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"status": status, "processed": processed, "total": total})
 }

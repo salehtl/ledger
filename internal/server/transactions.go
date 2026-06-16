@@ -65,47 +65,6 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(items)
 }
 
-func (s *Server) handleRecategorize(w http.ResponseWriter, r *http.Request) {
-	if s.catStore == nil {
-		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-	items, err := s.catStore.SelectNeedsReview()
-	if err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
-		return
-	}
-	processed := 0
-	if s.recatFn != nil {
-		// Dedupe by merchant: categorizing the same unknown merchant is
-		// deterministic, so call the (possibly AI-backed) fn once per distinct
-		// merchant and apply the result to every matching transaction. This
-		// keeps a bulk pass over many rows from firing one API call per row.
-		type recatResult struct {
-			catID  int64
-			status string
-			ok     bool
-		}
-		seen := make(map[string]recatResult)
-		for _, item := range items {
-			res, cached := seen[item.MerchantRaw]
-			if !cached {
-				catID, status, ok := s.recatFn(r.Context(), item.MerchantRaw)
-				res = recatResult{catID, status, ok}
-				seen[item.MerchantRaw] = res
-			}
-			if !res.ok {
-				continue
-			}
-			if err := s.catStore.UpdateTransactionCategory(item.ID, res.catID, res.status); err == nil {
-				processed++
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"processed": processed})
-}
-
 // handleClearCategorization moves every transaction back to needs_review and
 // clears its category, leaving learned rules intact. Destructive bulk reset
 // exposed in the Settings "Danger zone".
