@@ -4,7 +4,7 @@ import { monthRange } from "./transactions";
 /** The app-wide time scope. Periods are "YYYY-MM". */
 export type Scope =
   | { kind: "month"; period: string }
-  | { kind: "range"; from: string; to: string } // from <= to
+  | { kind: "range"; from: string; to: string } // both "YYYY-MM", from <= to
   | { kind: "all" };
 
 export const DEFAULT_SCOPE: Scope = { kind: "month", period: currentPeriod() };
