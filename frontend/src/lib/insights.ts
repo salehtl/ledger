@@ -110,6 +110,26 @@ export function categoryDeltas(cur: CategorySpend[], prev: CategorySpend[]): Cat
   return out;
 }
 
+/** Add a `pct` field (fraction of `total`) to each row. */
+export function withShare<T extends { spent: number }>(rows: T[], total: number): (T & { pct: number })[] {
+  return rows.map((r) => ({ ...r, pct: total > 0 ? r.spent / total : 0 }));
+}
+
+export interface BucketComparison { bucket: string; spent: number; prevSpent: number; delta: number; }
+
+const BUCKET_ORDER = ["need", "want", "saving"] as const;
+
+/** Per-bucket spend this month vs last, in fixed need/want/saving order. */
+export function bucketComparison(cur: CategorySpend[], prev: CategorySpend[]): BucketComparison[] {
+  const sumBy = (rows: CategorySpend[], bucket: string) =>
+    rows.filter((c) => c.bucket === bucket).reduce((s, c) => s + c.spent, 0);
+  return BUCKET_ORDER.map((bucket) => {
+    const spent = sumBy(cur, bucket);
+    const prevSpent = sumBy(prev, bucket);
+    return { bucket, spent, prevSpent, delta: spent - prevSpent };
+  });
+}
+
 /** The trailing `n` period strings ("YYYY-MM"), oldest first, ending at `end` (a YYYY-MM). */
 export function trailingPeriods(end: string, n: number): string[] {
   const [y, m] = end.split("-").map(Number);
