@@ -4,9 +4,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"ledger/internal/store"
 )
+
+// writeCategoryDBErr maps a UNIQUE(name) violation to 409, anything else to 500.
+func writeCategoryDBErr(w http.ResponseWriter, err error) {
+	if strings.Contains(err.Error(), "UNIQUE") {
+		http.Error(w, `{"error":"name exists"}`, http.StatusConflict)
+		return
+	}
+	http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+}
 
 func (s *Server) handleGetCategories(w http.ResponseWriter, r *http.Request) {
 	if s.catStore == nil {
@@ -50,12 +60,13 @@ func (s *Server) handlePostCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.catStore.InsertCategory(store.CategoryRow{
-		Name:   req.Name,
-		Kind:   req.Kind,
-		Bucket: req.Bucket,
+		Name:     req.Name,
+		Kind:     req.Kind,
+		Bucket:   req.Bucket,
+		IsActive: true,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		writeCategoryDBErr(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -142,7 +153,7 @@ func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.catStore.UpdateCategory(store.CategoryRow{ID: id, Name: req.Name, Kind: req.Kind, Bucket: req.Bucket}); err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		writeCategoryDBErr(w, err)
 		return
 	}
 	if req.ApplyToPast && req.Bucket != "" {
