@@ -23,3 +23,4 @@ export interface Summary {
 }
 export interface CategorySpend { category_id: number; name: string; bucket: string; spent: number; }
 export interface MonthlyTotal { period: string; spent: number; income: number; }
+export interface CategoryUsage { transactions: number; rules: number; }
