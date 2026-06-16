@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
   totalProjection, paceStatus, paceTone, categoryDeltas, withShare, bucketComparison,
+  topMovers, savingsRate,
 } from "./insights";
+import type { CategoryDelta } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
 
 const buckets: BucketSummary[] = [
@@ -132,5 +134,25 @@ describe("bucketComparison", () => {
     expect(res[0]).toMatchObject({ bucket: "need", spent: 150, prevSpent: 120, delta: 30 });
     expect(res[1]).toMatchObject({ bucket: "want", spent: 200, prevSpent: 150, delta: 50 });
     expect(res[2]).toMatchObject({ bucket: "saving", spent: 0, prevSpent: 0, delta: 0 });
+  });
+});
+
+function delta(id: number, d: number): CategoryDelta {
+  return { category_id: id, name: `c${id}`, bucket: "want", spent: Math.max(d, 0), prevSpent: 0, delta: d, deltaPct: null, isNew: false };
+}
+
+describe("topMovers", () => {
+  it("returns the n biggest movers by absolute fils delta, excluding zero", () => {
+    const res = topMovers([delta(1, 300), delta(2, -900), delta(3, 0), delta(4, 100)], 2);
+    expect(res.map((m) => m.category_id)).toEqual([2, 1]);
+  });
+});
+
+describe("savingsRate", () => {
+  it("computes net and rate", () => {
+    expect(savingsRate(1000, 800)).toEqual({ net: 200, rate: 0.2 });
+  });
+  it("returns null rate when income is 0", () => {
+    expect(savingsRate(0, 500)).toEqual({ net: -500, rate: null });
   });
 });

@@ -130,6 +130,21 @@ export function bucketComparison(cur: CategorySpend[], prev: CategorySpend[]): B
   });
 }
 
+/** The `n` categories that moved most this month, by absolute fils change; zero-deltas excluded. */
+export function topMovers(deltas: CategoryDelta[], n = 3): CategoryDelta[] {
+  return deltas
+    .filter((d) => d.delta !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+    .slice(0, n);
+}
+
+export interface SavingsResult { net: number; rate: number | null; }
+
+/** Net (income − spent) and savings rate; rate is null when there's no income to divide by. */
+export function savingsRate(income: number, spent: number): SavingsResult {
+  return { net: income - spent, rate: income > 0 ? (income - spent) / income : null };
+}
+
 /** The trailing `n` period strings ("YYYY-MM"), oldest first, ending at `end` (a YYYY-MM). */
 export function trailingPeriods(end: string, n: number): string[] {
   const [y, m] = end.split("-").map(Number);
