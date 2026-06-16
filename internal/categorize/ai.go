@@ -1,12 +1,13 @@
 package categorize
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"ledger/internal/anthropic"
 )
 
 // AnthropicCategorizer calls the Anthropic Messages API to suggest a category
@@ -15,8 +16,8 @@ import (
 type AnthropicCategorizer struct {
 	apiKey   string
 	model    string
-	endpoint string     // defaults to "https://api.anthropic.com/v1/messages"
-	client   *http.Client
+	endpoint string // defaults to "https://api.anthropic.com/v1/messages"
+	retry    *anthropic.Retrier
 }
 
 // NewAnthropicCategorizer builds the real AI categorizer.
@@ -25,7 +26,7 @@ func NewAnthropicCategorizer(apiKey, model string) *AnthropicCategorizer {
 		apiKey:   apiKey,
 		model:    model,
 		endpoint: "https://api.anthropic.com/v1/messages",
-		client:   &http.Client{},
+		retry:    anthropic.New(nil),
 	}
 }
 
@@ -81,16 +82,7 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 		return "", 0, fmt.Errorf("categorize: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", 0, fmt.Errorf("categorize: build request: %w", err)
-	}
-
-	req.Header.Set("x-api-key", a.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("content-type", "application/json")
-
-	resp, err := a.client.Do(req)
+	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, bodyBytes)
 	if err != nil {
 		return "", 0, fmt.Errorf("categorize: http request: %w", err)
 	}
