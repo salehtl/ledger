@@ -40,7 +40,7 @@ export function SubcategoryPanel({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end"
+      className="fixed inset-x-0 top-0 h-[100dvh] z-50 flex items-end"
       onClick={onCancel}
       data-testid="subcategory-scrim"
     >
@@ -50,7 +50,7 @@ export function SubcategoryPanel({
       {/* Panel */}
       <div
         ref={panelRef}
-        className="relative w-full bg-surface rounded-t-3xl px-4 pt-4 pb-8"
+        className="relative w-full bg-surface rounded-t-3xl px-4 pt-4 pb-[max(2rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain"
         style={{ transition: 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)' }}
         onClick={e => e.stopPropagation()}
       >
