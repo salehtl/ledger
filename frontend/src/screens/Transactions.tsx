@@ -11,7 +11,8 @@ import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
 import { useToast } from "../components/Toast";
-import { AlertTriangle, ListOrdered } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
+import { currentPeriod } from "../lib/insights";
 
 type Filter = "all" | "needs_review" | "confirmed";
 const FILTERS = [
@@ -81,28 +82,48 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Transactions</h1>
-      <div className="flex flex-col gap-2">
+      {/* title + month scope (mirrors the Home header) */}
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">Transactions</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setMonth(month ? "" : currentPeriod())}
+            className="text-xs text-muted hover:text-fg transition-colors"
+          >
+            {month ? "All time" : "This month"}
+          </button>
+          <input
+            type="month"
+            aria-label="Month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            className="bg-surface border border-border rounded-lg px-2 py-1 text-sm tnum"
+          />
+        </div>
+      </div>
+
+      {/* status filter + swipe entry (right-aligned so it never reflows search) */}
+      <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
-        <input type="month" aria-label="Month" value={month} onChange={(e) => setMonth(e.target.value)} />
-        {month && (
-          <button onClick={() => setMonth("")}>All time</button>
-        )}
         {filter === "needs_review" && onOpenSwipeMode && (
           <button
             onClick={onOpenSwipeMode}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[--accent] text-white text-sm font-medium hover:opacity-90 transition-opacity self-start"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
           >
-            <span>⚡</span>
-            Swipe Mode
+            <Zap size={16} /> Swipe
           </button>
         )}
+      </div>
+
+      {/* search */}
+      <div className="relative">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
         <input
           type="search"
           placeholder="Search merchant…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full px-3 py-2 rounded-lg border border-border bg-surface text-sm"
+          className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm"
         />
       </div>
 
