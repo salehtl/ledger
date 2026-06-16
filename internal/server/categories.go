@@ -70,6 +70,35 @@ type updateCategoryReq struct {
 	ApplyToPast bool   `json:"apply_to_past"`
 }
 
+func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	txns, rules, err := s.catStore.CategoryUsage(id)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if txns > 0 || rules > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"error": "in use", "transactions": txns, "rules": rules})
+		return
+	}
+	if err := s.catStore.DeleteCategory(id); err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
 func (s *Server) handleGetCategoryUsage(w http.ResponseWriter, r *http.Request) {
 	if s.catStore == nil {
 		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
