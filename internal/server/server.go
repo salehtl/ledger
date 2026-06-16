@@ -74,6 +74,7 @@ type Server struct {
 	reprocessor     Reprocessor
 	catStore        CategoryStore
 	recatFn         CategorizeFunc
+	catJob          categorizeJob
 	budgetStore     BudgetStore
 	insightsStore   InsightsStore
 	hub             *Hub                // SSE fan-out hub
