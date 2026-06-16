@@ -54,6 +54,25 @@ func TestPostCategory(t *testing.T) {
 	if resp["id"] == nil {
 		t.Error("expected id in response")
 	}
+
+	// Created category must appear in GET /api/categories (is_active=1 check).
+	r2 := httptest.NewRequest("GET", "/api/categories", nil)
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET /api/categories status = %d", w2.Code)
+	}
+	var cats []map[string]any
+	json.NewDecoder(w2.Body).Decode(&cats)
+	var found bool
+	for _, c := range cats {
+		if c["Name"] == "Hobbies" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("created category 'Hobbies' not visible in GET /api/categories")
+	}
 }
 
 func TestPostCategoryMissingKind(t *testing.T) {
@@ -108,6 +127,31 @@ func TestPutCategoryRejectsSpendingWithoutBucket(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(`{"name":"Z","kind":"spending","bucket":""}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPostCategoryDuplicateName(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+
+	body, _ := json.Marshal(map[string]any{"name": "Dupe", "kind": "spending", "bucket": "want"})
+	r1 := httptest.NewRequest("POST", "/api/categories", bytes.NewReader(body))
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, r1)
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first create status = %d, want 201; body: %s", w1.Code, w1.Body)
+	}
+
+	r2 := httptest.NewRequest("POST", "/api/categories", bytes.NewReader(body))
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("duplicate create status = %d, want 409; body: %s", w2.Code, w2.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w2.Body).Decode(&resp)
+	if resp["error"] != "name exists" {
+		t.Fatalf("unexpected body: %+v", resp)
 	}
 }
 
