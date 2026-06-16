@@ -14,7 +14,9 @@ import { AlertTriangle } from "lucide-react";
 const BUCKET_TONE: Record<string, Tone> = { need: "neutral", want: "warn", saving: "good" };
 
 export function Insights({ period = currentPeriod() }: { period?: string }) {
-  const periods = trailingPeriods(period, 6);
+  // The 6-month trend is always the trailing 6 real months (it matches the
+  // static /api/insights/trend), independent of the selected scope.
+  const periods = trailingPeriods(currentPeriod(), 6);
   const cats = useQuery({ queryKey: ["insights-categories", period], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${period}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
 
