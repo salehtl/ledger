@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON, del } from "../api/client";
-import type { AppSettings, BudgetConfig, Category, Rule } from "../api/types";
+import type { AppSettings, BudgetConfig, Category, Rule, CategorizeStatus } from "../api/types";
+import { PeriodSheet } from "../components/ui/PeriodSheet";
+import { type Scope, scopeBounds, scopeLabel, DEFAULT_SCOPE } from "../lib/scope";
 import { CategoryManager } from "./CategoryManager";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 import { Card } from "../components/ui/Card";
@@ -21,14 +23,24 @@ export function pctsValid(need: number, want: number, saving: number): boolean {
   return Math.abs(need + want + saving - 1.0) < 0.001;
 }
 
-export function Settings() {
+export function Settings({ scope }: { scope?: Scope }) {
   const qc = useQueryClient();
   const { show } = useToast();
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
+  const catStatus = useQuery({ queryKey: ["categorize-status"], queryFn: () => getJSON<CategorizeStatus>("/api/categorize/status") });
   const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
+  const [draft, setDraft] = useState<BudgetConfig | null>(null);
+  const [error, setError] = useState("");
+  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [runScope, setRunScope] = useState<Scope>(() => scope ?? DEFAULT_SCOPE);
+  const [periodOpen, setPeriodOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
+
   const saveSettings = async (next: AppSettings) => {
     try {
       // Send only the writable fields — ai_key_present is read-only (env-only).
@@ -40,31 +52,22 @@ export function Settings() {
     } catch { show({ message: "Couldn't save settings", tone: "error" }); }
   };
 
+  const running = catStatus.data?.status === "running";
+
   const runCategorization = async () => {
-    setRecatBusy(true);
+    const b = scopeBounds(runScope);
     try {
-      const res = await postJSON<{ processed: number }>("/api/recategorize", {});
-      show({
-        message: res.processed > 0 ? `Categorized ${res.processed} transaction${res.processed === 1 ? "" : "s"}` : "Nothing needed categorizing",
-        tone: "success",
-      });
-      for (const k of ["transactions", "review", "summary", "insights-categories", "insights-trend"]) {
-        qc.invalidateQueries({ queryKey: [k] });
-      }
-    } catch {
-      show({ message: "Couldn't run categorization", tone: "error" });
-    } finally {
-      setRecatBusy(false);
-    }
+      await postJSON("/api/categorize/run", { from: b.from ?? "", to: b.to ?? "" });
+      qc.invalidateQueries({ queryKey: ["categorize-status"] });
+    } catch { show({ message: "Couldn't start categorization", tone: "error" }); }
   };
 
-  const [draft, setDraft] = useState<BudgetConfig | null>(null);
-  const [error, setError] = useState("");
-  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
-  const [managerOpen, setManagerOpen] = useState(false);
-  const [recatBusy, setRecatBusy] = useState(false);
-  const [clearOpen, setClearOpen] = useState(false);
-  const [clearBusy, setClearBusy] = useState(false);
+  const stopCategorization = async () => {
+    try {
+      await postJSON("/api/categorize/stop", {});
+      qc.invalidateQueries({ queryKey: ["categorize-status"] });
+    } catch { show({ message: "Couldn't stop categorization", tone: "error" }); }
+  };
   const txnCount = txns.data?.length ?? 0;
 
   const clearCategorization = async () => {
@@ -196,11 +199,28 @@ export function Settings() {
           </div>
 
           <div className="mt-4">
-            <Button variant="secondary" onClick={runCategorization} disabled={recatBusy}>
-              {recatBusy ? "Categorizing…" : "Run categorization now"}
-            </Button>
-            <p className="text-xs text-muted mt-1.5">Re-runs your rules{settings.data.ai_enabled ? " and AI" : ""} over everything in Needs review.</p>
+            {running ? (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm tnum">{catStatus.data!.processed} of {catStatus.data!.total} categorized</span>
+                <Button variant="secondary" onClick={stopCategorization}>Stop</Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button variant="secondary" onClick={() => setPeriodOpen(true)}>{scopeLabel(runScope)}</Button>
+                <Button variant="primary" onClick={runCategorization}>Run</Button>
+              </div>
+            )}
+            <p className="text-xs text-muted mt-1.5">
+              Categorizes Needs review for {scopeLabel(runScope)} ({settings.data.ai_enabled ? "rules + AI" : "rules"}).
+            </p>
           </div>
+          {periodOpen && (
+            <PeriodSheet
+              scope={runScope}
+              onApply={(s) => { setRunScope(s); setPeriodOpen(false); }}
+              onClose={() => setPeriodOpen(false)}
+            />
+          )}
         </Card>
       )}
 
