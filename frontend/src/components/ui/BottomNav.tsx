@@ -4,7 +4,7 @@ export function BottomNav({
   active, reviewCount, onNavigate,
 }: { active: TabId; reviewCount: number; onNavigate: (id: TabId) => void }) {
   return (
-    <nav className="fixed bottom-0 inset-x-0 z-30 bg-surface border-t border-border grid grid-cols-4 pb-[env(safe-area-inset-bottom)]">
+    <nav className="shrink-0 bg-surface border-t border-border grid grid-cols-4 pb-[env(safe-area-inset-bottom)]">
       {TABS.map((t) => {
         const Icon = t.icon;
         const isActive = active === t.id;
