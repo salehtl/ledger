@@ -5,6 +5,8 @@ export interface AppSettings {
   ai_enabled: boolean;
   ai_auto_accept: boolean;
   ai_threshold: number;
+  /** Read-only: whether an Anthropic key is loaded (env-only). Not sent on save. */
+  ai_key_present?: boolean;
 }
 export interface Txn {
   ID: number; PostedAt: string; AmountFils: number; Currency: string;
