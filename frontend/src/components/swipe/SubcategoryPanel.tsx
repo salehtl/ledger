@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import type { Category } from '../../api/types'
-import type { SwipeAction } from '../../lib/swipe'
+import { type SwipeAction, actionColor } from '../../lib/swipe'
 
 interface SubcategoryPanelProps {
   action: SwipeAction
@@ -22,6 +22,7 @@ export function SubcategoryPanel({
 }: SubcategoryPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
+  const color = actionColor(action)
   const visible = categories.filter(
     c => c.Kind === 'spending' && c.Bucket === action.bucket && c.IsActive,
   )
@@ -57,9 +58,12 @@ export function SubcategoryPanel({
         {/* Drag handle */}
         <div className="w-10 h-1.5 rounded-full bg-border mx-auto mb-5" />
 
-        {/* Header */}
+        {/* Header — bucket dot ties the sheet to the direction just swiped */}
         <div className="flex items-center justify-between mb-5">
-          <h3 className={`text-lg font-semibold ${action.textClass}`}>{action.label}</h3>
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+            <h3 className="text-lg font-semibold" style={{ color }}>{action.label}</h3>
+          </div>
           <button
             onClick={onCancel}
             className="p-1.5 rounded-lg hover:bg-bg text-muted"
