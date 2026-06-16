@@ -54,6 +54,17 @@ describe("CategoryManager", () => {
     expect(screen.getAllByText("Income").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("overlay has a solid theme background, not a broken CSS-var class (regression)", async () => {
+    const { container } = wrap();
+    await screen.findByDisplayValue("Groceries");
+    const overlay = container.firstChild as HTMLElement;
+    expect(overlay.className).toContain("fixed");
+    // Must use the real theme utility (--color-bg), not the undefined --bg var
+    // that rendered the full-screen overlay transparent.
+    expect(overlay.className).toContain("bg-bg");
+    expect(overlay.className).not.toMatch(/bg-\[--/);
+  });
+
   it("shows the bucket select on the add form only for spending kind", async () => {
     wrap();
     await screen.findByDisplayValue("Groceries");
