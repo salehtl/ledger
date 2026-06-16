@@ -16,8 +16,13 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/categories")) return new Response(JSON.stringify(cats));
     if (url.includes("/api/transactions")) {
-      const status = new URL("http://x" + url.replace(/^[^/]*/, "")).searchParams.get("status");
-      const rows = status === "needs_review" ? all.filter((t) => t.Status === "needs_review") : all;
+      const sp = new URL("http://x" + url.replace(/^[^/]*/, "")).searchParams;
+      const status = sp.get("status");
+      const from = sp.get("from");
+      const to = sp.get("to");
+      let rows = status ? all.filter((t) => t.Status === status) : all;
+      if (from) rows = rows.filter((t) => t.PostedAt >= from);
+      if (to) rows = rows.filter((t) => t.PostedAt <= to);
       return new Response(JSON.stringify(rows));
     }
     return new Response("[]");
@@ -51,5 +56,24 @@ describe("Transactions", () => {
     fireEvent.change(screen.getByPlaceholderText(/search merchant/i), { target: { value: "spin" } });
     expect(screen.getByText("SPINNEYS")).toBeInTheDocument();
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
+  });
+
+  it("scopes the list to a selected month", async () => {
+    wrap();
+    await screen.findByText("SPINNEYS");
+    // sample rows are June 2026; selecting May yields none
+    fireEvent.change(screen.getByLabelText(/^month$/i), { target: { value: "2026-05" } });
+    expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
+    expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
+  });
+
+  it("clears the month scope with All time", async () => {
+    wrap();
+    await screen.findByText("SPINNEYS");
+    fireEvent.change(screen.getByLabelText(/^month$/i), { target: { value: "2026-05" } });
+    await screen.findByText(/no transactions/i);
+    fireEvent.click(screen.getByRole("button", { name: /all time/i }));
+    expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
+    expect(screen.getByText("NETFLIX")).toBeInTheDocument();
   });
 });
