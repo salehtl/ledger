@@ -26,7 +26,7 @@ export function ReviewSwipe({ onClose }: ReviewSwipeProps) {
   const empty = !loading && (txns.data?.length ?? 0) === 0
 
   return (
-    <div className="fixed inset-0 z-40 bg-bg flex flex-col">
+    <div className="fixed inset-x-0 top-0 h-[100dvh] z-40 bg-bg flex flex-col">
       {/* Top bar */}
       <header className="flex items-center gap-3 px-4 pb-3 border-b border-border pt-[calc(env(safe-area-inset-top)+1rem)]">
         <button

@@ -24,7 +24,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
     return () => document.removeEventListener("keydown", onKey);
   }, []); // mount-only; ref holds the latest onClose
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-x-0 top-0 h-[100dvh] z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={onClose}>
       <div
         ref={ref}
         role="dialog"
@@ -32,7 +32,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="w-full sm:max-w-md bg-surface rounded-t-2xl sm:rounded-2xl p-4 max-h-[85vh] overflow-y-auto outline-none"
+        className="w-full sm:max-w-md bg-surface rounded-t-2xl sm:rounded-2xl px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
         <div className="flex items-center justify-between mb-3">
           <h2 id={titleId} className="text-lg font-semibold">{title}</h2>

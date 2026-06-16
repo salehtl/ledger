@@ -30,6 +30,23 @@ func TestGetSettings(t *testing.T) {
 	if got["auto_categorize"] != true {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
+	if got["ai_key_present"] != false {
+		t.Fatalf("ai_key_present should default false: body=%s", rec.Body.String())
+	}
+}
+
+func TestGetSettingsReportsAIKeyPresent(t *testing.T) {
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(&stubSettings{s: store.AppSettings{AIThreshold: 0.85}})
+	srv.SetAIKeyPresent(true)
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["ai_key_present"] != true {
+		t.Fatalf("ai_key_present=true expected, body=%s", rec.Body.String())
+	}
 }
 
 func TestPutSettings(t *testing.T) {
