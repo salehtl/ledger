@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON, del } from "../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../api/types";
+import { CategoryManager } from "./CategoryManager";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -18,8 +19,6 @@ import {
 export function pctsValid(need: number, want: number, saving: number): boolean {
   return Math.abs(need + want + saving - 1.0) < 0.001;
 }
-
-const BUCKETS = ["need", "want", "saving"] as const;
 
 export function Settings() {
   const qc = useQueryClient();
@@ -38,6 +37,7 @@ export function Settings() {
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
   const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
+  const [managerOpen, setManagerOpen] = useState(false);
   const cfg = draft ?? budget.data ?? null;
   const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
@@ -53,13 +53,6 @@ export function Settings() {
     } catch {
       setError("Couldn’t save — please try again.");
     }
-  };
-  const reassign = async (c: Category, bucket: string) => {
-    try {
-      await postJSON(`/api/categories/${c.ID}`, { name: c.Name, kind: c.Kind, bucket }, "PUT");
-      qc.invalidateQueries({ queryKey: ["categories"] });
-      qc.invalidateQueries({ queryKey: ["summary"] });
-    } catch { show({ message: "Couldn't move category", tone: "error" }); }
   };
   const deleteRule = async (id: number) => {
     try { await del(`/api/rules/${id}`); qc.invalidateQueries({ queryKey: ["rules"] }); }
@@ -154,17 +147,13 @@ export function Settings() {
       )}
 
       <Card>
-        <p className="text-sm font-medium mb-3">Categories → buckets</p>
-        <div className="space-y-2">
-          {(cats.data ?? []).filter((c) => c.Kind === "spending").map((c) => (
-            <div key={c.ID} className="flex items-center justify-between gap-3">
-              <span className="text-sm">{c.Name}</span>
-              <select value={c.Bucket} onChange={(e) => reassign(c, e.target.value)} className="border border-border rounded-lg px-2 py-1 text-sm bg-surface">
-                {BUCKETS.map((b) => <option key={b} value={b}>{b}</option>)}
-              </select>
-            </div>
-          ))}
-        </div>
+        <button
+          onClick={() => setManagerOpen(true)}
+          className="w-full flex items-center justify-between text-sm font-medium"
+        >
+          <span>Manage categories</span>
+          <span className="text-muted" aria-hidden>→</span>
+        </button>
       </Card>
 
       <Card>
@@ -235,6 +224,7 @@ export function Settings() {
         <p className="text-sm font-medium mb-1">About</p>
         <p className="text-xs text-muted">Icons by Lucide (ISC). Charts by Recharts (MIT).</p>
       </Card>
+      {managerOpen && <CategoryManager onClose={() => setManagerOpen(false)} />}
     </div>
   );
 }
