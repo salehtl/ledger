@@ -354,6 +354,55 @@ func TestDeleteRule(t *testing.T) {
 	}
 }
 
+func TestCategoryUsage(t *testing.T) {
+	st := newTestStore(t)
+	ingestID := seedIngestRow(t, st)
+	if err := st.SeedDefaultCategories(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatalf("SelectCategories: %v", err)
+	}
+	var groceriesID int64
+	for _, c := range cats {
+		if c.Name == "Groceries" {
+			groceriesID = c.ID
+		}
+	}
+
+	// Initially unused.
+	txns, rules, err := st.CategoryUsage(groceriesID)
+	if err != nil {
+		t.Fatalf("CategoryUsage: %v", err)
+	}
+	if txns != 0 || rules != 0 {
+		t.Fatalf("fresh category usage = (%d,%d), want (0,0)", txns, rules)
+	}
+
+	// Assign one transaction and one rule.
+	row := txnRow()
+	row.IngestID = ingestID
+	txID, _, err := st.InsertTransaction(row)
+	if err != nil {
+		t.Fatalf("InsertTransaction: %v", err)
+	}
+	if err := st.UpdateTransactionCategory(txID, groceriesID, "categorized"); err != nil {
+		t.Fatalf("UpdateTransactionCategory: %v", err)
+	}
+	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: groceriesID, Priority: 100, Source: "manual"}); err != nil {
+		t.Fatalf("InsertRule: %v", err)
+	}
+
+	txns, rules, err = st.CategoryUsage(groceriesID)
+	if err != nil {
+		t.Fatalf("CategoryUsage: %v", err)
+	}
+	if txns != 1 || rules != 1 {
+		t.Fatalf("usage = (%d,%d), want (1,1)", txns, rules)
+	}
+}
+
 func mustTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
