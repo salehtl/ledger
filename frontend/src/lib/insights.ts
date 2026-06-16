@@ -16,6 +16,9 @@ export function bucketColor(bucket: string): string {
   }
 }
 
+/** Display labels for budget buckets. */
+export const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export function monthLabel(period: string): string {
   const m = Number(period.slice(5, 7));

@@ -1,10 +1,8 @@
 import { Card } from "../ui/Card";
 import { Money } from "../Money";
-import { bucketColor } from "../../lib/insights";
+import { bucketColor, BUCKET_LABEL } from "../../lib/insights";
 import type { BucketComparison, SavingsResult } from "../../lib/insights";
 import { DeltaBadge } from "./DeltaBadge";
-
-const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
 export function ComparativeSummary({ label, note, net, savings, buckets }: {
   label: string; note: string; net: number; savings: SavingsResult; buckets: BucketComparison[];
@@ -22,7 +20,7 @@ export function ComparativeSummary({ label, note, net, savings, buckets }: {
         </div>
         <div className="text-right">
           <p className="text-xs text-muted">Saved</p>
-          <p className="text-lg font-semibold tnum">{savings.rate != null ? `${Math.round(savings.rate * 100)}%` : "—"}</p>
+          <p className={`text-lg font-semibold tnum ${savings.rate != null && savings.rate < 0 ? "text-bad" : ""}`}>{savings.rate != null ? `${Math.round(savings.rate * 100)}%` : "—"}</p>
         </div>
       </div>
       <div className="mt-3 space-y-1.5">
