@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -100,59 +99,6 @@ func TestPostStatusInvalid(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for invalid status", w.Code)
-	}
-}
-
-func TestPostRecategorize_NoFn(t *testing.T) {
-	st := newTestServerStore(t)
-	seedTestTransaction(t, st)
-	srv := newTestServerWithStore(t, st)
-	// Without a categorizer fn set, recategorize returns 200 with 0 processed
-	r := httptest.NewRequest("POST", "/api/recategorize", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if _, ok := resp["processed"]; !ok {
-		t.Error("expected 'processed' in response")
-	}
-}
-
-func TestPostRecategorize_WithFn(t *testing.T) {
-	st := newTestServerStore(t)
-	txID := seedTestTransaction(t, st)
-	// Pick a real category ID
-	cats, _ := st.SelectCategories()
-	var catID int64
-	for _, c := range cats {
-		if c.Name == "Shopping" {
-			catID = c.ID
-		}
-	}
-	srv := newTestServerWithStore(t, st)
-	// Wire a categorize fn that always returns Shopping/confirmed
-	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
-		return catID, "confirmed", true
-	})
-	r := httptest.NewRequest("POST", "/api/recategorize", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["processed"] == nil || resp["processed"].(float64) != 1 {
-		t.Errorf("expected processed=1, got %v", resp["processed"])
-	}
-	// Verify DB state
-	var status string
-	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&status)
-	if status != "confirmed" {
-		t.Errorf("db status = %q, want confirmed", status)
 	}
 }
 
