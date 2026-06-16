@@ -38,9 +38,9 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
   const grouped = KINDS.map((k) => ({ kind: k, items: (cats.data ?? []).filter((c) => c.Kind === k) }));
 
   return (
-    <div className="fixed inset-0 z-40 bg-[--bg] flex flex-col">
+    <div className="fixed inset-0 z-40 bg-bg flex flex-col">
       <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
-        <button onClick={onClose} className="p-2 -ml-2 rounded-xl hover:bg-slate-100 text-muted" aria-label="Close category manager">
+        <button onClick={onClose} className="p-2 -ml-2 rounded-xl hover:bg-bg text-muted" aria-label="Close category manager">
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-lg font-semibold text-fg">Categories</h1>
@@ -81,7 +81,7 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
 
         {cats.isPending ? (
           <div className="flex items-center justify-center py-12">
-            <Loader2 size={36} className="animate-spin text-[--muted]" />
+            <Loader2 size={36} className="animate-spin text-muted" />
           </div>
         ) : (
           grouped.filter((g) => g.items.length > 0).map((g) => (
