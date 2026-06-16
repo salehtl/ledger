@@ -276,6 +276,18 @@ func scanReviewItems(rows interface {
 	return out, rows.Err()
 }
 
+// CategoryUsage returns how many transactions and rules reference a category.
+// Used to enforce block-if-in-use deletes.
+func (s *Store) CategoryUsage(id int64) (txns int, rules int, err error) {
+	if err = s.DB.QueryRow(`SELECT count(*) FROM transactions WHERE category_id=?`, id).Scan(&txns); err != nil {
+		return 0, 0, err
+	}
+	if err = s.DB.QueryRow(`SELECT count(*) FROM rules WHERE category_id=?`, id).Scan(&rules); err != nil {
+		return 0, 0, err
+	}
+	return txns, rules, nil
+}
+
 // UpdateCategory overwrites name/kind/bucket for one category.
 func (s *Store) UpdateCategory(c CategoryRow) error {
 	_, err := s.DB.Exec(
