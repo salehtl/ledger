@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 )
@@ -423,6 +424,96 @@ func TestCategoryUsage(t *testing.T) {
 	}
 	if txns != 1 || rules != 1 {
 		t.Fatalf("usage = (%d,%d), want (1,1)", txns, rules)
+	}
+}
+
+func TestClearAllCategorization(t *testing.T) {
+	st := newTestStore(t)
+	ingestID := seedIngestRow(t, st)
+	if err := st.SeedDefaultCategories(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cats, _ := st.SelectCategories()
+	var groceriesID int64
+	for _, c := range cats {
+		if c.Name == "Groceries" {
+			groceriesID = c.ID
+		}
+	}
+
+	// A categorized transaction (with a frozen bucket snapshot).
+	row := txnRow()
+	row.IngestID = ingestID
+	catID, _, err := st.InsertTransaction(row)
+	if err != nil {
+		t.Fatalf("InsertTransaction: %v", err)
+	}
+	if err := st.UpdateTransactionCategory(catID, groceriesID, "confirmed"); err != nil {
+		t.Fatalf("UpdateTransactionCategory: %v", err)
+	}
+	if err := st.SnapshotBucketForCategory(groceriesID, "need"); err != nil {
+		t.Fatalf("SnapshotBucketForCategory: %v", err)
+	}
+
+	// An intentionally-ignored transaction (no category).
+	row2 := txnRow()
+	row2.IngestID = ingestID
+	row2.MerchantRaw = "TRANSFER OUT"
+	row2.AmountFils = 99900
+	ignoredID, _, err := st.InsertTransaction(row2)
+	if err != nil {
+		t.Fatalf("InsertTransaction 2: %v", err)
+	}
+	if err := st.UpdateTransactionStatus(ignoredID, "ignored"); err != nil {
+		t.Fatalf("UpdateTransactionStatus: %v", err)
+	}
+
+	// A learned rule that must survive the wipe.
+	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "CARREFOUR", CategoryID: groceriesID, Priority: 10, Source: "manual"}); err != nil {
+		t.Fatalf("InsertRule: %v", err)
+	}
+
+	n, err := st.ClearAllCategorization()
+	if err != nil {
+		t.Fatalf("ClearAllCategorization: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("cleared count = %d, want 2", n)
+	}
+
+	// Every transaction is back to needs_review with no category or bucket.
+	rows, err := st.DB.Query(`SELECT category_id, bucket_snapshot, status FROM transactions`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var cat sql.NullInt64
+		var bucket sql.NullString
+		var status string
+		if err := rows.Scan(&cat, &bucket, &status); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen++
+		if cat.Valid {
+			t.Errorf("category_id not cleared: %d", cat.Int64)
+		}
+		if bucket.Valid {
+			t.Errorf("bucket_snapshot not cleared: %q", bucket.String)
+		}
+		if status != "needs_review" {
+			t.Errorf("status = %q, want needs_review", status)
+		}
+	}
+	if seen != 2 {
+		t.Errorf("scanned %d transactions, want 2", seen)
+	}
+
+	// Rules are untouched.
+	rules, _ := st.SelectRules()
+	if len(rules) != 1 {
+		t.Errorf("rules len = %d, want 1 (rules must survive)", len(rules))
 	}
 }
 

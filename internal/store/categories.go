@@ -315,6 +315,22 @@ func (s *Store) SnapshotBucketForCategory(categoryID int64, bucket string) error
 	return err
 }
 
+// ClearAllCategorization moves every transaction back to needs_review and clears
+// its category and frozen bucket snapshot. Learned rules are left intact, so
+// re-categorizing known merchants stays fast. Returns the number of rows affected.
+func (s *Store) ClearAllCategorization() (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.DB.Exec(
+		`UPDATE transactions
+		    SET category_id=NULL, bucket_snapshot=NULL, status='needs_review', updated_at=?`,
+		now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DeleteRule removes one rule by id.
 func (s *Store) DeleteRule(id int64) error {
 	_, err := s.DB.Exec(`DELETE FROM rules WHERE id=?`, id)

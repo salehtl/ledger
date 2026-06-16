@@ -21,6 +21,9 @@ type settingsDTO struct {
 	AIEnabled      bool    `json:"ai_enabled"`
 	AIAutoAccept   bool    `json:"ai_auto_accept"`
 	AIThreshold    float64 `json:"ai_threshold"`
+	// AIKeyPresent is read-only output: whether an Anthropic key is loaded
+	// (env-only). It is ignored on PUT.
+	AIKeyPresent bool `json:"ai_key_present"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +37,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settingsDTO{a.AutoCategorize, a.AIEnabled, a.AIAutoAccept, a.AIThreshold})
+	json.NewEncoder(w).Encode(settingsDTO{
+		AutoCategorize: a.AutoCategorize, AIEnabled: a.AIEnabled,
+		AIAutoAccept: a.AIAutoAccept, AIThreshold: a.AIThreshold,
+		AIKeyPresent: s.aiKeyPresent,
+	})
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {

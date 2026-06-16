@@ -91,6 +91,24 @@ func (s *Server) handleRecategorize(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"processed": processed})
 }
 
+// handleClearCategorization moves every transaction back to needs_review and
+// clears its category, leaving learned rules intact. Destructive bulk reset
+// exposed in the Settings "Danger zone".
+func (s *Server) handleClearCategorization(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	n, err := s.catStore.ClearAllCategorization()
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	s.BroadcastEvent("tx", nil)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"cleared": n})
+}
+
 var validStatuses = map[string]bool{
 	"confirmed":    true,
 	"ignored":      true,

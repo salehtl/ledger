@@ -49,6 +49,7 @@ type CategoryStore interface {
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
 	CategoryUsage(id int64) (txns int, rules int, err error)
 	DeleteCategory(id int64) error
+	ClearAllCategorization() (int64, error)
 }
 
 // PushStore is the subset of the store needed by push-subscription handlers.
@@ -66,21 +67,22 @@ type PushSender interface {
 
 // Server holds the router and its dependencies.
 type Server struct {
-	mux            *http.ServeMux
-	store          HealthChecker
-	ingest         IngestStatus
-	imapConfigured bool
-	reprocessor    Reprocessor
-	catStore       CategoryStore
-	recatFn        CategorizeFunc
-	budgetStore    BudgetStore
-	insightsStore  InsightsStore
-	hub            *Hub                // SSE fan-out hub
-	driftMon       DriftStatusProvider // optional drift monitor for /api/health
+	mux             *http.ServeMux
+	store           HealthChecker
+	ingest          IngestStatus
+	imapConfigured  bool
+	reprocessor     Reprocessor
+	catStore        CategoryStore
+	recatFn         CategorizeFunc
+	budgetStore     BudgetStore
+	insightsStore   InsightsStore
+	hub             *Hub                // SSE fan-out hub
+	driftMon        DriftStatusProvider // optional drift monitor for /api/health
 	pushStore       PushStore
 	pushSender      PushSender
 	settingsStore   SettingsStore
 	ruleActiveStore RuleActiveStore
+	aiKeyPresent    bool
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -108,6 +110,11 @@ func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 
 // SetRecategorizeFn wires the bulk-categorize function used by POST /api/recategorize.
 func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
+
+// SetAIKeyPresent records whether an Anthropic API key was loaded at startup.
+// It is reported (as a bool, never the value) by GET /api/settings so the UI
+// can show whether AI categorization can run. The key itself stays env-only.
+func (s *Server) SetAIKeyPresent(present bool) { s.aiKeyPresent = present }
 
 // DriftStatusProvider surfaces the monitor's current alert list for /api/health.
 type DriftStatusProvider interface {
@@ -146,6 +153,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("POST /api/categorization/clear", s.handleClearCategorization)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
