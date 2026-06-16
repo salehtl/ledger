@@ -133,7 +133,10 @@ func TestProcessorCategorizes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewProcessorWithCategorizer(st, dibCascade(), cat)
+	p := NewProcessor(st, dibCascade())
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
+		return cat, true
+	})
 	n, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true})
 	if err != nil {
 		t.Fatalf("ProcessPending: %v", err)

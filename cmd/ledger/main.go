@@ -29,6 +29,42 @@ import (
 	"ledger/internal/web"
 )
 
+// buildCategorizer reads live app settings and returns a categorizer plus
+// whether auto-categorization is enabled. It returns (nil, false) when settings
+// can't be read, auto_categorize is off, or rules can't be read — callers skip
+// categorization in that case. cats is the static category list; aiCat is the
+// AI categorizer used only when settings.AIEnabled.
+func buildCategorizer(st *store.Store, cats []categorize.Category, aiCat categorize.AICategorizer) (*categorize.Categorizer, bool) {
+	settings, err := st.SelectAppSettings()
+	if err != nil {
+		log.Printf("categorizer: settings read failed, skipping categorization: %v", err)
+		return nil, false
+	}
+	if !settings.AutoCategorize {
+		return nil, false
+	}
+	ruleRows, err := st.SelectActiveRules()
+	if err != nil {
+		log.Printf("categorizer: active rules read failed: %v", err)
+		return nil, false
+	}
+	rules := make([]categorize.Rule, 0, len(ruleRows))
+	for _, r := range ruleRows {
+		rules = append(rules, categorize.Rule{
+			MatchType: r.MatchType, Pattern: r.Pattern, CategoryID: r.CategoryID, Priority: r.Priority,
+		})
+	}
+	ai := categorize.AICategorizer(categorize.DisabledAI{})
+	threshold := math.MaxFloat64 // AI suggests but never auto-confirms
+	if settings.AIEnabled {
+		ai = aiCat
+		if settings.AIAutoAccept {
+			threshold = settings.AIThreshold
+		}
+	}
+	return categorize.New(rules, cats, ai, threshold, settings.AIAutoAccept), true
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -103,34 +139,7 @@ func main() {
 	}
 	processor := parse.NewProcessor(st, cascade)
 	processor.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
-		settings, err := st.SelectAppSettings()
-		if err != nil {
-			log.Printf("categorizer: settings read failed, skipping categorization: %v", err)
-			return nil, false
-		}
-		if !settings.AutoCategorize {
-			return nil, false
-		}
-		ruleRows, err := st.SelectActiveRules()
-		if err != nil {
-			log.Printf("categorizer: active rules read failed: %v", err)
-			return nil, false
-		}
-		rules := make([]categorize.Rule, 0, len(ruleRows))
-		for _, r := range ruleRows {
-			rules = append(rules, categorize.Rule{
-				MatchType: r.MatchType, Pattern: r.Pattern, CategoryID: r.CategoryID, Priority: r.Priority,
-			})
-		}
-		ai := categorize.AICategorizer(categorize.DisabledAI{})
-		threshold := math.MaxFloat64 // AI suggests but never auto-confirms
-		if settings.AIEnabled {
-			ai = aiCat
-			if settings.AIAutoAccept {
-				threshold = settings.AIThreshold
-			}
-		}
-		return categorize.New(rules, domainCats, ai, threshold, settings.AIAutoAccept), true
+		return buildCategorizer(st, domainCats, aiCat)
 	})
 
 	srv := server.New(st, webFS)
@@ -142,32 +151,10 @@ func main() {
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
-		settings, serr := st.SelectAppSettings()
-		if serr != nil {
+		cat, ok := buildCategorizer(st, domainCats, aiCat)
+		if !ok {
 			return 0, "", false
 		}
-		if !settings.AutoCategorize {
-			return 0, "", false
-		}
-		ruleRows, rerr := st.SelectActiveRules()
-		if rerr != nil {
-			return 0, "", false
-		}
-		rules := make([]categorize.Rule, 0, len(ruleRows))
-		for _, r := range ruleRows {
-			rules = append(rules, categorize.Rule{
-				MatchType: r.MatchType, Pattern: r.Pattern, CategoryID: r.CategoryID, Priority: r.Priority,
-			})
-		}
-		ai := categorize.AICategorizer(categorize.DisabledAI{})
-		threshold := math.MaxFloat64
-		if settings.AIEnabled {
-			ai = aiCat
-			if settings.AIAutoAccept {
-				threshold = settings.AIThreshold
-			}
-		}
-		cat := categorize.New(rules, domainCats, ai, threshold, settings.AIAutoAccept)
 		result, ok := cat.Categorize(ctx, merchantRaw)
 		if !ok {
 			return 0, "", false
