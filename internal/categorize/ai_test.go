@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ledger/internal/anthropic"
 )
 
 func TestAnthropicCategorizerSuccess(t *testing.T) {
@@ -28,7 +30,7 @@ func TestAnthropicCategorizerSuccess(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		client:   srv.Client(),
+		retry:    anthropic.New(srv.Client()),
 	}
 
 	cats := []Category{
@@ -67,7 +69,7 @@ func TestAnthropicCategorizerSendsOnlyMerchant(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		client:   srv.Client(),
+		retry:    anthropic.New(srv.Client()),
 	}
 
 	cats := []Category{
@@ -107,7 +109,7 @@ func TestAnthropicCategorizerSendsOnlyMerchant(t *testing.T) {
 
 func TestAnthropicCategorizerHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusBadRequest) // non-retryable: surfaces immediately
 	}))
 	defer srv.Close()
 
@@ -115,7 +117,7 @@ func TestAnthropicCategorizerHTTPError(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		client:   srv.Client(),
+		retry:    anthropic.New(srv.Client()),
 	}
 
 	cats := []Category{

@@ -77,12 +77,27 @@ func (s *Server) handleRecategorize(w http.ResponseWriter, r *http.Request) {
 	}
 	processed := 0
 	if s.recatFn != nil {
+		// Dedupe by merchant: categorizing the same unknown merchant is
+		// deterministic, so call the (possibly AI-backed) fn once per distinct
+		// merchant and apply the result to every matching transaction. This
+		// keeps a bulk pass over many rows from firing one API call per row.
+		type recatResult struct {
+			catID  int64
+			status string
+			ok     bool
+		}
+		seen := make(map[string]recatResult)
 		for _, item := range items {
-			catID, status, ok := s.recatFn(r.Context(), item.MerchantRaw)
-			if !ok {
+			res, cached := seen[item.MerchantRaw]
+			if !cached {
+				catID, status, ok := s.recatFn(r.Context(), item.MerchantRaw)
+				res = recatResult{catID, status, ok}
+				seen[item.MerchantRaw] = res
+			}
+			if !res.ok {
 				continue
 			}
-			if err := s.catStore.UpdateTransactionCategory(item.ID, catID, status); err == nil {
+			if err := s.catStore.UpdateTransactionCategory(item.ID, res.catID, res.status); err == nil {
 				processed++
 			}
 		}

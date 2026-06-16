@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"ledger/internal/store"
 )
 
 func TestPostCategorize(t *testing.T) {
@@ -153,6 +156,51 @@ func TestPostRecategorize_WithFn(t *testing.T) {
 	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&status)
 	if status != "confirmed" {
 		t.Errorf("db status = %q, want confirmed", status)
+	}
+}
+
+func TestPostRecategorize_DedupesByMerchant(t *testing.T) {
+	st := newTestServerStore(t)
+	// Two needs_review transactions from the SAME merchant.
+	for _, amt := range []int64{1000, 2000} {
+		if _, _, err := st.InsertTransaction(store.TransactionRow{
+			PostedAt:    time.Date(2026, 6, int(amt/1000), 0, 0, 0, 0, time.UTC),
+			AmountFils:  amt,
+			Currency:    "AED",
+			Direction:   "debit",
+			MerchantRaw: "ACME WIDGETS",
+			Status:      "needs_review",
+			Tier:        "template",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cats, _ := st.SelectCategories()
+	var catID int64
+	for _, c := range cats {
+		if c.Name == "Shopping" {
+			catID = c.ID
+		}
+	}
+	srv := newTestServerWithStore(t, st)
+	calls := 0
+	srv.SetRecategorizeFn(func(_ context.Context, _ string) (int64, string, bool) {
+		calls++
+		return catID, "confirmed", true
+	})
+	r := httptest.NewRequest("POST", "/api/recategorize", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["processed"] == nil || resp["processed"].(float64) != 2 {
+		t.Errorf("processed=%v, want 2", resp["processed"])
+	}
+	if calls != 1 {
+		t.Errorf("recatFn called %d times, want 1 (deduped by merchant)", calls)
 	}
 }
 
