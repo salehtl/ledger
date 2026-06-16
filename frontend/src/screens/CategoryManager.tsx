@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2 } from "lucide-react";
 import { getJSON, postJSON, getCategoryUsage, deleteCategory } from "../api/client";
 import type { Category } from "../api/types";
 import { useToast } from "../components/Toast";
@@ -39,11 +39,11 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-40 bg-[--bg] flex flex-col">
-      <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-[--border]">
-        <button onClick={onClose} className="p-2 -ml-2 rounded-xl hover:bg-slate-100 text-[--muted]" aria-label="Close category manager">
+      <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
+        <button onClick={onClose} className="p-2 -ml-2 rounded-xl hover:bg-slate-100 text-muted" aria-label="Close category manager">
           <ArrowLeft size={20} />
         </button>
-        <h1 className="text-lg font-semibold text-[--fg]">Categories</h1>
+        <h1 className="text-lg font-semibold text-fg">Categories</h1>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6 max-w-screen-sm w-full mx-auto">
@@ -79,19 +79,27 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
           <button onClick={add} className="w-full py-2 rounded-lg bg-accent text-white text-sm font-medium">Add</button>
         </div>
 
-        {grouped.map((g) => g.items.length > 0 && (
-          <div key={g.kind} className="space-y-2">
-            <p className="text-sm font-medium">{KIND_LABELS[g.kind]}</p>
-            {g.items.map((c) => <CategoryRow key={c.ID} cat={c} onChanged={invalidate} />)}
+        {cats.isPending ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 size={36} className="animate-spin text-[--muted]" />
           </div>
-        ))}
+        ) : (
+          grouped.filter((g) => g.items.length > 0).map((g) => (
+            <div key={g.kind} className="space-y-2">
+              <p className="text-sm font-medium">{KIND_LABELS[g.kind]}</p>
+              {g.items.map((c) => <CategoryRow key={c.ID} cat={c} onChanged={invalidate} />)}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
 }
 
 function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void }) {
+  const qc = useQueryClient();
   const { show } = useToast();
+  const [draftName, setDraftName] = useState(cat.Name);
   const usage = useQuery({ queryKey: ["category-usage", cat.ID], queryFn: () => getCategoryUsage(cat.ID) });
   const inUse = (usage.data?.transactions ?? 0) > 0 || (usage.data?.rules ?? 0) > 0;
 
@@ -104,6 +112,7 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     } catch (e) {
       const dup = e instanceof Error && e.message === "name exists";
       show({ message: dup ? "A category with that name already exists." : "Couldn't rename category", tone: "error" });
+      setDraftName(cat.Name);
     }
   };
 
@@ -120,6 +129,7 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     if (inUse) return;
     try {
       await deleteCategory(cat.ID);
+      qc.removeQueries({ queryKey: ["category-usage", cat.ID] });
       onChanged();
     } catch {
       show({ message: "Couldn't delete — category is now in use", tone: "error" });
@@ -131,8 +141,9 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     <div className="flex items-center justify-between gap-2">
       <input
         aria-label={`Rename ${cat.Name}`}
-        defaultValue={cat.Name}
-        onBlur={(e) => rename(e.target.value)}
+        value={draftName}
+        onChange={(e) => setDraftName(e.target.value)}
+        onBlur={() => rename(draftName)}
         className="min-w-0 flex-1 px-2 py-1 rounded-lg border border-border bg-surface text-sm"
       />
       {cat.Kind === "spending" && (
