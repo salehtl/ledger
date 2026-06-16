@@ -9,23 +9,17 @@ import (
 )
 
 // Processor runs the cascade over ingest_log rows and persists results.
-// If a Categorizer is set, it runs immediately after each successful extraction.
+// If a provider is installed via SetCategorizerProvider, categorization runs
+// immediately after each successful extraction.
 type Processor struct {
-	store       *store.Store
-	cascade     *Cascade
-	categorizer *categorize.Categorizer
-	provider    func(ctx context.Context) (*categorize.Categorizer, bool)
-	onInsert    func(txID, amountFils int64, merchant, direction string)
+	store    *store.Store
+	cascade  *Cascade
+	provider func(ctx context.Context) (*categorize.Categorizer, bool)
+	onInsert func(txID, amountFils int64, merchant, direction string)
 }
 
 func NewProcessor(st *store.Store, c *Cascade) *Processor {
 	return &Processor{store: st, cascade: c}
-}
-
-// NewProcessorWithCategorizer builds a Processor that also categorizes each
-// extracted transaction and auto-confirms rule hits.
-func NewProcessorWithCategorizer(st *store.Store, c *Cascade, cat *categorize.Categorizer) *Processor {
-	return &Processor{store: st, cascade: c, categorizer: cat}
 }
 
 // SetCategorizerProvider installs a per-batch categorizer resolver. The bool it
@@ -35,13 +29,10 @@ func (p *Processor) SetCategorizerProvider(f func(ctx context.Context) (*categor
 }
 
 // resolveCategorizer returns the categorizer for this batch and whether to run it.
-// Provider wins over the static categorizer when both are set.
+// Categorization is skipped (false) when no provider is installed.
 func (p *Processor) resolveCategorizer(ctx context.Context) (*categorize.Categorizer, bool) {
 	if p.provider != nil {
 		return p.provider(ctx)
-	}
-	if p.categorizer != nil {
-		return p.categorizer, true
 	}
 	return nil, false
 }

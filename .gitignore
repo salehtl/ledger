@@ -15,3 +15,6 @@ ledger.env
 
 # Frontend
 frontend/node_modules
+
+# Agent worktree scratch space (never commit)
+.claire/
