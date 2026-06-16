@@ -478,8 +478,10 @@ import { ComparativeSummary } from "./ComparativeSummary";
 const buckets = [
   { bucket: "need", spent: 400000, prevSpent: 380000, delta: 20000 },
   { bucket: "want", spent: 210000, prevSpent: 240000, delta: -30000 },
-  { bucket: "saving", spent: 90000, prevSpent: 90000, delta: 0 },
+  { bucket: "saving", spent: 90000, prevSpent: 80000, delta: 10000 },
 ];
+// Note: no bucket has delta 0, so DeltaBadge never renders "—"; the only em dash
+// in the null-rate test below is the savings rate itself.
 
 describe("ComparativeSummary", () => {
   it("renders the focus label, note, savings rate and bucket rows", () => {
