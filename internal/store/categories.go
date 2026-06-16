@@ -276,6 +276,14 @@ func scanReviewItems(rows interface {
 	return out, rows.Err()
 }
 
+// DeleteCategory hard-deletes a category row. Callers MUST verify the category
+// is unused (see CategoryUsage) first — foreign_keys=ON would otherwise reject
+// the delete if any transaction or rule still references it.
+func (s *Store) DeleteCategory(id int64) error {
+	_, err := s.DB.Exec(`DELETE FROM categories WHERE id=?`, id)
+	return err
+}
+
 // CategoryUsage returns how many transactions and rules reference a category.
 // Used to enforce block-if-in-use deletes.
 func (s *Store) CategoryUsage(id int64) (txns int, rules int, err error) {

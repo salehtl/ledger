@@ -354,6 +354,29 @@ func TestDeleteRule(t *testing.T) {
 	}
 }
 
+func TestDeleteCategory(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.SeedDefaultCategories(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	id, err := st.InsertCategory(CategoryRow{Name: "Temp", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+
+	if err := st.DeleteCategory(id); err != nil {
+		t.Fatalf("DeleteCategory: %v", err)
+	}
+
+	var count int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM categories WHERE id=?`, id).Scan(&count); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("category still present after delete (count=%d)", count)
+	}
+}
+
 func TestCategoryUsage(t *testing.T) {
 	st := newTestStore(t)
 	ingestID := seedIngestRow(t, st)
