@@ -5,7 +5,8 @@ import type { Txn } from "../api/types";
 import { BottomNav } from "../components/ui/BottomNav";
 import { TopBar } from "../components/ui/TopBar";
 import { type TabId } from "./nav";
-import { type Scope, DEFAULT_SCOPE, scopeBounds, scopeAnchor } from "../lib/scope";
+import { type Scope, scopeBounds, scopeAnchor } from "../lib/scope";
+import { currentPeriod } from "../lib/insights";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
 import { Home } from "../screens/Home";
@@ -23,7 +24,9 @@ const TITLES: Record<TabId, string> = {
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
-  const [scope, setScope] = useState<Scope>(DEFAULT_SCOPE);
+  // Lazy initializer so the default month reflects the day the app opens,
+  // not the day this module was first imported.
+  const [scope, setScope] = useState<Scope>(() => ({ kind: "month", period: currentPeriod() }));
   const [inSwipeMode, setInSwipeMode] = useState(false);
   const online = useOnline();
   useLiveEvents();
