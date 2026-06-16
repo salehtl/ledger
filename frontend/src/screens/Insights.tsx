@@ -28,7 +28,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const summary = useQuery({ queryKey: ["summary", focusMonth], queryFn: () => getJSON<Summary>(`/api/summary?period=${focusMonth}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
 
-  if (cur.isLoading) return <Skeleton rows={8} />;
+  if (cur.isLoading || prev.isLoading || summary.isLoading) return <Skeleton rows={8} />;
   if (cur.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load insights" hint="Check your connection and try again." />;
 
   const curData = cur.data ?? [];
