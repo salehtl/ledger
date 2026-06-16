@@ -49,6 +49,7 @@ type CategoryStore interface {
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
 	CategoryUsage(id int64) (txns int, rules int, err error)
 	DeleteCategory(id int64) error
+	ClearAllCategorization() (int64, error)
 }
 
 // PushStore is the subset of the store needed by push-subscription handlers.
@@ -66,17 +67,17 @@ type PushSender interface {
 
 // Server holds the router and its dependencies.
 type Server struct {
-	mux            *http.ServeMux
-	store          HealthChecker
-	ingest         IngestStatus
-	imapConfigured bool
-	reprocessor    Reprocessor
-	catStore       CategoryStore
-	recatFn        CategorizeFunc
-	budgetStore    BudgetStore
-	insightsStore  InsightsStore
-	hub            *Hub                // SSE fan-out hub
-	driftMon       DriftStatusProvider // optional drift monitor for /api/health
+	mux             *http.ServeMux
+	store           HealthChecker
+	ingest          IngestStatus
+	imapConfigured  bool
+	reprocessor     Reprocessor
+	catStore        CategoryStore
+	recatFn         CategorizeFunc
+	budgetStore     BudgetStore
+	insightsStore   InsightsStore
+	hub             *Hub                // SSE fan-out hub
+	driftMon        DriftStatusProvider // optional drift monitor for /api/health
 	pushStore       PushStore
 	pushSender      PushSender
 	settingsStore   SettingsStore
@@ -152,6 +153,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/recategorize", s.handleRecategorize)
+	s.mux.HandleFunc("POST /api/categorization/clear", s.handleClearCategorization)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
