@@ -110,3 +110,28 @@ func TestPutCategoryRejectsSpendingWithoutBucket(t *testing.T) {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
+
+func TestGetCategoryUsage(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+
+	id, err := st.InsertCategory(store.CategoryRow{Name: "Temp", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+
+	r := httptest.NewRequest("GET", "/api/categories/"+strconv.FormatInt(id, 10)+"/usage", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body)
+	}
+	var resp map[string]int
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["transactions"] != 0 || resp["rules"] != 0 {
+		t.Fatalf("usage = %+v, want zeros", resp)
+	}
+}

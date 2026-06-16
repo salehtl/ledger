@@ -70,6 +70,25 @@ type updateCategoryReq struct {
 	ApplyToPast bool   `json:"apply_to_past"`
 }
 
+func (s *Server) handleGetCategoryUsage(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	txns, rules, err := s.catStore.CategoryUsage(id)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"transactions": txns, "rules": rules})
+}
+
 func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 	if s.catStore == nil {
 		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
