@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addMonth, normalizeRange, scopeBounds, scopeAnchor, scopeLabel } from "./scope";
+import { addMonth, normalizeRange, scopeBounds, scopeAnchor, scopeLabel, insightsFocus } from "./scope";
 import { currentPeriod } from "./insights";
 
 describe("addMonth", () => {
@@ -50,5 +50,17 @@ describe("scopeLabel", () => {
   });
   it("labels all time", () => {
     expect(scopeLabel({ kind: "all" })).toBe("All time");
+  });
+});
+
+describe("insightsFocus", () => {
+  it("returns the month with no note for a month scope", () => {
+    expect(insightsFocus({ kind: "month", period: "2026-03" })).toEqual({ period: "2026-03", note: "" });
+  });
+  it("returns the latest month of a range with a note", () => {
+    expect(insightsFocus({ kind: "range", from: "2026-01", to: "2026-04" })).toEqual({ period: "2026-04", note: "latest in range" });
+  });
+  it("returns the current month with a note for all-time", () => {
+    expect(insightsFocus({ kind: "all" })).toEqual({ period: currentPeriod(), note: "current month" });
   });
 });
