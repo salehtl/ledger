@@ -1,19 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
-import type { Summary, CategorySpend, MonthlyTotal } from "../api/types";
+import type { Summary, MonthlyTotal } from "../api/types";
 import { Money } from "../components/Money";
 import { Card } from "../components/ui/Card";
 import { ProgressBar } from "../components/ui/ProgressBar";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
-import { DonutChart } from "../components/charts/DonutChart";
 import { TrendBars } from "../components/charts/TrendBars";
 import {
-  totalSpent, totalBudget, donutSlices, trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
+  totalSpent, totalBudget, totalProjection, paceStatus, paceTone,
+  trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
+import { formatFils } from "../lib/money";
 import { AlertTriangle } from "lucide-react";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
+const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
+const TONE_TEXT = { good: "text-good", warn: "text-warn", bad: "text-bad" } as const;
+
+/** "1,180 left" or "320 over" for a remaining amount (positive = under budget). */
+function remainingLabel(remaining: number): string {
+  return remaining >= 0 ? `${formatFils(remaining)} left` : `${formatFils(-remaining)} over`;
+}
 
 export function Home({ period = currentPeriod() }: { period?: string }) {
   // The 6-month trend is always the trailing 6 real months (it matches the
@@ -21,11 +29,10 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
   const periods = trailingPeriods(currentPeriod(), 6);
 
   const summary = useQuery({ queryKey: ["summary", period], queryFn: () => getJSON<Summary>(`/api/summary?period=${period}`) });
-  const catSpend = useQuery({ queryKey: ["insights-categories", period], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${period}`) });
-  // trend is always the trailing 6 months from today, independent of the selected period
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
 
-  const heroLabel = period === currentPeriod() ? "Spent this month" : `Spent in ${monthLabel(period)} ${period.slice(0, 4)}`;
+  const isCurrent = period === currentPeriod();
+  const heroLabel = isCurrent ? "Spent this month" : `Spent in ${monthLabel(period)} ${period.slice(0, 4)}`;
 
   if (summary.isLoading) return <Skeleton rows={8} />;
   if (summary.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load your spending" hint="Check your connection and try again." />;
@@ -33,57 +40,71 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
   const s = summary.data!;
   const spent = totalSpent(s.buckets);
   const budget = totalBudget(s.buckets);
+  const projection = totalProjection(s.buckets);
   const pct = budget > 0 ? spent / budget : 0;
-  const slices = donutSlices(catSpend.data ?? []);
+  // Only the in-progress month has a "today" pace marker; finished months are done.
+  const pace = isCurrent ? s.month_progress : undefined;
+  const heroStatus = paceStatus(spent, budget, projection);
+  const heroTone = paceTone(heroStatus);
   const points = trendSeries(trend.data ?? [], periods);
 
   return (
     <div className="space-y-4">
-      {/* hero: spent vs budget */}
+      {/* hero: spent vs budget, with today's pace + projection */}
       <Card>
         <p className="text-sm text-muted">{heroLabel}</p>
         <p className="text-3xl font-bold tnum"><Money fils={spent} /></p>
-        <p className="text-sm text-muted mt-1">spent of <span className="tnum"><Money fils={budget} /></span> budget</p>
-        <div className="mt-3"><ProgressBar pct={pct} /></div>
+        <p className="text-sm text-muted mt-1">of <span className="tnum"><Money fils={budget} /></span> budget</p>
+        <div className="mt-3"><ProgressBar pct={pct} pace={pace} tone={heroTone} label="Total budget used" /></div>
+        <div className="flex items-center justify-between mt-2 text-sm">
+          <span className="tnum text-muted">{remainingLabel(budget - spent)}</span>
+          {isCurrent && <span className={`font-medium ${TONE_TEXT[heroTone]}`}>{VERDICT[heroStatus]}</span>}
+        </div>
+        {isCurrent && (
+          <p className="text-xs text-muted mt-1">
+            Projected <span className="tnum"><Money fils={projection} /></span> · {Math.round(s.month_progress * 100)}% of month gone
+          </p>
+        )}
       </Card>
 
-      {/* donut by category + trend */}
-      <div className="grid grid-cols-1 gap-4">
-        <Card>
-          <p className="text-sm font-medium mb-2">By category</p>
-          {slices.length === 0
-            ? <EmptyState title="No spending yet" />
-            : <DonutChart slices={slices} centerLabel="Spent" centerValue={spent} />}
-        </Card>
-        <Card>
-          <p className="text-sm font-medium mb-2">6-month trend</p>
-          {trend.isError
-            ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
-            : <TrendBars points={points} activePeriod={period} />}
-        </Card>
-      </div>
-
-      {/* bucket bars */}
+      {/* budget pace: each bucket against today's pace */}
       <Card>
-        <p className="text-sm font-medium mb-3">Budget buckets</p>
-        <div className="space-y-3">
-          {s.buckets.map((b) => (
-            <div key={b.bucket}>
-              <div className="flex items-center justify-between text-sm mb-1">
-                <span className="flex items-center gap-2">
-                  <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: bucketColor(b.bucket) }} />
-                  {BUCKET_LABEL[b.bucket] ?? b.bucket}
-                </span>
-                <span className="tnum text-muted"><Money fils={b.spent} /> / <Money fils={b.target} /></span>
+        <p className="text-sm font-medium mb-3">Budget pace</p>
+        <div className="space-y-4">
+          {s.buckets.map((b) => {
+            const status = paceStatus(b.spent, b.target, b.projection);
+            const tone = paceTone(status);
+            const name = BUCKET_LABEL[b.bucket] ?? b.bucket;
+            return (
+              <div key={b.bucket}>
+                <div className="flex items-center justify-between text-sm mb-1.5">
+                  <span className="flex items-center gap-2 font-medium">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: bucketColor(b.bucket) }} />
+                    {name}
+                  </span>
+                  <span className="tnum text-muted"><Money fils={b.spent} /> / <Money fils={b.target} /></span>
+                </div>
+                <ProgressBar pct={b.pct_used} pace={pace} tone={tone} label={`${name} budget used`} />
+                <div className="flex items-center justify-between mt-1.5 text-xs">
+                  <span className="tnum text-muted">{remainingLabel(b.remaining)}</span>
+                  {isCurrent && <span className={`font-medium ${TONE_TEXT[tone]}`}>{VERDICT[status]}</span>}
+                </div>
               </div>
-              <ProgressBar pct={b.pct_used} label={`${BUCKET_LABEL[b.bucket] ?? b.bucket} budget used`} />
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
 
+      {/* 6-month trend */}
+      <Card>
+        <p className="text-sm font-medium mb-2">6-month trend</p>
+        {trend.isError
+          ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
+          : <TrendBars points={points} activePeriod={period} />}
+      </Card>
+
       {/* recent stream — only meaningful for the current month */}
-      {period === currentPeriod() && (
+      {isCurrent && (
         <Card>
           <p className="text-sm font-medium mb-2">Recent</p>
           {s.recent.length === 0 ? (

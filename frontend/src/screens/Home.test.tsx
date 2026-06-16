@@ -39,9 +39,17 @@ describe("Home", () => {
     wrap();
     // 482000 fils => 4,820.00; 600000 => 6,000.00
     // findAllByText because the DonutChart center also renders the same value
-    const matches = await screen.findAllByText(/4,820\.00/);
-    expect(matches.length).toBeGreaterThan(0);
-    expect(screen.getByText(/spent of/i)).toBeInTheDocument();
+    expect(await screen.findByText("Spent this month")).toBeInTheDocument();
+    expect(screen.getAllByText(/4,820\.00/).length).toBeGreaterThan(0); // spent
+    expect(screen.getByText(/6,000\.00/)).toBeInTheDocument(); // budget
+  });
+
+  it("surfaces pace: projection and an over-pace verdict", async () => {
+    wrap();
+    // projection 640000 > 600000 budget → over pace; want bucket also projects over
+    expect((await screen.findAllByText("Over pace")).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Projected/)).toBeInTheDocument();
+    expect(screen.getByText(/50% of month gone/)).toBeInTheDocument();
   });
 
   it("lists the recent transactions", async () => {

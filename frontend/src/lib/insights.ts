@@ -50,6 +50,30 @@ export function currentPeriod(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Sum of each bucket's run-rate projection (where this month is heading). */
+export function totalProjection(buckets: BucketSummary[]): number {
+  return buckets.reduce((s, b) => s + b.projection, 0);
+}
+
+export type PaceStatus = "under" | "over" | "overbudget";
+
+/**
+ * Pace verdict for one budget line:
+ *  - "overbudget": already spent the whole target,
+ *  - "over": projected to overspend by month-end,
+ *  - "under": projected to finish within budget.
+ */
+export function paceStatus(spent: number, target: number, projection: number): PaceStatus {
+  if (target > 0 && spent >= target) return "overbudget";
+  if (target > 0 && projection > target) return "over";
+  return "under";
+}
+
+/** Tone for a pace status, matching the app's semantic colors. */
+export function paceTone(status: PaceStatus): "good" | "warn" | "bad" {
+  return status === "overbudget" ? "bad" : status === "over" ? "warn" : "good";
+}
+
 /** The trailing `n` period strings ("YYYY-MM"), oldest first, ending at `end` (a YYYY-MM). */
 export function trailingPeriods(end: string, n: number): string[] {
   const [y, m] = end.split("-").map(Number);
