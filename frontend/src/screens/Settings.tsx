@@ -89,8 +89,6 @@ export function Settings() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Settings</h1>
-
       {cfg && (
         <Card>
           <p className="text-sm font-medium mb-3">Budget</p>

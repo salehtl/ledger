@@ -34,7 +34,15 @@ describe("AppShell", () => {
   it("switches screens when a tab is tapped", async () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
-    // Settings screen renders a "Settings" heading.
+    // The TopBar renders the active screen's title as the page heading.
     expect(await screen.findByRole("heading", { name: /settings/i })).toBeInTheDocument();
+  });
+
+  it("exposes the global period control and opens the picker", async () => {
+    wrap();
+    // The TopBar shows the current month as a tappable label; tapping opens the sheet.
+    const label = screen.getByRole("button", { name: /\d{4}/ }); // e.g. "Jun 2026"
+    fireEvent.click(label);
+    expect(await screen.findByText(/choose period/i)).toBeInTheDocument();
   });
 });

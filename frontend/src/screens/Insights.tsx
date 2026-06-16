@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { CategorySpend, MonthlyTotal } from "../api/types";
@@ -9,14 +8,15 @@ import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { DonutChart } from "../components/charts/DonutChart";
 import { TrendBars } from "../components/charts/TrendBars";
-import { donutSlices, trendSeries, trailingPeriods, monthLabel, currentPeriod } from "../lib/insights";
+import { donutSlices, trendSeries, trailingPeriods, currentPeriod } from "../lib/insights";
 import { AlertTriangle } from "lucide-react";
 
 const BUCKET_TONE: Record<string, Tone> = { need: "neutral", want: "warn", saving: "good" };
 
-export function Insights() {
-  const [period] = useState(currentPeriod());
-  const periods = trailingPeriods(period, 6);
+export function Insights({ period = currentPeriod() }: { period?: string }) {
+  // The 6-month trend is always the trailing 6 real months (it matches the
+  // static /api/insights/trend), independent of the selected scope.
+  const periods = trailingPeriods(currentPeriod(), 6);
   const cats = useQuery({ queryKey: ["insights-categories", period], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${period}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
 
@@ -30,8 +30,6 @@ export function Insights() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Insights · {monthLabel(period)}</h1>
-
       <Card>
         <p className="text-sm font-medium mb-2">Where the money went</p>
         {slices.length === 0 ? <EmptyState title="No spending this month" /> : <DonutChart slices={slices} centerLabel="Spent" centerValue={total} />}
