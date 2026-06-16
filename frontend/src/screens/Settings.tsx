@@ -192,7 +192,7 @@ export function Settings() {
       {/* Swipe Directions */}
       <Card>
         <h2 className="font-semibold mb-1">Swipe Directions</h2>
-        <p className="text-sm text-[--muted] mb-4">
+        <p className="text-sm text-muted mb-4">
           Customize what each swipe direction means when reviewing transactions.
         </p>
         <div className="space-y-3">
@@ -204,7 +204,7 @@ export function Settings() {
             const value = current.statusOverride === 'transfer' ? 'transfer' : current.bucket ?? ''
             return (
               <div key={dir} className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-[--fg] w-20">{dirLabel[dir]}</span>
+                <span className="text-sm font-medium text-fg w-20">{dirLabel[dir]}</span>
                 <select
                   value={value}
                   onChange={e => setSwipeDir(dir, e.target.value)}
