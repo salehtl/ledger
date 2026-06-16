@@ -9,12 +9,13 @@ import (
 )
 
 // Processor runs the cascade over ingest_log rows and persists results.
-// If a Categorizer is set, it runs immediately after each successful extraction.
+// If a provider is installed via SetCategorizerProvider, categorization runs
+// immediately after each successful extraction.
 type Processor struct {
-	store       *store.Store
-	cascade     *Cascade
+	store    *store.Store
+	cascade  *Cascade
 	provider func(ctx context.Context) (*categorize.Categorizer, bool)
-	onInsert    func(txID, amountFils int64, merchant, direction string)
+	onInsert func(txID, amountFils int64, merchant, direction string)
 }
 
 func NewProcessor(st *store.Store, c *Cascade) *Processor {
