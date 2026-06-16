@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
-  totalProjection, paceStatus, paceTone,
+  totalProjection, paceStatus, paceTone, categoryDeltas,
 } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
 
@@ -68,5 +68,39 @@ describe("pace", () => {
     expect(paceTone("under")).toBe("good");
     expect(paceTone("over")).toBe("warn");
     expect(paceTone("overbudget")).toBe("bad");
+  });
+});
+
+describe("categoryDeltas", () => {
+  const cur: CategorySpend[] = [
+    { category_id: 1, name: "Groceries", bucket: "need", spent: 2000 },
+    { category_id: 2, name: "Dining", bucket: "want", spent: 500 },
+    { category_id: 3, name: "Gifts", bucket: "want", spent: 300 }, // new
+  ];
+  const prev: CategorySpend[] = [
+    { category_id: 1, name: "Groceries", bucket: "need", spent: 1000 },
+    { category_id: 2, name: "Dining", bucket: "want", spent: 800 },
+    { category_id: 4, name: "Travel", bucket: "want", spent: 600 }, // gone
+  ];
+
+  it("computes delta and deltaPct for matched categories", () => {
+    const d = categoryDeltas(cur, prev);
+    const groceries = d.find((x) => x.category_id === 1)!;
+    expect(groceries.delta).toBe(1000);
+    expect(groceries.deltaPct).toBeCloseTo(1.0);
+    expect(groceries.isNew).toBe(false);
+  });
+  it("marks a category absent last month as new with null deltaPct", () => {
+    const gifts = categoryDeltas(cur, prev).find((x) => x.category_id === 3)!;
+    expect(gifts.isNew).toBe(true);
+    expect(gifts.deltaPct).toBeNull();
+    expect(gifts.delta).toBe(300);
+  });
+  it("includes a category present last month but gone this month with spent 0", () => {
+    const travel = categoryDeltas(cur, prev).find((x) => x.category_id === 4)!;
+    expect(travel.spent).toBe(0);
+    expect(travel.prevSpent).toBe(600);
+    expect(travel.delta).toBe(-600);
+    expect(travel.deltaPct).toBe(-1);
   });
 });

@@ -74,6 +74,42 @@ export function paceTone(status: PaceStatus): "good" | "warn" | "bad" {
   return status === "overbudget" ? "bad" : status === "over" ? "warn" : "good";
 }
 
+export interface CategoryDelta {
+  category_id: number;
+  name: string;
+  bucket: string;
+  spent: number;
+  prevSpent: number;
+  delta: number;            // spent - prevSpent
+  deltaPct: number | null;  // prevSpent > 0 ? delta / prevSpent : null
+  isNew: boolean;           // prevSpent === 0 && spent > 0
+}
+
+/** Pair each category's spend with its previous-month spend. Includes "gone" categories (present last month only) with spent 0. */
+export function categoryDeltas(cur: CategorySpend[], prev: CategorySpend[]): CategoryDelta[] {
+  const prevMap = new Map(prev.map((c) => [c.category_id, c]));
+  const out: CategoryDelta[] = cur.map((c) => {
+    const prevSpent = prevMap.get(c.category_id)?.spent ?? 0;
+    const delta = c.spent - prevSpent;
+    return {
+      category_id: c.category_id, name: c.name, bucket: c.bucket,
+      spent: c.spent, prevSpent, delta,
+      deltaPct: prevSpent > 0 ? delta / prevSpent : null,
+      isNew: prevSpent === 0 && c.spent > 0,
+    };
+  });
+  const curIds = new Set(cur.map((c) => c.category_id));
+  for (const p of prev) {
+    if (!curIds.has(p.category_id)) {
+      out.push({
+        category_id: p.category_id, name: p.name, bucket: p.bucket,
+        spent: 0, prevSpent: p.spent, delta: -p.spent, deltaPct: -1, isNew: false,
+      });
+    }
+  }
+  return out;
+}
+
 /** The trailing `n` period strings ("YYYY-MM"), oldest first, ending at `end` (a YYYY-MM). */
 export function trailingPeriods(end: string, n: number): string[] {
   const [y, m] = end.split("-").map(Number);
