@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-export const LIVE_INVALIDATE_KEYS = [["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"]] as const;
+export const LIVE_INVALIDATE_KEYS = [["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"], ["categorize-status"]] as const;
 
 export function useLiveEvents() {
   const qc = useQueryClient();
