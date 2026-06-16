@@ -14,7 +14,11 @@ beforeEach(() => {
         calls.push({ url, method: "PUT", body: JSON.parse(init.body as string) });
         return new Response("{}");
       }
-      return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85 }));
+      return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85, ai_key_present: true }));
+    }
+    if (url === "/api/recategorize" && init?.method === "POST") {
+      calls.push({ url, method: "POST", body: init.body ? JSON.parse(init.body as string) : null });
+      return new Response(JSON.stringify({ processed: 2 }));
     }
     if (url === "/api/budget") return new Response(JSON.stringify({ monthly_income: 0, need_pct: 0.5, want_pct: 0.3, saving_pct: 0.2, income_source: "config", freeze_history: false }));
     if (url === "/api/rules") return new Response(JSON.stringify([{ ID: 5, MatchType: "contains", Pattern: "spinneys", CategoryID: 1, Priority: 100, Source: "manual", IsActive: true }]));
@@ -49,6 +53,19 @@ describe("Settings categorization", () => {
       expect(call).toBeDefined();
       expect(call!.body).toEqual({ auto_categorize: false, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85 });
     });
+  });
+
+  it("shows the AI key status from the server", async () => {
+    wrap();
+    expect(await screen.findByText(/anthropic api key/i)).toBeInTheDocument();
+    expect(screen.getByText(/^loaded$/i)).toBeInTheDocument();
+  });
+
+  it("runs a categorization pass on demand", async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole("button", { name: /run categorization now/i }));
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/recategorize" && c.method === "POST")).toBe(true));
+    expect(await screen.findByText(/categorized 2 transactions/i)).toBeInTheDocument();
   });
 
   it("toggles a rule's active state via PUT /api/rules/{id}/active", async () => {
