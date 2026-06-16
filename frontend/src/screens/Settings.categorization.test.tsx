@@ -16,9 +16,16 @@ beforeEach(() => {
       }
       return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85, ai_key_present: true }));
     }
-    if (url === "/api/recategorize" && init?.method === "POST") {
+    if (url === "/api/categorize/status") {
+      return new Response(JSON.stringify({ status: "idle", processed: 0, total: 0 }));
+    }
+    if (url === "/api/categorize/run" && init?.method === "POST") {
       calls.push({ url, method: "POST", body: init.body ? JSON.parse(init.body as string) : null });
-      return new Response(JSON.stringify({ processed: 2 }));
+      return new Response(JSON.stringify({ started: true }));
+    }
+    if (url === "/api/categorize/stop" && init?.method === "POST") {
+      calls.push({ url, method: "POST", body: null });
+      return new Response(JSON.stringify({ stopped: true }));
     }
     if (url === "/api/budget") return new Response(JSON.stringify({ monthly_income: 0, need_pct: 0.5, want_pct: 0.3, saving_pct: 0.2, income_source: "config", freeze_history: false }));
     if (url === "/api/rules") return new Response(JSON.stringify([{ ID: 5, MatchType: "contains", Pattern: "spinneys", CategoryID: 1, Priority: 100, Source: "manual", IsActive: true }]));
@@ -61,11 +68,16 @@ describe("Settings categorization", () => {
     expect(screen.getByText(/^loaded$/i)).toBeInTheDocument();
   });
 
-  it("runs a categorization pass on demand", async () => {
+  it("starts a scoped categorization run", async () => {
     wrap();
-    fireEvent.click(await screen.findByRole("button", { name: /run categorization now/i }));
-    await waitFor(() => expect(calls.some((c) => c.url === "/api/recategorize" && c.method === "POST")).toBe(true));
-    expect(await screen.findByText(/categorized 2 transactions/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^run$/i }));
+    await waitFor(() => {
+      const call = calls.find((c) => c.url === "/api/categorize/run" && c.method === "POST");
+      expect(call).toBeDefined();
+      const body = call!.body as { from: string; to: string };
+      expect(body.from).toMatch(/^\d{4}-\d{2}-01$/);
+      expect(body.to).toMatch(/^\d{4}-\d{2}-32$/);
+    });
   });
 
   it("toggles a rule's active state via PUT /api/rules/{id}/active", async () => {
