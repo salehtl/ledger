@@ -47,7 +47,7 @@ export function AppShell() {
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
           {tab === "home" && <Home period={anchor} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} onOpenSwipeMode={() => setInSwipeMode(true)} />}
-          {tab === "insights" && <Insights period={anchor} />}
+          {tab === "insights" && <Insights scope={scope} />}
           {tab === "settings" && <Settings />}
         </div>
       </main>
