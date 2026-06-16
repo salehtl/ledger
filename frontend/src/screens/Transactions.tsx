@@ -2,6 +2,8 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
+import { monthRange, txnTotals } from "../lib/transactions";
+import { formatFils } from "../lib/money";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -10,7 +12,8 @@ import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
 import { useToast } from "../components/Toast";
-import { AlertTriangle, ListOrdered } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
+import { monthLabel, currentPeriod } from "../lib/insights";
 
 type Filter = "all" | "needs_review" | "confirmed";
 const FILTERS = [
@@ -24,12 +27,23 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
   const { show } = useToast();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [month, setMonth] = useState("");
   const [active, setActive] = useState<Txn | null>(null);
 
   const status = filter === "all" ? "" : filter;
   const q = useQuery({
-    queryKey: ["transactions", status],
-    queryFn: () => getJSON<Txn[]>(status ? `/api/transactions?status=${status}` : "/api/transactions"),
+    queryKey: ["transactions", status, month],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (month) {
+        const { from, to } = monthRange(month);
+        params.set("from", from);
+        params.set("to", to);
+      }
+      const qs = params.toString();
+      return getJSON<Txn[]>(qs ? `/api/transactions?${qs}` : "/api/transactions");
+    },
   });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
 
@@ -38,6 +52,8 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
     const term = search.trim().toLowerCase();
     return term ? data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term)) : data;
   }, [q.data, search]);
+
+  const totals = useMemo(() => txnTotals(rows), [rows]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -69,24 +85,48 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Transactions</h1>
-      <div className="flex flex-col gap-2">
+      {/* title + month scope (mirrors the Home header) */}
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">Transactions</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setMonth(month ? "" : currentPeriod())}
+            className="text-xs text-muted hover:text-fg transition-colors"
+          >
+            {month ? "All time" : "This month"}
+          </button>
+          <input
+            type="month"
+            aria-label="Month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            className="bg-surface border border-border rounded-lg px-2 py-1 text-sm tnum"
+          />
+        </div>
+      </div>
+
+      {/* status filter + swipe entry (right-aligned so it never reflows search) */}
+      <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
         {filter === "needs_review" && onOpenSwipeMode && (
           <button
             onClick={onOpenSwipeMode}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[--accent] text-white text-sm font-medium hover:opacity-90 transition-opacity self-start"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
           >
-            <span>⚡</span>
-            Swipe Mode
+            <Zap size={16} /> Swipe
           </button>
         )}
+      </div>
+
+      {/* search */}
+      <div className="relative">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
         <input
           type="search"
           placeholder="Search merchant…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full px-3 py-2 rounded-lg border border-border bg-surface text-sm"
+          className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm"
         />
       </div>
 
@@ -97,14 +137,24 @@ export function Transactions({ onOpenSwipeMode }: { onOpenSwipeMode?: () => void
       ) : rows.length === 0 ? (
         <EmptyState icon={ListOrdered} title="No transactions" hint="Try a different filter or search." />
       ) : (
-        <Card className="!p-0">
-          <p className="text-xs text-muted px-4 pt-3">{rows.length} transaction{rows.length === 1 ? "" : "s"}</p>
-          <ul className="divide-y divide-border px-4">
-            {rows.map((t) => (
-              <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
-            ))}
-          </ul>
-        </Card>
+        <>
+          <div className="flex items-center justify-between px-1">
+            <p className="text-sm text-muted">
+              {month ? `${monthLabel(month)} ${month.slice(0, 4)}` : "All time"} ·{" "}
+              {rows.length} transaction{rows.length === 1 ? "" : "s"}
+            </p>
+            {totals.spentFils > 0 && (
+              <p className="text-sm text-muted tnum">{formatFils(totals.spentFils)} spent</p>
+            )}
+          </div>
+          <Card className="!p-0">
+            <ul className="divide-y divide-border px-4">
+              {rows.map((t) => (
+                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
+              ))}
+            </ul>
+          </Card>
+        </>
       )}
 
       {active && cats.data && (
