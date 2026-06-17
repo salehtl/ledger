@@ -49,7 +49,7 @@ describe("AppShell", () => {
   it("refetches data when the user pulls down from the top", async () => {
     wrap();
     await screen.findByRole("button", { name: /home/i });
-    const fetchMock = global.fetch as unknown as { mock: { calls: unknown[][] } };
+    const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } };
     const summaryCalls = () =>
       fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/summary")).length;
     await waitFor(() => expect(summaryCalls()).toBeGreaterThan(0));
