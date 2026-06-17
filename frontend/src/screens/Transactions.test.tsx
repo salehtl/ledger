@@ -58,6 +58,40 @@ describe("Transactions", () => {
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
   });
 
+  it("filters by bucket via the chip picker", async () => {
+    wrap();
+    await screen.findByText("NETFLIX");
+    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
+    fireEvent.click(screen.getByLabelText("Wants"));
+    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    expect(screen.getByText("NETFLIX")).toBeInTheDocument();
+    expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
+  });
+
+  it("ANDs a bucket chip with a direction chip", async () => {
+    wrap();
+    await screen.findByText("NETFLIX");
+    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
+    fireEvent.click(screen.getByLabelText("Wants"));
+    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^direction/i }));
+    fireEvent.click(screen.getByLabelText("Income")); // credit — NETFLIX is debit
+    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
+    expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
+  });
+
+  it("Clear restores all rows", async () => {
+    wrap();
+    await screen.findByText("NETFLIX");
+    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
+    fireEvent.click(screen.getByLabelText("Wants"));
+    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+    expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
+  });
+
   it("scopes to the from/to bounds it is given", async () => {
     wrap({ from: "2026-05-01", to: "2026-05-32" }); // May → no June rows
     expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
