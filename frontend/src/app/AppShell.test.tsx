@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { AppShell } from "./AppShell";
@@ -44,5 +44,21 @@ describe("AppShell", () => {
     const label = screen.getByRole("button", { name: /\d{4}/ }); // e.g. "Jun 2026"
     fireEvent.click(label);
     expect(await screen.findByText(/choose period/i)).toBeInTheDocument();
+  });
+
+  it("refetches data when the user pulls down from the top", async () => {
+    wrap();
+    await screen.findByRole("button", { name: /home/i });
+    const fetchMock = global.fetch as unknown as { mock: { calls: unknown[][] } };
+    const summaryCalls = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/summary")).length;
+    const before = summaryCalls();
+
+    const main = screen.getByRole("main");
+    fireEvent.touchStart(main, { touches: [{ clientY: 0 }] });
+    fireEvent.touchMove(main, { touches: [{ clientY: 400 }] }); // past threshold
+    fireEvent.touchEnd(main);
+
+    await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));
   });
 });
