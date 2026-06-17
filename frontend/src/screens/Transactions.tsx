@@ -9,8 +9,9 @@ import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
+import { FilterChips } from "../components/transactions/FilterChips";
 import { useToast } from "../components/Toast";
-import { txnTotals } from "../lib/transactions";
+import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters } from "../lib/transactions";
 import { formatFils } from "../lib/money";
 import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
 
@@ -26,6 +27,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
   const { show } = useToast();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
   const [active, setActive] = useState<Txn | null>(null);
 
   const status = filter === "all" ? "" : filter;
@@ -43,10 +45,11 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
 
   const rows = useMemo(() => {
-    const data = q.data ?? [];
+    let data = applyTxnFilters(q.data ?? [], filters);
     const term = search.trim().toLowerCase();
-    return term ? data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term)) : data;
-  }, [q.data, search]);
+    if (term) data = data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term));
+    return data;
+  }, [q.data, search, filters]);
   const totals = useMemo(() => txnTotals(rows), [rows]);
 
   const invalidate = () => {
@@ -101,6 +104,8 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm"
         />
       </div>
+
+      <FilterChips filters={filters} categories={cats.data ?? []} txns={q.data ?? []} onChange={setFilters} />
 
       {q.isError ? (
         <EmptyState icon={AlertTriangle} title="Couldn't load transactions" hint="Check your connection and try again." />
