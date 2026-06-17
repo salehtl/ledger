@@ -1,6 +1,71 @@
 import { describe, it, expect } from "vitest";
-import { monthRange, txnTotals } from "./transactions";
+import {
+  monthRange,
+  txnTotals,
+  applyTxnFilters,
+  filtersActive,
+  sourceLabel,
+  EMPTY_FILTERS,
+  type TxnFilters,
+} from "./transactions";
 import type { Txn } from "../api/types";
+
+const mkTxn = (over: Partial<Txn>): Txn => ({
+  ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED",
+  Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0,
+  Source: "email", CategoryID: null, CategoryName: "", Bucket: "", ...over,
+});
+
+describe("applyTxnFilters", () => {
+  const rows: Txn[] = [
+    mkTxn({ ID: 1, Bucket: "need", Direction: "debit", CategoryID: 1, Source: "email" }),
+    mkTxn({ ID: 2, Bucket: "want", Direction: "debit", CategoryID: 2, Source: "import" }),
+    mkTxn({ ID: 3, Bucket: "want", Direction: "credit", CategoryID: null, Source: "ai" }),
+  ];
+
+  it("returns all rows when filters are empty", () => {
+    expect(applyTxnFilters(rows, EMPTY_FILTERS)).toHaveLength(3);
+  });
+
+  it("ORs values within a dimension", () => {
+    const f: TxnFilters = { ...EMPTY_FILTERS, buckets: ["need", "want"] };
+    expect(applyTxnFilters(rows, f).map((t) => t.ID)).toEqual([1, 2, 3]);
+  });
+
+  it("ANDs across dimensions", () => {
+    const f: TxnFilters = { ...EMPTY_FILTERS, buckets: ["want"], directions: ["debit"] };
+    expect(applyTxnFilters(rows, f).map((t) => t.ID)).toEqual([2]);
+  });
+
+  it("matches categories by id and excludes null categories", () => {
+    const f: TxnFilters = { ...EMPTY_FILTERS, categoryIds: [2] };
+    expect(applyTxnFilters(rows, f).map((t) => t.ID)).toEqual([2]);
+    const none: TxnFilters = { ...EMPTY_FILTERS, categoryIds: [99] };
+    expect(applyTxnFilters(rows, none)).toHaveLength(0);
+  });
+
+  it("filters by source", () => {
+    const f: TxnFilters = { ...EMPTY_FILTERS, sources: ["ai"] };
+    expect(applyTxnFilters(rows, f).map((t) => t.ID)).toEqual([3]);
+  });
+});
+
+describe("filtersActive", () => {
+  it("counts selected values across dimensions", () => {
+    expect(filtersActive(EMPTY_FILTERS)).toBe(0);
+    expect(filtersActive({ buckets: ["need"], categoryIds: [1, 2], directions: [], sources: ["ai"] })).toBe(4);
+  });
+});
+
+describe("sourceLabel", () => {
+  it("maps known sources", () => {
+    expect(sourceLabel("email")).toBe("Email");
+    expect(sourceLabel("ai")).toBe("AI");
+  });
+  it("prettifies unknown sources", () => {
+    expect(sourceLabel("import_derived")).toBe("Import Derived");
+  });
+});
 
 describe("monthRange", () => {
   it("brackets a month inclusive of timestamped posted_at values", () => {
