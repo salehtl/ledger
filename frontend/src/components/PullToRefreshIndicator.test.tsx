@@ -27,4 +27,14 @@ describe("PullToRefreshIndicator", () => {
     render(<PullToRefreshIndicator pullDistance={0} refreshing={false} />);
     expect(screen.getByTestId("ptr-indicator")).toHaveAttribute("aria-hidden", "true");
   });
+
+  it("animates height while collapsing at rest", () => {
+    render(<PullToRefreshIndicator pullDistance={0} refreshing={false} />);
+    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ transition: "height 0.2s ease-out" });
+  });
+
+  it("does not animate height during an active pull", () => {
+    render(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
+    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ transition: "none" });
+  });
 });
