@@ -52,6 +52,7 @@ describe("AppShell", () => {
     const fetchMock = global.fetch as unknown as { mock: { calls: unknown[][] } };
     const summaryCalls = () =>
       fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/summary")).length;
+    await waitFor(() => expect(summaryCalls()).toBeGreaterThan(0));
     const before = summaryCalls();
 
     const main = screen.getByRole("main");
