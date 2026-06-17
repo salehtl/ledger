@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, fireEvent } from "@testing-library/react";
 import { usePullToRefresh } from "./usePullToRefresh";
 
@@ -11,6 +11,8 @@ function makeEl(scrollTop = 0): HTMLDivElement {
 }
 
 describe("usePullToRefresh", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+
   it("tracks a downward pull from the top", () => {
     const el = makeEl(0);
     const { result } = renderHook(() => usePullToRefresh({ current: el }, async () => {}));

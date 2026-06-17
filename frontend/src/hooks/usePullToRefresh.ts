@@ -30,7 +30,7 @@ export function usePullToRefresh(
       startY.current = el.scrollTop <= 0 ? e.touches[0].clientY : null;
     };
     const onMove = (e: TouchEvent) => {
-      if (startY.current === null || refreshingRef.current) return;
+      if (startY.current === null || refreshingRef.current || !e.touches[0]) return;
       const dist = resist(e.touches[0].clientY - startY.current);
       if (dist > 0) {
         e.preventDefault(); // suppress native scroll/bounce while pulling
