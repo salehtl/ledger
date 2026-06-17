@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { Txn } from "../api/types";
 import { BottomNav } from "../components/ui/BottomNav";
@@ -9,6 +9,8 @@ import { type Scope, scopeBounds, scopeAnchor } from "../lib/scope";
 import { currentPeriod } from "../lib/insights";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
+import { usePullToRefresh } from "../hooks/usePullToRefresh";
+import { PullToRefreshIndicator } from "../components/PullToRefreshIndicator";
 import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
 import { Insights } from "../screens/Insights";
@@ -31,6 +33,10 @@ export function AppShell() {
   const online = useOnline();
   useLiveEvents();
 
+  const qc = useQueryClient();
+  const mainRef = useRef<HTMLElement>(null);
+  const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries());
+
   const review = useQuery({ queryKey: ["review"], queryFn: () => getJSON<Txn[]>("/api/review") });
   const reviewCount = review.data?.length ?? 0;
 
@@ -43,7 +49,8 @@ export function AppShell() {
       {!online && (
         <div role="status" className="shrink-0 bg-warn/15 text-warn text-sm text-center py-1">Offline — showing last loaded data</div>
       )}
-      <main className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
+        <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
           {tab === "home" && <Home period={anchor} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} onOpenSwipeMode={() => setInSwipeMode(true)} />}
