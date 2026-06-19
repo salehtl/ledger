@@ -3,6 +3,7 @@ package categorize
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -116,7 +117,13 @@ func (c *Categorizer) matchRule(r Rule, lowerMerchant string) bool {
 
 // Categorize classifies merchantRaw using rules first, then AI fallback.
 // Returns (Result, true) on success, (Result{}, false) when no classification is possible.
-func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Result, bool) {
+// Categorize resolves a merchant to a category. It returns a nil error when a
+// rule or the AI confidently resolved the merchant. A non-nil error means the
+// merchant was left unresolved; callers should leave the transaction in review.
+// The sentinel ErrAIUnavailable (returned when AI is disabled and no rule
+// matched) signals a *benign* miss rather than a failure, so callers surfacing
+// errors to the user can filter it out via errors.Is.
+func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Result, error) {
 	lowerMerchant := strings.ToLower(merchantRaw)
 
 	// Walk rules in priority order (already sorted ascending by Priority).
@@ -135,17 +142,17 @@ func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Resul
 			Confidence:     1.0,
 			Source:         "rule",
 			AboveThreshold: true,
-		}, true
+		}, nil
 	}
 
 	// No rule matched — try AI.
 	name, conf, err := c.ai.Categorize(ctx, merchantRaw, c.cats)
 	if err != nil {
-		return Result{}, false
+		return Result{}, err
 	}
 	cat, ok := c.catsByName[strings.ToLower(name)]
 	if !ok {
-		return Result{}, false
+		return Result{}, fmt.Errorf("ai returned unknown category %q for %q", name, merchantRaw)
 	}
 
 	res := Result{
@@ -165,5 +172,5 @@ func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Resul
 			}
 		}
 	}
-	return res, true
+	return res, nil
 }

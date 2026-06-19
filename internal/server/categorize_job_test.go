@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,7 +36,7 @@ func seedNeedsReview(t *testing.T, st *store.Store, merchant string, amt int64) 
 func waitCategorizeIdle(t *testing.T, srv *Server) {
 	t.Helper()
 	for i := 0; i < 400; i++ {
-		if status, _, _ := srv.categorizeStatus(); status == "idle" {
+		if status, _, _, _, _ := srv.categorizeStatus(); status == "idle" {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -57,9 +58,9 @@ func shoppingID(t *testing.T, st *store.Store) int64 {
 
 func TestCategorizeJob_StatusIdleInitially(t *testing.T) {
 	srv := newTestServerWithStore(t, newTestServerStore(t))
-	status, processed, total := srv.categorizeStatus()
-	if status != "idle" || processed != 0 || total != 0 {
-		t.Fatalf("got %q %d %d, want idle 0 0", status, processed, total)
+	status, processed, total, failed, errMsg := srv.categorizeStatus()
+	if status != "idle" || processed != 0 || total != 0 || failed != 0 || errMsg != "" {
+		t.Fatalf("got %q %d %d %d %q, want idle 0 0 0 \"\"", status, processed, total, failed, errMsg)
 	}
 }
 
@@ -69,7 +70,7 @@ func TestCategorizeJob_ProcessesAllAndBroadcasts(t *testing.T) {
 	b := seedNeedsReview(t, st, "BETA", 2000)
 	catID := shoppingID(t, st)
 	srv := newTestServerWithStore(t, st)
-	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) { return catID, "confirmed", true })
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) { return catID, "confirmed", true, nil })
 	hub := NewHub()
 	srv.SetHub(hub)
 	ch, unsub := hub.Subscribe()
@@ -81,7 +82,7 @@ func TestCategorizeJob_ProcessesAllAndBroadcasts(t *testing.T) {
 	}
 	waitCategorizeIdle(t, srv)
 
-	_, processed, total := srv.categorizeStatus()
+	_, processed, total, _, _ := srv.categorizeStatus()
 	if processed != 2 || total != 2 {
 		t.Fatalf("processed=%d total=%d, want 2 2", processed, total)
 	}
@@ -116,19 +117,84 @@ func TestCategorizeJob_DedupesByMerchant(t *testing.T) {
 	catID := shoppingID(t, st)
 	srv := newTestServerWithStore(t, st)
 	var calls int32
-	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) {
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) {
 		atomic.AddInt32(&calls, 1)
-		return catID, "confirmed", true
+		return catID, "confirmed", true, nil
 	})
 	if started, err := srv.startCategorize("", ""); err != nil || !started {
 		t.Fatalf("start: %v %v", started, err)
 	}
 	waitCategorizeIdle(t, srv)
-	if _, processed, _ := srv.categorizeStatus(); processed != 3 {
+	if _, processed, _, _, _ := srv.categorizeStatus(); processed != 3 {
 		t.Errorf("processed=%d, want 3", processed)
 	}
 	if c := atomic.LoadInt32(&calls); c != 1 {
 		t.Errorf("recatFn called %d times, want 1 (deduped)", c)
+	}
+}
+
+func TestCategorizeJob_RecordsGenuineFailures(t *testing.T) {
+	st := newTestServerStore(t)
+	seedNeedsReview(t, st, "BOOM", 1000)  // recatFn returns a genuine error
+	seedNeedsReview(t, st, "BOOM", 1500)  // same merchant, deduped — same error
+	seedNeedsReview(t, st, "SKIP", 2000)  // benign miss (ok=false, err=nil)
+	catID := shoppingID(t, st)
+	seedNeedsReview(t, st, "OKAY", 3000)  // categorized fine
+	srv := newTestServerWithStore(t, st)
+	srv.SetRecategorizeFn(func(_ context.Context, merchant string) (int64, string, bool, error) {
+		switch merchant {
+		case "BOOM":
+			return 0, "", false, errors.New("anthropic API status 429")
+		case "OKAY":
+			return catID, "confirmed", true, nil
+		default:
+			return 0, "", false, nil // benign miss
+		}
+	})
+
+	if started, err := srv.startCategorize("", ""); err != nil || !started {
+		t.Fatalf("start: %v %v", started, err)
+	}
+	waitCategorizeIdle(t, srv)
+
+	_, processed, total, failed, errMsg := srv.categorizeStatus()
+	if processed != 4 || total != 4 {
+		t.Errorf("processed=%d total=%d, want 4 4", processed, total)
+	}
+	// Two BOOM rows failed; SKIP (benign) and OKAY (success) must not count.
+	if failed != 2 {
+		t.Errorf("failed=%d, want 2 (only the two BOOM rows)", failed)
+	}
+	if errMsg == "" || !strings.Contains(errMsg, "429") {
+		t.Errorf("errMsg=%q, want it to carry the AI failure message", errMsg)
+	}
+}
+
+func TestHandleCategorizeStatus_ReportsFailure(t *testing.T) {
+	st := newTestServerStore(t)
+	seedNeedsReview(t, st, "BOOM", 1000)
+	srv := newTestServerWithStore(t, st)
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) {
+		return 0, "", false, errors.New("anthropic API status 500")
+	})
+	if started, err := srv.startCategorize("", ""); err != nil || !started {
+		t.Fatalf("start: %v %v", started, err)
+	}
+	waitCategorizeIdle(t, srv)
+
+	r := httptest.NewRequest("GET", "/api/categorize/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	var resp struct {
+		Failed int    `json:"failed"`
+		Error  string `json:"error"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Failed != 1 {
+		t.Errorf("failed=%d, want 1", resp.Failed)
+	}
+	if !strings.Contains(resp.Error, "500") {
+		t.Errorf("error=%q, want it to surface the AI failure", resp.Error)
 	}
 }
 
@@ -142,12 +208,12 @@ func TestCategorizeJob_StopHalts(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var calls int32
-	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) {
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			entered <- struct{}{}
 			<-release
 		}
-		return catID, "confirmed", true
+		return catID, "confirmed", true, nil
 	})
 	if started, _ := srv.startCategorize("", ""); !started {
 		t.Fatal("expected start")
@@ -157,7 +223,7 @@ func TestCategorizeJob_StopHalts(t *testing.T) {
 	close(release)
 	waitCategorizeIdle(t, srv)
 
-	_, processed, _ := srv.categorizeStatus()
+	_, processed, _, _, _ := srv.categorizeStatus()
 	if processed != 1 {
 		t.Errorf("processed=%d, want 1 (stopped after first item)", processed)
 	}
@@ -174,12 +240,12 @@ func TestCategorizeJob_RejectsConcurrentRun(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{}, 1)
 	var once int32
-	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) {
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) {
 		if atomic.AddInt32(&once, 1) == 1 {
 			entered <- struct{}{}
 			<-release
 		}
-		return catID, "confirmed", true
+		return catID, "confirmed", true, nil
 	})
 	if started, _ := srv.startCategorize("", ""); !started {
 		t.Fatal("first start should succeed")
@@ -216,12 +282,12 @@ func TestHandleCategorizeRunAndConflict(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var once int32
-	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool) {
+	srv.SetRecategorizeFn(func(context.Context, string) (int64, string, bool, error) {
 		if atomic.AddInt32(&once, 1) == 1 {
 			entered <- struct{}{}
 			<-release
 		}
-		return catID, "confirmed", true
+		return catID, "confirmed", true, nil
 	})
 
 	w := httptest.NewRecorder()

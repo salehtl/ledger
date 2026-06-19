@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -34,19 +35,21 @@ import (
 // can't be read, auto_categorize is off, or rules can't be read — callers skip
 // categorization in that case. cats is the static category list; aiCat is the
 // AI categorizer used only when settings.AIEnabled.
-func buildCategorizer(st *store.Store, cats []categorize.Category, aiCat categorize.AICategorizer) (*categorize.Categorizer, bool) {
+// buildCategorizer assembles a categorizer from current settings + rules. A nil
+// categorizer with a nil error means categorization is disabled (AutoCategorize
+// off) — a benign state, not a failure. A non-nil error means a real read
+// failure the caller may want to surface.
+func buildCategorizer(st *store.Store, cats []categorize.Category, aiCat categorize.AICategorizer) (*categorize.Categorizer, error) {
 	settings, err := st.SelectAppSettings()
 	if err != nil {
-		log.Printf("categorizer: settings read failed, skipping categorization: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("read settings: %w", err)
 	}
 	if !settings.AutoCategorize {
-		return nil, false
+		return nil, nil
 	}
 	ruleRows, err := st.SelectActiveRules()
 	if err != nil {
-		log.Printf("categorizer: active rules read failed: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("read active rules: %w", err)
 	}
 	rules := make([]categorize.Rule, 0, len(ruleRows))
 	for _, r := range ruleRows {
@@ -62,7 +65,7 @@ func buildCategorizer(st *store.Store, cats []categorize.Category, aiCat categor
 			threshold = settings.AIThreshold
 		}
 	}
-	return categorize.New(rules, cats, ai, threshold, settings.AIAutoAccept), true
+	return categorize.New(rules, cats, ai, threshold, settings.AIAutoAccept), nil
 }
 
 func main() {
@@ -139,7 +142,12 @@ func main() {
 	}
 	processor := parse.NewProcessor(st, cascade)
 	processor.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
-		return buildCategorizer(st, domainCats, aiCat)
+		cat, err := buildCategorizer(st, domainCats, aiCat)
+		if err != nil {
+			log.Printf("categorizer: skipping categorization: %v", err)
+			return nil, false
+		}
+		return cat, cat != nil
 	})
 
 	srv := server.New(st, webFS)
@@ -151,14 +159,24 @@ func main() {
 	srv.SetRuleActiveStore(st)
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
-	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool) {
-		cat, ok := buildCategorizer(st, domainCats, aiCat)
-		if !ok {
-			return 0, "", false
+	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool, error) {
+		cat, err := buildCategorizer(st, domainCats, aiCat)
+		if err != nil {
+			// Real read failure — surface it to the run status.
+			return 0, "", false, err
 		}
-		result, ok := cat.Categorize(ctx, merchantRaw)
-		if !ok {
-			return 0, "", false
+		if cat == nil {
+			// Categorization disabled — benign miss, nothing to report.
+			return 0, "", false, nil
+		}
+		result, err := cat.Categorize(ctx, merchantRaw)
+		if err != nil {
+			if errors.Is(err, categorize.ErrAIUnavailable) {
+				// No rule matched and AI is off for this merchant — benign.
+				return 0, "", false, nil
+			}
+			// Genuine failure (AI outage, rate-limit exhaustion, bad response).
+			return 0, "", false, err
 		}
 		status := "needs_review"
 		if result.AboveThreshold {
@@ -173,7 +191,7 @@ func main() {
 				Source:     "ai_confirmed",
 			})
 		}
-		return result.CategoryID, status, true
+		return result.CategoryID, status, true, nil
 	})
 
 	// VAPID push sender (optional — only enabled when both keys are set).

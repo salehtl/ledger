@@ -54,6 +54,19 @@ export function Settings({ scope }: { scope?: Scope }) {
 
   const running = catStatus.data?.status === "running";
 
+  // The manual run is a no-op when auto-categorize is off (the categorizer
+  // isn't built), and the AI tier fails on every merchant when AI is on but no
+  // API key is loaded. In both cases there's nothing useful to do, so the Run
+  // button is disabled with a reason. Rules-only runs (AI off) still work
+  // without a key.
+  const aiNeedsKey = !!settings.data?.ai_enabled && !settings.data?.ai_key_present;
+  const runDisabled = !settings.data?.auto_categorize || aiNeedsKey;
+  const runDisabledReason = !settings.data?.auto_categorize
+    ? "Turn on Auto-categorize to run categorization."
+    : aiNeedsKey
+      ? "AI suggestions need the Anthropic API key — add LEDGER_AI_API_KEY to the env file and restart."
+      : "";
+
   const runCategorization = async () => {
     const b = scopeBounds(runScope);
     try {
@@ -207,12 +220,22 @@ export function Settings({ scope }: { scope?: Scope }) {
             ) : (
               <div className="flex items-center gap-2">
                 <Button variant="secondary" onClick={() => setPeriodOpen(true)}>{scopeLabel(runScope)}</Button>
-                <Button variant="primary" onClick={runCategorization}>Run</Button>
+                <Button variant="primary" onClick={runCategorization} disabled={runDisabled}>Run</Button>
               </div>
             )}
             <p className="text-xs text-muted mt-1.5">
-              Categorizes Needs review for {scopeLabel(runScope)} ({settings.data.ai_enabled ? "rules + AI" : "rules"}).
+              {runDisabled && !running
+                ? runDisabledReason
+                : `Categorizes Needs review for ${scopeLabel(runScope)} (${settings.data.ai_enabled ? "rules + AI" : "rules"}).`}
             </p>
+            {catStatus.data && (catStatus.data.failed > 0 || catStatus.data.error) && (
+              <p role="alert" className="text-bad text-xs mt-2">
+                {catStatus.data.failed > 0
+                  ? `${catStatus.data.failed} ${catStatus.data.failed === 1 ? "transaction" : "transactions"} couldn’t be categorized`
+                  : "Categorization ran into a problem"}
+                {catStatus.data.error ? ` — ${catStatus.data.error}` : ""}
+              </p>
+            )}
           </div>
           {periodOpen && (
             <PeriodSheet

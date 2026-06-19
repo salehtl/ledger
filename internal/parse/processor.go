@@ -110,8 +110,10 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 }
 
 func (p *Processor) categorizeWith(ctx context.Context, cz *categorize.Categorizer, txID int64, merchantRaw string) {
-	result, ok := cz.Categorize(ctx, merchantRaw)
-	if !ok {
+	result, err := cz.Categorize(ctx, merchantRaw)
+	if err != nil {
+		// Unresolved (no rule match with AI disabled, or an AI failure) — leave
+		// the transaction in review for the manual run / categorizer deck.
 		return
 	}
 	status := "needs_review"

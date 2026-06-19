@@ -104,7 +104,7 @@ func (imp *Importer) Run(ctx context.Context, rows []RawRow, m MapConfig, fileNa
 				merchantCounts[merchantCatKey{norm.Txn.MerchantRaw, catID}]++
 			}
 		} else if imp.cat != nil {
-			if result, ok := imp.cat.Categorize(ctx, norm.Txn.MerchantRaw); ok {
+			if result, err := imp.cat.Categorize(ctx, norm.Txn.MerchantRaw); err == nil {
 				catID = result.CategoryID
 				if result.AboveThreshold {
 					status = "confirmed"

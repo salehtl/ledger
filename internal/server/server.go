@@ -31,8 +31,13 @@ type Reprocessor interface {
 	Reprocess(ctx context.Context, bank string) (int, error)
 }
 
-// CategorizeFunc is called by POST /api/categorize/run for each needs_review transaction.
-type CategorizeFunc func(ctx context.Context, merchantRaw string) (categoryID int64, status string, ok bool)
+// CategorizeFunc is called by POST /api/categorize/run for each needs_review
+// transaction. It returns ok=true with a category when the merchant was
+// resolved. ok=false with err=nil is a benign miss (no rule matched and AI is
+// off, or categorization is disabled) — leave the row in review, don't report
+// it. ok=false with err!=nil is a genuine failure (AI outage, rate-limit
+// exhaustion, settings/DB read error) that should be surfaced to the user.
+type CategorizeFunc func(ctx context.Context, merchantRaw string) (categoryID int64, status string, ok bool, err error)
 
 // CategoryStore is the subset of store methods the category/review/transaction handlers need.
 type CategoryStore interface {
