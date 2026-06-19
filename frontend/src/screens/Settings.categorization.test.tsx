@@ -5,19 +5,25 @@ import { ToastProvider } from "../components/Toast";
 import { Settings } from "./Settings";
 
 const calls: { url: string; method: string; body: unknown }[] = [];
+const defaultSettings = { auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85, ai_key_present: true };
+// Per-test overrides for the stubbed payloads.
+let categorizeStatus: Record<string, unknown> = { status: "idle", processed: 0, total: 0, failed: 0, error: "" };
+let appSettings: Record<string, unknown> = { ...defaultSettings };
 
 beforeEach(() => {
   calls.length = 0;
+  categorizeStatus = { status: "idle", processed: 0, total: 0, failed: 0, error: "" };
+  appSettings = { ...defaultSettings };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (url === "/api/settings") {
       if (init?.method === "PUT") {
         calls.push({ url, method: "PUT", body: JSON.parse(init.body as string) });
         return new Response("{}");
       }
-      return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85, ai_key_present: true }));
+      return new Response(JSON.stringify(appSettings));
     }
     if (url === "/api/categorize/status") {
-      return new Response(JSON.stringify({ status: "idle", processed: 0, total: 0 }));
+      return new Response(JSON.stringify(categorizeStatus));
     }
     if (url === "/api/categorize/run" && init?.method === "POST") {
       calls.push({ url, method: "POST", body: init.body ? JSON.parse(init.body as string) : null });
@@ -78,6 +84,48 @@ describe("Settings categorization", () => {
       expect(body.from).toMatch(/^\d{4}-\d{2}-01$/);
       expect(body.to).toMatch(/^\d{4}-\d{2}-32$/);
     });
+  });
+
+  it("disables Run when auto-categorize is off", async () => {
+    appSettings = { ...defaultSettings, auto_categorize: false };
+    wrap();
+    const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+    expect(screen.getByText(/turn on auto-categorize to run/i)).toBeInTheDocument();
+    // Clicking a disabled button must not fire a run.
+    fireEvent.click(run);
+    expect(calls.some((c) => c.url === "/api/categorize/run")).toBe(false);
+  });
+
+  it("disables Run when AI is on but the API key isn't loaded", async () => {
+    appSettings = { ...defaultSettings, ai_enabled: true, ai_key_present: false };
+    wrap();
+    const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+    expect(screen.getByText(/AI suggestions need the Anthropic API key/i)).toBeInTheDocument();
+  });
+
+  it("keeps Run enabled for a rules-only run with no API key", async () => {
+    appSettings = { ...defaultSettings, ai_enabled: false, ai_key_present: false };
+    wrap();
+    const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
+    expect(run.disabled).toBe(false);
+  });
+
+  it("surfaces the error message when a run reported failures", async () => {
+    categorizeStatus = { status: "idle", processed: 5, total: 5, failed: 3, error: "anthropic API status 429" };
+    wrap();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/3 transactions couldn’t be categorized/);
+    expect(alert).toHaveTextContent(/anthropic API status 429/);
+  });
+
+  it("shows no error alert after a clean run", async () => {
+    categorizeStatus = { status: "idle", processed: 5, total: 5, failed: 0, error: "" };
+    wrap();
+    // Wait for the categorization card to render, then assert no alert exists.
+    await screen.findByRole("button", { name: /^run$/i });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("toggles a rule's active state via PUT /api/rules/{id}/active", async () => {

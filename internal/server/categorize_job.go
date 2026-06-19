@@ -19,12 +19,15 @@ type categorizeJob struct {
 	cancel    context.CancelFunc
 	processed int
 	total     int
+	failed    int    // rows a genuine error left uncategorized this run
+	errMsg    string // first genuine error seen this run (surfaced to the UI)
 }
 
 type recatOutcome struct {
 	catID  int64
 	status string
 	ok     bool
+	err    error // non-nil = genuine failure (benign misses carry ok=false, err=nil)
 }
 
 // startCategorize launches a run over needs_review transactions in [from,to]
@@ -50,6 +53,8 @@ func (s *Server) startCategorize(from, to string) (bool, error) {
 	j.cancel = cancel
 	j.processed = 0
 	j.total = len(items)
+	j.failed = 0
+	j.errMsg = ""
 	j.mu.Unlock()
 
 	go s.runCategorize(ctx, items)
@@ -62,9 +67,9 @@ func (s *Server) runCategorize(ctx context.Context, items []store.ReviewItem) {
 		j.mu.Lock()
 		j.running = false
 		j.cancel = nil
-		processed, total := j.processed, j.total
+		processed, total, failed, errMsg := j.processed, j.total, j.failed, j.errMsg
 		j.mu.Unlock()
-		s.BroadcastEvent("categorize", map[string]any{"status": "idle", "processed": processed, "total": total})
+		s.BroadcastEvent("categorize", map[string]any{"status": "idle", "processed": processed, "total": total, "failed": failed, "error": errMsg})
 	}()
 
 	// Dedupe by merchant: categorizing a given merchant is deterministic, so
@@ -79,8 +84,8 @@ func (s *Server) runCategorize(ctx context.Context, items []store.ReviewItem) {
 		}
 		res, cached := cache[item.MerchantRaw]
 		if !cached {
-			catID, status, ok := s.recatFn(ctx, item.MerchantRaw)
-			res = recatOutcome{catID: catID, status: status, ok: ok}
+			catID, status, ok, err := s.recatFn(ctx, item.MerchantRaw)
+			res = recatOutcome{catID: catID, status: status, ok: ok, err: err}
 			cache[item.MerchantRaw] = res
 		}
 		if res.ok {
@@ -88,12 +93,20 @@ func (s *Server) runCategorize(ctx context.Context, items []store.ReviewItem) {
 		}
 		j.mu.Lock()
 		j.processed++
-		processed, total := j.processed, j.total
+		if res.err != nil {
+			// A genuine failure left this row uncategorized — count it and keep
+			// the first message so the UI can tell the user what went wrong.
+			j.failed++
+			if j.errMsg == "" {
+				j.errMsg = res.err.Error()
+			}
+		}
+		processed, total, failed, errMsg := j.processed, j.total, j.failed, j.errMsg
 		j.mu.Unlock()
 		// Throttle progress to ~3/sec so the SSE stream isn't chatty.
 		if time.Since(lastBroadcast) > 300*time.Millisecond {
 			lastBroadcast = time.Now()
-			s.BroadcastEvent("categorize", map[string]any{"status": "running", "processed": processed, "total": total})
+			s.BroadcastEvent("categorize", map[string]any{"status": "running", "processed": processed, "total": total, "failed": failed, "error": errMsg})
 		}
 	}
 }
@@ -108,15 +121,19 @@ func (s *Server) stopCategorize() {
 	j.mu.Unlock()
 }
 
-// categorizeStatus returns the current run state.
-func (s *Server) categorizeStatus() (status string, processed, total int) {
+// categorizeStatus returns the current run state, including how many rows a
+// genuine error left uncategorized and the first such error message. The failed
+// count and message persist after the run ends (until the next run resets them)
+// so the UI can show the outcome of the last run.
+func (s *Server) categorizeStatus() (status string, processed, total, failed int, errMsg string) {
 	j := &s.catJob
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	status = "idle"
 	if j.running {
-		return "running", j.processed, j.total
+		status = "running"
 	}
-	return "idle", j.processed, j.total
+	return status, j.processed, j.total, j.failed, j.errMsg
 }
 
 type categorizeRunReq struct {
@@ -151,7 +168,7 @@ func (s *Server) handleCategorizeStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCategorizeStatus(w http.ResponseWriter, r *http.Request) {
-	status, processed, total := s.categorizeStatus()
+	status, processed, total, failed, errMsg := s.categorizeStatus()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"status": status, "processed": processed, "total": total})
+	json.NewEncoder(w).Encode(map[string]any{"status": status, "processed": processed, "total": total, "failed": failed, "error": errMsg})
 }

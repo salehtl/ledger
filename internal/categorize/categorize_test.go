@@ -2,6 +2,7 @@ package categorize
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -15,6 +16,13 @@ func (f fixedAI) Categorize(_ context.Context, _ string, _ []Category) (string, 
 	return f.name, f.conf, nil
 }
 
+// errAI always fails, simulating an AI provider outage / rate-limit exhaustion.
+type errAI struct{ err error }
+
+func (e errAI) Categorize(_ context.Context, _ string, _ []Category) (string, float64, error) {
+	return "", 0, e.err
+}
+
 var testCats = []Category{
 	{ID: 1, Name: "Shopping", Kind: "spending", Bucket: "want"},
 	{ID: 2, Name: "Software", Kind: "spending", Bucket: "need"},
@@ -26,9 +34,9 @@ func TestRuleMatchExact(t *testing.T) {
 		{MatchType: "exact", Pattern: "AMAZON.AE", CategoryID: 1, Priority: 10},
 	}
 	c := New(rules, testCats, DisabledAI{}, 0.85, false)
-	res, ok := c.Categorize(context.Background(), "AMAZON.AE")
-	if !ok {
-		t.Fatal("expected ok=true")
+	res, err := c.Categorize(context.Background(), "AMAZON.AE")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
 	if res.CategoryID != 1 {
 		t.Errorf("expected CategoryID=1, got %d", res.CategoryID)
@@ -49,9 +57,9 @@ func TestRuleMatchContainsCaseInsensitive(t *testing.T) {
 		{MatchType: "contains", Pattern: "amazon", CategoryID: 1, Priority: 10},
 	}
 	c := New(rules, testCats, DisabledAI{}, 0.85, false)
-	res, ok := c.Categorize(context.Background(), "AMAZON.AE")
-	if !ok {
-		t.Fatal("expected ok=true")
+	res, err := c.Categorize(context.Background(), "AMAZON.AE")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
 	if res.CategoryID != 1 {
 		t.Errorf("expected CategoryID=1, got %d", res.CategoryID)
@@ -68,18 +76,18 @@ func TestRuleMatchRegex(t *testing.T) {
 	c := New(rules, testCats, DisabledAI{}, 0.85, false)
 
 	// Should match
-	res, ok := c.Categorize(context.Background(), "FIGMA")
-	if !ok {
-		t.Fatal("expected ok=true for 'FIGMA'")
+	res, err := c.Categorize(context.Background(), "FIGMA")
+	if err != nil {
+		t.Fatalf("expected nil error for 'FIGMA', got %v", err)
 	}
 	if res.CategoryID != 2 {
 		t.Errorf("expected CategoryID=2, got %d", res.CategoryID)
 	}
 
-	// Should not match
-	_, ok = c.Categorize(context.Background(), "NOT FIGMA")
-	if ok {
-		t.Error("expected ok=false for 'NOT FIGMA'")
+	// Should not match — AI disabled, so a benign ErrAIUnavailable miss.
+	_, err = c.Categorize(context.Background(), "NOT FIGMA")
+	if !errors.Is(err, ErrAIUnavailable) {
+		t.Errorf("expected ErrAIUnavailable for 'NOT FIGMA', got %v", err)
 	}
 }
 
@@ -91,9 +99,9 @@ func TestRulePriorityOrder(t *testing.T) {
 		{MatchType: "contains", Pattern: "amazon", CategoryID: 2, Priority: 100},
 	}
 	c := New(rules, testCats, DisabledAI{}, 0.85, false)
-	res, ok := c.Categorize(context.Background(), "AMAZON.AE")
-	if !ok {
-		t.Fatal("expected ok=true")
+	res, err := c.Categorize(context.Background(), "AMAZON.AE")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
 	if res.CategoryID != 1 {
 		t.Errorf("expected CategoryID=1 (priority=10 wins), got %d", res.CategoryID)
@@ -102,18 +110,50 @@ func TestRulePriorityOrder(t *testing.T) {
 
 func TestNoRuleNoAI(t *testing.T) {
 	c := New(nil, testCats, DisabledAI{}, 0.85, false)
-	_, ok := c.Categorize(context.Background(), "SOME MERCHANT")
-	if ok {
-		t.Error("expected ok=false when no rules and AI disabled")
+	_, err := c.Categorize(context.Background(), "SOME MERCHANT")
+	if !errors.Is(err, ErrAIUnavailable) {
+		t.Errorf("expected ErrAIUnavailable when no rules and AI disabled, got %v", err)
+	}
+}
+
+// A real AI failure (not the disabled sentinel) must propagate so callers can
+// surface it. This is the regression guard for swallowed errors during a
+// manual categorization run.
+func TestAIErrorPropagates(t *testing.T) {
+	boom := errors.New("anthropic API status 429")
+	c := New(nil, testCats, errAI{err: boom}, 0.85, true)
+	_, err := c.Categorize(context.Background(), "some merchant")
+	if err == nil {
+		t.Fatal("expected the AI error to propagate, got nil")
+	}
+	if errors.Is(err, ErrAIUnavailable) {
+		t.Errorf("a real AI failure must not look like the benign ErrAIUnavailable sentinel: %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("expected wrapped boom error, got %v", err)
+	}
+}
+
+// When the AI returns a category name we don't know, that's a failure (not a
+// silent drop) so it can be reported.
+func TestAIUnknownCategoryIsError(t *testing.T) {
+	ai := fixedAI{name: "Teleportation", conf: 0.99}
+	c := New(nil, testCats, ai, 0.85, true)
+	_, err := c.Categorize(context.Background(), "some merchant")
+	if err == nil {
+		t.Fatal("expected an error for an unknown category name, got nil")
+	}
+	if errors.Is(err, ErrAIUnavailable) {
+		t.Errorf("unknown-category must not look like ErrAIUnavailable: %v", err)
 	}
 }
 
 func TestAIFallbackAboveThreshold(t *testing.T) {
 	ai := fixedAI{name: "Shopping", conf: 0.92}
 	c := New(nil, testCats, ai, 0.85, true)
-	res, ok := c.Categorize(context.Background(), "some merchant")
-	if !ok {
-		t.Fatal("expected ok=true")
+	res, err := c.Categorize(context.Background(), "some merchant")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
 	if res.Source != "ai" {
 		t.Errorf("expected Source=ai, got %q", res.Source)
@@ -138,9 +178,9 @@ func TestAIFallbackAboveThreshold(t *testing.T) {
 func TestAIFallbackBelowThreshold(t *testing.T) {
 	ai := fixedAI{name: "Shopping", conf: 0.50}
 	c := New(nil, testCats, ai, 0.85, true)
-	res, ok := c.Categorize(context.Background(), "some merchant")
-	if !ok {
-		t.Fatal("expected ok=true when AI returns a known category")
+	res, err := c.Categorize(context.Background(), "some merchant")
+	if err != nil {
+		t.Fatalf("expected nil error when AI returns a known category, got %v", err)
 	}
 	if res.Source != "ai" {
 		t.Errorf("expected Source=ai, got %q", res.Source)
