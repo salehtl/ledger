@@ -78,6 +78,7 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 - **`ingest`** — IMAP worker. Opens the mailbox **read-only** (`EXAMINE`), polls on an interval, writes every message to `ingest_log`, then calls a post-process hook to run the parse cascade over unparsed rows.
 - **`parse`** — the extraction cascade (`cascade.go`). Tiers: `DIBParser`/`ENBDParser` templates → `HeuristicParser` → AI extractor (`DisabledExtractor` when off). `Processor.ProcessPending` selects ingest rows and writes transactions; `reprocess.go` re-runs over already-seen mail (e.g. after fixing a parser). `body.go`/`fields.go` handle MIME/field extraction.
 - **`categorize`** — rules-first categorizer. `Categorize` matches rules (`contains`/`exact`/`regex`, by priority) and falls back to the AI categorizer above a confidence threshold; proposes a write-back rule on confident results. `DisabledAI` is the no-op. Behavior is gated at runtime by app settings (`AutoCategorize`, `AIEnabled`, `AIAutoAccept`, `AIThreshold`) — see the categorizer-provider closures in `main.go`.
+- **`anthropic`** — shared retrying HTTP client for the Anthropic Messages API, used by both `parse/ai.go` (extraction fallback) and `categorize/ai.go` (merchant categorization). `Retrier` honors `Retry-After` on 429/5xx/529 and otherwise backs off exponentially with jitter, so bulk categorization throttles instead of hammering the API. This is the one network path that data leaves the box on.
 - **`server`** — stdlib `net/http` with Go 1.22 method+pattern routing (`s.mux.HandleFunc("GET /api/...")`). One file per resource (transactions, review, rules, categories, settings, budget, insights, push, events). `/api/events` is the SSE stream via `Hub`; unknown `/api/*` returns 404 so the SPA fallback (`spa.go`) never swallows API calls.
 - **`budget`** — 50/30/20 need/want/saving math over confirmed transactions.
 - **`monitor`** — rolling per-sender parse-success drift detection; emits `drift_alert` SSE/push events when a sender drops below `drift_min`.
@@ -89,6 +90,8 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 ### Frontend (`frontend/src/`)
 
 React 18 + TypeScript + Vite. TanStack Router/Query/Table, Tailwind v4, recharts, `vite-plugin-pwa`. `api/` (client + types), `screens/`, `components/` (incl. `swipe/` categorizer deck and `transactions/`), `hooks/`, `app/AppShell.tsx`. State/server-cache via react-query (`queryClient.ts`).
+
+`lib/` holds **pure, framework-free helpers** (money/`fils` formatting, scope math, swipe and pull-to-refresh gesture geometry, transaction filtering) each with a co-located `*.test.ts`. The convention: extract decision logic out of components into a pure `lib/` function and unit-test it there, keeping components thin and gesture/format edge cases covered without rendering. Follow this when adding non-trivial UI logic.
 
 ## Deploy
 
