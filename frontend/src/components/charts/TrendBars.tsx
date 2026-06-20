@@ -9,7 +9,7 @@ export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; acti
           <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={11} stroke="var(--color-muted)" />
           <Bar dataKey="spent" radius={[4, 4, 0, 0]}>
             {points.map((p, i) => (
-              <Cell key={i} fill={p.period === activePeriod ? "var(--color-accent)" : "var(--color-border)"} />
+              <Cell key={i} fill={p.period === activePeriod ? "var(--color-accent)" : "var(--color-surface-2)"} />
             ))}
           </Bar>
         </BarChart>

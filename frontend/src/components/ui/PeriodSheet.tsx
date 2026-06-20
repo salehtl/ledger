@@ -74,7 +74,7 @@ export function PeriodSheet({ scope, onApply, onClose }: {
               onClick={() => pick(period)}
               aria-pressed={selected}
               className={`min-h-11 rounded-xl text-sm font-medium transition-colors ${
-                selected ? "bg-accent text-accent-fg" : isCurrent ? "bg-bg text-fg ring-1 ring-accent/40" : "bg-bg text-fg hover:bg-border/60"
+                selected ? "bg-accent text-accent-fg" : isCurrent ? "bg-surface-2 text-fg ring-1 ring-accent/40" : "bg-surface-2 text-fg hover:bg-border/60"
               }`}
             >
               {m}

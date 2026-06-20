@@ -10,6 +10,7 @@ import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
 import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
+import { Fab } from "../components/ui/Fab";
 import { FilterChips } from "../components/transactions/FilterChips";
 import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
@@ -123,7 +124,6 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
               <Zap size={16} /> Swipe
             </button>
           )}
-          <button onClick={() => setAddOpen(true)} aria-label="Add transaction" className="flex items-center justify-center p-2 rounded-lg bg-accent text-accent-fg hover:opacity-90 transition-opacity"><Plus size={16} /></button>
         </div>
       </div>
 
@@ -172,6 +172,8 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           onClose={() => setActive(null)}
         />
       )}
+
+      <Fab icon={Plus} label="Add transaction" onClick={() => setAddOpen(true)} />
 
       {addOpen && (
         <AddTransactionSheet categories={cats.data ?? []} onSubmit={createTxn} onClose={() => setAddOpen(false)} />

@@ -33,7 +33,7 @@ export interface DonutSlice { name: string; value: number; color: string; }
  * shade of its bucket — the need/want/saving grouping lives in the bucket Pills
  * and dots elsewhere. Evenly-saturated hues that read well on the white surface.
  */
-export const CATEGORY_PALETTE = ["#4f46e5", "#0891b2", "#d97706", "#db2777", "#16a34a", "#7c3aed"];
+export const CATEGORY_PALETTE = ["#1373d9", "#7b35b8", "#2e7d52", "#0e7490", "#b45309", "#be185d"];
 
 /** Top `topN` categories by spend, each a distinct palette color; the rest folded into a muted "Other". */
 export function donutSlices(cats: CategorySpend[], topN = 6): DonutSlice[] {

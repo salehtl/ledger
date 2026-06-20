@@ -76,7 +76,7 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
               </select>
             )}
           </div>
-          <button onClick={add} className="w-full py-2 rounded-lg bg-accent text-white text-sm font-medium">Add</button>
+          <button onClick={add} className="w-full py-2 rounded-lg bg-accent text-accent-fg text-sm font-medium">Add</button>
         </div>
 
         {cats.isPending ? (

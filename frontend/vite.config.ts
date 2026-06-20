@@ -15,8 +15,8 @@ export default defineConfig({
         name: "ledger",
         short_name: "ledger",
         description: "Personal budgeting",
-        theme_color: "#0058E6",
-        background_color: "#245EDC",
+        theme_color: "#fcf8f8",
+        background_color: "#fcf8f8",
         display: "standalone",
         start_url: "/",
         icons: [
