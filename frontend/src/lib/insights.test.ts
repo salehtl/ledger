@@ -45,7 +45,7 @@ describe("donutSlices", () => {
     // All three colors are distinct.
     expect(new Set([rent.color, groceries.color, dining.color]).size).toBe(3);
     // Biggest slice gets the first palette color (the app accent).
-    expect(rent.color).toBe("#4f46e5");
+    expect(rent.color).toBe("#1373d9");
   });
 
   it("colors 'Other' muted", () => {
