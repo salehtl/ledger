@@ -102,6 +102,46 @@ func TestPostStatusInvalid(t *testing.T) {
 	}
 }
 
+func TestPostArchiveAndRestore(t *testing.T) {
+	st := newTestServerStore(t)
+	txID := seedTestTransaction(t, st)
+	srv := newTestServerWithStore(t, st)
+
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/archive", txID), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("archive status = %d; body: %s", w.Code, w.Body)
+	}
+	var dbStatus string
+	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&dbStatus)
+	if dbStatus != "archived" {
+		t.Fatalf("db status = %q, want archived", dbStatus)
+	}
+
+	r = httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/restore", txID), nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore status = %d; body: %s", w.Code, w.Body)
+	}
+	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&dbStatus)
+	if dbStatus != "needs_review" {
+		t.Fatalf("db status after restore = %q, want needs_review", dbStatus)
+	}
+}
+
+func TestPostArchiveInvalidID(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	r := httptest.NewRequest("POST", "/api/transactions/abc/archive", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
 func TestClearCategorization(t *testing.T) {
 	st := newTestServerStore(t)
 	txID := seedTestTransaction(t, st)
