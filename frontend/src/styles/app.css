@@ -28,8 +28,8 @@
   /* Rounded numeric face — kept only for the swipe-deck amount. */
   --font-rounded: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
 
-  --radius-card: 16px;          /* Material "large" */
-  --radius-sheet: 28px;         /* Material "extra-large" — bottom sheets */
+  --radius-card: 12px;          /* Material "large", sharpened */
+  --radius-sheet: 20px;         /* Material "extra-large" — bottom sheets, sharpened */
 }
 
 html, body, #root { height: 100%; }

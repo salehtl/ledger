@@ -82,7 +82,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             key={d.key}
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
-            className={`flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+            className={`flex items-center gap-1 px-3 py-1 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
               count > 0 ? "bg-accent/10 text-accent" : "bg-surface-2 text-muted"
             }`}
           >
@@ -95,7 +95,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
       {active > 0 && (
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
-          className="flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium text-muted whitespace-nowrap hover:text-fg"
+          className="flex items-center gap-1 px-3 py-1 rounded-md text-sm font-medium text-muted whitespace-nowrap hover:text-fg"
         >
           <X size={14} aria-hidden /> Clear
         </button>
