@@ -32,11 +32,12 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="w-full sm:max-w-md bg-surface rounded-t-2xl sm:rounded-2xl px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
+        className="w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
+        <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
         <div className="flex items-center justify-between mb-3">
           <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
-          <button aria-label="Close" className="text-muted text-xl" onClick={onClose}>×</button>
+          <button aria-label="Close" className="-mr-2 p-2 rounded-full text-muted hover:bg-surface-2 text-xl leading-none" onClick={onClose}>×</button>
         </div>
         {children}
       </div>
