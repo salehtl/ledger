@@ -66,7 +66,7 @@ export function SubcategoryPanel({
           </div>
           <button
             onClick={onCancel}
-            className="p-1.5 rounded-lg hover:bg-bg text-muted"
+            className="p-1.5 rounded-lg hover:bg-surface-2 text-muted"
             aria-label="Cancel"
           >
             <X size={18} />
@@ -79,7 +79,7 @@ export function SubcategoryPanel({
             <button
               key={cat.ID}
               onClick={() => onSelect(cat.ID)}
-              className="py-4 px-4 rounded-2xl border border-border text-sm font-medium text-fg hover:bg-bg active:scale-95 transition-transform text-left"
+              className="py-4 px-4 rounded-2xl border border-border text-sm font-medium text-fg hover:bg-surface-2 active:scale-95 transition-transform text-left"
             >
               {cat.Name}
             </button>
