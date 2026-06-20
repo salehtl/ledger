@@ -178,3 +178,27 @@ func TestSelectForParseAndMarkParsed(t *testing.T) {
 		t.Errorf("expected 0 unparsed after mark, got %d", len(rows2))
 	}
 }
+
+func TestSelectTransactionsExcludesArchivedByDefault(t *testing.T) {
+	st := newTestStore(t)
+	id := seedConfirmedTxn(t, st)
+	if err := st.ArchiveTransaction(id); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := st.SelectTransactions("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("default list returned archived row: %d items", len(all))
+	}
+
+	arch, err := st.SelectTransactions("archived", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(arch) != 1 {
+		t.Fatalf("status=archived returned %d items, want 1", len(arch))
+	}
+}

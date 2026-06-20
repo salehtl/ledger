@@ -233,6 +233,10 @@ func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error
 	if status != "" {
 		q += " AND t.status=?"
 		args = append(args, status)
+	} else {
+		// Archived rows are soft-deleted: hidden from the default list, reachable
+		// only by explicitly asking for status='archived'.
+		q += " AND t.status!='archived'"
 	}
 	if from != "" {
 		q += " AND t.posted_at >= ?"
