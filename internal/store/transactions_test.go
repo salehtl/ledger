@@ -273,3 +273,100 @@ func TestInsertManualTransactionAllowsDuplicateFingerprint(t *testing.T) {
 		t.Fatalf("want 2 manual rows, got %d", len(rows))
 	}
 }
+
+// TestClearAllCategorizationLeavesArchived verifies that ClearAllCategorization
+// never touches archived rows — an archived transaction must remain archived.
+func TestClearAllCategorizationLeavesArchived(t *testing.T) {
+	st := newTestStore(t)
+	id := seedConfirmedTxn(t, st)
+
+	if err := st.ArchiveTransaction(id); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if got := statusOf(t, st, id); got != "archived" {
+		t.Fatalf("pre-clear status = %q, want archived", got)
+	}
+
+	if _, err := st.ClearAllCategorization(); err != nil {
+		t.Fatalf("ClearAllCategorization: %v", err)
+	}
+
+	if got := statusOf(t, st, id); got != "archived" {
+		t.Errorf("post-clear status = %q, want archived (archived rows must not be touched)", got)
+	}
+}
+
+// TestFindTransferMatchSkipsArchived verifies that FindTransferMatch never
+// returns an archived row as a candidate — an archived row must not be
+// silently promoted to a transfer leg.
+func TestFindTransferMatchSkipsArchived(t *testing.T) {
+	st := newTestStore(t)
+
+	// Seed two ingest rows: one for the candidate (to be archived), one for
+	// the calling transaction so the FK is satisfied.
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "transfer-cand", FromAddr: "bank@test.com",
+		Subject: "n", ParseStatus: "parsed", RawBody: []byte("raw"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var candIngestID int64
+	st.DB.QueryRow("SELECT id FROM ingest_log WHERE message_uid='transfer-cand'").Scan(&candIngestID)
+
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "transfer-caller", FromAddr: "bank@test.com",
+		Subject: "n", ParseStatus: "parsed", RawBody: []byte("raw"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var callerIngestID int64
+	st.DB.QueryRow("SELECT id FROM ingest_log WHERE message_uid='transfer-caller'").Scan(&callerIngestID)
+
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	amount := int64(50000) // 500.00 AED in fils
+
+	// Insert the candidate: credit 500 AED — would match a debit caller.
+	candRow := TransactionRow{
+		PostedAt:    base,
+		AmountFils:  amount,
+		Currency:    "AED",
+		Direction:   "credit",
+		MerchantRaw: "BANK TRANSFER",
+		Last4:       "9999",
+		Status:      "confirmed",
+		Confidence:  1.0,
+		Source:      "email",
+		IngestID:    candIngestID,
+	}
+	candID, _, err := st.InsertTransaction(candRow)
+	if err != nil {
+		t.Fatalf("insert candidate: %v", err)
+	}
+
+	// Archive the candidate — it must now be invisible to FindTransferMatch.
+	if err := st.ArchiveTransaction(candID); err != nil {
+		t.Fatalf("archive candidate: %v", err)
+	}
+
+	// Insert the calling transaction: debit 500 AED within window.
+	callerRow := TransactionRow{
+		PostedAt:    base.Add(10 * time.Minute),
+		AmountFils:  amount,
+		Currency:    "AED",
+		Direction:   "debit",
+		MerchantRaw: "BANK TRANSFER",
+		Last4:       "8888",
+		Status:      "confirmed",
+		Confidence:  1.0,
+		Source:      "email",
+		IngestID:    callerIngestID,
+	}
+	callerID, _, err := st.InsertTransaction(callerRow)
+	if err != nil {
+		t.Fatalf("insert caller: %v", err)
+	}
+
+	matchID, found, err := st.FindTransferMatch(callerID, amount, "debit", base.Add(10*time.Minute), time.Hour)
+	if err != nil {
+		t.Fatalf("FindTransferMatch: %v", err)
+	}
+	if found {
+		t.Errorf("FindTransferMatch returned archived row %d as match — archived rows must be skipped", matchID)
+	}
+}
