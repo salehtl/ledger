@@ -127,7 +127,7 @@ export function SwipeCard({
         userSelect: 'none',
         willChange: 'transform',
       }}
-      className="relative w-full bg-surface rounded-[28px] cursor-grab active:cursor-grabbing overflow-hidden"
+      className="relative w-full bg-surface rounded-[20px] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

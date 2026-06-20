@@ -23,7 +23,7 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
       aria-label={label}
       className={`relative h-3 w-full rounded-full overflow-hidden ${track}`}
     >
-      <div className={`h-full rounded-full transition-[width] duration-300 ${onAccent ? "bg-white" : TONE_BG[tone ?? auto]}`} style={{ width: `${clamped}%` }} />
+      <div className={`h-full rounded-full transition-[width] duration-300 ${TONE_BG[tone ?? auto]}`} style={{ width: `${clamped}%` }} />
       {pace !== undefined && (
         <div
           data-pace

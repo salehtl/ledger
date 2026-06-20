@@ -12,7 +12,7 @@ export function Button(
 ) {
   return (
     <button
-      className={`min-h-11 px-5 rounded-full text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
+      className={`min-h-11 px-5 rounded-xl text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
       {...rest}
     >
       {children}

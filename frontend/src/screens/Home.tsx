@@ -12,11 +12,14 @@ import {
   trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
 import { formatFils } from "../lib/money";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Check, TrendingUp } from "lucide-react";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
 const TONE_TEXT = { good: "text-good", warn: "text-warn", bad: "text-bad" } as const;
+// Hero status badge: solid tone fill + text-bg (legible on any tone in both themes).
+const HERO_BADGE_BG = { good: "bg-good", warn: "bg-warn", bad: "bg-bad" } as const;
+const VERDICT_ICON = { under: Check, over: TrendingUp, overbudget: AlertTriangle } as const;
 
 /** "1,180 left" or "320 over" for a remaining amount (positive = under budget). */
 function remainingLabel(remaining: number): string {
@@ -45,6 +48,8 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
   // Only the in-progress month has a "today" pace marker; finished months are done.
   const pace = isCurrent ? s.month_progress : undefined;
   const heroStatus = paceStatus(spent, budget, projection);
+  const heroTone = paceTone(heroStatus);
+  const HeroIcon = VERDICT_ICON[heroStatus];
   const points = trendSeries(trend.data ?? [], periods);
 
   return (
@@ -55,10 +60,15 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
         <p className="text-sm opacity-80">{heroLabel}</p>
         <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-tight tnum"><Money fils={spent} /></p>
         <p className="text-sm opacity-80 mt-2">of <span className="tnum"><Money fils={budget} /></span> budget</p>
-        <div className="mt-4"><ProgressBar pct={pct} pace={pace} onAccent label="Total budget used" /></div>
+        <div className="mt-4"><ProgressBar pct={pct} pace={pace} tone={heroTone} onAccent label="Total budget used" /></div>
         <div className="flex items-center justify-between mt-2 text-sm">
           <span className="tnum opacity-80">{remainingLabel(budget - spent)}</span>
-          {isCurrent && <span className="font-medium">{VERDICT[heroStatus]}</span>}
+          {isCurrent && (
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold text-bg ${HERO_BADGE_BG[heroTone]}`}>
+              <HeroIcon size={13} aria-hidden />
+              {VERDICT[heroStatus]}
+            </span>
+          )}
         </div>
         {isCurrent && (
           <p className="text-xs opacity-70 mt-1">

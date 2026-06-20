@@ -212,7 +212,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           {next && (
             <div
               aria-hidden
-              className="absolute inset-0 bg-surface rounded-[28px] shadow-lg"
+              className="absolute inset-0 bg-surface rounded-[20px] shadow-lg"
               style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
             />
           )}
