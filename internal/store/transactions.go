@@ -137,6 +137,36 @@ func nullable(s string) any {
 	return s
 }
 
+// ArchiveTransaction soft-deletes a transaction: it stashes the current status
+// in archived_from and sets status='archived'. Archived rows are hidden from the
+// default transaction list and fall out of budgets/insights (which count only
+// status='confirmed'). No row is ever physically deleted. No-op if already archived.
+func (s *Store) ArchiveTransaction(txID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(
+		`UPDATE transactions
+		    SET archived_from=status, status='archived', updated_at=?
+		  WHERE id=? AND status!='archived'`,
+		now, txID,
+	)
+	return err
+}
+
+// RestoreTransaction reverses ArchiveTransaction: it returns the row to its
+// pre-archive status (or 'needs_review' when unknown) and clears archived_from.
+// No-op if the row is not archived.
+func (s *Store) RestoreTransaction(txID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(
+		`UPDATE transactions
+		    SET status=COALESCE(NULLIF(archived_from,''), 'needs_review'),
+		        archived_from=NULL, updated_at=?
+		  WHERE id=? AND status='archived'`,
+		now, txID,
+	)
+	return err
+}
+
 // FindTransferMatch looks for an existing transaction that could be the other leg
 // of a self-transfer: same amount, opposite direction, within `window` of `postedAt`,
 // and not already marked as a transfer. Returns (matchID, true, nil) on hit.
