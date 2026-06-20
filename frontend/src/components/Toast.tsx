@@ -31,17 +31,17 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
 
   const tone = toast.tone === "success" ? "bg-good" : toast.tone === "error" ? "bg-bad" : "bg-fg";
   return (
-    <div className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] text-white px-3 py-2.5 rounded-2xl shadow-lg ${tone}`}>
+    <div className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] text-bg px-3 py-2.5 rounded-2xl shadow-lg ${tone}`}>
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
         <button
-          className="text-sm font-semibold text-white/90 underline"
+          className="text-sm font-semibold text-bg/90 underline"
           onClick={() => { try { toast.action!.onAction(); } finally { onDismiss(); } }}
         >
           {toast.action.label}
         </button>
       )}
-      <button aria-label="Dismiss" className="text-white/70" onClick={onDismiss}>×</button>
+      <button aria-label="Dismiss" className="text-bg/70" onClick={onDismiss}>×</button>
     </div>
   );
 }

@@ -4,7 +4,7 @@ const VARIANTS: Record<Variant, string> = {
   primary: "bg-accent text-accent-fg hover:opacity-90",
   secondary: "bg-surface-2 text-fg hover:opacity-80",   // Material tonal
   ghost: "bg-transparent text-accent hover:bg-surface-2",
-  danger: "bg-bad text-white hover:opacity-90",
+  danger: "bg-bad text-bg hover:opacity-90",
 };
 export function Button(
   { variant = "secondary", className = "", children, ...rest }:
