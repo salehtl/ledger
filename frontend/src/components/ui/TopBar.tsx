@@ -31,7 +31,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
               onClick={() => setOpen(true)}
               aria-haspopup="dialog"
               aria-expanded={open}
-              className="px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg tnum truncate"
+              className="px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg truncate"
             >
               {scopeLabel(scope)}
             </button>

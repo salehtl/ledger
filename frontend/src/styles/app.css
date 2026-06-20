@@ -27,6 +27,8 @@
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   /* Rounded numeric face — kept only for the swipe-deck amount. */
   --font-rounded: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
+  /* Monospaced figures — money, counts, percentages (applied via .tnum). */
+  --font-mono: "Roboto Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 
   --radius-card: 8px;           /* Material "large", sharpened */
   --radius-sheet: 12px;         /* Material "extra-large" — bottom sheets, sharpened */
@@ -40,8 +42,8 @@ body { background: var(--color-bg); color: var(--color-fg); font-family: var(--f
 .shadow-1 {
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.10);
 }
-/* tabular figures for money everywhere */
-.tnum { font-variant-numeric: tabular-nums; }
+/* Monospaced tabular figures for money/counts/percentages everywhere. */
+.tnum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .money-neg { color: var(--color-bad); }
 .money-zero { color: var(--color-muted); }
 
