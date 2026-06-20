@@ -2,8 +2,8 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-accent text-accent-fg hover:opacity-90",
-  secondary: "bg-surface border border-border text-fg hover:bg-bg",
-  ghost: "bg-transparent text-fg hover:bg-bg",
+  secondary: "bg-surface-2 text-fg hover:opacity-80",   // Material tonal
+  ghost: "bg-transparent text-accent hover:bg-surface-2",
   danger: "bg-bad text-white hover:opacity-90",
 };
 export function Button(
@@ -12,7 +12,7 @@ export function Button(
 ) {
   return (
     <button
-      className={`min-h-11 px-4 rounded-xl text-sm font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
+      className={`min-h-11 px-5 rounded-full text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
       {...rest}
     >
       {children}
