@@ -82,8 +82,8 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             key={d.key}
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
-            className={`flex items-center gap-1 px-3 py-1.5 rounded-full border text-sm font-medium whitespace-nowrap transition-colors ${
-              count > 0 ? "border-accent bg-accent/10 text-accent" : "border-border bg-surface text-fg"
+            className={`flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+              count > 0 ? "bg-accent/10 text-accent" : "bg-surface-2 text-muted"
             }`}
           >
             {d.label}{count > 0 ? ` · ${count}` : ""}
@@ -109,7 +109,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             <ul className="space-y-1">
               {current.options.map((o) => (
                 <li key={o.value}>
-                  <label className="flex items-center gap-3 px-2 py-2.5 rounded-lg hover:bg-bg cursor-pointer">
+                  <label className="flex items-center gap-3 px-2 py-2.5 rounded-lg hover:bg-surface-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={current.selected.includes(o.value)}
