@@ -15,11 +15,12 @@ import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
 import { Insights } from "../screens/Insights";
 import { Settings } from "../screens/Settings";
-import { ReviewSwipe } from "../screens/ReviewSwipe";
+import { Review } from "../screens/Review";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
   transactions: "Transactions",
+  review: "Review",
   insights: "Insights",
   settings: "Settings",
 };
@@ -29,7 +30,6 @@ export function AppShell() {
   // Lazy initializer so the default month reflects the day the app opens,
   // not the day this module was first imported.
   const [scope, setScope] = useState<Scope>(() => ({ kind: "month", period: currentPeriod() }));
-  const [inSwipeMode, setInSwipeMode] = useState(false);
   const online = useOnline();
   useLiveEvents();
 
@@ -37,11 +37,19 @@ export function AppShell() {
   const mainRef = useRef<HTMLElement>(null);
   const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries());
 
-  const review = useQuery({ queryKey: ["review"], queryFn: () => getJSON<Txn[]>("/api/review") });
-  const reviewCount = review.data?.length ?? 0;
-
   const bounds = scopeBounds(scope);
   const anchor = scopeAnchor(scope);
+
+  const review = useQuery({
+    queryKey: ["review", bounds.from ?? "", bounds.to ?? ""],
+    queryFn: () => {
+      const params = new URLSearchParams({ status: "needs_review" });
+      if (bounds.from) params.set("from", bounds.from);
+      if (bounds.to) params.set("to", bounds.to);
+      return getJSON<Txn[]>(`/api/transactions?${params.toString()}`);
+    },
+  });
+  const reviewCount = review.data?.length ?? 0;
 
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">
@@ -53,13 +61,13 @@ export function AppShell() {
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
           {tab === "home" && <Home period={anchor} />}
-          {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} onOpenSwipeMode={() => setInSwipeMode(true)} />}
+          {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} onOpenSwipeMode={() => setTab("review")} />}
+          {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
           {tab === "settings" && <Settings scope={scope} />}
         </div>
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
-      {inSwipeMode && <ReviewSwipe onClose={() => setInSwipeMode(false)} />}
     </div>
   );
 }

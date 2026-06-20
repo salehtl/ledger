@@ -211,35 +211,6 @@ func TestUpdateTransactionStatus(t *testing.T) {
 	}
 }
 
-func TestSelectNeedsReview(t *testing.T) {
-	st := newTestStore(t)
-	ingestID := seedIngestRow(t, st)
-
-	row := txnRow() // status is "needs_review"
-	row.IngestID = ingestID
-	txID, _, err := st.InsertTransaction(row)
-	if err != nil {
-		t.Fatalf("InsertTransaction: %v", err)
-	}
-
-	items, err := st.SelectNeedsReview()
-	if err != nil {
-		t.Fatalf("SelectNeedsReview: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("SelectNeedsReview len = %d, want 1", len(items))
-	}
-	if items[0].ID != txID {
-		t.Errorf("ID = %d, want %d", items[0].ID, txID)
-	}
-	if items[0].AmountFils != row.AmountFils {
-		t.Errorf("AmountFils = %d, want %d", items[0].AmountFils, row.AmountFils)
-	}
-	if items[0].Status != "needs_review" {
-		t.Errorf("Status = %q, want needs_review", items[0].Status)
-	}
-}
-
 func TestSelectTransactions(t *testing.T) {
 	st := newTestStore(t)
 	// Seed ingest row
