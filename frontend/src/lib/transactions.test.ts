@@ -5,6 +5,7 @@ import {
   applyTxnFilters,
   filtersActive,
   sourceLabel,
+  buildManualTxnPayload,
   EMPTY_FILTERS,
   type TxnFilters,
 } from "./transactions";
@@ -103,5 +104,49 @@ describe("txnTotals", () => {
 
   it("returns zeroes for an empty list", () => {
     expect(txnTotals([])).toEqual({ count: 0, spentFils: 0 });
+  });
+});
+
+describe("buildManualTxnPayload", () => {
+  const base = { merchant: "Carrefour", amountAed: "42.50", direction: "debit", date: "2026-06-15", categoryId: 3 };
+
+  it("builds a payload from valid input", () => {
+    const r = buildManualTxnPayload(base);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.payload).toEqual({
+        posted_at: "2026-06-15", amount_fils: 4250, currency: "AED",
+        direction: "debit", merchant_raw: "Carrefour", category_id: 3,
+      });
+    }
+  });
+
+  it("defaults category_id to 0 when none chosen", () => {
+    const r = buildManualTxnPayload({ ...base, categoryId: null });
+    expect(r.ok && r.payload.category_id).toBe(0);
+  });
+
+  it("trims the merchant", () => {
+    const r = buildManualTxnPayload({ ...base, merchant: "  Spinneys  " });
+    expect(r.ok && r.payload.merchant_raw).toBe("Spinneys");
+  });
+
+  it("rejects a blank merchant", () => {
+    const r = buildManualTxnPayload({ ...base, merchant: "   " });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects a non-positive amount", () => {
+    expect(buildManualTxnPayload({ ...base, amountAed: "0" }).ok).toBe(false);
+    expect(buildManualTxnPayload({ ...base, amountAed: "-5" }).ok).toBe(false);
+    expect(buildManualTxnPayload({ ...base, amountAed: "abc" }).ok).toBe(false);
+  });
+
+  it("rejects a bad direction", () => {
+    expect(buildManualTxnPayload({ ...base, direction: "sideways" }).ok).toBe(false);
+  });
+
+  it("rejects a malformed date", () => {
+    expect(buildManualTxnPayload({ ...base, date: "06/15/2026" }).ok).toBe(false);
   });
 });
