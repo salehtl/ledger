@@ -9,7 +9,7 @@ const TONES: Record<Tone, string> = {
 };
 export function Pill({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TONES[tone]}`}>
+    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${TONES[tone]}`}>
       {children}
     </span>
   );

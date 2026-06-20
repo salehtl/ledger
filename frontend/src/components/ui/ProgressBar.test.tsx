@@ -24,4 +24,8 @@ describe("ProgressBar", () => {
     expect(marker).not.toBeNull();
     expect(marker.style.left).toBe("50%");
   });
+  it("uses a translucent track on accent surfaces", () => {
+    const { getByRole } = render(<ProgressBar pct={0.5} onAccent />);
+    expect((getByRole("progressbar") as HTMLElement).className).toContain("bg-white/25");
+  });
 });
