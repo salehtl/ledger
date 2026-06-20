@@ -69,6 +69,90 @@ func TestInsertTransactionAndFingerprintDedup(t *testing.T) {
 	}
 }
 
+func seedConfirmedTxn(t *testing.T, st *Store) int64 {
+	t.Helper()
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "arch-seed", FromAddr: "DIB.notification@dib.ae",
+		Subject: "n", ParseStatus: "parsed", RawBody: []byte("raw"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var ingestID int64
+	st.DB.QueryRow("SELECT id FROM ingest_log WHERE message_uid='arch-seed'").Scan(&ingestID)
+	row := txnRow()
+	row.IngestID = ingestID
+	row.PostedAt = time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
+	id, _, err := st.InsertTransaction(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cats, _ := st.SelectCategories()
+	var catID int64
+	for _, c := range cats {
+		if c.Name == "Shopping" {
+			catID = c.ID
+		}
+	}
+	if err := st.UpdateTransactionCategory(id, catID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func statusOf(t *testing.T, st *Store, id int64) string {
+	t.Helper()
+	var s string
+	if err := st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestArchiveAndRestoreRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	id := seedConfirmedTxn(t, st)
+
+	if err := st.ArchiveTransaction(id); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if got := statusOf(t, st, id); got != "archived" {
+		t.Fatalf("status after archive = %q, want archived", got)
+	}
+
+	if err := st.RestoreTransaction(id); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := statusOf(t, st, id); got != "confirmed" {
+		t.Fatalf("status after restore = %q, want confirmed (prior status preserved)", got)
+	}
+}
+
+func TestArchiveHidesFromBudget(t *testing.T) {
+	st := newTestStore(t)
+	id := seedConfirmedTxn(t, st)
+
+	before, _ := st.SelectMonthSpend("2026-06", false)
+	if len(before) != 1 {
+		t.Fatalf("pre-archive month spend rows = %d, want 1", len(before))
+	}
+	if err := st.ArchiveTransaction(id); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := st.SelectMonthSpend("2026-06", false)
+	if len(after) != 0 {
+		t.Fatalf("archived txn still counted in budget: %d rows", len(after))
+	}
+}
+
+func TestRestoreNonArchivedIsNoOp(t *testing.T) {
+	st := newTestStore(t)
+	id := seedConfirmedTxn(t, st)
+	if err := st.RestoreTransaction(id); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := statusOf(t, st, id); got != "confirmed" {
+		t.Fatalf("status = %q, want unchanged confirmed", got)
+	}
+}
+
 func TestSelectForParseAndMarkParsed(t *testing.T) {
 	st := newTestStore(t)
 	if _, err := st.InsertIngest(IngestRecord{MessageUID: "u1", FromAddr: "DIB.notification@dib.ae",

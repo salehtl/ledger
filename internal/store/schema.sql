@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   confidence      REAL,
   fingerprint     TEXT NOT NULL,
   source          TEXT NOT NULL DEFAULT 'email',  -- 'email' | 'import' | 'manual'
+  archived_from   TEXT,                            -- pre-archive status; set only while status='archived'
   ingest_id       INTEGER REFERENCES ingest_log(id),
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL

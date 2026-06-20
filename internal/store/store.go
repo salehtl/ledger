@@ -65,7 +65,10 @@ func (s *Store) Ping() error { return s.DB.Ping() }
 // migrate applies idempotent column additions that CREATE TABLE IF NOT EXISTS
 // cannot perform on pre-existing tables.
 func migrate(db *sql.DB) error {
-	return addColumnIfMissing(db, "rules", "is_active", "INTEGER NOT NULL DEFAULT 1")
+	if err := addColumnIfMissing(db, "rules", "is_active", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(db, "transactions", "archived_from", "TEXT")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
