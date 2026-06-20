@@ -56,3 +56,31 @@ body { background: var(--color-bg); color: var(--color-fg); font-family: var(--f
 @media (prefers-reduced-motion: reduce) {
   .swipe-card-in { animation: none; }
 }
+
+/* ---- Dark theme (automatic, follows the OS) ----
+   Overrides the same CSS vars the light @theme set; utilities pick these up
+   with no markup changes. Values = Thunderbird Android dark color scheme. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #131314;
+    --color-surface: #201f20;
+    --color-surface-2: #2a2a2b;
+    --color-border: #44474c;
+    --color-fg: #e5e2e3;
+    --color-muted: #c5c6cc;
+
+    --color-accent: #bee6ff;
+    --color-accent-fg: #003549;
+
+    --color-hero: #00344a;
+    --color-hero-fg: #bee6ff;
+
+    --color-need: #96cdff;
+    --color-want: #c7a6e8;
+    --color-save: #8ee7aa;
+
+    --color-good: #8ee7aa;
+    --color-warn: #fee78a;
+    --color-bad: #fca5a5;
+  }
+}
