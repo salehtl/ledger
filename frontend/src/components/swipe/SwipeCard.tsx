@@ -175,7 +175,7 @@ export function SwipeCard({
       {/* Confirming badge — appears at the committed/leaning edge */}
       {action && color && dir && (dragging || flying) && (
         <div
-          className="absolute flex items-center gap-2 px-4 py-2 rounded-full text-white font-semibold shadow-lg pointer-events-none"
+          className="absolute flex items-center gap-2 px-4 py-2 rounded-full text-bg font-semibold shadow-lg pointer-events-none"
           style={{
             ...BADGE_POS[dir].style,
             backgroundColor: color,
