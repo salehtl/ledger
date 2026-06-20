@@ -97,4 +97,27 @@ describe("Transactions", () => {
     expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
     expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
   });
+
+  it("opens the Add transaction sheet", async () => {
+    wrap();
+    await screen.findByText("NETFLIX");
+    fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+    expect(await screen.findByRole("button", { name: /^add$/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/merchant/i)).toBeInTheDocument();
+  });
+
+  it("archives a row via its Archive action", async () => {
+    wrap();
+    await screen.findByText("SPINNEYS");
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    realFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") { calls.push(url); return new Response("{}"); }
+      if (url.includes("/api/categories")) return new Response(JSON.stringify(cats));
+      return new Response(JSON.stringify(all));
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^archive$/i })[0]);
+    await screen.findByText(/archived/i); // toast
+    expect(calls.some((u) => /\/api\/transactions\/\d+\/archive$/.test(u))).toBe(true);
+  });
 });
