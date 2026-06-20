@@ -21,7 +21,7 @@ export function AddTransactionSheet({ categories, onSubmit, onClose }: {
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [error, setError] = useState("");
 
-  const field = "w-full px-3 py-2 rounded-lg border border-border bg-surface-2 text-sm";
+  const field = "w-full px-3 py-2 rounded-md border border-border bg-surface-2 text-sm";
 
   const submit = () => {
     const res = buildManualTxnPayload({ merchant, amountAed, direction, date, categoryId });

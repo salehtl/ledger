@@ -52,7 +52,7 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
   return (
     <div className="absolute z-10 pointer-events-none" style={style}>
       <div
-        className={`flex items-center justify-center gap-1.5 rounded-full font-semibold transition-all duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
+        className={`flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-all duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           color: active ? '#ffffff' : color,
@@ -212,7 +212,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           {next && (
             <div
               aria-hidden
-              className="absolute inset-0 bg-surface rounded-[20px] shadow-lg"
+              className="absolute inset-0 bg-surface rounded-[12px] shadow-lg"
               style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
             />
           )}

@@ -127,7 +127,7 @@ export function SwipeCard({
         userSelect: 'none',
         willChange: 'transform',
       }}
-      className="relative w-full bg-surface rounded-[20px] cursor-grab active:cursor-grabbing overflow-hidden"
+      className="relative w-full bg-surface rounded-[12px] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -143,7 +143,7 @@ export function SwipeCard({
       <div className="px-7 pt-9 pb-8 flex flex-col items-center gap-5">
         {/* Merchant monogram — keeps a stable color per merchant */}
         <div
-          className="w-[72px] h-[72px] rounded-2xl flex items-center justify-center"
+          className="w-[72px] h-[72px] rounded-xl flex items-center justify-center"
           style={{ backgroundColor: `hsl(${hue} 72% 93%)`, color: `hsl(${hue} 58% 38%)` }}
         >
           <span className="text-3xl font-bold">

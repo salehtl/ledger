@@ -33,17 +33,17 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
       </div>
       <div className="flex flex-col gap-1 self-center">
         {archived ? (
-          <button aria-label="Restore" className="p-2 rounded-lg hover:bg-bg text-accent" onClick={() => onRestore(txn)}><ArchiveRestore size={16} /></button>
+          <button aria-label="Restore" className="p-2 rounded-md hover:bg-bg text-accent" onClick={() => onRestore(txn)}><ArchiveRestore size={16} /></button>
         ) : (
           <>
             {needsReview && (
               <>
-                <button aria-label="Categorize" className="p-2 rounded-lg hover:bg-bg text-accent" onClick={() => onOpen(txn)}><Tag size={16} /></button>
-                <button aria-label="Transfer" className="p-2 rounded-lg hover:bg-bg text-muted" onClick={() => onStatus(txn, "transfer")}><ArrowLeftRight size={16} /></button>
-                <button aria-label="Ignore" className="p-2 rounded-lg hover:bg-bg text-muted" onClick={() => onStatus(txn, "ignored")}><X size={16} /></button>
+                <button aria-label="Categorize" className="p-2 rounded-md hover:bg-bg text-accent" onClick={() => onOpen(txn)}><Tag size={16} /></button>
+                <button aria-label="Transfer" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onStatus(txn, "transfer")}><ArrowLeftRight size={16} /></button>
+                <button aria-label="Ignore" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onStatus(txn, "ignored")}><X size={16} /></button>
               </>
             )}
-            <button aria-label="Archive" className="p-2 rounded-lg hover:bg-bg text-muted" onClick={() => onArchive(txn)}><Archive size={16} /></button>
+            <button aria-label="Archive" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onArchive(txn)}><Archive size={16} /></button>
           </>
         )}
       </div>

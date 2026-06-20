@@ -64,7 +64,7 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
         <div className="flex items-center justify-between mt-2 text-sm">
           <span className="tnum opacity-80">{remainingLabel(budget - spent)}</span>
           {isCurrent && (
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold text-bg ${HERO_BADGE_BG[heroTone]}`}>
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold text-bg ${HERO_BADGE_BG[heroTone]}`}>
               <HeroIcon size={13} aria-hidden />
               {VERDICT[heroStatus]}
             </span>

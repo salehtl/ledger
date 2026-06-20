@@ -40,7 +40,7 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-40 bg-bg flex flex-col">
       <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
-        <button onClick={onClose} className="p-2 -ml-2 rounded-xl hover:bg-bg text-muted" aria-label="Close category manager">
+        <button onClick={onClose} className="p-2 -ml-2 rounded-lg hover:bg-bg text-muted" aria-label="Close category manager">
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-lg font-semibold text-fg">Categories</h1>
@@ -54,14 +54,14 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Name"
-            className="w-full px-3 py-2 rounded-lg border border-border bg-surface text-sm"
+            className="w-full px-3 py-2 rounded-md border border-border bg-surface text-sm"
           />
           <div className="flex gap-2">
             <select
               aria-label="New category kind"
               value={kind}
               onChange={(e) => setKind(e.target.value as (typeof KINDS)[number])}
-              className="flex-1 border border-border rounded-lg px-2 py-2 text-sm bg-surface"
+              className="flex-1 border border-border rounded-md px-2 py-2 text-sm bg-surface"
             >
               {KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
             </select>
@@ -70,13 +70,13 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
                 aria-label="New category bucket"
                 value={bucket}
                 onChange={(e) => setBucket(e.target.value as (typeof BUCKETS)[number])}
-                className="flex-1 border border-border rounded-lg px-2 py-2 text-sm bg-surface"
+                className="flex-1 border border-border rounded-md px-2 py-2 text-sm bg-surface"
               >
                 {BUCKETS.map((b) => <option key={b} value={b}>{b}</option>)}
               </select>
             )}
           </div>
-          <button onClick={add} className="w-full py-2 rounded-lg bg-accent text-accent-fg text-sm font-medium">Add</button>
+          <button onClick={add} className="w-full py-2 rounded-md bg-accent text-accent-fg text-sm font-medium">Add</button>
         </div>
 
         {cats.isPending ? (
@@ -144,14 +144,14 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
         value={draftName}
         onChange={(e) => setDraftName(e.target.value)}
         onBlur={() => rename(draftName)}
-        className="min-w-0 flex-1 px-2 py-1 rounded-lg border border-border bg-surface text-sm"
+        className="min-w-0 flex-1 px-2 py-1 rounded-md border border-border bg-surface text-sm"
       />
       {cat.Kind === "spending" && (
         <select
           aria-label={`Bucket for ${cat.Name}`}
           value={cat.Bucket}
           onChange={(e) => reBucket(e.target.value)}
-          className="border border-border rounded-lg px-2 py-1 text-sm bg-surface"
+          className="border border-border rounded-md px-2 py-1 text-sm bg-surface"
         >
           {BUCKETS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>

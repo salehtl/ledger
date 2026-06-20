@@ -18,7 +18,7 @@ export function BottomNav({
           >
             <span className="relative">
               {/* Material active-indicator pill behind the icon */}
-              <span className={`flex items-center justify-center w-14 h-8 rounded-full transition-colors ${isActive ? "bg-accent/10" : ""}`}>
+              <span className={`flex items-center justify-center w-14 h-8 rounded-lg transition-colors ${isActive ? "bg-accent/10" : ""}`}>
                 <Icon size={22} aria-hidden />
               </span>
               {t.id === "review" && reviewCount > 0 && (

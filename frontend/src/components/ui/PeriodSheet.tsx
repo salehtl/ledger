@@ -58,9 +58,9 @@ export function PeriodSheet({ scope, onApply, onClose }: {
       </div>
 
       <div className="flex items-center justify-between mb-3">
-        <button aria-label="Previous year" className="p-2 rounded-lg text-muted hover:bg-bg" onClick={() => setYear((y) => y - 1)}><ChevronLeft size={18} /></button>
+        <button aria-label="Previous year" className="p-2 rounded-md text-muted hover:bg-bg" onClick={() => setYear((y) => y - 1)}><ChevronLeft size={18} /></button>
         <span className="text-sm font-semibold tnum">{year}</span>
-        <button aria-label="Next year" className="p-2 rounded-lg text-muted hover:bg-bg" onClick={() => setYear((y) => y + 1)}><ChevronRight size={18} /></button>
+        <button aria-label="Next year" className="p-2 rounded-md text-muted hover:bg-bg" onClick={() => setYear((y) => y + 1)}><ChevronRight size={18} /></button>
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-4">
@@ -73,7 +73,7 @@ export function PeriodSheet({ scope, onApply, onClose }: {
               key={m}
               onClick={() => pick(period)}
               aria-pressed={selected}
-              className={`min-h-11 rounded-xl text-sm font-medium transition-colors ${
+              className={`min-h-11 rounded-lg text-sm font-medium transition-colors ${
                 selected ? "bg-accent text-accent-fg" : isCurrent ? "bg-surface-2 text-fg ring-1 ring-accent/40" : "bg-surface-2 text-fg hover:bg-border/60"
               }`}
             >

@@ -138,7 +138,7 @@ export function Settings({ scope }: { scope?: Scope }) {
     saveSwipeConfig(next)
   }
 
-  const field = "w-full px-3 py-2 rounded-lg border border-border bg-surface text-sm";
+  const field = "w-full px-3 py-2 rounded-md border border-border bg-surface text-sm";
 
   return (
     <div className="space-y-4">
