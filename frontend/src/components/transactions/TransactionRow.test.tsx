@@ -26,4 +26,11 @@ describe("TransactionRow archive actions", () => {
     fireEvent.click(screen.getByRole("button", { name: /restore/i }));
     expect(onRestore).toHaveBeenCalledTimes(1);
   });
+
+  it("shows Categorize, Transfer, Ignore and Archive on a needs_review row", () => {
+    render(<TransactionRow txn={mk({ Status: "needs_review" })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    for (const name of [/categorize/i, /transfer/i, /ignore/i, /^archive$/i]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
 });

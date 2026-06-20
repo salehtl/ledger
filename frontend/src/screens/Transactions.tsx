@@ -72,18 +72,17 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
 
   const archiveTxn = async (t: Txn) => {
     const name = t.MerchantRaw || "transaction";
-    const prevStatus = t.Status;
     try {
-      await postJSON(`/api/transactions/${t.ID}/status`, { status: "archived" });
+      await postJSON(`/api/transactions/${t.ID}/archive`, {});
       invalidate();
-      show({ message: `Archived ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: prevStatus }).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
+      show({ message: `Archived ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/restore`, {}).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
     } catch { show({ message: `Couldn't archive ${name}`, tone: "error" }); }
   };
 
   const restoreTxn = async (t: Txn) => {
     const name = t.MerchantRaw || "transaction";
     try {
-      await postJSON(`/api/transactions/${t.ID}/status`, { status: "confirmed" });
+      await postJSON(`/api/transactions/${t.ID}/restore`, {});
       invalidate();
       show({ message: `Restored ${name}` });
     } catch { show({ message: `Couldn't restore ${name}`, tone: "error" }); }
