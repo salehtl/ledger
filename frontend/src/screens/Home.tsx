@@ -45,27 +45,27 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
   // Only the in-progress month has a "today" pace marker; finished months are done.
   const pace = isCurrent ? s.month_progress : undefined;
   const heroStatus = paceStatus(spent, budget, projection);
-  const heroTone = paceTone(heroStatus);
   const points = trendSeries(trend.data ?? [], periods);
 
   return (
     <div className="space-y-4">
-      {/* hero: spent vs budget, with today's pace + projection */}
-      <Card>
-        <p className="text-sm text-muted">{heroLabel}</p>
-        <p className="text-3xl font-bold tnum"><Money fils={spent} /></p>
-        <p className="text-sm text-muted mt-1">of <span className="tnum"><Money fils={budget} /></span> budget</p>
-        <div className="mt-3"><ProgressBar pct={pct} pace={pace} tone={heroTone} label="Total budget used" /></div>
+      {/* hero: spent vs budget, with today's pace + projection — the one bold,
+          branded surface; everything below stays quiet on neutral cards. */}
+      <div className="rounded-[var(--radius-card)] bg-hero text-hero-fg shadow-1 p-5">
+        <p className="text-sm opacity-80">{heroLabel}</p>
+        <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-tight tnum"><Money fils={spent} /></p>
+        <p className="text-sm opacity-80 mt-2">of <span className="tnum"><Money fils={budget} /></span> budget</p>
+        <div className="mt-4"><ProgressBar pct={pct} pace={pace} onAccent label="Total budget used" /></div>
         <div className="flex items-center justify-between mt-2 text-sm">
-          <span className="tnum text-muted">{remainingLabel(budget - spent)}</span>
-          {isCurrent && <span className={`font-medium ${TONE_TEXT[heroTone]}`}>{VERDICT[heroStatus]}</span>}
+          <span className="tnum opacity-80">{remainingLabel(budget - spent)}</span>
+          {isCurrent && <span className="font-medium">{VERDICT[heroStatus]}</span>}
         </div>
         {isCurrent && (
-          <p className="text-xs text-muted mt-1">
+          <p className="text-xs opacity-70 mt-1">
             Projected <span className="tnum"><Money fils={projection} /></span> · {Math.round(s.month_progress * 100)}% of month gone
           </p>
         )}
-      </Card>
+      </div>
 
       {/* budget pace: each bucket against today's pace */}
       <Card>
