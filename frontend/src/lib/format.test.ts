@@ -14,6 +14,9 @@ describe("statusLabel", () => {
   it("falls back to capitalized raw value", () => {
     expect(statusLabel("pending")).toBe("Pending");
   });
+  it("labels archived", () => {
+    expect(statusLabel("archived")).toBe("Archived");
+  });
 });
 
 describe("statusTone", () => {
@@ -22,6 +25,9 @@ describe("statusTone", () => {
     expect(statusTone("needs_review")).toBe("warn");
     expect(statusTone("ignored")).toBe("muted");
     expect(statusTone("transfer")).toBe("neutral");
+  });
+  it("tones archived as muted", () => {
+    expect(statusTone("archived")).toBe("muted");
   });
 });
 
