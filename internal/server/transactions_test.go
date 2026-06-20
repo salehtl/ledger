@@ -102,6 +102,91 @@ func TestPostStatusInvalid(t *testing.T) {
 	}
 }
 
+func TestPostArchiveAndRestore(t *testing.T) {
+	st := newTestServerStore(t)
+	txID := seedTestTransaction(t, st)
+	srv := newTestServerWithStore(t, st)
+
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/archive", txID), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("archive status = %d; body: %s", w.Code, w.Body)
+	}
+	var dbStatus string
+	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&dbStatus)
+	if dbStatus != "archived" {
+		t.Fatalf("db status = %q, want archived", dbStatus)
+	}
+
+	r = httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/restore", txID), nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore status = %d; body: %s", w.Code, w.Body)
+	}
+	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", txID).Scan(&dbStatus)
+	if dbStatus != "needs_review" {
+		t.Fatalf("db status after restore = %q, want needs_review", dbStatus)
+	}
+}
+
+func TestPostArchiveInvalidID(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	r := httptest.NewRequest("POST", "/api/transactions/abc/archive", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestPostManualTransaction(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	body, _ := json.Marshal(map[string]any{
+		"posted_at": "2026-06-15", "amount_fils": 4250, "direction": "debit",
+		"merchant_raw": "Corner Shop",
+	})
+	r := httptest.NewRequest("POST", "/api/transactions", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["id"] == nil || resp["id"].(float64) <= 0 {
+		t.Fatalf("expected positive id, got %v", resp["id"])
+	}
+	var n int
+	st.DB.QueryRow("SELECT count(*) FROM transactions WHERE source='manual'").Scan(&n)
+	if n != 1 {
+		t.Errorf("manual rows = %d, want 1", n)
+	}
+}
+
+func TestPostManualTransactionRejectsBadInput(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	cases := []map[string]any{
+		{"posted_at": "2026-06-15", "amount_fils": 0, "direction": "debit", "merchant_raw": "X"},      // amount <= 0
+		{"posted_at": "2026-06-15", "amount_fils": 100, "direction": "sideways", "merchant_raw": "X"}, // bad direction
+		{"posted_at": "2026-06-15", "amount_fils": 100, "direction": "debit", "merchant_raw": "  "},   // blank merchant
+		{"posted_at": "nope", "amount_fils": 100, "direction": "debit", "merchant_raw": "X"},          // bad date
+	}
+	for i, c := range cases {
+		body, _ := json.Marshal(c)
+		r := httptest.NewRequest("POST", "/api/transactions", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("case %d: status = %d, want 400", i, w.Code)
+		}
+	}
+}
+
 func TestClearCategorization(t *testing.T) {
 	st := newTestServerStore(t)
 	txID := seedTestTransaction(t, st)

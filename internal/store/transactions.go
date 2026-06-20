@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -137,6 +138,88 @@ func nullable(s string) any {
 	return s
 }
 
+// ArchiveTransaction soft-deletes a transaction: it stashes the current status
+// in archived_from and sets status='archived'. Archived rows are hidden from the
+// default transaction list and fall out of budgets/insights (which count only
+// status='confirmed'). No row is ever physically deleted. No-op if already archived.
+func (s *Store) ArchiveTransaction(txID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(
+		`UPDATE transactions
+		    SET archived_from=status, status='archived', updated_at=?
+		  WHERE id=? AND status!='archived'`,
+		now, txID,
+	)
+	return err
+}
+
+// RestoreTransaction reverses ArchiveTransaction: it returns the row to its
+// pre-archive status (or 'needs_review' when unknown) and clears archived_from.
+// No-op if the row is not archived.
+func (s *Store) RestoreTransaction(txID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(
+		`UPDATE transactions
+		    SET status=COALESCE(NULLIF(archived_from,''), 'needs_review'),
+		        archived_from=NULL, updated_at=?
+		  WHERE id=? AND status='archived'`,
+		now, txID,
+	)
+	return err
+}
+
+// ManualTxn is a user-entered transaction. CategoryID 0 means uncategorized.
+type ManualTxn struct {
+	PostedAt    time.Time
+	AmountFils  int64
+	Currency    string // "" defaults to "AED"
+	Direction   string // "debit" | "credit"
+	MerchantRaw string
+	CategoryID  int64
+}
+
+// InsertManualTransaction writes a user-entered transaction (source='manual',
+// confidence 1.0). A row with a category is trusted and stored 'confirmed';
+// without one it lands in 'needs_review'. The fingerprint is salted with random
+// bytes so a deliberate manual entry never trips the UNIQUE fingerprint index
+// (two identical real-world purchases on the same day are legitimate).
+func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
+	currency := m.Currency
+	if currency == "" {
+		currency = "AED"
+	}
+	status := "needs_review"
+	var catID any
+	if m.CategoryID > 0 {
+		status = "confirmed"
+		catID = m.CategoryID
+	}
+	base := TransactionRow{
+		PostedAt:    m.PostedAt,
+		AmountFils:  m.AmountFils,
+		Direction:   m.Direction,
+		MerchantRaw: m.MerchantRaw,
+	}
+	salt := make([]byte, 8)
+	if _, err := rand.Read(salt); err != nil {
+		return 0, err
+	}
+	fp := base.Fingerprint() + "|manual|" + hex.EncodeToString(salt)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.DB.Exec(
+		`INSERT INTO transactions
+		   (posted_at, amount, currency, direction, merchant_raw, category_id, status,
+		    confidence, fingerprint, source, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+		m.PostedAt.UTC().Format(time.RFC3339Nano), m.AmountFils, currency, m.Direction,
+		m.MerchantRaw, catID, status, 1.0, fp, now, now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 // FindTransferMatch looks for an existing transaction that could be the other leg
 // of a self-transfer: same amount, opposite direction, within `window` of `postedAt`,
 // and not already marked as a transfer. Returns (matchID, true, nil) on hit.
@@ -158,6 +241,7 @@ func (s *Store) FindTransferMatch(txID, amountFils int64, direction string, post
 		   AND posted_at >= ?
 		   AND posted_at <= ?
 		   AND status != 'transfer'
+		   AND status != 'archived'
 		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
 		 LIMIT 1
 	`, txID, amountFils, opp, start, end, postedStr).Scan(&matchID)

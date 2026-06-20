@@ -9,17 +9,19 @@ import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
+import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
 import { FilterChips } from "../components/transactions/FilterChips";
 import { useToast } from "../components/Toast";
-import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters } from "../lib/transactions";
+import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { formatFils } from "../lib/money";
-import { AlertTriangle, ListOrdered, Search, Zap } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Zap, Plus } from "lucide-react";
 
-type Filter = "all" | "needs_review" | "confirmed";
+type Filter = "all" | "needs_review" | "confirmed" | "archived";
 const FILTERS = [
   { value: "all" as const, label: "All" },
   { value: "needs_review" as const, label: "Needs review" },
   { value: "confirmed" as const, label: "Confirmed" },
+  { value: "archived" as const, label: "Archived" },
 ];
 
 export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?: string; onOpenSwipeMode?: () => void }) {
@@ -29,6 +31,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
   const [active, setActive] = useState<Txn | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
   const status = filter === "all" ? "" : filter;
   const q = useQuery({
@@ -70,6 +73,33 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
     } catch { show({ message: `Couldn't update ${name}`, tone: "error" }); }
   };
 
+  const archiveTxn = async (t: Txn) => {
+    const name = t.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${t.ID}/archive`, {});
+      invalidate();
+      show({ message: `Archived ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/restore`, {}).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
+    } catch { show({ message: `Couldn't archive ${name}`, tone: "error" }); }
+  };
+
+  const restoreTxn = async (t: Txn) => {
+    const name = t.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${t.ID}/restore`, {});
+      invalidate();
+      show({ message: `Restored ${name}` });
+    } catch { show({ message: `Couldn't restore ${name}`, tone: "error" }); }
+  };
+
+  const createTxn = async (payload: ManualTxnPayload) => {
+    try {
+      await postJSON("/api/transactions", payload);
+      setAddOpen(false);
+      invalidate();
+      show({ message: "Transaction added", tone: "success" });
+    } catch { show({ message: "Couldn't add transaction", tone: "error" }); }
+  };
+
   const categorize = async (t: Txn, body: { category_id: number; make_rule: boolean }) => {
     const name = t.MerchantRaw || "transaction";
     try {
@@ -84,14 +114,17 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
-        {filter === "needs_review" && onOpenSwipeMode && (
-          <button
-            onClick={onOpenSwipeMode}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
-          >
-            <Zap size={16} /> Swipe
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {filter === "needs_review" && onOpenSwipeMode && (
+            <button
+              onClick={onOpenSwipeMode}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <Zap size={16} /> Swipe
+            </button>
+          )}
+          <button onClick={() => setAddOpen(true)} aria-label="Add transaction" className="flex items-center justify-center p-2 rounded-lg bg-accent text-accent-fg hover:opacity-90 transition-opacity"><Plus size={16} /></button>
+        </div>
       </div>
 
       <div className="relative">
@@ -124,7 +157,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           <Card className="!p-0">
             <ul className="divide-y divide-border px-4">
               {rows.map((t) => (
-                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
+                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
               ))}
             </ul>
           </Card>
@@ -138,6 +171,10 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           onSubmit={(body) => categorize(active, body)}
           onClose={() => setActive(null)}
         />
+      )}
+
+      {addOpen && (
+        <AddTransactionSheet categories={cats.data ?? []} onSubmit={createTxn} onClose={() => setAddOpen(false)} />
       )}
     </div>
   );

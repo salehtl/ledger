@@ -1,4 +1,5 @@
 import type { Txn } from "../api/types";
+import { dirhamsToFils } from "./format";
 
 /**
  * Inclusive query bounds for a "YYYY-MM" month, matching the backend filter
@@ -61,4 +62,53 @@ const SOURCE_LABEL: Record<string, string> = {
 export function sourceLabel(s: string): string {
   if (SOURCE_LABEL[s]) return SOURCE_LABEL[s];
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export interface ManualTxnInput {
+  merchant: string;
+  amountAed: string;
+  direction: string;
+  date: string; // YYYY-MM-DD
+  categoryId: number | null;
+}
+
+export interface ManualTxnPayload {
+  posted_at: string;
+  amount_fils: number;
+  currency: string;
+  direction: string;
+  merchant_raw: string;
+  category_id: number;
+}
+
+export type BuildResult =
+  | { ok: true; payload: ManualTxnPayload }
+  | { ok: false; error: string };
+
+/** Validate a manual-entry form and project it onto the POST /api/transactions body. */
+export function buildManualTxnPayload(input: ManualTxnInput): BuildResult {
+  const merchant = input.merchant.trim();
+  if (!merchant) return { ok: false, error: "Enter a merchant or description." };
+
+  const aed = Number(input.amountAed);
+  if (!Number.isFinite(aed) || aed <= 0) {
+    return { ok: false, error: "Enter an amount greater than zero." };
+  }
+  if (input.direction !== "debit" && input.direction !== "credit") {
+    return { ok: false, error: "Choose debit or credit." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
+    return { ok: false, error: "Choose a valid date." };
+  }
+  return {
+    ok: true,
+    payload: {
+      posted_at: input.date,
+      amount_fils: dirhamsToFils(aed),
+      currency: "AED",
+      direction: input.direction,
+      merchant_raw: merchant,
+      category_id: input.categoryId ?? 0,
+    },
+  };
 }

@@ -3,6 +3,7 @@ const STATUS_LABELS: Record<string, string> = {
   confirmed: "Confirmed",
   transfer: "Transfer",
   ignored: "Ignored",
+  archived: "Archived",
 };
 
 export function statusLabel(status: string): string {
@@ -16,6 +17,7 @@ export function statusTone(status: string): Tone {
     case "confirmed": return "good";
     case "needs_review": return "warn";
     case "ignored": return "muted";
+    case "archived": return "muted";
     default: return "neutral";
   }
 }
