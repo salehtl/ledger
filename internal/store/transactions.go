@@ -241,6 +241,7 @@ func (s *Store) FindTransferMatch(txID, amountFils int64, direction string, post
 		   AND posted_at >= ?
 		   AND posted_at <= ?
 		   AND status != 'transfer'
+		   AND status != 'archived'
 		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
 		 LIMIT 1
 	`, txID, amountFils, opp, start, end, postedStr).Scan(&matchID)
