@@ -70,6 +70,25 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
     } catch { show({ message: `Couldn't update ${name}`, tone: "error" }); }
   };
 
+  const archiveTxn = async (t: Txn) => {
+    const name = t.MerchantRaw || "transaction";
+    const prevStatus = t.Status;
+    try {
+      await postJSON(`/api/transactions/${t.ID}/status`, { status: "archived" });
+      invalidate();
+      show({ message: `Archived ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: prevStatus }).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
+    } catch { show({ message: `Couldn't archive ${name}`, tone: "error" }); }
+  };
+
+  const restoreTxn = async (t: Txn) => {
+    const name = t.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${t.ID}/status`, { status: "confirmed" });
+      invalidate();
+      show({ message: `Restored ${name}` });
+    } catch { show({ message: `Couldn't restore ${name}`, tone: "error" }); }
+  };
+
   const categorize = async (t: Txn, body: { category_id: number; make_rule: boolean }) => {
     const name = t.MerchantRaw || "transaction";
     try {
@@ -124,7 +143,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           <Card className="!p-0">
             <ul className="divide-y divide-border px-4">
               {rows.map((t) => (
-                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} /></li>
+                <li key={t.ID}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
               ))}
             </ul>
           </Card>
