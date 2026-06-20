@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"ledger/internal/store"
 )
@@ -115,6 +117,71 @@ func (s *Server) archiveOrRestore(w http.ResponseWriter, r *http.Request, archiv
 	s.BroadcastEvent("tx", nil)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+type manualTxnReq struct {
+	PostedAt    string `json:"posted_at"`
+	AmountFils  int64  `json:"amount_fils"`
+	Currency    string `json:"currency"`
+	Direction   string `json:"direction"`
+	MerchantRaw string `json:"merchant_raw"`
+	CategoryID  int64  `json:"category_id"`
+}
+
+// parseManualDate accepts a full RFC3339 timestamp or a bare YYYY-MM-DD date.
+func parseManualDate(s string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC(), true
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req manualTxnReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.AmountFils <= 0 {
+		http.Error(w, `{"error":"amount must be positive"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Direction != "debit" && req.Direction != "credit" {
+		http.Error(w, `{"error":"direction must be debit or credit"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.MerchantRaw) == "" {
+		http.Error(w, `{"error":"merchant required"}`, http.StatusBadRequest)
+		return
+	}
+	posted, ok := parseManualDate(req.PostedAt)
+	if !ok {
+		http.Error(w, `{"error":"invalid posted_at"}`, http.StatusBadRequest)
+		return
+	}
+	id, err := s.catStore.InsertManualTransaction(store.ManualTxn{
+		PostedAt:    posted,
+		AmountFils:  req.AmountFils,
+		Currency:    req.Currency,
+		Direction:   req.Direction,
+		MerchantRaw: strings.TrimSpace(req.MerchantRaw),
+		CategoryID:  req.CategoryID,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	s.BroadcastEvent("tx", nil)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{"id": id})
 }
 
 var validStatuses = map[string]bool{

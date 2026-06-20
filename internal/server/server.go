@@ -57,6 +57,7 @@ type CategoryStore interface {
 	ClearAllCategorization() (int64, error)
 	ArchiveTransaction(txID int64) error
 	RestoreTransaction(txID int64) error
+	InsertManualTransaction(store.ManualTxn) (int64, error)
 }
 
 // PushStore is the subset of the store needed by push-subscription handlers.
@@ -158,6 +159,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("DELETE /api/categories/{id}", s.handleDeleteCategory)
 	s.mux.HandleFunc("GET /api/review", s.handleGetReview)
 	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
+	s.mux.HandleFunc("POST /api/transactions", s.handlePostTransaction)
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/transactions/{id}/archive", s.handleArchive)
