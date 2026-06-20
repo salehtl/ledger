@@ -83,6 +83,40 @@ func (s *Server) handleClearCategorization(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]any{"cleared": n})
 }
 
+func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	s.archiveOrRestore(w, r, true)
+}
+
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	s.archiveOrRestore(w, r, false)
+}
+
+// archiveOrRestore handles both soft-delete directions: archive (true) stashes
+// the current status and hides the row; restore (false) brings it back.
+func (s *Server) archiveOrRestore(w http.ResponseWriter, r *http.Request, archive bool) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	txID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || txID <= 0 {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	if archive {
+		err = s.catStore.ArchiveTransaction(txID)
+	} else {
+		err = s.catStore.RestoreTransaction(txID)
+	}
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	s.BroadcastEvent("tx", nil)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
 var validStatuses = map[string]bool{
 	"confirmed":    true,
 	"ignored":      true,
