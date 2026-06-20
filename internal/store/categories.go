@@ -205,22 +205,6 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 	return err
 }
 
-// SelectNeedsReview returns transactions with status='needs_review', newest first.
-func (s *Store) SelectNeedsReview() ([]ReviewItem, error) {
-	rows, err := s.DB.Query(
-		`SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
-		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
-		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
-		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
-		  WHERE t.status='needs_review' ORDER BY t.posted_at DESC`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanReviewItems(rows)
-}
-
 // SelectTransactions returns transactions matching optional status and date filters.
 // Empty status matches all. from/to are RFC3339 or date strings (SQLite text compare).
 func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error) {

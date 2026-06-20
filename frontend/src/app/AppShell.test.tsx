@@ -23,12 +23,21 @@ function wrap() {
 }
 
 describe("AppShell", () => {
-  it("shows four tabs and starts on Home", async () => {
+  it("shows five tabs and starts on Home", async () => {
     wrap();
     expect(screen.getByRole("button", { name: /home/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /transactions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /review/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /insights/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+  });
+
+  it("opens the Review screen under the persistent TopBar", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
+    // TopBar renders the active screen's title as the page heading and keeps the scope control.
+    expect(await screen.findByRole("heading", { name: /review/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\d{4}/ })).toBeInTheDocument(); // month label still present
   });
 
   it("switches screens when a tab is tapped", async () => {
