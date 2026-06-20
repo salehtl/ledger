@@ -202,3 +202,74 @@ func TestSelectTransactionsExcludesArchivedByDefault(t *testing.T) {
 		t.Fatalf("status=archived returned %d items, want 1", len(arch))
 	}
 }
+
+func TestInsertManualTransactionConfirmedWithCategory(t *testing.T) {
+	st := newTestStore(t)
+	cats, _ := st.SelectCategories()
+	var catID int64
+	for _, c := range cats {
+		if c.Name == "Groceries" {
+			catID = c.ID
+		}
+	}
+	id, err := st.InsertManualTransaction(ManualTxn{
+		PostedAt:    time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC),
+		AmountFils:  4250,
+		Direction:   "debit",
+		MerchantRaw: "Corner Shop",
+		CategoryID:  catID,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var status, source, currency string
+	st.DB.QueryRow("SELECT status, source, currency FROM transactions WHERE id=?", id).
+		Scan(&status, &source, &currency)
+	if status != "confirmed" {
+		t.Errorf("status = %q, want confirmed", status)
+	}
+	if source != "manual" {
+		t.Errorf("source = %q, want manual", source)
+	}
+	if currency != "AED" {
+		t.Errorf("currency = %q, want default AED", currency)
+	}
+}
+
+func TestInsertManualTransactionUncategorizedGoesToReview(t *testing.T) {
+	st := newTestStore(t)
+	id, err := st.InsertManualTransaction(ManualTxn{
+		PostedAt:    time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC),
+		AmountFils:  1000,
+		Direction:   "debit",
+		MerchantRaw: "Mystery",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	st.DB.QueryRow("SELECT status FROM transactions WHERE id=?", id).Scan(&status)
+	if status != "needs_review" {
+		t.Errorf("status = %q, want needs_review", status)
+	}
+}
+
+func TestInsertManualTransactionAllowsDuplicateFingerprint(t *testing.T) {
+	st := newTestStore(t)
+	m := ManualTxn{
+		PostedAt:    time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC),
+		AmountFils:  1500,
+		Direction:   "debit",
+		MerchantRaw: "Coffee",
+	}
+	if _, err := st.InsertManualTransaction(m); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if _, err := st.InsertManualTransaction(m); err != nil {
+		t.Fatalf("second identical manual insert should not collide: %v", err)
+	}
+	rows, _ := st.SelectTransactions("", "", "")
+	if len(rows) != 2 {
+		t.Fatalf("want 2 manual rows, got %d", len(rows))
+	}
+}
