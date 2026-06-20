@@ -37,7 +37,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
         <div className="flex items-center justify-between mb-3">
           <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
-          <button aria-label="Close" className="-mr-2 p-2 rounded-full text-muted hover:bg-surface-2 text-xl leading-none" onClick={onClose}>×</button>
+          <button aria-label="Close" className="-mr-2 p-2 rounded-lg text-muted hover:bg-surface-2 text-xl leading-none" onClick={onClose}>×</button>
         </div>
         {children}
       </div>

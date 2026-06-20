@@ -22,7 +22,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
               <button
                 aria-label="Previous month"
                 onClick={() => onScopeChange({ kind: "month", period: addMonth(scope.period, -1) })}
-                className="p-2 rounded-full text-muted hover:bg-surface-2"
+                className="p-2 rounded-lg text-muted hover:bg-surface-2"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -31,7 +31,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
               onClick={() => setOpen(true)}
               aria-haspopup="dialog"
               aria-expanded={open}
-              className="px-3 py-1.5 rounded-full text-sm font-medium bg-surface-2 text-fg tnum truncate"
+              className="px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg tnum truncate"
             >
               {scopeLabel(scope)}
             </button>
@@ -39,7 +39,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
               <button
                 aria-label="Next month"
                 onClick={() => onScopeChange({ kind: "month", period: addMonth(scope.period, 1) })}
-                className="p-2 rounded-full text-muted hover:bg-surface-2"
+                className="p-2 rounded-lg text-muted hover:bg-surface-2"
               >
                 <ChevronRight size={18} />
               </button>

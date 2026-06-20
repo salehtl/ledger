@@ -119,7 +119,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           {filter === "needs_review" && onOpenSwipeMode && (
             <button
               onClick={onOpenSwipeMode}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
             >
               <Zap size={16} /> Swipe
             </button>
@@ -134,7 +134,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
           placeholder="Search merchant…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm"
+          className="w-full pl-9 pr-3 py-2 rounded-md border border-border bg-surface text-sm"
         />
       </div>
 

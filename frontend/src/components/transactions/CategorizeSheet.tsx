@@ -37,7 +37,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
         placeholder="Search categories…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        className="w-full mb-3 px-3 py-2 rounded-lg border border-border bg-surface-2 text-sm"
+        className="w-full mb-3 px-3 py-2 rounded-md border border-border bg-surface-2 text-sm"
       />
       <div className="space-y-3">
         {groups.map(([bucket, list]) => (
