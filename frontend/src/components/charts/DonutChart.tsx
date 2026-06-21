@@ -2,8 +2,9 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import type { DonutSlice } from "../../lib/insights";
 import { formatFils } from "../../lib/money";
 
-export function DonutChart({ slices, centerLabel, centerValue }: {
+export function DonutChart({ slices, centerLabel, centerValue, onSelect }: {
   slices: DonutSlice[]; centerLabel: string; centerValue: number;
+  onSelect?: (name: string) => void;
 }) {
   const share = (value: number) => (centerValue > 0 ? Math.round((value / centerValue) * 100) : 0);
   return (
@@ -23,13 +24,27 @@ export function DonutChart({ slices, centerLabel, centerValue }: {
         </div>
       </div>
       <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
-        {slices.map((s, i) => (
-          <li key={i} className="flex items-center gap-2 min-w-0 text-sm">
-            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} aria-hidden />
-            <span className="truncate">{s.name}</span>
-            <span className="ml-auto tnum text-muted shrink-0">{share(s.value)}%</span>
-          </li>
-        ))}
+        {slices.map((s, i) => {
+          const inner = (
+            <>
+              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} aria-hidden />
+              <span className="truncate">{s.name}</span>
+              <span className="ml-auto tnum text-muted shrink-0">{share(s.value)}%</span>
+            </>
+          );
+          const tappable = onSelect && s.name !== "Other";
+          return (
+            <li key={i} className="min-w-0 text-sm">
+              {tappable ? (
+                <button aria-label={`Drill into ${s.name}`} className="flex items-center gap-2 w-full text-left" onClick={() => onSelect!(s.name)}>
+                  {inner}
+                </button>
+              ) : (
+                <span className="flex items-center gap-2">{inner}</span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
