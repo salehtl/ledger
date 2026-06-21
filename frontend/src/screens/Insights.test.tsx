@@ -58,21 +58,26 @@ describe("Insights", () => {
     expect(await screen.findByText("Jun 2026")).toBeInTheDocument();
     expect(screen.getByText("Saved")).toBeInTheDocument();
   });
-  it("lists categories by spend with the biggest-changes block", async () => {
+  it("offers the analyze-by lens and lists categories by default", async () => {
     wrap();
-    // "Groceries" appears in both the donut legend and the category list.
-    expect((await screen.findAllByText("Groceries")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Analyze by")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merchants" })).toBeInTheDocument();
+    // default lens = categories → category rows are shown
+    expect(screen.getByText("Groceries")).toBeInTheDocument();
+    expect(screen.getByText("Dining")).toBeInTheDocument();
+    // the biggest-changes (top movers) block is still present
     expect(screen.getByText("Biggest changes")).toBeInTheDocument();
-    expect(screen.getByText("By category")).toBeInTheDocument();
   });
-  it("shows the Top merchants card and opens the drill-down sheet when a bucket is tapped", async () => {
+  it("switches the lens to Merchants and ranks merchants", async () => {
     wrap();
-    // Wait for top merchants card to appear (requires monthTxns to load)
-    expect(await screen.findByText(/top merchants/i)).toBeInTheDocument();
-    // Tap the first "Wants" bucket row (in ComparativeSummary) to open the drill-down sheet
+    fireEvent.click(await screen.findByRole("button", { name: "Merchants" }));
+    expect(await screen.findByRole("button", { name: /see transactions for Deliveroo/i })).toBeInTheDocument();
+  });
+  it("opens the drill-down sheet when a bucket is tapped", async () => {
+    wrap();
     const wantsButtons = await screen.findAllByRole("button", { name: /Wants/ });
     fireEvent.click(wantsButtons[0]);
-    // The drill-down sheet should show the transaction (may appear in multiple places)
+    // The drill-down sheet shows the bucket's transaction (title + row).
     expect((await screen.findAllByText("Deliveroo")).length).toBeGreaterThan(0);
   });
 });
