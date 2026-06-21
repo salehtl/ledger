@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ComparativeSummary } from "./ComparativeSummary";
 
 const buckets = [
@@ -21,5 +21,20 @@ describe("ComparativeSummary", () => {
   it("shows an em dash for savings rate when rate is null", () => {
     render(<ComparativeSummary label="Jun 2026" note="" net={-5000} savings={{ net: -5000, rate: null }} buckets={buckets} />);
     expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});
+
+const buckets2 = [
+  { bucket: "need", spent: 1000, prevSpent: 800, delta: 200 },
+  { bucket: "want", spent: 500, prevSpent: 500, delta: 0 },
+];
+const savings2 = { net: 1500, rate: 0.2 } as any;
+
+describe("ComparativeSummary onSelectBucket", () => {
+  it("fires onSelectBucket when a bucket row is tapped", () => {
+    const onSelectBucket = vi.fn();
+    render(<ComparativeSummary label="June 2026" note="" net={1500} savings={savings2} buckets={buckets2 as any} onSelectBucket={onSelectBucket} />);
+    fireEvent.click(screen.getByRole("button", { name: /Needs/ }));
+    expect(onSelectBucket).toHaveBeenCalledWith("need");
   });
 });

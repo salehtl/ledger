@@ -9,8 +9,8 @@ const cats: Category[] = [
   { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
 ];
 const txns: Txn[] = [
-  { ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED", Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 1, CategoryName: "Groceries", Bucket: "need" },
-  { ID: 2, PostedAt: "2026-06-09", AmountFils: 2000, Currency: "AED", Direction: "credit", MerchantRaw: "Y", Status: "confirmed", Confidence: 0, Source: "ai", CategoryID: 2, CategoryName: "Dining", Bucket: "want" },
+  { ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED", Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 1, CategoryName: "Groceries", Bucket: "need", Kind: "spending", BucketSnapshot: "" },
+  { ID: 2, PostedAt: "2026-06-09", AmountFils: 2000, Currency: "AED", Direction: "credit", MerchantRaw: "Y", Status: "confirmed", Confidence: 0, Source: "ai", CategoryID: 2, CategoryName: "Dining", Bucket: "want", Kind: "spending", BucketSnapshot: "" },
 ];
 
 function setup(filters: TxnFilters = EMPTY_FILTERS) {

@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { DonutChart } from "./DonutChart";
 import type { DonutSlice } from "../../lib/insights";
 
@@ -24,5 +24,26 @@ describe("DonutChart", () => {
   it("shows 0% shares when the total is zero", () => {
     render(<DonutChart slices={[{ name: "Rent", value: 0, color: "x" }]} centerLabel="Spent" centerValue={0} />);
     expect(screen.getByText("0%")).toBeInTheDocument();
+  });
+});
+
+const slices2 = [
+  { name: "Dining", value: 600, color: "#1373d9" },
+  { name: "Other", value: 400, color: "var(--color-muted)" },
+];
+
+describe("DonutChart onSelect", () => {
+  it("fires onSelect for a named slice but not for Other", () => {
+    const onSelect = vi.fn();
+    render(<DonutChart slices={slices2} centerLabel="Spent" centerValue={1000} onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: /Dining/ }));
+    expect(onSelect).toHaveBeenCalledWith("Dining");
+    // "Other" is not a button
+    expect(screen.queryByRole("button", { name: /Other/ })).not.toBeInTheDocument();
+  });
+
+  it("renders no buttons when onSelect is absent", () => {
+    render(<DonutChart slices={slices2} centerLabel="Spent" centerValue={1000} />);
+    expect(screen.queryByRole("button", { name: /Dining/ })).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ export interface Txn {
   ID: number; PostedAt: string; AmountFils: number; Currency: string;
   Direction: string; MerchantRaw: string; Status: string; Confidence: number; Source: string;
   CategoryID: number | null; CategoryName: string; Bucket: string;
+  Kind: string; BucketSnapshot: string;
 }
 export interface BudgetConfig {
   monthly_income: number; need_pct: number; want_pct: number; saving_pct: number;
