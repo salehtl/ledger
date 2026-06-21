@@ -91,3 +91,11 @@ func TestUnwrapFwdSubjectFallbackWhenNoMarker(t *testing.T) {
 		t.Errorf("body changed unexpectedly: %q", gotBody)
 	}
 }
+
+func TestUnwrapPlainSubjectUntouched(t *testing.T) {
+	const body = "المبلغ\nAED 124.00"
+	from, subject, gotBody := Unwrap("DIB.notification@dib.ae", "DIB Notification", body)
+	if from != "DIB.notification@dib.ae" || subject != "DIB Notification" || gotBody != body {
+		t.Errorf("plain non-forward should pass through unchanged; got %q / %q / %q", from, subject, gotBody)
+	}
+}
