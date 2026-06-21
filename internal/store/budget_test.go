@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -15,6 +16,29 @@ func openTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
+}
+
+// SelectRecent shares scanReviewItems with SelectTransactions; its SELECT must
+// project the same columns (incl. kind + bucket_snapshot) or the scan fails.
+// Regression guard: a column-count mismatch surfaced as /api/summary 500.
+func TestSelectRecentScansAllColumns(t *testing.T) {
+	st := openTestStore(t)
+	if _, _, err := st.InsertTransaction(TransactionRow{
+		PostedAt: time.Now().UTC(), AmountFils: 1234, Currency: "AED",
+		Direction: "debit", MerchantRaw: "Test Merchant", Status: "confirmed",
+	}); err != nil {
+		t.Fatalf("InsertTransaction: %v", err)
+	}
+	rows, err := st.SelectRecent(10)
+	if err != nil {
+		t.Fatalf("SelectRecent: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("SelectRecent returned %d rows, want 1", len(rows))
+	}
+	if rows[0].MerchantRaw != "Test Merchant" {
+		t.Errorf("MerchantRaw = %q, want %q", rows[0].MerchantRaw, "Test Merchant")
+	}
 }
 
 func TestEnsureAndSelectBudgetConfig(t *testing.T) {
