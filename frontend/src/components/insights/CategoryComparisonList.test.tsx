@@ -35,4 +35,9 @@ describe("CategoryComparisonList onSelectCategory", () => {
     fireEvent.click(screen.getByRole("button", { name: /Dining/ }));
     expect(onSelectCategory).toHaveBeenCalledWith(10, "Dining");
   });
+
+  it("renders no buttons when onSelectCategory is absent", () => {
+    render(<CategoryComparisonList rows={rows2} />);
+    expect(screen.queryByRole("button", { name: /Dining/ })).toBeNull();
+  });
 });

@@ -33,14 +33,12 @@ export function CategoryComparisonList({ rows, onSelectCategory }: {
               </>
             );
             return (
-              <li key={c.category_id} className="py-2.5">
+              <li key={c.category_id} className="py-2.5 flex items-center justify-between gap-3">
                 {onSelectCategory ? (
-                  <button className="w-full flex items-center justify-between gap-3 text-left" onClick={() => onSelectCategory(c.category_id, c.name)}>
+                  <button type="button" className="w-full flex items-center justify-between gap-3 text-left" onClick={() => onSelectCategory(c.category_id, c.name)}>
                     {inner}
                   </button>
-                ) : (
-                  <div className="flex items-center justify-between gap-3">{inner}</div>
-                )}
+                ) : inner}
               </li>
             );
           })}
