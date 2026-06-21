@@ -56,6 +56,13 @@ describe("bucketBreakdown", () => {
     expect(dining.count).toBe(2);
     expect(want.share).toBeCloseTo(0.5, 5); // 1000 / 2000 total
   });
+  it("uses the bucket snapshot when frozen", () => {
+    const rows = [txn({ ID: 1, AmountFils: 500, Bucket: "want", BucketSnapshot: "need" })];
+    const live = bucketBreakdown(rows, false);
+    expect(live[0].bucket).toBe("want");
+    const frozen = bucketBreakdown(rows, true);
+    expect(frozen[0].bucket).toBe("need");
+  });
 });
 
 describe("merchantBreakdown", () => {
@@ -74,6 +81,17 @@ describe("merchantBreakdown", () => {
     const top2 = merchantBreakdown(rows, 2);
     expect(top2.map((m) => m.merchant)).toEqual(["Deliveroo", "Noon", "Other"]);
     expect(top2[2].spent).toBe(100); // Talabat folded into Other
+  });
+  it("excludes non-spending transactions", () => {
+    const rows = [
+      txn({ ID: 1, MerchantRaw: "Deliveroo", AmountFils: 300 }),
+      txn({ ID: 2, MerchantRaw: "Bank", AmountFils: 999, Kind: "income", Direction: "credit" }),
+      txn({ ID: 3, MerchantRaw: "Noon", AmountFils: 200, Status: "needs_review" }),
+    ];
+    const out = merchantBreakdown(rows);
+    expect(out.map((m) => m.merchant)).toEqual(["Deliveroo"]);
+    expect(out[0].spent).toBe(300);
+    expect(out[0].share).toBeCloseTo(1, 5); // 300 / 300 (only spending counted)
   });
 });
 
