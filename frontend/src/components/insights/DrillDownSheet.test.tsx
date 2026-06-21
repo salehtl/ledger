@@ -53,7 +53,7 @@ describe("DrillDownSheet", () => {
     renderSheet({ type: "merchant", merchant: "Deliveroo" }, rows);
     // The dialog title and the transaction row both render the merchant name —
     // use getAllByText since both are intentionally present.
-    expect(screen.getAllByText("Deliveroo").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Deliveroo")).toHaveLength(2); // dialog title + transaction row
     expect(screen.queryByText("Noon")).not.toBeInTheDocument();
   });
 });
