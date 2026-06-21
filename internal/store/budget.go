@@ -126,7 +126,8 @@ func (s *Store) SelectRecent(n int) ([]ReviewItem, error) {
 	rows, err := s.DB.Query(
 		`SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
 		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
-		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
+		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
+		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,'')
 		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
 		  ORDER BY t.posted_at DESC LIMIT ?`, n,
 	)
