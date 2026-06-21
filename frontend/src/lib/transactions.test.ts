@@ -14,7 +14,7 @@ import type { Txn } from "../api/types";
 const mkTxn = (over: Partial<Txn>): Txn => ({
   ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED",
   Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0,
-  Source: "email", CategoryID: null, CategoryName: "", Bucket: "", ...over,
+  Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
 });
 
 describe("applyTxnFilters", () => {
@@ -90,7 +90,7 @@ describe("txnTotals", () => {
   const mk = (over: Partial<Txn>): Txn => ({
     ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED",
     Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0,
-    Source: "email", CategoryID: null, CategoryName: "", Bucket: "", ...over,
+    Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
   });
 
   it("sums debits as spend and ignores credits", () => {

@@ -533,3 +533,60 @@ func TestSelectTransactionsIncludesCategory(t *testing.T) {
 		t.Fatalf("CategoryName/Bucket = %q/%q, want Groceries/need", got.CategoryName, got.Bucket)
 	}
 }
+
+func TestSelectTransactionsExposesKindAndSnapshot(t *testing.T) {
+	st := openTestStore(t)
+	// Get the default categories.
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatalf("SelectCategories: %v", err)
+	}
+	var diningID int64
+	for _, c := range cats {
+		if c.Name == "Dining" && c.Kind == "spending" && c.Bucket == "want" {
+			diningID = c.ID
+		}
+	}
+	if diningID == 0 {
+		t.Fatal("Dining category not found")
+	}
+	// A confirmed debit in the Dining category, with a frozen bucket snapshot.
+	id, _, err := st.InsertTransaction(TransactionRow{
+		PostedAt:    time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		AmountFils:  5000,
+		Currency:    "AED",
+		Direction:   "debit",
+		MerchantRaw: "Deliveroo",
+		Status:      "confirmed",
+		Source:      "email",
+	})
+	if err != nil {
+		t.Fatalf("InsertTransaction: %v", err)
+	}
+	if err := st.UpdateTransactionCategory(id, diningID, "confirmed"); err != nil {
+		t.Fatalf("UpdateTransactionCategory: %v", err)
+	}
+	// Set bucket_snapshot directly on this transaction.
+	if _, err := st.DB.Exec("UPDATE transactions SET bucket_snapshot=? WHERE id=?", "need", id); err != nil {
+		t.Fatalf("SetBucketSnapshot: %v", err)
+	}
+	rows, err := st.SelectTransactions("confirmed", "", "")
+	if err != nil {
+		t.Fatalf("SelectTransactions: %v", err)
+	}
+	var got *ReviewItem
+	for i := range rows {
+		if rows[i].ID == id {
+			got = &rows[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("transaction not returned")
+	}
+	if got.Kind != "spending" {
+		t.Errorf("Kind = %q, want %q", got.Kind, "spending")
+	}
+	if got.BucketSnapshot != "need" {
+		t.Errorf("BucketSnapshot = %q, want %q", got.BucketSnapshot, "need")
+	}
+}
