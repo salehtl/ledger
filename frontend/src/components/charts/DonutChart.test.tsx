@@ -41,4 +41,9 @@ describe("DonutChart onSelect", () => {
     // "Other" is not a button
     expect(screen.queryByRole("button", { name: /Other/ })).not.toBeInTheDocument();
   });
+
+  it("renders no buttons when onSelect is absent", () => {
+    render(<DonutChart slices={slices2} centerLabel="Spent" centerValue={1000} />);
+    expect(screen.queryByRole("button", { name: /Dining/ })).toBeNull();
+  });
 });

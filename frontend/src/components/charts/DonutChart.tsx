@@ -34,14 +34,12 @@ export function DonutChart({ slices, centerLabel, centerValue, onSelect }: {
           );
           const tappable = onSelect && s.name !== "Other";
           return (
-            <li key={i} className="min-w-0 text-sm">
+            <li key={i} className="flex items-center gap-2 min-w-0 text-sm">
               {tappable ? (
-                <button aria-label={`Drill into ${s.name}`} className="flex items-center gap-2 w-full text-left" onClick={() => onSelect!(s.name)}>
+                <button type="button" aria-label={`Drill into ${s.name}`} className="flex items-center gap-2 w-full text-left" onClick={() => onSelect!(s.name)}>
                   {inner}
                 </button>
-              ) : (
-                <span className="flex items-center gap-2">{inner}</span>
-              )}
+              ) : inner}
             </li>
           );
         })}
