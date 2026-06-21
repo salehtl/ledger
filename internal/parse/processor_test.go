@@ -321,3 +321,62 @@ func (stubDebitLegParser) Parse(_ string) (ParsedTxn, error) {
 		Confidence:  1.0,
 	}, nil
 }
+
+// fwdEmail builds a base64 text/html email whose envelope is the iCloud
+// forwarder but whose body inline-forwards a DIB notification.
+func fwdEmail() []byte {
+	html := "<html><body>" +
+		"<div>Sent from my iPhone</div>" +
+		"<div><br>Begin forwarded message:<br><br></div>" +
+		"<blockquote><div>" +
+		"<b>From:</b> DIB Notification &lt;DIB.notification@dib.ae&gt;<br>" +
+		"<b>Date:</b> 18 June 2026 at 7:33:38 PM GST<br>" +
+		"<b>To:</b> salehtl@icloud.com<br>" +
+		"<b>Subject:</b> <b>DIB Notification</b><br><br>" +
+		"</div></blockquote>" +
+		"<blockquote><div>" +
+		"معاملة بطاقة ائتمان<br>" +
+		"إشعار مشتريات بتاريخ 18-06-2026 18:03<br>" +
+		"رقم البطاقة<br>462467XXXXXX7502<br>" +
+		"المبلغ<br>AED 124.00<br>" +
+		"الدفع الى<br>NOIRO CAFE<br>" +
+		"</div></blockquote></body></html>"
+	enc := base64.StdEncoding.EncodeToString([]byte(html))
+	return []byte("From: Saleh Lootah <salehtl@icloud.com>\r\nSubject: Fwd: DIB Notification\r\n" +
+		"MIME-Version: 1.0\r\nContent-Type: text/html; charset=\"utf-8\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" + enc)
+}
+
+func TestProcessorParsesForwardedDIBViaTemplate(t *testing.T) {
+	st := procTestStore(t)
+	if _, err := st.InsertIngest(store.IngestRecord{MessageUID: "fwd1", FromAddr: "Saleh Lootah <salehtl@icloud.com>",
+		Subject: "Fwd: DIB Notification", ParseStatus: "unparsed", RawBody: fwdEmail(), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, dibCascade())
+	n, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("processed = %d, want 1", n)
+	}
+	// Correct merchant + amount, NOT the forwarder ("salehtl").
+	var cnt int
+	st.DB.QueryRow("SELECT COUNT(*) FROM transactions WHERE merchant_raw='NOIRO CAFE' AND amount=12400 AND direction='debit'").Scan(&cnt)
+	if cnt != 1 {
+		t.Errorf("expected 1 NOIRO CAFE/12400 transaction, got %d", cnt)
+	}
+	// Must be the high-confidence template tier, and ingest marked parsed.
+	var ps, tier string
+	st.DB.QueryRow("SELECT parse_status, COALESCE(parse_tier,'') FROM ingest_log WHERE message_uid='fwd1'").Scan(&ps, &tier)
+	if ps != "parsed" || tier != "template" {
+		t.Errorf("ingest status/tier = %q/%q, want parsed/template", ps, tier)
+	}
+	// Guard against the original bug.
+	var bad int
+	st.DB.QueryRow("SELECT COUNT(*) FROM transactions WHERE merchant_raw='salehtl'").Scan(&bad)
+	if bad != 0 {
+		t.Errorf("found %d transactions with forwarder as merchant; preamble not stripped", bad)
+	}
+}

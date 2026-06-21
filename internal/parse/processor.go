@@ -59,7 +59,10 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", berr.Error())
 			continue
 		}
-		res := p.cascade.Run(ctx, row.FromAddr, row.Subject, text)
+		// Recover the original sender/subject and drop the forwarding preamble
+		// for inline-forwarded bank mail; a non-forward passes through unchanged.
+		from, subject, text := Unwrap(row.FromAddr, row.Subject, text)
+		res := p.cascade.Run(ctx, from, subject, text)
 		if res.Status == StatusUnparsed {
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
