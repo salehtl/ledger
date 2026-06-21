@@ -24,7 +24,7 @@ These were discovered reading the code; they preserve the approved behavior with
 - Reuse `monthRange(period)` from `lib/transactions.ts` (returns `{from: "YYYY-MM-01", to: "YYYY-MM-32"}`, already handling the month-end timestamp boundary) instead of a new `monthBounds`.
 - Reuse `applyTxnFilters` + `FilterChips` (bucket/category/direction/source) for the search sheet; add only a small `searchTxns` text helper. **Min-amount filter is dropped** (not in `FilterChips`).
 - No `ui/Sheet` extraction — `Dialog` already is the shared bottom-sheet primitive (used by `CategorizeSheet`, `FilterChips`).
-- Drill-down entry points are the **bucket rows** (ComparativeSummary) and **category rows** (CategoryComparisonList); the **donut is not click-to-drill** (its slices fold an "Other" bucket and drop category ids, and its legend duplicates the category list).
+- Drill-down entry points are the **bucket rows** (ComparativeSummary), **category rows** (CategoryComparisonList), and **donut legend items** (DonutChart). The donut maps a slice's category name back to its id (Insights holds the `CategorySpend[]` that has ids); the folded **"Other" slice stays non-interactive**.
 - Search/filter entry point is a button in the **Insights page body**, not the shared TopBar (avoids AppShell coupling; same UX).
 
 ---
@@ -1006,15 +1006,16 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Make bucket and category rows tappable (`onSelect`)
+### Task 7: Make bucket rows, category rows, and donut legend tappable (`onSelect`)
 
 **Files:**
 - Modify: `frontend/src/components/insights/ComparativeSummary.tsx`
 - Modify: `frontend/src/components/insights/CategoryComparisonList.tsx`
-- Test: `frontend/src/components/insights/ComparativeSummary.test.tsx`, `frontend/src/components/insights/CategoryComparisonList.test.tsx` (create if absent)
+- Modify: `frontend/src/components/charts/DonutChart.tsx`
+- Test: `frontend/src/components/insights/ComparativeSummary.test.tsx`, `frontend/src/components/insights/CategoryComparisonList.test.tsx`, `frontend/src/components/charts/DonutChart.test.tsx` (create if absent)
 
 **Interfaces:**
-- Produces: `ComparativeSummary` gains optional `onSelectBucket?: (bucket: string) => void` — when present, each bucket row becomes a button calling it. `CategoryComparisonList` gains optional `onSelectCategory?: (categoryId: number, name: string) => void` — when present, each category row becomes a button. When the prop is absent, rendering/behavior is unchanged (backward compatible).
+- Produces: `ComparativeSummary` gains optional `onSelectBucket?: (bucket: string) => void` — when present, each bucket row becomes a button calling it. `CategoryComparisonList` gains optional `onSelectCategory?: (categoryId: number, name: string) => void` — when present, each category row becomes a button. `DonutChart` gains optional `onSelect?: (name: string) => void` — when present, each legend item (except a slice named `"Other"`) becomes a button calling `onSelect(slice.name)`. When a prop is absent, rendering/behavior is unchanged (backward compatible).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1062,10 +1063,34 @@ describe("CategoryComparisonList onSelectCategory", () => {
 });
 ```
 
+Create/extend `frontend/src/components/charts/DonutChart.test.tsx`:
+
+```tsx
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { DonutChart } from "./DonutChart";
+
+const slices = [
+  { name: "Dining", value: 600, color: "#1373d9" },
+  { name: "Other", value: 400, color: "var(--color-muted)" },
+];
+
+describe("DonutChart onSelect", () => {
+  it("fires onSelect for a named slice but not for Other", () => {
+    const onSelect = vi.fn();
+    render(<DonutChart slices={slices} centerLabel="Spent" centerValue={1000} onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: /Dining/ }));
+    expect(onSelect).toHaveBeenCalledWith("Dining");
+    // "Other" is not a button
+    expect(screen.queryByRole("button", { name: /Other/ })).not.toBeInTheDocument();
+  });
+});
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd frontend && bunx vitest run src/components/insights/ComparativeSummary.test.tsx src/components/insights/CategoryComparisonList.test.tsx`
-Expected: FAIL — `onSelectBucket` / `onSelectCategory` not wired (no matching button role/name).
+Run: `cd frontend && bunx vitest run src/components/insights/ComparativeSummary.test.tsx src/components/insights/CategoryComparisonList.test.tsx src/components/charts/DonutChart.test.tsx`
+Expected: FAIL — `onSelectBucket` / `onSelectCategory` / donut `onSelect` not wired (no matching button role/name).
 
 - [ ] **Step 3: Wire `onSelectBucket` into `ComparativeSummary`**
 
@@ -1128,16 +1153,46 @@ In `frontend/src/components/insights/CategoryComparisonList.tsx`, add `onSelectC
           })}
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 5: Wire `onSelect` into `DonutChart`**
 
-Run: `cd frontend && bunx vitest run src/components/insights/ComparativeSummary.test.tsx src/components/insights/CategoryComparisonList.test.tsx`
+In `frontend/src/components/charts/DonutChart.tsx`, add `onSelect?: (name: string) => void;` to the props type. Make each legend `<li>` a button when `onSelect` is present and the slice is not `"Other"`. Replace the legend `slices.map(...)` block with:
+
+```tsx
+        {slices.map((s, i) => {
+          const inner = (
+            <>
+              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} aria-hidden />
+              <span className="truncate">{s.name}</span>
+              <span className="ml-auto tnum text-muted shrink-0">{share(s.value)}%</span>
+            </>
+          );
+          const tappable = onSelect && s.name !== "Other";
+          return (
+            <li key={i} className="min-w-0 text-sm">
+              {tappable ? (
+                <button aria-label={`Drill into ${s.name}`} className="flex items-center gap-2 w-full text-left" onClick={() => onSelect!(s.name)}>
+                  {inner}
+                </button>
+              ) : (
+                <span className="flex items-center gap-2">{inner}</span>
+              )}
+            </li>
+          );
+        })}
+```
+
+(The pie itself stays non-interactive; the legend is the tappable, testable affordance.)
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `cd frontend && bunx vitest run src/components/insights/ComparativeSummary.test.tsx src/components/insights/CategoryComparisonList.test.tsx src/components/charts/DonutChart.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src/components/insights/ComparativeSummary.tsx frontend/src/components/insights/CategoryComparisonList.tsx frontend/src/components/insights/ComparativeSummary.test.tsx frontend/src/components/insights/CategoryComparisonList.test.tsx
-git commit -m "feat(insights): tappable bucket + category rows (onSelect)
+git add frontend/src/components/insights/ComparativeSummary.tsx frontend/src/components/insights/CategoryComparisonList.tsx frontend/src/components/charts/DonutChart.tsx frontend/src/components/insights/ComparativeSummary.test.tsx frontend/src/components/insights/CategoryComparisonList.test.tsx frontend/src/components/charts/DonutChart.test.tsx
+git commit -m "feat(insights): tappable bucket rows, category rows, donut legend (onSelect)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -1221,6 +1276,7 @@ import { Search } from "lucide-react";
 
    - Change `<ComparativeSummary … />` to add `onSelectBucket={(bucket) => setDrill({ type: "bucket", bucket })}`.
    - Change `<CategoryComparisonList rows={listRows} />` to `<CategoryComparisonList rows={listRows} onSelectCategory={(categoryId, name) => setDrill({ type: "category", categoryId, name })} />`.
+   - Make the donut tappable: change `<DonutChart slices={slices} … />` to add `onSelect={(name) => { const cat = curData.find((c) => c.name === name); if (cat) setDrill({ type: "category", categoryId: cat.category_id, name }); }}`. (`curData` is the `CategorySpend[]` already in scope; it carries `category_id`. The "Other" slice never matches and is non-interactive in `DonutChart`.)
    - After the donut card (or wherever sensible in the flow), add `<MerchantBreakdown txns={txns} onSelect={(merchant) => setDrill({ type: "merchant", merchant })} />`.
    - At the end of the root `<div>`, render the sheets:
 
@@ -1267,7 +1323,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Focused-month scope → Task 8 fetches `monthRange(focusMonth)`. ✅
 - Backend `Kind`/`BucketSnapshot` → Task 1. ✅
 - Testing (pure lib, components, store) → Tasks 1–8 each include tests. ✅
-- Deviations (min-amount dropped, donut not clickable, in-page search, no `ui/Sheet`, `useTxnActions` extraction) are listed up top and flagged for the user.
+- Donut click-to-drill (by category-name→id mapping) → Task 7 (`DonutChart onSelect`) + Task 8 wiring. ✅
+- Deviations (min-amount dropped, in-page search, no `ui/Sheet`, `useTxnActions` extraction) are listed up top; all confirmed with the user. Donut is now tappable per the user's choice.
 
 **2. Placeholder scan:** No TBD/TODO. Steps that must adapt to existing harnesses (store test helpers in Task 1 Step 1; Insights test harness in Task 8 Step 1; `ToastProvider` name in Task 4) name the exact thing to check and pin the fixed assertions. No "handle edge cases" hand-waving.
 
