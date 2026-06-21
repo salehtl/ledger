@@ -1,6 +1,6 @@
 // frontend/src/screens/Transactions.tsx
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
@@ -14,8 +14,10 @@ import { Fab } from "../components/ui/Fab";
 import { FilterChips } from "../components/transactions/FilterChips";
 import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
+import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
 import { AlertTriangle, ListOrdered, Search, Zap, Plus } from "lucide-react";
+import { useTxnActions } from "../hooks/useTxnActions";
 
 type Filter = "all" | "needs_review" | "confirmed" | "archived";
 const FILTERS = [
@@ -26,8 +28,8 @@ const FILTERS = [
 ];
 
 export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?: string; onOpenSwipeMode?: () => void }) {
-  const qc = useQueryClient();
   const { show } = useToast();
+  const { invalidate, setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
@@ -49,48 +51,10 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
 
   const rows = useMemo(() => {
-    let data = applyTxnFilters(q.data ?? [], filters);
-    const term = search.trim().toLowerCase();
-    if (term) data = data.filter((t) => (t.MerchantRaw || "").toLowerCase().includes(term));
-    return data;
+    const filtered = applyTxnFilters(q.data ?? [], filters);
+    return searchTxns(filtered, search);
   }, [q.data, search, filters]);
   const totals = useMemo(() => txnTotals(rows), [rows]);
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["transactions"] });
-    qc.invalidateQueries({ queryKey: ["summary"] });
-    qc.invalidateQueries({ queryKey: ["review"] });
-    qc.invalidateQueries({ queryKey: ["insights-categories"] });
-    qc.invalidateQueries({ queryKey: ["insights-trend"] });
-  };
-
-  const setStatus = async (t: Txn, newStatus: string) => {
-    const name = t.MerchantRaw || "transaction";
-    const verb = newStatus === "ignored" ? "Ignored" : newStatus === "transfer" ? "Marked transfer" : "Updated";
-    try {
-      await postJSON(`/api/transactions/${t.ID}/status`, { status: newStatus });
-      invalidate();
-      show({ message: `${verb} ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/status`, { status: "needs_review" }).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
-    } catch { show({ message: `Couldn't update ${name}`, tone: "error" }); }
-  };
-
-  const archiveTxn = async (t: Txn) => {
-    const name = t.MerchantRaw || "transaction";
-    try {
-      await postJSON(`/api/transactions/${t.ID}/archive`, {});
-      invalidate();
-      show({ message: `Archived ${name}`, action: { label: "Undo", onAction: () => { void postJSON(`/api/transactions/${t.ID}/restore`, {}).then(invalidate).catch(() => show({ message: `Couldn't undo`, tone: "error" })); } } });
-    } catch { show({ message: `Couldn't archive ${name}`, tone: "error" }); }
-  };
-
-  const restoreTxn = async (t: Txn) => {
-    const name = t.MerchantRaw || "transaction";
-    try {
-      await postJSON(`/api/transactions/${t.ID}/restore`, {});
-      invalidate();
-      show({ message: `Restored ${name}` });
-    } catch { show({ message: `Couldn't restore ${name}`, tone: "error" }); }
-  };
 
   const createTxn = async (payload: ManualTxnPayload) => {
     try {
@@ -99,16 +63,6 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
       invalidate();
       show({ message: "Transaction added", tone: "success" });
     } catch { show({ message: "Couldn't add transaction", tone: "error" }); }
-  };
-
-  const categorize = async (t: Txn, body: { category_id: number; make_rule: boolean }) => {
-    const name = t.MerchantRaw || "transaction";
-    try {
-      await postJSON(`/api/transactions/${t.ID}/categorize`, { ...body, merchant_raw: t.MerchantRaw });
-      setActive(null);
-      invalidate();
-      show({ message: `Categorized ${name}`, tone: "success" });
-    } catch { show({ message: `Couldn't categorize ${name}`, tone: "error" }); }
   };
 
   return (
@@ -168,7 +122,7 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
         <CategorizeSheet
           txn={active}
           categories={cats.data}
-          onSubmit={(body) => categorize(active, body)}
+          onSubmit={async (body) => { if (await categorize(active, body)) setActive(null); }}
           onClose={() => setActive(null)}
         />
       )}

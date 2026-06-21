@@ -27,18 +27,20 @@ type RuleRow struct {
 
 // ReviewItem is a flattened transaction row returned for manual review.
 type ReviewItem struct {
-	ID           int64
-	PostedAt     string
-	AmountFils   int64
-	Currency     string
-	Direction    string
-	MerchantRaw  string
-	Status       string
-	Confidence   float64
-	Source       string
-	CategoryID   *int64 // nil when uncategorized
-	CategoryName string // "" when uncategorized
-	Bucket       string // "" when uncategorized or category has no bucket
+	ID             int64
+	PostedAt       string
+	AmountFils     int64
+	Currency       string
+	Direction      string
+	MerchantRaw    string
+	Status         string
+	Confidence     float64
+	Source         string
+	CategoryID     *int64 // nil when uncategorized
+	CategoryName   string // "" when uncategorized
+	Bucket         string // "" when uncategorized or category has no bucket
+	Kind           string // category kind: "spending" | "income" | "excluded" | "" (uncategorized)
+	BucketSnapshot string // frozen bucket at categorization time; "" when unset
 }
 
 // nullableStr maps an empty string to SQL NULL.
@@ -210,7 +212,8 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error) {
 	q := `SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
 	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
-	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,'')
+	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
+	             COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,'')
 	      FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
 	      WHERE 1=1`
 	var args []any
@@ -252,6 +255,7 @@ func scanReviewItems(rows interface {
 			&r.ID, &r.PostedAt, &r.AmountFils, &r.Currency, &r.Direction,
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 			&catID, &r.CategoryName, &r.Bucket,
+			&r.Kind, &r.BucketSnapshot,
 		); err != nil {
 			return nil, err
 		}
