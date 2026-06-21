@@ -33,9 +33,13 @@ func Unwrap(from, subject, body string) (string, string, string) {
 		}
 	}
 	if marker == -1 {
-		// No forward marker. If the subject is Fwd-prefixed, still strip the
-		// prefix so a future template Matches can use it; body is untouched.
-		return from, fwdSubjectRe.ReplaceAllString(subject, ""), body
+		// No forward marker. Strip a leading Fwd:/FW: from the subject if
+		// present (so a future template Matches can use it); otherwise return
+		// the inputs unchanged. Body is untouched either way.
+		if fwdSubjectRe.MatchString(subject) {
+			return from, fwdSubjectRe.ReplaceAllString(subject, ""), body
+		}
+		return from, subject, body
 	}
 
 	recFrom, recSubject := "", ""
