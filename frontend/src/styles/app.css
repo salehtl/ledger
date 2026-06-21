@@ -20,9 +20,9 @@
   --color-want: #7b35b8;        /* tertiary purple */
   --color-save: #2e7d52;        /* green */
 
-  --color-good: #194e2c;        /* success */
-  --color-warn: #713f12;        /* warning */
-  --color-bad: #7f1d1d;         /* error */
+  --color-good: #047857;        /* success — emerald, AA on white (5.5:1) */
+  --color-warn: #b45309;        /* warning — burnt amber, AA on white (5.0:1) */
+  --color-bad: #dc2626;         /* error — vivid red, AA on white (4.8:1) */
 
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   /* Rounded numeric face — kept only for the swipe-deck amount. */
