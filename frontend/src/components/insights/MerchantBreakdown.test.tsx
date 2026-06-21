@@ -28,4 +28,23 @@ describe("MerchantBreakdown", () => {
     render(<MerchantBreakdown txns={[]} onSelect={() => {}} />);
     expect(screen.getByText(/no spending/i)).toBeInTheDocument();
   });
+
+  it("folds merchants beyond top 8 into a non-interactive Other row", () => {
+    const onSelect = vi.fn();
+    render(<MerchantBreakdown txns={[
+      txn({ ID: 1, MerchantRaw: "M1", AmountFils: 9000 }),
+      txn({ ID: 2, MerchantRaw: "M2", AmountFils: 8000 }),
+      txn({ ID: 3, MerchantRaw: "M3", AmountFils: 7000 }),
+      txn({ ID: 4, MerchantRaw: "M4", AmountFils: 6000 }),
+      txn({ ID: 5, MerchantRaw: "M5", AmountFils: 5000 }),
+      txn({ ID: 6, MerchantRaw: "M6", AmountFils: 4000 }),
+      txn({ ID: 7, MerchantRaw: "M7", AmountFils: 3000 }),
+      txn({ ID: 8, MerchantRaw: "M8", AmountFils: 2000 }),
+      txn({ ID: 9, MerchantRaw: "M9", AmountFils: 1000 }),
+    ]} onSelect={onSelect} />);
+
+    expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Other/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /M1/ })).toBeInTheDocument();
+  });
 });
