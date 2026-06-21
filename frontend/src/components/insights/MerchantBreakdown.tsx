@@ -29,7 +29,7 @@ export function MerchantBreakdown({ txns, onSelect }: { txns: Txn[]; onSelect: (
                 {isOther ? (
                   <div className="flex text-muted">{content}</div>
                 ) : (
-                  <button aria-label={`Drill into ${m.merchant}`} className="w-full text-left" onClick={() => onSelect(m.merchant)}>
+                  <button type="button" aria-label={`Drill into ${m.merchant}`} className="w-full text-left" onClick={() => onSelect(m.merchant)}>
                     {content}
                   </button>
                 )}
