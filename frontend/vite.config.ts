@@ -10,7 +10,12 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icon-192.png", "icon-512.png"],
+      includeAssets: [
+        "favicon.svg",
+        "apple-touch-icon.jpg",
+        "manifest-icon-192.jpg",
+        "manifest-icon-512.jpg",
+      ],
       manifest: {
         name: "ledger",
         short_name: "ledger",
@@ -20,13 +25,14 @@ export default defineConfig({
         display: "standalone",
         start_url: "/",
         icons: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+          { src: "/manifest-icon-192.jpg", sizes: "192x192", type: "image/jpeg" },
+          { src: "/manifest-icon-512.jpg", sizes: "512x512", type: "image/jpeg" },
+          { src: "/manifest-icon-512.jpg", sizes: "512x512", type: "image/jpeg", purpose: "maskable" },
         ],
       },
       workbox: {
         navigateFallback: "/index.html",
-        globPatterns: ["**/*.{js,css,html,png,woff2}"],
+        globPatterns: ["**/*.{js,css,html,png,jpg,svg,woff2}"],
       },
     }),
   ],
