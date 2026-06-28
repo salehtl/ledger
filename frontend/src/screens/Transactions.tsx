@@ -16,7 +16,7 @@ import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
-import { AlertTriangle, ListOrdered, Search, Zap, Plus } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Plus } from "lucide-react";
 import { useTxnActions } from "../hooks/useTxnActions";
 
 type Filter = "all" | "needs_review" | "confirmed" | "archived";
@@ -27,7 +27,7 @@ const FILTERS = [
   { value: "archived" as const, label: "Archived" },
 ];
 
-export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?: string; onOpenSwipeMode?: () => void }) {
+export function Transactions({ from, to }: { from?: string; to?: string }) {
   const { show } = useToast();
   const { invalidate, setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
   const [filter, setFilter] = useState<Filter>("all");
@@ -69,16 +69,6 @@ export function Transactions({ from, to, onOpenSwipeMode }: { from?: string; to?
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
-        <div className="flex items-center gap-2">
-          {filter === "needs_review" && onOpenSwipeMode && (
-            <button
-              onClick={onOpenSwipeMode}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-accent-fg text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
-            >
-              <Zap size={16} /> Swipe
-            </button>
-          )}
-        </div>
       </div>
 
       <div className="relative">
