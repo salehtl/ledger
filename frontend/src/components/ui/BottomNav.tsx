@@ -14,7 +14,7 @@ export function BottomNav({
             aria-label={t.id === "review" && reviewCount > 0 ? `Review, ${reviewCount} need review` : t.label}
             aria-current={isActive ? "page" : undefined}
             onClick={() => onNavigate(t.id)}
-            className={`min-h-14 flex flex-col items-center justify-center gap-1 text-xs ${isActive ? "text-accent font-medium" : "text-muted"}`}
+            className={`min-h-14 flex flex-col items-center justify-center gap-1 text-xs press ${isActive ? "text-accent font-medium" : "text-muted"}`}
           >
             <span className="relative">
               {/* Material active-indicator pill behind the icon */}
