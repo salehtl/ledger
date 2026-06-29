@@ -2,6 +2,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motion";
+import { useSheetDrag } from "../../hooks/useSheetDrag";
 
 export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -50,6 +51,8 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
   const requestCloseRef = useRef(requestClose);
   requestCloseRef.current = requestClose;
 
+  const drag = useSheetDrag(panelRef, () => requestCloseRef.current(), reduced);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { requestCloseRef.current(); return; }
@@ -86,10 +89,17 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         style={{ transition: sheetTransition(reduced), willChange: reduced ? "auto" : "transform" }}
         className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
-        <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
-        <div className="flex items-center justify-between mb-3">
-          <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
-          <button aria-label="Close" className="-mr-2 p-2 rounded-lg text-muted hover:bg-surface-2 text-xl leading-none press" onClick={requestClose}>×</button>
+        <div
+          className="touch-none cursor-grab active:cursor-grabbing"
+          onPointerDown={drag.onPointerDown}
+          onPointerMove={drag.onPointerMove}
+          onPointerUp={drag.onPointerUp}
+        >
+          <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
+          <div className="flex items-center justify-between mb-3">
+            <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
+            <button aria-label="Close" className="-mr-2 p-2 rounded-lg text-muted hover:bg-surface-2 text-xl leading-none press" onClick={requestClose}>×</button>
+          </div>
         </div>
         {children}
       </div>
