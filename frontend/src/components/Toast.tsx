@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
+import { shouldDismissToast } from "../lib/toastSwipe";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -38,6 +39,31 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const beginRef = useRef(beginDismiss);
   beginRef.current = beginDismiss;
 
+  const elRef = useRef<HTMLDivElement>(null);
+  const dragX = useRef<{ start: number; t: number; dx: number } | null>(null);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (reduced) return;
+    dragX.current = { start: e.clientX, t: Date.now(), dx: 0 };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    if (elRef.current) elRef.current.style.transition = "none";
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragX.current) return;
+    dragX.current.dx = e.clientX - dragX.current.start;
+    if (elRef.current) elRef.current.style.transform = `translateX(${dragX.current.dx}px)`;
+  };
+  const onPointerUp = () => {
+    const d = dragX.current;
+    dragX.current = null;
+    if (!d) return;
+    if (shouldDismissToast(d.dx, Date.now() - d.t)) { beginDismiss(); return; }
+    if (elRef.current) {                       // snap back
+      elRef.current.style.transition = "transform 200ms var(--ease-out)";
+      elRef.current.style.transform = "translateX(0)";
+    }
+  };
+
   // Trigger the enter transition one frame after mount.
   useEffect(() => {
     const r = requestAnimationFrame(() => setMounted(true));
@@ -67,13 +93,18 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const hidden = !mounted || leaving;
   return (
     <div
+      ref={elRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
       style={{
         transition: reduced
           ? "opacity 150ms var(--ease-out)"
           : "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)",
         transform: reduced ? undefined : hidden ? "translateY(12px)" : "translateY(0)",
         opacity: hidden ? 0 : 1,
-        willChange: reduced ? "opacity" : "transform, opacity",
+        willChange: "transform",
+        touchAction: "pan-y",
       }}
       className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] text-bg px-3 py-2.5 rounded-lg shadow-lg ${tone}`}
     >
