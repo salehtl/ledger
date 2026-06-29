@@ -63,6 +63,16 @@ describe("toast enter/exit motion", () => {
     expect(el.style.transition).toContain("opacity");
   });
 
+  it("snaps back (does not dismiss) when the pointer is cancelled mid-drag", () => {
+    render(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    const toast = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
+    fireEvent.pointerDown(toast, { clientX: 0, pointerId: 1 });
+    fireEvent.pointerMove(toast, { clientX: 30, pointerId: 1 });   // small horizontal drag (< 80px)
+    fireEvent.pointerCancel(toast, { clientX: 30, pointerId: 1 });
+    expect(screen.queryByText("Ignored Spinneys")).toBeInTheDocument();  // not dismissed
+  });
+
   it("pauses the auto-dismiss timer while the tab is hidden", () => {
     render(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));

@@ -97,13 +97,14 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
       style={{
         transition: reduced
           ? "opacity 150ms var(--ease-out)"
           : "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)",
         transform: reduced ? undefined : hidden ? "translateY(12px)" : "translateY(0)",
         opacity: hidden ? 0 : 1,
-        willChange: "transform",
+        willChange: reduced ? "opacity" : "transform, opacity",
         touchAction: "pan-y",
       }}
       className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] text-bg px-3 py-2.5 rounded-lg shadow-lg ${tone}`}
