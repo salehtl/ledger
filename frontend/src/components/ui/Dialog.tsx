@@ -15,12 +15,17 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
 
   // Slide the sheet up and fade the scrim in on mount. Double rAF lets the
   // browser paint the offscreen start state before transitioning to rest.
+  // Under reduced motion, skip the slide but still seed + fade the scrim.
   useEffect(() => {
     const panel = panelRef.current, scrim = scrimRef.current;
     panel?.focus();
-    if (reduced || !panel || !scrim) return;
-    panel.style.transform = "translateY(100%)";
+    if (!scrim) return;
     scrim.style.opacity = "0";
+    if (reduced || !panel) {
+      const r = requestAnimationFrame(() => { scrim.style.opacity = "1"; });
+      return () => cancelAnimationFrame(r);
+    }
+    panel.style.transform = "translateY(100%)";
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
@@ -70,7 +75,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
       className="fixed inset-x-0 top-0 h-[100dvh] z-50 flex items-end sm:items-center justify-center"
       onClick={requestClose}
     >
-      <div ref={scrimRef} aria-hidden className="absolute inset-0 bg-black/40" style={{ transition: scrimTransition() }} />
+      <div ref={scrimRef} aria-hidden data-testid="dialog-scrim" className="absolute inset-0 bg-black/40" style={{ transition: scrimTransition() }} />
       <div
         ref={panelRef}
         role="dialog"
@@ -78,7 +83,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        style={{ transition: sheetTransition(reduced), willChange: "transform" }}
+        style={{ transition: sheetTransition(reduced), willChange: reduced ? "auto" : "transform" }}
         className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
         <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
