@@ -25,6 +25,17 @@ describe("DonutChart", () => {
     render(<DonutChart slices={[{ name: "Rent", value: 0, color: "x" }]} centerLabel="Spent" centerValue={0} />);
     expect(screen.getByText("0%")).toBeInTheDocument();
   });
+
+  it("renders slice labels immediately (no entrance animation)", () => {
+    render(
+      <DonutChart
+        slices={[{ name: "Dining", value: 100, color: "#000" }]}
+        centerLabel="Total"
+        centerValue={100}
+      />,
+    );
+    expect(screen.getByText("Dining")).toBeInTheDocument();
+  });
 });
 
 const slices2 = [
