@@ -18,7 +18,7 @@ import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
 import { AlertTriangle, ListOrdered, Search, Plus } from "lucide-react";
 import { useTxnActions } from "../hooks/useTxnActions";
-import { useFirstMount } from "../hooks/useFirstMount";
+import { useFirstReveal } from "../hooks/useFirstReveal";
 
 type Filter = "all" | "needs_review" | "confirmed" | "archived";
 const FILTERS = [
@@ -30,7 +30,6 @@ const FILTERS = [
 
 export function Transactions({ from, to }: { from?: string; to?: string }) {
   const { show } = useToast();
-  const firstMount = useFirstMount();
   const { invalidate, setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -57,6 +56,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     return searchTxns(filtered, search);
   }, [q.data, search, filters]);
   const totals = useMemo(() => txnTotals(rows), [rows]);
+  const firstReveal = useFirstReveal(rows.length > 0);
 
   const createTxn = async (payload: ManualTxnPayload) => {
     try {
@@ -103,7 +103,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           <Card className="!p-0">
             <ul className="divide-y divide-border px-4">
               {rows.map((t) => (
-                <li key={t.ID} className={firstMount ? "stagger-item" : undefined}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
+                <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
               ))}
             </ul>
           </Card>

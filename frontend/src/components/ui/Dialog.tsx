@@ -94,6 +94,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
           onPointerDown={drag.onPointerDown}
           onPointerMove={drag.onPointerMove}
           onPointerUp={drag.onPointerUp}
+          onPointerCancel={drag.onPointerCancel}
         >
           <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
           <div className="flex items-center justify-between mb-3">

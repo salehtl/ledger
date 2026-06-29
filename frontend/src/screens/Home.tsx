@@ -13,7 +13,7 @@ import {
 } from "../lib/insights";
 import { formatFils } from "../lib/money";
 import { AlertTriangle, Check, TrendingUp } from "lucide-react";
-import { useFirstMount } from "../hooks/useFirstMount";
+import { useFirstReveal } from "../hooks/useFirstReveal";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
@@ -28,7 +28,6 @@ function remainingLabel(remaining: number): string {
 }
 
 export function Home({ period = currentPeriod() }: { period?: string }) {
-  const firstMount = useFirstMount();
   // The 6-month trend is always the trailing 6 real months (it matches the
   // static /api/insights/trend), independent of the selected scope.
   const periods = trailingPeriods(currentPeriod(), 6);
@@ -38,6 +37,9 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
 
   const isCurrent = period === currentPeriod();
   const heroLabel = isCurrent ? "Spent this month" : `Spent in ${monthLabel(period)} ${period.slice(0, 4)}`;
+
+  // Hook must be before early returns (React rules); gates on first populated recent list paint.
+  const firstReveal = useFirstReveal(!summary.isLoading && (summary.data?.recent.length ?? 0) > 0);
 
   if (summary.isLoading) return <Skeleton rows={8} />;
   if (summary.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load your spending" hint="Check your connection and try again." />;
@@ -124,7 +126,7 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
           ) : (
             <ul className="divide-y divide-border">
               {s.recent.map((t) => (
-                <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstMount ? " stagger-item" : ""}`}>
+                <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstReveal ? " stagger-item" : ""}`}>
                   <div className="min-w-0">
                     <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
                     <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
