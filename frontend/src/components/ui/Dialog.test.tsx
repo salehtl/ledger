@@ -56,6 +56,17 @@ describe("Dialog", () => {
     expect(scrim.style.opacity).toBe("0");
   });
 
+  it("dismisses when the handle is flicked down", () => {
+    const onClose = vi.fn();
+    render(<Dialog title="T" onClose={onClose}>x</Dialog>);
+    const handle = screen.getByText("T").closest("div")!; // the drag region wrapping the header
+    fireEvent.pointerDown(handle, { clientY: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientY: 60, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientY: 60, pointerId: 1 });
+    vi.advanceTimersByTime(SHEET_EXIT_MS);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("closes synchronously under reduced motion without advancing timers", () => {
     window.matchMedia = vi.fn().mockImplementation(query => ({
       matches: query === "(prefers-reduced-motion: reduce)",
