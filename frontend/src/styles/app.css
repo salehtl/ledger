@@ -53,6 +53,22 @@
   .press:active { transform: none; }
 }
 
+/* First-paint list stagger — a one-shot cascade (decorative). Apply only on a
+   list's first mount; never on refetch. Steps are short (<=80ms). Reduced
+   motion keeps the fade, drops the upward movement. */
+@keyframes stagger-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.stagger-item { opacity: 0; animation: stagger-in 300ms var(--ease-out) forwards; }
+.stagger-item:nth-child(1) { animation-delay: 0ms; }
+.stagger-item:nth-child(2) { animation-delay: 40ms; }
+.stagger-item:nth-child(3) { animation-delay: 80ms; }
+.stagger-item:nth-child(4) { animation-delay: 120ms; }
+.stagger-item:nth-child(5) { animation-delay: 160ms; }
+.stagger-item:nth-child(6) { animation-delay: 200ms; }
+.stagger-item:nth-child(n+7) { animation-delay: 240ms; } /* cap the cascade */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes stagger-in { from { opacity: 0; } to { opacity: 1; } }
+}
+
 html, body, #root { height: 100%; }
 body { background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans);
        -webkit-text-size-adjust: 100%; }
