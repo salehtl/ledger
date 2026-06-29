@@ -44,6 +44,15 @@
   --dur-press: 140ms;                               /* button press feedback */
 }
 
+/* Press feedback — subtle scale confirms the UI heard the tap. Applies to any
+   pressable element. Disabled under reduced motion (movement removed, not the
+   element). Scale on :active is correct on touch too (unlike hover). */
+.press { transition: transform var(--dur-press) var(--ease-out); }
+.press:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .press:active { transform: none; }
+}
+
 html, body, #root { height: 100%; }
 body { background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans);
        -webkit-text-size-adjust: 100%; }
