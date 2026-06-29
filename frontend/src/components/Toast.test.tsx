@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { toastReducer, ToastProvider, useToast } from "./Toast";
 
 describe("toastReducer", () => {
@@ -34,5 +34,29 @@ describe("ToastProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: /undo/i }));
     expect((globalThis as Record<string, unknown>).__undo).toBeTruthy();
     expect(((globalThis as unknown as Record<string, () => void> & { __undo: ReturnType<typeof vi.fn> }).__undo)).toHaveBeenCalled();
+  });
+});
+
+describe("toast enter/exit motion", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps the toast mounted briefly after × is clicked (exit animation)", () => {
+    render(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    const toast = screen.getByText("Ignored Spinneys");
+    expect(toast).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    // Still present immediately after click — exit is animating.
+    expect(screen.queryByText("Ignored Spinneys")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(screen.queryByText("Ignored Spinneys")).toBeNull();
+  });
+
+  it("gives the toast a transform+opacity transition", () => {
+    render(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    const el = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
+    expect(el.style.transition).toContain("opacity");
   });
 });
