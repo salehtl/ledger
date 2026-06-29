@@ -41,6 +41,8 @@ export function useSheetDrag(
     const elapsed = Date.now() - startT.current;
     const panel = panelRef.current;
     if (shouldDismiss(dy.current, elapsed)) {
+      if (panel) panel.style.transition = sheetTransition(reduced); // restore curve so slide-out animates
+      startY.current = null;                           // parity with snap-back branch
       onDismiss();                                     // Dialog plays the rest of the slide-out
       return;
     }

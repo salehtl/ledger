@@ -90,7 +90,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
         className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
         <div
-          className="touch-none cursor-grab active:cursor-grabbing"
+          className="touch-none cursor-grab active:cursor-grabbing sm:cursor-default"
           onPointerDown={drag.onPointerDown}
           onPointerMove={drag.onPointerMove}
           onPointerUp={drag.onPointerUp}
