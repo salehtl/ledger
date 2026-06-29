@@ -39,7 +39,10 @@ describe("ToastProvider", () => {
 
 describe("toast enter/exit motion", () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
 
   it("keeps the toast mounted briefly after × is clicked (exit animation)", () => {
     render(<ToastProvider><Trigger /></ToastProvider>);
@@ -58,5 +61,20 @@ describe("toast enter/exit motion", () => {
     fireEvent.click(screen.getByText("go"));
     const el = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
     expect(el.style.transition).toContain("opacity");
+  });
+
+  it("pauses the auto-dismiss timer while the tab is hidden", () => {
+    render(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    act(() => { vi.advanceTimersByTime(3000); });           // 3s in — still present
+    expect(screen.queryByText("Ignored Spinneys")).toBeInTheDocument();
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    fireEvent(document, new Event("visibilitychange"));      // tab hidden → pause
+    act(() => { vi.advanceTimersByTime(10000); });           // 10s hidden — still present
+    expect(screen.queryByText("Ignored Spinneys")).toBeInTheDocument();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    fireEvent(document, new Event("visibilitychange"));      // visible → resume (~2s left)
+    act(() => { vi.advanceTimersByTime(2300); });            // 2000ms remaining + 200ms exit anim + buffer
+    expect(screen.queryByText("Ignored Spinneys")).toBeNull();
   });
 });
