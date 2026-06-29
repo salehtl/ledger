@@ -63,6 +63,10 @@ describe("Dialog", () => {
     fireEvent.pointerDown(handle, { clientY: 0, pointerId: 1 });
     fireEvent.pointerMove(handle, { clientY: 60, pointerId: 1 });
     fireEvent.pointerUp(handle, { clientY: 60, pointerId: 1 });
+    // Transition must be restored before dismiss so the slide-out animates (not jumps)
+    const panel = screen.getByRole("dialog");
+    expect(panel.style.transition).not.toBe("none");
+    expect(panel.style.transition).toContain("transform");
     vi.advanceTimersByTime(SHEET_EXIT_MS);
     expect(onClose).toHaveBeenCalled();
   });
