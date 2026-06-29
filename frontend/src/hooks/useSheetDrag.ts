@@ -53,5 +53,16 @@ export function useSheetDrag(
     startY.current = null;
   }, [panelRef, onDismiss, reduced]);
 
-  return { onPointerDown, onPointerMove, onPointerUp };
+  const onPointerCancel = useCallback(() => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    startY.current = null;
+    const panel = panelRef.current;
+    if (panel) {
+      panel.style.transition = sheetTransition(reduced);
+      panel.style.transform = "translateY(0)";
+    }
+  }, [panelRef, reduced]);
+
+  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel };
 }

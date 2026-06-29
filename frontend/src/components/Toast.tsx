@@ -57,7 +57,11 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     const d = dragX.current;
     dragX.current = null;
     if (!d) return;
-    if (shouldDismissToast(d.dx, Date.now() - d.t)) { beginDismiss(); return; }
+    if (shouldDismissToast(d.dx, Date.now() - d.t)) {
+      if (elRef.current) elRef.current.style.transition = "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)";
+      beginDismiss();
+      return;
+    }
     if (elRef.current) {                       // snap back
       elRef.current.style.transition = "transform 200ms var(--ease-out)";
       elRef.current.style.transform = "translateX(0)";
