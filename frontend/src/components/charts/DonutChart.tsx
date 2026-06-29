@@ -13,7 +13,7 @@ export function DonutChart({ slices, centerLabel, centerValue, onSelect }: {
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie data={slices} dataKey="value" nameKey="name" innerRadius="68%" outerRadius="100%"
-                 stroke="var(--color-surface)" strokeWidth={2} paddingAngle={1.5}>
+                 stroke="var(--color-surface)" strokeWidth={2} paddingAngle={1.5} isAnimationActive={false}>
               {slices.map((s, i) => <Cell key={i} fill={s.color} />)}
             </Pie>
           </PieChart>
