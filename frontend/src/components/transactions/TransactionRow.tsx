@@ -1,6 +1,6 @@
 // frontend/src/components/transactions/TransactionRow.tsx
 import type { Txn } from "../../api/types";
-import { Money } from "../Money";
+import { flowAmount } from "../../lib/money";
 import { Pill } from "../ui/Pill";
 import { statusLabel, statusTone } from "../../lib/format";
 import { bucketColor } from "../../lib/insights";
@@ -16,6 +16,7 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
   const needsReview = txn.Status === "needs_review";
   const archived = txn.Status === "archived";
   const subtitle = [txn.PostedAt.slice(0, 10), txn.CategoryName].filter(Boolean).join(" · ");
+  const amount = flowAmount(txn.Direction, txn.AmountFils);
   return (
     <div className="py-2.5 flex items-stretch gap-3">
       <span
@@ -28,7 +29,13 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
         <p className="text-xs text-muted truncate">{subtitle || "Uncategorized"}</p>
       </button>
       <div className="flex flex-col items-end gap-1 self-center">
-        <span className="tnum font-medium"><Money fils={txn.Direction === "credit" ? txn.AmountFils : -txn.AmountFils} /></span>
+        <span
+          className="tnum font-medium"
+          style={amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
+          title={amount.flow === "in" ? "Money in" : "Money out"}
+        >
+          {amount.text}
+        </span>
         <Pill tone={statusTone(txn.Status)}>{statusLabel(txn.Status)}</Pill>
       </div>
       <div className="flex flex-col gap-1 self-center">

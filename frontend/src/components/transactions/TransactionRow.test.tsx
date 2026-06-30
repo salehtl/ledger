@@ -27,6 +27,13 @@ describe("TransactionRow archive actions", () => {
     expect(onRestore).toHaveBeenCalledTimes(1);
   });
 
+  it("signs the amount by flow direction", () => {
+    const { rerender } = render(<TransactionRow txn={mk({ Direction: "debit", AmountFils: 5000 })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText("−50.00")).toBeInTheDocument();
+    rerender(<TransactionRow txn={mk({ Direction: "credit", AmountFils: 5000 })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText("+50.00")).toBeInTheDocument();
+  });
+
   it("shows Categorize, Transfer, Ignore and Archive on a needs_review row", () => {
     render(<TransactionRow txn={mk({ Status: "needs_review" })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
     for (const name of [/categorize/i, /transfer/i, /ignore/i, /^archive$/i]) {

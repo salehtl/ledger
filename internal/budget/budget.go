@@ -33,6 +33,19 @@ var bucketOrder = []string{"need", "want", "saving"}
 // Compute rolls spend rows into jars for the month of now. income is already
 // resolved by the caller (config figure or summed income categories).
 func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, now time.Time) Summary {
+	return computeJars(cfg, income, spend, recent, now.Format("2006-01"), MonthProgress(now))
+}
+
+// ComputeRange rolls jars for a multi-month span. The caller has already summed
+// spend + income across the span; period labels it (e.g. "2026-03..2026-06") and
+// progress is the fraction of the span elapsed (1.0 once it is wholly past). The
+// jar math is identical to Compute — a target is income×pct regardless of span
+// length, because the caller's summed income already scales with the months.
+func ComputeRange(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64) Summary {
+	return computeJars(cfg, income, spend, recent, period, progress)
+}
+
+func computeJars(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64) Summary {
 	pct := map[string]float64{"need": cfg.NeedPct, "want": cfg.WantPct, "saving": cfg.SavingPct}
 
 	net := map[string]int64{}
@@ -45,9 +58,8 @@ func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recen
 		}
 	}
 
-	progress := monthProgress(now)
 	out := Summary{
-		Period:        now.Format("2006-01"),
+		Period:        period,
 		Income:        income,
 		MonthProgress: progress,
 		Recent:        recent,
@@ -74,8 +86,8 @@ func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recen
 	return out
 }
 
-// monthProgress is the fraction of the current month elapsed (day / daysInMonth).
-func monthProgress(now time.Time) float64 {
+// MonthProgress is the fraction of now's month elapsed (day / daysInMonth).
+func MonthProgress(now time.Time) float64 {
 	year, month, _ := now.Date()
 	firstNext := time.Date(year, month, 1, 0, 0, 0, 0, now.Location()).AddDate(0, 1, 0)
 	daysInMonth := firstNext.AddDate(0, 0, -1).Day()

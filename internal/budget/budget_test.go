@@ -44,6 +44,28 @@ func TestComputeBucketsAndProjection(t *testing.T) {
 	}
 }
 
+func TestComputeRangeAggregates(t *testing.T) {
+	cfg := store.BudgetConfig{NeedPct: 0.50, WantPct: 0.30, SavingPct: 0.20}
+	// Spend already summed across a 3-month span by the caller; income likewise
+	// (3 × 2,000,000). A full-past span has progress 1.0 → projection == spent.
+	spend := []store.SpendRow{
+		{Bucket: "need", Direction: "debit", AmountFils: 1500000},
+		{Bucket: "want", Direction: "debit", AmountFils: 900000},
+	}
+	s := ComputeRange(cfg, 6000000, spend, nil, "2026-03..2026-05", 1.0)
+
+	if s.Period != "2026-03..2026-05" {
+		t.Errorf("period = %q", s.Period)
+	}
+	need := bucketByName(t, s, "need")
+	if need.Target != 3000000 { // 6,000,000 × 0.5, the 3-month target
+		t.Errorf("need target = %d, want 3000000", need.Target)
+	}
+	if need.Spent != 1500000 || need.Projection != 1500000 {
+		t.Errorf("need spent/projection = %d/%d, want 1500000/1500000", need.Spent, need.Projection)
+	}
+}
+
 func TestComputeZeroTargetNoDivByZero(t *testing.T) {
 	cfg := store.BudgetConfig{NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2}
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

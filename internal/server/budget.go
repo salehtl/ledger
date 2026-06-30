@@ -16,6 +16,7 @@ type BudgetStore interface {
 	UpdateBudgetConfig(store.BudgetConfig) error
 	SelectMonthSpend(period string, frozen bool) ([]store.SpendRow, error)
 	SelectMonthIncome(period string) (int64, error)
+	SelectEarliestPeriod() (string, bool, error)
 	SelectRecent(n int) ([]store.ReviewItem, error)
 }
 
@@ -44,35 +45,75 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	period := r.URL.Query().Get("period")
-	computeAt := now
-	if period == "" {
-		period = now.Format("2006-01")
-	} else {
-		t, parseErr := time.Parse("2006-01", period)
-		if parseErr != nil {
-			http.Error(w, "bad period", http.StatusBadRequest)
-			return
-		}
-		// For past months use end-of-month to get 100% progress; for current keep now.
-		if period != now.Format("2006-01") {
-			// Last moment of the requested month
-			computeAt = t.AddDate(0, 1, 0).Add(-time.Second)
-		}
-	}
+	q := r.URL.Query()
+	cur := now.Format("2006-01")
 
-	income := cfg.MonthlyIncome
-	if cfg.IncomeSource == "categories" {
-		if income, err = s.budgetStore.SelectMonthIncome(period); err != nil {
+	// Resolve which months this summary spans. A single ?period= (or none) is the
+	// month-at-a-glance default; from/to and all=1 aggregate across the span.
+	var months []string
+	switch {
+	case q.Get("all") != "":
+		earliest, ok, derr := s.budgetStore.SelectEarliestPeriod()
+		if derr != nil {
 			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 			return
 		}
+		if !ok {
+			earliest = cur
+		}
+		if months, err = monthsBetween(earliest, cur); err != nil {
+			http.Error(w, "bad range", http.StatusBadRequest)
+			return
+		}
+	case q.Get("from") != "" || q.Get("to") != "":
+		if months, err = monthsBetween(q.Get("from"), q.Get("to")); err != nil {
+			http.Error(w, "bad range", http.StatusBadRequest)
+			return
+		}
+	default:
+		period := q.Get("period")
+		if period == "" {
+			period = cur
+		}
+		if _, perr := time.Parse("2006-01", period); perr != nil {
+			http.Error(w, "bad period", http.StatusBadRequest)
+			return
+		}
+		months = []string{period}
 	}
-	spend, err := s.budgetStore.SelectMonthSpend(period, cfg.FreezeHistory)
-	if err != nil {
-		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
-		return
+
+	// Aggregate spend + income across every month in the span. progress is the
+	// elapsed fraction: past months count whole, the current month by its day
+	// progress, future months as zero.
+	var spend []store.SpendRow
+	var income int64
+	elapsed := 0.0
+	for _, m := range months {
+		rows, derr := s.budgetStore.SelectMonthSpend(m, cfg.FreezeHistory)
+		if derr != nil {
+			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+			return
+		}
+		spend = append(spend, rows...)
+		if cfg.IncomeSource == "categories" {
+			mi, derr := s.budgetStore.SelectMonthIncome(m)
+			if derr != nil {
+				http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+				return
+			}
+			income += mi
+		} else {
+			income += cfg.MonthlyIncome
+		}
+		switch {
+		case m < cur:
+			elapsed += 1
+		case m == cur:
+			elapsed += budget.MonthProgress(now)
+		}
 	}
+	progress := elapsed / float64(len(months))
+
 	recent, err := s.budgetStore.SelectRecent(10)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
@@ -81,9 +122,37 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	if recent == nil {
 		recent = []store.ReviewItem{}
 	}
-	sum := budget.Compute(cfg, income, spend, recent, computeAt)
+
+	// Single month keeps its bare "YYYY-MM" label; a span is "from..to".
+	period := months[0]
+	if len(months) > 1 {
+		period = months[0] + ".." + months[len(months)-1]
+	}
+	sum := budget.ComputeRange(cfg, income, spend, recent, period, progress)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sum)
+}
+
+// monthsBetween lists the inclusive "YYYY-MM" months from..to in ascending order.
+// Either bound may be the earlier one; the span is capped so a pathological
+// request can't spin forever.
+func monthsBetween(from, to string) ([]string, error) {
+	ft, err := time.Parse("2006-01", from)
+	if err != nil {
+		return nil, err
+	}
+	tt, err := time.Parse("2006-01", to)
+	if err != nil {
+		return nil, err
+	}
+	if tt.Before(ft) {
+		ft, tt = tt, ft
+	}
+	var out []string
+	for m := ft; !m.After(tt) && len(out) < 600; m = m.AddDate(0, 1, 0) {
+		out = append(out, m.Format("2006-01"))
+	}
+	return out, nil
 }
 
 func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {

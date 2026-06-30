@@ -11,7 +11,8 @@ import {
   totalSpent, totalBudget, totalProjection, paceStatus, paceTone,
   trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
-import { formatFils } from "../lib/money";
+import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope";
+import { formatFils, flowAmount } from "../lib/money";
 import { AlertTriangle, Check, TrendingUp } from "lucide-react";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 
@@ -27,16 +28,35 @@ function remainingLabel(remaining: number): string {
   return remaining >= 0 ? `${formatFils(remaining)} left` : `${formatFils(-remaining)} over`;
 }
 
-export function Home({ period = currentPeriod() }: { period?: string }) {
+/** Query string for /api/summary: a single month, a from..to span, or all time. */
+function summaryParams(scope: Scope): string {
+  const p = new URLSearchParams();
+  if (scope.kind === "month") p.set("period", scope.period);
+  else if (scope.kind === "range") { p.set("from", scope.from); p.set("to", scope.to); }
+  else p.set("all", "1");
+  return p.toString();
+}
+
+export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   // The 6-month trend is always the trailing 6 real months (it matches the
   // static /api/insights/trend), independent of the selected scope.
   const periods = trailingPeriods(currentPeriod(), 6);
 
-  const summary = useQuery({ queryKey: ["summary", period], queryFn: () => getJSON<Summary>(`/api/summary?period=${period}`) });
+  // Summary aggregates over the whole scope: a single month, a from..to span, or
+  // all time. Pace/projection/recent below stay scoped to the live current month.
+  const params = summaryParams(scope);
+  const summary = useQuery({ queryKey: ["summary", params], queryFn: () => getJSON<Summary>(`/api/summary?${params}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
 
-  const isCurrent = period === currentPeriod();
-  const heroLabel = isCurrent ? "Spent this month" : `Spent in ${monthLabel(period)} ${period.slice(0, 4)}`;
+  const isCurrent = scope.kind === "month" && scope.period === currentPeriod();
+  const anchor = scopeAnchor(scope); // the month the trend chart highlights
+  const heroLabel = isCurrent
+    ? "Spent this month"
+    : scope.kind === "month"
+      ? `Spent in ${monthLabel(scope.period)} ${scope.period.slice(0, 4)}`
+      : scope.kind === "all"
+        ? "Spent all time"
+        : `Spent · ${scopeLabel(scope)}`;
 
   // Hook must be before early returns (React rules); gates on first populated recent list paint.
   const firstReveal = useFirstReveal(!summary.isLoading && (summary.data?.recent.length ?? 0) > 0);
@@ -114,7 +134,7 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
         <p className="text-sm font-medium mb-2">6-month trend</p>
         {trend.isError
           ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
-          : <TrendBars points={points} activePeriod={period} />}
+          : <TrendBars points={points} activePeriod={anchor} />}
       </Card>
 
       {/* recent stream — only meaningful for the current month */}
@@ -125,15 +145,24 @@ export function Home({ period = currentPeriod() }: { period?: string }) {
             <EmptyState title="No recent activity" hint="New transactions will appear here." />
           ) : (
             <ul className="divide-y divide-border">
-              {s.recent.map((t) => (
-                <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstReveal ? " stagger-item" : ""}`}>
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
-                    <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
-                  </div>
-                  <span className="tnum"><Money fils={t.Direction === "credit" ? t.AmountFils : -t.AmountFils} /></span>
-                </li>
-              ))}
+              {s.recent.map((t) => {
+                const amount = flowAmount(t.Direction, t.AmountFils);
+                return (
+                  <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstReveal ? " stagger-item" : ""}`}>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
+                      <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
+                    </div>
+                    <span
+                      className="tnum"
+                      style={amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
+                      title={amount.flow === "in" ? "Money in" : "Money out"}
+                    >
+                      {amount.text}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Card>
