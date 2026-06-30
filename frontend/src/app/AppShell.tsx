@@ -5,7 +5,7 @@ import type { Txn } from "../api/types";
 import { BottomNav } from "../components/ui/BottomNav";
 import { TopBar } from "../components/ui/TopBar";
 import { type TabId } from "./nav";
-import { type Scope, scopeBounds, scopeAnchor } from "../lib/scope";
+import { type Scope, scopeBounds } from "../lib/scope";
 import { currentPeriod } from "../lib/insights";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
@@ -38,7 +38,6 @@ export function AppShell() {
   const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries());
 
   const bounds = scopeBounds(scope);
-  const anchor = scopeAnchor(scope);
 
   const review = useQuery({
     queryKey: ["review", bounds.from ?? "", bounds.to ?? ""],
@@ -60,7 +59,7 @@ export function AppShell() {
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
-          {tab === "home" && <Home period={anchor} />}
+          {tab === "home" && <Home scope={scope} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}

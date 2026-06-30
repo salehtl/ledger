@@ -121,6 +121,22 @@ func (s *Store) SelectMonthIncome(period string) (int64, error) {
 	return total, err
 }
 
+// SelectEarliestPeriod returns the "YYYY-MM" of the earliest confirmed
+// transaction. ok is false when there are no confirmed transactions yet.
+func (s *Store) SelectEarliestPeriod() (period string, ok bool, err error) {
+	var p *string
+	err = s.DB.QueryRow(
+		`SELECT strftime('%Y-%m', MIN(posted_at)) FROM transactions WHERE status='confirmed'`,
+	).Scan(&p)
+	if err != nil {
+		return "", false, err
+	}
+	if p == nil {
+		return "", false, nil
+	}
+	return *p, true, nil
+}
+
 // SelectRecent returns the newest n transactions as ReviewItems for the dashboard list.
 func (s *Store) SelectRecent(n int) ([]ReviewItem, error) {
 	rows, err := s.DB.Query(

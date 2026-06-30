@@ -56,4 +56,26 @@ describe("Home", () => {
     wrap();
     expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
   });
+
+  it("aggregates over a multi-month range", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("/api/summary")) return new Response(JSON.stringify(summary));
+      if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+      return new Response("[]");
+    }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Home scope={{ kind: "range", from: "2026-03", to: "2026-06" }} />
+      </QueryClientProvider>,
+    );
+    // Hero reflects the span, and the summary request carries from/to so the
+    // server sums every month rather than just the latest.
+    expect(await screen.findByText(/Mar–Jun 2026/)).toBeInTheDocument();
+    expect(calls.some((u) => u.includes("from=2026-03") && u.includes("to=2026-06"))).toBe(true);
+    // Pace/projection stay scoped to the live current month, not a span.
+    expect(screen.queryByText(/Projected/)).not.toBeInTheDocument();
+  });
 });
