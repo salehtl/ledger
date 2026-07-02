@@ -1,4 +1,4 @@
-import type { CategoryUsage } from "./types";
+import type { CategoryUsage, RatesResponse } from "./types";
 
 async function parseOrThrow(res: Response) {
   const text = await res.text();
@@ -31,4 +31,16 @@ export function getCategoryUsage(id: number): Promise<CategoryUsage> {
 
 export function deleteCategory(id: number): Promise<void> {
   return del(`/api/categories/${id}`);
+}
+
+export function getRates(): Promise<RatesResponse> {
+  return getJSON<RatesResponse>("/api/rates");
+}
+
+export async function putRate(currency: string, rate: number): Promise<void> {
+  await postJSON(`/api/rates/${currency}`, { rate }, "PUT");
+}
+
+export function deleteRate(currency: string): Promise<void> {
+  return del(`/api/rates/${currency}`);
 }
