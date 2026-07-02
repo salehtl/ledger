@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJSON, postJSON, del } from "../api/client";
+import { getJSON, postJSON, del, getRates, putRate, deleteRate } from "../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule, CategorizeStatus } from "../api/types";
 import { PeriodSheet } from "../components/ui/PeriodSheet";
 import { type Scope, scopeBounds, scopeLabel, DEFAULT_SCOPE } from "../lib/scope";
 import { CategoryManager } from "./CategoryManager";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
+import { parseRateForm } from "../lib/rates";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Dialog } from "../components/ui/Dialog";
@@ -32,6 +33,7 @@ export function Settings({ scope }: { scope?: Scope }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
   const catStatus = useQuery({ queryKey: ["categorize-status"], queryFn: () => getJSON<CategorizeStatus>("/api/categorize/status") });
   const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
+  const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
   const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
@@ -40,6 +42,11 @@ export function Settings({ scope }: { scope?: Scope }) {
   const [periodOpen, setPeriodOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
+  const [rateErrors, setRateErrors] = useState<Record<string, string>>({});
+  const [newRateCode, setNewRateCode] = useState("");
+  const [newRateValue, setNewRateValue] = useState("");
+  const [newRateError, setNewRateError] = useState("");
 
   const saveSettings = async (next: AppSettings) => {
     try {
@@ -125,6 +132,54 @@ export function Settings({ scope }: { scope?: Scope }) {
     } catch { show({ message: "Couldn't update rule", tone: "error" }); }
   };
   const catName = (id: number) => cats.data?.find((c) => c.ID === id)?.Name ?? `#${id}`;
+
+  const invalidateRates = () => {
+    qc.invalidateQueries({ queryKey: ["rates"] });
+    qc.invalidateQueries({ queryKey: ["transactions"] });
+  };
+
+  const rateDraftFor = (code: string, current: string) => rateDrafts[code] ?? current;
+
+  const saveRate = async (code: string, rawValue: string) => {
+    const parsed = parseRateForm(code, rawValue);
+    if (!parsed.ok) {
+      setRateErrors((prev) => ({ ...prev, [code]: parsed.error }));
+      return;
+    }
+    setRateErrors((prev) => ({ ...prev, [code]: "" }));
+    try {
+      await putRate(parsed.currency, parsed.rate);
+      invalidateRates();
+    } catch {
+      show({ message: `Couldn't save ${code} rate`, tone: "error" });
+    }
+  };
+
+  const removeRate = async (code: string) => {
+    try {
+      await deleteRate(code);
+      invalidateRates();
+    } catch {
+      show({ message: `Couldn't delete ${code} rate`, tone: "error" });
+    }
+  };
+
+  const addRate = async () => {
+    const parsed = parseRateForm(newRateCode, newRateValue);
+    if (!parsed.ok) {
+      setNewRateError(parsed.error);
+      return;
+    }
+    setNewRateError("");
+    try {
+      await putRate(parsed.currency, parsed.rate);
+      setNewRateCode("");
+      setNewRateValue("");
+      invalidateRates();
+    } catch {
+      show({ message: `Couldn't add ${parsed.currency} rate`, tone: "error" });
+    }
+  };
 
   const setSwipeDir = (dir: SwipeDirection, value: string) => {
     const next: SwipeConfig = { ...swipeCfg }
@@ -319,6 +374,94 @@ export function Settings({ scope }: { scope?: Scope }) {
         >
           Reset to defaults
         </Button>
+      </Card>
+
+      <Card>
+        <h2 className="font-semibold mb-1">Currency Rates</h2>
+        <p className="text-xs text-muted mb-4">
+          AED per 1 unit. Snapshots are taken when a transaction arrives; changing a rate only affects future and unconverted transactions.
+        </p>
+        <div className="space-y-3">
+          {(rates.data?.rates ?? []).map((r) => (
+            <div key={r.currency} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium w-12">{r.currency}</span>
+                <input
+                  type="number"
+                  step="0.0001"
+                  min="0"
+                  className={`${field} flex-1`}
+                  value={rateDraftFor(r.currency, String(r.rate))}
+                  onChange={(e) => setRateDrafts((prev) => ({ ...prev, [r.currency]: e.target.value }))}
+                />
+                <Button
+                  variant="secondary"
+                  aria-label={`Save ${r.currency}`}
+                  onClick={() => saveRate(r.currency, rateDraftFor(r.currency, String(r.rate)))}
+                >
+                  Save
+                </Button>
+                <button
+                  aria-label={`Delete ${r.currency} rate`}
+                  className="text-muted hover:text-bad"
+                  onClick={() => removeRate(r.currency)}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+              {rateErrors[r.currency] && <p role="alert" className="text-bad text-xs">{rateErrors[r.currency]}</p>}
+            </div>
+          ))}
+
+          {(rates.data?.missing ?? []).map((code) => (
+            <div key={code} className="space-y-1">
+              <p className="text-xs text-muted">{code} — no rate configured; these transactions are excluded from budgets</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="0.0001"
+                  min="0"
+                  aria-label={`Rate for ${code}`}
+                  className={`${field} flex-1`}
+                  value={rateDrafts[code] ?? ""}
+                  onChange={(e) => setRateDrafts((prev) => ({ ...prev, [code]: e.target.value }))}
+                />
+                <Button
+                  variant="secondary"
+                  aria-label={`Save ${code}`}
+                  onClick={() => saveRate(code, rateDrafts[code] ?? "")}
+                >
+                  Save
+                </Button>
+              </div>
+              {rateErrors[code] && <p role="alert" className="text-bad text-xs">{rateErrors[code]}</p>}
+            </div>
+          ))}
+
+          <div className="space-y-1 pt-2 border-t border-border">
+            <p className="text-sm font-medium">Add currency</p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="USD"
+                className={`${field} w-20`}
+                value={newRateCode}
+                onChange={(e) => setNewRateCode(e.target.value)}
+              />
+              <input
+                type="number"
+                step="0.0001"
+                min="0"
+                placeholder="Rate"
+                className={`${field} flex-1`}
+                value={newRateValue}
+                onChange={(e) => setNewRateValue(e.target.value)}
+              />
+              <Button variant="secondary" onClick={addRate}>Add</Button>
+            </div>
+            {newRateError && <p role="alert" className="text-bad text-xs">{newRateError}</p>}
+          </div>
+        </div>
       </Card>
 
       <Card className="border-bad/40">
