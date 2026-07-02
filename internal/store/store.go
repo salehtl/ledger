@@ -53,6 +53,14 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed categories: %w", err)
 	}
+	if err := st.seedFXRates(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("seed fx rates: %w", err)
+	}
+	if _, err := st.ConvertUnconverted(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill amount_aed: %w", err)
+	}
 	return st, nil
 }
 
@@ -68,7 +76,11 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "rules", "is_active", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
-	return addColumnIfMissing(db, "transactions", "archived_from", "TEXT")
+	if err := addColumnIfMissing(db, "transactions", "archived_from", "TEXT"); err != nil {
+		return err
+	}
+	// AED snapshot of amount; NULL when the currency has no fx rate yet.
+	return addColumnIfMissing(db, "transactions", "amount_aed", "INTEGER")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

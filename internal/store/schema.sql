@@ -111,3 +111,12 @@ CREATE TABLE IF NOT EXISTS import_log (
   rows_error   INTEGER,
   created_at   TEXT NOT NULL
 );
+
+-- FX rates for converting foreign-currency transactions to AED.
+-- rate_micro is AED per 1 unit of currency × 1,000,000 (integer; money math never uses floats).
+-- AED itself never has a row (identity). Rates are user-maintained via /api/rates.
+CREATE TABLE IF NOT EXISTS fx_rates (
+  currency   TEXT PRIMARY KEY,
+  rate_micro INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
