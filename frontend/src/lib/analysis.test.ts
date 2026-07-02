@@ -4,7 +4,7 @@ import { isSpending, spendingTxns, effectiveBucket, bucketBreakdown, merchantBre
 
 function txn(p: Partial<Txn>): Txn {
   return {
-    ID: 1, PostedAt: "2026-06-10T12:00:00Z", AmountFils: 1000, Currency: "AED",
+    ID: 1, PostedAt: "2026-06-10T12:00:00Z", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED",
     Direction: "debit", MerchantRaw: "M", Status: "confirmed", Confidence: 1, Source: "email",
     CategoryID: 1, CategoryName: "Dining", Bucket: "want", Kind: "spending", BucketSnapshot: "",
     ...p,
@@ -92,6 +92,19 @@ describe("merchantBreakdown", () => {
     expect(out.map((m) => m.merchant)).toEqual(["Deliveroo"]);
     expect(out[0].spent).toBe(300);
     expect(out[0].share).toBeCloseTo(1, 5); // 300 / 300 (only spending counted)
+  });
+});
+
+describe("bucketBreakdown AED effective amounts", () => {
+  it("sums the AED snapshot, not the native amount, and skips unconverted rows", () => {
+    const rows = [
+      txn({ AmountFils: 10000, Currency: "AED", AmountAedFils: 10000 }),
+      txn({ AmountFils: 1009, Currency: "USD", AmountAedFils: 3706 }),
+      txn({ AmountFils: 2412, Currency: "EUR", AmountAedFils: null }),
+    ];
+    const out = bucketBreakdown(rows, false);
+    const total = out.reduce((s, b) => s + b.spent, 0);
+    expect(total).toBe(13706);
   });
 });
 

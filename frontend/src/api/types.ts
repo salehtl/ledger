@@ -9,11 +9,13 @@ export interface AppSettings {
   ai_key_present?: boolean;
 }
 export interface Txn {
-  ID: number; PostedAt: string; AmountFils: number; Currency: string;
+  ID: number; PostedAt: string; AmountFils: number; AmountAedFils: number | null; Currency: string;
   Direction: string; MerchantRaw: string; Status: string; Confidence: number; Source: string;
   CategoryID: number | null; CategoryName: string; Bucket: string;
   Kind: string; BucketSnapshot: string;
 }
+export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
+export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
 export interface BudgetConfig {
   monthly_income: number; need_pct: number; want_pct: number; saving_pct: number;
   income_source: string; freeze_history: boolean;

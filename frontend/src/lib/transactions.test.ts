@@ -12,7 +12,7 @@ import {
 import type { Txn } from "../api/types";
 
 const mkTxn = (over: Partial<Txn>): Txn => ({
-  ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED",
+  ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED",
   Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0,
   Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
 });
@@ -88,7 +88,7 @@ describe("monthRange", () => {
 
 describe("txnTotals", () => {
   const mk = (over: Partial<Txn>): Txn => ({
-    ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, Currency: "AED",
+    ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED",
     Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0,
     Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
   });
@@ -104,6 +104,16 @@ describe("txnTotals", () => {
 
   it("returns zeroes for an empty list", () => {
     expect(txnTotals([])).toEqual({ count: 0, spentFils: 0 });
+  });
+
+  it("txnTotals uses AED snapshots and skips unconverted rows", () => {
+    const rows = [
+      { Direction: "debit", AmountFils: 10000, Currency: "AED", AmountAedFils: 10000 },
+      { Direction: "debit", AmountFils: 1009, Currency: "USD", AmountAedFils: 3706 },
+      { Direction: "debit", AmountFils: 2412, Currency: "EUR", AmountAedFils: null },
+      { Direction: "credit", AmountFils: 999, Currency: "AED", AmountAedFils: 999 },
+    ] as unknown as Txn[];
+    expect(txnTotals(rows)).toEqual({ count: 4, spentFils: 13706 });
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatFils, moneyClass, flowAmount } from "./money";
+import { formatFils, moneyClass, flowAmount, aedFils, nativeAmountTag } from "./money";
 
 describe("formatFils", () => {
   it("groups thousands and shows 2 decimals", () => {
@@ -32,5 +32,35 @@ describe("flowAmount", () => {
   it("signs the magnitude, never a stored negative", () => {
     // transactions.amount is always positive; guard against a stray sign.
     expect(flowAmount("debit", -2450).text).toBe("−24.50");
+  });
+});
+
+const txn = (over: Partial<{ AmountFils: number; Currency: string; AmountAedFils: number | null }>) => ({
+  AmountFils: 1009, Currency: "USD", AmountAedFils: 3706, ...over,
+});
+
+describe("aedFils", () => {
+  it("returns AmountFils for AED rows regardless of snapshot", () => {
+    expect(aedFils(txn({ Currency: "AED", AmountFils: 5000, AmountAedFils: 5000 }))).toBe(5000);
+  });
+  it("treats empty currency as AED", () => {
+    expect(aedFils(txn({ Currency: "", AmountFils: 700, AmountAedFils: null }))).toBe(700);
+  });
+  it("returns the snapshot for foreign rows", () => {
+    expect(aedFils(txn({}))).toBe(3706);
+  });
+  it("returns null for unconverted foreign rows", () => {
+    expect(aedFils(txn({ AmountAedFils: null }))).toBeNull();
+  });
+});
+
+describe("nativeAmountTag", () => {
+  it("is null for AED rows", () => {
+    expect(nativeAmountTag(txn({ Currency: "AED" }))).toBeNull();
+    expect(nativeAmountTag(txn({ Currency: "" }))).toBeNull();
+  });
+  it("formats the native amount with its code", () => {
+    expect(nativeAmountTag(txn({}))).toBe("USD 10.09");
+    expect(nativeAmountTag(txn({ Currency: "EUR", AmountFils: 241234 }))).toBe("EUR 2,412.34");
   });
 });

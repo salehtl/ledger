@@ -1,4 +1,5 @@
 import type { Txn } from "../api/types";
+import { aedFils } from "./money";
 
 /** A transaction counts toward spending iff it mirrors SelectCategorySpend:
  *  confirmed, debit, and in a spending-kind category. */
@@ -36,16 +37,16 @@ export interface BucketBreakdownRow {
  *  Shares are fractions of the total spending in the input. */
 export function bucketBreakdown(txns: Txn[], frozen: boolean): BucketBreakdownRow[] {
   const spending = spendingTxns(txns);
-  const total = spending.reduce((s, t) => s + t.AmountFils, 0);
+  const total = spending.reduce((s, t) => s + (aedFils(t) ?? 0), 0);
 
   const buckets = new Map<string, { spent: number; cats: Map<string, CategoryBreakdownRow> }>();
   for (const t of spending) {
     const bucket = effectiveBucket(t, frozen);
     const b = buckets.get(bucket) ?? { spent: 0, cats: new Map() };
-    b.spent += t.AmountFils;
+    b.spent += aedFils(t) ?? 0;
     const key = t.CategoryID === null ? "uncategorized" : String(t.CategoryID);
     const c = b.cats.get(key) ?? { categoryId: t.CategoryID, name: t.CategoryName || "Uncategorized", bucket, spent: 0, count: 0, share: 0 };
-    c.spent += t.AmountFils;
+    c.spent += aedFils(t) ?? 0;
     c.count += 1;
     b.cats.set(key, c);
     buckets.set(bucket, b);
@@ -72,12 +73,12 @@ export interface MerchantRow {
  *  and there are more merchants, the remainder is folded into an "Other" row. */
 export function merchantBreakdown(txns: Txn[], topN?: number): MerchantRow[] {
   const spending = spendingTxns(txns);
-  const total = spending.reduce((s, t) => s + t.AmountFils, 0);
+  const total = spending.reduce((s, t) => s + (aedFils(t) ?? 0), 0);
   const byMerchant = new Map<string, { spent: number; count: number }>();
   for (const t of spending) {
     const name = t.MerchantRaw || "—";
     const m = byMerchant.get(name) ?? { spent: 0, count: 0 };
-    m.spent += t.AmountFils;
+    m.spent += aedFils(t) ?? 0;
     m.count += 1;
     byMerchant.set(name, m);
   }

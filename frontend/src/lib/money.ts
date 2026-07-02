@@ -29,3 +29,27 @@ export function flowAmount(direction: string, amountFils: number): { text: strin
   const inbound = direction === "credit";
   return { text: `${inbound ? "+" : "−"}${formatted}`, flow: inbound ? "in" : "out" };
 }
+
+export interface FXAmount {
+  AmountFils: number;
+  Currency: string;
+  AmountAedFils: number | null;
+}
+
+/** Budget-effective AED fils for a transaction. AED rows are their own amount;
+ *  foreign rows use the stored snapshot; null = foreign with no rate configured
+ *  yet (excluded from every sum until a rate is added in Settings). */
+export function aedFils(t: FXAmount): number | null {
+  if (!t.Currency || t.Currency === "AED") return t.AmountFils;
+  return t.AmountAedFils;
+}
+
+/** "USD 10.09" annotation for foreign-currency rows; null for AED rows. */
+export function nativeAmountTag(t: FXAmount): string | null {
+  if (!t.Currency || t.Currency === "AED") return null;
+  const n = (t.AmountFils / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${t.Currency} ${n}`;
+}
