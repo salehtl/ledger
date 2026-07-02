@@ -5,7 +5,7 @@ import { bucketRows, categoryRows, merchantRows } from "./lens";
 
 function txn(p: Partial<Txn>): Txn {
   return {
-    ID: 1, PostedAt: "2026-06-10T12:00:00Z", AmountFils: 1000, Currency: "AED",
+    ID: 1, PostedAt: "2026-06-10T12:00:00Z", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED",
     Direction: "debit", MerchantRaw: "M", Status: "confirmed", Confidence: 1, Source: "email",
     CategoryID: 1, CategoryName: "Dining", Bucket: "want", Kind: "spending", BucketSnapshot: "",
     ...p,

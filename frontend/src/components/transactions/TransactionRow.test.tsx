@@ -4,7 +4,7 @@ import { TransactionRow } from "./TransactionRow";
 import type { Txn } from "../../api/types";
 
 const mk = (over: Partial<Txn>): Txn => ({
-  ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, Currency: "AED", Direction: "debit",
+  ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit",
   MerchantRaw: "SPINNEYS", Status: "confirmed", Confidence: 0, Source: "email",
   CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
 });

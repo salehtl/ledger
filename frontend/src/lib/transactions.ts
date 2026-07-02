@@ -1,5 +1,6 @@
 import type { Txn } from "../api/types";
 import { dirhamsToFils } from "./format";
+import { aedFils } from "./money";
 
 /**
  * Inclusive query bounds for a "YYYY-MM" month, matching the backend filter
@@ -22,7 +23,7 @@ export interface TxnTotals {
 export function txnTotals(rows: Txn[]): TxnTotals {
   let spentFils = 0;
   for (const t of rows) {
-    if (t.Direction === "debit") spentFils += t.AmountFils;
+    if (t.Direction === "debit") spentFils += aedFils(t) ?? 0;
   }
   return { count: rows.length, spentFils };
 }
