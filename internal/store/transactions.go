@@ -46,13 +46,17 @@ func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
 	if source == "" {
 		source = "email"
 	}
+	amountAED, err := s.amountAEDValue(r.AmountFils, r.Currency)
+	if err != nil {
+		return 0, false, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
-		   (posted_at, amount, currency, direction, merchant_raw, status, confidence,
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, status, confidence,
 		    fingerprint, source, ingest_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, r.Currency, r.Direction,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, amountAED, r.Currency, r.Direction,
 		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), source, nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
@@ -188,6 +192,10 @@ func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
 	if currency == "" {
 		currency = "AED"
 	}
+	amountAED, err := s.amountAEDValue(m.AmountFils, currency)
+	if err != nil {
+		return 0, err
+	}
 	status := "needs_review"
 	var catID any
 	if m.CategoryID > 0 {
@@ -208,10 +216,10 @@ func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT INTO transactions
-		   (posted_at, amount, currency, direction, merchant_raw, category_id, status,
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, category_id, status,
 		    confidence, fingerprint, source, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
-		m.PostedAt.UTC().Format(time.RFC3339Nano), m.AmountFils, currency, m.Direction,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+		m.PostedAt.UTC().Format(time.RFC3339Nano), m.AmountFils, amountAED, currency, m.Direction,
 		m.MerchantRaw, catID, status, 1.0, fp, now, now,
 	)
 	if err != nil {
