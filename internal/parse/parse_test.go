@@ -47,6 +47,16 @@ func TestValidateRejectsMissingCurrency(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMalformedCurrency(t *testing.T) {
+	for _, c := range []string{"usd", "US", "USDD", "12D", "US$"} {
+		p := valid()
+		p.Currency = c
+		if Validate(p) == nil {
+			t.Errorf("expected error for currency %q", c)
+		}
+	}
+}
+
 func TestValidateRejectsZeroOrFutureDate(t *testing.T) {
 	p := valid()
 	p.PostedAt = time.Time{}

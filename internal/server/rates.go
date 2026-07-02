@@ -81,6 +81,10 @@ func (s *Server) handlePutRate(w http.ResponseWriter, r *http.Request) {
 	}
 	// The float exists only at the API boundary; storage and math are integer micro-units.
 	rateMicro := int64(math.Round(req.Rate * 1e6))
+	if rateMicro < 1 {
+		http.Error(w, `{"error":"rate too small"}`, http.StatusBadRequest)
+		return
+	}
 	if err := s.ratesStore.UpsertFXRate(currency, rateMicro); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return

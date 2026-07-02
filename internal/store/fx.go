@@ -124,7 +124,7 @@ func (s *Store) UnconvertedCurrencies() ([]string, error) {
 // Existing snapshots are never rewritten (WHERE amount_aed IS NULL).
 func (s *Store) ConvertUnconverted() (int64, error) {
 	res1, err := s.DB.Exec(
-		`UPDATE transactions SET amount_aed = amount WHERE amount_aed IS NULL AND currency = 'AED'`)
+		`UPDATE transactions SET amount_aed = amount WHERE amount_aed IS NULL AND currency IN ('AED', '')`)
 	if err != nil {
 		return 0, err
 	}

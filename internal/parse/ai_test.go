@@ -51,6 +51,33 @@ func TestAnthropicExtractorSuccess(t *testing.T) {
 	}
 }
 
+func TestAnthropicExtractorNormalizesCurrency(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"{\"posted_at\":\"2025-08-19T00:00:00Z\",\"amount_fils\":1009,\"currency\":\" usd \",\"direction\":\"debit\",\"merchant_raw\":\"HETZNER\",\"last4\":\"\",\"confidence\":0.7}"}]}`))
+	}))
+	defer srv.Close()
+
+	ex := &AnthropicExtractor{
+		apiKey:   "test-key",
+		model:    "claude-haiku-4-5-20251001",
+		endpoint: srv.URL + "/v1/messages",
+		retry:    anthropic.New(srv.Client()),
+	}
+
+	p, err := ex.Extract(context.Background(), "some email body")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Currency != "USD" {
+		t.Errorf("Currency: got %q, want %q", p.Currency, "USD")
+	}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected normalized currency to pass Validate, got %v", err)
+	}
+}
+
 func TestAnthropicExtractorHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest) // non-retryable: surfaces immediately
