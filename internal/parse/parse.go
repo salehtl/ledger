@@ -5,6 +5,7 @@ package parse
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -17,6 +18,12 @@ const (
 	DirectionDebit  = "debit"
 	DirectionCredit = "credit"
 )
+
+// currencyRe enforces a 3-letter uppercase ISO 4217-shaped code. Template and
+// heuristic tiers already guarantee this via their own extraction regexes;
+// this check exists to catch a wayward AI-tier result before it becomes a
+// transaction whose currency can never match a user-entered rate.
+var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // ParsedTxn is the extracted, not-yet-categorized transaction. AmountFils is
 // always a positive integer minor unit (AED × 100); Direction carries sign.
@@ -49,6 +56,9 @@ func Validate(p ParsedTxn) error {
 	}
 	if p.Currency == "" {
 		return fmt.Errorf("currency must not be empty")
+	}
+	if !currencyRe.MatchString(p.Currency) {
+		return fmt.Errorf("currency must be a 3-letter uppercase code, got %q", p.Currency)
 	}
 	if p.Direction != DirectionDebit && p.Direction != DirectionCredit {
 		return fmt.Errorf("direction must be debit|credit, got %q", p.Direction)

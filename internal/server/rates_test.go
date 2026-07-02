@@ -90,6 +90,7 @@ func TestPutRateValidation(t *testing.T) {
 		{"/api/rates/EURO", `{"rate":4.3}`}, // 4 letters
 		{"/api/rates/EUR", `{"rate":0}`},    // non-positive
 		{"/api/rates/EUR", `{"rate":-2}`},
+		{"/api/rates/EUR", `{"rate":0.0000001}`}, // rounds to micro 0
 	} {
 		req := httptest.NewRequest("PUT", c.path, strings.NewReader(c.body))
 		rec := httptest.NewRecorder()

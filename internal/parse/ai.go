@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"ledger/internal/anthropic"
@@ -128,7 +129,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 	return ParsedTxn{
 		PostedAt:    postedAt,
 		AmountFils:  et.AmountFils,
-		Currency:    et.Currency,
+		Currency:    strings.ToUpper(strings.TrimSpace(et.Currency)),
 		Direction:   et.Direction,
 		MerchantRaw: et.MerchantRaw,
 		Last4:       et.Last4,

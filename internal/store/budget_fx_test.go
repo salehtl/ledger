@@ -59,12 +59,22 @@ func TestCategorySpendAndTotalsUseAmountAED(t *testing.T) {
 	if cats[0].AmountFils != 13706 {
 		t.Fatalf("category spend = %d, want 13706", cats[0].AmountFils)
 	}
-	totals, err := s.SelectMonthlyTotals(1)
-	if err != nil || len(totals) != 1 {
+	totals, err := s.SelectMonthlyTotals(24)
+	if err != nil {
 		t.Fatalf("SelectMonthlyTotals = %v, err=%v", totals, err)
 	}
-	if totals[0].SpentFils != 13706 {
-		t.Fatalf("monthly spent = %d, want 13706", totals[0].SpentFils)
+	var found bool
+	for _, tot := range totals {
+		if tot.Period != "2026-07" {
+			continue
+		}
+		found = true
+		if tot.SpentFils != 13706 {
+			t.Fatalf("monthly spent = %d, want 13706", tot.SpentFils)
+		}
+	}
+	if !found {
+		t.Fatalf("SelectMonthlyTotals(24) = %v; missing period 2026-07", totals)
 	}
 }
 
