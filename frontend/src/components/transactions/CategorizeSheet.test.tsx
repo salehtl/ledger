@@ -26,4 +26,11 @@ describe("CategorizeSheet", () => {
     expect(screen.getByLabelText("Dining")).toBeInTheDocument();
     expect(screen.queryByLabelText("Groceries")).not.toBeInTheDocument();
   });
+
+  it("marks an unconverted foreign row with the native tag and a no-rate note", () => {
+    const foreign: Txn = { ...txn, AmountFils: 1009, Currency: "USD", AmountAedFils: null };
+    render(<CategorizeSheet txn={foreign} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    expect(screen.getByText(/USD 10\.09/)).toBeInTheDocument();
+    expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
+  });
 });

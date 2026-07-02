@@ -13,6 +13,8 @@ const summary: Summary = {
   ],
   recent: [
     { ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "SPINNEYS", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 1, CategoryName: "Groceries", Bucket: "need", Kind: "spending", BucketSnapshot: "" },
+    { ID: 2, PostedAt: "2026-06-11", AmountFils: 1009, AmountAedFils: 3706, Currency: "USD", Direction: "debit", MerchantRaw: "NETFLIX", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "" },
+    { ID: 3, PostedAt: "2026-06-12", AmountFils: 2412, AmountAedFils: null, Currency: "EUR", Direction: "debit", MerchantRaw: "BAHN.DE", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "" },
   ],
 };
 const cats: CategorySpend[] = [{ category_id: 1, name: "Groceries", bucket: "need", spent: 210000 }];
@@ -55,6 +57,17 @@ describe("Home", () => {
   it("lists the recent transactions", async () => {
     wrap();
     expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
+  });
+
+  it("shows AED-converted amounts with native tags in the recent list", async () => {
+    wrap();
+    await screen.findByText("NETFLIX");
+    // Converted foreign row: primary amount is the AED snapshot, native tag in the subtitle.
+    expect(screen.getByText("−37.06")).toBeInTheDocument();
+    expect(screen.getByText(/USD 10\.09/)).toBeInTheDocument();
+    // Unconverted foreign row: native tag plus the no-rate note.
+    expect(screen.getByText(/EUR 24\.12/)).toBeInTheDocument();
+    expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
   });
 
   it("aggregates over a multi-month range", async () => {
