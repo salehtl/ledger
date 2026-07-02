@@ -7,6 +7,7 @@ import { TransactionRow } from "../transactions/TransactionRow";
 import { CategorizeSheet } from "../transactions/CategorizeSheet";
 import { useTxnActions } from "../../hooks/useTxnActions";
 import { bucketBreakdown, effectiveBucket, isSpending } from "../../lib/analysis";
+import { aedFils } from "../../lib/money";
 import { BUCKET_LABEL } from "../../lib/insights";
 
 export type DrillTarget =
@@ -49,7 +50,7 @@ export function DrillDownSheet({ target, txns, frozen, categories, onClose }: {
     rows = spending.filter((t) => (t.MerchantRaw || "—") === (target as { type: "merchant"; merchant: string }).merchant);
   }
 
-  const total = rows.reduce((s, t) => s + t.AmountFils, 0);
+  const total = rows.reduce((s, t) => s + (aedFils(t) ?? 0), 0);
 
   return (
     <Dialog title={title} onClose={onClose}>

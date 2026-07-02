@@ -40,4 +40,17 @@ describe("TransactionRow archive actions", () => {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
   });
+
+  it("shows the converted AED amount with a native tag for foreign rows", () => {
+    render(<TransactionRow txn={mk({ AmountFils: 1009, Currency: "USD", AmountAedFils: 3706, Direction: "debit" })}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText("−37.06")).toBeInTheDocument();
+    expect(screen.getByText(/USD 10\.09/)).toBeInTheDocument();
+  });
+
+  it("marks unconverted foreign rows", () => {
+    render(<TransactionRow txn={mk({ AmountFils: 2412, Currency: "EUR", AmountAedFils: null, Direction: "debit" })}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
+  });
 });

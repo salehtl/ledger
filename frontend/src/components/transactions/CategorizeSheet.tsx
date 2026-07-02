@@ -4,6 +4,7 @@ import type { Category, Txn } from "../../api/types";
 import { Money } from "../Money";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { aedFils, nativeAmountTag } from "../../lib/money";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
@@ -31,7 +32,10 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
 
   return (
     <Dialog title="Categorize" onClose={onClose}>
-      <p className="text-sm text-muted mb-3">{txn.MerchantRaw || "—"} · <Money fils={-txn.AmountFils} /></p>
+      <p className="text-sm text-muted mb-3">
+        {txn.MerchantRaw || "—"} · <Money fils={-(aedFils(txn) ?? txn.AmountFils)} />
+        {nativeAmountTag(txn) ? ` · ${nativeAmountTag(txn)}` : ""}
+      </p>
       <input
         type="search"
         placeholder="Search categories…"

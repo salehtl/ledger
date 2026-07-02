@@ -1,7 +1,7 @@
 // frontend/src/components/swipe/SwipeCard.tsx
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { Heart, Home, PiggyBank, ArrowLeftRight, type LucideIcon } from 'lucide-react'
-import { formatFils } from '../../lib/money'
+import { formatFils, aedFils, nativeAmountTag } from '../../lib/money'
 import type { Txn } from '../../api/types'
 import {
   type SwipeConfig,
@@ -167,8 +167,11 @@ export function SwipeCard({
             className="font-rounded font-bold tabular-nums leading-none"
             style={{ fontSize: '3rem', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
           >
-            {credit ? '+' : '−'}{formatFils(txn.AmountFils)}
+            {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}
           </span>
+          {nativeAmountTag(txn) && (
+            <p className="text-xs text-muted">{nativeAmountTag(txn)}{aedFils(txn) === null ? " · no AED rate" : ""}</p>
+          )}
         </div>
       </div>
 
