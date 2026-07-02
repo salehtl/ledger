@@ -85,6 +85,20 @@ func (s *Store) RateMicroFor(currency string) (int64, bool, error) {
 	return rate, true, nil
 }
 
+// amountAEDValue computes the AED snapshot to store with a new transaction:
+// the amount itself for AED, the converted value when a rate exists, SQL NULL
+// otherwise (backfilled later by ConvertUnconverted once a rate is added).
+func (s *Store) amountAEDValue(amountFils int64, currency string) (any, error) {
+	rate, ok, err := s.RateMicroFor(currency)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return ConvertToAEDFils(amountFils, rate), nil
+}
+
 // UnconvertedCurrencies lists currencies present on transactions that still
 // have no AED snapshot — i.e. rates the user needs to add.
 func (s *Store) UnconvertedCurrencies() ([]string, error) {

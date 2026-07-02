@@ -33,7 +33,7 @@ func (DisabledExtractor) Extract(context.Context, string) (ParsedTxn, error) {
 const extractorSystemPrompt = `Extract financial transaction data from this bank email body.
 Respond ONLY with valid JSON on one line (no extra text):
 {"posted_at":"2024-01-15T00:00:00Z","amount_fils":3825,"currency":"AED","direction":"debit","merchant_raw":"AMAZON.AE","last4":"1234","confidence":0.8}
-Rules: posted_at is ISO8601 UTC; amount_fils is positive integer (AED×100); direction is exactly "debit" or "credit"; last4 may be empty string "".`
+Rules: posted_at is ISO8601 UTC; amount_fils is a positive integer, the amount in minor units (×100) of the transaction currency (e.g. USD 10.09 → 1009 with currency "USD"); currency is the 3-letter code shown in the email, "AED" if none shown; direction is exactly "debit" or "credit"; last4 may be empty string "".`
 
 type extractReq struct {
 	Model     string   `json:"model"`
