@@ -35,6 +35,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
       <p className="text-sm text-muted mb-3">
         {txn.MerchantRaw || "—"} · <Money fils={-(aedFils(txn) ?? txn.AmountFils)} />
         {nativeAmountTag(txn) ? ` · ${nativeAmountTag(txn)}` : ""}
+        {aedFils(txn) === null ? " · no AED rate" : ""}
       </p>
       <input
         type="search"

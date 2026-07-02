@@ -12,7 +12,7 @@ import {
   trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
 import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope";
-import { formatFils, flowAmount, aedFils } from "../lib/money";
+import { formatFils, flowAmount, aedFils, nativeAmountTag } from "../lib/money";
 import { AlertTriangle, Check, TrendingUp } from "lucide-react";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 
@@ -151,7 +151,7 @@ export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
                   <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstReveal ? " stagger-item" : ""}`}>
                     <div className="min-w-0">
                       <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
-                      <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}</p>
+                      <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}{nativeAmountTag(t) ? ` · ${nativeAmountTag(t)}` : ""}{aedFils(t) === null ? " · no AED rate" : ""}</p>
                     </div>
                     <span
                       className="tnum"
