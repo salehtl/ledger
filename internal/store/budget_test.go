@@ -93,9 +93,9 @@ func seedTx(t *testing.T, st *Store, postedAt, direction string, amount int64, c
 	t.Helper()
 	_, err := st.DB.Exec(
 		`INSERT INTO transactions
-		   (posted_at, amount, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
-		 VALUES (?, ?, 'AED', ?, 'M', ?, ?, ?, 'email', '2026-06-01', '2026-06-01')`,
-		postedAt, amount, direction, catID, status,
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
+		 VALUES (?, ?, ?, 'AED', ?, 'M', ?, ?, ?, 'email', '2026-06-01', '2026-06-01')`,
+		postedAt, amount, amount, direction, catID, status,
 		postedAt+direction+itoa(amount),
 	)
 	if err != nil {

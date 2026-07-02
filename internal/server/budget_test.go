@@ -121,9 +121,9 @@ func seedConfirmedDebit(t *testing.T, st *store.Store, catID int64, postedAt str
 	t.Helper()
 	_, err := st.DB.Exec(
 		`INSERT INTO transactions
-		   (posted_at, amount, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
-		 VALUES (?, ?, 'AED', 'debit', 'M', ?, 'confirmed', ?, 'email', '2026-01-01', '2026-01-01')`,
-		postedAt, amount, catID, postedAt+"-"+strconv.FormatInt(amount, 10),
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
+		 VALUES (?, ?, ?, 'AED', 'debit', 'M', ?, 'confirmed', ?, 'email', '2026-01-01', '2026-01-01')`,
+		postedAt, amount, amount, catID, postedAt+"-"+strconv.FormatInt(amount, 10),
 	)
 	if err != nil {
 		t.Fatalf("seedConfirmedDebit: %v", err)

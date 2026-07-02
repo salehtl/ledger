@@ -23,12 +23,12 @@ func (s *Store) SelectCategorySpend(period string, frozen bool) ([]CategorySpend
 		bucketExpr = "COALESCE(t.bucket_snapshot, c.bucket)"
 	}
 	rows, err := s.DB.Query(
-		`SELECT c.id, c.name, COALESCE(`+bucketExpr+`,''), SUM(t.amount)
+		`SELECT c.id, c.name, COALESCE(`+bucketExpr+`,''), SUM(COALESCE(t.amount_aed, 0))
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='spending' AND t.direction='debit'
 		    AND t.posted_at >= ? AND t.posted_at < ?
 		  GROUP BY c.id, c.name
-		  ORDER BY SUM(t.amount) DESC`,
+		  ORDER BY SUM(COALESCE(t.amount_aed, 0)) DESC`,
 		start, end,
 	)
 	if err != nil {
@@ -65,8 +65,8 @@ func (s *Store) SelectMonthlyTotals(months int) ([]MonthlyTotalRow, error) {
 	start := firstOfThis.AddDate(0, -(months-1), 0).Format("2006-01-02")
 	rows, err := s.DB.Query(
 		`SELECT strftime('%Y-%m', t.posted_at) AS ym,
-		        COALESCE(SUM(CASE WHEN c.kind='spending' AND t.direction='debit' THEN t.amount END),0),
-		        COALESCE(SUM(CASE WHEN c.kind='income'   AND t.direction='credit' THEN t.amount END),0)
+		        COALESCE(SUM(CASE WHEN c.kind='spending' AND t.direction='debit' THEN COALESCE(t.amount_aed, 0) END),0),
+		        COALESCE(SUM(CASE WHEN c.kind='income'   AND t.direction='credit' THEN COALESCE(t.amount_aed, 0) END),0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND t.posted_at >= ?
 		  GROUP BY ym ORDER BY ym`,

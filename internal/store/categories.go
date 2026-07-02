@@ -30,6 +30,7 @@ type ReviewItem struct {
 	ID             int64
 	PostedAt       string
 	AmountFils     int64
+	AmountAedFils  *int64 // AED snapshot; nil when the currency has no rate yet
 	Currency       string
 	Direction      string
 	MerchantRaw    string
@@ -210,7 +211,7 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 // SelectTransactions returns transactions matching optional status and date filters.
 // Empty status matches all. from/to are RFC3339 or date strings (SQLite text compare).
 func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error) {
-	q := `SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
+	q := `SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
 	             COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,'')
@@ -251,13 +252,18 @@ func scanReviewItems(rows interface {
 	for rows.Next() {
 		var r ReviewItem
 		var catID sql.NullInt64
+		var aed sql.NullInt64
 		if err := rows.Scan(
-			&r.ID, &r.PostedAt, &r.AmountFils, &r.Currency, &r.Direction,
+			&r.ID, &r.PostedAt, &r.AmountFils, &aed, &r.Currency, &r.Direction,
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 			&catID, &r.CategoryName, &r.Bucket,
 			&r.Kind, &r.BucketSnapshot,
 		); err != nil {
 			return nil, err
+		}
+		if aed.Valid {
+			v := aed.Int64
+			r.AmountAedFils = &v
 		}
 		if catID.Valid {
 			id := catID.Int64

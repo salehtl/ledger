@@ -79,7 +79,7 @@ func (s *Store) SelectMonthSpend(period string, frozen bool) ([]SpendRow, error)
 		bucketExpr = "COALESCE(t.bucket_snapshot, c.bucket)"
 	}
 	rows, err := s.DB.Query(
-		`SELECT `+bucketExpr+`, t.direction, t.amount
+		`SELECT `+bucketExpr+`, t.direction, COALESCE(t.amount_aed, 0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='spending'
 		    AND t.posted_at >= ? AND t.posted_at < ?`,
@@ -112,7 +112,7 @@ func (s *Store) SelectMonthIncome(period string) (int64, error) {
 	}
 	var total int64
 	err = s.DB.QueryRow(
-		`SELECT COALESCE(SUM(t.amount), 0)
+		`SELECT COALESCE(SUM(COALESCE(t.amount_aed, 0)), 0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='income' AND t.direction='credit'
 		    AND t.posted_at >= ? AND t.posted_at < ?`,
@@ -140,7 +140,7 @@ func (s *Store) SelectEarliestPeriod() (period string, ok bool, err error) {
 // SelectRecent returns the newest n transactions as ReviewItems for the dashboard list.
 func (s *Store) SelectRecent(n int) ([]ReviewItem, error) {
 	rows, err := s.DB.Query(
-		`SELECT t.id, t.posted_at, t.amount, t.currency, t.direction,
+		`SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
 		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,'')
