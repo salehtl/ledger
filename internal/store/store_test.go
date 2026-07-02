@@ -44,7 +44,7 @@ func TestOpenAppliesFullSchema(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"accounts", "app_settings", "budget_config", "categories", "import_log",
+		"accounts", "app_settings", "budget_config", "categories", "fx_rates", "import_log",
 		"ingest_log", "push_subscriptions", "rules", "transactions",
 	}
 	if len(got) != len(want) {
