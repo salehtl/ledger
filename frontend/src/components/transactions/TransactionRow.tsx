@@ -1,6 +1,6 @@
 // frontend/src/components/transactions/TransactionRow.tsx
 import type { Txn } from "../../api/types";
-import { flowAmount } from "../../lib/money";
+import { flowAmount, aedFils, nativeAmountTag } from "../../lib/money";
 import { Pill } from "../ui/Pill";
 import { statusLabel, statusTone } from "../../lib/format";
 import { bucketColor } from "../../lib/insights";
@@ -15,8 +15,15 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
 }) {
   const needsReview = txn.Status === "needs_review";
   const archived = txn.Status === "archived";
-  const subtitle = [txn.PostedAt.slice(0, 10), txn.CategoryName].filter(Boolean).join(" · ");
-  const amount = flowAmount(txn.Direction, txn.AmountFils);
+  const aed = aedFils(txn);
+  const native = nativeAmountTag(txn);
+  const subtitle = [
+    txn.PostedAt.slice(0, 10),
+    txn.CategoryName,
+    native,
+    aed === null ? "no AED rate" : null,
+  ].filter(Boolean).join(" · ");
+  const amount = flowAmount(txn.Direction, aed ?? txn.AmountFils);
   return (
     <div className="py-2.5 flex items-stretch gap-3">
       <span
