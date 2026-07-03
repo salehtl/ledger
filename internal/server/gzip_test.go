@@ -98,3 +98,23 @@ func TestGzipSkipsRangeRequests(t *testing.T) {
 		t.Fatalf("ranged Content-Encoding = %q, want none", got)
 	}
 }
+
+func TestGzipFlushBeforeWriteStillCompresses(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.(http.Flusher).Flush()
+		w.Write([]byte(`{"ok":true}`))
+	})
+	rec := gzGet(t, withGzip(inner), "/api/anything", true)
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	zr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("body is not gzip: %v", err)
+	}
+	body, err := io.ReadAll(zr)
+	if err != nil || string(body) != `{"ok":true}` {
+		t.Fatalf("round-trip = %q, %v", body, err)
+	}
+}
