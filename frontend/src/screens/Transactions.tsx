@@ -88,7 +88,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
 
       {q.isError ? (
         <EmptyState icon={AlertTriangle} title="Couldn't load transactions" hint="Check your connection and try again." />
-      ) : q.isLoading ? (
+      ) : q.isPending ? (
         <Skeleton rows={8} />
       ) : rows.length === 0 ? (
         <EmptyState icon={ListOrdered} title="No transactions" hint="Try a different period, filter, or search." />

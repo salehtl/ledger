@@ -59,9 +59,12 @@ export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
         : `Spent · ${scopeLabel(scope)}`;
 
   // Hook must be before early returns (React rules); gates on first populated recent list paint.
-  const firstReveal = useFirstReveal(!summary.isLoading && (summary.data?.recent.length ?? 0) > 0);
+  const firstReveal = useFirstReveal(!summary.isPending && (summary.data?.recent.length ?? 0) > 0);
 
-  if (summary.isLoading) return <Skeleton rows={8} />;
+  // isPending, not isLoading: with the persisted-cache provider, queries sit
+  // pending-but-not-fetching while the cache restores, and isLoading is false
+  // there even though data is still undefined.
+  if (summary.isPending) return <Skeleton rows={8} />;
   if (summary.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load your spending" hint="Check your connection and try again." />;
 
   const s = summary.data!;
