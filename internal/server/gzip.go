@@ -66,6 +66,12 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (w *gzipResponseWriter) Flush() {
+	// Commit the compress/identity decision before the header goes out —
+	// flushing an unwritten response would otherwise send headers without
+	// Content-Encoding while later Writes start compressing.
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.gz != nil {
 		w.gz.Flush()
 	}
