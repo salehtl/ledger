@@ -75,6 +75,7 @@ type PushSender interface {
 // Server holds the router and its dependencies.
 type Server struct {
 	mux             *http.ServeMux
+	handler         http.Handler // mux wrapped in middleware (gzip)
 	store           HealthChecker
 	ingest          IngestStatus
 	imapConfigured  bool
@@ -101,6 +102,7 @@ func New(store HealthChecker, webFS fs.FS) *Server {
 		store: store,
 	}
 	s.routes(webFS)
+	s.handler = withGzip(s.mux)
 	return s
 }
 
@@ -195,5 +197,5 @@ func (s *Server) routes(webFS fs.FS) {
 
 // ServeHTTP makes Server an http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
