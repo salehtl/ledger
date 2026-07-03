@@ -3,10 +3,12 @@ import { ChevronRight } from "lucide-react";
 import { getJSON, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
 import { loadSwipeConfig } from "../../lib/swipe";
+import { loadFontScale } from "../../lib/fontScale";
 import {
   budgetSplitLabel,
   categorizationSummary,
   currenciesLabel,
+  fontScaleLabel,
   swipeSummary,
 } from "../../lib/settingsSummary";
 
@@ -16,7 +18,8 @@ export type SettingsPageId =
   | "swipe"
   | "currencies"
   | "categories"
-  | "rules";
+  | "rules"
+  | "textsize";
 
 /** A drill-in row: label on the left, current-state preview + chevron on the right. */
 function HubRow({
@@ -89,6 +92,10 @@ export function SettingsHub({
           onClick={() => onOpen("categorization")}
         />
         <HubRow label="Swipe actions" value={swipeSummary(swipe)} onClick={() => onOpen("swipe")} />
+      </Group>
+
+      <Group label="Device">
+        <HubRow label="Text size" value={fontScaleLabel(loadFontScale())} onClick={() => onOpen("textsize")} />
       </Group>
 
       <Group label="Library">

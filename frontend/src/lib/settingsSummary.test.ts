@@ -3,6 +3,7 @@ import {
   budgetSplitLabel,
   categorizationSummary,
   currenciesLabel,
+  fontScaleLabel,
   swipeSummary,
 } from "./settingsSummary";
 import type { AppSettings, BudgetConfig, RatesResponse } from "../api/types";
@@ -74,5 +75,14 @@ describe("currenciesLabel", () => {
 describe("swipeSummary", () => {
   it("shows the horizontal directions", () => {
     expect(swipeSummary(DEFAULT_SWIPE_CONFIG)).toBe("← Want · → Need");
+  });
+});
+
+describe("fontScaleLabel", () => {
+  it("names the default scale", () => {
+    expect(fontScaleLabel(100)).toBe("Default");
+  });
+  it("shows reduced scales as percentages", () => {
+    expect(fontScaleLabel(90)).toBe("90%");
   });
 });
