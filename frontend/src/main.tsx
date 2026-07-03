@@ -7,6 +7,11 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { queryClient, persister, PERSIST_MAX_AGE } from "./queryClient";
 import { ToastProvider } from "./components/Toast";
 import { AppShell } from "./app/AppShell";
+import { applyFontScale, loadFontScale } from "./lib/fontScale";
+
+// Apply the device's saved text scale before first paint so there's no flash
+// of the wrong size.
+applyFontScale(loadFontScale());
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

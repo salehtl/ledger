@@ -33,6 +33,11 @@ export function currenciesLabel(r: RatesResponse): string {
   return segments.length > 0 ? segments.join(" · ") : "None";
 }
 
+/** "Default" | "90%" — this device's text-size override. */
+export function fontScaleLabel(scale: number): string {
+  return scale === 100 ? "Default" : `${scale}%`;
+}
+
 /** "← Want · → Need" — the two horizontal swipe actions, the ones users hit most. */
 export function swipeSummary(cfg: SwipeConfig): string {
   return `← ${cfg.left.label} · → ${cfg.right.label}`;
