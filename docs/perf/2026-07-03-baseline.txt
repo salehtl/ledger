@@ -1,0 +1,47 @@
+== Critical path (index.html references) ==
+      1481  index.html
+    600416  assets/index-C4TPzU7H.js
+     35243  assets/index-C_fVpJiW.css
+       134  registerSW.js
+      2831  sw.js
+    640105  TOTAL uncompressed (~5.1s at 1 Mbit/s)
+
+== Service-worker precache manifest ==
+     34926  apple-touch-icon.jpg
+     34926  apple-touch-icon.jpg
+    600416  assets/index-C4TPzU7H.js
+     35243  assets/index-C_fVpJiW.css
+     25960  assets/inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2
+     18748  assets/inter-cyrillic-wght-normal-DqGufNeO.woff2
+     11232  assets/inter-greek-ext-wght-normal-DlzME5K_.woff2
+     18996  assets/inter-greek-wght-normal-CkhJZR-_.woff2
+     85068  assets/inter-latin-ext-wght-normal-DO1Apj_S.woff2
+     48256  assets/inter-latin-wght-normal-Dx4kXJAl.woff2
+     10252  assets/inter-vietnamese-wght-normal-CBcvBZtf.woff2
+     35912  assets/roboto-mono-cyrillic-ext-wght-normal-BUDPrIko.woff2
+     18592  assets/roboto-mono-cyrillic-wght-normal-HUlVHixE.woff2
+     14044  assets/roboto-mono-greek-wght-normal-BJJTbwTT.woff2
+     22916  assets/roboto-mono-latin-ext-wght-normal-QAYlOegK.woff2
+     32796  assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2
+     10308  assets/roboto-mono-vietnamese-wght-normal-DlC-zuDL.woff2
+    110110  favicon.svg
+    110110  favicon.svg
+      1481  index.html
+    109931  logo-square.svg
+     34344  manifest-icon-192.jpg
+     34344  manifest-icon-192.jpg
+    205016  manifest-icon-512.jpg
+    205016  manifest-icon-512.jpg
+       435  manifest.webmanifest
+    125096  open-graph.jpg
+       134  registerSW.js
+     82964  twitter-card.png
+   2077572  TOTAL precache: 29 files (~16.6s at 1 Mbit/s)
+
+== On-the-wire transfer (http://127.0.0.1:8099) ==
+  identity       gzip  path
+      1481       1481  /
+    600416     600416  /assets/index-C4TPzU7H.js
+     35243      35243  /assets/index-C_fVpJiW.css
+       337        337  /api/summary
+         3          3  /api/transactions
