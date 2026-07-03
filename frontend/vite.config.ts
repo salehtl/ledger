@@ -10,12 +10,8 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: [
-        "favicon.svg",
-        "apple-touch-icon.jpg",
-        "manifest-icon-192.jpg",
-        "manifest-icon-512.jpg",
-      ],
+      // Manifest icons are fetched by the OS at install time; don't precache them.
+      includeManifestIcons: false,
       manifest: {
         name: "ledger",
         short_name: "ledger",
@@ -32,7 +28,17 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
-        globPatterns: ["**/*.{js,css,html,png,jpg,svg,woff2}"],
+        // Precache only what a cold offline start needs: app code + latin
+        // fonts. Marketing/link-preview images and non-latin font subsets
+        // (never fetched at runtime thanks to unicode-range) stay
+        // network-served with cache headers.
+        globPatterns: ["**/*.{js,css,html,woff2}"],
+        globIgnores: [
+          "assets/*-cyrillic*",
+          "assets/*-greek*",
+          "assets/*-vietnamese*",
+          "assets/*-latin-ext-*",
+        ],
       },
     }),
   ],
