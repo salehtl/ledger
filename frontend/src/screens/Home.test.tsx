@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { PersistQueryClientProvider, type Persister } from "@tanstack/react-query-persist-client";
 import { Home } from "./Home";
 import type { Summary, CategorySpend, MonthlyTotal } from "../api/types";
 
@@ -37,6 +38,24 @@ function wrap() {
 }
 
 describe("Home", () => {
+  it("shows the skeleton (not a crash) while the persisted cache is restoring", () => {
+    // Under PersistQueryClientProvider, queries pause until restore completes:
+    // isPending=true but isFetching=false, so v5's isLoading is false while
+    // data is still undefined. The guard must hold in that window.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const neverRestores: Persister = {
+      persistClient: () => {},
+      restoreClient: () => new Promise(() => {}),
+      removeClient: () => {},
+    };
+    render(
+      <PersistQueryClientProvider client={qc} persistOptions={{ persister: neverRestores }}>
+        <Home />
+      </PersistQueryClientProvider>,
+    );
+    expect(screen.getByLabelText("Loading")).toBeInTheDocument();
+  });
+
   it("shows the spent-this-month hero and budget", async () => {
     wrap();
     // 482000 fils => 4,820.00; 600000 => 6,000.00

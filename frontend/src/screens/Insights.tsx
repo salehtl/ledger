@@ -65,7 +65,9 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
     return categoryRows(withShare([...deltas].sort((a, b) => b.spent - a.spent), total));
   }, [lens, curData, prevData, txns, total]);
 
-  if (cur.isLoading || prev.isLoading || summary.isLoading) return <Skeleton rows={8} />;
+  // isPending, not isLoading: queries are pending-but-not-fetching during
+  // persisted-cache restore, and isLoading is false in that window.
+  if (cur.isPending || prev.isPending || summary.isPending) return <Skeleton rows={8} />;
   if (cur.isError) return <EmptyState icon={AlertTriangle} title="Couldn't load insights" hint="Check your connection and try again." />;
 
   const deltas = categoryDeltas(curData, prevData);
