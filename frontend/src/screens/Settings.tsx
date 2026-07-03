@@ -1,156 +1,28 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJSON, postJSON, getRates, putRate, deleteRate } from "../api/client";
-import type { AppSettings, BudgetConfig, Category, Rule, CategorizeStatus } from "../api/types";
-import { PeriodSheet } from "../components/ui/PeriodSheet";
-import { type Scope, scopeBounds, scopeLabel, DEFAULT_SCOPE } from "../lib/scope";
+import { getJSON, postJSON } from "../api/client";
+import { type Scope } from "../lib/scope";
 import { CategoryManager } from "./CategoryManager";
 import { RulesManager } from "./RulesManager";
-import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../lib/format";
-import { parseRateForm } from "../lib/rates";
-import { splitSegments } from "../lib/split";
-import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Dialog } from "../components/ui/Dialog";
-import { Switch } from "../components/ui/Switch";
 import { useToast } from "../components/Toast";
-import { ChevronRight, Trash2 } from "lucide-react";
-import {
-  loadSwipeConfig,
-  saveSwipeConfig,
-  DEFAULT_SWIPE_CONFIG,
-  type SwipeConfig,
-  type SwipeDirection,
-} from "../lib/swipe";
+import { SettingsHub, type SettingsPageId } from "./settings/SettingsHub";
+import { BudgetPage } from "./settings/BudgetPage";
+import { CategorizationPage } from "./settings/CategorizationPage";
+import { SwipePage } from "./settings/SwipePage";
+import { CurrenciesPage } from "./settings/CurrenciesPage";
 
-export function pctsValid(need: number, want: number, saving: number): boolean {
-  return Math.abs(need + want + saving - 1.0) < 0.001;
-}
-
-/** Eyebrow-labeled settings group — the label is the section's only heading. */
-function Section({ label, tone = "default", children }: { label: string; tone?: "default" | "danger"; children: ReactNode }) {
-  return (
-    <section className="space-y-2">
-      <h2 className={`px-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${tone === "danger" ? "text-bad" : "text-muted"}`}>
-        {label}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-/** Full-width drill-in row: label, item count, chevron. */
-function NavRow({ label, count, onClick }: { label: string; count?: number; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left press hover:bg-surface-2/50"
-    >
-      <span>{label}</span>
-      <span className="flex items-center gap-1.5 text-muted">
-        {count !== undefined && <span className="text-xs tnum">{count}</span>}
-        <ChevronRight size={16} aria-hidden />
-      </span>
-    </button>
-  );
-}
-
-/** Setting row: label + explanation on the left, a control on the right. */
-function ToggleRow({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
-  return (
-    <label className="flex items-center justify-between gap-3 text-sm py-2">
-      <span>
-        {title}
-        <span className="block text-xs text-muted">{hint}</span>
-      </span>
-      {children}
-    </label>
-  );
-}
-
-/** The 50/30/20 split, live: segment widths track the inputs below, and
-    under-allocated income reads as a literal gap in the bar. */
-function SplitBar({ need, want, saving }: { need: number; want: number; saving: number }) {
-  const seg = splitSegments(need, want, saving);
-  const bar = "h-full transition-[width] duration-300 motion-reduce:transition-none";
-  return (
-    <div
-      className="h-3 flex overflow-hidden rounded-full bg-surface-2"
-      role="img"
-      aria-label={`Budget split: need ${fractionToPercent(need)}%, want ${fractionToPercent(want)}%, saving ${fractionToPercent(saving)}%`}
-    >
-      <div className={`${bar} bg-need`} style={{ width: `${seg.needPct}%` }} />
-      <div className={`${bar} bg-want`} style={{ width: `${seg.wantPct}%` }} />
-      <div className={`${bar} bg-save`} style={{ width: `${seg.savingPct}%` }} />
-    </div>
-  );
-}
+export { pctsValid } from "../lib/split";
 
 export function Settings({ scope }: { scope?: Scope }) {
   const qc = useQueryClient();
   const { show } = useToast();
-  const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
-  const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
-  const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
-  const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
-  const catStatus = useQuery({ queryKey: ["categorize-status"], queryFn: () => getJSON<CategorizeStatus>("/api/categorize/status") });
-  const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
-  const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
-  const [draft, setDraft] = useState<BudgetConfig | null>(null);
-  const [error, setError] = useState("");
-  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(loadSwipeConfig);
-  const [managerOpen, setManagerOpen] = useState(false);
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const [runScope, setRunScope] = useState<Scope>(() => scope ?? DEFAULT_SCOPE);
-  const [periodOpen, setPeriodOpen] = useState(false);
+  const [page, setPage] = useState<SettingsPageId | null>(null);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
-  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
-  const [rateErrors, setRateErrors] = useState<Record<string, string>>({});
-  const [newRateCode, setNewRateCode] = useState("");
-  const [newRateValue, setNewRateValue] = useState("");
-  const [newRateError, setNewRateError] = useState("");
 
-  const saveSettings = async (next: AppSettings) => {
-    try {
-      // Send only the writable fields — ai_key_present is read-only (env-only).
-      await postJSON("/api/settings", {
-        auto_categorize: next.auto_categorize, ai_enabled: next.ai_enabled,
-        ai_auto_accept: next.ai_auto_accept, ai_threshold: next.ai_threshold,
-      }, "PUT");
-      qc.invalidateQueries({ queryKey: ["settings"] });
-    } catch { show({ message: "Couldn't save settings", tone: "error" }); }
-  };
-
-  const running = catStatus.data?.status === "running";
-
-  // The manual run is a no-op when auto-categorize is off (the categorizer
-  // isn't built), and the AI tier fails on every merchant when AI is on but no
-  // API key is loaded. In both cases there's nothing useful to do, so the Run
-  // button is disabled with a reason. Rules-only runs (AI off) still work
-  // without a key.
-  const aiNeedsKey = !!settings.data?.ai_enabled && !settings.data?.ai_key_present;
-  const runDisabled = !settings.data?.auto_categorize || aiNeedsKey;
-  const runDisabledReason = !settings.data?.auto_categorize
-    ? "Turn on Auto-categorize to run categorization."
-    : aiNeedsKey
-      ? "AI suggestions need the Anthropic API key — add LEDGER_AI_API_KEY to the env file and restart."
-      : "";
-
-  const runCategorization = async () => {
-    const b = scopeBounds(runScope);
-    try {
-      await postJSON("/api/categorize/run", { from: b.from ?? "", to: b.to ?? "" });
-      qc.invalidateQueries({ queryKey: ["categorize-status"] });
-    } catch { show({ message: "Couldn't start categorization", tone: "error" }); }
-  };
-
-  const stopCategorization = async () => {
-    try {
-      await postJSON("/api/categorize/stop", {});
-      qc.invalidateQueries({ queryKey: ["categorize-status"] });
-    } catch { show({ message: "Couldn't stop categorization", tone: "error" }); }
-  };
+  const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
   const txnCount = txns.data?.length ?? 0;
 
   const clearCategorization = async () => {
@@ -168,349 +40,20 @@ export function Settings({ scope }: { scope?: Scope }) {
       setClearBusy(false);
     }
   };
-  const cfg = draft ?? budget.data ?? null;
-  const patch = (p: Partial<BudgetConfig>) => cfg && setDraft({ ...cfg, ...p });
 
-  const saveBudget = async () => {
-    if (!cfg) return;
-    if (!pctsValid(cfg.need_pct, cfg.want_pct, cfg.saving_pct)) { setError("Need / Want / Saving must add up to 100%."); return; }
-    setError("");
-    try {
-      await postJSON("/api/budget", cfg, "PUT");
-      setDraft(null);
-      qc.invalidateQueries({ queryKey: ["budget"] });
-      qc.invalidateQueries({ queryKey: ["summary"] });
-    } catch {
-      setError("Couldn’t save — please try again.");
-    }
-  };
-
-  const invalidateRates = () => {
-    qc.invalidateQueries({ queryKey: ["rates"] });
-    qc.invalidateQueries({ queryKey: ["transactions"] });
-  };
-
-  const rateDraftFor = (code: string, current: string) => rateDrafts[code] ?? current;
-
-  const saveRate = async (code: string, rawValue: string) => {
-    const parsed = parseRateForm(code, rawValue);
-    if (!parsed.ok) {
-      setRateErrors((prev) => ({ ...prev, [code]: parsed.error }));
-      return;
-    }
-    setRateErrors((prev) => ({ ...prev, [code]: "" }));
-    try {
-      await putRate(parsed.currency, parsed.rate);
-      invalidateRates();
-    } catch {
-      show({ message: `Couldn't save ${code} rate`, tone: "error" });
-    }
-  };
-
-  const removeRate = async (code: string) => {
-    try {
-      await deleteRate(code);
-      invalidateRates();
-    } catch {
-      show({ message: `Couldn't delete ${code} rate`, tone: "error" });
-    }
-  };
-
-  const addRate = async () => {
-    const parsed = parseRateForm(newRateCode, newRateValue);
-    if (!parsed.ok) {
-      setNewRateError(parsed.error);
-      return;
-    }
-    setNewRateError("");
-    try {
-      await putRate(parsed.currency, parsed.rate);
-      setNewRateCode("");
-      setNewRateValue("");
-      invalidateRates();
-    } catch {
-      show({ message: `Couldn't add ${parsed.currency} rate`, tone: "error" });
-    }
-  };
-
-  const setSwipeDir = (dir: SwipeDirection, value: string) => {
-    const next: SwipeConfig = { ...swipeCfg };
-    if (value === "transfer") {
-      next[dir] = { ...DEFAULT_SWIPE_CONFIG.up };
-    } else {
-      const template = Object.values(DEFAULT_SWIPE_CONFIG).find((a) => a.bucket === value);
-      if (template) next[dir] = { ...template };
-    }
-    setSwipeCfg(next);
-    saveSwipeConfig(next);
-  };
-
-  const field = "w-full px-3 py-2 rounded-md border border-border bg-surface text-sm";
-  const split = cfg ? splitSegments(cfg.need_pct, cfg.want_pct, cfg.saving_pct) : null;
-
-  const SWIPE_DIRS: Record<SwipeDirection, { arrow: string; word: string }> = {
-    left: { arrow: "←", word: "Left" },
-    right: { arrow: "→", word: "Right" },
-    up: { arrow: "↑", word: "Up" },
-    down: { arrow: "↓", word: "Down" },
-  };
+  const close = () => setPage(null);
 
   return (
-    <div className="space-y-6">
-      {cfg && split && (
-        <Section label="Plan">
-          <Card>
-            <label className="block text-sm mb-4">Monthly income (AED)
-              <input type="number" min="0" step="0.01" className={`${field} mt-1`}
-                value={filsToDirhams(cfg.monthly_income)}
-                onChange={(e) => patch({ monthly_income: dirhamsToFils(Number(e.target.value)) })} />
-            </label>
-            <div className="flex items-baseline justify-between mb-1.5">
-              <span className="text-sm">Split</span>
-              <span className={`text-xs font-medium tnum ${split.ok ? "text-muted" : "text-bad"}`}>
-                {split.totalPct}% allocated
-              </span>
-            </div>
-            <SplitBar need={cfg.need_pct} want={cfg.want_pct} saving={cfg.saving_pct} />
-            <div className="grid grid-cols-3 gap-2 mt-2.5">
-              <label className="text-sm">Need %
-                <input type="number" min="0" max="100" className={`${field} mt-1`}
-                  value={fractionToPercent(cfg.need_pct)}
-                  onChange={(e) => patch({ need_pct: percentToFraction(Number(e.target.value)) })} />
-              </label>
-              <label className="text-sm">Want %
-                <input type="number" min="0" max="100" className={`${field} mt-1`}
-                  value={fractionToPercent(cfg.want_pct)}
-                  onChange={(e) => patch({ want_pct: percentToFraction(Number(e.target.value)) })} />
-              </label>
-              <label className="text-sm">Saving %
-                <input type="number" min="0" max="100" className={`${field} mt-1`}
-                  value={fractionToPercent(cfg.saving_pct)}
-                  onChange={(e) => patch({ saving_pct: percentToFraction(Number(e.target.value)) })} />
-              </label>
-            </div>
-            <ToggleRow title="Freeze history" hint="Keep closed months as they were when budget numbers change.">
-              <Switch aria-label="Freeze history" checked={cfg.freeze_history} onChange={(e) => patch({ freeze_history: e.target.checked })} />
-            </ToggleRow>
-            {error && <p role="alert" className="text-bad text-sm mt-1">{error}</p>}
-            <div className="mt-2"><Button variant="primary" onClick={saveBudget}>Save budget</Button></div>
-          </Card>
-        </Section>
-      )}
+    <>
+      <SettingsHub onOpen={setPage} onClear={() => setClearOpen(true)} />
 
-      {settings.data && (
-        <Section label="Categorization">
-          <Card>
-            <ToggleRow title="Auto-categorize new transactions" hint="Off = everything waits in Needs review for you to categorize.">
-              <Switch aria-label="Auto-categorize"
-                checked={settings.data.auto_categorize}
-                onChange={(e) => saveSettings({ ...settings.data!, auto_categorize: e.target.checked })} />
-            </ToggleRow>
-            <ToggleRow title="AI suggestions" hint="Let AI propose a category when no rule matches.">
-              <Switch aria-label="AI suggestions"
-                checked={settings.data.ai_enabled}
-                onChange={(e) => saveSettings({ ...settings.data!, ai_enabled: e.target.checked })} />
-            </ToggleRow>
-            <ToggleRow title="AI auto-accept" hint="Auto-confirm confident AI suggestions instead of just suggesting.">
-              <Switch aria-label="AI auto-accept"
-                disabled={!settings.data.ai_enabled}
-                checked={settings.data.ai_auto_accept}
-                onChange={(e) => saveSettings({ ...settings.data!, ai_auto_accept: e.target.checked })} />
-            </ToggleRow>
+      {page === "budget" && <BudgetPage onClose={close} />}
+      {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}
+      {page === "swipe" && <SwipePage onClose={close} />}
+      {page === "currencies" && <CurrenciesPage onClose={close} />}
+      {page === "categories" && <CategoryManager onClose={close} />}
+      {page === "rules" && <RulesManager onClose={close} />}
 
-            <div className="flex items-center justify-between gap-3 mt-2 pt-3 border-t border-border">
-              <span className="text-sm">Anthropic API key</span>
-              {settings.data.ai_key_present
-                ? <span className="text-xs font-medium text-good">Loaded</span>
-                : <span className="text-xs text-muted text-right">Not set · add LEDGER_AI_API_KEY to the env file and restart</span>}
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-border">
-              {running ? (
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm tnum">{catStatus.data!.processed} of {catStatus.data!.total} categorized</span>
-                  <Button variant="secondary" onClick={stopCategorization}>Stop</Button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <Button variant="secondary" onClick={() => setPeriodOpen(true)}>{scopeLabel(runScope)}</Button>
-                  <Button variant="primary" onClick={runCategorization} disabled={runDisabled}>Run</Button>
-                </div>
-              )}
-              <p className="text-xs text-muted mt-1.5">
-                {runDisabled && !running
-                  ? runDisabledReason
-                  : `Categorizes Needs review for ${scopeLabel(runScope)} (${settings.data.ai_enabled ? "rules + AI" : "rules"}).`}
-              </p>
-              {catStatus.data && (catStatus.data.failed > 0 || catStatus.data.error) && (
-                <p role="alert" className="text-bad text-xs mt-2">
-                  {catStatus.data.failed > 0
-                    ? `${catStatus.data.failed} ${catStatus.data.failed === 1 ? "transaction" : "transactions"} couldn’t be categorized`
-                    : "Categorization ran into a problem"}
-                  {catStatus.data.error ? ` — ${catStatus.data.error}` : ""}
-                </p>
-              )}
-            </div>
-            {periodOpen && (
-              <PeriodSheet
-                scope={runScope}
-                onApply={(s) => { setRunScope(s); setPeriodOpen(false); }}
-                onClose={() => setPeriodOpen(false)}
-              />
-            )}
-          </Card>
-        </Section>
-      )}
-
-      <Section label="Library">
-        <div className="bg-surface rounded-[var(--radius-card)] shadow-1 divide-y divide-border overflow-hidden">
-          <NavRow label="Categories" count={cats.data?.length} onClick={() => setManagerOpen(true)} />
-          <NavRow label="Rules" count={rules.data?.length} onClick={() => setRulesOpen(true)} />
-        </div>
-      </Section>
-
-      <Section label="Preferences">
-        <Card>
-          <p className="text-xs text-muted mb-3">What each swipe does when reviewing transactions.</p>
-          <div className="space-y-2.5">
-            {(["left", "right", "up", "down"] as const).map((dir) => {
-              const current = swipeCfg[dir];
-              const value = current.statusOverride === "transfer" ? "transfer" : current.bucket ?? "";
-              const { arrow, word } = SWIPE_DIRS[dir];
-              return (
-                <div key={dir} className="flex items-center gap-3">
-                  <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2 text-sm" aria-hidden>{arrow}</span>
-                  <span className="text-sm w-12">{word}</span>
-                  <select
-                    value={value}
-                    aria-label={`${word} swipe action`}
-                    onChange={(e) => setSwipeDir(dir, e.target.value)}
-                    className={`${field} flex-1`}
-                  >
-                    <option value="want">Want</option>
-                    <option value="need">Need</option>
-                    <option value="saving">Save</option>
-                    <option value="transfer">Transfer</option>
-                  </select>
-                </div>
-              );
-            })}
-          </div>
-          <Button
-            variant="ghost"
-            className="mt-3 text-sm"
-            onClick={() => {
-              setSwipeCfg(DEFAULT_SWIPE_CONFIG);
-              saveSwipeConfig(DEFAULT_SWIPE_CONFIG);
-            }}
-          >
-            Reset to defaults
-          </Button>
-        </Card>
-      </Section>
-
-      <Section label="Currency Rates">
-        <Card>
-          <p className="text-xs text-muted mb-4">
-            AED per 1 unit. Snapshots are taken when a transaction arrives; changing a rate only affects future and unconverted transactions.
-          </p>
-          <div className="space-y-3">
-            {(rates.data?.rates ?? []).map((r) => (
-              <div key={r.currency} className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium w-12">{r.currency}</span>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    min="0"
-                    className={`${field} flex-1`}
-                    value={rateDraftFor(r.currency, String(r.rate))}
-                    onChange={(e) => setRateDrafts((prev) => ({ ...prev, [r.currency]: e.target.value }))}
-                  />
-                  <Button
-                    variant="secondary"
-                    aria-label={`Save ${r.currency}`}
-                    onClick={() => saveRate(r.currency, rateDraftFor(r.currency, String(r.rate)))}
-                  >
-                    Save
-                  </Button>
-                  <button
-                    aria-label={`Delete ${r.currency} rate`}
-                    className="p-2 -mr-2 text-muted hover:text-bad"
-                    onClick={() => removeRate(r.currency)}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                {rateErrors[r.currency] && <p role="alert" className="text-bad text-xs">{rateErrors[r.currency]}</p>}
-              </div>
-            ))}
-
-            {(rates.data?.missing ?? []).map((code) => (
-              <div key={code} className="space-y-1">
-                <p className="text-xs text-warn">{code} — no rate configured; these transactions are excluded from budgets</p>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    step="0.0001"
-                    min="0"
-                    aria-label={`Rate for ${code}`}
-                    className={`${field} flex-1`}
-                    value={rateDrafts[code] ?? ""}
-                    onChange={(e) => setRateDrafts((prev) => ({ ...prev, [code]: e.target.value }))}
-                  />
-                  <Button
-                    variant="secondary"
-                    aria-label={`Save ${code}`}
-                    onClick={() => saveRate(code, rateDrafts[code] ?? "")}
-                  >
-                    Save
-                  </Button>
-                </div>
-                {rateErrors[code] && <p role="alert" className="text-bad text-xs">{rateErrors[code]}</p>}
-              </div>
-            ))}
-
-            <div className="space-y-1 pt-3 border-t border-border">
-              <p className="text-sm font-medium">Add currency</p>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="USD"
-                  aria-label="New currency code"
-                  className={`${field} w-20`}
-                  value={newRateCode}
-                  onChange={(e) => setNewRateCode(e.target.value)}
-                />
-                <input
-                  type="number"
-                  step="0.0001"
-                  min="0"
-                  placeholder="Rate"
-                  aria-label="New currency rate"
-                  className={`${field} flex-1`}
-                  value={newRateValue}
-                  onChange={(e) => setNewRateValue(e.target.value)}
-                />
-                <Button variant="secondary" onClick={addRate}>Add</Button>
-              </div>
-              {newRateError && <p role="alert" className="text-bad text-xs">{newRateError}</p>}
-            </div>
-          </div>
-        </Card>
-      </Section>
-
-      <Section label="Danger zone" tone="danger">
-        <Card className="border border-bad/40">
-          <p className="text-xs text-muted mb-3">Clearing categorization moves every transaction back to Needs review and removes its category. Your learned rules are kept.</p>
-          <Button variant="danger" onClick={() => setClearOpen(true)}>Clear all categorization</Button>
-        </Card>
-      </Section>
-
-      <p className="text-center text-xs text-muted pb-4">Icons by Lucide (ISC)</p>
-
-      {managerOpen && <CategoryManager onClose={() => setManagerOpen(false)} />}
-      {rulesOpen && <RulesManager onClose={() => setRulesOpen(false)} />}
       {clearOpen && (
         <Dialog title="Clear all categorization?" onClose={() => setClearOpen(false)}>
           <p className="text-sm mb-4">
@@ -525,6 +68,6 @@ export function Settings({ scope }: { scope?: Scope }) {
           </div>
         </Dialog>
       )}
-    </div>
+    </>
   );
 }

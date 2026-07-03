@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Settings, pctsValid } from "./Settings";
 import { ToastProvider } from "../components/Toast";
@@ -11,6 +11,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/budget")) return new Response(JSON.stringify(budget));
     if (url === "/api/settings") return new Response(JSON.stringify({ auto_categorize: true, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85 }));
+    if (url === "/api/rates") return new Response(JSON.stringify({ rates: [], missing: [] }));
     return new Response("[]");
   }));
 });
@@ -28,8 +29,14 @@ describe("pctsValid", () => {
 });
 
 describe("Settings", () => {
-  it("shows income in AED and splits as whole percents", async () => {
+  it("previews the split on the hub row", async () => {
     wrap();
+    expect(await screen.findByText("50/30/20")).toBeInTheDocument();
+  });
+
+  it("shows income in AED and splits as whole percents in the Budget drill-in", async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole("button", { name: /budget & income/i }));
     expect((await screen.findByLabelText(/monthly income/i) as HTMLInputElement).value).toBe("15000");
     expect((screen.getByLabelText(/need %/i) as HTMLInputElement).value).toBe("50");
   });
