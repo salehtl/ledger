@@ -1,0 +1,55 @@
+== Critical path (index.html references) ==
+      1481  index.html
+    284975  assets/index-DaQZkiHP.js
+     35384  assets/index-nPoNgz3d.css
+       134  registerSW.js
+      1237  sw.js
+    323211  TOTAL uncompressed (~2.6s at 1 Mbit/s)
+
+== Service-worker precache manifest ==
+    284975  assets/index-DaQZkiHP.js
+     35384  assets/index-nPoNgz3d.css
+     48256  assets/inter-latin-wght-normal-Dx4kXJAl.woff2
+     32796  assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2
+      1481  index.html
+       435  manifest.webmanifest
+       134  registerSW.js
+    403461  TOTAL precache: 7 files (~3.2s at 1 Mbit/s)
+
+== On-the-wire transfer (http://127.0.0.1:8099) ==
+  identity       gzip  path
+      1481        584  /
+    284975      86098  /assets/index-DaQZkiHP.js
+     35384       7712  /assets/index-nPoNgz3d.css
+       337        175  /api/summary
+         3         27  /api/transactions
+
+== Critical path at gzip sizes (computed by hand) ==
+The script above reports uncompressed critical-path bytes (323,211 → ~2.6s
+at 1 Mbit/s). What actually crosses the wire is gzip-compressed (gzip
+middleware landed in 9b24920). Measured gzip sizes for every file the
+critical path loads on first paint:
+
+       584  index.html            (gzip; identity 1,481)
+     86098  assets/index-*.js     (gzip; identity 284,975)
+      7712  assets/index-*.css    (gzip; identity 35,384)
+       130  registerSW.js         (gzip; identity 134)
+       754  sw.js                 (gzip; identity 1,237)
+     95278  TOTAL gzip bytes
+
+  95,278 bytes * 8 bits/byte = 762,224 bits
+  762,224 bits / 1,000,000 bits/s = 0.762s ≈ 0.8s at 1 Mbit/s
+
+Criterion 4 (≤ 2.5s using gzip sizes): 0.8s — PASS, well under budget.
+
+== Note on precache comparison to baseline ==
+Baseline (docs/perf/2026-07-03-baseline.txt) recorded precache TOTAL as
+2,077,572 bytes across 29 entries. That figure was inflated by duplicate
+manifest entries (several files — apple-touch-icon.jpg, favicon.svg,
+manifest-icon-192.jpg, manifest-icon-512.jpg — were listed twice) plus a
+much broader asset set (all font subsets, marketing/OG images) that Task 4
+(c7d461e, "precache only app code and latin fonts") intentionally trimmed
+and deduplicated. The after total of 403,461 bytes / 7 files reflects both
+the dedup fix and the narrower precache scope — not an apples-to-apples
+"we shrank the same set by 5x," but the real, corrected number now serving
+from the service worker.
