@@ -130,6 +130,8 @@ describe("Settings categorization", () => {
 
   it("toggles a rule's active state via PUT /api/rules/{id}/active", async () => {
     wrap();
+    // Rules live behind the Library > Rules drill-in.
+    fireEvent.click(await screen.findByRole("button", { name: /^rules/i }));
     const ruleSwitch = await screen.findByLabelText(/rule 5 active/i) as HTMLInputElement;
     expect(ruleSwitch.checked).toBe(true);
     fireEvent.click(ruleSwitch);
