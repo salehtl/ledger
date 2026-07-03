@@ -48,3 +48,20 @@ func TestSPAUnknownAPIIs404NotIndex(t *testing.T) {
 		t.Errorf("unknown /api path returned 200 (served index?)")
 	}
 }
+
+func TestSPACacheHeaders(t *testing.T) {
+	srv := New(nil, fstest())
+	cases := []struct{ path, want string }{
+		{"/assets/app.js", "public, max-age=31536000, immutable"},
+		{"/", "no-cache"},
+		{"/index.html", "no-cache"},
+		{"/review", "no-cache"}, // SPA fallback serves index.html
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, c.path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != c.want {
+			t.Errorf("%s: Cache-Control = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
