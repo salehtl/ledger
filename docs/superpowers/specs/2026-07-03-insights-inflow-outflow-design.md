@@ -72,10 +72,12 @@ net dot proportional to net on the shared scale, clamped within the column band.
 
 ### Interaction & quality floor
 
-- Tapping a month sets it as the focus month (same drill/highlight behavior as the
-  current `activePeriod`). The active column gets a subtle emphasis (bolder label).
-- First-mount height animation only (reuse the app easings); `prefers-reduced-motion`
-  drops movement.
+- Non-interactive, matching the current Insights `TrendBars` (which only takes
+  `activePeriod`). The focus month is highlighted — bolder label + a faint column
+  tint. Tap-to-refocus is intentionally out of scope: focus derives from the global
+  `scope` prop, and lifting that for a chart tap is disproportionate to this feature.
+- Height transitions on mount; `prefers-reduced-motion` drops movement
+  (`motion-safe:` utilities).
 - `role="img"` with a spoken summary; each column also exposes an accessible label
   (month, in, out, net). Keyboard-focusable if columns are interactive.
 - Responsive: six columns flex down cleanly to a phone width; the card matches the

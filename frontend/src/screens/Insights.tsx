@@ -6,7 +6,7 @@ import { Card } from "../components/ui/Card";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
-import { TrendBars } from "../components/charts/TrendBars";
+import { FlowBars } from "../components/charts/FlowBars";
 import { ComparativeSummary } from "../components/insights/ComparativeSummary";
 import { TopMovers } from "../components/insights/TopMovers";
 import { LensBreakdown } from "../components/insights/LensBreakdown";
@@ -106,10 +106,10 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
       <TopMovers movers={movers} hasPrev={prevData.length > 0} />
 
       <Card>
-        <p className="text-sm font-medium mb-2">6-month spending trend</p>
+        <p className="text-sm font-medium mb-2">Money in vs out</p>
         {trend.isError
           ? <p className="text-sm text-muted text-center py-6">Trend unavailable</p>
-          : <TrendBars points={points} activePeriod={focusMonth} />}
+          : <FlowBars points={points} activePeriod={focusMonth} />}
       </Card>
 
       {drill && (
