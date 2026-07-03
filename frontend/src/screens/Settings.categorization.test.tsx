@@ -34,6 +34,7 @@ beforeEach(() => {
       return new Response(JSON.stringify({ stopped: true }));
     }
     if (url === "/api/budget") return new Response(JSON.stringify({ monthly_income: 0, need_pct: 0.5, want_pct: 0.3, saving_pct: 0.2, income_source: "config", freeze_history: false }));
+    if (url === "/api/rates") return new Response(JSON.stringify({ rates: [], missing: [] }));
     if (url === "/api/rules") return new Response(JSON.stringify([{ ID: 5, MatchType: "contains", Pattern: "spinneys", CategoryID: 1, Priority: 100, Source: "manual", IsActive: true }]));
     if (/^\/api\/rules\/\d+\/active$/.test(url) && init?.method === "PUT") {
       calls.push({ url, method: "PUT", body: JSON.parse(init.body as string) });
@@ -49,9 +50,15 @@ function wrap() {
   return render(<QueryClientProvider client={qc}><ToastProvider><Settings /></ToastProvider></QueryClientProvider>);
 }
 
+/** Open the Categorization drill-in from the hub. */
+async function openCategorization() {
+  fireEvent.click(await screen.findByRole("button", { name: /^categorization/i }));
+}
+
 describe("Settings categorization", () => {
   it("renders the auto-categorize switch reflecting current state", async () => {
     wrap();
+    await openCategorization();
     const toggle = await screen.findByLabelText(/auto-categorize/i) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
     expect((await screen.findByLabelText(/ai auto-accept/i) as HTMLInputElement).disabled).toBe(true);
@@ -59,6 +66,7 @@ describe("Settings categorization", () => {
 
   it("PUTs the new value when toggled off", async () => {
     wrap();
+    await openCategorization();
     const toggle = await screen.findByLabelText(/auto-categorize/i);
     fireEvent.click(toggle);
     await waitFor(() => {
@@ -70,12 +78,14 @@ describe("Settings categorization", () => {
 
   it("shows the AI key status from the server", async () => {
     wrap();
+    await openCategorization();
     expect(await screen.findByText(/anthropic api key/i)).toBeInTheDocument();
     expect(screen.getByText(/^loaded$/i)).toBeInTheDocument();
   });
 
   it("starts a scoped categorization run", async () => {
     wrap();
+    await openCategorization();
     fireEvent.click(await screen.findByRole("button", { name: /^run$/i }));
     await waitFor(() => {
       const call = calls.find((c) => c.url === "/api/categorize/run" && c.method === "POST");
@@ -89,6 +99,7 @@ describe("Settings categorization", () => {
   it("disables Run when auto-categorize is off", async () => {
     appSettings = { ...defaultSettings, auto_categorize: false };
     wrap();
+    await openCategorization();
     const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
     expect(run.disabled).toBe(true);
     expect(screen.getByText(/turn on auto-categorize to run/i)).toBeInTheDocument();
@@ -100,6 +111,7 @@ describe("Settings categorization", () => {
   it("disables Run when AI is on but the API key isn't loaded", async () => {
     appSettings = { ...defaultSettings, ai_enabled: true, ai_key_present: false };
     wrap();
+    await openCategorization();
     const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
     expect(run.disabled).toBe(true);
     expect(screen.getByText(/AI suggestions need the Anthropic API key/i)).toBeInTheDocument();
@@ -108,6 +120,7 @@ describe("Settings categorization", () => {
   it("keeps Run enabled for a rules-only run with no API key", async () => {
     appSettings = { ...defaultSettings, ai_enabled: false, ai_key_present: false };
     wrap();
+    await openCategorization();
     const run = await screen.findByRole("button", { name: /^run$/i }) as HTMLButtonElement;
     expect(run.disabled).toBe(false);
   });
@@ -115,6 +128,7 @@ describe("Settings categorization", () => {
   it("surfaces the error message when a run reported failures", async () => {
     categorizeStatus = { status: "idle", processed: 5, total: 5, failed: 3, error: "anthropic API status 429" };
     wrap();
+    await openCategorization();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/3 transactions couldn’t be categorized/);
     expect(alert).toHaveTextContent(/anthropic API status 429/);
@@ -123,7 +137,8 @@ describe("Settings categorization", () => {
   it("shows no error alert after a clean run", async () => {
     categorizeStatus = { status: "idle", processed: 5, total: 5, failed: 0, error: "" };
     wrap();
-    // Wait for the categorization card to render, then assert no alert exists.
+    await openCategorization();
+    // Wait for the run controls to render, then assert no alert exists.
     await screen.findByRole("button", { name: /^run$/i });
     expect(screen.queryByRole("alert")).toBeNull();
   });

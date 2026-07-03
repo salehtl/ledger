@@ -1,3 +1,8 @@
+/** Whether a need/want/saving split (as fractions) allocates exactly 100%. */
+export function pctsValid(need: number, want: number, saving: number): boolean {
+  return Math.abs(need + want + saving - 1.0) < 0.001;
+}
+
 /** Geometry for the budget split bar. */
 export interface SplitSegments {
   needPct: number;
