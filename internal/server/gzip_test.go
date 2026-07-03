@@ -106,7 +106,7 @@ func TestGzipFlushBeforeWriteStillCompresses(t *testing.T) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 	rec := gzGet(t, withGzip(inner), "/api/anything", true)
-	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+	if got := rec.Result().Header.Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
 	zr, err := gzip.NewReader(rec.Body)
