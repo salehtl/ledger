@@ -2,7 +2,7 @@ import { useState, useCallback, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type LucideIcon } from 'lucide-react'
 import { postJSON } from '../../api/client'
-import { fire } from '../../lib/haptics'
+import { fire } from '../../lib/feedback'
 import type { Txn, Category } from '../../api/types'
 import {
   type SwipeConfig,

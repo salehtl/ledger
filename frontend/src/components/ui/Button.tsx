@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, MouseEvent, ReactNode } from "react";
-import { fire } from "../../lib/haptics";
+import { fire } from "../../lib/feedback";
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-accent text-accent-fg hover:opacity-90",
