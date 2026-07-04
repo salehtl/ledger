@@ -1,4 +1,4 @@
-import { fire } from "../../lib/haptics";
+import { fire } from "../../lib/feedback";
 
 export function SegmentedControl<T extends string>({
   value, onChange, options,

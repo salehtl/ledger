@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { fire } from "../../lib/haptics";
+import { fire } from "../../lib/feedback";
 
 /** Material floating action button, fixed above the bottom nav. */
 export function Fab({ icon: Icon, label, onClick }: { icon: LucideIcon; label: string; onClick: () => void }) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { resist, shouldTrigger } from "../lib/pullToRefresh";
-import { fire } from "../lib/haptics";
+import { fire } from "../lib/feedback";
 
 /**
  * Pull-to-refresh gesture on a scroll container. Tracking begins only when the

@@ -6,7 +6,13 @@ import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types"
 import { Switch } from "../../components/ui/Switch";
 import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
-import { fire, isHapticsEnabled, setHapticsEnabled } from "../../lib/haptics";
+import {
+  fire,
+  isHapticsEnabled,
+  setHapticsEnabled,
+  isSoundEnabled,
+  setSoundEnabled,
+} from "../../lib/feedback";
 import {
   budgetSplitLabel,
   categorizationSummary,
@@ -94,6 +100,7 @@ export function SettingsHub({
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
+  const [sound, setSound] = useState(isSoundEnabled());
 
   const count = (n?: number) => (n === undefined ? undefined : String(n));
 
@@ -125,6 +132,15 @@ export function SettingsHub({
             setHapticsEnabled(v);
             setHaptics(v);
             if (v) fire("selection"); // confirm with a tick when switching on
+          }}
+        />
+        <ToggleRow
+          label="Sound"
+          checked={sound}
+          onChange={(v) => {
+            setSoundEnabled(v);
+            setSound(v);
+            if (v) fire("selection"); // let the user hear it immediately
           }}
         />
       </Group>
