@@ -1,3 +1,5 @@
+import { fire } from "../../lib/haptics";
+
 export function SegmentedControl<T extends string>({
   value, onChange, options,
 }: {
@@ -11,7 +13,7 @@ export function SegmentedControl<T extends string>({
         <button
           key={o.value}
           aria-pressed={value === o.value}
-          onClick={() => onChange(o.value)}
+          onClick={() => { fire("selection"); onChange(o.value); }}
           className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
             value === o.value ? "bg-surface text-fg shadow-1" : "text-muted hover:text-fg"
           }`}

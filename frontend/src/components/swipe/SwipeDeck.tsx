@@ -2,6 +2,7 @@ import { useState, useCallback, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type LucideIcon } from 'lucide-react'
 import { postJSON } from '../../api/client'
+import { fire } from '../../lib/haptics'
 import type { Txn, Category } from '../../api/types'
 import {
   type SwipeConfig,
@@ -98,6 +99,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   const handleDirectionCommit = useCallback((dir: SwipeDirection) => {
     const action = config[dir]
     if (!action) return
+    fire('success') // fire synchronously in the gesture, before any await
     if (action.statusOverride === 'transfer') {
       if (current) {
         postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
@@ -112,6 +114,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
   const handleCategorySelect = useCallback(async (categoryId: number) => {
     if (!current) return
+    fire('selection') // synchronous, before the network await
     const dir = state.pendingDirection
     // Close panel and start card exit animation
     setState(s => ({ ...s, pendingDirection: null, flyDirection: dir }))

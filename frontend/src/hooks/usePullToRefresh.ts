@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { resist, shouldTrigger } from "../lib/pullToRefresh";
+import { fire } from "../lib/haptics";
 
 /**
  * Pull-to-refresh gesture on a scroll container. Tracking begins only when the
@@ -41,6 +42,7 @@ export function usePullToRefresh(
       if (startY.current === null) return;
       startY.current = null;
       if (shouldTrigger(distanceRef.current)) {
+        fire("success"); // synchronous, inside the touchend gesture
         refreshingRef.current = true;
         setRefreshing(true);
         setDistance(0);
