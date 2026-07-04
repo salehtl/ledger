@@ -1,4 +1,5 @@
 import { TABS, type TabId } from "../../app/nav";
+import { fire } from "../../lib/haptics";
 
 export function BottomNav({
   active, reviewCount, onNavigate,
@@ -13,7 +14,7 @@ export function BottomNav({
             key={t.id}
             aria-label={t.id === "review" && reviewCount > 0 ? `Review, ${reviewCount} need review` : t.label}
             aria-current={isActive ? "page" : undefined}
-            onClick={() => onNavigate(t.id)}
+            onClick={() => { fire("selection"); onNavigate(t.id); }}
             className={`min-h-14 flex flex-col items-center justify-center gap-1 text-xs press ${isActive ? "text-accent font-medium" : "text-muted"}`}
           >
             <span className="relative">

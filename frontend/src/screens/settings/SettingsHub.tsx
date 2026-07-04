@@ -1,9 +1,12 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import { getJSON, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
+import { Switch } from "../../components/ui/Switch";
 import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
+import { fire, isHapticsEnabled, setHapticsEnabled } from "../../lib/haptics";
 import {
   budgetSplitLabel,
   categorizationSummary,
@@ -47,6 +50,24 @@ function HubRow({
   );
 }
 
+/** An inline toggle row: label on the left, switch on the right. */
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium cursor-pointer select-none">
+      <span>{label}</span>
+      <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </label>
+  );
+}
+
 /** Eyebrow-labeled group of rows. */
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -72,6 +93,7 @@ export function SettingsHub({
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const swipe = loadSwipeConfig();
+  const [haptics, setHaptics] = useState(isHapticsEnabled());
 
   const count = (n?: number) => (n === undefined ? undefined : String(n));
 
@@ -96,6 +118,15 @@ export function SettingsHub({
 
       <Group label="Device">
         <HubRow label="Text size" value={fontScaleLabel(loadFontScale())} onClick={() => onOpen("textsize")} />
+        <ToggleRow
+          label="Haptics"
+          checked={haptics}
+          onChange={(v) => {
+            setHapticsEnabled(v);
+            setHaptics(v);
+            if (v) fire("selection"); // confirm with a tick when switching on
+          }}
+        />
       </Group>
 
       <Group label="Library">

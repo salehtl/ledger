@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Settings, pctsValid } from "./Settings";
 import { ToastProvider } from "../components/Toast";
+import { isHapticsEnabled, setHapticsEnabled } from "../lib/haptics";
 import type { BudgetConfig } from "../api/types";
 
 const budget: BudgetConfig = { monthly_income: 1500000, need_pct: 0.5, want_pct: 0.3, saving_pct: 0.2, income_source: "config", freeze_history: false };
@@ -39,5 +40,14 @@ describe("Settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: /budget & income/i }));
     expect((await screen.findByLabelText(/monthly income/i) as HTMLInputElement).value).toBe("15000");
     expect((screen.getByLabelText(/need %/i) as HTMLInputElement).value).toBe("50");
+  });
+
+  it("toggles device haptics from the Device group", async () => {
+    setHapticsEnabled(true);
+    wrap();
+    const toggle = await screen.findByRole("checkbox", { name: /haptics/i });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(isHapticsEnabled()).toBe(false);
   });
 });
