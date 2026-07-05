@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
 import { type Scope } from "../lib/scope";
@@ -16,12 +16,20 @@ import { TextSizePage } from "./settings/TextSizePage";
 
 export { pctsValid } from "../lib/split";
 
-export function Settings({ scope }: { scope?: Scope }) {
+/** Cross-tab deep link into a settings drill-in (e.g. banner → Email ingest).
+ *  nonce forces re-navigation when Settings is already mounted. */
+export interface SettingsIntent { page: SettingsPageId; nonce: number }
+
+export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIntent | null }) {
   const qc = useQueryClient();
   const { show } = useToast();
   const [page, setPage] = useState<SettingsPageId | null>(null);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
+
+  useEffect(() => {
+    if (intent) setPage(intent.page);
+  }, [intent]);
 
   const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
   const txnCount = txns.data?.length ?? 0;
