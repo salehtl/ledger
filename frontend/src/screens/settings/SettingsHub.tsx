@@ -28,7 +28,8 @@ export type SettingsPageId =
   | "currencies"
   | "categories"
   | "rules"
-  | "textsize";
+  | "textsize"
+  | "ingest";
 
 /** A drill-in row: label on the left, current-state preview + chevron on the right. */
 function HubRow({

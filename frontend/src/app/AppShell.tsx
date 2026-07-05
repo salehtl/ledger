@@ -15,7 +15,9 @@ import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
 import { Insights } from "../screens/Insights";
 import { Settings } from "../screens/Settings";
+import type { SettingsIntent } from "../screens/Settings";
 import { Review } from "../screens/Review";
+import { IngestHealthBanner } from "../components/IngestHealthBanner";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
@@ -27,6 +29,11 @@ const TITLES: Record<TabId, string> = {
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
+  const [settingsIntent, setSettingsIntent] = useState<SettingsIntent | null>(null);
+  const openIngestHealth = () => {
+    setSettingsIntent((p) => ({ page: "ingest", nonce: (p?.nonce ?? 0) + 1 }));
+    setTab("settings");
+  };
   // Lazy initializer so the default month reflects the day the app opens,
   // not the day this module was first imported.
   const [scope, setScope] = useState<Scope>(() => ({ kind: "month", period: currentPeriod() }));
@@ -56,6 +63,7 @@ export function AppShell() {
       {!online && (
         <div role="status" className="shrink-0 bg-warn/15 text-warn text-sm text-center py-1">Offline — showing last loaded data</div>
       )}
+      <IngestHealthBanner onView={openIngestHealth} />
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
@@ -63,7 +71,7 @@ export function AppShell() {
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
-          {tab === "settings" && <Settings scope={scope} />}
+          {tab === "settings" && <Settings scope={scope} intent={settingsIntent} />}
         </div>
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
