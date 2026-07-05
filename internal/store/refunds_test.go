@@ -196,3 +196,51 @@ func TestClearAllCategorizationClearsRefundLinks(t *testing.T) {
 		t.Errorf("refund_of_id survived bulk clear, want NULL")
 	}
 }
+
+func TestSelectRefundCandidatesRanksExactAmountFirst(t *testing.T) {
+	st := openTestStore(t)
+	// In-window candidates:
+	nearWrongAmt := seedTxn(t, st, "debit", "Noon", 7000, "2026-07-02T10:00:00Z", "Shopping")
+	exact := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-06-20T10:00:00Z", "Groceries")
+	// Excluded rows:
+	old := seedTxn(t, st, "debit", "Old buy", 5000, "2026-03-01T10:00:00Z", "Groceries")       // >90 days before
+	future := seedTxn(t, st, "debit", "Future buy", 5000, "2026-07-20T10:00:00Z", "Groceries") // after credit+1d
+	pending := seedTxn(t, st, "debit", "Pending buy", 5000, "2026-07-01T10:00:00Z", "")        // uncategorized
+	credit := seedTxn(t, st, "credit", "Refund", 5000, "2026-07-03T10:00:00Z", "")
+
+	items, err := st.SelectRefundCandidates(credit, 20)
+	if err != nil {
+		t.Fatalf("SelectRefundCandidates: %v", err)
+	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d candidates (%v), want 2", len(items), ids)
+	}
+	if items[0].ID != exact {
+		t.Errorf("first candidate = %d, want exact-amount match %d (got order %v)", items[0].ID, exact, ids)
+	}
+	if items[1].ID != nearWrongAmt {
+		t.Errorf("second candidate = %d, want %d", items[1].ID, nearWrongAmt)
+	}
+	for _, excluded := range []int64{old, future, pending} {
+		for _, id := range ids {
+			if id == excluded {
+				t.Errorf("candidate %d should have been excluded", excluded)
+			}
+		}
+	}
+}
+
+func TestSelectRefundCandidatesRejectsNonCredit(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
+	if _, err := st.SelectRefundCandidates(debitID, 20); !errors.Is(err, ErrRefundBadLink) {
+		t.Errorf("SelectRefundCandidates(debit) = %v, want ErrRefundBadLink", err)
+	}
+	if _, err := st.SelectRefundCandidates(99999, 20); !errors.Is(err, ErrRefundNotFound) {
+		t.Errorf("SelectRefundCandidates(missing) = %v, want ErrRefundNotFound", err)
+	}
+}
