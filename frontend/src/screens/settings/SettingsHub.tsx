@@ -6,6 +6,8 @@ import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types"
 import { Switch } from "../../components/ui/Switch";
 import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
+import { useIngestHealth } from "../../hooks/useIngestHealth";
+import { ingestStatusLabel } from "../../lib/ingestHealth";
 import {
   fire,
   isHapticsEnabled,
@@ -99,6 +101,7 @@ export function SettingsHub({
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
+  const health = useIngestHealth();
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());
@@ -122,6 +125,11 @@ export function SettingsHub({
           onClick={() => onOpen("categorization")}
         />
         <HubRow label="Swipe actions" value={swipeSummary(swipe)} onClick={() => onOpen("swipe")} />
+        <HubRow
+          label="Email ingest"
+          value={health.data?.ingest ? ingestStatusLabel(health.data.ingest.status) : undefined}
+          onClick={() => onOpen("ingest")}
+        />
       </Group>
 
       <Group label="Device">

@@ -24,6 +24,7 @@ const settings = (over: Partial<AppSettings> = {}): AppSettings => ({
   ai_enabled: false,
   ai_auto_accept: false,
   ai_threshold: 0.8,
+  ingest_silence_days: 3,
   ...over,
 });
 
