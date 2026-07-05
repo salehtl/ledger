@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -208,9 +209,12 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 	return err
 }
 
-// SelectTransactions returns transactions matching optional status and date filters.
-// Empty status matches all. from/to are RFC3339 or date strings (SQLite text compare).
-func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error) {
+// SelectTransactions returns transactions matching optional status, date, and
+// free-text filters. Empty status matches all. from/to are RFC3339 or date
+// strings (SQLite text compare). search does a case-insensitive contains-match
+// on merchant_raw; LIKE wildcards in the term are escaped so they match
+// literally.
+func (s *Store) SelectTransactions(status, from, to, search string) ([]ReviewItem, error) {
 	q := `SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
@@ -234,6 +238,10 @@ func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error
 		q += " AND t.posted_at <= ?"
 		args = append(args, to)
 	}
+	if search != "" {
+		q += ` AND t.merchant_raw LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(search)+"%")
+	}
 	q += " ORDER BY t.posted_at DESC"
 	rows, err := s.DB.Query(q, args...)
 	if err != nil {
@@ -241,6 +249,11 @@ func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error
 	}
 	defer rows.Close()
 	return scanReviewItems(rows)
+}
+
+// escapeLike backslash-escapes LIKE metacharacters so user text matches literally.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 func scanReviewItems(rows interface {

@@ -46,7 +46,7 @@ type CategoryStore interface {
 	SelectRules() ([]store.RuleRow, error)
 	InsertRule(store.RuleRow) error
 	DeleteRule(id int64) error
-	SelectTransactions(status, from, to string) ([]store.ReviewItem, error)
+	SelectTransactions(status, from, to, q string) ([]store.ReviewItem, error)
 	UpdateTransactionCategory(txID, catID int64, status string) error
 	UpdateTransactionStatus(txID int64, status string) error
 	UpdateCategory(store.CategoryRow) error

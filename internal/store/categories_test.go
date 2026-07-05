@@ -226,7 +226,7 @@ func TestSelectTransactions(t *testing.T) {
 	st.InsertTransaction(row) // status="needs_review" from txnRow()
 
 	// No filters — returns all
-	all, err := st.SelectTransactions("", "", "")
+	all, err := st.SelectTransactions("", "", "", "")
 	if err != nil {
 		t.Fatalf("SelectTransactions(): %v", err)
 	}
@@ -235,25 +235,25 @@ func TestSelectTransactions(t *testing.T) {
 	}
 
 	// Status filter match
-	matched, _ := st.SelectTransactions("needs_review", "", "")
+	matched, _ := st.SelectTransactions("needs_review", "", "", "")
 	if len(matched) != 1 {
 		t.Errorf("status=needs_review: got %d, want 1", len(matched))
 	}
 
 	// Status filter miss
-	missed, _ := st.SelectTransactions("confirmed", "", "")
+	missed, _ := st.SelectTransactions("confirmed", "", "", "")
 	if len(missed) != 0 {
 		t.Errorf("status=confirmed: got %d, want 0", len(missed))
 	}
 
 	// Date range filter: from after posted_at → no results
-	after, _ := st.SelectTransactions("", "2030-01-01", "")
+	after, _ := st.SelectTransactions("", "2030-01-01", "", "")
 	if len(after) != 0 {
 		t.Errorf("from=2030: got %d, want 0", len(after))
 	}
 
 	// Date range filter: to before posted_at → no results
-	before, _ := st.SelectTransactions("", "", "2020-01-01")
+	before, _ := st.SelectTransactions("", "", "2020-01-01", "")
 	if len(before) != 0 {
 		t.Errorf("to=2020: got %d, want 0", len(before))
 	}
@@ -518,7 +518,7 @@ func TestSelectTransactionsIncludesCategory(t *testing.T) {
 	if err := st.UpdateTransactionCategory(id, groceries.ID, "confirmed"); err != nil {
 		t.Fatalf("setcategory: %v", err)
 	}
-	items, err := st.SelectTransactions("", "", "")
+	items, err := st.SelectTransactions("", "", "", "")
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestSelectTransactionsExposesKindAndSnapshot(t *testing.T) {
 	if _, err := st.DB.Exec("UPDATE transactions SET bucket_snapshot=? WHERE id=?", "need", id); err != nil {
 		t.Fatalf("SetBucketSnapshot: %v", err)
 	}
-	rows, err := st.SelectTransactions("confirmed", "", "")
+	rows, err := st.SelectTransactions("confirmed", "", "", "")
 	if err != nil {
 		t.Fatalf("SelectTransactions: %v", err)
 	}
@@ -588,5 +588,54 @@ func TestSelectTransactionsExposesKindAndSnapshot(t *testing.T) {
 	}
 	if got.BucketSnapshot != "need" {
 		t.Errorf("BucketSnapshot = %q, want %q", got.BucketSnapshot, "need")
+	}
+}
+
+func TestSelectTransactionsSearch(t *testing.T) {
+	st := newTestStore(t)
+	seed := func(merchant string) {
+		t.Helper()
+		if _, _, err := st.InsertTransaction(TransactionRow{
+			PostedAt:    time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC),
+			AmountFils:  5000,
+			Currency:    "AED",
+			Direction:   "debit",
+			MerchantRaw: merchant,
+			Status:      "needs_review",
+		}); err != nil {
+			t.Fatalf("insert %q: %v", merchant, err)
+		}
+	}
+	seed("SPINNEYS DUBAI MARINA")
+	seed("NETFLIX.COM")
+	seed("100% NATURAL JUICE")
+	seed("1000 THINGS STORE")
+
+	// Case-insensitive contains-match.
+	got, err := st.SelectTransactions("", "", "", "spinneys")
+	if err != nil {
+		t.Fatalf("SelectTransactions(search): %v", err)
+	}
+	if len(got) != 1 || got[0].MerchantRaw != "SPINNEYS DUBAI MARINA" {
+		t.Errorf("search=spinneys: got %+v, want only the SPINNEYS row", got)
+	}
+
+	// No match.
+	none, _ := st.SelectTransactions("", "", "", "carrefour")
+	if len(none) != 0 {
+		t.Errorf("search=carrefour: got %d rows, want 0", len(none))
+	}
+
+	// LIKE wildcards in the term are literal text, not patterns: "100%" must
+	// match only the "100%" merchant, not everything containing "100".
+	pct, _ := st.SelectTransactions("", "", "", "100%")
+	if len(pct) != 1 || pct[0].MerchantRaw != "100% NATURAL JUICE" {
+		t.Errorf("search=100%%: got %+v, want only the 100%% NATURAL JUICE row", pct)
+	}
+
+	// Empty search matches all.
+	all, _ := st.SelectTransactions("", "", "", "")
+	if len(all) != 4 {
+		t.Errorf("empty search: got %d rows, want 4", len(all))
 	}
 }
