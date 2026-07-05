@@ -362,7 +362,10 @@ func TestFindTransferMatchSkipsArchived(t *testing.T) {
 		t.Fatalf("insert caller: %v", err)
 	}
 
-	matchID, found, err := st.FindTransferMatch(callerID, amount, "debit", base.Add(10*time.Minute), time.Hour)
+	matchID, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: callerID, AmountFils: amount, Currency: "AED", Direction: "debit",
+		Last4: "8888", PostedAt: base.Add(10 * time.Minute),
+	}, time.Hour)
 	if err != nil {
 		t.Fatalf("FindTransferMatch: %v", err)
 	}
@@ -393,5 +396,140 @@ func TestInsertTransactionPersistsLast4(t *testing.T) {
 	}
 	if got != "1234" {
 		t.Errorf("last4 = %q, want %q", got, "1234")
+	}
+}
+
+// seedTxn inserts a minimal transaction for transfer-matching tests and
+// returns its id.
+func seedTxn(t *testing.T, st *Store, amount int64, currency, direction, last4, status string, at time.Time) int64 {
+	t.Helper()
+	id, created, err := st.InsertTransaction(TransactionRow{
+		PostedAt:    at,
+		AmountFils:  amount,
+		Currency:    currency,
+		Direction:   direction,
+		MerchantRaw: "SEED " + direction + " " + last4 + " " + at.Format(time.RFC3339),
+		Last4:       last4,
+		Status:      status,
+	})
+	if err != nil || !created {
+		t.Fatalf("seedTxn: created=%v err=%v", created, err)
+	}
+	return id
+}
+
+func TestFindTransferMatchRequiresSameCurrency(t *testing.T) {
+	st := newTestStore(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	seedTxn(t, st, 10000, "USD", "credit", "", "needs_review", base)
+	debitID := seedTxn(t, st, 10000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
+
+	_, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: debitID, AmountFils: 10000, Currency: "AED", Direction: "debit",
+		PostedAt: base.Add(5 * time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("matched across currencies: AED debit must not pair with USD credit")
+	}
+}
+
+func TestFindTransferMatchRejectsSameLast4(t *testing.T) {
+	// Same account, opposite directions = refund/reversal, never a transfer.
+	st := newTestStore(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	seedTxn(t, st, 25000, "AED", "credit", "1234", "needs_review", base)
+	debitID := seedTxn(t, st, 25000, "AED", "debit", "1234", "needs_review", base.Add(10*time.Minute))
+
+	_, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: debitID, AmountFils: 25000, Currency: "AED", Direction: "debit",
+		Last4: "1234", PostedAt: base.Add(10 * time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("same-last4 opposite pair matched — refund shape must be rejected")
+	}
+}
+
+func TestFindTransferMatchOwnAccountGating(t *testing.T) {
+	st := newTestStore(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	// Registry configured with two own accounts.
+	if _, err := st.InsertAccount("A", "DIB", "1111"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertAccount("B", "ENBD", "2222"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Counterpart credit on a NON-registered account: must not match.
+	seedTxn(t, st, 50000, "AED", "credit", "9999", "needs_review", base)
+	d1 := seedTxn(t, st, 50000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
+	_, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: d1, AmountFils: 50000, Currency: "AED", Direction: "debit",
+		Last4: "1111", PostedAt: base.Add(time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("matched a leg on an unregistered account while registry is configured")
+	}
+
+	// Counterpart on the other registered account: must match.
+	c2 := seedTxn(t, st, 70000, "AED", "credit", "2222", "needs_review", base)
+	d2 := seedTxn(t, st, 70000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
+	matchID, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: d2, AmountFils: 70000, Currency: "AED", Direction: "debit",
+		Last4: "1111", PostedAt: base.Add(time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || matchID != c2 {
+		t.Errorf("match = (%d,%v), want (%d,true)", matchID, found, c2)
+	}
+}
+
+func TestFindTransferMatchAllowsMissingLast4(t *testing.T) {
+	// Old rows and CSV imports have no last4; they must still be matchable.
+	st := newTestStore(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	credID := seedTxn(t, st, 30000, "AED", "credit", "", "needs_review", base)
+	debitID := seedTxn(t, st, 30000, "AED", "debit", "1234", "needs_review", base.Add(time.Minute))
+
+	matchID, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: debitID, AmountFils: 30000, Currency: "AED", Direction: "debit",
+		Last4: "1234", PostedAt: base.Add(time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || matchID != credID {
+		t.Errorf("match = (%d,%v), want (%d,true)", matchID, found, credID)
+	}
+}
+
+func TestFindTransferMatchSkipsIgnored(t *testing.T) {
+	// A row the user explicitly ignored must not be silently rewritten.
+	st := newTestStore(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	seedTxn(t, st, 40000, "AED", "credit", "", "ignored", base)
+	debitID := seedTxn(t, st, 40000, "AED", "debit", "", "needs_review", base.Add(time.Minute))
+
+	_, found, err := st.FindTransferMatch(TransferLeg{
+		TxID: debitID, AmountFils: 40000, Currency: "AED", Direction: "debit",
+		PostedAt: base.Add(time.Minute),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("ignored row was offered as a transfer leg")
 	}
 }
