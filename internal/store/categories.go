@@ -326,7 +326,7 @@ func (s *Store) ClearAllCategorization() (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`UPDATE transactions
-		    SET category_id=NULL, bucket_snapshot=NULL, status='needs_review', updated_at=?
+		    SET category_id=NULL, bucket_snapshot=NULL, refund_of_id=NULL, status='needs_review', updated_at=?
 		  WHERE status!='archived'`,
 		now,
 	)
