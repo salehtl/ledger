@@ -93,6 +93,7 @@ type Server struct {
 	settingsStore   SettingsStore
 	ruleActiveStore RuleActiveStore
 	ratesStore      RatesStore
+	accountsStore   AccountsStore
 	aiKeyPresent    bool
 }
 
@@ -176,6 +177,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/rates", s.handleGetRates)
 	s.mux.HandleFunc("PUT /api/rates/{currency}", s.handlePutRate)
 	s.mux.HandleFunc("DELETE /api/rates/{currency}", s.handleDeleteRate)
+	s.mux.HandleFunc("GET /api/accounts", s.handleGetAccounts)
+	s.mux.HandleFunc("POST /api/accounts", s.handlePostAccount)
+	s.mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
 	s.mux.HandleFunc("POST /api/rules", s.handlePostRule)
 	s.mux.HandleFunc("DELETE /api/rules/{id}", s.handleDeleteRule)
