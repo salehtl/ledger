@@ -13,6 +13,7 @@ import { CategorizationPage } from "./settings/CategorizationPage";
 import { SwipePage } from "./settings/SwipePage";
 import { CurrenciesPage } from "./settings/CurrenciesPage";
 import { TextSizePage } from "./settings/TextSizePage";
+import { IngestHealthPage } from "./settings/IngestHealthPage";
 
 export { pctsValid } from "../lib/split";
 
@@ -61,6 +62,7 @@ export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIn
       {page === "swipe" && <SwipePage onClose={close} />}
       {page === "currencies" && <CurrenciesPage onClose={close} />}
       {page === "textsize" && <TextSizePage onClose={close} />}
+      {page === "ingest" && <IngestHealthPage onClose={close} />}
       {page === "categories" && <CategoryManager onClose={close} />}
       {page === "rules" && <RulesManager onClose={close} />}
 
