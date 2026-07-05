@@ -157,6 +157,7 @@ func main() {
 	srv.SetSettingsStore(st)
 	srv.SetRatesStore(st)
 	srv.SetAccountsStore(st)
+	srv.SetTransfersStore(st)
 	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
 	srv.SetRuleActiveStore(st)
 	srv.SetBudgetStore(st)

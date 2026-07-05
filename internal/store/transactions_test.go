@@ -533,3 +533,63 @@ func TestFindTransferMatchSkipsIgnored(t *testing.T) {
 		t.Error("ignored row was offered as a transfer leg")
 	}
 }
+
+func TestNetTransferPairs(t *testing.T) {
+	st := newTestStore(t)
+	base := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+
+	// A genuine pair, already confirmed (historical pollution).
+	d1 := seedTxn(t, st, 150000, "AED", "debit", "1111", "confirmed", base)
+	c1 := seedTxn(t, st, 150000, "AED", "credit", "2222", "confirmed", base.Add(20*time.Minute))
+	// A refund shape: same account both sides — must NOT be netted.
+	r1 := seedTxn(t, st, 8000, "AED", "debit", "3333", "confirmed", base)
+	r2 := seedTxn(t, st, 8000, "AED", "credit", "3333", "confirmed", base.Add(10*time.Minute))
+	// A lone debit with no counterpart — must stay untouched.
+	lone := seedTxn(t, st, 999999, "AED", "debit", "1111", "confirmed", base)
+
+	marked, err := st.NetTransferPairs(2 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked != 2 {
+		t.Errorf("marked = %d, want 2", marked)
+	}
+	status := func(id int64) string {
+		var s string
+		if err := st.DB.QueryRow(`SELECT status FROM transactions WHERE id=?`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if status(d1) != "transfer" || status(c1) != "transfer" {
+		t.Errorf("pair statuses = %s/%s, want transfer/transfer", status(d1), status(c1))
+	}
+	if status(r1) != "confirmed" || status(r2) != "confirmed" {
+		t.Errorf("refund pair rewritten: %s/%s, want confirmed/confirmed", status(r1), status(r2))
+	}
+	if status(lone) != "confirmed" {
+		t.Errorf("lone debit rewritten to %s", status(lone))
+	}
+}
+
+func TestNetTransferPairsEachLegUsedOnce(t *testing.T) {
+	// Two debits, one credit at the same amount: only one debit pairs.
+	st := newTestStore(t)
+	base := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+	seedTxn(t, st, 50000, "AED", "debit", "", "needs_review", base)
+	seedTxn(t, st, 50000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
+	seedTxn(t, st, 50000, "AED", "credit", "", "needs_review", base.Add(2*time.Minute))
+
+	marked, err := st.NetTransferPairs(2 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked != 2 {
+		t.Errorf("marked = %d, want 2 (one pair, credit used once)", marked)
+	}
+	var transfers int
+	st.DB.QueryRow(`SELECT COUNT(*) FROM transactions WHERE status='transfer'`).Scan(&transfers)
+	if transfers != 2 {
+		t.Errorf("transfer rows = %d, want 2", transfers)
+	}
+}

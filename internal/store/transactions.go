@@ -301,3 +301,94 @@ func (s *Store) FindTransferMatch(leg TransferLeg, window time.Duration) (int64,
 	}
 	return 0, false, rows.Err()
 }
+
+// NetTransferPairs retroactively pairs and nets self-transfers across all
+// nettable rows (needs_review / low_confidence / confirmed): same amount and
+// currency, opposite directions, within `window`, last4-compatible (see
+// transferLast4Compatible). Greedy nearest-in-time pairing; each leg is used at
+// most once. Both legs of every pair get status='transfer'. Returns the number
+// of transactions marked (2 per pair). User-initiated (sweep endpoint) — it is
+// deliberately not run automatically on ingest or import.
+func (s *Store) NetTransferPairs(window time.Duration) (int, error) {
+	own, err := s.OwnAccountLast4s()
+	if err != nil {
+		return 0, err
+	}
+	type leg struct {
+		id        int64
+		amount    int64
+		currency  string
+		direction string
+		last4     string
+		postedAt  time.Time
+	}
+	rows, err := s.DB.Query(
+		`SELECT id, amount, currency, direction, COALESCE(last4,''), posted_at
+		   FROM transactions
+		  WHERE status IN ('needs_review','low_confidence','confirmed')
+		  ORDER BY posted_at, id`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var legs []leg
+	for rows.Next() {
+		var l leg
+		var posted string
+		if err := rows.Scan(&l.id, &l.amount, &l.currency, &l.direction, &l.last4, &posted); err != nil {
+			return 0, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, posted)
+		if err != nil {
+			continue // unparseable timestamp: skip the row, never fail the sweep
+		}
+		l.postedAt = t
+		legs = append(legs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	used := make(map[int64]bool)
+	marked := 0
+	for i := range legs {
+		if legs[i].direction != "debit" || used[legs[i].id] {
+			continue
+		}
+		best := -1
+		var bestDelta time.Duration
+		for j := range legs {
+			if legs[j].direction != "credit" || used[legs[j].id] {
+				continue
+			}
+			if legs[j].amount != legs[i].amount || legs[j].currency != legs[i].currency {
+				continue
+			}
+			delta := legs[j].postedAt.Sub(legs[i].postedAt)
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta > window {
+				continue
+			}
+			if !transferLast4Compatible(legs[i].last4, legs[j].last4, own) {
+				continue
+			}
+			if best == -1 || delta < bestDelta {
+				best, bestDelta = j, delta
+			}
+		}
+		if best == -1 {
+			continue
+		}
+		used[legs[i].id], used[legs[best].id] = true, true
+		if err := s.UpdateTransactionStatus(legs[i].id, "transfer"); err != nil {
+			return marked, err
+		}
+		if err := s.UpdateTransactionStatus(legs[best].id, "transfer"); err != nil {
+			return marked, err
+		}
+		marked += 2
+	}
+	return marked, nil
+}
