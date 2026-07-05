@@ -241,7 +241,7 @@ func TestProcessorCategorizerProvider(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("provider should be resolved once per batch, called %d times", calls)
 	}
-	items, err := st.SelectTransactions("needs_review", "", "")
+	items, err := st.SelectTransactions("needs_review", "", "", "")
 	if err != nil {
 		t.Fatalf("SelectTransactions needs_review: %v", err)
 	}

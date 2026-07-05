@@ -51,7 +51,7 @@ func TestRun_DryRun_NoWrites(t *testing.T) {
 		t.Errorf("added (dry) = %d, want 2", result.RowsAdded)
 	}
 	// dry-run must not write to DB
-	txns, _ := st.SelectTransactions("", "", "")
+	txns, _ := st.SelectTransactions("", "", "", "")
 	if len(txns) != 0 {
 		t.Errorf("dry-run wrote %d txns, want 0", len(txns))
 	}
@@ -74,7 +74,7 @@ func TestRun_WetRun_InsertsAndCategorizes(t *testing.T) {
 	if result.RowsAdded != 1 {
 		t.Fatalf("added = %d, want 1", result.RowsAdded)
 	}
-	txns, _ := st.SelectTransactions("confirmed", "", "")
+	txns, _ := st.SelectTransactions("confirmed", "", "", "")
 	if len(txns) != 1 {
 		t.Fatalf("confirmed txns = %d, want 1", len(txns))
 	}
@@ -106,7 +106,7 @@ func TestRun_NoCategoryColumn_RoutesToReview(t *testing.T) {
 	if result.RowsReview != 1 {
 		t.Errorf("review = %d, want 1", result.RowsReview)
 	}
-	txns, _ := st.SelectTransactions("needs_review", "", "")
+	txns, _ := st.SelectTransactions("needs_review", "", "", "")
 	if len(txns) != 1 {
 		t.Errorf("needs_review txns = %d, want 1", len(txns))
 	}
