@@ -105,3 +105,49 @@ func (s *Store) UnlinkRefund(txID int64) error {
 	}
 	return nil
 }
+
+// SelectRefundCandidates lists confirmed, categorized spending debits the
+// credit could plausibly refund: posted between 90 days before and 1 day
+// after the credit. Exact amount+currency matches rank first, then newest.
+func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var postedAt, currency, direction string
+	var amount int64
+	err := s.DB.QueryRow(
+		`SELECT posted_at, amount, currency, direction FROM transactions WHERE id=?`, creditID,
+	).Scan(&postedAt, &amount, &currency, &direction)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("%w: credit %d", ErrRefundNotFound, creditID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if direction != "credit" {
+		return nil, fmt.Errorf("%w: transaction %d is not a credit", ErrRefundBadLink, creditID)
+	}
+	posted, err := time.Parse(time.RFC3339Nano, postedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse posted_at %q: %w", postedAt, err)
+	}
+	lower := posted.UTC().AddDate(0, 0, -90).Format(time.RFC3339Nano)
+	upper := posted.UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	rows, err := s.DB.Query(
+		`SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
+		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
+		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
+		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id
+		   FROM transactions t JOIN categories c ON c.id = t.category_id
+		  WHERE t.direction='debit' AND t.status='confirmed' AND c.kind='spending'
+		    AND t.posted_at >= ? AND t.posted_at <= ?
+		  ORDER BY CASE WHEN t.amount = ? AND t.currency = ? THEN 0 ELSE 1 END, t.posted_at DESC
+		  LIMIT ?`,
+		lower, upper, amount, currency, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanReviewItems(rows)
+}
