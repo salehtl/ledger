@@ -242,3 +242,101 @@ func TestSyncOnceRunsPostProcessHook(t *testing.T) {
 		t.Errorf("post-process hook called %d times, want 1", called)
 	}
 }
+
+// scriptedWaiter signals "new mail" instantly on the first Wait call and then
+// blocks until cancellation, so tests can prove the early-wake path without
+// real timers.
+type scriptedWaiter struct {
+	mu     sync.Mutex
+	nWaits int
+	closed bool
+}
+
+func (s *scriptedWaiter) Wait(ctx context.Context, timeout time.Duration) error {
+	s.mu.Lock()
+	s.nWaits++
+	first := s.nWaits == 1
+	s.mu.Unlock()
+	if first {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *scriptedWaiter) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+func (s *scriptedWaiter) wasClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+type fakeIdleDialer struct {
+	w       *scriptedWaiter
+	dialErr error
+}
+
+func (d *fakeIdleDialer) DialIdle(ctx context.Context) (Waiter, error) {
+	if d.dialErr != nil {
+		return nil, d.dialErr
+	}
+	return d.w, nil
+}
+
+func TestWaitNextWakesOnIdleSignal(t *testing.T) {
+	st := newTestStore(t)
+	// 1h interval: if waitNext returns promptly, the idle signal (not the
+	// timer) woke it.
+	w := New(&fakeDialer{mb: mailboxWith(1)}, st, time.Hour, quietLogger())
+	sw := &scriptedWaiter{}
+	w.SetIdle(&fakeIdleDialer{w: sw})
+
+	start := time.Now()
+	if !w.waitNext(context.Background()) {
+		t.Fatal("waitNext = false, want true")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("waitNext took %s; the idle signal should wake it immediately", elapsed)
+	}
+	if !sw.wasClosed() {
+		t.Error("waiter connection not closed after waitNext")
+	}
+}
+
+func TestWaitNextFallsBackToTimerOnDialError(t *testing.T) {
+	st := newTestStore(t)
+	w := New(&fakeDialer{mb: mailboxWith(1)}, st, 20*time.Millisecond, quietLogger())
+	w.SetIdle(&fakeIdleDialer{dialErr: errors.New("boom")})
+
+	if !w.waitNext(context.Background()) {
+		t.Fatal("waitNext = false, want true (interval-timer fallback)")
+	}
+}
+
+func TestWaitNextReturnsFalseWhenCancelled(t *testing.T) {
+	st := newTestStore(t)
+	w := New(&fakeDialer{mb: mailboxWith(1)}, st, time.Hour, quietLogger())
+	// nWaits pre-set to 1 so Wait blocks on ctx instead of signalling.
+	sw := &scriptedWaiter{nWaits: 1}
+	w.SetIdle(&fakeIdleDialer{w: sw})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if w.waitNext(ctx) {
+		t.Fatal("waitNext = true on cancelled ctx, want false")
+	}
+}
+
+func TestWaitNextWithoutIdleUsesTimer(t *testing.T) {
+	st := newTestStore(t)
+	w := New(&fakeDialer{mb: mailboxWith(1)}, st, 20*time.Millisecond, quietLogger())
+	if !w.waitNext(context.Background()) {
+		t.Fatal("waitNext = false, want true after interval")
+	}
+}

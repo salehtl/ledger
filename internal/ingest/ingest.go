@@ -58,6 +58,21 @@ type Dialer interface {
 	Dial(ctx context.Context) (Mailbox, error)
 }
 
+// Waiter blocks until the mailbox signals new mail or a timeout passes.
+// Wait returns nil when it is time to sync again (a new-mail signal or the
+// timeout elapsing — callers treat both the same) and a non-nil error on
+// cancellation or connection failure. Close releases the connection.
+type Waiter interface {
+	Wait(ctx context.Context, timeout time.Duration) error
+	Close() error
+}
+
+// IdleDialer opens a Waiter: a dedicated connection that can park in IMAP
+// IDLE between syncs. Optional — without one the worker is purely poll-driven.
+type IdleDialer interface {
+	DialIdle(ctx context.Context) (Waiter, error)
+}
+
 // Worker ingests the mailbox into the store. It depends on a Dialer (the I/O
 // seam) and the concrete store. now is injectable for deterministic tests.
 type Worker struct {
@@ -67,6 +82,7 @@ type Worker struct {
 	log         *log.Logger
 	now         func() time.Time
 	postProcess func(ctx context.Context) (int, error)
+	idle        IdleDialer
 	healthMu    sync.Mutex
 	health      HealthSnapshot
 }
@@ -90,6 +106,13 @@ func New(d Dialer, st *store.Store, interval time.Duration, logger *log.Logger) 
 // processes any leftover unparsed rows.
 func (w *Worker) SetPostProcess(fn func(ctx context.Context) (int, error)) {
 	w.postProcess = fn
+}
+
+// SetIdle registers an IdleDialer. When set, the worker parks in IMAP IDLE
+// between syncs and wakes early on new mail; the poll interval remains the
+// fallback upper bound, so IDLE failures degrade to plain polling.
+func (w *Worker) SetIdle(d IdleDialer) {
+	w.idle = d
 }
 
 // Health returns a copy of the current poll-health snapshot. Safe for
@@ -187,10 +210,15 @@ func (w *Worker) syncOnce(ctx context.Context) (int, error) {
 	return inserted, nil
 }
 
-// Run polls the mailbox every interval until ctx is cancelled. Transient errors
+// Run syncs the mailbox until ctx is cancelled: every interval, plus (when an
+// IdleDialer is set) immediately on an IDLE new-mail signal. Transient errors
 // are logged and retried on the next cycle; the worker never crashes the process.
 func (w *Worker) Run(ctx context.Context) {
-	w.log.Printf("ingest worker started (poll every %s)", w.interval)
+	mode := "poll"
+	if w.idle != nil {
+		mode = "idle+poll"
+	}
+	w.log.Printf("ingest worker started (%s, interval %s)", mode, w.interval)
 	for {
 		n, err := w.pollOnce(ctx)
 		switch {
@@ -202,11 +230,42 @@ func (w *Worker) Run(ctx context.Context) {
 		case n > 0:
 			w.log.Printf("ingest: %d new message(s)", n)
 		}
-		select {
-		case <-ctx.Done():
+		if !w.waitNext(ctx) {
 			w.log.Printf("ingest worker stopping")
 			return
-		case <-time.After(w.interval):
 		}
+	}
+}
+
+// waitNext blocks until the next sync should run. With an IdleDialer set it
+// parks in IMAP IDLE and wakes early on a new-mail signal; the poll interval
+// is always the upper bound, and the sole mechanism when IDLE is off or
+// failing (a failed IDLE falls through to the plain timer, so the worker can
+// never spin hot). Returns false when ctx was cancelled.
+func (w *Worker) waitNext(ctx context.Context) bool {
+	if w.idle != nil {
+		wtr, err := w.idle.DialIdle(ctx)
+		if err == nil {
+			werr := wtr.Wait(ctx, w.interval)
+			_ = wtr.Close()
+			if werr == nil {
+				return true // new-mail signal or interval elapsed: sync now
+			}
+			if ctx.Err() != nil {
+				return false
+			}
+			w.log.Printf("idle wait error: %v (falling back to poll timer)", werr)
+		} else {
+			if ctx.Err() != nil {
+				return false
+			}
+			w.log.Printf("idle dial error: %v (falling back to poll timer)", err)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(w.interval):
+		return true
 	}
 }
