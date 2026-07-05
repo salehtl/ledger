@@ -6,6 +6,7 @@ import {
   filtersActive,
   sourceLabel,
   buildManualTxnPayload,
+  exportUrl,
   EMPTY_FILTERS,
   type TxnFilters,
 } from "./transactions";
@@ -158,5 +159,21 @@ describe("buildManualTxnPayload", () => {
 
   it("rejects a malformed date", () => {
     expect(buildManualTxnPayload({ ...base, date: "06/15/2026" }).ok).toBe(false);
+  });
+});
+
+describe("exportUrl", () => {
+  it("returns the bare endpoint with no filters", () => {
+    expect(exportUrl({})).toBe("/api/transactions/export");
+  });
+
+  it("carries status, period and search", () => {
+    expect(exportUrl({ status: "confirmed", from: "2026-06-01", to: "2026-06-32", q: "netflix" }))
+      .toBe("/api/transactions/export?status=confirmed&from=2026-06-01&to=2026-06-32&q=netflix");
+  });
+
+  it("omits blank search and trims whitespace", () => {
+    expect(exportUrl({ q: "  " })).toBe("/api/transactions/export");
+    expect(exportUrl({ q: " spin " })).toBe("/api/transactions/export?q=spin");
   });
 });

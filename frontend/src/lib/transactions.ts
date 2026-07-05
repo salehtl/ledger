@@ -113,3 +113,19 @@ export function buildManualTxnPayload(input: ManualTxnInput): BuildResult {
     },
   };
 }
+
+/**
+ * URL for the CSV export endpoint, carrying the same server-side filters as
+ * the list query (status/from/to/q). Client-only chip filters are deliberately
+ * not reflected — export mirrors what the server can filter.
+ */
+export function exportUrl(opts: { status?: string; from?: string; to?: string; q?: string }): string {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.from) params.set("from", opts.from);
+  if (opts.to) params.set("to", opts.to);
+  const q = opts.q?.trim();
+  if (q) params.set("q", q);
+  const qs = params.toString();
+  return qs ? `/api/transactions/export?${qs}` : "/api/transactions/export";
+}
