@@ -57,6 +57,9 @@ type CategoryStore interface {
 	ArchiveTransaction(txID int64) error
 	RestoreTransaction(txID int64) error
 	InsertManualTransaction(store.ManualTxn) (int64, error)
+	LinkRefund(creditID, debitID int64) error
+	UnlinkRefund(txID int64) error
+	SelectRefundCandidates(creditID int64, limit int) ([]store.ReviewItem, error)
 }
 
 // PushStore is the subset of the store needed by push-subscription handlers.
@@ -165,6 +168,9 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
 	s.mux.HandleFunc("POST /api/transactions/{id}/archive", s.handleArchive)
 	s.mux.HandleFunc("POST /api/transactions/{id}/restore", s.handleRestore)
+	s.mux.HandleFunc("GET /api/transactions/{id}/refund-candidates", s.handleRefundCandidates)
+	s.mux.HandleFunc("POST /api/transactions/{id}/link-refund", s.handleLinkRefund)
+	s.mux.HandleFunc("POST /api/transactions/{id}/unlink-refund", s.handleUnlinkRefund)
 	s.mux.HandleFunc("POST /api/categorize/run", s.handleCategorizeRun)
 	s.mux.HandleFunc("POST /api/categorize/stop", s.handleCategorizeStop)
 	s.mux.HandleFunc("GET /api/categorize/status", s.handleCategorizeStatus)
