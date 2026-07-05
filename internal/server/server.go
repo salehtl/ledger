@@ -161,6 +161,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/categories/{id}/usage", s.handleGetCategoryUsage)
 	s.mux.HandleFunc("DELETE /api/categories/{id}", s.handleDeleteCategory)
 	s.mux.HandleFunc("GET /api/transactions", s.handleGetTransactions)
+	s.mux.HandleFunc("GET /api/transactions/export", s.handleExportTransactions)
 	s.mux.HandleFunc("POST /api/transactions", s.handlePostTransaction)
 	s.mux.HandleFunc("POST /api/transactions/{id}/categorize", s.handleCategorize)
 	s.mux.HandleFunc("POST /api/transactions/{id}/status", s.handleSetStatus)
