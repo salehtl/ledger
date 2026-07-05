@@ -34,3 +34,48 @@ describe("CategorizeSheet", () => {
     expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
   });
 });
+
+describe("CategorizeSheet refund actions", () => {
+  it("offers the refund link for unlinked credits", () => {
+    const onLinkRefund = vi.fn();
+    render(
+      <CategorizeSheet
+        txn={{ ...txn, Direction: "credit", RefundOfID: null }}
+        categories={cats}
+        onSubmit={() => {}}
+        onClose={() => {}}
+        onLinkRefund={onLinkRefund}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /refund/i }));
+    expect(onLinkRefund).toHaveBeenCalled();
+  });
+
+  it("offers unlink for linked credits", () => {
+    const onUnlinkRefund = vi.fn();
+    render(
+      <CategorizeSheet
+        txn={{ ...txn, Direction: "credit", RefundOfID: 42 }}
+        categories={cats}
+        onSubmit={() => {}}
+        onClose={() => {}}
+        onUnlinkRefund={onUnlinkRefund}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /unlink refund/i }));
+    expect(onUnlinkRefund).toHaveBeenCalled();
+  });
+
+  it("hides refund actions for debits", () => {
+    render(
+      <CategorizeSheet
+        txn={{ ...txn, Direction: "debit" }}
+        categories={cats}
+        onSubmit={() => {}}
+        onClose={() => {}}
+        onLinkRefund={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /refund/i })).not.toBeInTheDocument();
+  });
+});

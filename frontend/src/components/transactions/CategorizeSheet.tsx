@@ -8,11 +8,13 @@ import { aedFils, nativeAmountTag } from "../../lib/money";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 
-export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
+export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefund, onUnlinkRefund }: {
   txn: Txn;
   categories: Category[];
   onSubmit: (body: { category_id: number; make_rule: boolean }) => void;
   onClose: () => void;
+  onLinkRefund?: () => void;
+  onUnlinkRefund?: () => void;
 }) {
   const [catID, setCatID] = useState<number | null>(null);
   const [makeRule, setMakeRule] = useState(false);
@@ -37,6 +39,16 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
         {nativeAmountTag(txn) ? ` · ${nativeAmountTag(txn)}` : ""}
         {aedFils(txn) === null ? " · no AED rate" : ""}
       </p>
+      {txn.Direction === "credit" && !txn.RefundOfID && onLinkRefund && (
+        <Button variant="secondary" className="w-full mb-3" onClick={onLinkRefund}>
+          This is a refund — link the purchase
+        </Button>
+      )}
+      {txn.RefundOfID != null && onUnlinkRefund && (
+        <Button variant="secondary" className="w-full mb-3" onClick={onUnlinkRefund}>
+          Unlink refund
+        </Button>
+      )}
       <input
         type="search"
         placeholder="Search categories…"
