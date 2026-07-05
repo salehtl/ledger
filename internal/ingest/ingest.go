@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"sync"
 	"time"
 
 	"ledger/internal/store"
@@ -24,6 +25,18 @@ type Message struct {
 	Subject    string
 	ReceivedAt time.Time
 	Raw        []byte
+}
+
+// HealthSnapshot is a point-in-time view of the worker's polling health,
+// read by /api/health. All state is in-memory: it rebuilds within one poll
+// of a restart, so it is deliberately not persisted.
+type HealthSnapshot struct {
+	StartedAt           time.Time     // when the worker was constructed; anchors the "starting" grace window
+	LastAttemptAt       time.Time     // zero until the first poll completes or fails
+	LastSuccessAt       time.Time     // zero until the first successful poll
+	ConsecutiveFailures int
+	LastError           string // "" when the last poll succeeded
+	Interval            time.Duration
 }
 
 // Mailbox is a read-only view of one IMAP mailbox. Implementations open with
@@ -54,18 +67,22 @@ type Worker struct {
 	log         *log.Logger
 	now         func() time.Time
 	postProcess func(ctx context.Context) (int, error)
+	healthMu    sync.Mutex
+	health      HealthSnapshot
 }
 
 // New builds a Worker. interval is the poll cadence; logger receives operational
 // messages.
 func New(d Dialer, st *store.Store, interval time.Duration, logger *log.Logger) *Worker {
-	return &Worker{
+	w := &Worker{
 		dialer:   d,
 		store:    st,
 		interval: interval,
 		log:      logger,
 		now:      time.Now,
 	}
+	w.health = HealthSnapshot{StartedAt: w.now().UTC(), Interval: interval}
+	return w
 }
 
 // SetPostProcess registers a hook run at the end of each sync (e.g. the parse
@@ -73,6 +90,41 @@ func New(d Dialer, st *store.Store, interval time.Duration, logger *log.Logger) 
 // processes any leftover unparsed rows.
 func (w *Worker) SetPostProcess(fn func(ctx context.Context) (int, error)) {
 	w.postProcess = fn
+}
+
+// Health returns a copy of the current poll-health snapshot. Safe for
+// concurrent use with the polling loop.
+func (w *Worker) Health() HealthSnapshot {
+	w.healthMu.Lock()
+	defer w.healthMu.Unlock()
+	return w.health
+}
+
+// recordPoll updates the snapshot after one poll. A success resets the
+// failure streak and error; a failure increments the streak.
+func (w *Worker) recordPoll(err error) {
+	w.healthMu.Lock()
+	defer w.healthMu.Unlock()
+	now := w.now().UTC()
+	w.health.LastAttemptAt = now
+	if err == nil {
+		w.health.LastSuccessAt = now
+		w.health.ConsecutiveFailures = 0
+		w.health.LastError = ""
+		return
+	}
+	w.health.ConsecutiveFailures++
+	w.health.LastError = err.Error()
+}
+
+// pollOnce runs one sync and records its outcome in the health snapshot.
+// Shutdown cancellation is not recorded — it is not a mailbox failure.
+func (w *Worker) pollOnce(ctx context.Context) (int, error) {
+	n, err := w.syncOnce(ctx)
+	if ctx.Err() == nil {
+		w.recordPoll(err)
+	}
+	return n, err
 }
 
 // syncOnce dials, examines the mailbox read-only, and writes any not-yet-seen
@@ -140,7 +192,7 @@ func (w *Worker) syncOnce(ctx context.Context) (int, error) {
 func (w *Worker) Run(ctx context.Context) {
 	w.log.Printf("ingest worker started (poll every %s)", w.interval)
 	for {
-		n, err := w.syncOnce(ctx)
+		n, err := w.pollOnce(ctx)
 		switch {
 		case ctx.Err() != nil:
 			w.log.Printf("ingest worker stopping")
