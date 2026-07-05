@@ -380,3 +380,53 @@ func TestProcessorParsesForwardedDIBViaTemplate(t *testing.T) {
 		t.Errorf("found %d transactions with forwarder as merchant; preamble not stripped", bad)
 	}
 }
+
+// TestProcessorIsTransferLegArrivingSecondNetsCounterpart covers the arrival
+// order the old guard missed: the credit leg is already in the DB as
+// needs_review, then the parser-flagged (IsTransfer) debit leg arrives. Both
+// must end up status=transfer.
+func TestProcessorIsTransferLegArrivingSecondNetsCounterpart(t *testing.T) {
+	st := procTestStore(t)
+
+	// Pre-existing credit leg (e.g. the receiving account's email parsed first).
+	// stubTransferParser emits: 2025-08-19 00:00 UTC, 10000 fils, AED, debit.
+	if _, created, err := st.InsertTransaction(store.TransactionRow{
+		PostedAt:    time.Date(2025, 8, 19, 0, 30, 0, 0, time.UTC),
+		AmountFils:  10000,
+		Currency:    "AED",
+		Direction:   "credit",
+		MerchantRaw: "Incoming Transfer",
+		Status:      "needs_review",
+	}); err != nil || !created {
+		t.Fatalf("seed credit leg: created=%v err=%v", created, err)
+	}
+
+	// Now the IsTransfer debit email arrives.
+	cascade := &Cascade{
+		Parsers:   []BankParser{stubTransferParser{}},
+		Heuristic: HeuristicParser{},
+		AI:        DisabledExtractor{},
+	}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID:  "istransfer-second",
+		FromAddr:    "stub@bank.com",
+		Subject:     "transfer",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: stub@bank.com\r\nSubject: transfer\r\n\r\ntransfer"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, cascade)
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transactions WHERE status='transfer'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("transfer-status count = %d, want 2 (IsTransfer leg arriving second must net its counterpart)", count)
+	}
+}

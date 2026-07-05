@@ -143,3 +143,44 @@ func TestSelectMonthIncome(t *testing.T) {
 		t.Errorf("income = %d, want 2000000", got)
 	}
 }
+
+// TestMonthSpendExcludesTransferLegs is the spec's "a self-transfer nets to
+// zero" check at the store layer: a categorized debit that got netted as a
+// transfer must not appear in month spend.
+func TestMonthSpendExcludesTransferLegs(t *testing.T) {
+	st := newTestStore(t)
+	catID, err := st.InsertCategory(CategoryRow{Name: "Transfer Test Cat", Kind: "spending", Bucket: "need", IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(direction, status string, at time.Time) {
+		id, created, err := st.InsertTransaction(TransactionRow{
+			PostedAt: at, AmountFils: 100000, Currency: "AED", Direction: direction,
+			MerchantRaw: "NET " + direction + " " + status, Status: "needs_review",
+		})
+		if err != nil || !created {
+			t.Fatalf("insert: created=%v err=%v", created, err)
+		}
+		if err := st.UpdateTransactionCategory(id, catID, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	mk("debit", "confirmed", at)               // real spend: counts
+	mk("debit", "transfer", at.Add(time.Hour)) // netted leg: must not count
+
+	rows, err := st.SelectMonthSpend("2026-07", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, r := range rows {
+		if r.Direction == "debit" {
+			total += r.AmountFils
+		}
+	}
+	if total != 100000 {
+		t.Errorf("month spend = %d fils, want 100000 (transfer leg leaked into spend)", total)
+	}
+}

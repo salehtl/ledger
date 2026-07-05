@@ -91,14 +91,19 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			if autoCat && cz != nil {
 				p.categorizeWith(ctx, cz, txID, res.Txn.MerchantRaw)
 			}
-			// Auto-match opposite transfer leg within 2 hours.
-			if txStatus != "transfer" {
-				if matchID, found, _ := p.store.FindTransferMatch(
-					txID, res.Txn.AmountFils, res.Txn.Direction, res.Txn.PostedAt, 2*time.Hour,
-				); found {
-					_ = p.store.UpdateTransactionStatus(txID, "transfer")
-					_ = p.store.UpdateTransactionStatus(matchID, "transfer")
-				}
+			// Net the opposite transfer leg within 2 hours — regardless of which
+			// leg arrived first. A parser-flagged transfer (IsTransfer) still has
+			// to find and mark its counterpart, or the credit leg lingers in review.
+			if matchID, found, _ := p.store.FindTransferMatch(store.TransferLeg{
+				TxID:       txID,
+				AmountFils: res.Txn.AmountFils,
+				Currency:   res.Txn.Currency,
+				Direction:  res.Txn.Direction,
+				Last4:      res.Txn.Last4,
+				PostedAt:   res.Txn.PostedAt,
+			}, 2*time.Hour); found {
+				_ = p.store.UpdateTransactionStatus(txID, "transfer")
+				_ = p.store.UpdateTransactionStatus(matchID, "transfer")
 			}
 			if p.onInsert != nil {
 				p.onInsert(txID, res.Txn.AmountFils, res.Txn.MerchantRaw, res.Txn.Direction)

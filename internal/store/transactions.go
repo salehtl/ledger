@@ -3,7 +3,6 @@ package store
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -228,36 +227,77 @@ func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
 	return res.LastInsertId()
 }
 
-// FindTransferMatch looks for an existing transaction that could be the other leg
-// of a self-transfer: same amount, opposite direction, within `window` of `postedAt`,
-// and not already marked as a transfer. Returns (matchID, true, nil) on hit.
-func (s *Store) FindTransferMatch(txID, amountFils int64, direction string, postedAt time.Time, window time.Duration) (int64, bool, error) {
-	opp := "credit"
-	if direction == "credit" {
-		opp = "debit"
-	}
-	start := postedAt.Add(-window).UTC().Format(time.RFC3339Nano)
-	end := postedAt.Add(window).UTC().Format(time.RFC3339Nano)
-	postedStr := postedAt.UTC().Format(time.RFC3339Nano)
+// TransferLeg is one side of a potential self-transfer, used to search for its
+// counterpart.
+type TransferLeg struct {
+	TxID       int64
+	AmountFils int64
+	Currency   string
+	Direction  string
+	Last4      string
+	PostedAt   time.Time
+}
 
-	var matchID int64
-	err := s.DB.QueryRow(`
-		SELECT id FROM transactions
-		 WHERE id != ?
-		   AND amount = ?
-		   AND direction = ?
-		   AND posted_at >= ?
-		   AND posted_at <= ?
-		   AND status != 'transfer'
-		   AND status != 'archived'
-		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
-		 LIMIT 1
-	`, txID, amountFils, opp, start, end, postedStr).Scan(&matchID)
-	if err == sql.ErrNoRows {
-		return 0, false, nil
+// transferLast4Compatible applies the last-4 heuristics for pairing two legs.
+// A same-account opposite pair is a refund/reversal, never a transfer. When the
+// own-accounts registry is configured (non-empty own set) and both last4s are
+// known, both must be registered own accounts. A missing last4 (old rows, CSV
+// imports) never blocks a match.
+func transferLast4Compatible(a, b string, own map[string]bool) bool {
+	if a == "" || b == "" {
+		return true
 	}
+	if a == b {
+		return false
+	}
+	if len(own) > 0 && (!own[a] || !own[b]) {
+		return false
+	}
+	return true
+}
+
+// FindTransferMatch looks for the other leg of a self-transfer: same amount and
+// currency, opposite direction, within `window` of the leg, still in a nettable
+// status (needs_review / low_confidence / confirmed), and last4-compatible.
+// Returns the closest-in-time hit. Ignored, archived and already-netted rows
+// are never candidates.
+func (s *Store) FindTransferMatch(leg TransferLeg, window time.Duration) (int64, bool, error) {
+	own, err := s.OwnAccountLast4s()
 	if err != nil {
 		return 0, false, err
 	}
-	return matchID, true, nil
+	opp := "credit"
+	if leg.Direction == "credit" {
+		opp = "debit"
+	}
+	start := leg.PostedAt.Add(-window).UTC().Format(time.RFC3339Nano)
+	end := leg.PostedAt.Add(window).UTC().Format(time.RFC3339Nano)
+	postedStr := leg.PostedAt.UTC().Format(time.RFC3339Nano)
+
+	rows, err := s.DB.Query(`
+		SELECT id, COALESCE(last4,'') FROM transactions
+		 WHERE id != ?
+		   AND amount = ?
+		   AND currency = ?
+		   AND direction = ?
+		   AND posted_at >= ?
+		   AND posted_at <= ?
+		   AND status IN ('needs_review','low_confidence','confirmed')
+		 ORDER BY ABS(CAST((julianday(posted_at) - julianday(?)) * 86400 AS INTEGER))
+	`, leg.TxID, leg.AmountFils, leg.Currency, opp, start, end, postedStr)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var last4 string
+		if err := rows.Scan(&id, &last4); err != nil {
+			return 0, false, err
+		}
+		if transferLast4Compatible(leg.Last4, last4, own) {
+			return id, true, nil
+		}
+	}
+	return 0, false, rows.Err()
 }
