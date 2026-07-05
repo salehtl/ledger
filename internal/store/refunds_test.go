@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -67,5 +69,130 @@ func TestReviewItemCarriesRefundOfID(t *testing.T) {
 		if debit.RefundOfID != nil {
 			t.Errorf("%s: debit.RefundOfID = %v, want nil", name, debit.RefundOfID)
 		}
+	}
+}
+
+func TestLinkRefundCopiesCategoryAndConfirms(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Carrefour refund", 5000, "2026-07-03T10:00:00Z", "")
+
+	if err := st.LinkRefund(creditID, debitID); err != nil {
+		t.Fatalf("LinkRefund: %v", err)
+	}
+
+	var refundOf, catID sql.NullInt64
+	var status string
+	if err := st.DB.QueryRow(
+		`SELECT refund_of_id, category_id, status FROM transactions WHERE id=?`, creditID,
+	).Scan(&refundOf, &catID, &status); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !refundOf.Valid || refundOf.Int64 != debitID {
+		t.Errorf("refund_of_id = %v, want %d", refundOf, debitID)
+	}
+	var groceriesID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&groceriesID); err != nil {
+		t.Fatal(err)
+	}
+	if !catID.Valid || catID.Int64 != groceriesID {
+		t.Errorf("category_id = %v, want %d (Groceries)", catID, groceriesID)
+	}
+	if status != "confirmed" {
+		t.Errorf("status = %q, want confirmed", status)
+	}
+
+	// The linked credit must net the purchase out of the month's Need bucket.
+	spend, err := st.SelectMonthSpend("2026-07", false)
+	if err != nil {
+		t.Fatalf("SelectMonthSpend: %v", err)
+	}
+	var net int64
+	for _, r := range spend {
+		if r.Bucket != "need" {
+			continue
+		}
+		if r.Direction == "debit" {
+			net += r.AmountFils
+		} else {
+			net -= r.AmountFils
+		}
+	}
+	if net != 0 {
+		t.Errorf("need bucket net = %d fils, want 0 (refund should cancel purchase)", net)
+	}
+}
+
+func TestLinkRefundValidation(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Refund", 5000, "2026-07-03T10:00:00Z", "")
+	otherCredit := seedTxn(t, st, "credit", "Other credit", 900, "2026-07-02T10:00:00Z", "")
+	pendingDebit := seedTxn(t, st, "debit", "Pending", 700, "2026-07-02T10:00:00Z", "") // needs_review, uncategorized
+
+	cases := []struct {
+		name          string
+		credit, debit int64
+		wantErr       error
+	}{
+		{"credit missing", 99999, debitID, ErrRefundNotFound},
+		{"target missing", creditID, 99999, ErrRefundNotFound},
+		{"credit is a debit", debitID, debitID, ErrRefundBadLink},
+		{"target is a credit", creditID, otherCredit, ErrRefundBadLink},
+		{"target unconfirmed", creditID, pendingDebit, ErrRefundBadLink},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := st.LinkRefund(tc.credit, tc.debit); !errors.Is(err, tc.wantErr) {
+				t.Errorf("LinkRefund = %v, want errors.Is(_, %v)", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestUnlinkRefundRevertsToReview(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Refund", 5000, "2026-07-03T10:00:00Z", "")
+	if err := st.LinkRefund(creditID, debitID); err != nil {
+		t.Fatalf("LinkRefund: %v", err)
+	}
+
+	if err := st.UnlinkRefund(creditID); err != nil {
+		t.Fatalf("UnlinkRefund: %v", err)
+	}
+	var refundOf, catID sql.NullInt64
+	var status string
+	if err := st.DB.QueryRow(
+		`SELECT refund_of_id, category_id, status FROM transactions WHERE id=?`, creditID,
+	).Scan(&refundOf, &catID, &status); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if refundOf.Valid || catID.Valid || status != "needs_review" {
+		t.Errorf("after unlink: refund_of=%v cat=%v status=%q, want NULL/NULL/needs_review", refundOf, catID, status)
+	}
+
+	// Unlinking a transaction that isn't linked is a not-found error.
+	if err := st.UnlinkRefund(creditID); !errors.Is(err, ErrRefundNotFound) {
+		t.Errorf("second UnlinkRefund = %v, want ErrRefundNotFound", err)
+	}
+}
+
+func TestClearAllCategorizationClearsRefundLinks(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Refund", 5000, "2026-07-03T10:00:00Z", "")
+	if err := st.LinkRefund(creditID, debitID); err != nil {
+		t.Fatalf("LinkRefund: %v", err)
+	}
+	if _, err := st.ClearAllCategorization(); err != nil {
+		t.Fatalf("ClearAllCategorization: %v", err)
+	}
+	var refundOf sql.NullInt64
+	if err := st.DB.QueryRow(`SELECT refund_of_id FROM transactions WHERE id=?`, creditID).Scan(&refundOf); err != nil {
+		t.Fatal(err)
+	}
+	if refundOf.Valid {
+		t.Errorf("refund_of_id survived bulk clear, want NULL")
 	}
 }
