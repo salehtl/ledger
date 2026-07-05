@@ -56,5 +56,14 @@ export function useTxnActions() {
     } catch { show({ message: `Couldn't categorize ${name}`, tone: "error" }); return false; }
   };
 
-  return { invalidate, setStatus, archiveTxn, restoreTxn, categorize };
+  const unlinkRefund = async (t: Txn) => {
+    const name = t.MerchantRaw || "transaction";
+    try {
+      await postJSON(`/api/transactions/${t.ID}/unlink-refund`, {});
+      invalidate();
+      show({ message: `Unlinked refund ${name}` });
+    } catch { show({ message: `Couldn't unlink ${name}`, tone: "error" }); }
+  };
+
+  return { invalidate, setStatus, archiveTxn, restoreTxn, categorize, unlinkRefund };
 }
