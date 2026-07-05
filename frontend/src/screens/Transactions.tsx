@@ -13,10 +13,10 @@ import { AddTransactionSheet } from "../components/transactions/AddTransactionSh
 import { Fab } from "../components/ui/Fab";
 import { FilterChips } from "../components/transactions/FilterChips";
 import { useToast } from "../components/Toast";
-import { txnTotals, applyTxnFilters, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
+import { txnTotals, applyTxnFilters, EMPTY_FILTERS, exportUrl, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
-import { AlertTriangle, ListOrdered, Search, Plus } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Plus, Download } from "lucide-react";
 import { useTxnActions } from "../hooks/useTxnActions";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 
@@ -71,6 +71,15 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
+        <a
+          href={exportUrl({ status, from, to, q: search })}
+          download
+          aria-label="Export CSV"
+          title="Export CSV (current status, period and search — chip filters not included)"
+          className="shrink-0 p-2 rounded-md border border-border bg-surface text-muted"
+        >
+          <Download size={16} aria-hidden />
+        </a>
       </div>
 
       <div className="relative">

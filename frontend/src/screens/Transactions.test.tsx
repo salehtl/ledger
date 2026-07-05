@@ -120,4 +120,16 @@ describe("Transactions", () => {
     await screen.findByText(/archived/i); // toast
     expect(calls.some((u) => /\/api\/transactions\/\d+\/archive$/.test(u))).toBe(true);
   });
+
+  it("links CSV export to the current server-side filters", async () => {
+    wrap({ from: "2026-06-01", to: "2026-06-32" });
+    await screen.findByText("NETFLIX");
+    fireEvent.click(screen.getByRole("button", { name: /confirmed/i }));
+    fireEvent.change(screen.getByPlaceholderText(/search merchant/i), { target: { value: "net" } });
+    const link = screen.getByRole("link", { name: /export csv/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/api/transactions/export?status=confirmed&from=2026-06-01&to=2026-06-32&q=net",
+    );
+  });
 });
