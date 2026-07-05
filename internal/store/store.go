@@ -84,7 +84,11 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	// Days of mailbox silence before /api/health reports mail_silent.
-	return addColumnIfMissing(db, "app_settings", "ingest_silence_days", "INTEGER NOT NULL DEFAULT 3")
+	if err := addColumnIfMissing(db, "app_settings", "ingest_silence_days", "INTEGER NOT NULL DEFAULT 3"); err != nil {
+		return err
+	}
+	// Account last-4 captured at parse time; used by self-transfer matching.
+	return addColumnIfMissing(db, "transactions", "last4", "TEXT")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
