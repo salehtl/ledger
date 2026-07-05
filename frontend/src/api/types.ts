@@ -13,6 +13,8 @@ export interface Txn {
   Direction: string; MerchantRaw: string; Status: string; Confidence: number; Source: string;
   CategoryID: number | null; CategoryName: string; Bucket: string;
   Kind: string; BucketSnapshot: string;
+  /** Set when this credit is a linked refund of another transaction. */
+  RefundOfID?: number | null;
 }
 export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
