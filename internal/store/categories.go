@@ -42,6 +42,7 @@ type ReviewItem struct {
 	Bucket         string // "" when uncategorized or category has no bucket
 	Kind           string // category kind: "spending" | "income" | "excluded" | "" (uncategorized)
 	BucketSnapshot string // frozen bucket at categorization time; "" when unset
+	RefundOfID     *int64 // set when this credit is a linked refund of another transaction
 }
 
 // nullableStr maps an empty string to SQL NULL.
@@ -214,7 +215,7 @@ func (s *Store) SelectTransactions(status, from, to string) ([]ReviewItem, error
 	q := `SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
-	             COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,'')
+	             COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id
 	      FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
 	      WHERE 1=1`
 	var args []any
@@ -253,11 +254,12 @@ func scanReviewItems(rows interface {
 		var r ReviewItem
 		var catID sql.NullInt64
 		var aed sql.NullInt64
+		var refundOf sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.PostedAt, &r.AmountFils, &aed, &r.Currency, &r.Direction,
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 			&catID, &r.CategoryName, &r.Bucket,
-			&r.Kind, &r.BucketSnapshot,
+			&r.Kind, &r.BucketSnapshot, &refundOf,
 		); err != nil {
 			return nil, err
 		}
@@ -268,6 +270,10 @@ func scanReviewItems(rows interface {
 		if catID.Valid {
 			id := catID.Int64
 			r.CategoryID = &id
+		}
+		if refundOf.Valid {
+			id := refundOf.Int64
+			r.RefundOfID = &id
 		}
 		out = append(out, r)
 	}
