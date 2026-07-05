@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -11,15 +12,21 @@ import (
 )
 
 // imapDialer opens authenticated, read-only IMAP connections from config.
+// It implements both Dialer (per-sync connections) and IdleDialer (dedicated
+// IDLE connections that wake the worker on new mail).
 type imapDialer struct {
 	cfg config.IMAPConfig
 }
 
-// NewIMAPDialer returns a Dialer backed by go-imap/v2.
+// NewIMAPDialer returns a Dialer backed by go-imap/v2. The returned value
+// also implements IdleDialer (checked via type assertion in main).
 func NewIMAPDialer(cfg config.IMAPConfig) Dialer { return &imapDialer{cfg: cfg} }
 
-func (d *imapDialer) Dial(ctx context.Context) (Mailbox, error) {
-	c, err := imapclient.DialTLS(d.cfg.Addr(), nil)
+// connect dials TLS and authenticates. opts may carry a unilateral-data
+// handler (required at dial time by go-imap for IDLE notifications); nil is
+// fine for plain sync connections.
+func (d *imapDialer) connect(opts *imapclient.Options) (*imapclient.Client, error) {
+	c, err := imapclient.DialTLS(d.cfg.Addr(), opts)
 	if err != nil {
 		return nil, fmt.Errorf("imap dial %s: %w", d.cfg.Addr(), err)
 	}
@@ -36,7 +43,75 @@ func (d *imapDialer) Dial(ctx context.Context) (Mailbox, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("imap: unknown auth %q", d.cfg.Auth)
 	}
+	return c, nil
+}
+
+func (d *imapDialer) Dial(ctx context.Context) (Mailbox, error) {
+	c, err := d.connect(nil)
+	if err != nil {
+		return nil, err
+	}
 	return &imapMailbox{c: c, folder: d.cfg.Folder}, nil
+}
+
+// DialIdle opens a connection whose sole job is to park in IDLE and report
+// new-mail activity. The unilateral-data handler must be registered at dial
+// time, and the folder is selected read-only (EXAMINE) — IDLE never weakens
+// the read-only guarantee.
+func (d *imapDialer) DialIdle(ctx context.Context) (Waiter, error) {
+	notify := make(chan struct{}, 1)
+	opts := &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
+				if data.NumMessages != nil {
+					select {
+					case notify <- struct{}{}:
+					default:
+					}
+				}
+			},
+		},
+	}
+	c, err := d.connect(opts)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Select(d.cfg.Folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("idle examine %q: %w", d.cfg.Folder, err)
+	}
+	return &idleWaiter{c: c, notify: notify}, nil
+}
+
+// idleWaiter is one parked IDLE connection.
+type idleWaiter struct {
+	c      *imapclient.Client
+	notify chan struct{}
+}
+
+func (iw *idleWaiter) Wait(ctx context.Context, timeout time.Duration) error {
+	cmd, err := iw.c.Idle()
+	if err != nil {
+		return fmt.Errorf("idle: %w", err)
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var reason error
+	select {
+	case <-ctx.Done():
+		reason = ctx.Err()
+	case <-iw.notify: // server pushed EXISTS: new mail
+	case <-timer.C: // fallback heartbeat: sync anyway
+	}
+	if err := cmd.Close(); err != nil && reason == nil {
+		return fmt.Errorf("idle close: %w", err)
+	}
+	return reason
+}
+
+func (iw *idleWaiter) Close() error {
+	_ = iw.c.Logout().Wait()
+	return iw.c.Close()
 }
 
 type imapMailbox struct {
