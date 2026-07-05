@@ -53,11 +53,11 @@ func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT OR IGNORE INTO transactions
-		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, status, confidence,
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, last4, status, confidence,
 		    fingerprint, source, ingest_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.PostedAt.UTC().Format(time.RFC3339Nano), r.AmountFils, amountAED, r.Currency, r.Direction,
-		r.MerchantRaw, r.Status, r.Confidence, r.Fingerprint(), source, nullableID(r.IngestID), now, now,
+		r.MerchantRaw, nullable(r.Last4), r.Status, r.Confidence, r.Fingerprint(), source, nullableID(r.IngestID), now, now,
 	)
 	if err != nil {
 		return 0, false, err

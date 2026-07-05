@@ -370,3 +370,28 @@ func TestFindTransferMatchSkipsArchived(t *testing.T) {
 		t.Errorf("FindTransferMatch returned archived row %d as match — archived rows must be skipped", matchID)
 	}
 }
+
+// TestInsertTransactionPersistsLast4 verifies the account last-4 captured at
+// parse time survives into the transactions row (transfer matching reads it).
+func TestInsertTransactionPersistsLast4(t *testing.T) {
+	st := newTestStore(t)
+	id, created, err := st.InsertTransaction(TransactionRow{
+		PostedAt:    time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC),
+		AmountFils:  12345,
+		Currency:    "AED",
+		Direction:   "debit",
+		MerchantRaw: "LAST4 TEST",
+		Last4:       "1234",
+		Status:      "needs_review",
+	})
+	if err != nil || !created {
+		t.Fatalf("insert: created=%v err=%v", created, err)
+	}
+	var got string
+	if err := st.DB.QueryRow(`SELECT COALESCE(last4,'') FROM transactions WHERE id=?`, id).Scan(&got); err != nil {
+		t.Fatalf("select last4: %v", err)
+	}
+	if got != "1234" {
+		t.Errorf("last4 = %q, want %q", got, "1234")
+	}
+}

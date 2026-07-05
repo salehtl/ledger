@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   direction       TEXT NOT NULL,               -- 'debit' | 'credit'
   merchant_raw    TEXT,
   description     TEXT,
+  last4           TEXT,                         -- account last-4 from the bank email; used by self-transfer matching
   category_id     INTEGER REFERENCES categories(id),
   bucket_snapshot TEXT,
   status          TEXT NOT NULL,
