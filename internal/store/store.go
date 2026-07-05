@@ -80,7 +80,11 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	// AED snapshot of amount; NULL when the currency has no fx rate yet.
-	return addColumnIfMissing(db, "transactions", "amount_aed", "INTEGER")
+	if err := addColumnIfMissing(db, "transactions", "amount_aed", "INTEGER"); err != nil {
+		return err
+	}
+	// Refund linking: a credit that refunds an earlier purchase points at it.
+	return addColumnIfMissing(db, "transactions", "refund_of_id", "INTEGER REFERENCES transactions(id)")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

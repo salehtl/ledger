@@ -126,3 +126,16 @@ func TestMigrateAddsRuleIsActiveAndSettings(t *testing.T) {
 		t.Fatalf("app_settings singleton not present, got %d", n)
 	}
 }
+
+func TestMigrateAddsRefundOfID(t *testing.T) {
+	st := openTestStore(t)
+	var n int
+	if err := st.DB.QueryRow(
+		`SELECT count(*) FROM pragma_table_info('transactions') WHERE name='refund_of_id'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	if n != 1 {
+		t.Fatal("transactions.refund_of_id column missing")
+	}
+}
