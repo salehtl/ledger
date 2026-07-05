@@ -41,3 +41,25 @@ func TestEnsureAppSettingsIdempotent(t *testing.T) {
 		t.Fatalf("ensure overwrote an existing row")
 	}
 }
+
+func TestAppSettingsIngestSilenceDays(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	got, err := st.SelectAppSettings()
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if got.IngestSilenceDays != 3 {
+		t.Fatalf("default IngestSilenceDays = %d, want 3", got.IngestSilenceDays)
+	}
+	got.IngestSilenceDays = 7
+	if err := st.UpdateAppSettings(got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got2, _ := st.SelectAppSettings()
+	if got2.IngestSilenceDays != 7 {
+		t.Fatalf("round-trip IngestSilenceDays = %d, want 7", got2.IngestSilenceDays)
+	}
+}
