@@ -81,7 +81,7 @@ func TestCategorySpendAndTotalsUseAmountAED(t *testing.T) {
 func TestReviewItemCarriesAmountAED(t *testing.T) {
 	s := openFXTestStore(t)
 	seedFXSpend(t, s)
-	items, err := s.SelectTransactions("", "", "")
+	items, err := s.SelectTransactions("", "", "", "")
 	if err != nil || len(items) != 3 {
 		t.Fatalf("SelectTransactions = %d items, err=%v; want 3", len(items), err)
 	}

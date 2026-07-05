@@ -43,7 +43,7 @@ func (s *Server) startCategorize(from, to string) (bool, error) {
 		j.mu.Unlock()
 		return false, nil
 	}
-	items, err := s.catStore.SelectTransactions("needs_review", from, to)
+	items, err := s.catStore.SelectTransactions("needs_review", from, to, "")
 	if err != nil {
 		j.mu.Unlock()
 		return false, err

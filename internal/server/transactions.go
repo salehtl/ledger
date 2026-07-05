@@ -55,7 +55,7 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	items, err := s.catStore.SelectTransactions(q.Get("status"), q.Get("from"), q.Get("to"))
+	items, err := s.catStore.SelectTransactions(q.Get("status"), q.Get("from"), q.Get("to"), q.Get("q"))
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return

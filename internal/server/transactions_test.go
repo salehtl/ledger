@@ -300,3 +300,30 @@ func TestClearCategorization(t *testing.T) {
 		t.Errorf("category_id not cleared: %d", cat.Int64)
 	}
 }
+
+func TestGetTransactionsSearch(t *testing.T) {
+	st := newTestServerStore(t)
+	seedTestTransaction(t, st) // merchant "DAPPER DAN GENTS SAL"
+	srv := newTestServerWithStore(t, st)
+
+	r := httptest.NewRequest("GET", "/api/transactions?q=dapper", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
+	}
+	var hits []map[string]any
+	json.NewDecoder(w.Body).Decode(&hits)
+	if len(hits) != 1 {
+		t.Errorf("q=dapper: got %d items, want 1", len(hits))
+	}
+
+	r = httptest.NewRequest("GET", "/api/transactions?q=nomatch", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	var misses []map[string]any
+	json.NewDecoder(w.Body).Decode(&misses)
+	if len(misses) != 0 {
+		t.Errorf("q=nomatch: got %d items, want 0", len(misses))
+	}
+}

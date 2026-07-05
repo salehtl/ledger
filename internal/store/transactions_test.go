@@ -186,7 +186,7 @@ func TestSelectTransactionsExcludesArchivedByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := st.SelectTransactions("", "", "")
+	all, err := st.SelectTransactions("", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestSelectTransactionsExcludesArchivedByDefault(t *testing.T) {
 		t.Fatalf("default list returned archived row: %d items", len(all))
 	}
 
-	arch, err := st.SelectTransactions("archived", "", "")
+	arch, err := st.SelectTransactions("archived", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestInsertManualTransactionAllowsDuplicateFingerprint(t *testing.T) {
 	if _, err := st.InsertManualTransaction(m); err != nil {
 		t.Fatalf("second identical manual insert should not collide: %v", err)
 	}
-	rows, _ := st.SelectTransactions("", "", "")
+	rows, _ := st.SelectTransactions("", "", "", "")
 	if len(rows) != 2 {
 		t.Fatalf("want 2 manual rows, got %d", len(rows))
 	}
