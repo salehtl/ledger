@@ -87,6 +87,7 @@ type Server struct {
 	insightsStore   InsightsStore
 	hub             *Hub                // SSE fan-out hub
 	driftMon        DriftStatusProvider // optional drift monitor for /api/health
+	ingestHealthFn  IngestHealthFunc    // optional worker poll-health for /api/health
 	pushStore       PushStore
 	pushSender      PushSender
 	settingsStore   SettingsStore
