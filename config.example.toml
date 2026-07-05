@@ -15,8 +15,8 @@ username      = "salehledgerbank@gmail.com"
 auth          = "app_password"          # "app_password" (only supported in M2) | "oauth2" (later)
 folder        = "INBOX"
 read_only     = true                    # opened with EXAMINE; the app can never alter mail
-use_idle      = false                   # reserved; Milestone 2 is poll-only
-poll_interval = "60s"
+use_idle      = false                   # true: park in IMAP IDLE between syncs — new mail triggers an immediate sync
+poll_interval = "60s"                   # sync cadence; with use_idle=true this is just the fallback heartbeat (raise it, e.g. "15m")
 # Secret is NEVER stored here. Set it in the environment / systemd:
 #   LEDGER_IMAP_APP_PASSWORD = the 16-char Gmail App Password
 
