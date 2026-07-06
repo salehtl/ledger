@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { CategorySpend, MonthlyTotal, Summary, Txn, Category, BudgetConfig } from "../api/types";
 import { Card } from "../components/ui/Card";
+import { SectionLabel } from "../components/ui/SectionLabel";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
@@ -96,7 +97,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
       <ComparativeSummary label={label} note={focus.note} net={savings.net} savings={savings} buckets={buckets} onSelectBucket={(bucket) => setDrill({ type: "bucket", bucket })} />
 
       <div>
-        <p className="text-xs uppercase tracking-wide text-muted mb-1.5">Analyze by</p>
+        <SectionLabel className="mb-1.5">Analyze by</SectionLabel>
         <div className="mb-2 overflow-x-auto -mx-1 px-1">
           <SegmentedControl value={lens} onChange={setLens} options={LENS_OPTIONS} />
         </div>

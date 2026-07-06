@@ -4,6 +4,8 @@ import { ChevronRight } from "lucide-react";
 import { getAccounts, getJSON, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
 import { Switch } from "../../components/ui/Switch";
+import { SectionLabel } from "../../components/ui/SectionLabel";
+import { Card } from "../../components/ui/Card";
 import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
 import { useIngestHealth } from "../../hooks/useIngestHealth";
@@ -82,10 +84,10 @@ function ToggleRow({
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
-      <h2 className="px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
-      <div className="bg-surface rounded-[var(--radius-card)] shadow-1 divide-y divide-border overflow-hidden">
+      <SectionLabel as="h2" className="px-1">{label}</SectionLabel>
+      <Card className="!p-0 divide-y divide-border overflow-hidden">
         {children}
-      </div>
+      </Card>
     </section>
   );
 }
