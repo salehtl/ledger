@@ -276,6 +276,7 @@ func main() {
 		worker.SetPostProcess(func(ctx context.Context) (int, error) {
 			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
 		})
+		srv.SetIngestHealth(worker.Health)
 		go worker.Run(ctx)
 		log.Printf("ingest+parse enabled for %s (mailbox %s, poll %s)", cfg.IMAP.Username, cfg.IMAP.Folder, interval)
 	} else {

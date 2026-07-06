@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../api/client";
 import { type Scope } from "../lib/scope";
@@ -13,15 +13,24 @@ import { CategorizationPage } from "./settings/CategorizationPage";
 import { SwipePage } from "./settings/SwipePage";
 import { CurrenciesPage } from "./settings/CurrenciesPage";
 import { TextSizePage } from "./settings/TextSizePage";
+import { IngestHealthPage } from "./settings/IngestHealthPage";
 
 export { pctsValid } from "../lib/split";
 
-export function Settings({ scope }: { scope?: Scope }) {
+/** Cross-tab deep link into a settings drill-in (e.g. banner → Email ingest).
+ *  nonce forces re-navigation when Settings is already mounted. */
+export interface SettingsIntent { page: SettingsPageId; nonce: number }
+
+export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIntent | null }) {
   const qc = useQueryClient();
   const { show } = useToast();
   const [page, setPage] = useState<SettingsPageId | null>(null);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
+
+  useEffect(() => {
+    if (intent) setPage(intent.page);
+  }, [intent]);
 
   const txns = useQuery({ queryKey: ["transactions"], queryFn: () => getJSON<unknown[]>("/api/transactions") });
   const txnCount = txns.data?.length ?? 0;
@@ -53,6 +62,7 @@ export function Settings({ scope }: { scope?: Scope }) {
       {page === "swipe" && <SwipePage onClose={close} />}
       {page === "currencies" && <CurrenciesPage onClose={close} />}
       {page === "textsize" && <TextSizePage onClose={close} />}
+      {page === "ingest" && <IngestHealthPage onClose={close} />}
       {page === "categories" && <CategoryManager onClose={close} />}
       {page === "rules" && <RulesManager onClose={close} />}
 

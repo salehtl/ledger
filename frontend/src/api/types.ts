@@ -5,6 +5,7 @@ export interface AppSettings {
   ai_enabled: boolean;
   ai_auto_accept: boolean;
   ai_threshold: number;
+  ingest_silence_days: number;
   /** Read-only: whether an Anthropic key is loaded (env-only). Not sent on save. */
   ai_key_present?: boolean;
 }
@@ -32,3 +33,17 @@ export interface CategorySpend { category_id: number; name: string; bucket: stri
 export interface MonthlyTotal { period: string; spent: number; income: number; }
 export interface CategoryUsage { transactions: number; rules: number; }
 export interface CategorizeStatus { status: "idle" | "running"; processed: number; total: number; failed: number; error: string; }
+export interface IngestHealth {
+  configured: boolean;
+  count: number;
+  last_at?: string;
+  status: "ok" | "warn" | "starting" | "off";
+  reasons: string[];
+  last_poll_success_at?: string;
+  last_poll_attempt_at?: string;
+  consecutive_failures: number;
+  last_error?: string;
+  poll_interval_seconds: number;
+  silence_days: number;
+}
+export interface Health { status: string; db: string; ingest?: IngestHealth; }

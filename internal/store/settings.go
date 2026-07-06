@@ -1,12 +1,14 @@
 // internal/store/settings.go
 package store
 
-// AppSettings is the singleton app_settings row controlling categorization.
+// AppSettings is the singleton app_settings row controlling categorization
+// and ingest-health thresholds.
 type AppSettings struct {
-	AutoCategorize bool
-	AIEnabled      bool
-	AIAutoAccept   bool
-	AIThreshold    float64
+	AutoCategorize    bool
+	AIEnabled         bool
+	AIAutoAccept      bool
+	AIThreshold       float64
+	IngestSilenceDays int
 }
 
 // EnsureAppSettings inserts the default singleton row if none exists. It never
@@ -25,9 +27,9 @@ func (s *Store) SelectAppSettings() (AppSettings, error) {
 	var a AppSettings
 	var auto, aiOn, aiAccept int
 	err := s.DB.QueryRow(
-		`SELECT auto_categorize, ai_enabled, ai_auto_accept, ai_threshold
+		`SELECT auto_categorize, ai_enabled, ai_auto_accept, ai_threshold, ingest_silence_days
 		 FROM app_settings WHERE id=1`,
-	).Scan(&auto, &aiOn, &aiAccept, &a.AIThreshold)
+	).Scan(&auto, &aiOn, &aiAccept, &a.AIThreshold, &a.IngestSilenceDays)
 	a.AutoCategorize = auto == 1
 	a.AIEnabled = aiOn == 1
 	a.AIAutoAccept = aiAccept == 1
@@ -38,9 +40,9 @@ func (s *Store) SelectAppSettings() (AppSettings, error) {
 func (s *Store) UpdateAppSettings(a AppSettings) error {
 	_, err := s.DB.Exec(
 		`UPDATE app_settings
-		   SET auto_categorize=?, ai_enabled=?, ai_auto_accept=?, ai_threshold=?
+		   SET auto_categorize=?, ai_enabled=?, ai_auto_accept=?, ai_threshold=?, ingest_silence_days=?
 		 WHERE id=1`,
-		boolToInt(a.AutoCategorize), boolToInt(a.AIEnabled), boolToInt(a.AIAutoAccept), a.AIThreshold,
+		boolToInt(a.AutoCategorize), boolToInt(a.AIEnabled), boolToInt(a.AIAutoAccept), a.AIThreshold, a.IngestSilenceDays,
 	)
 	return err
 }

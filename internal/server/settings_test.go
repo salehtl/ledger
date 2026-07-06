@@ -102,3 +102,48 @@ func TestPutSettingsBadJSON(t *testing.T) {
 		t.Fatalf("code=%d want 400", rec.Code)
 	}
 }
+
+func TestSettingsIngestSilenceDaysRoundTrip(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, IngestSilenceDays: 3}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ingest_silence_days":7}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.IngestSilenceDays != 7 {
+		t.Fatalf("IngestSilenceDays=%d, want 7", stub.s.IngestSilenceDays)
+	}
+
+	req = httptest.NewRequest("GET", "/api/settings", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["ingest_silence_days"] != float64(7) {
+		t.Fatalf("GET ingest_silence_days=%v, want 7: %s", got["ingest_silence_days"], rec.Body.String())
+	}
+}
+
+// A PUT that omits ingest_silence_days (older client) must not clobber the
+// stored value back to the default.
+func TestPutSettingsOmittedSilenceDaysPreserved(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, IngestSilenceDays: 7}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.IngestSilenceDays != 7 {
+		t.Fatalf("IngestSilenceDays=%d, want preserved 7", stub.s.IngestSilenceDays)
+	}
+}
