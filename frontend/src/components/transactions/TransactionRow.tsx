@@ -5,6 +5,7 @@ import { Pill } from "../ui/Pill";
 import { statusLabel, statusTone } from "../../lib/format";
 import { bucketColor } from "../../lib/insights";
 import { ArrowLeftRight, X, Tag, Archive, ArchiveRestore } from "lucide-react";
+import { IconButton } from "../ui/IconButton";
 
 export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: {
   txn: Txn;
@@ -47,17 +48,17 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
       </div>
       <div className="flex flex-col gap-1 self-center">
         {archived ? (
-          <button aria-label="Restore" className="p-2 rounded-md hover:bg-bg text-accent" onClick={() => onRestore(txn)}><ArchiveRestore size={16} /></button>
+          <IconButton label="Restore" size="sm" tone="accent" onClick={() => onRestore(txn)}><ArchiveRestore size={16} /></IconButton>
         ) : (
           <>
             {needsReview && (
               <>
-                <button aria-label="Categorize" className="p-2 rounded-md hover:bg-bg text-accent" onClick={() => onOpen(txn)}><Tag size={16} /></button>
-                <button aria-label="Transfer" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onStatus(txn, "transfer")}><ArrowLeftRight size={16} /></button>
-                <button aria-label="Ignore" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onStatus(txn, "ignored")}><X size={16} /></button>
+                <IconButton label="Categorize" size="sm" tone="accent" onClick={() => onOpen(txn)}><Tag size={16} /></IconButton>
+                <IconButton label="Transfer" size="sm" onClick={() => onStatus(txn, "transfer")}><ArrowLeftRight size={16} /></IconButton>
+                <IconButton label="Ignore" size="sm" onClick={() => onStatus(txn, "ignored")}><X size={16} /></IconButton>
               </>
             )}
-            <button aria-label="Archive" className="p-2 rounded-md hover:bg-bg text-muted" onClick={() => onArchive(txn)}><Archive size={16} /></button>
+            <IconButton label="Archive" size="sm" onClick={() => onArchive(txn)}><Archive size={16} /></IconButton>
           </>
         )}
       </div>

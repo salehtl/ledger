@@ -77,7 +77,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           download
           aria-label="Export CSV"
           title="Export CSV (current status, period and search — chip filters not included)"
-          className="shrink-0 p-2 rounded-md border border-border bg-surface text-muted"
+          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-md border border-border bg-surface text-muted press"
         >
           <Download size={16} aria-hidden />
         </a>
