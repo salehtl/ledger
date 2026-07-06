@@ -52,6 +52,7 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   `text-sm` on a control. Add `inputMode="decimal"` for money,
   `inputMode="numeric"` for integers, `enterKeyHint`/`autoCapitalize`/
   `autoCorrect` where the keyboard matters.
+- With `icon`, `className` lands on the inner input (not the wrapper) — apply margins to a wrapping element, not via `className`.
 
 ### Dialog
 - **Purpose:** the one modal/bottom-sheet. Scrim, slide-up, focus trap,

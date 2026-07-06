@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { type Scope, addMonth, scopeLabel } from "../../lib/scope";
+import { IconButton } from "./IconButton";
 import { PeriodSheet } from "./PeriodSheet";
 
 export function TopBar({ title, scope, onScopeChange, showScope }: {
@@ -19,30 +20,28 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
         {showScope && (
           <div className="flex items-center gap-0.5">
             {isMonth && (
-              <button
-                aria-label="Previous month"
+              <IconButton
+                label="Previous month"
                 onClick={() => onScopeChange({ kind: "month", period: addMonth(scope.period, -1) })}
-                className="p-2 rounded-lg text-muted hover:bg-surface-2"
               >
                 <ChevronLeft size={18} />
-              </button>
+              </IconButton>
             )}
             <button
               onClick={() => setOpen(true)}
               aria-haspopup="dialog"
               aria-expanded={open}
-              className="px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg truncate"
+              className="min-h-11 px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg truncate press"
             >
               {scopeLabel(scope)}
             </button>
             {isMonth && (
-              <button
-                aria-label="Next month"
+              <IconButton
+                label="Next month"
                 onClick={() => onScopeChange({ kind: "month", period: addMonth(scope.period, 1) })}
-                className="p-2 rounded-lg text-muted hover:bg-surface-2"
               >
                 <ChevronRight size={18} />
-              </button>
+              </IconButton>
             )}
           </div>
         )}
