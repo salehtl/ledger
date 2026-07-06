@@ -38,6 +38,7 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
       await postJSON("/api/settings", {
         auto_categorize: next.auto_categorize, ai_enabled: next.ai_enabled,
         ai_auto_accept: next.ai_auto_accept, ai_threshold: next.ai_threshold,
+        ingest_silence_days: next.ingest_silence_days,
       }, "PUT");
       qc.invalidateQueries({ queryKey: ["settings"] });
       flash();
