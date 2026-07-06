@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SubcategoryPanel } from './SubcategoryPanel'
 import { DEFAULT_SWIPE_CONFIG } from '../../lib/swipe'
 import type { Category } from '../../api/types'
@@ -46,9 +46,9 @@ describe('SubcategoryPanel', () => {
     expect(onSelect).toHaveBeenCalledWith(1)
   })
 
-  it('calls onCancel when backdrop is clicked', () => {
+  it('calls onCancel when backdrop is clicked', async () => {
     const onCancel = vi.fn()
-    const { container } = render(
+    render(
       <SubcategoryPanel
         action={DEFAULT_SWIPE_CONFIG.left}
         categories={CATS}
@@ -58,8 +58,8 @@ describe('SubcategoryPanel', () => {
         onCancel={onCancel}
       />
     )
-    fireEvent.click(container.firstChild as Element)
-    expect(onCancel).toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('dialog-scrim'))
+    await waitFor(() => expect(onCancel).toHaveBeenCalled())
   })
 
   it('renders the Make Rule checkbox and toggles it', () => {
