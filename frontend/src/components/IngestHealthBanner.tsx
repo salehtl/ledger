@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { TriangleAlert, X } from "lucide-react";
 import { useIngestHealth } from "../hooks/useIngestHealth";
 import { bannerMessage, dismissKey } from "../lib/ingestHealth";
+import { IconButton } from "./ui/IconButton";
 
 const STORAGE_KEY = "ingest-banner-dismissed";
 
@@ -39,9 +40,9 @@ export function IngestHealthBanner({ onView }: { onView: () => void }) {
       <button aria-label="Ingest details" onClick={onView} className="flex-1 text-left py-1 truncate">
         {msg}
       </button>
-      <button aria-label="Dismiss" onClick={dismiss} className="shrink-0 p-1.5 press">
+      <IconButton label="Dismiss" size="sm" onClick={dismiss} className="shrink-0">
         <X size={14} aria-hidden />
-      </button>
+      </IconButton>
     </div>
   );
 }

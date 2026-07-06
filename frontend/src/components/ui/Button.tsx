@@ -17,6 +17,7 @@ export function Button(
   };
   return (
     <button
+      type="button"
       className={`min-h-11 px-5 rounded-lg text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors press disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
       onClick={handleClick}
       {...rest}

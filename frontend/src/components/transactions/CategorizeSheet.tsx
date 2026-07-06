@@ -55,8 +55,8 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
             <SectionLabel as="legend" className="mb-1">{BUCKET_LABEL[bucket] ?? bucket}</SectionLabel>
             <div className="space-y-1">
               {list.map((c) => (
-                <label key={c.ID} className="flex items-center gap-3 py-1.5 cursor-pointer">
-                  <input type="radio" name="cat" onChange={() => setCatID(c.ID)} />
+                <label key={c.ID} className="flex items-center gap-3 py-3 cursor-pointer">
+                  <input type="radio" name="cat" className="w-5 h-5 accent-accent" onChange={() => setCatID(c.ID)} />
                   {c.Name}
                 </label>
               ))}

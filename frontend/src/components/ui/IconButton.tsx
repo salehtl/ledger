@@ -27,6 +27,7 @@ export function IconButton(
   };
   return (
     <button
+      type="button"
       aria-label={label}
       className={`inline-flex items-center justify-center rounded-lg transition-colors press disabled:opacity-30 disabled:cursor-not-allowed ${SIZES[size]} ${TONES[tone]} ${className}`}
       onClick={handleClick}
