@@ -38,7 +38,7 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 ### IconButton
 - **Purpose:** icon-only action with a required accessible `label`. 44px
-  default; `size="sm"` (36px) only in dense stacked rows (TransactionRow).
+  default; `size="sm"` (36px) only in dense stacked rows (e.g. TransactionRow's action column, CategoryManager's list rows).
   Tones: `muted` (default), `accent` (positive/primary row action),
   `danger` (delete).
 - **Don't use when:** the action fits a text label (→ `Button`).
@@ -113,8 +113,10 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 ## Shared components — `components/`
 
 ### Money
-- **Purpose:** formats fils (int64 minor units) with sign/zero color coding
-  and `.tnum`. All amounts render through it — never format currency inline.
+- **Purpose:** formats fils (int64 minor units) with sign/zero color coding.
+  All amounts render through it — never format currency inline. It does NOT
+  apply `.tnum` itself: wrap it (or its container) in a `.tnum` element for
+  tabular digit alignment, as every existing call site does.
 
 ### EmptyState
 - **Purpose:** canonical empty/error state (icon chip + title + hint). Used
