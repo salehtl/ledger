@@ -10,6 +10,7 @@ import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
+import { LinkRefundSheet } from "../components/transactions/LinkRefundSheet";
 import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
 import { Fab } from "../components/ui/Fab";
 import { FilterChips } from "../components/transactions/FilterChips";
@@ -31,11 +32,12 @@ const FILTERS = [
 
 export function Transactions({ from, to }: { from?: string; to?: string }) {
   const { show } = useToast();
-  const { invalidate, setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
+  const { invalidate, setStatus, archiveTxn, restoreTxn, categorize, unlinkRefund } = useTxnActions();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
   const [active, setActive] = useState<Txn | null>(null);
+  const [linkTxn, setLinkTxn] = useState<Txn | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
   const status = filter === "all" ? "" : filter;
@@ -125,6 +127,20 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           categories={cats.data}
           onSubmit={async (body) => { if (await categorize(active, body)) setActive(null); }}
           onClose={() => setActive(null)}
+          onLinkRefund={() => { setLinkTxn(active); setActive(null); }}
+          onUnlinkRefund={() => { const t = active; setActive(null); void unlinkRefund(t); }}
+        />
+      )}
+
+      {linkTxn && (
+        <LinkRefundSheet
+          txn={linkTxn}
+          onLinked={() => {
+            setLinkTxn(null);
+            invalidate();
+            show({ message: "Refund linked", tone: "success" });
+          }}
+          onClose={() => setLinkTxn(null)}
         />
       )}
 

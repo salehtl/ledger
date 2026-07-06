@@ -1,4 +1,4 @@
-import type { Account, CategoryUsage, RatesResponse, SweepResult } from "./types";
+import type { Account, CategoryUsage, RatesResponse, SweepResult, Txn } from "./types";
 
 async function parseOrThrow(res: Response) {
   const text = await res.text();
@@ -59,4 +59,16 @@ export function deleteAccount(id: number): Promise<void> {
 
 export function sweepTransfers(): Promise<SweepResult> {
   return postJSON("/api/transfers/sweep", {});
+}
+
+export function getRefundCandidates(id: number): Promise<Txn[]> {
+  return getJSON<Txn[]>(`/api/transactions/${id}/refund-candidates`);
+}
+
+export async function linkRefund(id: number, targetId: number): Promise<void> {
+  await postJSON(`/api/transactions/${id}/link-refund`, { target_id: targetId });
+}
+
+export async function unlinkRefund(id: number): Promise<void> {
+  await postJSON(`/api/transactions/${id}/unlink-refund`, {});
 }

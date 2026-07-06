@@ -83,6 +83,10 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "transactions", "amount_aed", "INTEGER"); err != nil {
 		return err
 	}
+	// Refund linking: a credit that refunds an earlier purchase points at it.
+	if err := addColumnIfMissing(db, "transactions", "refund_of_id", "INTEGER REFERENCES transactions(id)"); err != nil {
+		return err
+	}
 	// Days of mailbox silence before /api/health reports mail_silent.
 	if err := addColumnIfMissing(db, "app_settings", "ingest_silence_days", "INTEGER NOT NULL DEFAULT 3"); err != nil {
 		return err

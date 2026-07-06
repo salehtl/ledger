@@ -21,6 +21,7 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
   const subtitle = [
     txn.PostedAt.slice(0, 10),
     txn.CategoryName,
+    txn.RefundOfID ? "refund" : null,
     native,
     aed === null ? "no AED rate" : null,
   ].filter(Boolean).join(" · ");

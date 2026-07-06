@@ -399,9 +399,9 @@ func TestInsertTransactionPersistsLast4(t *testing.T) {
 	}
 }
 
-// seedTxn inserts a minimal transaction for transfer-matching tests and
+// seedTransferTxn inserts a minimal transaction for transfer-matching tests and
 // returns its id.
-func seedTxn(t *testing.T, st *Store, amount int64, currency, direction, last4, status string, at time.Time) int64 {
+func seedTransferTxn(t *testing.T, st *Store, amount int64, currency, direction, last4, status string, at time.Time) int64 {
 	t.Helper()
 	id, created, err := st.InsertTransaction(TransactionRow{
 		PostedAt:    at,
@@ -421,8 +421,8 @@ func seedTxn(t *testing.T, st *Store, amount int64, currency, direction, last4, 
 func TestFindTransferMatchRequiresSameCurrency(t *testing.T) {
 	st := newTestStore(t)
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	seedTxn(t, st, 10000, "USD", "credit", "", "needs_review", base)
-	debitID := seedTxn(t, st, 10000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
+	seedTransferTxn(t, st, 10000, "USD", "credit", "", "needs_review", base)
+	debitID := seedTransferTxn(t, st, 10000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
 
 	_, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: debitID, AmountFils: 10000, Currency: "AED", Direction: "debit",
@@ -440,8 +440,8 @@ func TestFindTransferMatchRejectsSameLast4(t *testing.T) {
 	// Same account, opposite directions = refund/reversal, never a transfer.
 	st := newTestStore(t)
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	seedTxn(t, st, 25000, "AED", "credit", "1234", "needs_review", base)
-	debitID := seedTxn(t, st, 25000, "AED", "debit", "1234", "needs_review", base.Add(10*time.Minute))
+	seedTransferTxn(t, st, 25000, "AED", "credit", "1234", "needs_review", base)
+	debitID := seedTransferTxn(t, st, 25000, "AED", "debit", "1234", "needs_review", base.Add(10*time.Minute))
 
 	_, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: debitID, AmountFils: 25000, Currency: "AED", Direction: "debit",
@@ -468,8 +468,8 @@ func TestFindTransferMatchOwnAccountGating(t *testing.T) {
 	}
 
 	// Counterpart credit on a NON-registered account: must not match.
-	seedTxn(t, st, 50000, "AED", "credit", "9999", "needs_review", base)
-	d1 := seedTxn(t, st, 50000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
+	seedTransferTxn(t, st, 50000, "AED", "credit", "9999", "needs_review", base)
+	d1 := seedTransferTxn(t, st, 50000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
 	_, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: d1, AmountFils: 50000, Currency: "AED", Direction: "debit",
 		Last4: "1111", PostedAt: base.Add(time.Minute),
@@ -482,8 +482,8 @@ func TestFindTransferMatchOwnAccountGating(t *testing.T) {
 	}
 
 	// Counterpart on the other registered account: must match.
-	c2 := seedTxn(t, st, 70000, "AED", "credit", "2222", "needs_review", base)
-	d2 := seedTxn(t, st, 70000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
+	c2 := seedTransferTxn(t, st, 70000, "AED", "credit", "2222", "needs_review", base)
+	d2 := seedTransferTxn(t, st, 70000, "AED", "debit", "1111", "needs_review", base.Add(time.Minute))
 	matchID, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: d2, AmountFils: 70000, Currency: "AED", Direction: "debit",
 		Last4: "1111", PostedAt: base.Add(time.Minute),
@@ -500,8 +500,8 @@ func TestFindTransferMatchAllowsMissingLast4(t *testing.T) {
 	// Old rows and CSV imports have no last4; they must still be matchable.
 	st := newTestStore(t)
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	credID := seedTxn(t, st, 30000, "AED", "credit", "", "needs_review", base)
-	debitID := seedTxn(t, st, 30000, "AED", "debit", "1234", "needs_review", base.Add(time.Minute))
+	credID := seedTransferTxn(t, st, 30000, "AED", "credit", "", "needs_review", base)
+	debitID := seedTransferTxn(t, st, 30000, "AED", "debit", "1234", "needs_review", base.Add(time.Minute))
 
 	matchID, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: debitID, AmountFils: 30000, Currency: "AED", Direction: "debit",
@@ -519,8 +519,8 @@ func TestFindTransferMatchSkipsIgnored(t *testing.T) {
 	// A row the user explicitly ignored must not be silently rewritten.
 	st := newTestStore(t)
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	seedTxn(t, st, 40000, "AED", "credit", "", "ignored", base)
-	debitID := seedTxn(t, st, 40000, "AED", "debit", "", "needs_review", base.Add(time.Minute))
+	seedTransferTxn(t, st, 40000, "AED", "credit", "", "ignored", base)
+	debitID := seedTransferTxn(t, st, 40000, "AED", "debit", "", "needs_review", base.Add(time.Minute))
 
 	_, found, err := st.FindTransferMatch(TransferLeg{
 		TxID: debitID, AmountFils: 40000, Currency: "AED", Direction: "debit",
@@ -539,13 +539,13 @@ func TestNetTransferPairs(t *testing.T) {
 	base := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
 
 	// A genuine pair, already confirmed (historical pollution).
-	d1 := seedTxn(t, st, 150000, "AED", "debit", "1111", "confirmed", base)
-	c1 := seedTxn(t, st, 150000, "AED", "credit", "2222", "confirmed", base.Add(20*time.Minute))
+	d1 := seedTransferTxn(t, st, 150000, "AED", "debit", "1111", "confirmed", base)
+	c1 := seedTransferTxn(t, st, 150000, "AED", "credit", "2222", "confirmed", base.Add(20*time.Minute))
 	// A refund shape: same account both sides — must NOT be netted.
-	r1 := seedTxn(t, st, 8000, "AED", "debit", "3333", "confirmed", base)
-	r2 := seedTxn(t, st, 8000, "AED", "credit", "3333", "confirmed", base.Add(10*time.Minute))
+	r1 := seedTransferTxn(t, st, 8000, "AED", "debit", "3333", "confirmed", base)
+	r2 := seedTransferTxn(t, st, 8000, "AED", "credit", "3333", "confirmed", base.Add(10*time.Minute))
 	// A lone debit with no counterpart — must stay untouched.
-	lone := seedTxn(t, st, 999999, "AED", "debit", "1111", "confirmed", base)
+	lone := seedTransferTxn(t, st, 999999, "AED", "debit", "1111", "confirmed", base)
 
 	marked, err := st.NetTransferPairs(2 * time.Hour)
 	if err != nil {
@@ -576,9 +576,9 @@ func TestNetTransferPairsEachLegUsedOnce(t *testing.T) {
 	// Two debits, one credit at the same amount: only one debit pairs.
 	st := newTestStore(t)
 	base := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
-	seedTxn(t, st, 50000, "AED", "debit", "", "needs_review", base)
-	seedTxn(t, st, 50000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
-	seedTxn(t, st, 50000, "AED", "credit", "", "needs_review", base.Add(2*time.Minute))
+	seedTransferTxn(t, st, 50000, "AED", "debit", "", "needs_review", base)
+	seedTransferTxn(t, st, 50000, "AED", "debit", "", "needs_review", base.Add(5*time.Minute))
+	seedTransferTxn(t, st, 50000, "AED", "credit", "", "needs_review", base.Add(2*time.Minute))
 
 	marked, err := st.NetTransferPairs(2 * time.Hour)
 	if err != nil {

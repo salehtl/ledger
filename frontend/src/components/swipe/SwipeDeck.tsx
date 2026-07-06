@@ -13,6 +13,7 @@ import {
 } from '../../lib/swipe'
 import { SwipeCard, SWIPE_ICONS } from './SwipeCard'
 import { SubcategoryPanel } from './SubcategoryPanel'
+import { LinkRefundSheet } from '../transactions/LinkRefundSheet'
 
 interface SwipeDeckProps {
   transactions: Txn[]
@@ -80,6 +81,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     previewDir: null,
     previewProgress: 0,
   })
+  const [linkOpen, setLinkOpen] = useState(false)
 
   // Freeze the transaction list at mount time. Live refetches update the
   // query cache but shouldn't shift the index mid-session.
@@ -237,6 +239,15 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
       <p className="text-center text-xs text-muted mt-4">Swipe a card to sort · triple-tap to skip</p>
 
+      {current && current.Direction === 'credit' && (
+        <button
+          className="mx-auto mt-2 text-sm font-medium text-accent"
+          onClick={() => setLinkOpen(true)}
+        >
+          This is a refund — link the purchase
+        </button>
+      )}
+
       {/* SubcategoryPanel rendered outside card stack to avoid clipping */}
       {pendingAction && pendingAction.bucket && (
         <SubcategoryPanel
@@ -246,6 +257,18 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           onMakeRuleChange={v => setState(s => ({ ...s, makeRule: v }))}
           onSelect={handleCategorySelect}
           onCancel={handleCancel}
+        />
+      )}
+
+      {linkOpen && current && (
+        <LinkRefundSheet
+          txn={current}
+          onLinked={() => {
+            setLinkOpen(false)
+            invalidate()
+            setState(s => ({ ...s, skippedIds: new Set([...s.skippedIds, current.ID]) }))
+          }}
+          onClose={() => setLinkOpen(false)}
         />
       )}
     </div>

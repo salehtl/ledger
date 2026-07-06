@@ -54,3 +54,16 @@ describe("TransactionRow archive actions", () => {
     expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
   });
 });
+
+describe("TransactionRow refund tag", () => {
+  it("marks linked refunds in the subtitle", () => {
+    render(<TransactionRow txn={mk({ Direction: "credit", CategoryName: "Groceries", RefundOfID: 42 })}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText(/refund/)).toBeInTheDocument();
+  });
+
+  it("does not tag unlinked rows", () => {
+    render(<TransactionRow txn={mk({ RefundOfID: null })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.queryByText(/refund/)).not.toBeInTheDocument();
+  });
+});
