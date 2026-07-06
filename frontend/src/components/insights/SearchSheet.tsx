@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import type { Category, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
+import { Input } from "../ui/Field";
 import { EmptyState } from "../EmptyState";
 import { FilterChips } from "../transactions/FilterChips";
 import { TransactionRow } from "../transactions/TransactionRow";
@@ -24,14 +25,16 @@ export function SearchSheet({ txns, categories, onClose }: {
 
   return (
     <Dialog title="Search & filter" onClose={onClose}>
-      <div className="relative mb-3">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
-        <input
+      <div className="mb-3">
+        <Input
+          inset
+          icon={Search}
           type="search"
+          enterKeyHint="search"
+          autoCorrect="off"
           placeholder="Search merchant…"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
-          className="w-full pl-9 pr-3 py-2 rounded-md border border-border bg-surface text-sm"
         />
       </div>
       <div className="mb-3">

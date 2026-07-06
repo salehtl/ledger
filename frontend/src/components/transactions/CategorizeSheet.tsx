@@ -4,6 +4,7 @@ import type { Category, Txn } from "../../api/types";
 import { Money } from "../Money";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { Input } from "../ui/Field";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
@@ -37,12 +38,15 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
         {nativeAmountTag(txn) ? ` · ${nativeAmountTag(txn)}` : ""}
         {aedFils(txn) === null ? " · no AED rate" : ""}
       </p>
-      <input
+      <Input
+        inset
         type="search"
+        enterKeyHint="search"
+        autoCorrect="off"
         placeholder="Search categories…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        className="w-full mb-3 px-3 py-2 rounded-md border border-border bg-surface-2 text-sm"
+        className="mb-3"
       />
       <div className="space-y-3">
         {groups.map(([bucket, list]) => (
