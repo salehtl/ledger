@@ -88,4 +88,19 @@ describe("Dialog", () => {
     // No timer advancement — reduced motion must fire onClose immediately.
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("renders a title adornment and applies titleStyle to the heading", () => {
+    render(
+      <Dialog
+        title="Wants"
+        titleAdornment={<span data-testid="dot" />}
+        titleStyle={{ color: "rgb(123, 53, 184)" }}
+        onClose={() => {}}
+      >
+        body
+      </Dialog>,
+    );
+    expect(screen.getByTestId("dot")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Wants" })).toHaveStyle({ color: "rgb(123, 53, 184)" });
+  });
 });
