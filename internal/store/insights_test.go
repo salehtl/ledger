@@ -1,7 +1,10 @@
 // internal/store/insights_test.go
 package store
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSelectCategorySpend(t *testing.T) {
 	st := openTestStore(t)
@@ -93,5 +96,64 @@ func TestSelectMonthlyTotals(t *testing.T) {
 	}
 	if june.SpentFils != 8000 || june.IncomeFils != 100000 {
 		t.Fatalf("june = %+v, want spent 8000 income 100000", june)
+	}
+}
+
+func TestCategorySpendNetsSpendingCredits(t *testing.T) {
+	st := openTestStore(t)
+	seedTxn(t, st, "debit", "Carrefour", 10000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Carrefour refund", 4000, "2026-07-02T10:00:00Z", "")
+	var groceriesID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&groceriesID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateTransactionCategory(creditID, groceriesID, "confirmed"); err != nil {
+		t.Fatalf("confirm credit: %v", err)
+	}
+
+	rows, err := st.SelectCategorySpend("2026-07", false)
+	if err != nil {
+		t.Fatalf("SelectCategorySpend: %v", err)
+	}
+	var groceries *CategorySpendRow
+	for i := range rows {
+		if rows[i].Name == "Groceries" {
+			groceries = &rows[i]
+		}
+	}
+	if groceries == nil {
+		t.Fatal("Groceries row missing")
+	}
+	if groceries.AmountFils != 6000 {
+		t.Errorf("Groceries spend = %d, want 6000 (10000 debit - 4000 refund credit)", groceries.AmountFils)
+	}
+}
+
+func TestMonthlyTotalsNetSpendingCredits(t *testing.T) {
+	st := openTestStore(t)
+	// SelectMonthlyTotals is anchored to time.Now, so seed rows in the current month.
+	posted := time.Now().UTC().Format("2006-01-02") + "T10:00:00Z"
+	seedTxn(t, st, "debit", "Carrefour", 10000, posted, "Groceries")
+	creditID := seedTxn(t, st, "credit", "Carrefour refund", 4000, posted, "")
+	var groceriesID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&groceriesID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateTransactionCategory(creditID, groceriesID, "confirmed"); err != nil {
+		t.Fatalf("confirm credit: %v", err)
+	}
+
+	totals, err := st.SelectMonthlyTotals(1)
+	if err != nil {
+		t.Fatalf("SelectMonthlyTotals: %v", err)
+	}
+	if len(totals) != 1 {
+		t.Fatalf("got %d months, want 1", len(totals))
+	}
+	if totals[0].SpentFils != 6000 {
+		t.Errorf("spent = %d, want 6000 (net of refund)", totals[0].SpentFils)
+	}
+	if totals[0].IncomeFils != 0 {
+		t.Errorf("income = %d, want 0 (refund is not income)", totals[0].IncomeFils)
 	}
 }

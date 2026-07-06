@@ -11,8 +11,9 @@ type CategorySpendRow struct {
 	AmountFils int64
 }
 
-// SelectCategorySpend returns confirmed spending-kind debits in the period,
-// grouped by category, highest spend first. Bucket honors bucket_snapshot when frozen.
+// SelectCategorySpend returns confirmed spending-kind activity in the period,
+// netting credits (refunds) against debits, grouped by category, highest net
+// spend first. Bucket honors bucket_snapshot when frozen.
 func (s *Store) SelectCategorySpend(period string, frozen bool) ([]CategorySpendRow, error) {
 	start, end, err := monthRange(period)
 	if err != nil {
@@ -23,12 +24,14 @@ func (s *Store) SelectCategorySpend(period string, frozen bool) ([]CategorySpend
 		bucketExpr = "COALESCE(t.bucket_snapshot, c.bucket)"
 	}
 	rows, err := s.DB.Query(
-		`SELECT c.id, c.name, COALESCE(`+bucketExpr+`,''), SUM(COALESCE(t.amount_aed, 0))
+		`SELECT c.id, c.name, COALESCE(`+bucketExpr+`,''),
+		        SUM(CASE WHEN t.direction='debit' THEN COALESCE(t.amount_aed, 0)
+		                 ELSE -COALESCE(t.amount_aed, 0) END) AS net
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
-		  WHERE t.status='confirmed' AND c.kind='spending' AND t.direction='debit'
+		  WHERE t.status='confirmed' AND c.kind='spending'
 		    AND t.posted_at >= ? AND t.posted_at < ?
 		  GROUP BY c.id, c.name
-		  ORDER BY SUM(COALESCE(t.amount_aed, 0)) DESC`,
+		  ORDER BY net DESC`,
 		start, end,
 	)
 	if err != nil {
@@ -65,7 +68,8 @@ func (s *Store) SelectMonthlyTotals(months int) ([]MonthlyTotalRow, error) {
 	start := firstOfThis.AddDate(0, -(months-1), 0).Format("2006-01-02")
 	rows, err := s.DB.Query(
 		`SELECT strftime('%Y-%m', t.posted_at) AS ym,
-		        COALESCE(SUM(CASE WHEN c.kind='spending' AND t.direction='debit' THEN COALESCE(t.amount_aed, 0) END),0),
+		        COALESCE(SUM(CASE WHEN c.kind='spending' AND t.direction='debit' THEN COALESCE(t.amount_aed, 0)
+		                          WHEN c.kind='spending' AND t.direction='credit' THEN -COALESCE(t.amount_aed, 0) END),0),
 		        COALESCE(SUM(CASE WHEN c.kind='income'   AND t.direction='credit' THEN COALESCE(t.amount_aed, 0) END),0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND t.posted_at >= ?
