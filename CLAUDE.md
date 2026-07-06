@@ -93,6 +93,8 @@ React 18 + TypeScript + Vite. TanStack Router/Query/Table, Tailwind v4, recharts
 
 `lib/` holds **pure, framework-free helpers** (money/`fils` formatting, scope math, swipe and pull-to-refresh gesture geometry, transaction filtering) each with a co-located `*.test.ts`. The convention: extract decision logic out of components into a pure `lib/` function and unit-test it there, keeping components thin and gesture/format edge cases covered without rendering. Follow this when adding non-trivial UI logic.
 
+`frontend/src/components/README.md` is the **UI component catalog**: every shared component's purpose plus when to use / not use it, and the mobile conventions (44px targets, 16px inputs, `.press` feedback, Dialog-only overlays). Check it before building UI; update it in the same commit whenever you add or change a shared component.
+
 ## Deploy
 
 `dinosaur` is both this dev box and the production server, so deploy steps run **locally**. Single static binary + systemd (`deploy/ledger.service`, hardened sandbox) + Tailscale HTTPS (required — service workers need HTTPS). Full runbook, dedicated-mailbox setup, and backup commands are in `deploy/README.md`. The service binds `127.0.0.1:8080`; `tailscale serve` fronts HTTPS. DB and config: `/var/lib/ledger/ledger.db` (0700), `/etc/ledger/config.toml`, secrets in `/etc/ledger/ledger.env`.
