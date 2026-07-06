@@ -4,10 +4,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { AppShell } from "./AppShell";
 
+const warnIngest = {
+  configured: true, count: 5, last_at: "2026-07-05T08:00:00Z",
+  status: "warn", reasons: ["poll_stale"],
+  last_poll_success_at: "2026-07-05T06:00:00Z",
+  last_poll_attempt_at: "2026-07-05T09:00:00Z",
+  consecutive_failures: 0, poll_interval_seconds: 60, silence_days: 3,
+};
+
 beforeEach(() => {
+  sessionStorage.clear();
   // Every screen hits the API on mount; return empty payloads.
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/summary")) return new Response(JSON.stringify({ period: "2026-06", income: 0, month_progress: 0, buckets: [], recent: [] }));
+    if (url.includes("/api/health")) return new Response(JSON.stringify({ status: "ok", db: "ok", ingest: warnIngest }));
     if (url.includes("/api/events")) return new Response("");
     return new Response("[]");
   }));
@@ -70,5 +80,24 @@ describe("AppShell", () => {
     fireEvent.touchEnd(main);
 
     await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));
+  });
+
+  it("does not replay a stale settings deep-link after navigating away and back", async () => {
+    wrap();
+    // Tap the ingest warning banner: jumps to Settings, straight into the Email ingest drill-in.
+    fireEvent.click(await screen.findByRole("button", { name: /ingest details/i }));
+    expect(await screen.findByRole("heading", { name: /email ingest/i })).toBeInTheDocument();
+
+    // Navigate to Home, then back to Settings via the bottom nav.
+    fireEvent.click(screen.getByRole("button", { name: /home/i }));
+    await screen.findByRole("heading", { name: /home/i });
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+
+    // The stale intent must not replay: we should land on the hub, not the ingest drill-in.
+    // (The hub's "Email ingest" row is always in the DOM under the drill-in overlay, so the
+    // reliable signal is the drill-in's own heading/back-button being absent.)
+    await screen.findByRole("button", { name: /^settings$/i }); // confirms we're on the Settings tab
+    expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /back from email ingest/i })).toBeNull();
   });
 });

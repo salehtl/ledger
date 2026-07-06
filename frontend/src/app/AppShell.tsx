@@ -74,7 +74,11 @@ export function AppShell() {
           {tab === "settings" && <Settings scope={scope} intent={settingsIntent} />}
         </div>
       </main>
-      <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
+      <BottomNav
+        active={tab}
+        reviewCount={reviewCount}
+        onNavigate={(t) => { setSettingsIntent(null); setTab(t); }}
+      />
     </div>
   );
 }
