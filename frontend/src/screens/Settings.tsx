@@ -12,6 +12,7 @@ import { BudgetPage } from "./settings/BudgetPage";
 import { CategorizationPage } from "./settings/CategorizationPage";
 import { SwipePage } from "./settings/SwipePage";
 import { CurrenciesPage } from "./settings/CurrenciesPage";
+import { AccountsPage } from "./settings/AccountsPage";
 import { TextSizePage } from "./settings/TextSizePage";
 import { IngestHealthPage } from "./settings/IngestHealthPage";
 
@@ -61,6 +62,7 @@ export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIn
       {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}
       {page === "swipe" && <SwipePage onClose={close} />}
       {page === "currencies" && <CurrenciesPage onClose={close} />}
+      {page === "accounts" && <AccountsPage onClose={close} />}
       {page === "textsize" && <TextSizePage onClose={close} />}
       {page === "ingest" && <IngestHealthPage onClose={close} />}
       {page === "categories" && <CategoryManager onClose={close} />}

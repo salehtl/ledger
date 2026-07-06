@@ -45,3 +45,14 @@ export interface IngestHealth {
   silence_days: number;
 }
 export interface Health { status: string; db: string; ingest?: IngestHealth; }
+
+export interface Account {
+  id: number;
+  name: string;
+  bank: string;
+  last4: string;
+}
+
+export interface SweepResult {
+  marked: number;
+}

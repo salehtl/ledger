@@ -1,4 +1,4 @@
-import type { CategoryUsage, RatesResponse } from "./types";
+import type { Account, CategoryUsage, RatesResponse, SweepResult } from "./types";
 
 async function parseOrThrow(res: Response) {
   const text = await res.text();
@@ -43,4 +43,20 @@ export async function putRate(currency: string, rate: number): Promise<void> {
 
 export function deleteRate(currency: string): Promise<void> {
   return del(`/api/rates/${currency}`);
+}
+
+export function getAccounts(): Promise<Account[]> {
+  return getJSON("/api/accounts");
+}
+
+export function createAccount(a: { name: string; last4: string; bank?: string }): Promise<{ id: number }> {
+  return postJSON("/api/accounts", a);
+}
+
+export function deleteAccount(id: number): Promise<void> {
+  return del(`/api/accounts/${id}`);
+}
+
+export function sweepTransfers(): Promise<SweepResult> {
+  return postJSON("/api/transfers/sweep", {});
 }
