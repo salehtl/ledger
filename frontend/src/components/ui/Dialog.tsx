@@ -1,10 +1,18 @@
 // frontend/src/components/ui/Dialog.tsx
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { X } from "lucide-react";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motion";
 import { useSheetDrag } from "../../hooks/useSheetDrag";
+import { IconButton } from "./IconButton";
 
-export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Dialog({ title, titleAdornment, titleStyle, onClose, children }: {
+  title: string;
+  titleAdornment?: ReactNode;
+  titleStyle?: CSSProperties;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   const panelRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -97,9 +105,12 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
           onPointerCancel={drag.onPointerCancel}
         >
           <div aria-hidden className="sm:hidden mx-auto mb-2 h-1 w-9 rounded-full bg-border" />
-          <div className="flex items-center justify-between mb-3">
-            <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
-            <button aria-label="Close" className="-mr-2 p-2 rounded-lg text-muted hover:bg-surface-2 text-xl leading-none press" onClick={requestClose}>×</button>
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {titleAdornment}
+              <h2 id={titleId} style={titleStyle} className="text-lg font-semibold truncate">{title}</h2>
+            </div>
+            <IconButton label="Close" className="-mr-2" onClick={requestClose}><X size={18} /></IconButton>
           </div>
         </div>
         {children}
