@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { getJSON, getRates } from "../../api/client";
+import { getAccounts, getJSON, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
 import { Switch } from "../../components/ui/Switch";
 import { loadSwipeConfig } from "../../lib/swipe";
@@ -28,6 +28,7 @@ export type SettingsPageId =
   | "categorization"
   | "swipe"
   | "currencies"
+  | "accounts"
   | "categories"
   | "rules"
   | "textsize"
@@ -102,6 +103,7 @@ export function SettingsHub({
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const health = useIngestHealth();
+  const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());
@@ -161,6 +163,15 @@ export function SettingsHub({
           label="Currencies"
           value={rates.data?.rates ? currenciesLabel(rates.data) : undefined}
           onClick={() => onOpen("currencies")}
+        />
+        <HubRow
+          label="Accounts & transfers"
+          value={
+            accounts.data && accounts.data.length > 0
+              ? `${accounts.data.length} account${accounts.data.length === 1 ? "" : "s"}`
+              : undefined
+          }
+          onClick={() => onOpen("accounts")}
         />
       </Group>
 
