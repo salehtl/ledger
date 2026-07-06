@@ -14,7 +14,7 @@ export function SegmentedControl<T extends string>({
           key={o.value}
           aria-pressed={value === o.value}
           onClick={() => { fire("selection"); onChange(o.value); }}
-          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+          className={`px-4 py-2 rounded text-sm font-medium transition-colors press ${
             value === o.value ? "bg-surface text-fg shadow-1" : "text-muted hover:text-fg"
           }`}
         >

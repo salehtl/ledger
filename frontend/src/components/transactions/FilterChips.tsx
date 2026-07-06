@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
+import { Button } from "../ui/Button";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import type { Category, Txn } from "../../api/types";
 
@@ -82,7 +83,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             key={d.key}
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
-            className={`flex items-center gap-1 px-3 py-1 rounded text-sm font-medium whitespace-nowrap transition-colors ${
+            className={`flex items-center gap-1 px-3.5 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors press ${
               count > 0 ? "bg-accent/10 text-accent" : "bg-surface-2 text-muted"
             }`}
           >
@@ -95,7 +96,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
       {active > 0 && (
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
-          className="flex items-center gap-1 px-3 py-1 rounded text-sm font-medium text-muted whitespace-nowrap hover:text-fg"
+          className="flex items-center gap-1 px-3.5 py-2 rounded-md text-sm font-medium text-muted whitespace-nowrap press hover:text-fg"
         >
           <X size={14} aria-hidden /> Clear
         </button>
@@ -109,12 +110,12 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             <ul className="space-y-1">
               {current.options.map((o) => (
                 <li key={o.value}>
-                  <label className="flex items-center gap-3 px-2 py-2.5 rounded-md hover:bg-surface-2 cursor-pointer">
+                  <label className="flex items-center gap-3 px-2 py-3 rounded-md hover:bg-surface-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={current.selected.includes(o.value)}
                       onChange={() => toggle(current, o.value)}
-                      className="h-4 w-4 accent-accent"
+                      className="h-5 w-5 accent-accent"
                     />
                     <span className="text-sm">{o.label}</span>
                   </label>
@@ -123,19 +124,10 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             </ul>
           )}
           <div className="flex justify-between items-center pt-3 mt-2 border-t border-border">
-            <button
-              onClick={() => current.onChange([])}
-              disabled={current.selected.length === 0}
-              className="text-sm text-muted disabled:opacity-40"
-            >
+            <Button variant="ghost" onClick={() => current.onChange([])} disabled={current.selected.length === 0}>
               Clear
-            </button>
-            <button
-              onClick={() => setOpen(null)}
-              className="px-4 py-1.5 rounded-md bg-accent text-accent-fg text-sm font-medium"
-            >
-              Done
-            </button>
+            </Button>
+            <Button variant="primary" onClick={() => setOpen(null)}>Done</Button>
           </div>
         </Dialog>
       )}

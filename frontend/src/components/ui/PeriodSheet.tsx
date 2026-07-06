@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Dialog } from "./Dialog";
 import { Button } from "./Button";
+import { IconButton } from "./IconButton";
 import { type Scope, addMonth, normalizeRange } from "../../lib/scope";
 import { currentPeriod, monthLabel } from "../../lib/insights";
 
@@ -58,9 +59,9 @@ export function PeriodSheet({ scope, onApply, onClose }: {
       </div>
 
       <div className="flex items-center justify-between mb-3">
-        <button aria-label="Previous year" className="p-2 rounded-md text-muted hover:bg-bg" onClick={() => setYear((y) => y - 1)}><ChevronLeft size={18} /></button>
+        <IconButton label="Previous year" onClick={() => setYear((y) => y - 1)}><ChevronLeft size={18} /></IconButton>
         <span className="text-sm font-semibold tnum">{year}</span>
-        <button aria-label="Next year" className="p-2 rounded-md text-muted hover:bg-bg" onClick={() => setYear((y) => y + 1)}><ChevronRight size={18} /></button>
+        <IconButton label="Next year" onClick={() => setYear((y) => y + 1)}><ChevronRight size={18} /></IconButton>
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-4">

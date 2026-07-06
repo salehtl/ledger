@@ -87,7 +87,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   return (
     <div className="space-y-4">
       <button
-        className="w-full flex items-center gap-2 px-3 py-2.5 rounded-md border border-border bg-surface text-sm text-muted"
+        className="w-full min-h-11 flex items-center gap-2 px-3 rounded-md border border-border bg-surface text-base text-muted press"
         onClick={() => setSearchOpen(true)}
       >
         <Search size={16} aria-hidden /> Search transactions…
