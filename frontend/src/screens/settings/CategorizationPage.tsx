@@ -6,6 +6,8 @@ import { type Scope, scopeBounds, scopeLabel, DEFAULT_SCOPE } from "../../lib/sc
 import { PeriodSheet } from "../../components/ui/PeriodSheet";
 import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
+import { SectionLabel } from "../../components/ui/SectionLabel";
+import { Card } from "../../components/ui/Card";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
@@ -106,8 +108,8 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
           </section>
 
           <section className="space-y-2">
-            <h2 className="px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Run now</h2>
-            <div className="bg-surface rounded-[var(--radius-card)] shadow-1 p-4">
+            <SectionLabel as="h2" className="px-1">Run now</SectionLabel>
+            <Card>
               {running ? (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm tnum">{catStatus.data!.processed} of {catStatus.data!.total} categorized</span>
@@ -132,7 +134,7 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
                   {catStatus.data.error ? ` — ${catStatus.data.error}` : ""}
                 </p>
               )}
-            </div>
+            </Card>
           </section>
 
           {periodOpen && (

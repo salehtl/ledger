@@ -5,6 +5,7 @@ import { Money } from "../Money";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Field";
+import { SectionLabel } from "../ui/SectionLabel";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
@@ -51,7 +52,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose }: {
       <div className="space-y-3">
         {groups.map(([bucket, list]) => (
           <fieldset key={bucket}>
-            <legend className="text-xs uppercase tracking-wide text-muted mb-1">{BUCKET_LABEL[bucket] ?? bucket}</legend>
+            <SectionLabel as="legend" className="mb-1">{BUCKET_LABEL[bucket] ?? bucket}</SectionLabel>
             <div className="space-y-1">
               {list.map((c) => (
                 <label key={c.ID} className="flex items-center gap-3 py-1.5 cursor-pointer">

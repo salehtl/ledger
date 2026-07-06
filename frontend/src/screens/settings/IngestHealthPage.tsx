@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, postJSON } from "../../api/client";
 import type { AppSettings } from "../../api/types";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { Card } from "../../components/ui/Card";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
@@ -49,7 +50,7 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
     <SettingsPage title="Email ingest" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
       {ih && (
         <>
-          <section className="bg-surface rounded-[var(--radius-card)] shadow-1 p-4 space-y-1">
+          <Card className="space-y-1">
             <p className="text-sm font-semibold">{ingestStatusLabel(ih.status)}</p>
             {ih.status === "warn" && ih.reasons.map((r) => (
               <p key={r} className="text-xs text-warn">{reasonText(r, ih)}</p>
@@ -63,9 +64,9 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
             {ih.status === "off" && (
               <p className="text-xs text-muted">No IMAP mailbox is configured.</p>
             )}
-          </section>
+          </Card>
 
-          <section className="bg-surface rounded-[var(--radius-card)] shadow-1 px-4 py-2 divide-y divide-border">
+          <Card className="!py-2 divide-y divide-border">
             <FactRow label="Last email seen" value={relTime(ih.last_at, now)} />
             <FactRow label="Last successful check" value={relTime(ih.last_poll_success_at, now)} />
             <FactRow label="Last attempted check" value={relTime(ih.last_poll_attempt_at, now)} />
@@ -75,7 +76,7 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
             {ih.last_error && (
               <p role="alert" className="text-bad text-xs py-2 break-words">{ih.last_error}</p>
             )}
-          </section>
+          </Card>
 
           <section>
             <p className="text-sm mb-1">Warn when no email for</p>
