@@ -5,6 +5,7 @@ import { getJSON, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
+import { Input } from "../components/ui/Field";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
@@ -82,16 +83,15 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
         </a>
       </div>
 
-      <div className="relative">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
-        <input
-          type="search"
-          placeholder="Search merchant…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-9 pr-3 py-2 rounded-md border border-border bg-surface text-sm"
-        />
-      </div>
+      <Input
+        icon={Search}
+        type="search"
+        enterKeyHint="search"
+        autoCorrect="off"
+        placeholder="Search merchant…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
 
       <FilterChips filters={filters} categories={cats.data ?? []} txns={q.data ?? []} onChange={setFilters} />
 
