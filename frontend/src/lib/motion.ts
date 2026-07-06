@@ -21,3 +21,6 @@ export function sheetTransition(reduced: boolean): string {
 export function scrimTransition(): string {
   return "opacity 200ms var(--ease-out)";
 }
+
+/** Drill-in pages slide on the same drawer curve and timing as sheets. */
+export const pageTransition = sheetTransition;
