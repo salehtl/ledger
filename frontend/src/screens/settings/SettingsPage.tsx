@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
+import { IconButton } from "../../components/ui/IconButton";
 
 /**
  * Shared full-screen drill-in shell for a Settings subpage. Matches the
@@ -20,13 +21,9 @@ export function SettingsPage({
   return (
     <div className="fixed inset-0 z-40 bg-bg flex flex-col">
       <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
-        <button
-          onClick={onClose}
-          className="p-2 -ml-2 rounded-lg hover:bg-surface-2 text-muted press"
-          aria-label={`Back from ${title}`}
-        >
+        <IconButton label={`Back from ${title}`} className="-ml-2" onClick={onClose}>
           <ArrowLeft size={20} />
-        </button>
+        </IconButton>
         <h1 className="flex-1 text-lg font-semibold text-fg">{title}</h1>
         {headerRight}
       </header>
