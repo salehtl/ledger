@@ -4,11 +4,11 @@ import { Trash2 } from "lucide-react";
 import { getRates, putRate, deleteRate } from "../../api/client";
 import { parseRateForm } from "../../lib/rates";
 import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Field";
+import { IconButton } from "../../components/ui/IconButton";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
-
-const field = "w-full px-3 py-2 rounded-md border border-border bg-surface text-sm";
 
 export function CurrenciesPage({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -85,22 +85,19 @@ export function CurrenciesPage({ onClose }: { onClose: () => void }) {
             <div key={r.currency} className="space-y-1">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium w-12">{r.currency}</span>
-                <input
+                <Input
                   type="number"
+                  inputMode="decimal"
                   step="0.0001"
                   min="0"
-                  className={`${field} flex-1`}
+                  className="flex-1"
                   value={rateDraftFor(r.currency, String(r.rate))}
                   onChange={(e) => setRateDrafts((prev) => ({ ...prev, [r.currency]: e.target.value }))}
                   onBlur={(e) => saveRate(r.currency, e.target.value, String(r.rate))}
                 />
-                <button
-                  aria-label={`Delete ${r.currency} rate`}
-                  className="p-2 -mr-2 text-muted hover:text-bad press"
-                  onClick={() => removeRate(r.currency)}
-                >
+                <IconButton label={`Delete ${r.currency} rate`} tone="danger" className="-mr-2" onClick={() => removeRate(r.currency)}>
                   <Trash2 size={16} />
-                </button>
+                </IconButton>
               </div>
               {rateErrors[r.currency] && <p role="alert" className="text-bad text-xs">{rateErrors[r.currency]}</p>}
             </div>
@@ -110,12 +107,13 @@ export function CurrenciesPage({ onClose }: { onClose: () => void }) {
             <div key={code} className="space-y-1">
               <p className="text-xs text-warn">{code} — no rate configured; these transactions are excluded from budgets</p>
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   type="number"
+                  inputMode="decimal"
                   step="0.0001"
                   min="0"
                   aria-label={`Rate for ${code}`}
-                  className={`${field} flex-1`}
+                  className="flex-1"
                   value={rateDrafts[code] ?? ""}
                   onChange={(e) => setRateDrafts((prev) => ({ ...prev, [code]: e.target.value }))}
                   onBlur={(e) => saveRate(code, e.target.value)}
@@ -128,21 +126,25 @@ export function CurrenciesPage({ onClose }: { onClose: () => void }) {
           <div className="space-y-1 pt-3 border-t border-border">
             <p className="text-sm font-medium">Add currency</p>
             <div className="flex items-center gap-2">
-              <input
+              <Input
                 type="text"
                 placeholder="USD"
                 aria-label="New currency code"
-                className={`${field} w-20`}
+                autoCapitalize="characters"
+                autoCorrect="off"
+                maxLength={3}
+                className="!w-24"
                 value={newRateCode}
                 onChange={(e) => setNewRateCode(e.target.value)}
               />
-              <input
+              <Input
                 type="number"
+                inputMode="decimal"
                 step="0.0001"
                 min="0"
                 placeholder="Rate"
                 aria-label="New currency rate"
-                className={`${field} flex-1`}
+                className="flex-1"
                 value={newRateValue}
                 onChange={(e) => setNewRateValue(e.target.value)}
               />

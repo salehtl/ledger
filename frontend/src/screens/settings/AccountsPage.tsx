@@ -3,11 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { getAccounts, createAccount, deleteAccount, sweepTransfers } from "../../api/client";
 import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Field";
+import { IconButton } from "../../components/ui/IconButton";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
-
-const field = "w-full px-3 py-2 rounded-md border border-border bg-surface text-sm";
 
 export function AccountsPage({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -84,34 +84,32 @@ export function AccountsPage({ onClose }: { onClose: () => void }) {
               <div key={a.id} className="flex items-center gap-2">
                 <span className="text-sm font-medium flex-1 truncate">{a.name}</span>
                 <span className="text-xs text-muted tabular-nums">•••• {a.last4}</span>
-                <button
-                  aria-label={`Delete ${a.name}`}
-                  className="p-2 -mr-2 text-muted hover:text-bad press"
-                  onClick={() => remove(a.id)}
-                >
+                <IconButton label={`Delete ${a.name}`} tone="danger" className="-mr-2" onClick={() => remove(a.id)}>
                   <Trash2 size={16} />
-                </button>
+                </IconButton>
               </div>
             ))}
 
             <div className="space-y-1 pt-3 border-t border-border">
               <p className="text-sm font-medium">Add account</p>
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   type="text"
                   placeholder="Name"
                   aria-label="Account name"
-                  className={`${field} flex-1`}
+                  autoCapitalize="words"
+                  autoCorrect="off"
+                  className="flex-1"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
-                <input
+                <Input
                   type="text"
                   inputMode="numeric"
                   maxLength={4}
                   placeholder="Last 4"
                   aria-label="Last 4 digits"
-                  className={`${field} w-24`}
+                  className="!w-24"
                   value={last4}
                   onChange={(e) => setLast4(e.target.value.replace(/\D/g, ""))}
                 />

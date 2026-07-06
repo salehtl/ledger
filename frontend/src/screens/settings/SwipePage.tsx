@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Field";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import {
@@ -9,8 +10,6 @@ import {
   type SwipeConfig,
   type SwipeDirection,
 } from "../../lib/swipe";
-
-const field = "w-full px-3 py-2 rounded-md border border-border bg-surface text-sm";
 
 const SWIPE_DIRS: Record<SwipeDirection, { arrow: string; word: string }> = {
   left: { arrow: "←", word: "Left" },
@@ -53,17 +52,12 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
               <div key={dir} className="flex items-center gap-3">
                 <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2 text-sm" aria-hidden>{arrow}</span>
                 <span className="text-sm w-12">{word}</span>
-                <select
-                  value={value}
-                  aria-label={`${word} swipe action`}
-                  onChange={(e) => setSwipeDir(dir, e.target.value)}
-                  className={`${field} flex-1`}
-                >
+                <Select value={value} aria-label={`${word} swipe action`} onChange={(e) => setSwipeDir(dir, e.target.value)} className="flex-1">
                   <option value="want">Want</option>
                   <option value="need">Need</option>
                   <option value="saving">Save</option>
                   <option value="transfer">Transfer</option>
-                </select>
+                </Select>
               </div>
             );
           })}
