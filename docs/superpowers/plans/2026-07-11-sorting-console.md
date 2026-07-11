@@ -514,9 +514,13 @@ The deck fills its container (graphite), measures the arena, positions a modest 
 
 ---
 
-## Task 6: Immersive graphite + fullscreen chrome (`Review.tsx`, `AppShell.tsx`)
+## Task 6: Immersive graphite + fullscreen chrome (`Review.tsx`, `AppShell.tsx`, deck polish)
 
-**Files:** Modify `frontend/src/screens/Review.tsx`, `frontend/src/app/AppShell.tsx`
+**Files:** Modify `frontend/src/screens/Review.tsx`, `frontend/src/app/AppShell.tsx`, `frontend/src/components/swipe/SwipeDeck.tsx`
+
+**Deck polish (carried over from Task 5 review):**
+- In `SwipeDeck.tsx`, gate ALL non-facet chrome (the exit button, the "Remaining" header, the hint text, the refund button) on `size.w > 0`, so nothing renders over an unmeasured arena on the first frame. Only the graphite root shows until the arena is measured.
+- Restore the header copy to **"Remaining"** with the count (matching the app's prior deck), e.g. an eyebrow "Remaining" over the number `N`.
 
 - [ ] **Step 1: `Review.tsx`** — accept `{ scope; immersive?: boolean; onExit?: () => void }`. When rendering the deck (not loading/empty), render it full-bleed: `<div className="absolute inset-0"><SwipeDeck ... config={config} onExit={onExit} /></div>`. Keep the existing loading spinner and "All caught up here" empty state (these render in the normal, non-immersive shell). Pass `onExit` through to the deck.
 
