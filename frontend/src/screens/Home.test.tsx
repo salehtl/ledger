@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider, type Persister } from "@tanstack/react-query-persist-client";
 import { Home } from "./Home";
-import type { Summary, CategorySpend, MonthlyTotal } from "../api/types";
+import type { Summary, CategorySpend, MonthlyTotal, Project } from "../api/types";
 
 const summary: Summary = {
   period: "2026-06", income: 1500000, month_progress: 0.5,
@@ -21,20 +21,26 @@ const summary: Summary = {
 const cats: CategorySpend[] = [{ category_id: 1, name: "Groceries", bucket: "need", spent: 210000 }];
 const trend: MonthlyTotal[] = [{ period: "2026-06", spent: 482000, income: 1500000 }];
 
+// Mutable per-test: most tests want zero active projects (section absent);
+// the Projects-section tests below populate this before rendering.
+let projects: Project[] = [];
+
 beforeEach(() => {
+  projects = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/summary")) return new Response(JSON.stringify(summary));
     if (url.includes("/api/insights/categories")) return new Response(JSON.stringify(cats));
     if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+    if (url.includes("/api/projects")) return new Response(JSON.stringify(projects));
     return new Response("[]");
   }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-function wrap() {
+function wrap(props: Partial<Parameters<typeof Home>[0]> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><Home /></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><Home {...props} /></QueryClientProvider>);
 }
 
 describe("Home", () => {
@@ -109,5 +115,34 @@ describe("Home", () => {
     expect(calls.some((u) => u.includes("from=2026-03") && u.includes("to=2026-06"))).toBe(true);
     // Pace/projection stay scoped to the live current month, not a span.
     expect(screen.queryByText(/Projected/)).not.toBeInTheDocument();
+  });
+
+  it("shows a Projects section with active projects, opening a card and the All affordance", async () => {
+    const onOpenProject = vi.fn();
+    const onOpenProjects = vi.fn();
+    projects = [
+      {
+        id: 7, name: "Kitchen reno", budget_fils: 1_000_000, color: "#1373d9",
+        starts_on: "", ends_on: "", status: "active", count_in_monthly: false,
+        completed_at: "", net_spent_fils: 400_000, pending_fils: 0, txn_count: 3,
+      },
+    ];
+    wrap({ onOpenProject, onOpenProjects });
+
+    expect(await screen.findByText("Projects")).toBeInTheDocument();
+    expect(screen.getByText("Kitchen reno")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Kitchen reno"));
+    expect(onOpenProject).toHaveBeenCalledWith(7);
+
+    fireEvent.click(screen.getByText("All ›"));
+    expect(onOpenProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no Projects section when there are no active projects", async () => {
+    wrap();
+    // Wait for a settled render (recent list) so we know the projects query resolved too.
+    await screen.findByText("SPINNEYS");
+    expect(screen.queryByText("Projects")).not.toBeInTheDocument();
   });
 });

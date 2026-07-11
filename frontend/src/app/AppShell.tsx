@@ -76,7 +76,7 @@ export function AppShell() {
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
-          {tab === "home" && <Home scope={scope} onOpenProject={openProject} />}
+          {tab === "home" && <Home scope={scope} onOpenProject={openProject} onOpenProjects={openProjects} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
