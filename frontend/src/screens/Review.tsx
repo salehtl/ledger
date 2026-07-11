@@ -7,7 +7,7 @@ import { SwipeDeck } from "../components/swipe/SwipeDeck";
 import { loadSwipeConfig } from "../lib/swipe";
 import { type Scope, scopeBounds, scopeLabel } from "../lib/scope";
 
-export function Review({ scope }: { scope: Scope }) {
+export function Review({ scope, immersive, onExit }: { scope: Scope; immersive?: boolean; onExit?: () => void }) {
   const bounds = scopeBounds(scope);
 
   const txns = useQuery({
@@ -36,7 +36,7 @@ export function Review({ scope }: { scope: Scope }) {
   const deckKey = `${bounds.from ?? "all"}:${bounds.to ?? "all"}`;
 
   return (
-    <div className="flex flex-col min-h-[60vh]">
+    <div className={immersive ? "relative flex flex-col h-full" : "flex flex-col min-h-[60vh]"}>
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
           <Loader2 size={36} className="animate-spin text-muted" />
@@ -52,7 +52,9 @@ export function Review({ scope }: { scope: Scope }) {
       )}
 
       {!loading && !empty && config && (
-        <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} />
+        <div className="absolute inset-0">
+          <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} onExit={onExit} />
+        </div>
       )}
     </div>
   );
