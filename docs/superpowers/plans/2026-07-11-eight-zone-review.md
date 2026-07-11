@@ -173,9 +173,9 @@ describe('buildDefaultConfig', () => {
     expect(cfg.edges.right.slotB).toBe(2) // not 9 (inactive)
   })
 
-  it('repeats the only category when a group has one, 0 when none', () => {
+  it('leaves slot B empty when a group has one category, 0/0 when none', () => {
     const cfg = buildDefaultConfig([{ ID: 5, Kind: 'spending', Bucket: 'saving', IsActive: true }])
-    expect(cfg.edges.down).toEqual({ group: 'saving', slotA: 5, slotB: 5 })
+    expect(cfg.edges.down).toEqual({ group: 'saving', slotA: 5, slotB: 0 })
     expect(cfg.edges.right).toEqual({ group: 'need', slotA: 0, slotB: 0 })
   })
 })
@@ -350,7 +350,7 @@ export function buildDefaultConfig(categories: SeedCat[]): SwipeConfig {
   const edge = (group: EdgeGroup): EdgeConfig => {
     const ids = candidates(group, categories)
     const slotA = ids[0] ?? 0
-    const slotB = ids[1] ?? ids[0] ?? 0
+    const slotB = ids[1] ?? 0
     return { group, slotA, slotB }
   }
   return {
@@ -858,7 +858,8 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
   const categorize = useCallback((categoryId: number, edge: EdgeKey) => {
     if (!current) return
-    fire('selection')
+    // Caller fires the feedback cue (success for a direct swipe, selection for
+    // a panel pick) so a single action never double-fires.
     setState(s => ({ ...s, pendingGroup: null, flyEdge: edge }))
     postJSON(`/api/transactions/${current.ID}/categorize`, {
       category_id: categoryId,
@@ -882,6 +883,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     const edge = (['up', 'down', 'left', 'right'] as const).find(
       e => config.edges[e].group === state.pendingGroup,
     ) ?? 'down'
+    fire('selection')
     categorize(categoryId, edge)
   }, [config, state.pendingGroup, categorize])
 
