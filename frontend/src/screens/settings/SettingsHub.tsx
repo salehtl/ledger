@@ -111,7 +111,7 @@ export function SettingsHub({
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const health = useIngestHealth();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
-  const projects = useQuery({ queryKey: ["projects"], queryFn: () => getProjects(true) });
+  const projects = useQuery({ queryKey: ["projects", "all"], queryFn: () => getProjects(true) });
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());

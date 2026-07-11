@@ -8,9 +8,12 @@ import { ProjectCard } from "../../components/projects/ProjectCard";
 import { SettingsPage } from "../settings/SettingsPage";
 
 /** Projects list drill-in: an Active section and a Completed section, both
- *  drawn from the same `["projects"]` query (include_completed=1) so the
+ *  drawn from the same `["projects", "all"]` query (include_completed=1) so the
  *  cache stays consistent with the Settings hub badge and the form's
- *  post-save invalidation. */
+ *  post-save invalidation (which invalidates the `["projects"]` prefix, so
+ *  this sub-key refreshes too). Kept separate from the active-only
+ *  `["projects", "active"]` key Home uses, since the two fetches return
+ *  different result sets and must not collide in the cache. */
 export function ProjectsScreen({
   onClose,
   onNewProject,
@@ -20,7 +23,7 @@ export function ProjectsScreen({
   onNewProject: () => void;
   onOpenProject: (id: number) => void;
 }) {
-  const projects = useQuery({ queryKey: ["projects"], queryFn: () => getProjects(true) });
+  const projects = useQuery({ queryKey: ["projects", "all"], queryFn: () => getProjects(true) });
   const all = projects.data ?? [];
   const active = all.filter((p) => p.status === "active");
   const completed = all.filter((p) => p.status === "completed");

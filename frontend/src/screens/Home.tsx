@@ -60,7 +60,9 @@ export function Home({
   const summary = useQuery({ queryKey: ["summary", params], queryFn: () => getJSON<Summary>(`/api/summary?${params}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
   // Active projects only — completed ones don't belong on the live Home glance.
-  const projects = useQuery({ queryKey: ["projects"], queryFn: () => getProjects(false) });
+  // Distinct "active" sub-key from the include-completed list below so the two
+  // result sets never collide under the same cache entry.
+  const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
 
   const isCurrent = scope.kind === "month" && scope.period === currentPeriod();
   const anchor = scopeAnchor(scope); // the month the trend chart highlights
