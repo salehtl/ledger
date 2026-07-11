@@ -126,6 +126,7 @@ func main() {
 	srv.SetIngest(st, cfg.IMAP.Enabled())
 	srv.SetCategoryStore(st)
 	srv.SetSettingsStore(st)
+	srv.SetAIUsageStore(st)
 	srv.SetRatesStore(st)
 	srv.SetAccountsStore(st)
 	srv.SetTransfersStore(st)

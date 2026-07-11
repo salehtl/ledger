@@ -25,6 +25,12 @@ type settingsDTO struct {
 	// AIKeyPresent is read-only output: whether an Anthropic key is loaded
 	// (env-only). It is ignored on PUT.
 	AIKeyPresent bool `json:"ai_key_present"`
+	// AISpendCapMuUSD is the monthly AI spend cap in micro-USD (0 = no cap).
+	AISpendCapMuUSD int64 `json:"ai_spend_cap_musd"`
+	// AICapLatched is read-only output: whether the spend cap has tripped and
+	// AI calls are currently blocked. The store clears the latch when
+	// AIEnabled is set true; the client cannot set this field directly.
+	AICapLatched bool `json:"ai_cap_latched"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +48,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		AutoCategorize: a.AutoCategorize, AIEnabled: a.AIEnabled,
 		AIAutoAccept: a.AIAutoAccept, AIThreshold: a.AIThreshold,
 		IngestSilenceDays: a.IngestSilenceDays,
-		AIKeyPresent: s.aiKeyPresent,
+		AIKeyPresent:      s.aiKeyPresent,
+		AISpendCapMuUSD:   a.SpendCapMuUSD,
+		AICapLatched:      a.CapLatched,
 	})
 }
 
@@ -71,6 +79,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		AutoCategorize: dto.AutoCategorize, AIEnabled: dto.AIEnabled,
 		AIAutoAccept: dto.AIAutoAccept, AIThreshold: dto.AIThreshold,
 		IngestSilenceDays: dto.IngestSilenceDays,
+		SpendCapMuUSD:     dto.AISpendCapMuUSD,
+		// CapLatched intentionally omitted — the store clears the latch when
+		// AIEnabled is true, and the client cannot set it directly.
 	}); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
