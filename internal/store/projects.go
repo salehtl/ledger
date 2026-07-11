@@ -30,8 +30,8 @@ func (s *Store) InsertProject(p ProjectRow) (int64, error) {
 	res, err := s.DB.Exec(
 		`INSERT INTO projects (name, budget_fils, color, starts_on, ends_on, status, count_in_monthly, completed_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.Name, p.BudgetFils, nullIfEmpty(p.Color), nullIfEmpty(p.StartsOn), nullIfEmpty(p.EndsOn),
-		p.Status, boolToInt(p.CountInMonthly), nullIfEmpty(p.CompletedAt), now, now,
+		p.Name, p.BudgetFils, nullableStr(p.Color), nullableStr(p.StartsOn), nullableStr(p.EndsOn),
+		p.Status, boolToInt(p.CountInMonthly), nullableStr(p.CompletedAt), now, now,
 	)
 	if err != nil {
 		return 0, err
@@ -79,8 +79,8 @@ func (s *Store) UpdateProject(p ProjectRow) error {
 	_, err := s.DB.Exec(
 		`UPDATE projects SET name=?, budget_fils=?, color=?, starts_on=?, ends_on=?,
 		        status=?, count_in_monthly=?, completed_at=?, updated_at=? WHERE id=?`,
-		p.Name, p.BudgetFils, nullIfEmpty(p.Color), nullIfEmpty(p.StartsOn), nullIfEmpty(p.EndsOn),
-		p.Status, boolToInt(p.CountInMonthly), nullIfEmpty(p.CompletedAt), isoNow(s), p.ID,
+		p.Name, p.BudgetFils, nullableStr(p.Color), nullableStr(p.StartsOn), nullableStr(p.EndsOn),
+		p.Status, boolToInt(p.CountInMonthly), nullableStr(p.CompletedAt), isoNow(s), p.ID,
 	)
 	return err
 }
@@ -151,13 +151,6 @@ func scanProject(sc interface{ Scan(...any) error }) (ProjectRow, error) {
 	}
 	p.CountInMonthly = cim == 1
 	return p, nil
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // isoNow returns the store clock (s.now(), unix seconds — overridable via
