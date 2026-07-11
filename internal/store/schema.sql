@@ -113,6 +113,20 @@ CREATE TABLE IF NOT EXISTS import_log (
   created_at   TEXT NOT NULL
 );
 
+-- Anthropic API usage log — one row per call for cost transparency.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  at            INTEGER NOT NULL,   -- unix seconds
+  path          TEXT    NOT NULL,   -- 'extract' | 'categorize'
+  model         TEXT    NOT NULL,
+  input_tokens  INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cost_musd     INTEGER NOT NULL,   -- micro-USD (1e-6 USD)
+  ok            INTEGER NOT NULL,   -- 1 = 200 response, 0 = error
+  detail        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage(at);
+
 -- FX rates for converting foreign-currency transactions to AED.
 -- rate_micro is AED per 1 unit of currency × 1,000,000 (integer; money math never uses floats).
 -- AED itself never has a row (identity). Rates are user-maintained via /api/rates.
