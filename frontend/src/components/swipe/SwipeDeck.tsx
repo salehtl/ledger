@@ -144,24 +144,26 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
   return (
     <div ref={arenaRef} className="absolute inset-0 bg-[#0E1116] overflow-hidden">
-      <button
-        type="button"
-        aria-label="Close review"
-        onClick={() => onExit?.()}
-        className="absolute z-20 w-10 h-10 rounded-full flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 press"
-        style={{ top: 'calc(env(safe-area-inset-top) + 8px)', left: 8 }}
-      >
-        <ChevronLeft size={22} />
-      </button>
+      {size.w > 0 && (
+        <button
+          type="button"
+          aria-label="Close review"
+          onClick={() => onExit?.()}
+          className="absolute z-20 w-10 h-10 rounded-full flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 press"
+          style={{ top: 'calc(env(safe-area-inset-top) + 8px)', left: 8 }}
+        >
+          <ChevronLeft size={22} />
+        </button>
+      )}
 
-      {!done && (
+      {size.w > 0 && !done && (
         <div
           className="absolute z-20 right-4 text-right"
           style={{ top: 'calc(env(safe-area-inset-top) + 18px)' }}
         >
-          <p className="text-[10px] uppercase tracking-[0.24em] text-white/40 font-semibold">Sorting</p>
+          <p className="text-[10px] uppercase tracking-[0.24em] text-white/40 font-semibold">Remaining</p>
           <p className="text-[11px] tracking-wide text-white/60 tabular-nums">
-            <b className="text-white/90 font-bold">{remaining}</b> to sort
+            <b className="text-white/90 font-bold">{remaining}</b>
           </p>
         </div>
       )}
@@ -196,11 +198,13 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
             </div>
           )}
 
-          <p className="absolute bottom-4 left-0 right-0 text-center text-xs text-white/40">
-            Swipe toward a category · triple-tap to skip
-          </p>
+          {size.w > 0 && (
+            <p className="absolute bottom-4 left-0 right-0 text-center text-xs text-white/40">
+              Swipe toward a category · triple-tap to skip
+            </p>
+          )}
 
-          {current && current.Direction === 'credit' && (
+          {size.w > 0 && current && current.Direction === 'credit' && (
             <button
               className="absolute bottom-10 left-0 right-0 mx-auto w-fit text-sm font-medium text-white/80 underline underline-offset-2"
               onClick={() => setLinkOpen(true)}
