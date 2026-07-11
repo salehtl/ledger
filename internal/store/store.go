@@ -105,7 +105,17 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "app_settings", "ai_spend_cap_musd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return addColumnIfMissing(db, "app_settings", "ai_cap_latched", "INTEGER NOT NULL DEFAULT 0")
+	if err := addColumnIfMissing(db, "app_settings", "ai_cap_latched", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// project_id links a transaction to a temporary life-project (projects
+	// table); the index is created here, not in schema.sql, since the column
+	// doesn't exist yet when schema.sql first runs on a pre-existing DB.
+	if err := addColumnIfMissing(db, "transactions", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
+		return err
+	}
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tx_project ON transactions(project_id)`)
+	return err
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

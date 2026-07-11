@@ -135,3 +135,18 @@ CREATE TABLE IF NOT EXISTS fx_rates (
   rate_micro INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Temporary life-projects: a named budget bucket orthogonal to categories.
+CREATE TABLE IF NOT EXISTS projects (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  name             TEXT    NOT NULL,
+  budget_fils      INTEGER,                           -- AED minor units; NULL = no budget
+  color            TEXT,
+  starts_on        TEXT,
+  ends_on          TEXT,                              -- label only
+  status           TEXT    NOT NULL DEFAULT 'active', -- 'active' | 'completed'
+  count_in_monthly INTEGER NOT NULL DEFAULT 0,        -- 0 = carved out of 50/30/20
+  completed_at     TEXT,
+  created_at       TEXT    NOT NULL,
+  updated_at       TEXT    NOT NULL
+);
