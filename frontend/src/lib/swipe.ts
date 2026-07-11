@@ -40,10 +40,9 @@ export const GROUP_ICON: Record<EdgeGroup, string> = {
   other: 'ArrowLeftRight',
 }
 
-export const SWIPE_THRESHOLD = 80
-/** Half-width (deg) of the central "Other" sliver on each edge's cardinal axis. */
-export const SLIVER_HALF_ANGLE = 8
-const PREVIEW_THRESHOLD = 20
+export const OTHER_MIN = 30      // below → cancel (spring back)
+export const CATEGORY_MIN = 150  // below → Other, at/above → specific category
+export const CAT_FULL = 90       // px past CATEGORY_MIN to reach full brightness
 
 const STORAGE_KEY = 'ledger-swipe-config'
 
@@ -56,52 +55,54 @@ interface SeedCat {
 
 /** Nearest edge for a drag angle (±45° arc per cardinal; +dy is down). */
 export function resolveEdge(dx: number, dy: number): EdgeKey {
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI // (-180, 180]
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI
   if (angle >= -45 && angle < 45) return 'right'
   if (angle >= 45 && angle < 135) return 'down'
   if (angle >= -135 && angle < -45) return 'up'
   return 'left'
 }
 
-/** Angular deviation (deg, 0..90) from the edge's cardinal axis. */
-function deviation(edge: EdgeKey, dx: number, dy: number): number {
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI
-  switch (edge) {
-    case 'right': return Math.abs(angle)
-    case 'down': return Math.abs(angle - 90)
-    case 'up': return Math.abs(angle + 90)
-    case 'left': return 180 - Math.abs(angle)
-  }
+function slotFor(edge: EdgeKey, dx: number, dy: number): SlotKey {
+  const vertical = edge === 'left' || edge === 'right'
+  return vertical ? (dy < 0 ? 'A' : 'B') : (dx < 0 ? 'A' : 'B')
 }
 
-function zoneAt(dx: number, dy: number, config: SwipeConfig, threshold: number): Zone | null {
-  if (Math.hypot(dx, dy) < threshold) return null
+/**
+ * Depth-based resolution. Angle picks the bucket (and, when deep, the slot);
+ * distance picks intent: short push → the bucket's Other, long push → the
+ * specific category. An empty slot falls back to Other.
+ */
+export function resolveZone(dx: number, dy: number, config: SwipeConfig): Zone | null {
+  const dist = Math.hypot(dx, dy)
+  if (dist < OTHER_MIN) return null
   const edge = resolveEdge(dx, dy)
   const ec = config.edges[edge]
-  if (deviation(edge, dx, dy) <= SLIVER_HALF_ANGLE) {
-    return { kind: 'other', edge, group: ec.group }
-  }
-  // Vertical edges (left/right) split by dy; horizontal (up/down) by dx.
-  const vertical = edge === 'left' || edge === 'right'
-  const slot: SlotKey = vertical ? (dy < 0 ? 'A' : 'B') : (dx < 0 ? 'A' : 'B')
+  if (dist < CATEGORY_MIN) return { kind: 'other', edge, group: ec.group }
+  const slot = slotFor(edge, dx, dy)
   const categoryId = slot === 'A' ? ec.slotA : ec.slotB
   if (!categoryId) return { kind: 'other', edge, group: ec.group }
   return { kind: 'category', edge, slot, categoryId }
 }
 
-/** Resolve a committed drag (≥ threshold) to a zone, or null if too short. */
-export function resolveZone(dx: number, dy: number, config: SwipeConfig, threshold = SWIPE_THRESHOLD): Zone | null {
-  return zoneAt(dx, dy, config, threshold)
-}
+/** Live feedback for facet lighting: which region is aimed and how filled (0..1). */
+export type PreviewState =
+  | { edge: EdgeKey; group: EdgeGroup; kind: 'other'; fill: number }
+  | { edge: EdgeKey; group: EdgeGroup; kind: 'category'; slot: SlotKey; categoryId: number; fill: number }
 
-/** Like resolveZone but at the lower live-preview threshold. */
-export function previewZone(dx: number, dy: number, config: SwipeConfig): Zone | null {
-  return zoneAt(dx, dy, config, PREVIEW_THRESHOLD)
-}
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n))
 
-/** 0–1 progress for overlay opacity based on drag magnitude. */
-export function overlayProgress(dx: number, dy: number): number {
-  return Math.min(1, Math.hypot(dx, dy) / SWIPE_THRESHOLD)
+export function previewState(dx: number, dy: number, config: SwipeConfig): PreviewState | null {
+  const dist = Math.hypot(dx, dy)
+  if (dist < OTHER_MIN) return null
+  const edge = resolveEdge(dx, dy)
+  const ec = config.edges[edge]
+  if (dist < CATEGORY_MIN) {
+    return { edge, group: ec.group, kind: 'other', fill: clamp01((dist - OTHER_MIN) / (CATEGORY_MIN - OTHER_MIN)) }
+  }
+  const slot = slotFor(edge, dx, dy)
+  const categoryId = slot === 'A' ? ec.slotA : ec.slotB
+  if (!categoryId) return { edge, group: ec.group, kind: 'other', fill: 1 }
+  return { edge, group: ec.group, kind: 'category', slot, categoryId, fill: clamp01((dist - CATEGORY_MIN) / CAT_FULL) }
 }
 
 function candidates(group: EdgeGroup, categories: SeedCat[]): number[] {
