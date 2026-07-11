@@ -15,6 +15,7 @@ type BudgetStore interface {
 	SelectBudgetConfig() (store.BudgetConfig, error)
 	UpdateBudgetConfig(store.BudgetConfig) error
 	SelectMonthSpend(period string, frozen bool) ([]store.SpendRow, error)
+	SelectMonthProjectExcluded(period string, frozen bool) (int64, error)
 	SelectMonthIncome(period string) (int64, error)
 	SelectEarliestPeriod() (string, bool, error)
 	SelectRecent(n int) ([]store.ReviewItem, error)
@@ -87,6 +88,7 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	// progress, future months as zero.
 	var spend []store.SpendRow
 	var income int64
+	var projectExcluded int64
 	elapsed := 0.0
 	for _, m := range months {
 		rows, derr := s.budgetStore.SelectMonthSpend(m, cfg.FreezeHistory)
@@ -95,6 +97,12 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		spend = append(spend, rows...)
+		ex, derr := s.budgetStore.SelectMonthProjectExcluded(m, cfg.FreezeHistory)
+		if derr != nil {
+			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+			return
+		}
+		projectExcluded += ex
 		if cfg.IncomeSource == "categories" {
 			mi, derr := s.budgetStore.SelectMonthIncome(m)
 			if derr != nil {
@@ -128,7 +136,7 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	if len(months) > 1 {
 		period = months[0] + ".." + months[len(months)-1]
 	}
-	sum := budget.ComputeRange(cfg, income, spend, recent, period, progress)
+	sum := budget.ComputeRange(cfg, income, spend, recent, period, progress, projectExcluded)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sum)
 }
