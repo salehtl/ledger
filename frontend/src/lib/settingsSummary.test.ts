@@ -7,7 +7,6 @@ import {
   swipeSummary,
 } from "./settingsSummary";
 import type { AppSettings, BudgetConfig, RatesResponse } from "../api/types";
-import { DEFAULT_SWIPE_CONFIG } from "./swipe";
 
 const budget = (over: Partial<BudgetConfig> = {}): BudgetConfig => ({
   monthly_income: 0,
@@ -74,8 +73,8 @@ describe("currenciesLabel", () => {
 });
 
 describe("swipeSummary", () => {
-  it("shows the horizontal directions", () => {
-    expect(swipeSummary(DEFAULT_SWIPE_CONFIG)).toBe("← Want · → Need");
+  it("shows the fixed horizontal directions", () => {
+    expect(swipeSummary()).toBe("← Want · → Need");
   });
 });
 
