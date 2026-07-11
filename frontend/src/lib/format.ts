@@ -22,6 +22,21 @@ export function statusTone(status: string): Tone {
   }
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Compact posted-at label for list rows: "Jul 10" in the reference year,
+ * "Jul 10, 2025" otherwise. Accepts an RFC3339 timestamp or a bare date; the
+ * reference date is injectable so the year rule is testable without the clock.
+ */
+export function shortDate(iso: string, ref: Date = new Date()): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const [, year, month, day] = m;
+  const label = `${MONTHS[Number(month) - 1] ?? month} ${Number(day)}`;
+  return Number(year) === ref.getFullYear() ? label : `${label}, ${year}`;
+}
+
 /** AED has 2 minor units. Inputs are in dirhams; storage is in fils. */
 export function dirhamsToFils(dirhams: number): number {
   return Math.round(dirhams * 100);

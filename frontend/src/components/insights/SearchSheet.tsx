@@ -19,7 +19,7 @@ export function SearchSheet({ txns, categories, onClose }: {
   const [term, setTerm] = useState("");
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
   const [active, setActive] = useState<Txn | null>(null);
-  const { setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
+  const { categorize } = useTxnActions();
 
   const rows = useMemo(() => searchTxns(applyTxnFilters(txns, filters), term), [txns, filters, term]);
 
@@ -46,7 +46,7 @@ export function SearchSheet({ txns, categories, onClose }: {
         <ul className="divide-y divide-border">
           {rows.map((t) => (
             <li key={t.ID}>
-              <TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
+              <TransactionRow txn={t} onOpen={setActive} />
             </li>
           ))}
         </ul>

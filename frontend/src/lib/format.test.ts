@@ -1,8 +1,28 @@
 import { describe, it, expect } from "vitest";
 import {
   statusLabel, statusTone, dirhamsToFils, filsToDirhams,
-  fractionToPercent, percentToFraction,
+  fractionToPercent, percentToFraction, shortDate,
 } from "./format";
+
+describe("shortDate", () => {
+  const ref = new Date(2026, 0, 15); // Jan 2026
+
+  it("drops the year in the reference year", () => {
+    expect(shortDate("2026-07-10", ref)).toBe("Jul 10");
+  });
+  it("strips a leading zero from the day", () => {
+    expect(shortDate("2026-07-03", ref)).toBe("Jul 3");
+  });
+  it("keeps the year for other years", () => {
+    expect(shortDate("2025-12-31", ref)).toBe("Dec 31, 2025");
+  });
+  it("accepts a full RFC3339 timestamp", () => {
+    expect(shortDate("2026-02-01T09:30:00Z", ref)).toBe("Feb 1");
+  });
+  it("returns the input unchanged when unparseable", () => {
+    expect(shortDate("nope", ref)).toBe("nope");
+  });
+});
 
 describe("statusLabel", () => {
   it("humanizes known statuses", () => {

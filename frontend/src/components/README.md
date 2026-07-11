@@ -91,7 +91,9 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 ### SegmentedControl
 - **Purpose:** exclusive choice between 2–6 short options (filters, day
-  windows). Generic over the value type.
+  windows). Generic over the value type. `fullWidth` stretches to equal-width,
+  never-wrapping segments (the Transactions status filter); an option's optional
+  `badge` renders a small count (e.g. items needing review).
 - **Don't use when:** options overflow — put long sets in a `Dialog` list.
 
 ### Switch
@@ -137,9 +139,28 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 Domain components live beside their feature (`transactions/`, `swipe/`,
 `insights/`, `charts/`) and compose the primitives above. Notable:
-`TransactionRow` (the list row + stacked `IconButton size="sm"` actions),
-`CategorizeSheet`/`AddTransactionSheet`/`SearchSheet`/`FilterChips` (Dialog
-composition examples), `SubcategoryPanel` (Dialog with a decorated title).
+
+- `TransactionRow` — one calm, tap-only list line (merchant + amount, then
+  `category · date`); a status pill shows only for review/archived rows. Tapping
+  is the whole action surface — it has no inline buttons. Used by the
+  Transactions list and the Insights drill-down/search sheets.
+- `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
+  left = trailing. Full-swipe past the commit threshold fires it (haptic +
+  spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is
+  the pure, tested `lib/rowSwipe`. Touch enhancement only — keep every action
+  reachable by tapping the row open too.
+- `TransactionDetailSheet` — the tap-opened action hub for one transaction
+  (categorize, transfer, ignore, link/unlink refund, archive/restore), gated by
+  status. Swipe covers the two commonest moves; everything else lives here.
+- `CategorizeSheet` — category picker as tap-target chips grouped by bucket
+  (not a radio list), search, and a "make a rule" `Switch`. Preselects the
+  current category so recategorizing reads as a change.
+- `FilterBar` — inline, in-place filtering for the Transactions page: bucket /
+  type / category / source as direct toggle chips (no per-dimension sheet),
+  with removable active-filter tokens. `FilterChips` (the older sheet-per-
+  dimension picker) is still used by the Insights `SearchSheet`.
+- `AddTransactionSheet` / `LinkRefundSheet` / `SubcategoryPanel` — further
+  `Dialog` composition examples.
 
 ## Known deliberate exceptions
 
@@ -149,5 +170,8 @@ composition examples), `SubcategoryPanel` (Dialog with a decorated title).
   `SearchSheet`), kept because a real input would summon the keyboard.
 - Swipe deck cards use `rounded-[12px]` and wide-tracked eyebrows — display
   surface, intentionally denser than the card idiom.
+- `FilterBar` chips and `SwipeableRow` action icons run at 36px inside their
+  dense panels/rows — the sanctioned exception to the 44px target, same as
+  `IconButton size="sm"`.
 - Transactions list is not virtualized; acceptable at current volumes.
   Revisit if months exceed ~500 rows.

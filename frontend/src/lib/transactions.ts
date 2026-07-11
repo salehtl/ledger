@@ -114,6 +114,20 @@ export function buildManualTxnPayload(input: ManualTxnInput): BuildResult {
   };
 }
 
+/** Two-digit zero-pad for date parts. */
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/**
+ * Client-side name for a CSV export file, e.g. "ledger-export-2026-07-11.csv".
+ * The server sets the same shape in Content-Disposition, but the Web Share path
+ * builds a File in the browser and needs its own name.
+ */
+export function exportFilename(now: Date): string {
+  return `ledger-export-${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}.csv`;
+}
+
 /**
  * URL for the CSV export endpoint, carrying the same server-side filters as
  * the list query (status/from/to/q). Client-only chip filters are deliberately
