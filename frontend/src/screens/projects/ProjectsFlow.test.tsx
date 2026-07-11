@@ -3,11 +3,16 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProjectsFlow } from "./ProjectsFlow";
 import * as client from "../../api/client";
+import { ToastProvider } from "../../components/Toast";
 import type { Project, ProjectDetail } from "../../api/types";
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>
+      <ToastProvider>{ui}</ToastProvider>
+    </QueryClientProvider>,
+  );
 }
 
 function makeProject(overrides: Partial<Project> = {}): Project {
