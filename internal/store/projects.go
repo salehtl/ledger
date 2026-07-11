@@ -158,3 +158,107 @@ func scanProject(sc interface{ Scan(...any) error }) (ProjectRow, error) {
 // project timestamps use the same clock as AI-usage rows while matching the
 // TEXT ISO format the rest of the schema uses.
 func isoNow(s *Store) string { return time.Unix(s.now(), 0).UTC().Format(time.RFC3339) }
+
+// ProjectCategorySpend is one category's confirmed net spend within a project.
+type ProjectCategorySpend struct {
+	Category string `json:"category"`
+	NetFils  int64  `json:"net_fils"`
+}
+
+// ProjectRollup is the computed spend summary for one project: net spend and
+// transaction count over confirmed transactions, pending (needs_review)
+// amount, and a confirmed-net breakdown by category (highest first).
+type ProjectRollup struct {
+	Project      ProjectRow             `json:"-"`
+	NetSpentFils int64                  `json:"net_spent_fils"`
+	PendingFils  int64                  `json:"pending_fils"`
+	TxnCount     int                    `json:"txn_count"`
+	ByCategory   []ProjectCategorySpend `json:"by_category"`
+}
+
+// projAmt AED-normalizes an amount: AED-native rows without a stored
+// amount_aed still count via the fallback to amount.
+const projAmt = `COALESCE(t.amount_aed, t.amount)`
+
+// ProjectRollup computes the single-project rollup (net spend, pending,
+// txn count, and by-category breakdown) for detail views.
+func (s *Store) ProjectRollup(id int64) (ProjectRollup, error) {
+	p, err := s.SelectProject(id)
+	if err != nil {
+		return ProjectRollup{}, err
+	}
+	r := ProjectRollup{Project: p}
+	// net + count (confirmed) and pending in one pass.
+	err = s.DB.QueryRow(
+		`SELECT
+		   COALESCE(SUM(CASE WHEN t.status='confirmed' THEN
+		       (CASE t.direction WHEN 'debit' THEN `+projAmt+` WHEN 'credit' THEN -`+projAmt+` ELSE 0 END)
+		     ELSE 0 END), 0),
+		   COALESCE(SUM(CASE WHEN t.status='needs_review' THEN
+		       (CASE t.direction WHEN 'debit' THEN `+projAmt+` WHEN 'credit' THEN -`+projAmt+` ELSE 0 END)
+		     ELSE 0 END), 0),
+		   COALESCE(SUM(CASE WHEN t.status='confirmed' THEN 1 ELSE 0 END), 0)
+		 FROM transactions t WHERE t.project_id = ?`, id,
+	).Scan(&r.NetSpentFils, &r.PendingFils, &r.TxnCount)
+	if err != nil {
+		return r, err
+	}
+	// by-category (confirmed net), highest spend first.
+	rows, err := s.DB.Query(
+		`SELECT COALESCE(c.name,'Uncategorized'),
+		        SUM(CASE t.direction WHEN 'debit' THEN `+projAmt+` WHEN 'credit' THEN -`+projAmt+` ELSE 0 END)
+		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+		  WHERE t.project_id = ? AND t.status='confirmed'
+		  GROUP BY c.name ORDER BY 2 DESC`, id)
+	if err != nil {
+		return r, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cs ProjectCategorySpend
+		if err := rows.Scan(&cs.Category, &cs.NetFils); err != nil {
+			return r, err
+		}
+		r.ByCategory = append(r.ByCategory, cs)
+	}
+	return r, rows.Err()
+}
+
+// ProjectRollups returns rollups for the list/cards without N+1: it fetches all
+// projects then a single grouped aggregate, and attaches. ByCategory is left nil
+// here (only the detail view needs it) to keep the list query cheap.
+func (s *Store) ProjectRollups(includeCompleted bool) ([]ProjectRollup, error) {
+	projects, err := s.SelectProjects(includeCompleted)
+	if err != nil {
+		return nil, err
+	}
+	agg := map[int64]*ProjectRollup{}
+	out := make([]ProjectRollup, len(projects))
+	for i := range projects {
+		out[i] = ProjectRollup{Project: projects[i]}
+		agg[projects[i].ID] = &out[i]
+	}
+	rows, err := s.DB.Query(
+		`SELECT t.project_id,
+		   COALESCE(SUM(CASE WHEN t.status='confirmed' THEN
+		     (CASE t.direction WHEN 'debit' THEN ` + projAmt + ` WHEN 'credit' THEN -` + projAmt + ` ELSE 0 END) ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN t.status='needs_review' THEN
+		     (CASE t.direction WHEN 'debit' THEN ` + projAmt + ` WHEN 'credit' THEN -` + projAmt + ` ELSE 0 END) ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN t.status='confirmed' THEN 1 ELSE 0 END),0)
+		 FROM transactions t WHERE t.project_id IS NOT NULL GROUP BY t.project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid, net, pending int64
+		var cnt int
+		if err := rows.Scan(&pid, &net, &pending, &cnt); err != nil {
+			return nil, err
+		}
+		if r, ok := agg[pid]; ok {
+			r.NetSpentFils, r.PendingFils, r.TxnCount = net, pending, cnt
+		}
+	}
+	return out, rows.Err()
+}
