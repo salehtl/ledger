@@ -214,7 +214,6 @@ func seedTestTransaction(t *testing.T, st *store.Store) int64 {
 		Last4:       "1502",
 		Status:      "needs_review",
 		Confidence:  0.97,
-		Tier:        "template",
 		IngestID:    ingestID,
 	})
 	if err != nil {

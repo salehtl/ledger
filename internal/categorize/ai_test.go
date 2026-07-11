@@ -53,6 +53,36 @@ func TestAnthropicCategorizerSuccess(t *testing.T) {
 	}
 }
 
+// Fenced/prose-wrapped JSON must still parse, and an out-of-range confidence
+// must be clamped so it can't trivially clear the auto-accept threshold.
+func TestAnthropicCategorizerToleratesFencedJSONAndClampsConfidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp, _ := json.Marshal(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": "```json\n{\"category\":\"Shopping\",\"confidence\":1.5}\n```"}},
+		})
+		_, _ = w.Write(resp)
+	}))
+	defer srv.Close()
+
+	ac := &AnthropicCategorizer{
+		apiKey:   "test-key",
+		model:    "claude-haiku-4-5-20251001",
+		endpoint: srv.URL + "/v1/messages",
+		retry:    anthropic.New(srv.Client()),
+	}
+	name, conf, err := ac.Categorize(t.Context(), "AMAZON.AE", []Category{{ID: 1, Name: "Shopping"}})
+	if err != nil {
+		t.Fatalf("fenced JSON should still parse, got error: %v", err)
+	}
+	if name != "Shopping" {
+		t.Errorf("name = %q, want Shopping", name)
+	}
+	if conf != 1.0 {
+		t.Errorf("conf = %v, want clamped to 1.0", conf)
+	}
+}
+
 func TestAnthropicCategorizerSendsOnlyMerchant(t *testing.T) {
 	var capturedBody []byte
 

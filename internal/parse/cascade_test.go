@@ -2,6 +2,7 @@ package parse
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,6 +55,34 @@ func TestCascadeUnparsedWhenEverythingFails(t *testing.T) {
 	res := c.Run(context.Background(), "x@y.com", "s", "totally unparseable content")
 	if res.Status != StatusUnparsed {
 		t.Fatalf("status=%q, want unparsed", res.Status)
+	}
+}
+
+// An unparsed result must say WHY the tiers failed so ingest_log.parse_error is
+// debuggable — but not report the disabled AI tier, which is a benign skip.
+func TestCascadeUnparsedCapturesTierErrors(t *testing.T) {
+	c := newCascade(DisabledExtractor{})
+	res := c.Run(context.Background(), "DIB.notification@dib.ae", "s", "totally unparseable content")
+	if res.Status != StatusUnparsed {
+		t.Fatalf("status=%q, want unparsed", res.Status)
+	}
+	if res.Err == "" {
+		t.Fatal("Err empty; want tier failure details")
+	}
+	if !strings.Contains(res.Err, "template") || !strings.Contains(res.Err, "heuristic") {
+		t.Errorf("Err = %q, want template and heuristic failures noted", res.Err)
+	}
+	if strings.Contains(res.Err, "unavailable") {
+		t.Errorf("Err = %q, must not report the disabled AI tier as a failure", res.Err)
+	}
+}
+
+func TestCascadeUnparsedCapturesValidationError(t *testing.T) {
+	ai := stubExtractor{p: ParsedTxn{AmountFils: 0, Currency: "AED", Direction: DirectionDebit, Tier: TierAI}}
+	c := newCascade(ai)
+	res := c.Run(context.Background(), "x@y.com", "s", "no amount here either")
+	if !strings.Contains(res.Err, "amount") {
+		t.Errorf("Err = %q, want the AI validation failure (amount) captured", res.Err)
 	}
 }
 

@@ -23,8 +23,38 @@ func txnRow() TransactionRow {
 		Last4:       "1502",
 		Status:      "needs_review",
 		Confidence:  0.97,
-		Tier:        "template",
 		IngestID:    1,
+	}
+}
+
+func TestTransactionIDByIngest(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.InsertIngest(IngestRecord{MessageUID: "byingest", FromAddr: "DIB.notification@dib.ae",
+		Subject: "n", ParseStatus: "parsed", RawBody: []byte("raw"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var ingestID int64
+	if err := st.DB.QueryRow("SELECT id FROM ingest_log WHERE message_uid='byingest'").Scan(&ingestID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := st.TransactionIDByIngest(ingestID); err != nil || found {
+		t.Fatalf("before insert: found=%v err=%v, want false/nil", found, err)
+	}
+
+	row := txnRow()
+	row.IngestID = ingestID
+	txID, created, err := st.InsertTransaction(row)
+	if err != nil || !created {
+		t.Fatalf("insert: created=%v err=%v", created, err)
+	}
+
+	got, found, err := st.TransactionIDByIngest(ingestID)
+	if err != nil || !found {
+		t.Fatalf("after insert: found=%v err=%v, want true/nil", found, err)
+	}
+	if got != txID {
+		t.Errorf("id = %d, want %d", got, txID)
 	}
 }
 

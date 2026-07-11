@@ -2,6 +2,7 @@ package parse
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"ledger/internal/categorize"
@@ -52,6 +53,10 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 		return 0, err
 	}
 	cz, autoCat := p.resolveCategorizer(ctx)
+	// Per-batch merchant→result cache: the categorizer's rule snapshot predates
+	// this batch's write-backs, so without it a merchant seen twice would hit
+	// the AI twice and write two identical rules.
+	catCache := make(map[string]categorize.Result)
 	created := 0
 	for _, row := range rows {
 		text, berr := BodyText(row.RawBody)
@@ -67,6 +72,18 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
 		}
+		// One email must never yield two transactions. The fingerprint index
+		// won't dedup a re-parse whose extracted text drifted (a fixed template
+		// vs the earlier AI wording), so a row that already produced a
+		// transaction only refreshes its parse stamp.
+		if _, exists, xerr := p.store.TransactionIDByIngest(row.ID); xerr != nil {
+			return created, xerr
+		} else if exists {
+			if err := p.store.MarkParsed(row.ID, res.Status, res.Tier, ""); err != nil {
+				return created, err
+			}
+			continue
+		}
 		txStatus := "needs_review"
 		if res.Txn.IsTransfer {
 			txStatus = "transfer"
@@ -80,7 +97,6 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			Last4:       res.Txn.Last4,
 			Status:      txStatus,
 			Confidence:  res.Txn.Confidence,
-			Tier:        res.Tier,
 			IngestID:    row.ID,
 		})
 		if ierr != nil {
@@ -88,8 +104,12 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			continue
 		}
 		if inserted {
-			if autoCat && cz != nil {
-				p.categorizeWith(ctx, cz, txID, res.Txn.MerchantRaw)
+			created++
+			// Never categorize a parser-flagged transfer: UpdateTransactionCategory
+			// rewrites status, which would flip the leg to confirmed/needs_review
+			// and count it as spending.
+			if autoCat && cz != nil && txStatus != "transfer" {
+				p.categorizeWith(ctx, cz, catCache, txID, res.Txn.MerchantRaw, res.Tier)
 			}
 			// Net the opposite transfer leg within 2 hours — regardless of which
 			// leg arrived first. A parser-flagged transfer (IsTransfer) still has
@@ -112,30 +132,46 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 		if err := p.store.MarkParsed(row.ID, res.Status, res.Tier, ""); err != nil {
 			return created, err
 		}
-		created++
 	}
 	return created, nil
 }
 
-func (p *Processor) categorizeWith(ctx context.Context, cz *categorize.Categorizer, txID int64, merchantRaw string) {
-	result, err := cz.Categorize(ctx, merchantRaw)
-	if err != nil {
-		// Unresolved (no rule match with AI disabled, or an AI failure) — leave
-		// the transaction in review for the manual run / categorizer deck.
+func (p *Processor) categorizeWith(ctx context.Context, cz *categorize.Categorizer, cache map[string]categorize.Result, txID int64, merchantRaw, tier string) {
+	key := strings.ToLower(strings.TrimSpace(merchantRaw))
+	if key == "" {
+		// Nothing meaningful to classify; a blank merchant must never reach the
+		// AI or produce a write-back rule.
 		return
 	}
+	result, cached := cache[key]
+	if !cached {
+		var err error
+		result, err = cz.Categorize(ctx, merchantRaw)
+		if err != nil {
+			// Unresolved (no rule match with AI disabled, or an AI failure) — leave
+			// the transaction in review for the manual run / categorizer deck.
+			return
+		}
+		cache[key] = result
+		// Write-back happens once per merchant per batch; later cache hits for
+		// the same merchant must not duplicate the rule.
+		if result.ProposedRule != nil {
+			_ = p.store.InsertRule(store.RuleRow{
+				MatchType:  result.ProposedRule.MatchType,
+				Pattern:    result.ProposedRule.Pattern,
+				CategoryID: result.ProposedRule.CategoryID,
+				Priority:   result.ProposedRule.Priority,
+				Source:     "ai_confirmed",
+			})
+		}
+	}
+	// Only a template-tier extraction may be auto-confirmed. Heuristic and AI
+	// tiers are guesses about amount/date/direction — a confident *category*
+	// does not make the *extraction* trustworthy, so those stay in review with
+	// the category attached.
 	status := "needs_review"
-	if result.AboveThreshold {
+	if result.AboveThreshold && tier == TierTemplate {
 		status = "confirmed"
 	}
 	_ = p.store.UpdateTransactionCategory(txID, result.CategoryID, status)
-	if result.ProposedRule != nil {
-		_ = p.store.InsertRule(store.RuleRow{
-			MatchType:  result.ProposedRule.MatchType,
-			Pattern:    result.ProposedRule.Pattern,
-			CategoryID: result.ProposedRule.CategoryID,
-			Priority:   result.ProposedRule.Priority,
-			Source:     "ai_confirmed",
-		})
-	}
 }

@@ -71,10 +71,13 @@ func TestProcessorMarksUnparsedWhenNothingExtracts(t *testing.T) {
 	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
 		t.Fatal(err)
 	}
-	var ps string
-	st.DB.QueryRow("SELECT parse_status FROM ingest_log WHERE message_uid='u2'").Scan(&ps)
+	var ps, perr string
+	st.DB.QueryRow("SELECT parse_status, COALESCE(parse_error,'') FROM ingest_log WHERE message_uid='u2'").Scan(&ps, &perr)
 	if ps != "unparsed" {
 		t.Errorf("parse_status = %q, want unparsed", ps)
+	}
+	if perr == "" {
+		t.Error("parse_error empty; want the cascade's tier failures recorded")
 	}
 }
 
@@ -156,6 +159,331 @@ func TestProcessorCategorizes(t *testing.T) {
 	}
 	if catIDGot == nil || *catIDGot != shoppingID {
 		t.Errorf("category_id = %v, want %d", catIDGot, shoppingID)
+	}
+}
+
+// ruleCategorizer builds a rules-only Categorizer over the seeded categories
+// with one contains rule pattern→catName, and returns it plus the category ID.
+func ruleCategorizer(t *testing.T, st *store.Store, pattern, catName string) (*categorize.Categorizer, int64) {
+	t.Helper()
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catID int64
+	for _, c := range cats {
+		if c.Name == catName {
+			catID = c.ID
+			break
+		}
+	}
+	if catID == 0 {
+		t.Fatalf("category %q not found in seeded categories", catName)
+	}
+	if err := st.InsertRule(store.RuleRow{
+		MatchType: "contains", Pattern: pattern, CategoryID: catID, Priority: 100, Source: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.SelectActiveRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := make([]categorize.Rule, len(rows))
+	for i, r := range rows {
+		rules[i] = categorize.Rule{MatchType: r.MatchType, Pattern: r.Pattern, CategoryID: r.CategoryID, Priority: r.Priority}
+	}
+	domainCats := make([]categorize.Category, len(cats))
+	for i, c := range cats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	return categorize.New(rules, domainCats, categorize.DisabledAI{}, 0.85, false), catID
+}
+
+// A parser-flagged transfer whose merchant matches a rule must STAY status=transfer;
+// auto-categorization must not flip it to confirmed (it would leak into the budget).
+func TestProcessorTransferStatusSurvivesRuleMatch(t *testing.T) {
+	st := procTestStore(t)
+	cz, _ := ruleCategorizer(t, st, "internal transfer", "Shopping")
+
+	cascade := &Cascade{Parsers: []BankParser{stubTransferParser{}}, Heuristic: HeuristicParser{}, AI: DisabledExtractor{}}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "xfer-rule", FromAddr: "stub@bank.com", Subject: "transfer",
+		ParseStatus: "unparsed", RawBody: []byte("From: stub@bank.com\r\nSubject: transfer\r\n\r\ntransfer"),
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, cascade)
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) { return cz, true })
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := st.DB.QueryRow(`SELECT status FROM transactions LIMIT 1`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "transfer" {
+		t.Errorf("status = %q, want transfer (rule match must not overwrite transfer status)", status)
+	}
+}
+
+// A heuristic-tier extraction is a guess (fixed 0.4 confidence); a rule match may
+// attach the category but must not auto-confirm the transaction.
+func TestProcessorHeuristicTierNeverAutoConfirms(t *testing.T) {
+	st := procTestStore(t)
+	cz, shoppingID := ruleCategorizer(t, st, "starbucks", "Shopping")
+
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "heur-1", FromAddr: "alerts@unknownbank.com", Subject: "alert",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: alerts@unknownbank.com\r\nSubject: alert\r\n\r\nPayment to STARBUCKS AED 50.00 on 19-08-2025"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, dibCascade())
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) { return cz, true })
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var catID *int64
+	if err := st.DB.QueryRow(`SELECT status, category_id FROM transactions LIMIT 1`).Scan(&status, &catID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "needs_review" {
+		t.Errorf("status = %q, want needs_review (heuristic extraction must not auto-confirm)", status)
+	}
+	if catID == nil || *catID != shoppingID {
+		t.Errorf("category_id = %v, want %d (category should still be attached)", catID, shoppingID)
+	}
+}
+
+// An AI-tier extraction must always land in review, even when its merchant
+// matches an existing rule (CLAUDE.md: AI extractions are never auto-trusted).
+func TestProcessorAITierNeverAutoConfirms(t *testing.T) {
+	st := procTestStore(t)
+	cz, shoppingID := ruleCategorizer(t, st, "starbucks", "Shopping")
+
+	cascade := &Cascade{
+		Parsers:   []BankParser{DIBParser{}},
+		Heuristic: HeuristicParser{},
+		AI: stubExtractor{p: ParsedTxn{
+			PostedAt: time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC), AmountFils: 5000,
+			Currency: "AED", Direction: "debit", MerchantRaw: "STARBUCKS", Confidence: 0.6,
+		}},
+	}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "ai-1", FromAddr: "alerts@unknownbank.com", Subject: "alert",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: alerts@unknownbank.com\r\nSubject: alert\r\n\r\nno numbers here"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, cascade)
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) { return cz, true })
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var catID *int64
+	if err := st.DB.QueryRow(`SELECT status, category_id FROM transactions LIMIT 1`).Scan(&status, &catID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "needs_review" {
+		t.Errorf("status = %q, want needs_review (AI extraction must never auto-confirm)", status)
+	}
+	if catID == nil || *catID != shoppingID {
+		t.Errorf("category_id = %v, want %d (category should still be attached)", catID, shoppingID)
+	}
+}
+
+// countingAICat records categorization calls and always answers confidently.
+type countingAICat struct{ calls *int }
+
+func (c countingAICat) Categorize(context.Context, string, []categorize.Category) (string, float64, error) {
+	*c.calls++
+	return "Shopping", 0.99, nil
+}
+
+// stubEmptyMerchantParser extracts a valid transaction with no merchant text.
+type stubEmptyMerchantParser struct{}
+
+func (stubEmptyMerchantParser) Bank() string                { return "stub" }
+func (stubEmptyMerchantParser) Matches(from, _ string) bool { return from == "stub@bank.com" }
+func (stubEmptyMerchantParser) Parse(_ string) (ParsedTxn, error) {
+	return ParsedTxn{
+		PostedAt: time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC), AmountFils: 10000,
+		Currency: "AED", Direction: "debit", MerchantRaw: "", Confidence: 0.97,
+	}, nil
+}
+
+// A transaction with no merchant text must skip categorization entirely: no AI
+// call (nothing meaningful to classify) and, above all, no write-back rule.
+func TestProcessorSkipsCategorizationForEmptyMerchant(t *testing.T) {
+	st := procTestStore(t)
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainCats := make([]categorize.Category, len(cats))
+	for i, c := range cats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	calls := 0
+	cz := categorize.New(nil, domainCats, countingAICat{calls: &calls}, 0.85, true)
+
+	cascade := &Cascade{Parsers: []BankParser{stubEmptyMerchantParser{}}, Heuristic: HeuristicParser{}, AI: DisabledExtractor{}}
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "empty-merchant", FromAddr: "stub@bank.com", Subject: "txn",
+		ParseStatus: "unparsed", RawBody: []byte("From: stub@bank.com\r\nSubject: txn\r\n\r\nbody"),
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, cascade)
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) { return cz, true })
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if calls != 0 {
+		t.Errorf("AI categorizer called %d times for empty merchant, want 0", calls)
+	}
+	var ruleCnt int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM rules`).Scan(&ruleCnt); err != nil {
+		t.Fatal(err)
+	}
+	if ruleCnt != 0 {
+		t.Errorf("rules written = %d, want 0 (an empty pattern would match everything)", ruleCnt)
+	}
+	var status string
+	var catID *int64
+	if err := st.DB.QueryRow(`SELECT status, category_id FROM transactions LIMIT 1`).Scan(&status, &catID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "needs_review" || catID != nil {
+		t.Errorf("status/category = %q/%v, want needs_review/nil", status, catID)
+	}
+}
+
+// The same new merchant appearing twice in one batch must cost one AI call and
+// write one rule — the categorizer's rule snapshot predates the write-back, so
+// without a batch cache the second row re-asks the AI and duplicates the rule.
+func TestProcessorCategorizesRepeatedMerchantOncePerBatch(t *testing.T) {
+	st := procTestStore(t)
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainCats := make([]categorize.Category, len(cats))
+	for i, c := range cats {
+		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	calls := 0
+	cz := categorize.New(nil, domainCats, countingAICat{calls: &calls}, 0.85, true)
+
+	html := func(amount string) string {
+		return "<p>إشعار مشتريات</p><p>إشعار مشتريات بتاريخ 19-08-2025 16:18</p>" +
+			"<p>المبلغ</p><p>AED " + amount + "</p><p>الدفع الى</p><p>STARBUCKS</p>"
+	}
+	for i, amount := range []string{"10.00", "20.00"} {
+		if _, err := st.InsertIngest(store.IngestRecord{
+			MessageUID: "batch-" + string(rune('a'+i)), FromAddr: "DIB.notification@dib.ae",
+			Subject: "DIB Notification", ParseStatus: "unparsed",
+			RawBody: dibEmail(html(amount)), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewProcessor(st, dibCascade())
+	p.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) { return cz, true })
+	if _, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if calls != 1 {
+		t.Errorf("AI calls = %d, want 1 (second row must hit the batch cache)", calls)
+	}
+	var ruleCnt int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM rules`).Scan(&ruleCnt); err != nil {
+		t.Fatal(err)
+	}
+	if ruleCnt != 1 {
+		t.Errorf("rules = %d, want 1 (no duplicate write-back)", ruleCnt)
+	}
+	var uncat int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transactions WHERE category_id IS NULL`).Scan(&uncat); err != nil {
+		t.Fatal(err)
+	}
+	if uncat != 0 {
+		t.Errorf("%d transactions left uncategorized; the cached result must still apply", uncat)
+	}
+}
+
+// ProcessPending's return value is "rows that produced a transaction" — a
+// duplicate-fingerprint row (same email delivered twice) must not count.
+func TestProcessPendingCountExcludesDuplicates(t *testing.T) {
+	st := procTestStore(t)
+	html := "<p>إشعار مشتريات</p><p>إشعار مشتريات بتاريخ 19-08-2025 16:18</p>" +
+		"<p>المبلغ</p><p>AED 215.00</p><p>الدفع الى</p><p>DAPPER DAN GENTS SAL</p>"
+	for _, uid := range []string{"dup-1", "dup-2"} {
+		if _, err := st.InsertIngest(store.IngestRecord{MessageUID: uid, FromAddr: "DIB.notification@dib.ae",
+			Subject: "DIB Notification", ParseStatus: "unparsed", RawBody: dibEmail(html), CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewProcessor(st, dibCascade())
+	n, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1 (identical second email dedups by fingerprint)", n)
+	}
+}
+
+// Reprocessing a low_confidence row must not create a second transaction when
+// the re-run extracts slightly different fields (e.g. AI wording drift or a new
+// template producing a different merchant string → different fingerprint).
+func TestProcessorReprocessDoesNotDuplicateTransaction(t *testing.T) {
+	st := procTestStore(t)
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: "repro-1", FromAddr: "alerts@unknownbank.com", Subject: "alert",
+		ParseStatus: "unparsed",
+		RawBody:     []byte("From: alerts@unknownbank.com\r\nSubject: alert\r\n\r\nno numbers here"),
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	extract := func(merchant string) *Cascade {
+		return &Cascade{Parsers: []BankParser{DIBParser{}}, Heuristic: HeuristicParser{},
+			AI: stubExtractor{p: ParsedTxn{
+				PostedAt: time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC), AmountFils: 5000,
+				Currency: "AED", Direction: "debit", MerchantRaw: merchant, Confidence: 0.6,
+			}}}
+	}
+
+	// First pass: AI tier extracts "Amazon AE" → low_confidence + one transaction.
+	p1 := NewProcessor(st, extract("Amazon AE"))
+	if _, err := p1.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Reprocess: the same email now extracts "AMAZON.AE" (different fingerprint).
+	p2 := NewProcessor(st, extract("AMAZON.AE"))
+	if _, err := p2.Reprocess(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var cnt int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transactions`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Errorf("transaction count = %d, want 1 (one email must never yield two transactions)", cnt)
 	}
 }
 
