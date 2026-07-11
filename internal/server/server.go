@@ -99,6 +99,7 @@ type Server struct {
 	ratesStore      RatesStore
 	accountsStore   AccountsStore
 	transfersStore  TransfersStore
+	projectStore    ProjectStore
 	aiKeyPresent    bool
 }
 
@@ -176,6 +177,14 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("GET /api/transactions/{id}/refund-candidates", s.handleRefundCandidates)
 	s.mux.HandleFunc("POST /api/transactions/{id}/link-refund", s.handleLinkRefund)
 	s.mux.HandleFunc("POST /api/transactions/{id}/unlink-refund", s.handleUnlinkRefund)
+	s.mux.HandleFunc("GET /api/projects", s.handleGetProjects)
+	s.mux.HandleFunc("POST /api/projects", s.handlePostProject)
+	s.mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
+	s.mux.HandleFunc("PUT /api/projects/{id}", s.handlePutProject)
+	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
+	s.mux.HandleFunc("POST /api/projects/{id}/assign", s.handleBulkAssign)
+	s.mux.HandleFunc("POST /api/projects/{id}/unassign", s.handleBulkUnassign)
+	s.mux.HandleFunc("POST /api/transactions/{id}/project", s.handleAssignTxnProject)
 	s.mux.HandleFunc("POST /api/categorize/run", s.handleCategorizeRun)
 	s.mux.HandleFunc("POST /api/categorize/stop", s.handleCategorizeStop)
 	s.mux.HandleFunc("GET /api/categorize/status", s.handleCategorizeStatus)
