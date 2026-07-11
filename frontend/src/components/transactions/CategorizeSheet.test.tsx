@@ -14,7 +14,7 @@ describe("CategorizeSheet", () => {
   it("submits the chosen category + make_rule", () => {
     const onSubmit = vi.fn();
     render(<CategorizeSheet txn={txn} categories={cats} onSubmit={onSubmit} onClose={() => {}} />);
-    fireEvent.click(screen.getByLabelText("Dining"));
+    fireEvent.click(screen.getByRole("button", { name: "Dining" }));
     fireEvent.click(screen.getByLabelText(/make a rule/i));
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     expect(onSubmit).toHaveBeenCalledWith({ category_id: 2, make_rule: true });
@@ -23,8 +23,8 @@ describe("CategorizeSheet", () => {
   it("filters by search", () => {
     render(<CategorizeSheet txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "din" } });
-    expect(screen.getByLabelText("Dining")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Groceries")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dining" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Groceries" })).not.toBeInTheDocument();
   });
 
   it("marks an unconverted foreign row with the native tag and a no-rate note", () => {

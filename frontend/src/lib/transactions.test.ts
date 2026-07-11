@@ -7,6 +7,7 @@ import {
   sourceLabel,
   buildManualTxnPayload,
   exportUrl,
+  exportFilename,
   EMPTY_FILTERS,
   type TxnFilters,
 } from "./transactions";
@@ -175,5 +176,12 @@ describe("exportUrl", () => {
   it("omits blank search and trims whitespace", () => {
     expect(exportUrl({ q: "  " })).toBe("/api/transactions/export");
     expect(exportUrl({ q: " spin " })).toBe("/api/transactions/export?q=spin");
+  });
+});
+
+describe("exportFilename", () => {
+  it("stamps the local date, zero-padded", () => {
+    expect(exportFilename(new Date(2026, 6, 5))).toBe("ledger-export-2026-07-05.csv");
+    expect(exportFilename(new Date(2026, 11, 31))).toBe("ledger-export-2026-12-31.csv");
   });
 });

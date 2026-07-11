@@ -1,6 +1,6 @@
 // frontend/src/screens/Transactions.test.tsx
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { Transactions } from "./Transactions";
@@ -12,9 +12,15 @@ const all: Txn[] = [
 ];
 const cats: Category[] = [{ ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true }];
 
+let calls: { url: string; method?: string }[];
+
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  calls = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method });
+    if (init?.method === "POST") return new Response("{}");
     if (url.includes("/api/categories")) return new Response(JSON.stringify(cats));
+    if (url.includes("/api/transactions/export")) return new Response("id,merchant\n1,SPINNEYS\n");
     if (url.includes("/api/transactions")) {
       const sp = new URL("http://x" + url.replace(/^[^/]*/, "")).searchParams;
       const status = sp.get("status");
@@ -27,6 +33,10 @@ beforeEach(() => {
     }
     return new Response("[]");
   }));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 function wrap(props: { from?: string; to?: string } = {}) {
@@ -42,10 +52,10 @@ describe("Transactions", () => {
     expect(screen.getByText(/2 transactions/i)).toBeInTheDocument();
   });
 
-  it("filters to needs-review via the segmented control", async () => {
+  it("filters to review via the segmented control", async () => {
     wrap();
     await screen.findByText("NETFLIX");
-    fireEvent.click(screen.getByRole("button", { name: /needs review/i }));
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
     expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
   });
@@ -58,37 +68,32 @@ describe("Transactions", () => {
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
   });
 
-  it("filters by bucket via the chip picker", async () => {
+  it("filters by bucket with an inline chip", async () => {
     wrap();
     await screen.findByText("NETFLIX");
-    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
-    fireEvent.click(screen.getByLabelText("Wants"));
-    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    fireEvent.click(screen.getByRole("button", { name: /filters/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Wants" }));
     expect(screen.getByText("NETFLIX")).toBeInTheDocument();
     expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
   });
 
-  it("ANDs a bucket chip with a direction chip", async () => {
+  it("ANDs a bucket chip with a type chip", async () => {
     wrap();
     await screen.findByText("NETFLIX");
-    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
-    fireEvent.click(screen.getByLabelText("Wants"));
-    fireEvent.click(screen.getByRole("button", { name: /done/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^direction/i }));
-    fireEvent.click(screen.getByLabelText("Income")); // credit — NETFLIX is debit
-    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    fireEvent.click(screen.getByRole("button", { name: /filters/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Wants" }));
+    fireEvent.click(screen.getByRole("button", { name: "Income" })); // credit — both rows are debit
     expect(screen.queryByText("NETFLIX")).not.toBeInTheDocument();
     expect(await screen.findByText(/no transactions/i)).toBeInTheDocument();
   });
 
-  it("Clear restores all rows", async () => {
+  it("Clear all restores every row", async () => {
     wrap();
     await screen.findByText("NETFLIX");
-    fireEvent.click(screen.getByRole("button", { name: /^bucket/i }));
-    fireEvent.click(screen.getByLabelText("Wants"));
-    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    fireEvent.click(screen.getByRole("button", { name: /filters/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Wants" }));
     expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /clear all/i }));
     expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
   });
 
@@ -106,30 +111,26 @@ describe("Transactions", () => {
     expect(screen.getByLabelText(/merchant/i)).toBeInTheDocument();
   });
 
-  it("archives a row via its Archive action", async () => {
+  it("archives a row from its detail sheet", async () => {
     wrap();
     await screen.findByText("SPINNEYS");
-    const calls: string[] = [];
-    const realFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    realFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (init?.method === "POST") { calls.push(url); return new Response("{}"); }
-      if (url.includes("/api/categories")) return new Response(JSON.stringify(cats));
-      return new Response(JSON.stringify(all));
-    });
-    fireEvent.click(screen.getAllByRole("button", { name: /^archive$/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /open spinneys/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^archive$/i }));
     await screen.findByText(/archived/i); // toast
-    expect(calls.some((u) => /\/api\/transactions\/\d+\/archive$/.test(u))).toBe(true);
+    expect(calls.some((c) => c.method === "POST" && /\/api\/transactions\/\d+\/archive$/.test(c.url))).toBe(true);
   });
 
-  it("links CSV export to the current server-side filters", async () => {
+  it("exports via the platform share sheet with the current server-side filters", async () => {
+    const share = vi.fn(() => Promise.resolve());
+    (navigator as unknown as { canShare: () => boolean }).canShare = () => true;
+    (navigator as unknown as { share: typeof share }).share = share;
     wrap({ from: "2026-06-01", to: "2026-06-32" });
     await screen.findByText("NETFLIX");
     fireEvent.click(screen.getByRole("button", { name: /confirmed/i }));
     fireEvent.change(screen.getByPlaceholderText(/search merchant/i), { target: { value: "net" } });
-    const link = screen.getByRole("link", { name: /export csv/i });
-    expect(link).toHaveAttribute(
-      "href",
-      "/api/transactions/export?status=confirmed&from=2026-06-01&to=2026-06-32&q=net",
-    );
+    fireEvent.click(screen.getByRole("button", { name: /export csv/i }));
+    await waitFor(() => expect(share).toHaveBeenCalled());
+    expect(calls.some((c) => c.url ===
+      "/api/transactions/export?status=confirmed&from=2026-06-01&to=2026-06-32&q=net")).toBe(true);
   });
 });

@@ -9,61 +9,50 @@ const mk = (over: Partial<Txn>): Txn => ({
   CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
 });
 
-const noop = () => {};
-
-describe("TransactionRow archive actions", () => {
-  it("offers Archive on a non-archived row", () => {
-    const onArchive = vi.fn();
-    render(<TransactionRow txn={mk({})} onOpen={noop} onStatus={noop} onArchive={onArchive} onRestore={noop} />);
-    fireEvent.click(screen.getByRole("button", { name: /archive/i }));
-    expect(onArchive).toHaveBeenCalledTimes(1);
+describe("TransactionRow", () => {
+  it("opens the row on tap", () => {
+    const onOpen = vi.fn();
+    render(<TransactionRow txn={mk({})} onOpen={onOpen} />);
+    fireEvent.click(screen.getByRole("button", { name: /open spinneys/i }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  it("offers Restore (and not Archive) on an archived row", () => {
-    const onRestore = vi.fn();
-    render(<TransactionRow txn={mk({ Status: "archived" })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={onRestore} />);
-    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /restore/i }));
-    expect(onRestore).toHaveBeenCalledTimes(1);
+  it("shows category and short date, and 'Uncategorized' when unset", () => {
+    const { rerender } = render(<TransactionRow txn={mk({ CategoryName: "Groceries" })} onOpen={() => {}} />);
+    expect(screen.getByText(/Groceries · Jun 10/)).toBeInTheDocument();
+    rerender(<TransactionRow txn={mk({ CategoryName: "" })} onOpen={() => {}} />);
+    expect(screen.getByText(/Uncategorized · Jun 10/)).toBeInTheDocument();
   });
 
   it("signs the amount by flow direction", () => {
-    const { rerender } = render(<TransactionRow txn={mk({ Direction: "debit", AmountFils: 5000 })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    const { rerender } = render(<TransactionRow txn={mk({ Direction: "debit", AmountFils: 5000 })} onOpen={() => {}} />);
     expect(screen.getByText("−50.00")).toBeInTheDocument();
-    rerender(<TransactionRow txn={mk({ Direction: "credit", AmountFils: 5000 })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    rerender(<TransactionRow txn={mk({ Direction: "credit", AmountFils: 5000 })} onOpen={() => {}} />);
     expect(screen.getByText("+50.00")).toBeInTheDocument();
   });
 
-  it("shows Categorize, Transfer, Ignore and Archive on a needs_review row", () => {
-    render(<TransactionRow txn={mk({ Status: "needs_review" })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
-    for (const name of [/categorize/i, /transfer/i, /ignore/i, /^archive$/i]) {
-      expect(screen.getByRole("button", { name })).toBeInTheDocument();
-    }
-  });
-
   it("shows the converted AED amount with a native tag for foreign rows", () => {
-    render(<TransactionRow txn={mk({ AmountFils: 1009, Currency: "USD", AmountAedFils: 3706, Direction: "debit" })}
-      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    render(<TransactionRow txn={mk({ AmountFils: 1009, Currency: "USD", AmountAedFils: 3706, Direction: "debit" })} onOpen={() => {}} />);
     expect(screen.getByText("−37.06")).toBeInTheDocument();
     expect(screen.getByText(/USD 10\.09/)).toBeInTheDocument();
   });
 
   it("marks unconverted foreign rows", () => {
-    render(<TransactionRow txn={mk({ AmountFils: 2412, Currency: "EUR", AmountAedFils: null, Direction: "debit" })}
-      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    render(<TransactionRow txn={mk({ AmountFils: 2412, Currency: "EUR", AmountAedFils: null, Direction: "debit" })} onOpen={() => {}} />);
     expect(screen.getByText(/no AED rate/)).toBeInTheDocument();
   });
-});
 
-describe("TransactionRow refund tag", () => {
-  it("marks linked refunds in the subtitle", () => {
-    render(<TransactionRow txn={mk({ Direction: "credit", CategoryName: "Groceries", RefundOfID: 42 })}
-      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+  it("tags linked refunds in the meta line", () => {
+    render(<TransactionRow txn={mk({ Direction: "credit", CategoryName: "Groceries", RefundOfID: 42 })} onOpen={() => {}} />);
     expect(screen.getByText(/refund/)).toBeInTheDocument();
   });
 
-  it("does not tag unlinked rows", () => {
-    render(<TransactionRow txn={mk({ RefundOfID: null })} onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
-    expect(screen.queryByText(/refund/)).not.toBeInTheDocument();
+  it("shows a status pill only when a row needs attention or is archived", () => {
+    const { rerender } = render(<TransactionRow txn={mk({ Status: "confirmed" })} onOpen={() => {}} />);
+    expect(screen.queryByText(/needs review|archived/i)).not.toBeInTheDocument();
+    rerender(<TransactionRow txn={mk({ Status: "needs_review" })} onOpen={() => {}} />);
+    expect(screen.getByText(/needs review/i)).toBeInTheDocument();
+    rerender(<TransactionRow txn={mk({ Status: "archived" })} onOpen={() => {}} />);
+    expect(screen.getByText(/archived/i)).toBeInTheDocument();
   });
 });

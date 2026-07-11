@@ -9,23 +9,26 @@ import { Input } from "../components/ui/Field";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TransactionRow } from "../components/transactions/TransactionRow";
+import { SwipeableRow, type SwipeActionSpec } from "../components/transactions/SwipeableRow";
 import { CategorizeSheet } from "../components/transactions/CategorizeSheet";
+import { TransactionDetailSheet } from "../components/transactions/TransactionDetailSheet";
 import { LinkRefundSheet } from "../components/transactions/LinkRefundSheet";
 import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
 import { Fab } from "../components/ui/Fab";
-import { FilterChips } from "../components/transactions/FilterChips";
+import { FilterBar } from "../components/transactions/FilterBar";
 import { useToast } from "../components/Toast";
-import { txnTotals, applyTxnFilters, EMPTY_FILTERS, exportUrl, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
+import { txnTotals, applyTxnFilters, filtersActive, exportUrl, exportFilename, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
-import { AlertTriangle, ListOrdered, Search, Plus, Download } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Plus, Download, SlidersHorizontal, Tag, Archive, ArchiveRestore } from "lucide-react";
 import { useTxnActions } from "../hooks/useTxnActions";
 import { useFirstReveal } from "../hooks/useFirstReveal";
+import { fire } from "../lib/feedback";
 
 type Filter = "all" | "needs_review" | "confirmed" | "archived";
 const FILTERS = [
   { value: "all" as const, label: "All" },
-  { value: "needs_review" as const, label: "Needs review" },
+  { value: "needs_review" as const, label: "Review" },
   { value: "confirmed" as const, label: "Confirmed" },
   { value: "archived" as const, label: "Archived" },
 ];
@@ -36,9 +39,12 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
-  const [active, setActive] = useState<Txn | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [detail, setDetail] = useState<Txn | null>(null);
+  const [categorizeTxn, setCategorizeTxn] = useState<Txn | null>(null);
   const [linkTxn, setLinkTxn] = useState<Txn | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const status = filter === "all" ? "" : filter;
   const q = useQuery({
@@ -60,6 +66,13 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   }, [q.data, search, filters]);
   const totals = useMemo(() => txnTotals(rows), [rows]);
   const firstReveal = useFirstReveal(rows.length > 0);
+  const activeFilters = filtersActive(filters);
+
+  // Attention count for the Review segment — meaningful only when the loaded set
+  // spans all statuses ("all") or already is the review set.
+  const reviewBadge = status === "" || status === "needs_review"
+    ? (q.data ?? []).filter((t) => t.Status === "needs_review").length
+    : undefined;
 
   const createTxn = async (payload: ManualTxnPayload) => {
     try {
@@ -70,32 +83,89 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     } catch { show({ message: "Couldn't add transaction", tone: "error" }); }
   };
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <SegmentedControl value={filter} onChange={setFilter} options={FILTERS} />
-        <a
-          href={exportUrl({ status, from, to, q: search })}
-          download
-          aria-label="Export CSV"
-          title="Export CSV (current status, period and search — chip filters not included)"
-          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-md border border-border bg-surface text-muted press"
-        >
-          <Download size={16} aria-hidden />
-        </a>
-      </div>
+  // Export as a shared file where the platform supports it (an iOS PWA has no
+  // working <a download>), else fall back to a blob download for desktop.
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const res = await fetch(exportUrl({ status, from, to, q: search }));
+      if (!res.ok) throw new Error("export failed");
+      const blob = await res.blob();
+      const filename = exportFilename(new Date());
+      const file = new File([blob], filename, { type: "text/csv" });
+      const nav = navigator as Navigator & { canShare?: (data: unknown) => boolean };
+      if (nav.canShare?.({ files: [file] }) && nav.share) {
+        try {
+          await nav.share({ files: [file], title: filename });
+        } catch (e) {
+          if ((e as DOMException)?.name !== "AbortError") throw e;
+        }
+      } else {
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = href;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 1000);
+      }
+    } catch {
+      show({ message: "Couldn't export CSV", tone: "error" });
+    } finally {
+      setExporting(false);
+    }
+  };
 
-      <Input
-        icon={Search}
-        type="search"
-        enterKeyHint="search"
-        autoCorrect="off"
-        placeholder="Search merchant…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
+  return (
+    <div className="space-y-3">
+      <SegmentedControl
+        fullWidth
+        value={filter}
+        onChange={setFilter}
+        options={FILTERS.map((f) => (f.value === "needs_review" ? { ...f, badge: reviewBadge } : f))}
       />
 
-      <FilterChips filters={filters} categories={cats.data ?? []} txns={q.data ?? []} onChange={setFilters} />
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <Input
+            icon={Search}
+            type="search"
+            enterKeyHint="search"
+            autoCorrect="off"
+            placeholder="Search merchant…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => { fire("selection"); setFilterOpen((o) => !o); }}
+          aria-expanded={filterOpen}
+          aria-label="Filters"
+          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border press ${
+            activeFilters > 0 ? "border-accent/30 bg-accent/10 text-accent" : "border-border bg-surface text-muted"
+          }`}
+        >
+          <SlidersHorizontal size={16} aria-hidden />
+          {activeFilters > 0 && <span className="tnum text-xs font-semibold">{activeFilters}</span>}
+        </button>
+        <button
+          type="button"
+          onClick={() => { fire("selection"); void exportCsv(); }}
+          disabled={exporting}
+          aria-label="Export CSV"
+          title="Export CSV — current status, period and search"
+          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-md border border-border bg-surface text-muted press disabled:opacity-50"
+        >
+          <Download size={16} aria-hidden />
+        </button>
+      </div>
+
+      {(activeFilters > 0 || filterOpen) && (
+        <FilterBar filters={filters} categories={cats.data ?? []} txns={q.data ?? []} open={filterOpen} onChange={setFilters} />
+      )}
 
       {q.isError ? (
         <EmptyState icon={AlertTriangle} title="Couldn't load transactions" hint="Check your connection and try again." />
@@ -111,24 +181,60 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
               <p className="text-sm text-muted tnum">{formatFils(totals.spentFils)} spent</p>
             )}
           </div>
-          <Card className="!p-0">
-            <ul className="divide-y divide-border px-4">
-              {rows.map((t) => (
-                <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
-              ))}
+          <Card className="!p-0 overflow-hidden">
+            <ul className="divide-y divide-border">
+              {rows.map((t) => {
+                const archived = t.Status === "archived";
+                const lead: SwipeActionSpec = archived
+                  ? { label: "Restore", icon: <ArchiveRestore size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" }
+                  : { label: "Categorize", icon: <Tag size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" };
+                const trail: SwipeActionSpec | undefined = archived
+                  ? undefined
+                  : { label: "Archive", icon: <Archive size={18} aria-hidden />, color: "#64748b", fg: "#ffffff" };
+                const onCommit = (action: "lead" | "trail") => {
+                  if (action === "lead") {
+                    if (archived) void restoreTxn(t);
+                    else setCategorizeTxn(t);
+                  } else {
+                    void archiveTxn(t);
+                  }
+                };
+                return (
+                  <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}>
+                    <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>
+                      <div className="px-4">
+                        <TransactionRow txn={t} onOpen={setDetail} />
+                      </div>
+                    </SwipeableRow>
+                  </li>
+                );
+              })}
             </ul>
           </Card>
         </>
       )}
 
-      {active && cats.data && (
+      {detail && (
+        <TransactionDetailSheet
+          txn={detail}
+          onClose={() => setDetail(null)}
+          onCategorize={() => { const t = detail; setDetail(null); setCategorizeTxn(t); }}
+          onStatus={(s) => { const t = detail; setDetail(null); void setStatus(t, s); }}
+          onArchive={() => { const t = detail; setDetail(null); void archiveTxn(t); }}
+          onRestore={() => { const t = detail; setDetail(null); void restoreTxn(t); }}
+          onLinkRefund={() => { setLinkTxn(detail); setDetail(null); }}
+          onUnlinkRefund={() => { const t = detail; setDetail(null); void unlinkRefund(t); }}
+        />
+      )}
+
+      {categorizeTxn && cats.data && (
         <CategorizeSheet
-          txn={active}
+          txn={categorizeTxn}
           categories={cats.data}
-          onSubmit={async (body) => { if (await categorize(active, body)) setActive(null); }}
-          onClose={() => setActive(null)}
-          onLinkRefund={() => { setLinkTxn(active); setActive(null); }}
-          onUnlinkRefund={() => { const t = active; setActive(null); void unlinkRefund(t); }}
+          onSubmit={async (body) => { if (await categorize(categorizeTxn, body)) setCategorizeTxn(null); }}
+          onClose={() => setCategorizeTxn(null)}
+          onLinkRefund={() => { setLinkTxn(categorizeTxn); setCategorizeTxn(null); }}
+          onUnlinkRefund={() => { const t = categorizeTxn; setCategorizeTxn(null); void unlinkRefund(t); }}
         />
       )}
 

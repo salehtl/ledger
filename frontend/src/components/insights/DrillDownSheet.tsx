@@ -24,7 +24,7 @@ export function DrillDownSheet({ target, txns, frozen, categories, onClose }: {
 }) {
   // Within a bucket sheet, the user can narrow to one category (nested drill).
   const [narrowed, setNarrowed] = useState<{ categoryId: number | null; name: string } | null>(null);
-  const { setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
+  const { categorize } = useTxnActions();
   const [active, setActive] = useState<Txn | null>(null);
 
   const spending = txns.filter(isSpending);
@@ -82,7 +82,7 @@ export function DrillDownSheet({ target, txns, frozen, categories, onClose }: {
         <ul className="divide-y divide-border">
           {rows.map((t) => (
             <li key={t.ID}>
-              <TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
+              <TransactionRow txn={t} onOpen={setActive} />
             </li>
           ))}
         </ul>
