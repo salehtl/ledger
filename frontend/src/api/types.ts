@@ -28,6 +28,8 @@ export interface Txn {
   Kind: string; BucketSnapshot: string;
   /** Set when this credit is a linked refund of another transaction. */
   RefundOfID?: number | null;
+  /** Set when this transaction is assigned to a life-project. */
+  ProjectID?: number | null;
 }
 export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
