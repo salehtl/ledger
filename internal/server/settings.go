@@ -67,21 +67,33 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if dto.AIThreshold <= 0 || dto.AIThreshold > 1 {
 		dto.AIThreshold = 0.85
 	}
+	// Single read of the current settings, reused below for both the
+	// IngestSilenceDays fallback and the CapLatched carry-forward.
+	cur, curErr := s.settingsStore.SelectAppSettings()
 	if dto.IngestSilenceDays < 1 {
 		// Omitted (older client) or invalid: preserve the stored value.
-		if cur, err := s.settingsStore.SelectAppSettings(); err == nil && cur.IngestSilenceDays >= 1 {
+		if curErr == nil && cur.IngestSilenceDays >= 1 {
 			dto.IngestSilenceDays = cur.IngestSilenceDays
 		} else {
 			dto.IngestSilenceDays = 3
 		}
+	}
+	// CapLatched: the client cannot set this field directly (dto.AICapLatched
+	// is intentionally never read). We carry forward the stored value so the
+	// hard latch persists across unrelated settings changes made while AI is
+	// off; the store still clears it when AIEnabled is true. If the read
+	// failed, fail safe by treating it as false (at worst the banner clears
+	// early, never a safety issue).
+	capLatched := false
+	if curErr == nil {
+		capLatched = cur.CapLatched
 	}
 	if err := s.settingsStore.UpdateAppSettings(store.AppSettings{
 		AutoCategorize: dto.AutoCategorize, AIEnabled: dto.AIEnabled,
 		AIAutoAccept: dto.AIAutoAccept, AIThreshold: dto.AIThreshold,
 		IngestSilenceDays: dto.IngestSilenceDays,
 		SpendCapMuUSD:     dto.AISpendCapMuUSD,
-		// CapLatched intentionally omitted — the store clears the latch when
-		// AIEnabled is true, and the client cannot set it directly.
+		CapLatched:        capLatched,
 	}); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return

@@ -14,7 +14,18 @@ import (
 type stubSettings struct{ s store.AppSettings }
 
 func (st *stubSettings) SelectAppSettings() (store.AppSettings, error) { return st.s, nil }
-func (st *stubSettings) UpdateAppSettings(a store.AppSettings) error   { st.s = a; return nil }
+
+// UpdateAppSettings mirrors store.Store.UpdateAppSettings's cap-latch
+// clearing rule (re-enabling AI always clears the latch) so handler-level
+// tests can exercise the real persist-until-re-enable contract rather than
+// a stub that just parrots back whatever was written.
+func (st *stubSettings) UpdateAppSettings(a store.AppSettings) error {
+	if a.AIEnabled {
+		a.CapLatched = false
+	}
+	st.s = a
+	return nil
+}
 
 func TestGetSettings(t *testing.T) {
 	srv := New(nil, fstest()) // mirror existing server-test construction
@@ -191,6 +202,48 @@ func TestSettingsCapLatchedNotSettableByClient(t *testing.T) {
 	}
 	if stub.s.CapLatched {
 		t.Fatalf("client-sent ai_cap_latched:true must not be forwarded to the store")
+	}
+}
+
+// A PUT made while AI is off, changing an unrelated field, must not clear a
+// tripped cap latch — the latch is a hard latch that persists until the user
+// explicitly re-enables AI (ai_enabled:true).
+func TestSettingsCapLatchedPreservedAcrossUnrelatedPUT(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIEnabled: false, AIThreshold: 0.85, CapLatched: true, SpendCapMuUSD: 50000}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ai_spend_cap_musd":60000}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !stub.s.CapLatched {
+		t.Fatalf("CapLatched should remain true after an unrelated settings PUT while AI is off")
+	}
+	if stub.s.SpendCapMuUSD != 60000 {
+		t.Fatalf("SpendCapMuUSD=%d, want 60000 (unrelated field should still update)", stub.s.SpendCapMuUSD)
+	}
+}
+
+// Re-enabling AI (ai_enabled:true) must clear a tripped cap latch, asserted
+// at the handler level.
+func TestSettingsCapLatchedClearedOnReEnable(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIEnabled: false, AIThreshold: 0.85, CapLatched: true}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":true,"ai_auto_accept":false,"ai_threshold":0.85}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.CapLatched {
+		t.Fatalf("CapLatched should be cleared when re-enabling AI")
 	}
 }
 
