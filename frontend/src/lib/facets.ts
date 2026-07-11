@@ -50,7 +50,10 @@ export function computeFacets(w: number, h: number, card: CardRect, band: number
     return { edge, slot, points: poly(halfPts[k]), lx: at[0], ly: at[1], rot }
   })
 
-  const sT = band / y0, sB = band / (h - y1), sL = band / x0, sR = band / (w - x1)
+  // Guard against a zero/negative margin (pathologically short arena) so the
+  // slant ratios stay finite and the Other slices never invert.
+  const ratio = (margin: number) => (margin > 0 ? band / margin : 0)
+  const sT = ratio(y0), sB = ratio(h - y1), sL = ratio(x0), sR = ratio(w - x1)
   const otherPts: Record<EdgeKey, Pt[]> = {
     up: [[x0, y0], [x1, y0], [x1 + (w - x1) * sT, y0 - band], [x0 - x0 * sT, y0 - band]],
     down: [[x0, y1], [x1, y1], [x1 + (w - x1) * sB, y1 + band], [x0 - x0 * sB, y1 + band]],
