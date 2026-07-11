@@ -129,6 +129,71 @@ func TestSettingsIngestSilenceDaysRoundTrip(t *testing.T) {
 	}
 }
 
+// The spend-cap field round-trips through PUT/GET.
+func TestSettingsSpendCapRoundTrip(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ai_spend_cap_musd":50000}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.SpendCapMuUSD != 50000 {
+		t.Fatalf("SpendCapMuUSD=%d, want 50000", stub.s.SpendCapMuUSD)
+	}
+
+	req = httptest.NewRequest("GET", "/api/settings", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["ai_spend_cap_musd"] != float64(50000) {
+		t.Fatalf("GET ai_spend_cap_musd=%v, want 50000: %s", got["ai_spend_cap_musd"], rec.Body.String())
+	}
+}
+
+// ai_cap_latched is read-only output: GET reports whatever the store holds,
+// but the PUT handler never forwards a client-sent value for it — the store
+// is the sole authority (it sets the latch itself when the spend cap trips,
+// via a path this handler never touches).
+func TestSettingsCapLatchedReadOnlyOnGET(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, CapLatched: true}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["ai_cap_latched"] != true {
+		t.Fatalf("GET ai_cap_latched=%v, want true: %s", got["ai_cap_latched"], rec.Body.String())
+	}
+}
+
+// A client cannot force the latch true by including ai_cap_latched:true in
+// the PUT body — the handler must not read that field into the store write.
+func TestSettingsCapLatchedNotSettableByClient(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, CapLatched: false}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ai_cap_latched":true}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.CapLatched {
+		t.Fatalf("client-sent ai_cap_latched:true must not be forwarded to the store")
+	}
+}
+
 // A PUT that omits ingest_silence_days (older client) must not clobber the
 // stored value back to the default.
 func TestPutSettingsOmittedSilenceDaysPreserved(t *testing.T) {
