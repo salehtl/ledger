@@ -15,7 +15,7 @@ func TestComputeBucketsAndProjection(t *testing.T) {
 		{Bucket: "want", Direction: "debit", AmountFils: 300000},
 	}
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
-	s := Compute(cfg, 2000000, spend, nil, now)
+	s := Compute(cfg, 2000000, spend, nil, now, 0)
 
 	if s.Period != "2026-06" {
 		t.Errorf("period = %q", s.Period)
@@ -52,7 +52,7 @@ func TestComputeRangeAggregates(t *testing.T) {
 		{Bucket: "need", Direction: "debit", AmountFils: 1500000},
 		{Bucket: "want", Direction: "debit", AmountFils: 900000},
 	}
-	s := ComputeRange(cfg, 6000000, spend, nil, "2026-03..2026-05", 1.0)
+	s := ComputeRange(cfg, 6000000, spend, nil, "2026-03..2026-05", 1.0, 0)
 
 	if s.Period != "2026-03..2026-05" {
 		t.Errorf("period = %q", s.Period)
@@ -69,11 +69,18 @@ func TestComputeRangeAggregates(t *testing.T) {
 func TestComputeZeroTargetNoDivByZero(t *testing.T) {
 	cfg := store.BudgetConfig{NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2}
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	s := Compute(cfg, 0, nil, nil, now)
+	s := Compute(cfg, 0, nil, nil, now, 0)
 	for _, b := range s.Buckets {
 		if b.PctUsed != 0 {
 			t.Errorf("%s pct_used = %v, want 0 when target 0", b.Bucket, b.PctUsed)
 		}
+	}
+}
+
+func TestComputeCarriesProjectExcluded(t *testing.T) {
+	s := Compute(store.BudgetConfig{MonthlyIncome: 10000, NeedPct: .5, WantPct: .3, SavingPct: .2}, 10000, nil, nil, time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC), 4200)
+	if s.ProjectExcluded != 4200 {
+		t.Fatalf("ProjectExcluded=%d want 4200", s.ProjectExcluded)
 	}
 }
 
