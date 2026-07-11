@@ -67,7 +67,7 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
     <SettingsPage title="Swipe actions" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
       <div>
         <p className="text-xs text-muted mb-3">
-          Two categories per edge, plus an "Other" swipe that opens the full list for that group.
+          Two categories per edge, plus an “Other” swipe that opens the full list for that group.
         </p>
         {!swipeCfg ? (
           <p className="text-sm text-muted py-4">Loading…</p>
