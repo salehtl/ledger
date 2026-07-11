@@ -1166,21 +1166,62 @@ git commit -m "feat(swipe): SubcategoryPanel filters by edge group incl. income/
 
 ---
 
-## Task 6: Settings — per-slot category pickers
+## Task 6: Settings — per-slot category pickers + hub summary
 
 **Files:**
+- Modify: `frontend/src/lib/settingsSummary.ts` (rewrite `swipeSummary`)
+- Modify: `frontend/src/lib/settingsSummary.test.ts` (update the `swipeSummary` test)
 - Modify (rewrite): `frontend/src/screens/settings/SwipePage.tsx`
+- Modify: `frontend/src/screens/settings/SettingsHub.tsx` (stop calling the removed `loadSwipeConfig()` shape)
 
 **Interfaces:**
-- Consumes: `loadSwipeConfig`, `saveSwipeConfig`, `buildDefaultConfig`, `EDGE_GROUP`, `EdgeKey`, `EdgeGroup`, `SwipeConfig`, `SlotKey`; `Category`, `getJSON`.
-- Produces: no new exports.
+- Consumes: `loadSwipeConfig`, `saveSwipeConfig`, `buildDefaultConfig`, `EdgeKey`, `EdgeGroup`, `SwipeConfig`, `SlotKey`; `Category`, `getJSON`.
+- Produces: `swipeSummary(): string` (no longer takes a `SwipeConfig` — edge→group is fixed, so the summary is constant).
 
-- [ ] **Step 1: Rewrite the page**
+**Context:** `swipeSummary` currently reads `cfg.left.label`/`cfg.right.label` from the old 4-action config, and `SettingsHub` calls `loadSwipeConfig()` with no args (v2 requires a categories array). Both break under the v2 API. Since edge→group is fixed (left=Want, right=Need), the hub preview is now a constant string; make `swipeSummary` take no argument, and drop the swipe-config load from the hub entirely.
+
+- [ ] **Step 1: Update the `swipeSummary` test (TDD RED)**
+
+In `frontend/src/lib/settingsSummary.test.ts`: remove the `DEFAULT_SWIPE_CONFIG` import (line 10) and change the `swipeSummary` describe block to call it with no argument:
+
+```ts
+describe("swipeSummary", () => {
+  it("shows the fixed horizontal directions", () => {
+    expect(swipeSummary()).toBe("← Want · → Need");
+  });
+});
+```
+
+Run: `cd frontend && bunx vitest run src/lib/settingsSummary.test.ts`
+Expected: FAIL — `swipeSummary` still expects a `SwipeConfig` argument / references `cfg.left`.
+
+- [ ] **Step 2: Rewrite `swipeSummary` (TDD GREEN)**
+
+In `frontend/src/lib/settingsSummary.ts`: remove the `import type { SwipeConfig } from "./swipe";` line, and replace the `swipeSummary` function with:
+
+```ts
+/** "← Want · → Need" — the fixed horizontal swipe groups, the ones users hit most. */
+export function swipeSummary(): string {
+  return "← Want · → Need";
+}
+```
+
+Run: `cd frontend && bunx vitest run src/lib/settingsSummary.test.ts`
+Expected: PASS (all cases in the file).
+
+- [ ] **Step 3: Update `SettingsHub.tsx`**
+
+In `frontend/src/screens/settings/SettingsHub.tsx`:
+- Delete the import `import { loadSwipeConfig } from "../../lib/swipe";` (line 9).
+- Delete the line `const swipe = loadSwipeConfig();` (line 110).
+- Change the Swipe actions row from `value={swipeSummary(swipe)}` to `value={swipeSummary()}` (line 132).
+
+- [ ] **Step 4: Rewrite the page**
 
 Replace the entire contents of `frontend/src/screens/settings/SwipePage.tsx` with:
 
 ```tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../../api/client";
 import type { Category } from "../../api/types";
@@ -1219,7 +1260,13 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
   const { saved, flash } = useSavedFlash();
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
   const categories = cats.data ?? [];
-  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig>(() => loadSwipeConfig(categories));
+  // Seed once categories have loaded, so a fresh install (no saved config) gets
+  // real default slots instead of empty "—". loadSwipeConfig still honors any
+  // saved v2 config regardless of the categories passed.
+  const [swipeCfg, setSwipeCfg] = useState<SwipeConfig | null>(null);
+  useEffect(() => {
+    if (swipeCfg === null && !cats.isPending) setSwipeCfg(loadSwipeConfig(cats.data ?? []));
+  }, [swipeCfg, cats.isPending, cats.data]);
 
   const commit = (next: SwipeConfig) => {
     setSwipeCfg(next);
@@ -1228,6 +1275,7 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
   };
 
   const setSlot = (edge: EdgeKey, slot: SlotKey, id: number) => {
+    if (!swipeCfg) return;
     const next: SwipeConfig = {
       ...swipeCfg,
       edges: {
@@ -1244,45 +1292,51 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
         <p className="text-xs text-muted mb-3">
           Two categories per edge, plus an “Other” swipe that opens the full list for that group.
         </p>
-        <div className="space-y-3">
-          {EDGE_ROWS.map(({ edge, arrow, label, group }) => {
-            const opts = groupCategories(categories, group);
-            const ec = swipeCfg.edges[edge];
-            return (
-              <div key={edge} className="flex items-center gap-2">
-                <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2 text-sm shrink-0" aria-hidden>{arrow}</span>
-                <span className="text-sm w-16 shrink-0">{label}</span>
-                <Select value={String(ec.slotA)} aria-label={`${label} slot A`} onChange={(e) => setSlot(edge, "A", Number(e.target.value))} className="flex-1 min-w-0">
-                  <option value="0">—</option>
-                  {opts.map((c) => <option key={c.ID} value={c.ID}>{c.Name}</option>)}
-                </Select>
-                <Select value={String(ec.slotB)} aria-label={`${label} slot B`} onChange={(e) => setSlot(edge, "B", Number(e.target.value))} className="flex-1 min-w-0">
-                  <option value="0">—</option>
-                  {opts.map((c) => <option key={c.ID} value={c.ID}>{c.Name}</option>)}
-                </Select>
-              </div>
-            );
-          })}
-        </div>
-        <Button variant="ghost" className="mt-3 text-sm" onClick={() => commit(buildDefaultConfig(categories))}>
-          Reset to defaults
-        </Button>
+        {!swipeCfg ? (
+          <p className="text-sm text-muted py-4">Loading…</p>
+        ) : (
+          <>
+            <div className="space-y-3">
+              {EDGE_ROWS.map(({ edge, arrow, label, group }) => {
+                const opts = groupCategories(categories, group);
+                const ec = swipeCfg.edges[edge];
+                return (
+                  <div key={edge} className="flex items-center gap-2">
+                    <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2 text-sm shrink-0" aria-hidden>{arrow}</span>
+                    <span className="text-sm w-16 shrink-0">{label}</span>
+                    <Select value={String(ec.slotA)} aria-label={`${label} slot A`} onChange={(e) => setSlot(edge, "A", Number(e.target.value))} className="flex-1 min-w-0">
+                      <option value="0">—</option>
+                      {opts.map((c) => <option key={c.ID} value={c.ID}>{c.Name}</option>)}
+                    </Select>
+                    <Select value={String(ec.slotB)} aria-label={`${label} slot B`} onChange={(e) => setSlot(edge, "B", Number(e.target.value))} className="flex-1 min-w-0">
+                      <option value="0">—</option>
+                      {opts.map((c) => <option key={c.ID} value={c.ID}>{c.Name}</option>)}
+                    </Select>
+                  </div>
+                );
+              })}
+            </div>
+            <Button variant="ghost" className="mt-3 text-sm" onClick={() => commit(buildDefaultConfig(categories))}>
+              Reset to defaults
+            </Button>
+          </>
+        )}
       </div>
     </SettingsPage>
   );
 }
 ```
 
-- [ ] **Step 2: Typecheck**
+- [ ] **Step 5: Typecheck**
 
 Run: `cd frontend && bunx tsc --noEmit`
-Expected: PASS for this file (errors, if any, only remain in `Review.tsx` — next task).
+Expected: the only remaining errors are in `Review.tsx` (Task 7). `settingsSummary.ts`, `SettingsHub.tsx`, and `SwipePage.tsx` are now clean.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add frontend/src/screens/settings/SwipePage.tsx
-git commit -m "feat(settings): per-slot category pickers for the 8-zone swipe deck"
+git add frontend/src/lib/settingsSummary.ts frontend/src/lib/settingsSummary.test.ts frontend/src/screens/settings/SwipePage.tsx frontend/src/screens/settings/SettingsHub.tsx
+git commit -m "feat(settings): per-slot category pickers + fixed-group hub summary for 8-zone deck"
 ```
 
 ---
