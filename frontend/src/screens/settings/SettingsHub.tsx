@@ -35,8 +35,7 @@ export type SettingsPageId =
   | "categories"
   | "rules"
   | "textsize"
-  | "ingest"
-  | "projects";
+  | "ingest";
 
 /** A drill-in row: label on the left, current-state preview + chevron on the right. */
 function HubRow({
@@ -97,9 +96,13 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 export function SettingsHub({
   onOpen,
   onClear,
+  onOpenProjects,
 }: {
   onOpen: (page: SettingsPageId) => void;
   onClear: () => void;
+  /** Projects lives at the AppShell level (overlay, not a Settings page) so
+   *  Task 9's Home project cards can deep-link into a specific project. */
+  onOpenProjects: () => void;
 }) {
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
@@ -171,7 +174,7 @@ export function SettingsHub({
         <HubRow
           label="Projects"
           value={activeProjects > 0 ? `${activeProjects} active` : undefined}
-          onClick={() => onOpen("projects")}
+          onClick={onOpenProjects}
         />
         <HubRow label="Categories" value={count(cats.data?.length)} onClick={() => onOpen("categories")} />
         <HubRow label="Rules" value={count(rules.data?.length)} onClick={() => onOpen("rules")} />

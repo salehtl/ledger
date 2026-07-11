@@ -37,7 +37,16 @@ function summaryParams(scope: Scope): string {
   return p.toString();
 }
 
-export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
+export function Home({
+  scope = DEFAULT_SCOPE,
+  onOpenProject,
+}: {
+  scope?: Scope;
+  /** Opens a specific project's detail as the AppShell-level Projects overlay.
+   *  Not yet consumed here — wired through for Task 9's Home project cards. */
+  onOpenProject?: (id: number) => void;
+}) {
+  void onOpenProject;
   // The 6-month trend is always the trailing 6 real months (it matches the
   // static /api/insights/trend), independent of the selected scope.
   const periods = trailingPeriods(currentPeriod(), 6);
