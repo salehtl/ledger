@@ -1,9 +1,16 @@
 import type { Category } from '../../api/types'
-import { type SwipeAction, actionColor } from '../../lib/swipe'
+import { type EdgeGroup, GROUP_COLOR } from '../../lib/swipe'
 import { Dialog } from '../ui/Dialog'
 
+const GROUP_LABEL: Record<EdgeGroup, string> = {
+  need: 'Need',
+  want: 'Want',
+  saving: 'Save',
+  other: 'Transfer / Income',
+}
+
 interface SubcategoryPanelProps {
-  action: SwipeAction
+  group: EdgeGroup
   categories: Category[]
   makeRule: boolean
   onMakeRuleChange: (v: boolean) => void
@@ -11,25 +18,26 @@ interface SubcategoryPanelProps {
   onCancel: () => void
 }
 
-/** Bottom sheet for picking the category after an edge swipe. Built on the
- *  shared Dialog (focus trap, Escape, drag-to-dismiss); the bucket dot and
- *  tinted title tie the sheet to the direction just swiped. */
+/** Bottom sheet for picking a category from an edge's "Other" sliver. Filters
+ *  to the edge's group: a spending bucket, or income+excluded for "other". */
 export function SubcategoryPanel({
-  action,
+  group,
   categories,
   makeRule,
   onMakeRuleChange,
   onSelect,
   onCancel,
 }: SubcategoryPanelProps) {
-  const color = actionColor(action)
-  const visible = categories.filter(
-    c => c.Kind === 'spending' && c.Bucket === action.bucket && c.IsActive,
-  )
+  const color = GROUP_COLOR[group]
+  const visible = categories.filter(c => {
+    if (!c.IsActive) return false
+    if (group === 'other') return c.Kind === 'income' || c.Kind === 'excluded'
+    return c.Kind === 'spending' && c.Bucket === group
+  })
 
   return (
     <Dialog
-      title={action.label}
+      title={GROUP_LABEL[group]}
       titleAdornment={<span aria-hidden className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />}
       titleStyle={{ color }}
       onClose={onCancel}
@@ -53,9 +61,7 @@ export function SubcategoryPanel({
           onChange={e => onMakeRuleChange(e.target.checked)}
           className="w-5 h-5 accent-accent"
         />
-        <span className="text-sm text-muted">
-          Always use this category for this merchant
-        </span>
+        <span className="text-sm text-muted">Always use this category for this merchant</span>
       </label>
     </Dialog>
   )
