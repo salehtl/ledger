@@ -112,6 +112,9 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 
 	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, body)
 	if err != nil {
+		if !errors.Is(err, anthropic.ErrAIDisabled) && a.rec != nil {
+			a.rec(anthropic.Usage{Path: "extract", Model: a.model, OK: false})
+		}
 		return ParsedTxn{}, fmt.Errorf("ai: http request: %w", err)
 	}
 	defer resp.Body.Close()

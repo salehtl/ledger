@@ -3,10 +3,12 @@ package categorize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ledger/internal/anthropic"
 )
@@ -128,6 +130,40 @@ func TestAnthropicCategorizerHTTPError(t *testing.T) {
 	_, _, err := ac.Categorize(t.Context(), "AMAZON.AE", cats)
 	if err == nil {
 		t.Error("expected error for HTTP 503 response, got nil")
+	}
+}
+
+func TestCategorizerTransportFailureRecordsOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close() // now unreachable: connections fail immediately
+
+	var records int
+	var got anthropic.Usage
+	ac := &AnthropicCategorizer{
+		apiKey:   "test-key",
+		model:    "claude-haiku-4-5",
+		endpoint: deadURL,
+		retry:    &anthropic.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
+		rec:      func(u anthropic.Usage) { records++; got = u },
+	}
+
+	cats := []Category{{ID: 1, Name: "Shopping"}}
+	_, _, err := ac.Categorize(context.Background(), "AMAZON.AE", cats)
+	if err == nil {
+		t.Fatal("expected error for transport failure, got nil")
+	}
+	if errors.Is(err, anthropic.ErrAIDisabled) {
+		t.Fatal("transport failure should not look like the gated error")
+	}
+	if records != 1 {
+		t.Fatalf("records = %d, want 1", records)
+	}
+	if got.OK {
+		t.Errorf("got.OK = true, want false")
+	}
+	if got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Errorf("got tokens = %d/%d, want 0/0", got.InputTokens, got.OutputTokens)
 	}
 }
 
