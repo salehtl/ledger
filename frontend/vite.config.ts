@@ -9,7 +9,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: "autoUpdate",
+      // "prompt": a new service worker waits instead of silently taking over,
+      // so PwaUpdatePrompt can offer a "New version — tap to refresh" toast.
+      registerType: "prompt",
       // Manifest icons are fetched by the OS at install time; don't precache them.
       includeManifestIcons: false,
       manifest: {
