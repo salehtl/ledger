@@ -18,15 +18,23 @@ type AnthropicCategorizer struct {
 	model    string
 	endpoint string // defaults to "https://api.anthropic.com/v1/messages"
 	retry    *anthropic.Retrier
+	gate     func() error
+	rec      anthropic.Recorder
 }
 
-// NewAnthropicCategorizer builds the real AI categorizer.
-func NewAnthropicCategorizer(apiKey, model string) *AnthropicCategorizer {
+// NewAnthropicCategorizer builds the real AI categorizer. gate is consulted by
+// the Retrier before any network I/O; rec records usage for each call that
+// actually left the box (nil means "don't record").
+func NewAnthropicCategorizer(apiKey, model string, gate func() error, rec anthropic.Recorder) *AnthropicCategorizer {
+	r := anthropic.New(nil)
+	r.Gate = gate
 	return &AnthropicCategorizer{
 		apiKey:   apiKey,
 		model:    model,
 		endpoint: "https://api.anthropic.com/v1/messages",
-		retry:    anthropic.New(nil),
+		retry:    r,
+		gate:     gate,
+		rec:      rec,
 	}
 }
 
@@ -48,10 +56,15 @@ type categMsg struct {
 }
 
 type anthropicCategResp struct {
+	Model   string `json:"model"`
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 type categResult struct {
@@ -89,12 +102,27 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if a.rec != nil {
+			a.rec(anthropic.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
+		}
 		return "", 0, fmt.Errorf("anthropic API status %d", resp.StatusCode)
 	}
 
 	var ar anthropicCategResp
 	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
 		return "", 0, fmt.Errorf("categorize: decode response: %w", err)
+	}
+
+	if a.rec != nil {
+		model := ar.Model
+		if model == "" {
+			model = a.model
+		}
+		a.rec(anthropic.Usage{
+			Path: "categorize", Model: model,
+			InputTokens: ar.Usage.InputTokens, OutputTokens: ar.Usage.OutputTokens,
+			OK: true, Detail: merchant,
+		})
 	}
 
 	if len(ar.Content) == 0 {

@@ -49,10 +49,15 @@ type extMsg struct {
 }
 
 type extractResp struct {
+	Model   string `json:"model"`
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 type extractedTxn struct {
@@ -73,15 +78,23 @@ type AnthropicExtractor struct {
 	model    string
 	endpoint string
 	retry    *anthropic.Retrier
+	gate     func() error
+	rec      anthropic.Recorder
 }
 
-// NewAnthropicExtractor builds the real AI extractor.
-func NewAnthropicExtractor(apiKey, model string) *AnthropicExtractor {
+// NewAnthropicExtractor builds the real AI extractor. gate is consulted by the
+// Retrier before any network I/O; rec records usage for each call that
+// actually left the box (nil means "don't record").
+func NewAnthropicExtractor(apiKey, model string, gate func() error, rec anthropic.Recorder) *AnthropicExtractor {
+	r := anthropic.New(nil)
+	r.Gate = gate
 	return &AnthropicExtractor{
 		apiKey:   apiKey,
 		model:    model,
 		endpoint: "https://api.anthropic.com/v1/messages",
-		retry:    anthropic.New(nil),
+		retry:    r,
+		gate:     gate,
+		rec:      rec,
 	}
 }
 
@@ -104,12 +117,27 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if a.rec != nil {
+			a.rec(anthropic.Usage{Path: "extract", Model: a.model, OK: false})
+		}
 		return ParsedTxn{}, fmt.Errorf("ai: unexpected status %d", resp.StatusCode)
 	}
 
 	var apiResp extractResp
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return ParsedTxn{}, fmt.Errorf("ai: decode response: %w", err)
+	}
+
+	if a.rec != nil {
+		model := apiResp.Model
+		if model == "" {
+			model = a.model
+		}
+		a.rec(anthropic.Usage{
+			Path: "extract", Model: model,
+			InputTokens: apiResp.Usage.InputTokens, OutputTokens: apiResp.Usage.OutputTokens,
+			OK: true, Detail: "",
+		})
 	}
 
 	if len(apiResp.Content) == 0 {

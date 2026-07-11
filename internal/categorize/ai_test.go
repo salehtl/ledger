@@ -1,6 +1,7 @@
 package categorize
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -127,5 +128,21 @@ func TestAnthropicCategorizerHTTPError(t *testing.T) {
 	_, _, err := ac.Categorize(t.Context(), "AMAZON.AE", cats)
 	if err == nil {
 		t.Error("expected error for HTTP 503 response, got nil")
+	}
+}
+
+func TestCategorizerRecordsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"claude-haiku-4-5","content":[{"type":"text","text":"{\"category\":\"Groceries\",\"confidence\":0.9}"}],"usage":{"input_tokens":120,"output_tokens":8}}`))
+	}))
+	defer srv.Close()
+	var got anthropic.Usage
+	c := NewAnthropicCategorizer("key", "claude-haiku-4-5", nil, func(u anthropic.Usage) { got = u })
+	c.endpoint = srv.URL
+	if _, _, err := c.Categorize(context.Background(), "TESCO", []Category{{ID: 1, Name: "Groceries"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "categorize" || got.InputTokens != 120 || got.OutputTokens != 8 || !got.OK {
+		t.Fatalf("usage = %+v", got)
 	}
 }
