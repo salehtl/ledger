@@ -8,7 +8,6 @@ import {
   saveSwipeConfig,
   SWIPE_THRESHOLD,
   SLIVER_HALF_ANGLE,
-  type SwipeConfig,
 } from './swipe'
 
 type Cat = { ID: number; Kind: string; Bucket: string; IsActive: boolean }
