@@ -1,14 +1,15 @@
 // frontend/src/hooks/useSwipeGesture.ts
 import { useRef, useState, useCallback } from 'react'
-import { OTHER_MIN } from '../lib/swipe'
+import { detectDirection, SWIPE_THRESHOLD, type SwipeDirection } from '../lib/swipe'
 
 export interface GestureState {
   dx: number
   dy: number
   dragging: boolean
+  lockedDirection: SwipeDirection | null
 }
 
-const IDLE: GestureState = { dx: 0, dy: 0, dragging: false }
+const IDLE: GestureState = { dx: 0, dy: 0, dragging: false, lockedDirection: null }
 
 interface UseSwipeGestureResult {
   state: GestureState
@@ -22,21 +23,21 @@ interface UseSwipeGestureResult {
 /**
  * Tracks pointer drag gestures and triple-tap on a single card element.
  *
- * - Drag past OTHER_MIN → calls onCommit(dx, dy) with raw deltas
+ * - Drag past SWIPE_THRESHOLD → calls onDirectionCommit(dir) and locks state
  * - Drag below threshold → snaps back to IDLE
  * - 3 taps within 500ms → calls onTripleTap()
  */
 export function useSwipeGesture(
-  onCommit: (dx: number, dy: number) => void,
+  onDirectionCommit: (dir: SwipeDirection) => void,
   onTripleTap: () => void,
 ): UseSwipeGestureResult {
   const startRef = useRef<{ x: number; y: number } | null>(null)
   const tapCountRef = useRef(0)
   const tapTimerRef = useRef<ReturnType<typeof setTimeout>>()
   // Use refs for callbacks to avoid stale closures in pointer handlers
-  const onCommitRef = useRef(onCommit)
+  const onCommitRef = useRef(onDirectionCommit)
   const onTripleTapRef = useRef(onTripleTap)
-  onCommitRef.current = onCommit
+  onCommitRef.current = onDirectionCommit
   onTripleTapRef.current = onTripleTap
 
   const [state, setState] = useState<GestureState>(IDLE)
@@ -45,7 +46,7 @@ export function useSwipeGesture(
     // Capture so we keep receiving events even if pointer leaves element
     e.currentTarget.setPointerCapture(e.pointerId)
     startRef.current = { x: e.clientX, y: e.clientY }
-    setState(s => ({ ...s, dx: 0, dy: 0, dragging: true }))
+    setState(s => ({ ...s, dx: 0, dy: 0, dragging: true, lockedDirection: null }))
   }, [])
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
@@ -74,9 +75,10 @@ export function useSwipeGesture(
       return
     }
 
-    if (Math.hypot(dx, dy) >= OTHER_MIN) {
-      setState({ dx, dy, dragging: false })
-      onCommitRef.current(dx, dy)
+    const dir = detectDirection(dx, dy, SWIPE_THRESHOLD)
+    if (dir) {
+      setState({ dx, dy, dragging: false, lockedDirection: dir })
+      onCommitRef.current(dir)
     } else {
       // Below threshold — spring back
       setState(IDLE)

@@ -57,16 +57,6 @@ export function AppShell() {
     },
   });
   const reviewCount = review.data?.length ?? 0;
-  const immersive = tab === "review" && reviewCount > 0;
-
-  if (immersive) {
-    return (
-      <div className="fixed inset-0 z-50 bg-[#0E1116]">
-        <PwaUpdatePrompt />
-        <Review scope={scope} immersive onExit={() => setTab("home")} />
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SubcategoryPanel } from './SubcategoryPanel'
+import { DEFAULT_SWIPE_CONFIG } from '../../lib/swipe'
 import type { Category } from '../../api/types'
 
 const CATS: Category[] = [
@@ -12,10 +13,10 @@ const CATS: Category[] = [
 ]
 
 describe('SubcategoryPanel', () => {
-  it('shows only active categories matching the group bucket', () => {
+  it('shows only active categories matching the action bucket', () => {
     render(
       <SubcategoryPanel
-        group="need"
+        action={DEFAULT_SWIPE_CONFIG.left}
         categories={CATS}
         makeRule={false}
         onMakeRuleChange={vi.fn()}
@@ -23,17 +24,17 @@ describe('SubcategoryPanel', () => {
         onCancel={vi.fn()}
       />
     )
-    expect(screen.getByText('Groceries')).toBeInTheDocument()
-    expect(screen.queryByText('Dining')).not.toBeInTheDocument()
-    expect(screen.queryByText('Entertainment')).not.toBeInTheDocument()
-    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.getByText('Dining')).toBeInTheDocument()
+    expect(screen.getByText('Entertainment')).toBeInTheDocument()
+    expect(screen.queryByText('Groceries')).toBeNull()
+    expect(screen.queryByText('Archived')).toBeNull()
   })
 
   it('calls onSelect with category ID when tapped', () => {
     const onSelect = vi.fn()
     render(
       <SubcategoryPanel
-        group="want"
+        action={DEFAULT_SWIPE_CONFIG.left}
         categories={CATS}
         makeRule={false}
         onMakeRuleChange={vi.fn()}
@@ -49,7 +50,7 @@ describe('SubcategoryPanel', () => {
     const onCancel = vi.fn()
     render(
       <SubcategoryPanel
-        group="want"
+        action={DEFAULT_SWIPE_CONFIG.left}
         categories={CATS}
         makeRule={false}
         onMakeRuleChange={vi.fn()}
@@ -65,7 +66,7 @@ describe('SubcategoryPanel', () => {
     const onMakeRuleChange = vi.fn()
     render(
       <SubcategoryPanel
-        group="want"
+        action={DEFAULT_SWIPE_CONFIG.left}
         categories={CATS}
         makeRule={true}
         onMakeRuleChange={onMakeRuleChange}
@@ -77,26 +78,5 @@ describe('SubcategoryPanel', () => {
     expect(checkbox.checked).toBe(true)
     fireEvent.click(checkbox)
     expect(onMakeRuleChange).toHaveBeenCalledWith(false)
-  })
-
-  it('lists income and excluded categories for the "other" group', () => {
-    const categories = [
-      { ID: 1, Name: 'Salary', Kind: 'income', Bucket: '', IsActive: true },
-      { ID: 2, Name: 'Transfers', Kind: 'excluded', Bucket: '', IsActive: true },
-      { ID: 3, Name: 'Groceries', Kind: 'spending', Bucket: 'need', IsActive: true },
-    ]
-    render(
-      <SubcategoryPanel
-        group="other"
-        categories={categories}
-        makeRule={false}
-        onMakeRuleChange={() => {}}
-        onSelect={() => {}}
-        onCancel={() => {}}
-      />,
-    )
-    expect(screen.getByText('Salary')).toBeInTheDocument()
-    expect(screen.getByText('Transfers')).toBeInTheDocument()
-    expect(screen.queryByText('Groceries')).not.toBeInTheDocument()
   })
 })

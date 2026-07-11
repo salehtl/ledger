@@ -1,164 +1,102 @@
 // frontend/src/lib/swipe.ts
 
-export type EdgeKey = 'up' | 'down' | 'left' | 'right'
-export type EdgeGroup = 'need' | 'want' | 'saving' | 'other'
-export type SlotKey = 'A' | 'B'
+export type SwipeDirection = 'left' | 'right' | 'up' | 'down'
 
-export interface EdgeConfig {
-  group: EdgeGroup
-  slotA: number // category ID (0 = empty)
-  slotB: number // category ID (0 = empty)
+export interface SwipeAction {
+  /** Spending bucket to filter subcategories by. Null means no subcategory panel (transfer). */
+  bucket: 'want' | 'need' | 'saving' | null
+  /** When set, skip SubcategoryPanel and POST this status directly. */
+  statusOverride?: 'transfer'
+  label: string
+  /** Tailwind background class for the directional overlay. */
+  colorClass: string
+  /** Tailwind text class for panel headers. */
+  textClass: string
+  /** lucide-react icon component name. */
+  icon: string
 }
 
 export interface SwipeConfig {
-  version: 2
-  edges: Record<EdgeKey, EdgeConfig>
+  left: SwipeAction
+  right: SwipeAction
+  up: SwipeAction
+  down: SwipeAction
 }
 
-/** A resolved swipe target: a specific category slot, or the "Other" sliver. */
-export type Zone =
-  | { kind: 'category'; edge: EdgeKey; slot: SlotKey; categoryId: number }
-  | { kind: 'other'; edge: EdgeKey; group: EdgeGroup }
+export const SWIPE_THRESHOLD = 80
+
+export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
+  left:  { bucket: 'want',   label: 'Want',     colorClass: 'bg-purple-500', textClass: 'text-purple-700', icon: 'Heart' },
+  right: { bucket: 'need',   label: 'Need',     colorClass: 'bg-blue-500',   textClass: 'text-blue-700',   icon: 'Home' },
+  down:  { bucket: 'saving', label: 'Save',     colorClass: 'bg-green-500',  textClass: 'text-green-700',  icon: 'PiggyBank' },
+  up:    { bucket: null, statusOverride: 'transfer', label: 'Transfer', colorClass: 'bg-amber-500', textClass: 'text-amber-700', icon: 'ArrowLeftRight' },
+}
+
+/** Canonical bucket identity for an action, used to theme it consistently. */
+export type BucketKey = 'need' | 'want' | 'saving' | 'transfer'
+
+export function bucketKey(a: SwipeAction): BucketKey {
+  if (a.statusOverride === 'transfer') return 'transfer'
+  return (a.bucket as BucketKey) ?? 'transfer'
+}
 
 /**
- * Group colors, matching the app's bucket tokens (need=blue, save=green),
- * a distinct violet for Want and a neutral slate for Other (income/excluded,
- * which isn't 50/30/20 spending).
+ * Source of truth for swipe colors, derived from the bucket — not from the
+ * action's persisted colorClass — so the palette applies even to configs saved
+ * before a redesign, and Need/Want/Save/Transfer never collide. Matches the
+ * app's bucket tokens (need=blue, save=green) with a distinct violet for Want
+ * and a neutral slate for Transfer (which isn't real spending).
  */
-export const GROUP_COLOR: Record<EdgeGroup, string> = {
+export const BUCKET_COLOR: Record<BucketKey, string> = {
   need: '#2563eb',
   want: '#7c3aed',
   saving: '#059669',
-  other: '#64748b',
+  transfer: '#64748b',
 }
 
-/** lucide-react icon name per group, for rails/badges. */
-export const GROUP_ICON: Record<EdgeGroup, string> = {
-  need: 'Home',
-  want: 'Heart',
-  saving: 'PiggyBank',
-  other: 'ArrowLeftRight',
+export function actionColor(a: SwipeAction): string {
+  return BUCKET_COLOR[bucketKey(a)]
 }
-
-/** Brightened bucket colors for the graphite sorting console (glow), keyed by edge group. */
-export const CONSOLE_COLOR: Record<EdgeGroup, string> = {
-  need: '#3B82F6',
-  want: '#8B5CF6',
-  saving: '#10B981',
-  other: '#94A3B8',
-}
-
-export const OTHER_MIN = 30      // below → cancel (spring back)
-export const CATEGORY_MIN = 150  // below → Other, at/above → specific category
-export const CAT_FULL = 90       // px past CATEGORY_MIN to reach full brightness
 
 const STORAGE_KEY = 'ledger-swipe-config'
 
-interface SeedCat {
-  ID: number
-  Kind: string
-  Bucket: string
-  IsActive: boolean
-}
-
-/** Nearest edge for a drag angle (±45° arc per cardinal; +dy is down). */
-export function resolveEdge(dx: number, dy: number): EdgeKey {
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI
-  if (angle >= -45 && angle < 45) return 'right'
-  if (angle >= 45 && angle < 135) return 'down'
-  if (angle >= -135 && angle < -45) return 'up'
-  return 'left'
-}
-
-function slotFor(edge: EdgeKey, dx: number, dy: number): SlotKey {
-  const vertical = edge === 'left' || edge === 'right'
-  return vertical ? (dy < 0 ? 'A' : 'B') : (dx < 0 ? 'A' : 'B')
+/**
+ * Returns the dominant swipe direction if drag distance exceeds threshold.
+ * The axis with larger absolute displacement wins.
+ */
+export function detectDirection(dx: number, dy: number, threshold = SWIPE_THRESHOLD): SwipeDirection | null {
+  const absDx = Math.abs(dx)
+  const absDy = Math.abs(dy)
+  if (absDx < threshold && absDy < threshold) return null
+  if (absDx >= absDy) return dx < 0 ? 'left' : 'right'
+  return dy < 0 ? 'up' : 'down'
 }
 
 /**
- * Depth-based resolution. Angle picks the bucket (and, when deep, the slot);
- * distance picks intent: short push → the bucket's Other, long push → the
- * specific category. An empty slot falls back to Other.
+ * 0–1 progress for overlay opacity based on drag magnitude.
+ * Reaches 1 at SWIPE_THRESHOLD.
  */
-export function resolveZone(dx: number, dy: number, config: SwipeConfig): Zone | null {
-  const dist = Math.hypot(dx, dy)
-  if (dist < OTHER_MIN) return null
-  const edge = resolveEdge(dx, dy)
-  const ec = config.edges[edge]
-  if (dist < CATEGORY_MIN) return { kind: 'other', edge, group: ec.group }
-  const slot = slotFor(edge, dx, dy)
-  const categoryId = slot === 'A' ? ec.slotA : ec.slotB
-  if (!categoryId) return { kind: 'other', edge, group: ec.group }
-  return { kind: 'category', edge, slot, categoryId }
+export function overlayProgress(dx: number, dy: number): number {
+  const dist = Math.max(Math.abs(dx), Math.abs(dy))
+  return Math.min(1, dist / SWIPE_THRESHOLD)
 }
 
-/** Live feedback for facet lighting: which region is aimed and how filled (0..1). */
-export type PreviewState =
-  | { edge: EdgeKey; group: EdgeGroup; kind: 'other'; fill: number }
-  | { edge: EdgeKey; group: EdgeGroup; kind: 'category'; slot: SlotKey; categoryId: number; fill: number }
-
-const clamp01 = (n: number) => Math.min(1, Math.max(0, n))
-
-export function previewState(dx: number, dy: number, config: SwipeConfig): PreviewState | null {
-  const dist = Math.hypot(dx, dy)
-  if (dist < OTHER_MIN) return null
-  const edge = resolveEdge(dx, dy)
-  const ec = config.edges[edge]
-  if (dist < CATEGORY_MIN) {
-    return { edge, group: ec.group, kind: 'other', fill: clamp01((dist - OTHER_MIN) / (CATEGORY_MIN - OTHER_MIN)) }
-  }
-  const slot = slotFor(edge, dx, dy)
-  const categoryId = slot === 'A' ? ec.slotA : ec.slotB
-  if (!categoryId) return { edge, group: ec.group, kind: 'other', fill: 1 }
-  return { edge, group: ec.group, kind: 'category', slot, categoryId, fill: clamp01((dist - CATEGORY_MIN) / CAT_FULL) }
+/**
+ * Like detectDirection but uses a lower threshold (20px) for live preview feedback.
+ */
+export function previewDirection(dx: number, dy: number): SwipeDirection | null {
+  return detectDirection(dx, dy, 20)
 }
 
-function candidates(group: EdgeGroup, categories: SeedCat[]): number[] {
-  const match = (c: SeedCat) =>
-    group === 'other'
-      ? c.Kind === 'income' || c.Kind === 'excluded'
-      : c.Kind === 'spending' && c.Bucket === group
-  return categories
-    .filter(c => c.IsActive && match(c))
-    .sort((a, b) => a.ID - b.ID)
-    .map(c => c.ID)
-}
-
-/** Build a fresh config, seeding each edge's two slots from its group's categories. */
-export function buildDefaultConfig(categories: SeedCat[]): SwipeConfig {
-  const edge = (group: EdgeGroup): EdgeConfig => {
-    const ids = candidates(group, categories)
-    const slotA = ids[0] ?? 0
-    const slotB = ids[1] ?? 0
-    return { group, slotA, slotB }
-  }
-  return {
-    version: 2,
-    edges: {
-      right: edge('need'),
-      left: edge('want'),
-      down: edge('saving'),
-      up: edge('other'),
-    },
-  }
-}
-
-/** Empty-slot fallback used as a default prop / in tests that never swipe. */
-export const DEFAULT_SWIPE_CONFIG: SwipeConfig = buildDefaultConfig([])
-
-export function loadSwipeConfig(categories: SeedCat[]): SwipeConfig {
+export function loadSwipeConfig(): SwipeConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<SwipeConfig>
-      if (parsed && parsed.version === 2 && parsed.edges) {
-        return parsed as SwipeConfig
-      }
+      return { ...DEFAULT_SWIPE_CONFIG, ...parsed }
     }
-  } catch {
-    /* ignore corrupt data */
-  }
-  return buildDefaultConfig(categories)
+  } catch { /* ignore corrupt data */ }
+  return DEFAULT_SWIPE_CONFIG
 }
 
 export function saveSwipeConfig(config: SwipeConfig): void {

@@ -6,6 +6,7 @@ import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types"
 import { Switch } from "../../components/ui/Switch";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Card } from "../../components/ui/Card";
+import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
 import { useIngestHealth } from "../../hooks/useIngestHealth";
 import { ingestStatusLabel } from "../../lib/ingestHealth";
@@ -106,6 +107,7 @@ export function SettingsHub({
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const health = useIngestHealth();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
+  const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());
 
@@ -127,7 +129,7 @@ export function SettingsHub({
           value={settings.data ? categorizationSummary(settings.data) : undefined}
           onClick={() => onOpen("categorization")}
         />
-        <HubRow label="Swipe actions" value={swipeSummary()} onClick={() => onOpen("swipe")} />
+        <HubRow label="Swipe actions" value={swipeSummary(swipe)} onClick={() => onOpen("swipe")} />
         <HubRow
           label="Email ingest"
           value={health.data?.ingest ? ingestStatusLabel(health.data.ingest.status) : undefined}
