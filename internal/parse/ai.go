@@ -148,7 +148,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 	}
 
 	var et extractedTxn
-	if err := json.Unmarshal([]byte(apiResp.Content[0].Text), &et); err != nil {
+	if err := json.Unmarshal([]byte(anthropic.ExtractJSON(apiResp.Content[0].Text)), &et); err != nil {
 		return ParsedTxn{}, fmt.Errorf("ai: unmarshal extracted txn: %w", err)
 	}
 
@@ -164,7 +164,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 		Direction:   et.Direction,
 		MerchantRaw: et.MerchantRaw,
 		Last4:       et.Last4,
-		Confidence:  et.Confidence,
+		Confidence:  anthropic.Clamp01(et.Confidence),
 		Tier:        TierAI,
 	}, nil
 }

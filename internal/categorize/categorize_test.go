@@ -29,6 +29,37 @@ var testCats = []Category{
 	{ID: 3, Name: "Food", Kind: "spending", Bucket: "need"},
 }
 
+// An empty contains pattern would match every merchant (strings.Contains(x, "")
+// is always true) — one bad rule would silently categorize everything.
+func TestEmptyPatternRuleNeverMatches(t *testing.T) {
+	rules := []Rule{
+		{MatchType: "contains", Pattern: "", CategoryID: 1, Priority: 1},
+		{MatchType: "exact", Pattern: "", CategoryID: 1, Priority: 2},
+		{MatchType: "regex", Pattern: "", CategoryID: 1, Priority: 3},
+	}
+	c := New(rules, testCats, DisabledAI{}, 0.85, false)
+	if res, err := c.Categorize(context.Background(), "STARBUCKS"); err == nil {
+		t.Fatalf("empty pattern matched (%+v); want fall-through to AI (ErrAIUnavailable)", res)
+	} else if !errors.Is(err, ErrAIUnavailable) {
+		t.Fatalf("err = %v, want ErrAIUnavailable", err)
+	}
+}
+
+// A blank merchant must never generate a write-back rule: its lowered pattern
+// would be "" and match everything from then on.
+func TestNoProposedRuleForBlankMerchant(t *testing.T) {
+	for _, merchant := range []string{"", "   "} {
+		c := New(nil, testCats, fixedAI{name: "Shopping", conf: 0.99}, 0.85, true)
+		res, err := c.Categorize(context.Background(), merchant)
+		if err != nil {
+			t.Fatalf("merchant %q: %v", merchant, err)
+		}
+		if res.ProposedRule != nil {
+			t.Errorf("merchant %q proposed rule %+v; want nil", merchant, res.ProposedRule)
+		}
+	}
+}
+
 func TestRuleMatchExact(t *testing.T) {
 	rules := []Rule{
 		{MatchType: "exact", Pattern: "AMAZON.AE", CategoryID: 1, Priority: 10},

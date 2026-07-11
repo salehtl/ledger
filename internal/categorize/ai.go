@@ -134,9 +134,9 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 	}
 
 	var result categResult
-	if err := json.Unmarshal([]byte(ar.Content[0].Text), &result); err != nil {
+	if err := json.Unmarshal([]byte(anthropic.ExtractJSON(ar.Content[0].Text)), &result); err != nil {
 		return "", 0, fmt.Errorf("categorize: parse result JSON: %w", err)
 	}
 
-	return result.Category, result.Confidence, nil
+	return result.Category, anthropic.Clamp01(result.Confidence), nil
 }

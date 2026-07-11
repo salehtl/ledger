@@ -25,7 +25,6 @@ func seedNeedsReview(t *testing.T, st *store.Store, merchant string, amt int64) 
 		Direction:   "debit",
 		MerchantRaw: merchant,
 		Status:      "needs_review",
-		Tier:        "template",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,11 +134,11 @@ func TestCategorizeJob_DedupesByMerchant(t *testing.T) {
 
 func TestCategorizeJob_RecordsGenuineFailures(t *testing.T) {
 	st := newTestServerStore(t)
-	seedNeedsReview(t, st, "BOOM", 1000)  // recatFn returns a genuine error
-	seedNeedsReview(t, st, "BOOM", 1500)  // same merchant, deduped — same error
-	seedNeedsReview(t, st, "SKIP", 2000)  // benign miss (ok=false, err=nil)
+	seedNeedsReview(t, st, "BOOM", 1000) // recatFn returns a genuine error
+	seedNeedsReview(t, st, "BOOM", 1500) // same merchant, deduped — same error
+	seedNeedsReview(t, st, "SKIP", 2000) // benign miss (ok=false, err=nil)
 	catID := shoppingID(t, st)
-	seedNeedsReview(t, st, "OKAY", 3000)  // categorized fine
+	seedNeedsReview(t, st, "OKAY", 3000) // categorized fine
 	srv := newTestServerWithStore(t, st)
 	srv.SetRecategorizeFn(func(_ context.Context, merchant string) (int64, string, bool, error) {
 		switch merchant {
@@ -257,7 +256,6 @@ func TestCategorizeJob_RejectsConcurrentRun(t *testing.T) {
 	close(release)
 	waitCategorizeIdle(t, srv)
 }
-
 
 func TestHandleCategorizeStatus(t *testing.T) {
 	srv := newTestServerWithStore(t, newTestServerStore(t))

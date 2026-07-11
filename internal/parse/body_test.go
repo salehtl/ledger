@@ -43,6 +43,34 @@ func TestBodyTextDecodesBase64HTMLAndStrips(t *testing.T) {
 	}
 }
 
+// Gmail-style nesting with inline images buries the html part three levels
+// deep: mixed[alternative[related[html]]]. The walk must recurse, not stop at
+// a fixed depth.
+func TestBodyTextFindsHTMLInDeeplyNestedMultipart(t *testing.T) {
+	related := "--REL\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n\r\n<p>deep html</p>\r\n" +
+		"--REL\r\n" +
+		"Content-Type: image/png\r\n\r\nPNGBYTES\r\n" +
+		"--REL--\r\n"
+	alternative := "--ALT\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\nplain version\r\n" +
+		"--ALT\r\n" +
+		"Content-Type: multipart/related; boundary=\"REL\"\r\n\r\n" + related +
+		"--ALT--\r\n"
+	mixed := "--MIX\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"ALT\"\r\n\r\n" + alternative +
+		"--MIX--\r\n"
+	msg := "From: x@y.com\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"MIX\"\r\n\r\n" + mixed
+	text, err := BodyText([]byte(msg))
+	if err != nil {
+		t.Fatalf("BodyText: %v", err)
+	}
+	if !strings.Contains(text, "deep html") {
+		t.Errorf("expected nested html part, got: %s", text)
+	}
+}
+
 func TestBodyTextPrefersHTMLInMultipart(t *testing.T) {
 	boundary := "BOUND"
 	body := "--" + boundary + "\r\n" +

@@ -93,20 +93,20 @@ func TestDeriveIngestStatus(t *testing.T) {
 			wantStatus: "ok", wantReasons: []string{},
 		},
 		{
-			name: "mail silent",
-			snap: snap(nil),
+			name:     "mail silent",
+			snap:     snap(nil),
 			lastMail: t0.Add(-4 * 24 * time.Hour), haveMail: true, silenceDays: 3,
 			wantStatus: "warn", wantReasons: []string{"mail_silent"},
 		},
 		{
-			name: "no mail ever does not fire mail_silent",
-			snap: snap(nil),
+			name:     "no mail ever does not fire mail_silent",
+			snap:     snap(nil),
 			haveMail: false, silenceDays: 3,
 			wantStatus: "ok", wantReasons: []string{},
 		},
 		{
-			name: "custom silence threshold respected",
-			snap: snap(nil),
+			name:     "custom silence threshold respected",
+			snap:     snap(nil),
 			lastMail: t0.Add(-4 * 24 * time.Hour), haveMail: true, silenceDays: 7,
 			wantStatus: "ok", wantReasons: []string{},
 		},
@@ -123,7 +123,9 @@ func TestDeriveIngestStatus(t *testing.T) {
 
 func TestHealthEndpointReportsIngestStatus(t *testing.T) {
 	srv := New(fakeChecker{err: nil}, testFS())
-	srv.SetIngest(fakeIngest{count: 9, last: t0.Add(-2 * time.Hour), ok: true}, true)
+	// The endpoint derives status against real time.Now(), so the last-mail
+	// time must be relative too — a fixed date rots into mail_silent.
+	srv.SetIngest(fakeIngest{count: 9, last: time.Now().UTC().Add(-2 * time.Hour), ok: true}, true)
 	srv.SetIngestHealth(func() ingest.HealthSnapshot {
 		return ingest.HealthSnapshot{
 			StartedAt:           time.Now().UTC().Add(-time.Hour),

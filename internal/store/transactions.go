@@ -3,7 +3,9 @@ package store
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -20,7 +22,6 @@ type TransactionRow struct {
 	Last4       string
 	Status      string
 	Confidence  float64
-	Tier        string
 	Source      string // "email" | "import" | "manual"; defaults to "email" if empty
 	IngestID    int64
 }
@@ -70,6 +71,22 @@ func (s *Store) InsertTransaction(r TransactionRow) (int64, bool, error) {
 	}
 	id, err := res.LastInsertId()
 	return id, true, err
+}
+
+// TransactionIDByIngest returns the transaction created from the given
+// ingest_log row, if any. The fingerprint index can't catch a re-parse of the
+// same email that extracts different text (tier or AI wording drift), so
+// reprocessing guards on this instead.
+func (s *Store) TransactionIDByIngest(ingestID int64) (int64, bool, error) {
+	var id int64
+	err := s.DB.QueryRow(`SELECT id FROM transactions WHERE ingest_id = ? LIMIT 1`, ingestID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
 }
 
 // nullableID maps a zero rowid to SQL NULL (0 is never a valid ingest_log id).

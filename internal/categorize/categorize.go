@@ -57,7 +57,7 @@ type Categorizer struct {
 	catsByName map[string]Category // keyed by strings.ToLower(name)
 	ai         AICategorizer
 	threshold  float64
-	autoRule   bool // when true, AI-proposed rules are written back automatically (used by Processor in M4)
+	autoRule   bool                      // when true, AI-proposed rules are written back automatically (used by Processor in M4)
 	compiled   map[string]*regexp.Regexp // keyed by Rule.Pattern for regex rules
 }
 
@@ -97,8 +97,13 @@ func New(rules []Rule, cats []Category, ai AICategorizer, threshold float64, aut
 	}
 }
 
-// matchRule checks whether rule r matches lowerMerchant.
+// matchRule checks whether rule r matches lowerMerchant. An empty pattern
+// never matches: contains("") is true for every merchant, so one blank rule
+// would silently categorize everything.
 func (c *Categorizer) matchRule(r Rule, lowerMerchant string) bool {
+	if r.Pattern == "" {
+		return false
+	}
 	switch r.MatchType {
 	case "exact":
 		return lowerMerchant == strings.ToLower(r.Pattern)
@@ -163,10 +168,12 @@ func (c *Categorizer) Categorize(ctx context.Context, merchantRaw string) (Resul
 	}
 	if conf >= c.threshold {
 		res.AboveThreshold = true
-		if c.autoRule {
+		// Never write back a blank pattern — it would contains-match every
+		// future merchant.
+		if pattern := strings.ToLower(strings.TrimSpace(merchantRaw)); c.autoRule && pattern != "" {
 			res.ProposedRule = &Rule{
 				MatchType:  "contains",
-				Pattern:    strings.ToLower(merchantRaw),
+				Pattern:    pattern,
 				CategoryID: cat.ID,
 				Priority:   100,
 			}

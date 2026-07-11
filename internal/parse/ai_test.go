@@ -2,6 +2,7 @@ package parse
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,38 @@ func TestAnthropicExtractorNormalizesCurrency(t *testing.T) {
 	}
 	if err := Validate(p); err != nil {
 		t.Errorf("expected normalized currency to pass Validate, got %v", err)
+	}
+}
+
+// Models occasionally wrap their JSON in markdown fences or prose despite the
+// prompt. That must not fail the whole tier; and a confidence outside [0,1]
+// must be clamped.
+func TestAnthropicExtractorToleratesFencedJSONAndClampsConfidence(t *testing.T) {
+	content := "```json\n{\"posted_at\":\"2025-08-19T00:00:00Z\",\"amount_fils\":21500,\"currency\":\"AED\",\"direction\":\"debit\",\"merchant_raw\":\"AMAZON.AE\",\"last4\":\"\",\"confidence\":1.7}\n```"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp, _ := json.Marshal(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": content}},
+		})
+		_, _ = w.Write(resp)
+	}))
+	defer srv.Close()
+
+	ex := &AnthropicExtractor{
+		apiKey:   "test-key",
+		model:    "claude-haiku-4-5-20251001",
+		endpoint: srv.URL + "/v1/messages",
+		retry:    anthropic.New(srv.Client()),
+	}
+	p, err := ex.Extract(context.Background(), "some email body")
+	if err != nil {
+		t.Fatalf("fenced JSON should still parse, got error: %v", err)
+	}
+	if p.AmountFils != 21500 {
+		t.Errorf("AmountFils = %d, want 21500", p.AmountFils)
+	}
+	if p.Confidence != 1.0 {
+		t.Errorf("Confidence = %v, want clamped to 1.0", p.Confidence)
 	}
 }
 

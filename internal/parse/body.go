@@ -27,11 +27,29 @@ func BodyText(raw []byte) (string, error) {
 		return "", fmt.Errorf("read message: %w", err)
 	}
 	htmlBody, plainBody := "", ""
-	walk := func(e *message.Entity) {
+	// Recursively descend multipart containers (mixed/alternative/related nest
+	// arbitrarily deep once inline images are involved) and collect the first
+	// html and plain leaves.
+	var walk func(e *message.Entity) error
+	walk = func(e *message.Entity) error {
+		if mr := e.MultipartReader(); mr != nil {
+			for {
+				part, perr := mr.NextPart()
+				if perr == io.EOF {
+					return nil
+				}
+				if perr != nil {
+					return fmt.Errorf("next part: %w", perr)
+				}
+				if werr := walk(part); werr != nil {
+					return werr
+				}
+			}
+		}
 		ct, _, _ := e.Header.ContentType()
 		b, rerr := io.ReadAll(e.Body)
 		if rerr != nil {
-			return
+			return nil
 		}
 		switch ct {
 		case "text/html":
@@ -43,33 +61,10 @@ func BodyText(raw []byte) (string, error) {
 				plainBody = string(b)
 			}
 		}
+		return nil
 	}
-	if mr := ent.MultipartReader(); mr != nil {
-		for {
-			part, perr := mr.NextPart()
-			if perr == io.EOF {
-				break
-			}
-			if perr != nil {
-				return "", fmt.Errorf("next part: %w", perr)
-			}
-			if inner := part.MultipartReader(); inner != nil {
-				for {
-					p2, e2 := inner.NextPart()
-					if e2 == io.EOF {
-						break
-					}
-					if e2 != nil {
-						return "", fmt.Errorf("next inner part: %w", e2)
-					}
-					walk(p2)
-				}
-				continue
-			}
-			walk(part)
-		}
-	} else {
-		walk(ent)
+	if err := walk(ent); err != nil {
+		return "", err
 	}
 
 	chosen := htmlBody
