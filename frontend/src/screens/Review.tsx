@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getJSON } from "../api/client";
@@ -8,7 +8,6 @@ import { loadSwipeConfig } from "../lib/swipe";
 import { type Scope, scopeBounds, scopeLabel } from "../lib/scope";
 
 export function Review({ scope }: { scope: Scope }) {
-  const [config] = useState(loadSwipeConfig);
   const bounds = scopeBounds(scope);
 
   const txns = useQuery({
@@ -24,6 +23,11 @@ export function Review({ scope }: { scope: Scope }) {
     queryKey: ["categories"],
     queryFn: () => getJSON<Category[]>("/api/categories"),
   });
+
+  const config = useMemo(
+    () => (cats.data ? loadSwipeConfig(cats.data) : undefined),
+    [cats.data],
+  );
 
   const loading = txns.isPending || cats.isPending;
   const empty = !loading && (txns.data?.length ?? 0) === 0;
@@ -47,7 +51,7 @@ export function Review({ scope }: { scope: Scope }) {
         </div>
       )}
 
-      {!loading && !empty && (
+      {!loading && !empty && config && (
         <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} />
       )}
     </div>
