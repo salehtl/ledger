@@ -16,6 +16,7 @@ import { CurrenciesPage } from "./settings/CurrenciesPage";
 import { AccountsPage } from "./settings/AccountsPage";
 import { TextSizePage } from "./settings/TextSizePage";
 import { IngestHealthPage } from "./settings/IngestHealthPage";
+import { ProjectsFlow } from "./projects/ProjectsFlow";
 
 export { pctsValid } from "../lib/split";
 
@@ -69,6 +70,7 @@ export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIn
       {page === "ingest" && <IngestHealthPage onClose={close} />}
       {page === "categories" && <CategoryManager onClose={close} />}
       {page === "rules" && <RulesManager onClose={close} />}
+      {page === "projects" && <ProjectsFlow onClose={close} />}
 
       {clearOpen && (
         <Dialog title="Clear all categorization?" onClose={() => setClearOpen(false)}>

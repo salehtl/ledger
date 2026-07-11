@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { getAccounts, getJSON, getRates } from "../../api/client";
+import { getAccounts, getJSON, getProjects, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
 import { Switch } from "../../components/ui/Switch";
 import { SectionLabel } from "../../components/ui/SectionLabel";
@@ -35,7 +35,8 @@ export type SettingsPageId =
   | "categories"
   | "rules"
   | "textsize"
-  | "ingest";
+  | "ingest"
+  | "projects";
 
 /** A drill-in row: label on the left, current-state preview + chevron on the right. */
 function HubRow({
@@ -107,11 +108,13 @@ export function SettingsHub({
   const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
   const health = useIngestHealth();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: () => getProjects(true) });
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());
 
   const count = (n?: number) => (n === undefined ? undefined : String(n));
+  const activeProjects = projects.data?.filter((p) => p.status === "active").length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -165,6 +168,11 @@ export function SettingsHub({
       </Group>
 
       <Group label="Library">
+        <HubRow
+          label="Projects"
+          value={activeProjects > 0 ? `${activeProjects} active` : undefined}
+          onClick={() => onOpen("projects")}
+        />
         <HubRow label="Categories" value={count(cats.data?.length)} onClick={() => onOpen("categories")} />
         <HubRow label="Rules" value={count(rules.data?.length)} onClick={() => onOpen("rules")} />
         <HubRow
