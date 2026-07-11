@@ -1,6 +1,6 @@
 // frontend/src/hooks/useSwipeGesture.ts
 import { useRef, useState, useCallback } from 'react'
-import { SWIPE_THRESHOLD } from '../lib/swipe'
+import { OTHER_MIN } from '../lib/swipe'
 
 export interface GestureState {
   dx: number
@@ -22,7 +22,7 @@ interface UseSwipeGestureResult {
 /**
  * Tracks pointer drag gestures and triple-tap on a single card element.
  *
- * - Drag past SWIPE_THRESHOLD → calls onCommit(dx, dy) with raw deltas
+ * - Drag past OTHER_MIN → calls onCommit(dx, dy) with raw deltas
  * - Drag below threshold → snaps back to IDLE
  * - 3 taps within 500ms → calls onTripleTap()
  */
@@ -74,7 +74,7 @@ export function useSwipeGesture(
       return
     }
 
-    if (Math.hypot(dx, dy) >= SWIPE_THRESHOLD) {
+    if (Math.hypot(dx, dy) >= OTHER_MIN) {
       setState({ dx, dy, dragging: false })
       onCommitRef.current(dx, dy)
     } else {
