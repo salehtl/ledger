@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AiUsagePage } from "./AiUsagePage";
 import * as client from "../../api/client";
@@ -21,6 +21,7 @@ beforeEach(() => {
   vi.spyOn(client, "getAIUsage").mockResolvedValue({
     count_30d: 2, cost_30d_musd: 1_900_000, count_all: 5, cost_all_musd: 190_000_000, recent: [],
   } as any);
+  vi.spyOn(client, "postJSON").mockResolvedValue({} as any);
 });
 
 describe("AiUsagePage", () => {
@@ -28,5 +29,27 @@ describe("AiUsagePage", () => {
     wrap(<AiUsagePage onClose={() => {}} />);
     expect(await screen.findByText(/auto-disabled/i)).toBeInTheDocument();
     expect(await screen.findByText("$1.90")).toBeInTheDocument();
+  });
+
+  it("does not wipe the spend cap when Save is tapped with an empty field", async () => {
+    wrap(<AiUsagePage onClose={() => {}} />);
+    const saveButtons = await screen.findAllByRole("button", { name: "Save" });
+    const capSave = saveButtons[saveButtons.length - 1];
+    expect(capSave).toBeDisabled();
+    fireEvent.click(capSave);
+    expect(client.postJSON).not.toHaveBeenCalled();
+  });
+
+  it("clears the spend cap when the user explicitly enters 0 and saves", async () => {
+    wrap(<AiUsagePage onClose={() => {}} />);
+    const input = await screen.findByLabelText("Monthly spend cap in dollars");
+    fireEvent.change(input, { target: { value: "0" } });
+    const saveButtons = screen.getAllByRole("button", { name: "Save" });
+    fireEvent.click(saveButtons[saveButtons.length - 1]);
+    expect(client.postJSON).toHaveBeenCalledWith(
+      "/api/settings",
+      expect.objectContaining({ ai_spend_cap_musd: 0 }),
+      "PUT",
+    );
   });
 });

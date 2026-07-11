@@ -93,15 +93,17 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
                   placeholder={capDollars ? String(capDollars) : "No cap"}
                   value={capInput}
                   onChange={(e) => setCapInput(e.target.value)} />
-                <Button variant="secondary" onClick={() => {
+                <Button variant="secondary" disabled={capInput.trim() === ""} onClick={() => {
+                  if (capInput.trim() === "") return; // empty field is a no-op — never silently clears the cap
                   const d = parseFloat(capInput);
-                  save({ ...s, ai_spend_cap_musd: isNaN(d) || d <= 0 ? 0 : dollarsToMuUSD(d) });
+                  if (isNaN(d) || d < 0) return;
+                  save({ ...s, ai_spend_cap_musd: d === 0 ? 0 : dollarsToMuUSD(d) });
                   setCapInput("");
                 }}>Save</Button>
               </div>
               <p className="text-xs text-muted mt-1.5">
                 {capDollars > 0
-                  ? `At $${capDollars}/month spent, AI auto-disables until you turn it back on. Set 0 for no cap.`
+                  ? `At $${capDollars}/month spent, AI auto-disables until you turn it back on. Enter 0 to remove the cap.`
                   : "No cap set. Enter a dollar amount to auto-disable AI when monthly spend crosses it."}
               </p>
             </Card>
