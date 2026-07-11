@@ -96,3 +96,35 @@ func TestAnthropicExtractorHTTPError(t *testing.T) {
 		t.Fatal("expected error for 502 response, got nil")
 	}
 }
+
+func TestExtractorRecordsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"claude-haiku-4-5","content":[{"type":"text","text":"{\"posted_at\":\"2024-01-15T00:00:00Z\",\"amount_fils\":100,\"currency\":\"AED\",\"direction\":\"debit\",\"merchant_raw\":\"X\",\"last4\":\"\",\"confidence\":0.8}"}],"usage":{"input_tokens":812,"output_tokens":47}}`))
+	}))
+	defer srv.Close()
+
+	var got anthropic.Usage
+	ex := NewAnthropicExtractor("key", "claude-haiku-4-5", nil, func(u anthropic.Usage) { got = u })
+	ex.endpoint = srv.URL
+	if _, err := ex.Extract(context.Background(), "body"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "extract" || got.InputTokens != 812 || got.OutputTokens != 47 || !got.OK {
+		t.Fatalf("usage = %+v", got)
+	}
+}
+
+func TestExtractorGatedDoesNotRecord(t *testing.T) {
+	var hits, records int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer srv.Close()
+	ex := NewAnthropicExtractor("key", "m", func() error { return anthropic.ErrAIDisabled }, func(u anthropic.Usage) { records++ })
+	ex.endpoint = srv.URL
+	if _, err := ex.Extract(context.Background(), "body"); err == nil {
+		t.Fatal("expected error when gated")
+	}
+	if hits != 0 || records != 0 {
+		t.Fatalf("hits=%d records=%d, want 0/0", hits, records)
+	}
+}
