@@ -88,3 +88,33 @@ describe("toast enter/exit motion", () => {
     expect(screen.queryByText("Ignored Spinneys")).toBeNull();
   });
 });
+
+function StickyTrigger() {
+  const { show } = useToast();
+  return (
+    <button onClick={() => show({ message: "A new version is available.", sticky: true })}>
+      go
+    </button>
+  );
+}
+
+describe("sticky toast", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("does not auto-dismiss after the normal 5s window", () => {
+    render(<ToastProvider><StickyTrigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    expect(screen.getByText("A new version is available.")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(10000); });   // well past 5s
+    expect(screen.queryByText("A new version is available.")).toBeInTheDocument();
+  });
+
+  it("can still be dismissed manually with ×", () => {
+    render(<ToastProvider><StickyTrigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    act(() => { vi.advanceTimersByTime(200); });      // exit animation
+    expect(screen.queryByText("A new version is available.")).toBeNull();
+  });
+});

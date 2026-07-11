@@ -18,6 +18,7 @@ import { Settings } from "../screens/Settings";
 import type { SettingsIntent } from "../screens/Settings";
 import { Review } from "../screens/Review";
 import { IngestHealthBanner } from "../components/IngestHealthBanner";
+import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
@@ -59,6 +60,7 @@ export function AppShell() {
 
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">
+      <PwaUpdatePrompt />
       <TopBar title={TITLES[tab]} scope={scope} onScopeChange={setScope} showScope={tab !== "settings"} />
       {!online && (
         <div role="status" className="shrink-0 bg-warn/15 text-warn text-sm text-center py-1">Offline — showing last loaded data</div>

@@ -8,6 +8,10 @@ export interface Toast {
   message: string;
   tone?: "info" | "success" | "error";
   action?: ToastAction;
+  /** When true, the toast does not auto-dismiss after 5s — it stays until the
+   *  user taps its action, ×, or swipes it away. For prompts that must not be
+   *  missed (e.g. "a new version is available"). */
+  sticky?: boolean;
 }
 
 type State = Toast[];
@@ -75,8 +79,10 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, []);
 
   // Auto-dismiss after 5s, pausing while the tab is hidden so a backgrounded
-  // toast still gets its full on-screen time when the user returns.
+  // toast still gets its full on-screen time when the user returns. Sticky
+  // toasts skip the timer entirely and persist until dismissed by the user.
   useEffect(() => {
+    if (toast.sticky) return;
     let remaining = 5000;
     let startedAt = Date.now();
     let id = window.setTimeout(() => beginRef.current(), remaining);

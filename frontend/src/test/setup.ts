@@ -2,6 +2,18 @@ import "@testing-library/jest-dom";
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
 
+// `virtual:pwa-register/react` only exists under Vite's PWA plugin, not in
+// jsdom test runs. Stub it so importing PwaUpdatePrompt (transitively via
+// AppShell) never fails; the default returns "no update waiting". Tests that
+// exercise the update path inject their own useRegister via the component prop.
+vi.mock("virtual:pwa-register/react", () => ({
+  useRegisterSW: () => ({
+    needRefresh: [false, () => {}],
+    offlineReady: [false, () => {}],
+    updateServiceWorker: async () => {},
+  }),
+}));
+
 // jsdom does not ship PointerEvent. Polyfill it by extending MouseEvent so
 // clientX/Y and other mouse properties are available in pointer-event handlers.
 if (typeof window.PointerEvent === "undefined") {
