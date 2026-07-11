@@ -8,6 +8,18 @@ export interface AppSettings {
   ingest_silence_days: number;
   /** Read-only: whether an Anthropic key is loaded (env-only). Not sent on save. */
   ai_key_present?: boolean;
+  ai_spend_cap_musd?: number;
+  /** Read-only: AI auto-disabled because the monthly cap was hit. */
+  ai_cap_latched?: boolean;
+}
+export interface AIUsageRow {
+  at: number; path: "extract" | "categorize"; model: string;
+  input_tokens: number; output_tokens: number; cost_musd: number; ok: boolean; detail: string;
+}
+export interface AIUsage {
+  count_30d: number; cost_30d_musd: number;
+  count_all: number; cost_all_musd: number;
+  recent: AIUsageRow[];
 }
 export interface Txn {
   ID: number; PostedAt: string; AmountFils: number; AmountAedFils: number | null; Currency: string;
