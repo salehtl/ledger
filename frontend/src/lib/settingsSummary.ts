@@ -3,6 +3,7 @@
 // hub having to render the drill-in page.
 import type { AppSettings, BudgetConfig, RatesResponse } from "../api/types";
 import { fractionToPercent } from "./format";
+import type { SwipeConfig } from "./swipe";
 
 /** "50/30/20" — the need/want/saving split as whole percents. */
 export function budgetSplitLabel(cfg: BudgetConfig): string {
@@ -37,7 +38,7 @@ export function fontScaleLabel(scale: number): string {
   return scale === 100 ? "Default" : `${scale}%`;
 }
 
-/** "← Want · → Need" — the fixed horizontal swipe groups, the ones users hit most. */
-export function swipeSummary(): string {
-  return "← Want · → Need";
+/** "← Want · → Need" — the two horizontal swipe actions, the ones users hit most. */
+export function swipeSummary(cfg: SwipeConfig): string {
+  return `← ${cfg.left.label} · → ${cfg.right.label}`;
 }

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getJSON } from "../api/client";
@@ -7,7 +7,8 @@ import { SwipeDeck } from "../components/swipe/SwipeDeck";
 import { loadSwipeConfig } from "../lib/swipe";
 import { type Scope, scopeBounds, scopeLabel } from "../lib/scope";
 
-export function Review({ scope, immersive, onExit }: { scope: Scope; immersive?: boolean; onExit?: () => void }) {
+export function Review({ scope }: { scope: Scope }) {
+  const [config] = useState(loadSwipeConfig);
   const bounds = scopeBounds(scope);
 
   const txns = useQuery({
@@ -24,11 +25,6 @@ export function Review({ scope, immersive, onExit }: { scope: Scope; immersive?:
     queryFn: () => getJSON<Category[]>("/api/categories"),
   });
 
-  const config = useMemo(
-    () => (cats.data ? loadSwipeConfig(cats.data) : undefined),
-    [cats.data],
-  );
-
   const loading = txns.isPending || cats.isPending;
   const empty = !loading && (txns.data?.length ?? 0) === 0;
   // Remount the deck when the scope changes: SwipeDeck freezes its transaction
@@ -36,7 +32,7 @@ export function Review({ scope, immersive, onExit }: { scope: Scope; immersive?:
   const deckKey = `${bounds.from ?? "all"}:${bounds.to ?? "all"}`;
 
   return (
-    <div className={immersive ? "relative flex flex-col h-full" : "flex flex-col min-h-[60vh]"}>
+    <div className="flex flex-col min-h-[60vh]">
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
           <Loader2 size={36} className="animate-spin text-muted" />
@@ -51,10 +47,8 @@ export function Review({ scope, immersive, onExit }: { scope: Scope; immersive?:
         </div>
       )}
 
-      {!loading && !empty && config && (
-        <div className="absolute inset-0">
-          <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} onExit={onExit} />
-        </div>
+      {!loading && !empty && (
+        <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} />
       )}
     </div>
   );
