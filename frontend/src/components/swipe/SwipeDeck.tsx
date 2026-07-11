@@ -82,15 +82,18 @@ function EdgeRail({
         className={`flex items-stretch rounded-lg overflow-hidden font-semibold transition-all duration-200 ${vertical ? 'flex-col w-14' : 'flex-row'}`}
         style={{ transform: `scale(${active ? 1.06 : 1})`, boxShadow: active ? `0 10px 24px -8px ${color}` : 'none' }}
       >
+        {/* Segments are ordered to match the gesture: slot A on the up/left
+            half, the slim Other on the cardinal axis (a straight swipe), slot B
+            on the down/right half. */}
         <div className="flex items-center justify-center gap-1 leading-none" style={segStyle(false, false)}>
           <Icon size={13} className="shrink-0" />
           <span className="tracking-wide truncate max-w-[72px]">{slotA || '—'}</span>
         </div>
-        <div className="flex items-center justify-center leading-none" style={segStyle(false, false)}>
-          <span className="tracking-wide truncate max-w-[72px]">{slotB || '—'}</span>
-        </div>
         <div className="flex items-center justify-center leading-none opacity-80" style={segStyle(false, true)}>
           <span className="tracking-wide">Other</span>
+        </div>
+        <div className="flex items-center justify-center leading-none" style={segStyle(false, false)}>
+          <span className="tracking-wide truncate max-w-[72px]">{slotB || '—'}</span>
         </div>
       </div>
     </div>

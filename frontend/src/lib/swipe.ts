@@ -20,14 +20,6 @@ export type Zone =
   | { kind: 'category'; edge: EdgeKey; slot: SlotKey; categoryId: number }
   | { kind: 'other'; edge: EdgeKey; group: EdgeGroup }
 
-/** Fixed edge→group mapping — preserves color and muscle memory. */
-export const EDGE_GROUP: Record<EdgeKey, EdgeGroup> = {
-  right: 'need',
-  left: 'want',
-  down: 'saving',
-  up: 'other',
-}
-
 /**
  * Group colors, matching the app's bucket tokens (need=blue, save=green),
  * a distinct violet for Want and a neutral slate for Other (income/excluded,
