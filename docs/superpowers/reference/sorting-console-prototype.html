@@ -1,0 +1,537 @@
+<title>Sorting Console — ledger</title>
+<style>
+  :root {
+    --console: #0E1116;
+    --floor: #151A21;
+    --edge-line: #232A33;
+    --card: #F7F8FA;
+    --card-ink: #14171F;
+    --card-sub: #5B6472;
+    --need: #3B82F6;
+    --want: #8B5CF6;
+    --save: #10B981;
+    --other: #94A3B8;
+    --hair: rgba(255,255,255,0.06);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(120% 80% at 50% 0%, #12171F 0%, var(--console) 55%, #0A0D12 100%);
+    color: #C7CDD6;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .caption {
+    width: 100%;
+    max-width: 420px;
+    padding: 14px 20px 4px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: #6B7480;
+    font-weight: 600;
+  }
+  .remaining {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: #8B95A2;
+    font-variant-numeric: tabular-nums;
+  }
+  .remaining b { color: #E7ECF3; font-weight: 700; }
+
+  /* The console: fills the viewport under the caption */
+  .console {
+    position: relative;
+    width: min(410px, 94vw);
+    margin: 6px 0 4px;
+    border-radius: 26px;
+    touch-action: none;
+    overflow: hidden;
+    /* height is set in JS = card height + uniform border on all sides */
+  }
+  svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  .facet { transition: fill-opacity 90ms linear; }
+  .band  { transition: fill-opacity 90ms linear; }
+  .legend {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    transition: opacity 90ms linear, font-size 120ms cubic-bezier(.2,.8,.2,1);
+  }
+  .legend.other {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    font-weight: 600;
+  }
+
+  /* The card floats dead-center, above the SVG */
+  .card {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 150px; height: 224px;
+    margin-left: -75px; margin-top: -112px;
+    background: var(--card);
+    color: var(--card-ink);
+    border-radius: 18px;
+    box-shadow: 0 22px 50px -18px rgba(0,0,0,0.7), 0 2px 0 rgba(255,255,255,0.04);
+    cursor: grab;
+    touch-action: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 20px 14px;
+    z-index: 5;
+    will-change: transform;
+    user-select: none;
+  }
+  .card:active { cursor: grabbing; }
+  .card.reset { transition: transform 380ms cubic-bezier(.34,1.4,.5,1); }
+  .card.fly   { transition: transform 420ms cubic-bezier(.4,0,.2,1), opacity 420ms ease-in; }
+  .monogram {
+    width: 56px; height: 56px; border-radius: 14px;
+    display: grid; place-items: center;
+    font-size: 26px; font-weight: 800;
+  }
+  .merchant { font-size: 15px; font-weight: 650; text-align: center; line-height: 1.15; }
+  .amount {
+    font-family: ui-rounded, "SF Pro Rounded", system-ui;
+    font-weight: 800;
+    font-size: 34px;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+  .amount .cur { font-size: 12px; color: var(--card-sub); font-weight: 700; letter-spacing: 0.1em; display:block; text-align:center; margin-bottom: 2px; text-transform: uppercase; }
+  .amount.credit { color: var(--save); }
+
+  .hint {
+    padding: 8px 20px 18px;
+    font-size: 11.5px;
+    color: #6B7480;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+  .hint b { color: #9AA4B1; font-weight: 600; }
+
+  .toast {
+    position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(8px);
+    background: rgba(20,24,30,0.92);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #E7ECF3;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 8px 14px; border-radius: 999px;
+    opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms;
+    z-index: 9; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast .dot { display:inline-block; width:7px; height:7px; border-radius:999px; margin-right:7px; vertical-align: middle; }
+
+  /* Other picker — pick the exact category within a bucket */
+  .scrim {
+    position: absolute; inset: 0; z-index: 8;
+    background: rgba(6,8,11,0.55);
+    opacity: 0; pointer-events: none; transition: opacity 180ms ease;
+  }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 9;
+    background: #161B22;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    border-radius: 20px 20px 0 0;
+    padding: 10px 16px calc(18px + env(safe-area-inset-bottom));
+    transform: translateY(102%);
+    transition: transform 240ms cubic-bezier(.2,.9,.2,1);
+    box-shadow: 0 -20px 50px -20px rgba(0,0,0,0.7);
+  }
+  .sheet.show { transform: translateY(0); }
+  .grab { width: 34px; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.14); margin: 4px auto 12px; }
+  .sheet-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    margin: 0 2px 12px;
+  }
+  .sheet-title .dot { width: 9px; height: 9px; border-radius: 999px; }
+  .sheet-title .sub { color: #6B7480; font-weight: 600; letter-spacing: 0.04em; text-transform: none; margin-left: auto; font-size: 11px; }
+  .chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .chip {
+    min-height: 46px; padding: 10px 14px; text-align: left;
+    background: #1D242E; border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px; color: #DCE2EA; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background 120ms, border-color 120ms, transform 80ms;
+  }
+  .chip:hover { background: #232B36; }
+  .chip:active { transform: scale(0.98); }
+  .chip:focus-visible { outline: 2px solid var(--sheet-accent, #3B82F6); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card.reset, .card.fly, .facet, .band, .legend, .sheet, .scrim { transition: none !important; }
+  }
+</style>
+
+<div class="caption">
+  <span class="eyebrow">Sorting console</span>
+  <span class="remaining"><b id="left">6</b> to sort</span>
+</div>
+
+<div class="console" id="console">
+  <svg id="svg" preserveAspectRatio="none" aria-hidden="true"></svg>
+  <div class="card reset" id="card">
+    <div class="monogram" id="mono">S</div>
+    <div class="merchant" id="merchant">Starbucks</div>
+    <div class="amount" id="amount"><span class="cur">Spent · AED</span><span id="amt">−24.00</span></div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="grab"></div>
+    <div class="sheet-title" id="sheetTitle">
+      <span class="dot" id="sheetDot"></span><span id="sheetName">Need</span>
+      <span class="sub">pick a category</span>
+    </div>
+    <div class="chips" id="chips"></div>
+  </div>
+</div>
+
+<p class="hint">Drag toward a wall. <b>A short push</b> opens that bucket's picker to choose any category; <b>push further</b> to drop a top category in one motion.</p>
+
+<script>
+(function () {
+  const EDGES = {
+    up:    { group: 'Income', color: '#94A3B8', a: 'Salary',    b: 'Reimburse', dir: [0, -1],
+             cats: ['Salary', 'Freelance', 'Reimburse', 'Transfers'] },
+    right: { group: 'Need',   color: '#3B82F6', a: 'Groceries', b: 'Transport', dir: [1, 0],
+             cats: ['Groceries', 'Transport', 'Rent', 'Utilities', 'Healthcare', 'Insurance'] },
+    down:  { group: 'Save',   color: '#10B981', a: 'Savings',   b: 'Invest',    dir: [0, 1],
+             cats: ['Savings', 'Investments', 'Debt Repayment'] },
+    left:  { group: 'Want',   color: '#8B5CF6', a: 'Dining',    b: 'Shopping',  dir: [-1, 0],
+             cats: ['Dining', 'Shopping', 'Entertainment', 'Travel', 'Subscriptions'] },
+  };
+  const VERTICAL = { left: true, right: true, up: false, down: false };
+
+  const DECK = [
+    { m: 'Starbucks',     amt: '−24.00',   sub: 'Spent · AED' },
+    { m: 'Salik Toll',    amt: '−4.00',    sub: 'Spent · AED' },
+    { m: 'Careem',        amt: '−31.50',   sub: 'Spent · AED' },
+    { m: 'Spinneys',      amt: '−188.20',  sub: 'Spent · AED' },
+    { m: 'Netflix',       amt: '−56.00',   sub: 'Spent · AED' },
+    { m: 'ACME Payroll',  amt: '+18,000',  sub: 'Received · AED', credit: true },
+  ];
+
+  const OTHER_MIN = 30;      // below → cancel
+  const CATEGORY_MIN = 150;  // below → Other (fattened), at/above → category
+  const CAT_FULL = 88;       // px past CATEGORY_MIN to reach full brightness
+
+  const svg = document.getElementById('svg');
+  const card = document.getElementById('card');
+  const consoleEl = document.getElementById('console');
+  const toast = document.getElementById('toast');
+  const leftEl = document.getElementById('left');
+  const scrim = document.getElementById('scrim');
+  const sheet = document.getElementById('sheet');
+  const chips = document.getElementById('chips');
+  const SVGNS = 'http://www.w3.org/2000/svg';
+
+  let W = 0, H = 0, cx = 0, cy = 0, cardBox = null;
+  const regions = {}; // id -> element
+  const legends = {}; // id -> element
+
+  function hueFor(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
+  function pts(arr) { return arr.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' '); }
+  function centroid(arr) {
+    let x = 0, y = 0; for (const p of arr) { x += p[0]; y += p[1]; } return [x / arr.length, y / arr.length];
+  }
+
+  function makePoly(id, arr, cls, color) {
+    const el = document.createElementNS(SVGNS, 'polygon');
+    el.setAttribute('points', pts(arr));
+    el.setAttribute('class', cls);
+    el.setAttribute('fill', color);
+    el.setAttribute('fill-opacity', cls === 'band' ? 0.1 : 0.05);
+    svg.appendChild(el);
+    regions[id] = el;
+  }
+  function makeLine(a, b) {
+    const el = document.createElementNS(SVGNS, 'line');
+    el.setAttribute('x1', a[0]); el.setAttribute('y1', a[1]);
+    el.setAttribute('x2', b[0]); el.setAttribute('y2', b[1]);
+    el.setAttribute('stroke', 'var(--hair)'); el.setAttribute('stroke-width', '1');
+    svg.appendChild(el);
+  }
+  function makeLegend(id, text, at, cls, color, rot) {
+    const el = document.createElementNS(SVGNS, 'text');
+    el.setAttribute('x', at[0]); el.setAttribute('y', at[1]);
+    el.setAttribute('text-anchor', 'middle');
+    el.setAttribute('dominant-baseline', 'middle');
+    el.setAttribute('class', 'legend ' + cls);
+    el.setAttribute('fill', color);
+    el.setAttribute('opacity', cls.includes('other') ? 0.4 : 0.62);
+    if (rot) el.setAttribute('transform', `rotate(${rot} ${at[0]} ${at[1]})`);
+    el.textContent = text;
+    svg.appendChild(el);
+    legends[id] = el;
+  }
+
+  function build() {
+    // Width is CSS-driven; derive a uniform border D and a modest card, then
+    // set the console HEIGHT = card height + 2·D. That makes all four walls the
+    // same depth (top/bottom height == left/right width) without inflating the
+    // card, and keeps the whole frame full-bleed within the console.
+    W = consoleEl.clientWidth;
+    const D = Math.round(Math.max(96, Math.min(148, W * 0.28)));
+    const cw = W - 2 * D;
+    const ch = Math.round(cw * 1.5);
+    H = ch + 2 * D;
+    consoleEl.style.height = H + 'px';
+
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    for (const k in regions) delete regions[k];
+    for (const k in legends) delete legends[k];
+
+    cx = W / 2; cy = H / 2;
+    const x0 = D, x1 = W - D, y0 = D, y1 = H - D;
+    cardBox = { x0, x1, y0, y1 };
+    const band = Math.round(D * 0.5);
+    card.style.width = cw + 'px';
+    card.style.height = ch + 'px';
+    card.style.marginLeft = (-cw / 2) + 'px';
+    card.style.marginTop = (-ch / 2) + 'px';
+
+    // floor
+    const floor = document.createElementNS(SVGNS, 'rect');
+    floor.setAttribute('x', 0); floor.setAttribute('y', 0);
+    floor.setAttribute('width', W); floor.setAttribute('height', H);
+    floor.setAttribute('fill', 'var(--floor)');
+    svg.appendChild(floor);
+
+    // corners
+    const A = [0, 0], B = [W, 0], C = [W, H], D = [0, H];
+    const cTL = [x0, y0], cTR = [x1, y0], cBR = [x1, y1], cBL = [x0, y1];
+
+    // 8 facet halves (deep = category)
+    makePoly('up-A',    [A, [cx, 0], [cx, y0], cTL], 'facet', EDGES.up.color);
+    makePoly('up-B',    [[cx, 0], B, cTR, [cx, y0]], 'facet', EDGES.up.color);
+    makePoly('right-A', [B, [W, cy], [x1, cy], cTR], 'facet', EDGES.right.color);
+    makePoly('right-B', [[W, cy], C, cBR, [x1, cy]], 'facet', EDGES.right.color);
+    makePoly('down-A',  [D, [cx, H], [cx, y1], cBL], 'facet', EDGES.down.color);
+    makePoly('down-B',  [[cx, H], C, cBR, [cx, y1]], 'facet', EDGES.down.color);
+    makePoly('left-A',  [A, [0, cy], [x0, cy], cTL], 'facet', EDGES.left.color);
+    makePoly('left-B',  [[0, cy], D, cBL, [x0, cy]], 'facet', EDGES.left.color);
+
+    // miter diagonals + cardinal splits (hairlines)
+    makeLine(A, cTL); makeLine(B, cTR); makeLine(C, cBR); makeLine(D, cBL);
+    makeLine([cx, 0], cTR[1] < cTL[1] ? [cx, y0] : [cx, y0]); // top split
+    makeLine([cx, 0], [cx, y0]); makeLine([cx, H], [cx, y1]);
+    makeLine([0, cy], [x0, cy]); makeLine([W, cy], [x1, cy]);
+
+    // 4 Other bands — a shallow slice of each bucket, so the outer edge follows
+    // the miter diagonals (widens outward) instead of being a straight rectangle.
+    const sT = band / y0, sB = band / (H - y1), sL = band / x0, sR = band / (W - x1);
+    makePoly('up-O', [
+      [x0, y0], [x1, y0],
+      [x1 + (W - x1) * sT, y0 - band], [x0 - x0 * sT, y0 - band],
+    ], 'band', EDGES.up.color);
+    makePoly('down-O', [
+      [x0, y1], [x1, y1],
+      [x1 + (W - x1) * sB, y1 + band], [x0 - x0 * sB, y1 + band],
+    ], 'band', EDGES.down.color);
+    makePoly('left-O', [
+      [x0, y0], [x0, y1],
+      [x0 - band, y1 + (H - y1) * sL], [x0 - band, y0 - y0 * sL],
+    ], 'band', EDGES.left.color);
+    makePoly('right-O', [
+      [x1, y0], [x1, y1],
+      [x1 + band, y1 + (H - y1) * sR], [x1 + band, y0 - y0 * sR],
+    ], 'band', EDGES.right.color);
+
+    // legends — category names sit in the deep part; Other on the shallow band
+    makeLegend('up-A', EDGES.up.a, centroid([A, [cx, 0], [cx, y0], cTL]), 'catlabel', EDGES.up.color);
+    makeLegend('up-B', EDGES.up.b, centroid([[cx, 0], B, cTR, [cx, y0]]), 'catlabel', EDGES.up.color);
+    makeLegend('down-A', EDGES.down.a, centroid([D, [cx, H], [cx, y1], cBL]), 'catlabel', EDGES.down.color);
+    makeLegend('down-B', EDGES.down.b, centroid([[cx, H], C, cBR, [cx, y1]]), 'catlabel', EDGES.down.color);
+    makeLegend('right-A', EDGES.right.a, [(W + x1) / 2, (y0 + cy) / 2], 'catlabel', EDGES.right.color, 90);
+    makeLegend('right-B', EDGES.right.b, [(W + x1) / 2, (cy + y1) / 2], 'catlabel', EDGES.right.color, 90);
+    makeLegend('left-A', EDGES.left.a, [x0 / 2, (y0 + cy) / 2], 'catlabel', EDGES.left.color, -90);
+    makeLegend('left-B', EDGES.left.b, [x0 / 2, (cy + y1) / 2], 'catlabel', EDGES.left.color, -90);
+
+    makeLegend('up-O', 'Other…',[cx, y0 - band / 2], 'other', EDGES.up.color);
+    makeLegend('down-O', 'Other…',[cx, y1 + band / 2], 'other', EDGES.down.color);
+    makeLegend('left-O', 'Other…',[x0 - band / 2, cy], 'other', EDGES.left.color, -90);
+    makeLegend('right-O', 'Other…',[x1 + band / 2, cy], 'other', EDGES.right.color, 90);
+  }
+
+  function resolveEdge(dx, dy) {
+    const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (ang >= -45 && ang < 45) return 'right';
+    if (ang >= 45 && ang < 135) return 'down';
+    if (ang >= -135 && ang < -45) return 'up';
+    return 'left';
+  }
+  function clearLights() {
+    for (const id in regions) regions[id].setAttribute('fill-opacity', regions[id].getAttribute('class') === 'band' ? 0.1 : 0.05);
+    for (const id in legends) {
+      const l = legends[id];
+      l.setAttribute('opacity', l.getAttribute('class').includes('other') ? 0.4 : 0.62);
+      l.style.fontSize = '';
+    }
+  }
+
+  // ---- drag state ----
+  let dragging = false, sx = 0, sy = 0, dx = 0, dy = 0, idx = 0;
+
+  function loadCard() {
+    const t = DECK[idx % DECK.length];
+    document.getElementById('merchant').textContent = t.m;
+    document.getElementById('amt').textContent = t.amt;
+    document.querySelector('.amount .cur').textContent = t.sub;
+    document.getElementById('amount').classList.toggle('credit', !!t.credit);
+    const mono = document.getElementById('mono');
+    mono.textContent = t.m.charAt(0).toUpperCase();
+    const h = hueFor(t.m);
+    mono.style.background = `hsl(${h} 70% 92%)`;
+    mono.style.color = `hsl(${h} 55% 38%)`;
+    leftEl.textContent = Math.max(0, DECK.length - idx);
+  }
+
+  function showToast(label, color) {
+    toast.innerHTML = `<span class="dot" style="background:${color}"></span>${label}`;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('show'), 1100);
+  }
+
+  function preview() {
+    clearLights();
+    const dist = Math.hypot(dx, dy);
+    card.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx * 0.03}deg)`;
+    if (dist < OTHER_MIN) { card.style.boxShadow = ''; return; }
+    const edge = resolveEdge(dx, dy);
+    const ec = EDGES[edge];
+    if (dist < CATEGORY_MIN) {
+      const t = (dist - OTHER_MIN) / (CATEGORY_MIN - OTHER_MIN);
+      regions[edge + '-O'].setAttribute('fill-opacity', 0.16 + 0.42 * t);
+      legends[edge + '-O'].setAttribute('opacity', 0.55 + 0.45 * t);
+      ringCard(ec.color, 0.25 + 0.35 * t);
+    } else {
+      const slot = VERTICAL[edge] ? (dy < 0 ? 'A' : 'B') : (dx < 0 ? 'A' : 'B');
+      const t = Math.min(1, (dist - CATEGORY_MIN) / CAT_FULL);
+      const id = edge + '-' + slot;
+      regions[id].setAttribute('fill-opacity', 0.14 + 0.5 * t);
+      legends[id].setAttribute('opacity', 0.7 + 0.3 * t);
+      legends[id].style.fontSize = (10.5 + 3 * t) + 'px';
+      // keep the Other band faintly lit so the path reads as "passed through"
+      regions[edge + '-O'].setAttribute('fill-opacity', 0.2);
+      ringCard(ec.color, 0.55 + 0.4 * t);
+    }
+  }
+  function ringCard(color, a) {
+    card.style.boxShadow = `0 0 0 3px ${hexA(color, a)}, 0 22px 50px -18px rgba(0,0,0,0.7)`;
+  }
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a.toFixed(2)})`;
+  }
+
+  function onDown(e) {
+    dragging = true; sx = e.clientX; sy = e.clientY; dx = 0; dy = 0;
+    card.classList.remove('reset', 'fly');
+    card.setPointerCapture(e.pointerId);
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    dx = e.clientX - sx; dy = e.clientY - sy;
+    preview();
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    const dist = Math.hypot(dx, dy);
+    if (dist < OTHER_MIN) return springBack();
+    const edge = resolveEdge(dx, dy);
+    const ec = EDGES[edge];
+    if (dist >= CATEGORY_MIN) {
+      const slot = VERTICAL[edge] ? (dy < 0 ? 'A' : 'B') : (dx < 0 ? 'A' : 'B');
+      commit(edge, ec[slot === 'A' ? 'a' : 'b'], ec.color);
+    } else {
+      openSheet(edge); // Other → pick the exact category
+    }
+  }
+
+  let pendingEdge = null;
+  function openSheet(edge) {
+    pendingEdge = edge;
+    const ec = EDGES[edge];
+    document.getElementById('sheetName').textContent = ec.group;
+    document.getElementById('sheetName').style.color = ec.color;
+    document.getElementById('sheetDot').style.background = ec.color;
+    sheet.style.setProperty('--sheet-accent', ec.color);
+    chips.innerHTML = '';
+    ec.cats.forEach(name => {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.textContent = name;
+      b.addEventListener('click', () => { closeSheet(); commit(edge, name, ec.color); });
+      chips.appendChild(b);
+    });
+    scrim.classList.add('show');
+    sheet.classList.add('show');
+  }
+  function closeSheet() {
+    scrim.classList.remove('show');
+    sheet.classList.remove('show');
+  }
+  scrim.addEventListener('click', () => { closeSheet(); springBack(); });
+  function springBack() {
+    card.classList.add('reset');
+    card.style.transform = 'translate(0,0)';
+    card.style.boxShadow = '';
+    clearLights();
+  }
+  function commit(edge, label, color) {
+    showToast(label, color);
+    const [fx, fy] = EDGES[edge].dir;
+    card.classList.add('fly');
+    card.style.transform = `translate(${fx * (W)}px, ${fy * (H)}px) rotate(${fx * 14}deg)`;
+    card.style.opacity = '0';
+    clearLights();
+    setTimeout(() => {
+      idx++;
+      if (idx >= DECK.length) idx = 0; // loop the demo
+      loadCard();
+      card.classList.remove('fly');
+      card.classList.add('reset');
+      card.style.transform = 'translate(0,0)';
+      card.style.boxShadow = '';
+      // next frame: fade in
+      card.style.opacity = '0';
+      requestAnimationFrame(() => { card.style.opacity = '1'; });
+    }, 430);
+  }
+
+  card.addEventListener('pointerdown', onDown);
+  card.addEventListener('pointermove', onMove);
+  card.addEventListener('pointerup', onUp);
+  card.addEventListener('pointercancel', onUp);
+
+  let rAF;
+  window.addEventListener('resize', () => { cancelAnimationFrame(rAF); rAF = requestAnimationFrame(() => { build(); }); });
+
+  build();
+  loadCard();
+})();
+</script>
