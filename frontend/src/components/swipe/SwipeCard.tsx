@@ -7,10 +7,10 @@ import {
   type SwipeConfig,
   type EdgeKey,
   type Zone,
-  overlayProgress,
-  previewZone,
+  type PreviewState,
+  previewState,
   resolveZone,
-  GROUP_COLOR,
+  CONSOLE_COLOR,
   GROUP_ICON,
 } from '../../lib/swipe'
 import { useSwipeGesture } from '../../hooks/useSwipeGesture'
@@ -41,11 +41,6 @@ function hueFor(s: string): number {
   return h
 }
 
-/** Human label for a resolved zone. */
-function zoneLabel(zone: Zone, catName: (id: number) => string): string {
-  return zone.kind === 'category' ? catName(zone.categoryId) : 'Other…'
-}
-
 interface SwipeCardProps {
   txn: Txn
   config: SwipeConfig
@@ -56,8 +51,8 @@ interface SwipeCardProps {
   onZoneCommit: (zone: Zone) => void
   onTripleTap: () => void
   onExitComplete: () => void
-  /** Live drag feedback so the deck can light the matching zone. */
-  onPreview?: (zone: Zone | null, progress: number) => void
+  /** Live drag feedback so the deck/console can light the matching facet. */
+  onPreview?: (state: PreviewState | null) => void
 }
 
 export function SwipeCard({
@@ -87,25 +82,25 @@ export function SwipeCard({
 
   const { dx, dy, dragging } = state
 
-  const preview = previewZone(dx, dy, config)
-  const edge: EdgeKey | null = flying ?? preview?.edge ?? null
-  const progress = edge ? overlayProgress(dx, dy) : 0
+  const pv = previewState(dx, dy, config)
+  const edge: EdgeKey | null = flying ?? pv?.edge ?? null
 
-  // Report live drag zone/strength up to the deck (skip while flying out).
+  // Report live drag preview up to the deck/console (skip while flying out).
   useEffect(() => {
-    if (!flying) onPreview?.(preview, progress)
-  }, [preview, progress, flying, onPreview])
+    if (!flying) onPreview?.(pv)
+  }, [pv, flying, onPreview])
 
   const exit = flying ? EXIT[flying] : null
   const tx = exit ? exit.x : dx
   const ty = exit ? exit.y : dy
-  const rot = exit ? exit.rot : dx * 0.04
+  const rot = reduceMotion ? 0 : exit ? exit.rot : dx * 0.04
 
-  const color = edge ? GROUP_COLOR[config.edges[edge].group] : null
+  const color = pv ? CONSOLE_COLOR[pv.group] : null
+  const ring = pv?.fill ?? 0
   const Icon: LucideIcon | null = edge
     ? SWIPE_ICONS[GROUP_ICON[config.edges[edge].group]] ?? Heart
     : null
-  const badgeLabel = preview ? zoneLabel(preview, catName) : ''
+  const badgeLabel = pv ? (pv.kind === 'category' ? catName(pv.categoryId) : 'Other…') : ''
 
   const date = new Date(txn.PostedAt).toLocaleDateString('en-AE', {
     month: 'short',
@@ -115,7 +110,6 @@ export function SwipeCard({
 
   const credit = txn.Direction === 'credit'
   const hue = hueFor(txn.MerchantRaw || '?')
-  const ring = color ? Math.min(progress, 1) : 0
 
   return (
     <div
@@ -129,7 +123,7 @@ export function SwipeCard({
           ? 'transform 0.15s ease-out'
           : 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
         opacity: flying ? 0 : 1,
-        boxShadow: ring > 0
+        boxShadow: color && ring > 0
           ? `0 0 0 ${2 + ring * 2}px ${color}, 0 18px 40px -12px ${color}99`
           : '0 18px 40px -16px rgba(20,23,31,0.35)',
         touchAction: 'none',
@@ -188,7 +182,7 @@ export function SwipeCard({
           style={{
             ...BADGE_POS[edge].style,
             backgroundColor: color,
-            opacity: flying ? 1 : Math.min(progress * 1.2, 1),
+            opacity: flying ? 1 : Math.min(ring * 1.2, 1),
             transform: `${BADGE_POS[edge].center} scale(${0.85 + ring * 0.15})`,
           }}
         >
