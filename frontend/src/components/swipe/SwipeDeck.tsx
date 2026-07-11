@@ -1,4 +1,4 @@
-import { useState, useCallback, type CSSProperties } from 'react'
+import { useState, useCallback, useMemo, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type LucideIcon } from 'lucide-react'
 import { postJSON } from '../../api/client'
@@ -6,10 +6,12 @@ import { fire } from '../../lib/feedback'
 import type { Txn, Category } from '../../api/types'
 import {
   type SwipeConfig,
-  type SwipeDirection,
-  type SwipeAction,
+  type EdgeKey,
+  type EdgeGroup,
+  type Zone,
   DEFAULT_SWIPE_CONFIG,
-  actionColor,
+  GROUP_COLOR,
+  GROUP_ICON,
 } from '../../lib/swipe'
 import { SwipeCard, SWIPE_ICONS } from './SwipeCard'
 import { SubcategoryPanel } from './SubcategoryPanel'
@@ -24,15 +26,15 @@ interface SwipeDeckProps {
 interface DeckState {
   index: number
   skippedIds: Set<number>
-  pendingDirection: SwipeDirection | null
-  flyDirection: SwipeDirection | null
+  pendingGroup: EdgeGroup | null
+  flyEdge: EdgeKey | null
   makeRule: boolean
-  previewDir: SwipeDirection | null
+  previewEdge: EdgeKey | null
   previewProgress: number
 }
 
-// Edge placement for each direction's rail (position + centering transform).
-const RAIL_POS: Record<SwipeDirection, { style: CSSProperties; vertical: boolean }> = {
+// Edge placement for each rail (position + orientation).
+const RAIL_POS: Record<EdgeKey, { style: CSSProperties; vertical: boolean }> = {
   up:    { style: { top: 0, left: '50%', transform: 'translateX(-50%)' }, vertical: false },
   down:  { style: { bottom: 0, left: '50%', transform: 'translateX(-50%)' }, vertical: false },
   left:  { style: { left: 0, top: '50%', transform: 'translateY(-50%)' }, vertical: true },
@@ -40,30 +42,59 @@ const RAIL_POS: Record<SwipeDirection, { style: CSSProperties; vertical: boolean
 }
 
 // Color wash bleeding inward from the active edge.
-const WASH: Record<SwipeDirection, (c: string) => string> = {
+const WASH: Record<EdgeKey, (c: string) => string> = {
   left:  c => `linear-gradient(90deg, ${c}59 0%, ${c}00 55%)`,
   right: c => `linear-gradient(270deg, ${c}59 0%, ${c}00 55%)`,
   up:    c => `linear-gradient(180deg, ${c}59 0%, ${c}00 55%)`,
   down:  c => `linear-gradient(0deg, ${c}59 0%, ${c}00 55%)`,
 }
 
-function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeAction; active: boolean }) {
-  const color = actionColor(action)
-  const Icon: LucideIcon = SWIPE_ICONS[action.icon] ?? Heart
-  const { style, vertical } = RAIL_POS[dir]
+/** One rail per edge: slot A, slot B, and a slim "Other" segment. */
+function EdgeRail({
+  edge,
+  config,
+  catName,
+  active,
+}: {
+  edge: EdgeKey
+  config: SwipeConfig
+  catName: (id: number) => string
+  active: boolean
+}) {
+  const ec = config.edges[edge]
+  const color = GROUP_COLOR[ec.group]
+  const Icon: LucideIcon = SWIPE_ICONS[GROUP_ICON[ec.group]] ?? Heart
+  const { style, vertical } = RAIL_POS[edge]
+
+  const segStyle = (on: boolean, slim: boolean): CSSProperties => ({
+    backgroundColor: on ? color : `${color}1f`,
+    color: on ? '#ffffff' : color,
+    padding: slim ? '2px 6px' : vertical ? '6px 8px' : '6px 10px',
+    fontSize: slim ? '9px' : '11px',
+  })
+
+  const slotA = ec.slotA ? catName(ec.slotA) : ''
+  const slotB = ec.slotB ? catName(ec.slotB) : ''
+
   return (
     <div className="absolute z-10 pointer-events-none" style={style}>
       <div
-        className={`flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-all duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
-        style={{
-          backgroundColor: active ? color : `${color}1f`,
-          color: active ? '#ffffff' : color,
-          transform: `scale(${active ? 1.08 : 1})`,
-          boxShadow: active ? `0 10px 24px -8px ${color}` : 'none',
-        }}
+        className={`flex items-stretch rounded-lg overflow-hidden font-semibold transition-all duration-200 ${vertical ? 'flex-col w-14' : 'flex-row'}`}
+        style={{ transform: `scale(${active ? 1.06 : 1})`, boxShadow: active ? `0 10px 24px -8px ${color}` : 'none' }}
       >
-        <Icon size={16} className="shrink-0" />
-        <span className="text-[11px] tracking-wide leading-none">{action.label}</span>
+        {/* Segments are ordered to match the gesture: slot A on the up/left
+            half, the slim Other on the cardinal axis (a straight swipe), slot B
+            on the down/right half. */}
+        <div className="flex items-center justify-center gap-1 leading-none" style={segStyle(false, false)}>
+          <Icon size={13} className="shrink-0" />
+          <span className="tracking-wide truncate max-w-[72px]">{slotA || '—'}</span>
+        </div>
+        <div className="flex items-center justify-center leading-none opacity-80" style={segStyle(false, true)}>
+          <span className="tracking-wide">Other</span>
+        </div>
+        <div className="flex items-center justify-center leading-none" style={segStyle(false, false)}>
+          <span className="tracking-wide truncate max-w-[72px]">{slotB || '—'}</span>
+        </div>
       </div>
     </div>
   )
@@ -72,22 +103,23 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
 export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CONFIG }: SwipeDeckProps) {
   const qc = useQueryClient()
 
+  const catName = useMemo(() => {
+    const m = new Map(categories.map(c => [c.ID, c.Name]))
+    return (id: number) => m.get(id) ?? ''
+  }, [categories])
+
   const [state, setState] = useState<DeckState>({
     index: 0,
     skippedIds: new Set(),
-    pendingDirection: null,
-    flyDirection: null,
+    pendingGroup: null,
+    flyEdge: null,
     makeRule: true,
-    previewDir: null,
+    previewEdge: null,
     previewProgress: 0,
   })
   const [linkOpen, setLinkOpen] = useState(false)
 
-  // Freeze the transaction list at mount time. Live refetches update the
-  // query cache but shouldn't shift the index mid-session.
   const [frozenTxns] = useState(() => transactions)
-
-  // Active queue: frozen list minus IDs skipped this session
   const queue = frozenTxns.filter(t => !state.skippedIds.has(t.ID))
   const current = queue[state.index] ?? null
   const next = queue[state.index + 1] ?? null
@@ -98,63 +130,57 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     qc.invalidateQueries({ queryKey: ['summary'] })
   }, [qc])
 
-  const handleDirectionCommit = useCallback((dir: SwipeDirection) => {
-    const action = config[dir]
-    if (!action) return
-    fire('success') // fire synchronously in the gesture, before any await
-    if (action.statusOverride === 'transfer') {
-      if (current) {
-        postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
-          .then(invalidate)
-          .catch(() => { /* user can fix from list */ })
-      }
-      setState(s => ({ ...s, flyDirection: dir }))
-    } else {
-      setState(s => ({ ...s, pendingDirection: dir }))
-    }
-  }, [config, current, invalidate])
-
-  const handleCategorySelect = useCallback(async (categoryId: number) => {
+  const categorize = useCallback((categoryId: number, edge: EdgeKey) => {
     if (!current) return
-    fire('selection') // synchronous, before the network await
-    const dir = state.pendingDirection
-    // Close panel and start card exit animation
-    setState(s => ({ ...s, pendingDirection: null, flyDirection: dir }))
-    try {
-      await postJSON(`/api/transactions/${current.ID}/categorize`, {
-        category_id: categoryId,
-        merchant_raw: current.MerchantRaw,
-        make_rule: state.makeRule,
-      })
-      invalidate()
-    } catch {
-      // Card already animated out — user can recategorize from list view
+    // Caller fires the feedback cue (success for a direct swipe, selection for
+    // a panel pick) so a single action never double-fires.
+    setState(s => ({ ...s, pendingGroup: null, flyEdge: edge }))
+    postJSON(`/api/transactions/${current.ID}/categorize`, {
+      category_id: categoryId,
+      merchant_raw: current.MerchantRaw,
+      make_rule: state.makeRule,
+    }).then(invalidate).catch(() => { /* fixable from list view */ })
+  }, [current, state.makeRule, invalidate])
+
+  const handleZoneCommit = useCallback((zone: Zone) => {
+    if (zone.kind === 'category') {
+      fire('success')
+      categorize(zone.categoryId, zone.edge)
+    } else {
+      // Slim "Other" sliver → open the sheet filtered to this edge's group.
+      setState(s => ({ ...s, pendingGroup: zone.group }))
     }
-  }, [current, state.pendingDirection, state.makeRule, invalidate])
+  }, [categorize])
+
+  const handleCategorySelect = useCallback((categoryId: number) => {
+    // The panel that opened from an Other sliver — fly toward that edge.
+    const edge = (['up', 'down', 'left', 'right'] as const).find(
+      e => config.edges[e].group === state.pendingGroup,
+    ) ?? 'down'
+    fire('selection')
+    categorize(categoryId, edge)
+  }, [config, state.pendingGroup, categorize])
 
   const handleExitComplete = useCallback(() => {
-    setState(s => ({ ...s, flyDirection: null, index: s.index + 1, previewDir: null, previewProgress: 0 }))
+    setState(s => ({ ...s, flyEdge: null, index: s.index + 1, previewEdge: null, previewProgress: 0 }))
   }, [])
 
   const handleTripleTap = useCallback(() => {
     if (!current) return
-    setState(s => ({
-      ...s,
-      skippedIds: new Set([...s.skippedIds, current.ID]),
-    }))
+    setState(s => ({ ...s, skippedIds: new Set([...s.skippedIds, current.ID]) }))
   }, [current])
 
-  const handlePreview = useCallback((dir: SwipeDirection | null, progress: number) => {
-    setState(s => (s.previewDir === dir && s.previewProgress === progress
+  const handlePreview = useCallback((zone: Zone | null, progress: number) => {
+    const edge = zone?.edge ?? null
+    setState(s => (s.previewEdge === edge && s.previewProgress === progress
       ? s
-      : { ...s, previewDir: dir, previewProgress: progress }))
+      : { ...s, previewEdge: edge, previewProgress: progress }))
   }, [])
 
   const handleCancel = useCallback(() => {
-    setState(s => ({ ...s, pendingDirection: null }))
+    setState(s => ({ ...s, pendingGroup: null }))
   }, [])
 
-  const pendingAction = state.pendingDirection ? config[state.pendingDirection] : null
   const done = state.index >= queue.length
 
   if (done) {
@@ -173,14 +199,12 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   const progress = state.index / total
   const remaining = total - state.index
 
-  // Which edge is lit right now: a committing fly wins over a live drag.
-  const activeDir = state.flyDirection ?? state.previewDir
-  const activeColor = activeDir ? actionColor(config[activeDir]) : null
-  const washOpacity = activeDir ? (state.flyDirection ? 1 : Math.min(state.previewProgress, 1)) : 0
+  const activeEdge = state.flyEdge ?? state.previewEdge
+  const activeColor = activeEdge ? GROUP_COLOR[config.edges[activeEdge].group] : null
+  const washOpacity = activeEdge ? (state.flyEdge ? 1 : Math.min(state.previewProgress, 1)) : 0
 
   return (
     <div className="flex-1 flex flex-col w-full max-w-sm mx-auto px-4">
-      {/* Header — remaining count is the motivating number */}
       <div className="flex items-end justify-between mb-3 px-1">
         <div>
           <p className="text-[11px] uppercase tracking-[0.18em] text-muted mb-0.5">Remaining</p>
@@ -189,31 +213,23 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         <p className="text-sm text-muted mb-1 tabular-nums">{state.index} of {total} sorted</p>
       </div>
       <div className="h-1.5 bg-border rounded-full overflow-hidden mb-4">
-        <div
-          className="h-full bg-accent rounded-full transition-all duration-300"
-          style={{ width: `${progress * 100}%` }}
-        />
+        <div className="h-full bg-accent rounded-full transition-all duration-300" style={{ width: `${progress * 100}%` }} />
       </div>
 
-      {/* Card arena — rails hug the edges, card sits in the middle */}
       <div className="relative flex-1 flex items-center justify-center">
-        {/* Edge color wash from the active direction */}
-        {activeDir && activeColor && (
+        {activeEdge && activeColor && (
           <div
             aria-hidden
             className="absolute inset-0 pointer-events-none rounded-[28px] transition-opacity duration-150"
-            style={{ opacity: washOpacity, background: WASH[activeDir](activeColor) }}
+            style={{ opacity: washOpacity, background: WASH[activeEdge](activeColor) }}
           />
         )}
 
-        {/* Four bucket rails */}
-        {(['up', 'down', 'left', 'right'] as const).map(dir => (
-          <EdgeRail key={dir} dir={dir} action={config[dir]} active={activeDir === dir} />
+        {(['up', 'down', 'left', 'right'] as const).map(edge => (
+          <EdgeRail key={edge} edge={edge} config={config} catName={catName} active={activeEdge === edge} />
         ))}
 
-        {/* Sizing box keeps the ghost the same size as the front card */}
         <div className="relative w-[80%] max-w-[320px]">
-          {/* Ghost card behind gives depth */}
           {next && (
             <div
               aria-hidden
@@ -226,8 +242,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
               <SwipeCard
                 txn={current}
                 config={config}
-                flying={state.flyDirection}
-                onDirectionCommit={handleDirectionCommit}
+                catName={catName}
+                flying={state.flyEdge}
+                onZoneCommit={handleZoneCommit}
                 onTripleTap={handleTripleTap}
                 onExitComplete={handleExitComplete}
                 onPreview={handlePreview}
@@ -237,21 +254,17 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         </div>
       </div>
 
-      <p className="text-center text-xs text-muted mt-4">Swipe a card to sort · triple-tap to skip</p>
+      <p className="text-center text-xs text-muted mt-4">Swipe toward a category · triple-tap to skip</p>
 
       {current && current.Direction === 'credit' && (
-        <button
-          className="mx-auto mt-2 text-sm font-medium text-accent"
-          onClick={() => setLinkOpen(true)}
-        >
+        <button className="mx-auto mt-2 text-sm font-medium text-accent" onClick={() => setLinkOpen(true)}>
           This is a refund — link the purchase
         </button>
       )}
 
-      {/* SubcategoryPanel rendered outside card stack to avoid clipping */}
-      {pendingAction && pendingAction.bucket && (
+      {state.pendingGroup && (
         <SubcategoryPanel
-          action={pendingAction}
+          group={state.pendingGroup}
           categories={categories}
           makeRule={state.makeRule}
           onMakeRuleChange={v => setState(s => ({ ...s, makeRule: v }))}

@@ -1,78 +1,142 @@
-// frontend/src/lib/swipe.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  detectDirection,
-  overlayProgress,
-  previewDirection,
+  resolveEdge,
+  resolveZone,
+  previewZone,
+  buildDefaultConfig,
   loadSwipeConfig,
   saveSwipeConfig,
-  DEFAULT_SWIPE_CONFIG,
   SWIPE_THRESHOLD,
+  SLIVER_HALF_ANGLE,
 } from './swipe'
 
-describe('detectDirection', () => {
-  it('returns null when both axes are below threshold', () => {
-    expect(detectDirection(30, 20, SWIPE_THRESHOLD)).toBeNull()
-  })
-  it('detects left when dx is negative dominant', () => {
-    expect(detectDirection(-100, 10, SWIPE_THRESHOLD)).toBe('left')
-  })
-  it('detects right when dx is positive dominant', () => {
-    expect(detectDirection(100, 10, SWIPE_THRESHOLD)).toBe('right')
-  })
-  it('detects up when dy is negative dominant', () => {
-    expect(detectDirection(10, -100, SWIPE_THRESHOLD)).toBe('up')
-  })
-  it('detects down when dy is positive dominant', () => {
-    expect(detectDirection(10, 100, SWIPE_THRESHOLD)).toBe('down')
-  })
-  it('uses the larger axis when both exceed threshold', () => {
-    expect(detectDirection(-200, 90, SWIPE_THRESHOLD)).toBe('left')
-  })
-  it('returns null when exactly at threshold on one axis only', () => {
-    expect(detectDirection(-79, 0, SWIPE_THRESHOLD)).toBeNull()
+type Cat = { ID: number; Kind: string; Bucket: string; IsActive: boolean }
+
+const CATS: Cat[] = [
+  { ID: 1, Kind: 'spending', Bucket: 'need', IsActive: true },   // Groceries
+  { ID: 2, Kind: 'spending', Bucket: 'need', IsActive: true },   // Transport
+  { ID: 3, Kind: 'spending', Bucket: 'want', IsActive: true },   // Dining
+  { ID: 4, Kind: 'spending', Bucket: 'want', IsActive: true },   // Shopping
+  { ID: 5, Kind: 'spending', Bucket: 'saving', IsActive: true }, // Savings
+  { ID: 6, Kind: 'spending', Bucket: 'saving', IsActive: true }, // Invest
+  { ID: 7, Kind: 'excluded', Bucket: '', IsActive: true },       // Transfers
+  { ID: 8, Kind: 'income', Bucket: '', IsActive: true },         // Salary
+  { ID: 9, Kind: 'spending', Bucket: 'need', IsActive: false },  // inactive, ignored
+]
+
+// A drag vector of the given angle (degrees, +y down) at fixed magnitude.
+function vec(angleDeg: number, mag = 120): [number, number] {
+  const r = (angleDeg * Math.PI) / 180
+  return [Math.cos(r) * mag, Math.sin(r) * mag]
+}
+
+describe('resolveEdge', () => {
+  it('maps cardinal-ish angles to edges', () => {
+    expect(resolveEdge(...vec(0))).toBe('right')
+    expect(resolveEdge(...vec(90))).toBe('down')
+    expect(resolveEdge(...vec(180))).toBe('left')
+    expect(resolveEdge(...vec(-90))).toBe('up')
   })
 })
 
-describe('overlayProgress', () => {
-  it('returns 0 when no drag', () => {
-    expect(overlayProgress(0, 0)).toBe(0)
+describe('resolveZone', () => {
+  const cfg = buildDefaultConfig(CATS)
+
+  it('returns null below threshold', () => {
+    expect(resolveZone(10, 10, cfg)).toBeNull()
   })
-  it('returns 1 when drag exceeds threshold', () => {
-    expect(overlayProgress(-200, 0)).toBe(1)
+
+  it('right edge, angled up = slot A (top Need cat)', () => {
+    const z = resolveZone(...vec(-30), cfg)
+    expect(z).toEqual({ kind: 'category', edge: 'right', slot: 'A', categoryId: 1 })
   })
-  it('returns fractional value for partial drag', () => {
-    const p = overlayProgress(-40, 0)
-    expect(p).toBeGreaterThan(0)
-    expect(p).toBeLessThan(1)
+
+  it('right edge, angled down = slot B (2nd Need cat)', () => {
+    const z = resolveZone(...vec(30), cfg)
+    expect(z).toEqual({ kind: 'category', edge: 'right', slot: 'B', categoryId: 2 })
+  })
+
+  it('straight into an edge (within sliver) = other', () => {
+    const z = resolveZone(...vec(0), cfg)
+    expect(z).toEqual({ kind: 'other', edge: 'right', group: 'need' })
+  })
+
+  it('sliver boundary is inclusive of dev <= SLIVER_HALF_ANGLE', () => {
+    expect(resolveZone(...vec(SLIVER_HALF_ANGLE - 1), cfg)?.kind).toBe('other')
+    expect(resolveZone(...vec(SLIVER_HALF_ANGLE + 1), cfg)?.kind).toBe('category')
+  })
+
+  it('down edge, angled left = slot A; right = slot B', () => {
+    expect(resolveZone(...vec(120), cfg)).toMatchObject({ edge: 'down', slot: 'A', categoryId: 5 })
+    expect(resolveZone(...vec(60), cfg)).toMatchObject({ edge: 'down', slot: 'B', categoryId: 6 })
+  })
+
+  it('up edge maps to income/excluded slots', () => {
+    expect(resolveZone(...vec(-120), cfg)).toMatchObject({ edge: 'up', slot: 'A' })
+    expect(resolveZone(...vec(-60), cfg)).toMatchObject({ edge: 'up', slot: 'B' })
+  })
+
+  it('falls back to other when the slot has no category', () => {
+    const sparse = buildDefaultConfig([{ ID: 1, Kind: 'spending', Bucket: 'need', IsActive: true }])
+    // Need slot B is empty → an angled-down right swipe becomes other
+    expect(resolveZone(...vec(30), sparse)).toEqual({ kind: 'other', edge: 'right', group: 'need' })
   })
 })
 
-describe('previewDirection', () => {
-  it('returns direction at lower threshold (20px)', () => {
-    expect(previewDirection(-30, 0)).toBe('left')
-    expect(previewDirection(25, 0)).toBe('right')
-  })
-  it('returns null below 20px', () => {
-    expect(previewDirection(-10, 5)).toBeNull()
+describe('previewZone', () => {
+  const cfg = buildDefaultConfig(CATS)
+  it('uses a lower (20px) threshold', () => {
+    expect(previewZone(...vec(-30, 30), cfg)?.kind).toBe('category')
+    expect(previewZone(...vec(-30, 10), cfg)).toBeNull()
   })
 })
 
-describe('loadSwipeConfig / saveSwipeConfig', () => {
+describe('buildDefaultConfig', () => {
+  it('seeds slots from each group in ID order', () => {
+    const cfg = buildDefaultConfig(CATS)
+    expect(cfg.edges.right).toEqual({ group: 'need', slotA: 1, slotB: 2 })
+    expect(cfg.edges.left).toEqual({ group: 'want', slotA: 3, slotB: 4 })
+    expect(cfg.edges.down).toEqual({ group: 'saving', slotA: 5, slotB: 6 })
+    expect(cfg.edges.up).toEqual({ group: 'other', slotA: 7, slotB: 8 })
+  })
+
+  it('ignores inactive categories', () => {
+    const cfg = buildDefaultConfig(CATS)
+    expect(cfg.edges.right.slotB).toBe(2) // not 9 (inactive)
+  })
+
+  it('leaves slot B empty when a group has one category, 0/0 when none', () => {
+    const cfg = buildDefaultConfig([{ ID: 5, Kind: 'spending', Bucket: 'saving', IsActive: true }])
+    expect(cfg.edges.down).toEqual({ group: 'saving', slotA: 5, slotB: 0 })
+    expect(cfg.edges.right).toEqual({ group: 'need', slotA: 0, slotB: 0 })
+  })
+})
+
+describe('loadSwipeConfig migration', () => {
   beforeEach(() => localStorage.clear())
-  afterEach(() => localStorage.clear())
 
-  it('returns DEFAULT_SWIPE_CONFIG when localStorage is empty', () => {
-    const cfg = loadSwipeConfig()
-    expect(cfg.left.bucket).toBe('want')
-    expect(cfg.right.bucket).toBe('need')
-    expect(cfg.down.bucket).toBe('saving')
-    expect(cfg.up.statusOverride).toBe('transfer')
+  it('discards a v1 blob and rebuilds defaults', () => {
+    localStorage.setItem('ledger-swipe-config', JSON.stringify({ left: { bucket: 'want' } }))
+    const cfg = loadSwipeConfig(CATS)
+    expect(cfg.version).toBe(2)
+    expect(cfg.edges.right.slotA).toBe(1)
   })
 
-  it('round-trips a custom config', () => {
-    const custom = { ...DEFAULT_SWIPE_CONFIG, left: { ...DEFAULT_SWIPE_CONFIG.right } }
-    saveSwipeConfig(custom)
-    expect(loadSwipeConfig().left.bucket).toBe('need')
+  it('round-trips a saved v2 config', () => {
+    const cfg = buildDefaultConfig(CATS)
+    cfg.edges.right.slotA = 2
+    saveSwipeConfig(cfg)
+    expect(loadSwipeConfig(CATS).edges.right.slotA).toBe(2)
+  })
+
+  it('falls back to defaults on corrupt data', () => {
+    localStorage.setItem('ledger-swipe-config', '{ not json')
+    expect(loadSwipeConfig(CATS).version).toBe(2)
+  })
+})
+
+describe('constants', () => {
+  it('keeps the 80px commit threshold', () => {
+    expect(SWIPE_THRESHOLD).toBe(80)
   })
 })
