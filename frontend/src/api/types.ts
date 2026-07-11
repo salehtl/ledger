@@ -42,6 +42,8 @@ export interface BucketSummary {
 }
 export interface Summary {
   period: string; income: number; month_progress: number; buckets: BucketSummary[]; recent: Txn[];
+  /** Fils excluded from this summary because they belong to a project opted out of the monthly budget. */
+  project_excluded: number;
 }
 export interface CategorySpend { category_id: number; name: string; bucket: string; spent: number; }
 export interface MonthlyTotal { period: string; spent: number; income: number; }

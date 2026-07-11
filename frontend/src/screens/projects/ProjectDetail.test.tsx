@@ -148,6 +148,13 @@ describe("ProjectDetail", () => {
     expect(onAddTransactions).toHaveBeenCalledTimes(1);
   });
 
+  it("opens the CategorizeSheet when an assigned transaction row is tapped", async () => {
+    vi.spyOn(client, "getProject").mockResolvedValue(makeProject());
+    wrap(<ProjectDetail id={1} onClose={() => {}} onEdit={() => {}} onAddTransactions={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /open ikea/i }));
+    expect(await screen.findByText("Categorize")).toBeInTheDocument();
+  });
+
   it("opens a confirm dialog and deletes the project on confirm", async () => {
     vi.spyOn(client, "getProject").mockResolvedValue(makeProject());
     const onClose = vi.fn();

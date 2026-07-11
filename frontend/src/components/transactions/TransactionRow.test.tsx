@@ -55,6 +55,28 @@ describe("TransactionRow archive actions", () => {
   });
 });
 
+describe("TransactionRow project chip", () => {
+  const projectsById = { 7: { name: "Kitchen reno", color: "#1373d9" } };
+
+  it("renders a chip when the txn's project is in projectsById", () => {
+    render(<TransactionRow txn={mk({ ProjectID: 7 })} projectsById={projectsById}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.getByText("Kitchen reno")).toBeInTheDocument();
+  });
+
+  it("shows no chip when projectsById is not passed", () => {
+    render(<TransactionRow txn={mk({ ProjectID: 7 })}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.queryByText("Kitchen reno")).not.toBeInTheDocument();
+  });
+
+  it("shows no chip when the txn has no project", () => {
+    render(<TransactionRow txn={mk({ ProjectID: null })} projectsById={projectsById}
+      onOpen={noop} onStatus={noop} onArchive={noop} onRestore={noop} />);
+    expect(screen.queryByText("Kitchen reno")).not.toBeInTheDocument();
+  });
+});
+
 describe("TransactionRow refund tag", () => {
   it("marks linked refunds in the subtitle", () => {
     render(<TransactionRow txn={mk({ Direction: "credit", CategoryName: "Groceries", RefundOfID: 42 })}

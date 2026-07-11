@@ -91,6 +91,12 @@ describe("BulkBackfill", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
+  it("opens the CategorizeSheet when a candidate row is tapped", async () => {
+    wrap(<BulkBackfill id={1} onClose={() => {}} onDone={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /open ikea/i }));
+    expect(await screen.findByText("Categorize")).toBeInTheDocument();
+  });
+
   it("disables the assign button when nothing matches", async () => {
     wrap(<BulkBackfill id={1} onClose={() => {}} onDone={() => {}} />);
     await screen.findByText("Ikea");

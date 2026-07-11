@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, getProject, updateProject, deleteProject } from "../../api/client";
-import type { Project, Txn } from "../../api/types";
+import type { Category, Project, Txn } from "../../api/types";
 import { formatFils } from "../../lib/money";
 import { isOverBudget, projectPctUsed, projectRemaining } from "../../lib/projectMath";
 import { Card } from "../../components/ui/Card";
@@ -11,6 +11,7 @@ import { Switch } from "../../components/ui/Switch";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { TransactionRow } from "../../components/transactions/TransactionRow";
+import { CategorizeSheet } from "../../components/transactions/CategorizeSheet";
 import { useTxnActions } from "../../hooks/useTxnActions";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -40,14 +41,16 @@ export function ProjectDetail({
 }) {
   const qc = useQueryClient();
   const { show } = useToast();
-  const { setStatus, archiveTxn, restoreTxn } = useTxnActions();
+  const { setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [active, setActive] = useState<Txn | null>(null);
 
   const project = useQuery({ queryKey: ["projects", id], queryFn: () => getProject(id) });
   const txns = useQuery({
     queryKey: ["transactions", "", "", ""],
     queryFn: () => getJSON<Txn[]>("/api/transactions"),
   });
+  const categories = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
 
   const p = project.data;
   const assigned = (txns.data ?? []).filter((t) => t.ProjectID === id);
@@ -187,7 +190,7 @@ export function ProjectDetail({
               <ul className="divide-y divide-border px-4">
                 {assigned.map((t) => (
                   <li key={t.ID}>
-                    <TransactionRow txn={t} onOpen={() => {}} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
+                    <TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
                   </li>
                 ))}
               </ul>
@@ -195,6 +198,15 @@ export function ProjectDetail({
           )}
         </section>
       </div>
+
+      {active && categories.data && (
+        <CategorizeSheet
+          txn={active}
+          categories={categories.data}
+          onSubmit={async (body) => { if (await categorize(active, body)) setActive(null); }}
+          onClose={() => setActive(null)}
+        />
+      )}
 
       {confirmDelete && (
         <Dialog title="Delete project?" onClose={() => setConfirmDelete(false)}>

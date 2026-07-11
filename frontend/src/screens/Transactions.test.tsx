@@ -7,14 +7,18 @@ import { Transactions } from "./Transactions";
 import type { Txn, Category } from "../api/types";
 
 const all: Txn[] = [
-  { ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "SPINNEYS", Status: "needs_review", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "" },
+  { ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "SPINNEYS", Status: "needs_review", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ProjectID: 7 },
   { ID: 2, PostedAt: "2026-06-09", AmountFils: 2500, AmountAedFils: 2500, Currency: "AED", Direction: "debit", MerchantRaw: "NETFLIX", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 2, CategoryName: "Subscriptions", Bucket: "want", Kind: "spending", BucketSnapshot: "" },
 ];
 const cats: Category[] = [{ ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true }];
+const projects = [
+  { id: 7, name: "Kitchen reno", budget_fils: null, color: "#1373d9", starts_on: "", ends_on: "", status: "active", count_in_monthly: false, completed_at: "", net_spent_fils: 0, pending_fils: 0, txn_count: 1 },
+];
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url.includes("/api/categories")) return new Response(JSON.stringify(cats));
+    if (url.includes("/api/projects")) return new Response(JSON.stringify(projects));
     if (url.includes("/api/transactions")) {
       const sp = new URL("http://x" + url.replace(/^[^/]*/, "")).searchParams;
       const status = sp.get("status");
@@ -119,6 +123,12 @@ describe("Transactions", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^archive$/i })[0]);
     await screen.findByText(/archived/i); // toast
     expect(calls.some((u) => /\/api\/transactions\/\d+\/archive$/.test(u))).toBe(true);
+  });
+
+  it("shows a project chip on a row assigned to an active project", async () => {
+    wrap();
+    await screen.findByText("SPINNEYS");
+    expect(await screen.findByText("Kitchen reno")).toBeInTheDocument();
   });
 
   it("links CSV export to the current server-side filters", async () => {
