@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite"
 )
@@ -17,8 +18,12 @@ var schemaSQL string
 
 // Store wraps the application's single SQLite connection pool.
 type Store struct {
-	DB *sql.DB
+	DB  *sql.DB
+	now func() int64
 }
+
+// SetNow overrides the clock used for usage timestamps and cap windows (tests only).
+func (s *Store) SetNow(fn func() int64) { s.now = fn }
 
 // Open opens (creating if needed) dataDir/ledger.db, sets pragmas, and applies
 // the schema idempotently. The data directory is created 0700 if absent.
@@ -48,7 +53,7 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	st := &Store{DB: db}
+	st := &Store{DB: db, now: func() int64 { return time.Now().Unix() }}
 	if err := st.SeedDefaultCategories(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed categories: %w", err)
@@ -92,7 +97,15 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	// Account last-4 captured at parse time; used by self-transfer matching.
-	return addColumnIfMissing(db, "transactions", "last4", "TEXT")
+	if err := addColumnIfMissing(db, "transactions", "last4", "TEXT"); err != nil {
+		return err
+	}
+	// Monthly AI spend cap in micro-USD (0 = disabled) and whether the cap has
+	// already latched AI off (cleared when the user re-enables AI).
+	if err := addColumnIfMissing(db, "app_settings", "ai_spend_cap_musd", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(db, "app_settings", "ai_cap_latched", "INTEGER NOT NULL DEFAULT 0")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

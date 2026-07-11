@@ -12,6 +12,9 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatalf("ensure settings: %v", err)
+	}
 	return st
 }
 
