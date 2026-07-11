@@ -2,6 +2,7 @@ package parse
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -112,6 +113,39 @@ func TestExtractorRecordsUsage(t *testing.T) {
 	}
 	if got.Path != "extract" || got.InputTokens != 812 || got.OutputTokens != 47 || !got.OK {
 		t.Fatalf("usage = %+v", got)
+	}
+}
+
+func TestExtractorTransportFailureRecordsOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close() // now unreachable: connections fail immediately
+
+	var records int
+	var got anthropic.Usage
+	ex := &AnthropicExtractor{
+		apiKey:   "test-key",
+		model:    "claude-haiku-4-5",
+		endpoint: deadURL,
+		retry:    &anthropic.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
+		rec:      func(u anthropic.Usage) { records++; got = u },
+	}
+
+	_, err := ex.Extract(context.Background(), "some email body")
+	if err == nil {
+		t.Fatal("expected error for transport failure, got nil")
+	}
+	if errors.Is(err, anthropic.ErrAIDisabled) {
+		t.Fatal("transport failure should not look like the gated error")
+	}
+	if records != 1 {
+		t.Fatalf("records = %d, want 1", records)
+	}
+	if got.OK {
+		t.Errorf("got.OK = true, want false")
+	}
+	if got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Errorf("got tokens = %d/%d, want 0/0", got.InputTokens, got.OutputTokens)
 	}
 }
 

@@ -3,6 +3,7 @@ package categorize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,6 +98,9 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 
 	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, bodyBytes)
 	if err != nil {
+		if !errors.Is(err, anthropic.ErrAIDisabled) && a.rec != nil {
+			a.rec(anthropic.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
+		}
 		return "", 0, fmt.Errorf("categorize: http request: %w", err)
 	}
 	defer resp.Body.Close()
