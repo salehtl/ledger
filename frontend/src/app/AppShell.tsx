@@ -19,6 +19,7 @@ import type { SettingsIntent } from "../screens/Settings";
 import { Review } from "../screens/Review";
 import { IngestHealthBanner } from "../components/IngestHealthBanner";
 import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
+import { ProjectsFlow } from "../screens/projects/ProjectsFlow";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
@@ -35,6 +36,12 @@ export function AppShell() {
     setSettingsIntent((p) => ({ page: "ingest", nonce: (p?.nonce ?? 0) + 1 }));
     setTab("settings");
   };
+
+  // Projects is a Home-first feature: it opens as a full-screen overlay over
+  // whatever tab is active, never switching the bottom nav to Settings.
+  const [projectsView, setProjectsView] = useState<{ projectId?: number } | null>(null);
+  const openProjects = () => setProjectsView({});
+  const openProject = (id: number) => setProjectsView({ projectId: id });
   // Lazy initializer so the default month reflects the day the app opens,
   // not the day this module was first imported.
   const [scope, setScope] = useState<Scope>(() => ({ kind: "month", period: currentPeriod() }));
@@ -69,11 +76,11 @@ export function AppShell() {
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
-          {tab === "home" && <Home scope={scope} />}
+          {tab === "home" && <Home scope={scope} onOpenProject={openProject} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
-          {tab === "settings" && <Settings scope={scope} intent={settingsIntent} />}
+          {tab === "settings" && <Settings scope={scope} intent={settingsIntent} onOpenProjects={openProjects} />}
         </div>
       </main>
       <BottomNav
@@ -81,6 +88,9 @@ export function AppShell() {
         reviewCount={reviewCount}
         onNavigate={(t) => { setSettingsIntent(null); setTab(t); }}
       />
+      {projectsView !== null && (
+        <ProjectsFlow initialProjectId={projectsView.projectId} onClose={() => setProjectsView(null)} />
+      )}
     </div>
   );
 }

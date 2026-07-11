@@ -100,4 +100,18 @@ describe("AppShell", () => {
     expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /back from email ingest/i })).toBeNull();
   });
+
+  it("opens the Projects overlay from the Settings hub without switching tabs, and unmounts it on close", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    await screen.findByRole("heading", { name: /^settings$/i });
+
+    fireEvent.click(await screen.findByText(/^projects$/i));
+    expect(await screen.findByRole("heading", { name: /^projects$/i })).toBeInTheDocument();
+    // Still on the Settings tab underneath — opening Projects must not switch tabs.
+    expect(screen.getByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back from projects/i }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /^projects$/i })).toBeNull());
+  });
 });
