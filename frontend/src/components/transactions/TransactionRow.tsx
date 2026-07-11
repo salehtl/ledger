@@ -7,17 +7,21 @@ import { bucketColor } from "../../lib/insights";
 import { ArrowLeftRight, X, Tag, Archive, ArchiveRestore } from "lucide-react";
 import { IconButton } from "../ui/IconButton";
 
-export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: {
+export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore, projectsById }: {
   txn: Txn;
   onOpen: (t: Txn) => void;
   onStatus: (t: Txn, status: string) => void;
   onArchive: (t: Txn) => void;
   onRestore: (t: Txn) => void;
+  /** Optional: active project lookup for the subtle row chip. Callers that
+   *  don't pass it (drill-downs, search, project screens) simply show no chip. */
+  projectsById?: Record<number, { name: string; color: string }>;
 }) {
   const needsReview = txn.Status === "needs_review";
   const archived = txn.Status === "archived";
   const aed = aedFils(txn);
   const native = nativeAmountTag(txn);
+  const project = txn.ProjectID != null ? projectsById?.[txn.ProjectID] : undefined;
   const subtitle = [
     txn.PostedAt.slice(0, 10),
     txn.CategoryName,
@@ -36,6 +40,12 @@ export function TransactionRow({ txn, onOpen, onStatus, onArchive, onRestore }: 
       <button className="flex-1 min-w-0 text-left self-center" aria-label={`Open ${txn.MerchantRaw || "transaction"}`} onClick={() => onOpen(txn)}>
         <p className="truncate font-medium">{txn.MerchantRaw || "—"}</p>
         <p className="text-xs text-muted truncate">{subtitle || "Uncategorized"}</p>
+        {project && (
+          <span className="inline-flex items-center gap-1 mt-0.5 text-xs text-muted">
+            <span aria-hidden className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: project.color }} />
+            {project.name}
+          </span>
+        )}
       </button>
       <div className="flex flex-col items-end gap-1 self-center">
         <span

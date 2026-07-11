@@ -1,7 +1,7 @@
 // frontend/src/screens/Transactions.tsx
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getJSON, postJSON } from "../api/client";
+import { getJSON, getProjects, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -53,6 +53,11 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     },
   });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
+  const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
+  const projectsById = useMemo(
+    () => Object.fromEntries((projects.data ?? []).map((p) => [p.id, { name: p.name, color: p.color }])),
+    [projects.data],
+  );
 
   const rows = useMemo(() => {
     const filtered = applyTxnFilters(q.data ?? [], filters);
@@ -114,7 +119,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           <Card className="!p-0">
             <ul className="divide-y divide-border px-4">
               {rows.map((t) => (
-                <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} /></li>
+                <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}><TransactionRow txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} projectsById={projectsById} /></li>
               ))}
             </ul>
           </Card>

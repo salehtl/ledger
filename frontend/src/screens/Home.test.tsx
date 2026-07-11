@@ -12,6 +12,7 @@ const summary: Summary = {
     { bucket: "want", target: 200000, spent: 180000, remaining: 20000, pct_used: 0.9, projection: 240000 },
     { bucket: "saving", target: 100000, spent: 92000, remaining: 8000, pct_used: 0.92, projection: 100000 },
   ],
+  project_excluded: 0,
   recent: [
     { ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit", MerchantRaw: "SPINNEYS", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 1, CategoryName: "Groceries", Bucket: "need", Kind: "spending", BucketSnapshot: "" },
     { ID: 2, PostedAt: "2026-06-11", AmountFils: 1009, AmountAedFils: 3706, Currency: "USD", Direction: "debit", MerchantRaw: "NETFLIX", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "" },
@@ -144,5 +145,21 @@ describe("Home", () => {
     // Wait for a settled render (recent list) so we know the projects query resolved too.
     await screen.findByText("SPINNEYS");
     expect(screen.queryByText("Projects")).not.toBeInTheDocument();
+  });
+
+  it("shows a budget reconciliation note when project spend is excluded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/summary")) return new Response(JSON.stringify({ ...summary, project_excluded: 123456 }));
+      if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+      return new Response("[]");
+    }));
+    wrap();
+    expect(await screen.findByText(/Excludes 1,234\.56 in project spend/)).toBeInTheDocument();
+  });
+
+  it("hides the budget reconciliation note when nothing is excluded", async () => {
+    wrap();
+    await screen.findByText("SPINNEYS");
+    expect(screen.queryByText(/project spend/i)).not.toBeInTheDocument();
   });
 });

@@ -146,6 +146,11 @@ export function Home({
             );
           })}
         </div>
+        {s.project_excluded > 0 && (
+          <p className="text-xs text-muted mt-3 pt-3 border-t border-border">
+            Excludes {formatFils(s.project_excluded)} in project spend
+          </p>
+        )}
       </Card>
 
       {/* active projects glance — absent entirely when there are none */}

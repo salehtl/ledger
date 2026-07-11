@@ -5,6 +5,7 @@ import type { Category, Txn } from "../../api/types";
 import { Input, Select } from "../../components/ui/Field";
 import { Button } from "../../components/ui/Button";
 import { TransactionRow } from "../../components/transactions/TransactionRow";
+import { CategorizeSheet } from "../../components/transactions/CategorizeSheet";
 import { useTxnActions } from "../../hooks/useTxnActions";
 import { useToast } from "../../components/Toast";
 import { applyTxnFilters, EMPTY_FILTERS } from "../../lib/transactions";
@@ -26,12 +27,13 @@ import { SettingsPage } from "../settings/SettingsPage";
 export function BulkBackfill({ id, onClose, onDone }: { id: number; onClose: () => void; onDone: () => void }) {
   const qc = useQueryClient();
   const { show } = useToast();
-  const { setStatus, archiveTxn, restoreTxn } = useTxnActions();
+  const { setStatus, archiveTxn, restoreTxn, categorize } = useTxnActions();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [merchant, setMerchant] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [assigning, setAssigning] = useState(false);
+  const [active, setActive] = useState<Txn | null>(null);
 
   const project = useQuery({ queryKey: ["projects", id], queryFn: () => getProject(id) });
   const txns = useQuery({
@@ -117,7 +119,7 @@ export function BulkBackfill({ id, onClose, onDone }: { id: number; onClose: () 
         ) : (
           <div className="divide-y divide-border px-1">
             {matching.map((t) => (
-              <TransactionRow key={t.ID} txn={t} onOpen={() => {}} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
+              <TransactionRow key={t.ID} txn={t} onOpen={setActive} onStatus={setStatus} onArchive={archiveTxn} onRestore={restoreTxn} />
             ))}
           </div>
         )}
@@ -126,6 +128,15 @@ export function BulkBackfill({ id, onClose, onDone }: { id: number; onClose: () 
           {assigning ? "Assigning…" : `Assign ${matching.length} to ${projectName}`}
         </Button>
       </div>
+
+      {active && categories.data && (
+        <CategorizeSheet
+          txn={active}
+          categories={categories.data}
+          onSubmit={async (body) => { if (await categorize(active, body)) setActive(null); }}
+          onClose={() => setActive(null)}
+        />
+      )}
     </SettingsPage>
   );
 }
