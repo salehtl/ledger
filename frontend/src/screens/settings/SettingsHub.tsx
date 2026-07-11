@@ -28,6 +28,7 @@ import {
 export type SettingsPageId =
   | "budget"
   | "categorization"
+  | "ai"
   | "swipe"
   | "currencies"
   | "accounts"
@@ -133,6 +134,11 @@ export function SettingsHub({
           label="Email ingest"
           value={health.data?.ingest ? ingestStatusLabel(health.data.ingest.status) : undefined}
           onClick={() => onOpen("ingest")}
+        />
+        <HubRow
+          label="AI & API usage"
+          value={settings.data ? (settings.data.ai_enabled ? "On" : "Off") : undefined}
+          onClick={() => onOpen("ai")}
         />
       </Group>
 

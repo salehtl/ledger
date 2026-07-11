@@ -1,4 +1,4 @@
-import type { Account, CategoryUsage, RatesResponse, SweepResult, Txn } from "./types";
+import type { Account, AIUsage, CategoryUsage, RatesResponse, SweepResult, Txn } from "./types";
 
 async function parseOrThrow(res: Response) {
   const text = await res.text();
@@ -71,4 +71,8 @@ export async function linkRefund(id: number, targetId: number): Promise<void> {
 
 export async function unlinkRefund(id: number): Promise<void> {
   await postJSON(`/api/transactions/${id}/unlink-refund`, {});
+}
+
+export function getAIUsage(): Promise<AIUsage> {
+  return getJSON<AIUsage>("/api/ai/usage");
 }

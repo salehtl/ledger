@@ -88,8 +88,8 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
                 checked={s.auto_categorize}
                 onChange={(e) => saveSettings({ ...s, auto_categorize: e.target.checked })} />
             </ToggleRow>
-            <ToggleRow title="AI suggestions" hint="Let AI propose a category when no rule matches.">
-              <Switch aria-label="AI suggestions"
+            <ToggleRow title="AI features (master switch)" hint="Off = zero calls to Anthropic. Manage usage & spend cap under AI & API usage.">
+              <Switch aria-label="AI features"
                 checked={s.ai_enabled}
                 onChange={(e) => saveSettings({ ...s, ai_enabled: e.target.checked })} />
             </ToggleRow>

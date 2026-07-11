@@ -10,6 +10,7 @@ import { useToast } from "../components/Toast";
 import { SettingsHub, type SettingsPageId } from "./settings/SettingsHub";
 import { BudgetPage } from "./settings/BudgetPage";
 import { CategorizationPage } from "./settings/CategorizationPage";
+import { AiUsagePage } from "./settings/AiUsagePage";
 import { SwipePage } from "./settings/SwipePage";
 import { CurrenciesPage } from "./settings/CurrenciesPage";
 import { AccountsPage } from "./settings/AccountsPage";
@@ -60,6 +61,7 @@ export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIn
 
       {page === "budget" && <BudgetPage onClose={close} />}
       {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}
+      {page === "ai" && <AiUsagePage onClose={close} />}
       {page === "swipe" && <SwipePage onClose={close} />}
       {page === "currencies" && <CurrenciesPage onClose={close} />}
       {page === "accounts" && <AccountsPage onClose={close} />}
