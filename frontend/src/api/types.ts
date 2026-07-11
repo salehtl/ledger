@@ -62,6 +62,15 @@ export interface IngestHealth {
 }
 export interface Health { status: string; db: string; ingest?: IngestHealth; }
 
+export interface ProjectCategorySpend { category: string; net_fils: number; }
+export interface Project {
+  id: number; name: string; budget_fils: number | null; color: string;
+  starts_on: string; ends_on: string; status: "active" | "completed";
+  count_in_monthly: boolean; completed_at: string;
+  net_spent_fils: number; pending_fils: number; txn_count: number;
+}
+export interface ProjectDetail extends Project { by_category: ProjectCategorySpend[]; }
+
 export interface Account {
   id: number;
   name: string;
