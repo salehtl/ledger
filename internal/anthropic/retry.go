@@ -29,6 +29,10 @@ type Retrier struct {
 	Backoff func(attempt int) time.Duration
 	// sleep waits for d or until ctx is done; nil → real wait. Overridable in tests.
 	sleep func(ctx context.Context, d time.Duration) error
+	// Gate, if non-nil, is consulted at the top of Post before any request is built
+	// or sent. A non-nil return aborts the call with no network I/O. This is the
+	// single choke point that makes "AI off" mean zero egress.
+	Gate func() error
 }
 
 // New returns a Retrier with sane defaults: 3 retries, a 30s per-attempt
@@ -45,6 +49,12 @@ func New(hc *http.Client) *Retrier {
 // StatusCode. After exhausting retries it returns the last response (e.g. a
 // 429) rather than an error, so callers handle it uniformly.
 func (r *Retrier) Post(ctx context.Context, endpoint, apiKey string, body []byte) (*http.Response, error) {
+	if r.Gate != nil {
+		if err := r.Gate(); err != nil {
+			return nil, err
+		}
+	}
+
 	backoff := r.Backoff
 	if backoff == nil {
 		backoff = DefaultBackoff
