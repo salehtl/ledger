@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"ledger/internal/anthropic"
 	"ledger/internal/categorize"
 	"ledger/internal/config"
 	"ledger/internal/importer"
@@ -121,16 +122,94 @@ func main() {
 		domainCats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
 	}
 
-	// Pick AI clients based on config.
+	srv := server.New(st, webFS)
+	srv.SetIngest(st, cfg.IMAP.Enabled())
+	srv.SetCategoryStore(st)
+	srv.SetSettingsStore(st)
+	srv.SetRatesStore(st)
+	srv.SetAccountsStore(st)
+	srv.SetTransfersStore(st)
+	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
+	srv.SetRuleActiveStore(st)
+	srv.SetBudgetStore(st)
+	srv.SetInsightsStore(st)
+
+	// VAPID push sender (optional — only enabled when both keys are set).
+	var pushSend *push.Sender
+	if priv := os.Getenv("LEDGER_VAPID_PRIVATE"); priv != "" {
+		pub := os.Getenv("LEDGER_VAPID_PUBLIC")
+		subscriber := "mailto:" + cfg.IMAP.Username
+		if subscriber == "mailto:" {
+			subscriber = "mailto:admin@localhost"
+		}
+		if s, err := push.New(priv, pub, subscriber); err == nil {
+			pushSend = s
+			srv.SetPushStore(st)
+			srv.SetPushSender(pushSend)
+			log.Printf("push: VAPID enabled")
+		} else {
+			log.Printf("push: disabled (%v)", err)
+		}
+	} else {
+		log.Printf("push: disabled (set LEDGER_VAPID_PRIVATE + LEDGER_VAPID_PUBLIC to enable)")
+	}
+
+	// Live gate: the single authority over whether any Anthropic call may leave the
+	// box. Consulted at the HTTP boundary (anthropic.Retrier.Post) before every call.
+	keyPresent := cfg.AI.APIKey != ""
+	aiGate := func() error {
+		if !keyPresent {
+			return anthropic.ErrAIDisabled
+		}
+		s, err := st.SelectAppSettings()
+		if err != nil {
+			// Fail closed: if we can't read settings, don't spend money.
+			return anthropic.ErrAIDisabled
+		}
+		if !s.AIEnabled || s.CapLatched {
+			return anthropic.ErrAIDisabled
+		}
+		return nil
+	}
+
+	// Recorder: persist each call's tokens+cost; on cap latch, notify via push.
+	aiRecorder := func(u anthropic.Usage) {
+		latched, err := st.RecordAIUsage(store.AIUsageRow{
+			Path: u.Path, Model: u.Model,
+			InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+			CostMuUSD: anthropic.CostMuUSD(u.Model, u.InputTokens, u.OutputTokens),
+			OK:        u.OK, Detail: u.Detail,
+		})
+		if err != nil {
+			log.Printf("ai usage: record failed: %v", err)
+			return
+		}
+		if latched {
+			log.Printf("ai: monthly spend cap reached — AI disabled")
+			if pushSend != nil {
+				subs, _ := st.SelectPushSubs()
+				payload, _ := json.Marshal(map[string]string{
+					"title": "AI auto-disabled",
+					"body":  "Monthly Anthropic spend cap reached. Re-enable in Settings.",
+				})
+				for _, sub := range subs {
+					go func(s store.PushSubRow) {
+						_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+					}(sub)
+				}
+			}
+		}
+	}
+
+	// Pick AI clients based on config. The gate — not config — is the live on/off.
 	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
 	var aiExt parse.Extractor = parse.DisabledExtractor{}
 	if cfg.AI.Enabled {
-		aiCat = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model)
+		aiCat = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
 		if cfg.AI.AllowAIExtraction {
-			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model)
+			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
 		}
-		log.Printf("ai: enabled (model=%s, threshold=%.2f, auto_rule=%v, allow_extraction=%v)",
-			cfg.AI.Model, cfg.AI.AutoAcceptThreshold, cfg.AI.AutoRule, cfg.AI.AllowAIExtraction)
+		log.Printf("ai: clients wired (model=%s); runtime master switch + cap now govern calls", cfg.AI.Model)
 	} else {
 		log.Printf("ai: disabled (set ai.enabled=true + LEDGER_AI_API_KEY to activate)")
 	}
@@ -149,19 +228,7 @@ func main() {
 		}
 		return cat, cat != nil
 	})
-
-	srv := server.New(st, webFS)
-	srv.SetIngest(st, cfg.IMAP.Enabled())
 	srv.SetReprocessor(processor)
-	srv.SetCategoryStore(st)
-	srv.SetSettingsStore(st)
-	srv.SetRatesStore(st)
-	srv.SetAccountsStore(st)
-	srv.SetTransfersStore(st)
-	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
-	srv.SetRuleActiveStore(st)
-	srv.SetBudgetStore(st)
-	srv.SetInsightsStore(st)
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool, error) {
 		cat, err := buildCategorizer(st, domainCats, aiCat)
 		if err != nil {
@@ -196,26 +263,6 @@ func main() {
 		}
 		return result.CategoryID, status, true, nil
 	})
-
-	// VAPID push sender (optional — only enabled when both keys are set).
-	var pushSend *push.Sender
-	if priv := os.Getenv("LEDGER_VAPID_PRIVATE"); priv != "" {
-		pub := os.Getenv("LEDGER_VAPID_PUBLIC")
-		subscriber := "mailto:" + cfg.IMAP.Username
-		if subscriber == "mailto:" {
-			subscriber = "mailto:admin@localhost"
-		}
-		if s, err := push.New(priv, pub, subscriber); err == nil {
-			pushSend = s
-			srv.SetPushStore(st)
-			srv.SetPushSender(pushSend)
-			log.Printf("push: VAPID enabled")
-		} else {
-			log.Printf("push: disabled (%v)", err)
-		}
-	} else {
-		log.Printf("push: disabled (set LEDGER_VAPID_PRIVATE + LEDGER_VAPID_PUBLIC to enable)")
-	}
 
 	// SSE hub — broadcasts new transactions and drift alerts.
 	hub := server.NewHub()
