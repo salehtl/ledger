@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -136,5 +137,47 @@ func TestRetryAfterParsing(t *testing.T) {
 		if got := retryAfter(in); got != want {
 			t.Errorf("retryAfter(%q)=%v want %v", in, got, want)
 		}
+	}
+}
+
+func TestPostGateBlocksAllEgress(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	r := New(srv.Client())
+	r.Gate = func() error { return ErrAIDisabled }
+
+	resp, err := r.Post(context.Background(), srv.URL, "key", []byte(`{}`))
+	if !errors.Is(err, ErrAIDisabled) {
+		t.Fatalf("err = %v, want ErrAIDisabled", err)
+	}
+	if resp != nil {
+		t.Fatalf("resp = %v, want nil", resp)
+	}
+	if hits != 0 {
+		t.Fatalf("server received %d requests, want 0 — gate must block before any I/O", hits)
+	}
+}
+
+func TestPostGateAllowsWhenNil(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	r := New(srv.Client()) // Gate nil
+	resp, err := r.Post(context.Background(), srv.URL, "key", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resp.Body.Close()
+	if hits != 1 {
+		t.Fatalf("server received %d requests, want 1", hits)
 	}
 }
