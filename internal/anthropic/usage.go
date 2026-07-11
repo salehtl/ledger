@@ -23,10 +23,10 @@ type Recorder func(Usage)
 // PriceMuUSD is micro-USD (1e-6 USD) per token, per model. $1/Mtok input == 1 muUSD/token.
 // Unknown models resolve to {0,0} — tokens are still recorded, cost shows as unknown.
 var PriceMuUSD = map[string]struct{ In, Out int64 }{
-	"claude-haiku-4-5-20251001": {In: 1, Out: 5},   // $1 / $5 per Mtok
+	"claude-haiku-4-5-20251001": {In: 1, Out: 5}, // $1 / $5 per Mtok
 	"claude-haiku-4-5":          {In: 1, Out: 5},
-	"claude-opus-4-8":           {In: 5, Out: 25},  // $5 / $25 per Mtok
-	"claude-sonnet-5":           {In: 3, Out: 15},  // $3 / $15 per Mtok
+	"claude-opus-4-8":           {In: 5, Out: 25}, // $5 / $25 per Mtok
+	"claude-sonnet-5":           {In: 3, Out: 15}, // $3 / $15 per Mtok
 }
 
 // CostMuUSD computes exact integer micro-USD cost for a call. Unknown model -> 0.
