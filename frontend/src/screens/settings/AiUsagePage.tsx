@@ -6,6 +6,7 @@ import { Switch } from "../../components/ui/Switch";
 import { Card } from "../../components/ui/Card";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Field";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
@@ -85,10 +86,10 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
             <Card>
               <div className="flex items-center gap-2">
                 <span className="text-sm">$</span>
-                <input
+                <Input
                   type="number" inputMode="decimal" min="0" step="1"
                   aria-label="Monthly spend cap in dollars"
-                  className="flex-1 text-base border border-border rounded-lg px-3 py-2 bg-surface"
+                  className="flex-1"
                   placeholder={capDollars ? String(capDollars) : "No cap"}
                   value={capInput}
                   onChange={(e) => setCapInput(e.target.value)} />
