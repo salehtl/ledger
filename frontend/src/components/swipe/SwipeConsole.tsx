@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { type SwipeConfig, type PreviewState, type EdgeKey } from '../../lib/swipe'
+import { type SwipeConfig, type PreviewState, type EdgeKey, CONSOLE_COLOR } from '../../lib/swipe'
 import { computeFacets, type CardRect } from '../../lib/facets'
 
 interface Props {
@@ -66,8 +66,7 @@ export function SwipeConsole({ w, h, card, band, config, catName, preview }: Pro
   )
 }
 
-/** Brightened bucket colors for the graphite console (glow), keyed by edge group. */
+/** Console glow color for an edge, from its configured group. */
 function FACET_COLOR(config: SwipeConfig, edge: EdgeKey): string {
-  const CONSOLE: Record<string, string> = { need: '#3B82F6', want: '#8B5CF6', saving: '#10B981', other: '#94A3B8' }
-  return CONSOLE[config.edges[edge].group]
+  return CONSOLE_COLOR[config.edges[edge].group]
 }

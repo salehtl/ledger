@@ -40,6 +40,14 @@ export const GROUP_ICON: Record<EdgeGroup, string> = {
   other: 'ArrowLeftRight',
 }
 
+/** Brightened bucket colors for the graphite sorting console (glow), keyed by edge group. */
+export const CONSOLE_COLOR: Record<EdgeGroup, string> = {
+  need: '#3B82F6',
+  want: '#8B5CF6',
+  saving: '#10B981',
+  other: '#94A3B8',
+}
+
 export const OTHER_MIN = 30      // below → cancel (spring back)
 export const CATEGORY_MIN = 150  // below → Other, at/above → specific category
 export const CAT_FULL = 90       // px past CATEGORY_MIN to reach full brightness
