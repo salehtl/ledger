@@ -12,7 +12,7 @@ const cats: CategorySpend[] = [
 const trend: MonthlyTotal[] = [{ period: "2026-06", spent: 290000, income: 1500000 }];
 const summary: Summary = {
   period: "2026-06", income: 1500000, month_progress: 0.5,
-  buckets: [], recent: [],
+  buckets: [], recent: [], project_excluded: 0,
 };
 const monthTxns: Txn[] = [
   {

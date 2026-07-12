@@ -639,3 +639,33 @@ func TestSelectTransactionsSearch(t *testing.T) {
 		t.Errorf("empty search: got %d rows, want 4", len(all))
 	}
 }
+
+// TestTransactionRowCarriesProjectID asserts that a transaction assigned to a
+// project reports ProjectID non-nil through SelectTransactions — the same
+// read path the /api/transactions handler uses.
+func TestTransactionRowCarriesProjectID(t *testing.T) {
+	st := newTestStore(t)
+	cat := insertCategory(t, st, "Auto", "spending", "want")
+	id := insertTxn(t, st, cat, "debit", 100_000, "2026-07-01", "confirmed")
+	pid, err := st.InsertProject(ProjectRow{Name: "Car", Status: "active"})
+	if err != nil {
+		t.Fatalf("InsertProject: %v", err)
+	}
+	if err := st.AssignTransactionProject(id, &pid); err != nil {
+		t.Fatalf("AssignTransactionProject: %v", err)
+	}
+
+	items, err := st.SelectTransactions("confirmed", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *int64
+	for _, it := range items {
+		if it.ID == id {
+			found = it.ProjectID
+		}
+	}
+	if found == nil || *found != pid {
+		t.Fatalf("ProjectID = %v, want %d", found, pid)
+	}
+}

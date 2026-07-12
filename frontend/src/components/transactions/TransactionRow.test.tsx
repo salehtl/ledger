@@ -47,6 +47,25 @@ describe("TransactionRow", () => {
     expect(screen.getByText(/refund/)).toBeInTheDocument();
   });
 
+  describe("project chip", () => {
+    const projectsById = { 7: { name: "Kitchen reno", color: "#1373d9" } };
+
+    it("renders a chip when the txn's project is in projectsById", () => {
+      render(<TransactionRow txn={mk({ ProjectID: 7 })} projectsById={projectsById} onOpen={() => {}} />);
+      expect(screen.getByText("Kitchen reno")).toBeInTheDocument();
+    });
+
+    it("shows no chip when projectsById is not passed", () => {
+      render(<TransactionRow txn={mk({ ProjectID: 7 })} onOpen={() => {}} />);
+      expect(screen.queryByText("Kitchen reno")).not.toBeInTheDocument();
+    });
+
+    it("shows no chip when the txn has no project", () => {
+      render(<TransactionRow txn={mk({ ProjectID: null })} projectsById={projectsById} onOpen={() => {}} />);
+      expect(screen.queryByText("Kitchen reno")).not.toBeInTheDocument();
+    });
+  });
+
   it("shows a status pill only when a row needs attention or is archived", () => {
     const { rerender } = render(<TransactionRow txn={mk({ Status: "confirmed" })} onOpen={() => {}} />);
     expect(screen.queryByText(/needs review|archived/i)).not.toBeInTheDocument();

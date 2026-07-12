@@ -1,4 +1,4 @@
-import type { Account, AIUsage, CategoryUsage, RatesResponse, SweepResult, Txn } from "./types";
+import type { Account, AIUsage, CategoryUsage, Project, ProjectDetail, RatesResponse, SweepResult, Txn } from "./types";
 
 async function parseOrThrow(res: Response) {
   const text = await res.text();
@@ -75,4 +75,36 @@ export async function unlinkRefund(id: number): Promise<void> {
 
 export function getAIUsage(): Promise<AIUsage> {
   return getJSON<AIUsage>("/api/ai/usage");
+}
+
+export function getProjects(includeCompleted = false): Promise<Project[]> {
+  return getJSON<Project[]>(`/api/projects${includeCompleted ? "?include_completed=1" : ""}`);
+}
+
+export function getProject(id: number): Promise<ProjectDetail> {
+  return getJSON<ProjectDetail>(`/api/projects/${id}`);
+}
+
+export function createProject(body: Partial<Project>): Promise<{ id: number }> {
+  return postJSON(`/api/projects`, body);
+}
+
+export function updateProject(id: number, body: Partial<Project>): Promise<void> {
+  return postJSON(`/api/projects/${id}`, body, "PUT");
+}
+
+export function deleteProject(id: number): Promise<void> {
+  return del(`/api/projects/${id}`);
+}
+
+export function assignTxnProject(txnId: number, projectId: number | null): Promise<void> {
+  return postJSON(`/api/transactions/${txnId}/project`, { project_id: projectId });
+}
+
+export function bulkAssignProject(id: number, ids: number[]): Promise<void> {
+  return postJSON(`/api/projects/${id}/assign`, { transaction_ids: ids });
+}
+
+export function bulkUnassignProject(id: number, ids: number[]): Promise<void> {
+  return postJSON(`/api/projects/${id}/unassign`, { transaction_ids: ids });
 }

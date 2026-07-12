@@ -117,9 +117,9 @@ func TestSummaryAggregatesRange(t *testing.T) {
 	}
 }
 
-func seedConfirmedDebit(t *testing.T, st *store.Store, catID int64, postedAt string, amount int64) {
+func seedConfirmedDebit(t *testing.T, st *store.Store, catID int64, postedAt string, amount int64) int64 {
 	t.Helper()
-	_, err := st.DB.Exec(
+	res, err := st.DB.Exec(
 		`INSERT INTO transactions
 		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, category_id, status, fingerprint, source, created_at, updated_at)
 		 VALUES (?, ?, ?, 'AED', 'debit', 'M', ?, 'confirmed', ?, 'email', '2026-01-01', '2026-01-01')`,
@@ -127,6 +127,55 @@ func seedConfirmedDebit(t *testing.T, st *store.Store, catID int64, postedAt str
 	)
 	if err != nil {
 		t.Fatalf("seedConfirmedDebit: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("seedConfirmedDebit: LastInsertId: %v", err)
+	}
+	return id
+}
+
+// TestSummaryIncludesProjectExcluded confirms /api/summary sums
+// SelectMonthProjectExcluded across every month in the span and surfaces it as
+// project_excluded, so the frontend can render "excludes AED X in project
+// spend" without re-deriving it.
+func TestSummaryIncludesProjectExcluded(t *testing.T) {
+	srv, st := newTestServer(t)
+	_ = st.UpdateBudgetConfig(store.BudgetConfig{
+		MonthlyIncome: 2000000, NeedPct: 0.5, WantPct: 0.3, SavingPct: 0.2, IncomeSource: "config",
+	})
+	var grocID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&grocID); err != nil {
+		t.Fatalf("lookup Groceries: %v", err)
+	}
+	pid, err := st.InsertProject(store.ProjectRow{Name: "Car", Status: "active"}) // default carved out
+	if err != nil {
+		t.Fatalf("InsertProject: %v", err)
+	}
+	// One project-carved-out spend in each of two months; project_excluded must
+	// sum both. A third, un-carved spend must not count toward it.
+	marExcluded := seedConfirmedDebit(t, st, grocID, "2026-03-10", 300000)
+	aprExcluded := seedConfirmedDebit(t, st, grocID, "2026-04-12", 150000)
+	seedConfirmedDebit(t, st, grocID, "2026-04-15", 90000)
+	if err := st.AssignTransactionProject(marExcluded, &pid); err != nil {
+		t.Fatalf("AssignTransactionProject: %v", err)
+	}
+	if err := st.AssignTransactionProject(aprExcluded, &pid); err != nil {
+		t.Fatalf("AssignTransactionProject: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/summary?from=2026-03&to=2026-04", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var s budget.Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.ProjectExcluded != 450000 {
+		t.Fatalf("project_excluded = %d, want 450000 (300000+150000 summed across span)", s.ProjectExcluded)
 	}
 }
 

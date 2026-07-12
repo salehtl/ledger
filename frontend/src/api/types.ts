@@ -28,6 +28,8 @@ export interface Txn {
   Kind: string; BucketSnapshot: string;
   /** Set when this credit is a linked refund of another transaction. */
   RefundOfID?: number | null;
+  /** Set when this transaction is assigned to a life-project. */
+  ProjectID?: number | null;
 }
 export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
@@ -40,6 +42,8 @@ export interface BucketSummary {
 }
 export interface Summary {
   period: string; income: number; month_progress: number; buckets: BucketSummary[]; recent: Txn[];
+  /** Fils excluded from this summary because they belong to a project opted out of the monthly budget. */
+  project_excluded: number;
 }
 export interface CategorySpend { category_id: number; name: string; bucket: string; spent: number; }
 export interface MonthlyTotal { period: string; spent: number; income: number; }
@@ -59,6 +63,15 @@ export interface IngestHealth {
   silence_days: number;
 }
 export interface Health { status: string; db: string; ingest?: IngestHealth; }
+
+export interface ProjectCategorySpend { category: string; net_fils: number; }
+export interface Project {
+  id: number; name: string; budget_fils: number | null; color: string;
+  starts_on: string; ends_on: string; status: "active" | "completed";
+  count_in_monthly: boolean; completed_at: string;
+  net_spent_fils: number; pending_fils: number; txn_count: number;
+}
+export interface ProjectDetail extends Project { by_category: ProjectCategorySpend[]; }
 
 export interface Account {
   id: number;

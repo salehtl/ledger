@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { getJSON } from "../api/client";
+import { getJSON, getProjects } from "../api/client";
 import type { Summary, MonthlyTotal } from "../api/types";
 import { Money } from "../components/Money";
 import { Card } from "../components/ui/Card";
 import { ProgressBar } from "../components/ui/ProgressBar";
+import { SectionLabel } from "../components/ui/SectionLabel";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TrendBars } from "../components/charts/TrendBars";
+import { ProjectCard } from "../components/projects/ProjectCard";
 import {
   totalSpent, totalBudget, totalProjection, paceStatus, paceTone,
   trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
@@ -37,7 +39,17 @@ function summaryParams(scope: Scope): string {
   return p.toString();
 }
 
-export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
+export function Home({
+  scope = DEFAULT_SCOPE,
+  onOpenProject,
+  onOpenProjects,
+}: {
+  scope?: Scope;
+  /** Opens a specific project's detail as the AppShell-level Projects overlay. */
+  onOpenProject?: (id: number) => void;
+  /** Opens the full Projects list as the AppShell-level overlay. */
+  onOpenProjects?: () => void;
+}) {
   // The 6-month trend is always the trailing 6 real months (it matches the
   // static /api/insights/trend), independent of the selected scope.
   const periods = trailingPeriods(currentPeriod(), 6);
@@ -47,6 +59,10 @@ export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const params = summaryParams(scope);
   const summary = useQuery({ queryKey: ["summary", params], queryFn: () => getJSON<Summary>(`/api/summary?${params}`) });
   const trend = useQuery({ queryKey: ["insights-trend"], queryFn: () => getJSON<MonthlyTotal[]>("/api/insights/trend?months=6") });
+  // Active projects only — completed ones don't belong on the live Home glance.
+  // Distinct "active" sub-key from the include-completed list below so the two
+  // result sets never collide under the same cache entry.
+  const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
 
   const isCurrent = scope.kind === "month" && scope.period === currentPeriod();
   const anchor = scopeAnchor(scope); // the month the trend chart highlights
@@ -130,7 +146,33 @@ export function Home({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
             );
           })}
         </div>
+        {s.project_excluded > 0 && (
+          <p className="text-xs text-muted mt-3 pt-3 border-t border-border">
+            Excludes {formatFils(s.project_excluded)} in project spend
+          </p>
+        )}
       </Card>
+
+      {/* active projects glance — absent entirely when there are none */}
+      {projects.data && projects.data.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <SectionLabel as="h2">Projects</SectionLabel>
+            <button
+              type="button"
+              onClick={onOpenProjects}
+              className="min-h-11 -mr-2 px-2 flex items-center text-sm font-medium text-accent press"
+            >
+              All ›
+            </button>
+          </div>
+          <div className="space-y-3">
+            {projects.data.map((p) => (
+              <ProjectCard key={p.id} project={p} onOpen={() => onOpenProject?.(p.id)} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 6-month trend */}
       <Card>
