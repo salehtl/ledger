@@ -23,7 +23,19 @@ export { pctsValid } from "../lib/split";
  *  nonce forces re-navigation when Settings is already mounted. */
 export interface SettingsIntent { page: SettingsPageId; nonce: number }
 
-export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIntent | null }) {
+export function Settings({
+  scope,
+  intent,
+  onOpenProjects,
+}: {
+  scope?: Scope;
+  intent?: SettingsIntent | null;
+  /** Projects is hosted at the AppShell level (overlay, independent of the
+   *  Settings tab) so it can be deep-linked from Home too — the hub's
+   *  "Projects" row delegates to this instead of the local page dispatch.
+   *  Optional so standalone Settings tests don't need to stub it. */
+  onOpenProjects?: () => void;
+}) {
   const qc = useQueryClient();
   const { show } = useToast();
   const [page, setPage] = useState<SettingsPageId | null>(null);
@@ -57,7 +69,7 @@ export function Settings({ scope, intent }: { scope?: Scope; intent?: SettingsIn
 
   return (
     <>
-      <SettingsHub onOpen={setPage} onClear={() => setClearOpen(true)} />
+      <SettingsHub onOpen={setPage} onClear={() => setClearOpen(true)} onOpenProjects={() => onOpenProjects?.()} />
 
       {page === "budget" && <BudgetPage onClose={close} />}
       {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}

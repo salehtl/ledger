@@ -12,10 +12,17 @@ import { bucketColor } from "../../lib/insights";
  * put away (archived) — confirmed rows stay quiet. The whole row is the tap
  * target that opens the detail sheet; quick actions live on swipe.
  */
-export function TransactionRow({ txn, onOpen }: { txn: Txn; onOpen: (t: Txn) => void }) {
+export function TransactionRow({ txn, onOpen, projectsById }: {
+  txn: Txn;
+  onOpen: (t: Txn) => void;
+  /** Optional: active project lookup for the subtle row chip. Callers that
+   *  don't pass it (drill-downs, search, project screens) simply show no chip. */
+  projectsById?: Record<number, { name: string; color: string }>;
+}) {
   const aed = aedFils(txn);
   const native = nativeAmountTag(txn);
   const noRate = aed === null;
+  const project = txn.ProjectID != null ? projectsById?.[txn.ProjectID] : undefined;
   const amount = flowAmount(txn.Direction, aed ?? txn.AmountFils);
   const showStatus = txn.Status === "needs_review" || txn.Status === "archived";
   const meta = [txn.CategoryName || "Uncategorized", shortDate(txn.PostedAt), txn.RefundOfID ? "refund" : null]
@@ -46,7 +53,15 @@ export function TransactionRow({ txn, onOpen }: { txn: Txn; onOpen: (t: Txn) => 
           </span>
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-3">
-          <p className="text-xs text-muted truncate">{meta}</p>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <p className="text-xs text-muted truncate">{meta}</p>
+            {project && (
+              <span className="inline-flex items-center gap-1 text-xs text-muted shrink-0">
+                <span aria-hidden className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: project.color }} />
+                <span className="truncate max-w-24">{project.name}</span>
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {native && <span className="tnum text-xs text-muted">{native}</span>}
             {noRate && <Pill tone="warn">no AED rate</Pill>}

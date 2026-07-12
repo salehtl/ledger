@@ -20,11 +20,12 @@ type BucketSummary struct {
 
 // Summary is the full dashboard payload (§6.7 GET /api/summary).
 type Summary struct {
-	Period        string             `json:"period"`
-	Income        int64              `json:"income"`
-	MonthProgress float64            `json:"month_progress"`
-	Buckets       []BucketSummary    `json:"buckets"`
-	Recent        []store.ReviewItem `json:"recent"`
+	Period          string             `json:"period"`
+	Income          int64              `json:"income"`
+	MonthProgress   float64            `json:"month_progress"`
+	Buckets         []BucketSummary    `json:"buckets"`
+	Recent          []store.ReviewItem `json:"recent"`
+	ProjectExcluded int64              `json:"project_excluded"`
 }
 
 // buckets are always reported in this fixed order.
@@ -32,8 +33,11 @@ var bucketOrder = []string{"need", "want", "saving"}
 
 // Compute rolls spend rows into jars for the month of now. income is already
 // resolved by the caller (config figure or summed income categories).
-func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, now time.Time) Summary {
-	return computeJars(cfg, income, spend, recent, now.Format("2006-01"), MonthProgress(now))
+// projectExcluded is the net spend the caller carved out because it belongs to
+// a project with count_in_monthly=0; it is echoed on Summary for display only
+// and does not affect the jar math.
+func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, now time.Time, projectExcluded int64) Summary {
+	return computeJars(cfg, income, spend, recent, now.Format("2006-01"), MonthProgress(now), projectExcluded)
 }
 
 // ComputeRange rolls jars for a multi-month span. The caller has already summed
@@ -41,11 +45,11 @@ func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recen
 // progress is the fraction of the span elapsed (1.0 once it is wholly past). The
 // jar math is identical to Compute — a target is income×pct regardless of span
 // length, because the caller's summed income already scales with the months.
-func ComputeRange(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64) Summary {
-	return computeJars(cfg, income, spend, recent, period, progress)
+func ComputeRange(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64, projectExcluded int64) Summary {
+	return computeJars(cfg, income, spend, recent, period, progress, projectExcluded)
 }
 
-func computeJars(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64) Summary {
+func computeJars(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64, projectExcluded int64) Summary {
 	pct := map[string]float64{"need": cfg.NeedPct, "want": cfg.WantPct, "saving": cfg.SavingPct}
 
 	net := map[string]int64{}
@@ -59,10 +63,11 @@ func computeJars(cfg store.BudgetConfig, income int64, spend []store.SpendRow, r
 	}
 
 	out := Summary{
-		Period:        period,
-		Income:        income,
-		MonthProgress: progress,
-		Recent:        recent,
+		Period:          period,
+		Income:          income,
+		MonthProgress:   progress,
+		Recent:          recent,
+		ProjectExcluded: projectExcluded,
 	}
 	for _, name := range bucketOrder {
 		target := int64(float64(income) * pct[name])

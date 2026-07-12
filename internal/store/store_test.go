@@ -45,7 +45,7 @@ func TestOpenAppliesFullSchema(t *testing.T) {
 
 	want := []string{
 		"accounts", "ai_usage", "app_settings", "budget_config", "categories", "fx_rates", "import_log",
-		"ingest_log", "push_subscriptions", "rules", "transactions",
+		"ingest_log", "projects", "push_subscriptions", "rules", "transactions",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tables = %v, want %v", got, want)

@@ -134,6 +134,7 @@ func main() {
 	srv.SetRuleActiveStore(st)
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
+	srv.SetProjectStore(st)
 
 	// VAPID push sender (optional — only enabled when both keys are set).
 	var pushSend *push.Sender

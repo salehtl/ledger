@@ -82,7 +82,9 @@ func (s *Store) SelectMonthSpend(period string, frozen bool) ([]SpendRow, error)
 		`SELECT `+bucketExpr+`, t.direction, COALESCE(t.amount_aed, 0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='spending'
-		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		    AND t.posted_at >= ? AND t.posted_at < ?
+		    AND (t.project_id IS NULL
+		         OR EXISTS (SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.count_in_monthly = 1))`,
 		start, end,
 	)
 	if err != nil {
@@ -102,6 +104,28 @@ func (s *Store) SelectMonthSpend(period string, frozen bool) ([]SpendRow, error)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SelectMonthProjectExcluded returns the net AED spend in the period that was
+// carved out of the monthly jars (confirmed spending txns whose project has
+// count_in_monthly=0). Used for the "excludes AED X in project spend" note.
+func (s *Store) SelectMonthProjectExcluded(period string, frozen bool) (int64, error) {
+	start, end, err := monthRange(period)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	err = s.DB.QueryRow(
+		`SELECT COALESCE(SUM(CASE t.direction WHEN 'debit' THEN COALESCE(t.amount_aed, t.amount)
+		                                      WHEN 'credit' THEN -COALESCE(t.amount_aed, t.amount) ELSE 0 END), 0)
+		   FROM transactions t
+		   JOIN categories c ON c.id = t.category_id
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE t.status='confirmed' AND c.kind='spending' AND p.count_in_monthly = 0
+		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		start, end,
+	).Scan(&total)
+	return total, err
 }
 
 // SelectMonthIncome sums confirmed income-kind credits in the period.
@@ -143,7 +167,7 @@ func (s *Store) SelectRecent(n int) ([]ReviewItem, error) {
 		`SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
-		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id
+		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id, t.project_id
 		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
 		  ORDER BY t.posted_at DESC LIMIT ?`, n,
 	)

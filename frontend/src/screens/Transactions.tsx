@@ -1,7 +1,7 @@
 // frontend/src/screens/Transactions.tsx
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getJSON, postJSON } from "../api/client";
+import { getJSON, getProjects, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
@@ -59,6 +59,11 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     },
   });
   const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
+  const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
+  const projectsById = useMemo(
+    () => Object.fromEntries((projects.data ?? []).map((p) => [p.id, { name: p.name, color: p.color }])),
+    [projects.data],
+  );
 
   const rows = useMemo(() => {
     const filtered = applyTxnFilters(q.data ?? [], filters);
@@ -203,7 +208,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}>
                     <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>
                       <div className="px-4">
-                        <TransactionRow txn={t} onOpen={setDetail} />
+                        <TransactionRow txn={t} onOpen={setDetail} projectsById={projectsById} />
                       </div>
                     </SwipeableRow>
                   </li>

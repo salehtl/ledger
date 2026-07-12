@@ -1,14 +1,16 @@
 // frontend/src/components/transactions/CategorizeSheet.tsx
 import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Category, Txn } from "../../api/types";
 import { Money } from "../Money";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
-import { Input } from "../ui/Field";
+import { Input, Select } from "../ui/Field";
 import { Switch } from "../ui/Switch";
 import { SectionLabel } from "../ui/SectionLabel";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 import { bucketColor } from "../../lib/insights";
+import { assignTxnProject, getProjects } from "../../api/client";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const BUCKET_ORDER = ["need", "want", "saving"];
@@ -29,6 +31,20 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
   const [catID, setCatID] = useState<number | null>(txn.CategoryID ?? null);
   const [makeRule, setMakeRule] = useState(false);
   const [query, setQuery] = useState("");
+
+  const qc = useQueryClient();
+  const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
+
+  const handleProjectChange = (value: string) => {
+    const projectId = value === "" ? null : Number(value);
+    void assignTxnProject(txn.ID, projectId)
+      .then(() => {
+        qc.invalidateQueries({ queryKey: ["transactions"] });
+        qc.invalidateQueries({ queryKey: ["projects"] });
+        qc.invalidateQueries({ queryKey: ["summary"] });
+      })
+      .catch(() => {});
+  };
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -61,6 +77,17 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
         <Button variant="secondary" className="w-full mb-3" onClick={onUnlinkRefund}>
           Unlink refund
         </Button>
+      )}
+      {projects.data && projects.data.length > 0 && (
+        <label className="block text-sm mb-3">
+          <SectionLabel as="span" className="mb-1 block">Project</SectionLabel>
+          <Select inset value={txn.ProjectID ?? ""} onChange={(e) => handleProjectChange(e.target.value)}>
+            <option value="">None</option>
+            {projects.data.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </Select>
+        </label>
       )}
 
       <Input
