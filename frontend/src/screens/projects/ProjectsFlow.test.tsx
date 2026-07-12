@@ -59,6 +59,29 @@ describe("ProjectsFlow", () => {
     expect(await screen.findByRole("heading", { name: /^projects$/i })).toBeInTheDocument();
   });
 
+  it("keeps the list mounted beneath an opened detail page", async () => {
+    const project: ProjectDetail = { ...makeProject(), by_category: [] };
+    vi.spyOn(client, "getProjects").mockResolvedValue([makeProject()]);
+    vi.spyOn(client, "getProject").mockResolvedValue(project);
+    wrap(<ProjectsFlow onClose={() => {}} />);
+    fireEvent.click(await screen.findByText("Kitchen reno"));
+    await screen.findByRole("heading", { name: /kitchen reno/i });
+    // The list must stay in the DOM so back-nav reveals it beneath the
+    // detail's slide-out instead of flashing the screen under the flow.
+    expect(screen.getByRole("heading", { name: /^projects$/i })).toBeInTheDocument();
+  });
+
+  it("unmounts the detail after backing out of it", async () => {
+    const project: ProjectDetail = { ...makeProject({ id: 42, name: "Wedding" }), by_category: [] };
+    vi.spyOn(client, "getProject").mockResolvedValue(project);
+    vi.spyOn(client, "getProjects").mockResolvedValue([makeProject({ id: 42, name: "Wedding" })]);
+    wrap(<ProjectsFlow initialProjectId={42} onClose={() => {}} />);
+    await screen.findByRole("heading", { name: /wedding/i });
+    fireEvent.click(screen.getByRole("button", { name: /back from wedding/i }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /wedding/i })).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: /^projects$/i })).toBeInTheDocument();
+  });
+
   it("calls onClose when backing out of the list", async () => {
     vi.spyOn(client, "getProjects").mockResolvedValue([]);
     const onClose = vi.fn();

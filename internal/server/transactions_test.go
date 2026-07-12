@@ -326,3 +326,44 @@ func TestGetTransactionsSearch(t *testing.T) {
 		t.Errorf("q=nomatch: got %d items, want 0", len(misses))
 	}
 }
+
+// POST categorize with an explicit null category_id decategorizes: category
+// cleared, transaction back in the review queue, no rule written.
+func TestPostCategorizeClear(t *testing.T) {
+	st := newTestServerStore(t)
+	txID := seedTestTransaction(t, st)
+	cats, _ := st.SelectCategories()
+	var catID int64
+	for _, c := range cats {
+		if c.Name == "Shopping" {
+			catID = c.ID
+		}
+	}
+	if err := st.UpdateTransactionCategory(txID, catID, "confirmed"); err != nil {
+		t.Fatalf("precategorize: %v", err)
+	}
+
+	srv := newTestServerWithStore(t, st)
+	body := []byte(`{"category_id": null, "make_rule": true, "merchant_raw": "X"}`)
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/categorize", txID), bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
+	}
+	var gotCat *int64
+	var status string
+	st.DB.QueryRow("SELECT category_id, status FROM transactions WHERE id=?", txID).Scan(&gotCat, &status)
+	if gotCat != nil {
+		t.Errorf("category_id = %v, want NULL", *gotCat)
+	}
+	if status != "needs_review" {
+		t.Errorf("status = %q, want needs_review", status)
+	}
+	rules, _ := st.SelectRules()
+	if len(rules) != 0 {
+		t.Errorf("rules = %d, want 0 (make_rule ignored on clear)", len(rules))
+	}
+}

@@ -16,9 +16,13 @@ type View =
  * full-screen overlay mounted at the AppShell level (not tied to the
  * Settings tab), so it can be opened either from the Settings hub's
  * "Projects" row (list) or from a project card on Home (deep-linked straight
- * into that project's detail via `initialProjectId`). Each sub-screen is its
- * own full-screen SettingsPage, so the back arrow / edge-swipe unwinds one
- * level at a time.
+ * into that project's detail via `initialProjectId`).
+ *
+ * Every page on the path to the current view stays mounted, stacked in DOM
+ * order (each sub-screen is an opaque full-screen SettingsPage). That is what
+ * makes back-navigation read correctly: the top page's slide-out reveals its
+ * real parent already sitting underneath, instead of flashing the screen
+ * below the whole flow and then sliding the parent in from the right.
  *
  * The form's `from` tag is what makes back-nav context-sensitive: "+ New
  * project" from the list returns to the list on save/cancel, while "Edit"
@@ -36,30 +40,40 @@ export function ProjectsFlow({
     initialProjectId !== undefined ? { kind: "detail", id: initialProjectId } : { kind: "list" },
   );
 
-  if (view.kind === "form") {
-    const back = () =>
-      setView(view.from === "detail" && view.project ? { kind: "detail", id: view.project.id } : { kind: "list" });
-    return <ProjectForm project={view.project} onClose={back} onSaved={back} />;
-  }
-  if (view.kind === "bulk") {
-    const backToDetail = () => setView({ kind: "detail", id: view.id });
-    return <BulkBackfill id={view.id} onClose={backToDetail} onDone={backToDetail} />;
-  }
-  if (view.kind === "detail") {
-    return (
-      <ProjectDetail
-        id={view.id}
-        onClose={() => setView({ kind: "list" })}
-        onEdit={(project) => setView({ kind: "form", project, from: "detail" })}
-        onAddTransactions={() => setView({ kind: "bulk", id: view.id })}
-      />
+  // The detail page is part of the stack for detail itself, bulk-backfill,
+  // and an edit form opened from a detail.
+  const detailId =
+    view.kind === "detail" || view.kind === "bulk"
+      ? view.id
+      : view.kind === "form" && view.from === "detail" && view.project
+        ? view.project.id
+        : null;
+
+  const formBack = () =>
+    setView(
+      view.kind === "form" && view.from === "detail" && view.project
+        ? { kind: "detail", id: view.project.id }
+        : { kind: "list" },
     );
-  }
+  const bulkBack = () => setView(view.kind === "bulk" ? { kind: "detail", id: view.id } : { kind: "list" });
+
   return (
-    <ProjectsScreen
-      onClose={onClose}
-      onNewProject={() => setView({ kind: "form", from: "list" })}
-      onOpenProject={(id) => setView({ kind: "detail", id })}
-    />
+    <>
+      <ProjectsScreen
+        onClose={onClose}
+        onNewProject={() => setView({ kind: "form", from: "list" })}
+        onOpenProject={(id) => setView({ kind: "detail", id })}
+      />
+      {detailId !== null && (
+        <ProjectDetail
+          id={detailId}
+          onClose={() => setView({ kind: "list" })}
+          onEdit={(project) => setView({ kind: "form", project, from: "detail" })}
+          onAddTransactions={() => setView({ kind: "bulk", id: detailId })}
+        />
+      )}
+      {view.kind === "bulk" && <BulkBackfill id={view.id} onClose={bulkBack} onDone={bulkBack} />}
+      {view.kind === "form" && <ProjectForm project={view.project} onClose={formBack} onSaved={formBack} />}
+    </>
   );
 }

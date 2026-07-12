@@ -19,11 +19,13 @@ const BUCKET_ORDER = ["need", "want", "saving"];
  * Pick a category as a grid of tap targets grouped by bucket — no radio list.
  * The current category is preselected (recategorize reads as a change, not a
  * blank form), a search narrows long lists, and "make a rule" is one toggle.
+ * Tapping the selected category deselects it; saving with no selection on a
+ * categorized transaction decategorizes it (back to the review queue).
  */
 export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefund, onUnlinkRefund }: {
   txn: Txn;
   categories: Category[];
-  onSubmit: (body: { category_id: number; make_rule: boolean }) => void;
+  onSubmit: (body: { category_id: number | null; make_rule: boolean }) => void;
   onClose: () => void;
   onLinkRefund?: () => void;
   onUnlinkRefund?: () => void;
@@ -31,20 +33,28 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
   const [catID, setCatID] = useState<number | null>(txn.CategoryID ?? null);
   const [makeRule, setMakeRule] = useState(false);
   const [query, setQuery] = useState("");
+  // Local so the picker reflects the change immediately — the txn prop is a
+  // snapshot held by the parent and won't refresh while the sheet is open.
+  const [projectID, setProjectID] = useState<number | null>(txn.ProjectID ?? null);
 
   const qc = useQueryClient();
   const projects = useQuery({ queryKey: ["projects", "active"], queryFn: () => getProjects(false) });
 
   const handleProjectChange = (value: string) => {
-    const projectId = value === "" ? null : Number(value);
-    void assignTxnProject(txn.ID, projectId)
+    const next = value === "" ? null : Number(value);
+    const prev = projectID;
+    setProjectID(next);
+    void assignTxnProject(txn.ID, next)
       .then(() => {
         qc.invalidateQueries({ queryKey: ["transactions"] });
         qc.invalidateQueries({ queryKey: ["projects"] });
         qc.invalidateQueries({ queryKey: ["summary"] });
       })
-      .catch(() => {});
+      .catch(() => setProjectID(prev));
   };
+
+  // Decategorizing an already-categorized txn counts as a change to save.
+  const canSave = catID !== null || txn.CategoryID != null;
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -81,7 +91,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
       {projects.data && projects.data.length > 0 && (
         <label className="block text-sm mb-3">
           <SectionLabel as="span" className="mb-1 block">Project</SectionLabel>
-          <Select inset value={txn.ProjectID ?? ""} onChange={(e) => handleProjectChange(e.target.value)}>
+          <Select inset value={projectID ?? ""} onChange={(e) => handleProjectChange(e.target.value)}>
             <option value="">None</option>
             {projects.data.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
@@ -113,7 +123,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
                     key={c.ID}
                     type="button"
                     aria-pressed={selected}
-                    onClick={() => setCatID(c.ID)}
+                    onClick={() => setCatID(selected ? null : c.ID)}
                     className={`min-h-11 px-3.5 rounded-lg text-sm font-medium inline-flex items-center gap-2 press transition-colors ${
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
@@ -135,12 +145,20 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
 
       <label className="flex items-center justify-between gap-3 my-4 text-sm">
         <span className="min-w-0">Make a rule for future “{txn.MerchantRaw || "—"}”</span>
-        <Switch checked={makeRule} onChange={(e) => setMakeRule(e.target.checked)} />
+        <Switch checked={catID !== null && makeRule} disabled={catID === null} onChange={(e) => setMakeRule(e.target.checked)} />
       </label>
+
+      {catID === null && txn.CategoryID != null && (
+        <p className="text-xs text-muted mb-4">Saving with no category moves this back to the review queue.</p>
+      )}
 
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" disabled={catID === null} onClick={() => catID !== null && onSubmit({ category_id: catID, make_rule: makeRule })}>
+        <Button
+          variant="primary"
+          disabled={!canSave}
+          onClick={() => canSave && onSubmit({ category_id: catID, make_rule: catID !== null && makeRule })}
+        >
           Save
         </Button>
       </div>
