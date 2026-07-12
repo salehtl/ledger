@@ -48,6 +48,7 @@ type CategoryStore interface {
 	DeleteRule(id int64) error
 	SelectTransactions(status, from, to, q string) ([]store.ReviewItem, error)
 	UpdateTransactionCategory(txID, catID int64, status string) error
+	ClearTransactionCategory(txID int64) error
 	UpdateTransactionStatus(txID int64, status string) error
 	UpdateCategory(store.CategoryRow) error
 	SnapshotBucketForCategory(categoryID int64, bucket string) error

@@ -46,14 +46,15 @@ export function useTxnActions() {
     } catch { show({ message: `Couldn't restore ${name}`, tone: "error" }); }
   };
 
-  const categorize = async (t: Txn, body: { category_id: number; make_rule: boolean }): Promise<boolean> => {
+  const categorize = async (t: Txn, body: { category_id: number | null; make_rule: boolean }): Promise<boolean> => {
     const name = t.MerchantRaw || "transaction";
+    const clearing = body.category_id === null;
     try {
       await postJSON(`/api/transactions/${t.ID}/categorize`, { ...body, merchant_raw: t.MerchantRaw });
       invalidate();
-      show({ message: `Categorized ${name}`, tone: "success" });
+      show({ message: clearing ? `Moved ${name} back to review` : `Categorized ${name}`, tone: "success" });
       return true;
-    } catch { show({ message: `Couldn't categorize ${name}`, tone: "error" }); return false; }
+    } catch { show({ message: `Couldn't ${clearing ? "update" : "categorize"} ${name}`, tone: "error" }); return false; }
   };
 
   const unlinkRefund = async (t: Txn) => {

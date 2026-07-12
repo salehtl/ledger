@@ -669,3 +669,43 @@ func TestTransactionRowCarriesProjectID(t *testing.T) {
 		t.Fatalf("ProjectID = %v, want %d", found, pid)
 	}
 }
+
+// Decategorizing one transaction clears its category and frozen snapshot and
+// returns it to the review queue, but keeps orthogonal links (project, refund).
+func TestClearTransactionCategory(t *testing.T) {
+	st := newTestStore(t)
+	cat := insertCategory(t, st, "Trip dining", "spending", "want")
+	id := insertTxn(t, st, cat, "debit", 12_000, "2026-07-01", "confirmed")
+	pid, _ := st.InsertProject(ProjectRow{Name: "Trip", Status: "active"})
+	if err := st.AssignTransactionProject(id, &pid); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if err := st.SnapshotBucketForCategory(cat, "want"); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	if err := st.ClearTransactionCategory(id); err != nil {
+		t.Fatalf("ClearTransactionCategory: %v", err)
+	}
+
+	var catID, projectID *int64
+	var snapshot *string
+	var status string
+	if err := st.DB.QueryRow(
+		"SELECT category_id, bucket_snapshot, status, project_id FROM transactions WHERE id=?", id,
+	).Scan(&catID, &snapshot, &status, &projectID); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if catID != nil {
+		t.Errorf("category_id = %v, want NULL", *catID)
+	}
+	if snapshot != nil {
+		t.Errorf("bucket_snapshot = %v, want NULL", *snapshot)
+	}
+	if status != "needs_review" {
+		t.Errorf("status = %q, want needs_review", status)
+	}
+	if projectID == nil || *projectID != pid {
+		t.Errorf("project_id = %v, want %d (must survive decategorization)", projectID, pid)
+	}
+}

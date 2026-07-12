@@ -10,8 +10,10 @@ import (
 	"ledger/internal/store"
 )
 
+// categorizeReq's CategoryID is a pointer so an explicit JSON null (or 0)
+// decategorizes the transaction instead of being rejected.
 type categorizeReq struct {
-	CategoryID  int64  `json:"category_id"`
+	CategoryID  *int64 `json:"category_id"`
 	MerchantRaw string `json:"merchant_raw"`
 	MakeRule    bool   `json:"make_rule"`
 }
@@ -27,11 +29,22 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req categorizeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CategoryID == 0 {
-		http.Error(w, `{"error":"category_id required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if err := s.catStore.UpdateTransactionCategory(txID, req.CategoryID, "confirmed"); err != nil {
+	if req.CategoryID == nil || *req.CategoryID == 0 {
+		// Decategorize: back to the review queue; never write a rule.
+		if err := s.catStore.ClearTransactionCategory(txID); err != nil {
+			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+			return
+		}
+		s.BroadcastEvent("tx", nil)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		return
+	}
+	if err := s.catStore.UpdateTransactionCategory(txID, *req.CategoryID, "confirmed"); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
@@ -39,7 +52,7 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 		_ = s.catStore.InsertRule(store.RuleRow{
 			MatchType:  "contains",
 			Pattern:    req.MerchantRaw,
-			CategoryID: req.CategoryID,
+			CategoryID: *req.CategoryID,
 			Priority:   100,
 			Source:     "manual",
 		})

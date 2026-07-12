@@ -201,6 +201,19 @@ func (s *Store) UpdateTransactionCategory(txID, categoryID int64, status string)
 	return err
 }
 
+// ClearTransactionCategory decategorizes one transaction: category and frozen
+// bucket snapshot are cleared and it returns to the review queue. Orthogonal
+// links (project, refund) are left intact — unlike the bulk
+// ClearAllCategorization reset, this is a routine single-row correction.
+func (s *Store) ClearTransactionCategory(txID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(
+		`UPDATE transactions SET category_id=NULL, bucket_snapshot=NULL, status='needs_review', updated_at=? WHERE id=?`,
+		now, txID,
+	)
+	return err
+}
+
 // UpdateTransactionStatus sets only the status on one transaction.
 func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)

@@ -153,8 +153,11 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   (categorize, transfer, ignore, link/unlink refund, archive/restore), gated by
   status. Swipe covers the two commonest moves; everything else lives here.
 - `CategorizeSheet` — category picker as tap-target chips grouped by bucket
-  (not a radio list), search, and a "make a rule" `Switch`. Preselects the
-  current category so recategorizing reads as a change.
+  (not a radio list), search, a "make a rule" `Switch`, and a project picker
+  (assigns immediately, locally-stated so the choice sticks while the sheet is
+  open). Preselects the current category so recategorizing reads as a change;
+  tapping the selected chip deselects it, and saving with no category
+  decategorizes (back to the review queue, rule toggle disabled).
 - `FilterBar` — inline, in-place filtering for the Transactions page: bucket /
   type / category / source as direct toggle chips (no per-dimension sheet),
   with removable active-filter tokens. `FilterChips` (the older sheet-per-

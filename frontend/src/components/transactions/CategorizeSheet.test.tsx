@@ -119,4 +119,45 @@ describe("CategorizeSheet project assignment", () => {
     fireEvent.change(select, { target: { value: "" } });
     await waitFor(() => expect(client.assignTxnProject).toHaveBeenCalledWith(9, null));
   });
+
+  it("keeps the chosen project selected (txn prop stays stale)", async () => {
+    wrap(<CategorizeSheet txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    const select = await screen.findByLabelText(/project/i);
+    fireEvent.change(select, { target: { value: "3" } });
+    await waitFor(() => expect(client.assignTxnProject).toHaveBeenCalledWith(9, 3));
+    expect((select as HTMLSelectElement).value).toBe("3");
+  });
+
+  it("reverts the picker when assignment fails", async () => {
+    vi.mocked(client.assignTxnProject).mockRejectedValueOnce(new Error("boom"));
+    wrap(<CategorizeSheet txn={{ ...txn, ProjectID: 4 }} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    const select = await screen.findByLabelText(/project/i);
+    fireEvent.change(select, { target: { value: "3" } });
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("4"));
+  });
+});
+
+describe("CategorizeSheet decategorization", () => {
+  it("deselects the current category on tap and saves a decategorization", () => {
+    const onSubmit = vi.fn();
+    wrap(<CategorizeSheet txn={{ ...txn, CategoryID: 2, CategoryName: "Dining" }} categories={cats} onSubmit={onSubmit} onClose={() => {}} />);
+    const chip = screen.getByRole("button", { name: "Dining" });
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/back to the review queue/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(onSubmit).toHaveBeenCalledWith({ category_id: null, make_rule: false });
+  });
+
+  it("keeps Save disabled when an uncategorized txn has no selection", () => {
+    wrap(<CategorizeSheet txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+  });
+
+  it("disables the rule toggle while decategorizing", () => {
+    wrap(<CategorizeSheet txn={{ ...txn, CategoryID: 2 }} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dining" }));
+    expect(screen.getByLabelText(/make a rule/i)).toBeDisabled();
+  });
 });
