@@ -95,7 +95,7 @@ func TestInsertAndSelectRules(t *testing.T) {
 		Priority:   10,
 		Source:     "manual",
 	}
-	if err := st.InsertRule(rule); err != nil {
+	if _, err := st.InsertRule(rule); err != nil {
 		t.Fatalf("InsertRule: %v", err)
 	}
 	rules, err := st.SelectRules()
@@ -287,7 +287,7 @@ func TestRuleActiveToggleAndSelect(t *testing.T) {
 	st := openTestStore(t)
 	cats, _ := st.SelectCategories()
 	cat := cats[0]
-	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: cat.ID, Priority: 100, Source: "manual"}); err != nil {
+	if _, err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: cat.ID, Priority: 100, Source: "manual"}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	all, _ := st.SelectRules()
@@ -310,7 +310,7 @@ func TestRuleActiveToggleAndSelect(t *testing.T) {
 func TestDeleteRule(t *testing.T) {
 	st := openTestStore(t)
 	cat, _ := st.InsertCategory(CategoryRow{Name: "X", Kind: "spending", Bucket: "want", IsActive: true})
-	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "amzn", CategoryID: cat, Priority: 100, Source: "manual"}); err != nil {
+	if _, err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "amzn", CategoryID: cat, Priority: 100, Source: "manual"}); err != nil {
 		t.Fatal(err)
 	}
 	rules, _ := st.SelectRules()
@@ -385,7 +385,7 @@ func TestCategoryUsage(t *testing.T) {
 	if err := st.UpdateTransactionCategory(txID, groceriesID, "categorized"); err != nil {
 		t.Fatalf("UpdateTransactionCategory: %v", err)
 	}
-	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: groceriesID, Priority: 100, Source: "manual"}); err != nil {
+	if _, err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "spinneys", CategoryID: groceriesID, Priority: 100, Source: "manual"}); err != nil {
 		t.Fatalf("InsertRule: %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestClearAllCategorization(t *testing.T) {
 	}
 
 	// A learned rule that must survive the wipe.
-	if err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "CARREFOUR", CategoryID: groceriesID, Priority: 10, Source: "manual"}); err != nil {
+	if _, err := st.InsertRule(RuleRow{MatchType: "contains", Pattern: "CARREFOUR", CategoryID: groceriesID, Priority: 10, Source: "manual"}); err != nil {
 		t.Fatalf("InsertRule: %v", err)
 	}
 
@@ -531,6 +531,43 @@ func TestSelectTransactionsIncludesCategory(t *testing.T) {
 	}
 	if got.CategoryName != "Groceries" || got.Bucket != "need" {
 		t.Fatalf("CategoryName/Bucket = %q/%q, want Groceries/need", got.CategoryName, got.Bucket)
+	}
+}
+
+// Transactions carry their bank-email last4 and, when it matches a registered
+// account, that account's name — so the review UI can show where money moved.
+func TestSelectTransactionsIncludesAccount(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.InsertAccount("Main current", "ENBD", "4821"); err != nil {
+		t.Fatalf("InsertAccount: %v", err)
+	}
+	if _, _, err := st.InsertTransaction(TransactionRow{
+		PostedAt: mustTime("2026-06-10T09:00:00Z"), AmountFils: 5000, Currency: "AED",
+		Direction: "debit", MerchantRaw: "SPINNEYS", Last4: "4821", Status: "needs_review", Source: "email",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// A second transaction with an unregistered last4 keeps the raw digits only.
+	if _, _, err := st.InsertTransaction(TransactionRow{
+		PostedAt: mustTime("2026-06-11T09:00:00Z"), AmountFils: 7000, Currency: "AED",
+		Direction: "debit", MerchantRaw: "LULU", Last4: "9999", Status: "needs_review", Source: "email",
+	}); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	items, err := st.SelectTransactions("", "", "", "")
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	// Newest first: LULU then SPINNEYS.
+	if items[0].Last4 != "9999" || items[0].AccountName != "" {
+		t.Errorf("unregistered: Last4/AccountName = %q/%q, want 9999/(empty)", items[0].Last4, items[0].AccountName)
+	}
+	if items[1].Last4 != "4821" || items[1].AccountName != "Main current" {
+		t.Errorf("registered: Last4/AccountName = %q/%q, want 4821/Main current", items[1].Last4, items[1].AccountName)
 	}
 }
 

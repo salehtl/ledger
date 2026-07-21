@@ -98,7 +98,7 @@ func TestProcessorCategorizes(t *testing.T) {
 	if shoppingID == 0 {
 		t.Fatal("Shopping category not found in seeded categories")
 	}
-	if err := st.InsertRule(store.RuleRow{
+	if _, err := st.InsertRule(store.RuleRow{
 		MatchType:  "contains",
 		Pattern:    "DAPPER",
 		CategoryID: shoppingID,
@@ -180,7 +180,7 @@ func ruleCategorizer(t *testing.T, st *store.Store, pattern, catName string) (*c
 	if catID == 0 {
 		t.Fatalf("category %q not found in seeded categories", catName)
 	}
-	if err := st.InsertRule(store.RuleRow{
+	if _, err := st.InsertRule(store.RuleRow{
 		MatchType: "contains", Pattern: pattern, CategoryID: catID, Priority: 100, Source: "manual",
 	}); err != nil {
 		t.Fatal(err)

@@ -162,7 +162,7 @@ func (imp *Importer) Run(ctx context.Context, rows []RawRow, m MapConfig, fileNa
 		if existingKeys[key] {
 			continue
 		}
-		if err := imp.store.InsertRule(store.RuleRow{
+		if _, err := imp.store.InsertRule(store.RuleRow{
 			MatchType:  "contains",
 			Pattern:    mc.merchant,
 			CategoryID: mc.catID,

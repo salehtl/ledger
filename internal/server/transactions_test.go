@@ -70,6 +70,58 @@ func TestPostCategorizeWithRule(t *testing.T) {
 	}
 }
 
+// The categorize response reports the ID of the rule it wrote so the client
+// can offer an undo that also removes the rule.
+func TestPostCategorizeReturnsRuleID(t *testing.T) {
+	st := newTestServerStore(t)
+	txID := seedTestTransaction(t, st)
+	cats, _ := st.SelectCategories()
+	var catID int64
+	for _, c := range cats {
+		if c.Name == "Shopping" {
+			catID = c.ID
+		}
+	}
+
+	srv := newTestServerWithStore(t, st)
+	body, _ := json.Marshal(map[string]any{"category_id": catID, "make_rule": true, "merchant_raw": "DAPPER DAN GENTS SAL"})
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/categorize", txID), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		OK     bool   `json:"ok"`
+		RuleID *int64 `json:"rule_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.RuleID == nil || *resp.RuleID <= 0 {
+		t.Fatalf("rule_id = %v, want positive rule id; body: %s", resp.RuleID, w.Body)
+	}
+	rules, _ := st.SelectRules()
+	if len(rules) != 1 || rules[0].ID != *resp.RuleID {
+		t.Errorf("rules = %+v, want single rule with id %d", rules, *resp.RuleID)
+	}
+
+	// Without make_rule the response must not claim a rule was written.
+	tx2 := seedTestTransaction(t, st)
+	body, _ = json.Marshal(map[string]any{"category_id": catID, "make_rule": false})
+	r = httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/categorize", tx2), bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	var resp2 struct {
+		RuleID *int64 `json:"rule_id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp2)
+	if resp2.RuleID != nil {
+		t.Errorf("rule_id = %v without make_rule, want absent", *resp2.RuleID)
+	}
+}
+
 func TestPostStatus(t *testing.T) {
 	st := newTestServerStore(t)
 	txID := seedTestTransaction(t, st)

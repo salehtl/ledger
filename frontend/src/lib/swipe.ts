@@ -88,6 +88,24 @@ export function previewDirection(dx: number, dy: number): SwipeDirection | null 
   return detectDirection(dx, dy, 20)
 }
 
+/** Velocity (px/ms) above which a release counts as a flick. */
+export const FLICK_VELOCITY = 0.11
+/** A flick still needs enough travel to read as intentional. */
+export const FLICK_MIN_DISTANCE = 24
+
+/**
+ * Momentum commit: a quick throw should sort the card even when it never
+ * reached SWIPE_THRESHOLD. Returns the dominant direction when the release
+ * velocity exceeds FLICK_VELOCITY over at least FLICK_MIN_DISTANCE, else null.
+ * elapsedMs <= 0 (same-frame release) counts as maximally fast.
+ */
+export function flickDirection(dx: number, dy: number, elapsedMs: number): SwipeDirection | null {
+  const dist = Math.max(Math.abs(dx), Math.abs(dy))
+  if (dist < FLICK_MIN_DISTANCE) return null
+  if (elapsedMs > 0 && dist / elapsedMs <= FLICK_VELOCITY) return null
+  return detectDirection(dx, dy, FLICK_MIN_DISTANCE)
+}
+
 export function loadSwipeConfig(): SwipeConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)

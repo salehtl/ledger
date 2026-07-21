@@ -156,7 +156,7 @@ func (p *Processor) categorizeWith(ctx context.Context, cz *categorize.Categoriz
 		// Write-back happens once per merchant per batch; later cache hits for
 		// the same merchant must not duplicate the rule.
 		if result.ProposedRule != nil {
-			_ = p.store.InsertRule(store.RuleRow{
+			_, _ = p.store.InsertRule(store.RuleRow{
 				MatchType:  result.ProposedRule.MatchType,
 				Pattern:    result.ProposedRule.Pattern,
 				CategoryID: result.ProposedRule.CategoryID,
