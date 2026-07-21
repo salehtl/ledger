@@ -48,18 +48,24 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
+	resp := map[string]any{"ok": true}
 	if req.MakeRule && req.MerchantRaw != "" {
-		_ = s.catStore.InsertRule(store.RuleRow{
+		ruleID, err := s.catStore.InsertRule(store.RuleRow{
 			MatchType:  "contains",
 			Pattern:    req.MerchantRaw,
 			CategoryID: *req.CategoryID,
 			Priority:   100,
 			Source:     "manual",
 		})
+		// Rule write-back is best-effort; report the ID only when it landed so
+		// the client's undo can delete exactly what was created.
+		if err == nil {
+			resp["rule_id"] = ruleID
+		}
 	}
 	s.BroadcastEvent("tx", nil)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {

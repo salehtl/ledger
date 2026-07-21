@@ -31,7 +31,10 @@ func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
-	dsn := filepath.Join(dataDir, "ledger.db")
+	// busy_timeout rides on the DSN so every pooled connection gets it —
+	// a PRAGMA via db.Exec only reaches the one connection that runs it.
+	// Without it a second concurrent writer fails instantly with SQLITE_BUSY.
+	dsn := filepath.Join(dataDir, "ledger.db") + "?_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

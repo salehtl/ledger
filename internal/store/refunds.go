@@ -134,10 +134,7 @@ func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem,
 	lower := posted.UTC().AddDate(0, 0, -90).Format(time.RFC3339Nano)
 	upper := posted.UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
 	rows, err := s.DB.Query(
-		`SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
-		        COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
-		        t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
-		        COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id, t.project_id
+		`SELECT `+reviewItemColumns+`
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.direction='debit' AND t.status='confirmed' AND c.kind='spending'
 		    AND t.posted_at >= ? AND t.posted_at <= ?

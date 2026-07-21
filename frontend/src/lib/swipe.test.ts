@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   detectDirection,
+  flickDirection,
   overlayProgress,
   previewDirection,
   loadSwipeConfig,
@@ -31,6 +32,27 @@ describe('detectDirection', () => {
   })
   it('returns null when exactly at threshold on one axis only', () => {
     expect(detectDirection(-79, 0, SWIPE_THRESHOLD)).toBeNull()
+  })
+})
+
+describe('flickDirection', () => {
+  it('commits a fast short drag that never reached the distance threshold', () => {
+    // 60px in 150ms = 0.4 px/ms — a clear flick
+    expect(flickDirection(-60, 0, 150)).toBe('left')
+    expect(flickDirection(0, 60, 150)).toBe('down')
+  })
+
+  it('ignores a slow drag of the same distance', () => {
+    // 60px in 1200ms = 0.05 px/ms — a hesitating drag, not a flick
+    expect(flickDirection(-60, 0, 1200)).toBeNull()
+  })
+
+  it('ignores tiny movements even when instantaneous', () => {
+    expect(flickDirection(-10, 0, 20)).toBeNull()
+  })
+
+  it('survives a zero elapsed time without dividing by zero', () => {
+    expect(flickDirection(-60, 0, 0)).toBe('left')
   })
 })
 

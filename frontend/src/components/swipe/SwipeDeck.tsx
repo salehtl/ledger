@@ -1,8 +1,9 @@
-import { useState, useCallback, type CSSProperties } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useState, useCallback, useRef, type CSSProperties } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type LucideIcon } from 'lucide-react'
-import { postJSON } from '../../api/client'
+import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
+import { useToast } from '../Toast'
 import type { Txn, Category } from '../../api/types'
 import {
   type SwipeConfig,
@@ -54,7 +55,7 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
   return (
     <div className="absolute z-10 pointer-events-none" style={style}>
       <div
-        className={`flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-all duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
+        className={`flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-[transform,background-color,color,box-shadow] duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           color: active ? '#ffffff' : color,
@@ -69,8 +70,23 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
   )
 }
 
+/** The last committed sort, kept for one-shot undo. `seq` guards against a
+ *  stale toast undoing after a newer commit already moved the deck on. */
+interface Commit {
+  seq: number
+  index: number
+  txn: Txn
+  kind: 'categorize' | 'transfer'
+  categoryName?: string
+  ruleID?: number
+  projectID?: number | null
+}
+
 export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CONFIG }: SwipeDeckProps) {
   const qc = useQueryClient()
+  const toast = useToast()
+  const commitRef = useRef<Commit | null>(null)
+  const seqRef = useRef(0)
 
   const [state, setState] = useState<DeckState>({
     index: 0,
@@ -82,6 +98,10 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     previewProgress: 0,
   })
   const [linkOpen, setLinkOpen] = useState(false)
+
+  // Active projects for the panel's assign-on-sort chips (same cache key as
+  // the list view's CategorizeSheet).
+  const projects = useQuery({ queryKey: ['projects', 'active'], queryFn: () => getProjects(false) })
 
   // Freeze the transaction list at mount time. Live refetches update the
   // query cache but shouldn't shift the index mid-session.
@@ -98,39 +118,107 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     qc.invalidateQueries({ queryKey: ['summary'] })
   }, [qc])
 
+  // Bring a committed card back to the front of the deck (undo / failed save).
+  const restoreCard = useCallback((commit: Commit) => {
+    setState(s => ({ ...s, flyDirection: null, pendingDirection: null, index: commit.index }))
+  }, [])
+
+  const failCommit = useCallback((commit: Commit) => {
+    // Only roll the deck back if this is still the latest commit; a stale
+    // failure must not yank the user away from the card they're sorting now.
+    if (commitRef.current?.seq === commit.seq) {
+      commitRef.current = null
+      restoreCard(commit)
+    }
+    toast.show({ message: "Couldn't save — the card is back in the deck", tone: 'error' })
+  }, [restoreCard, toast])
+
+  const undoCommit = useCallback((seq: number) => {
+    const commit = commitRef.current
+    if (!commit || commit.seq !== seq) {
+      toast.show({ message: 'Too late to undo — fix it from Transactions' })
+      return
+    }
+    fire('selection')
+    commitRef.current = null
+    const reverse = commit.kind === 'transfer'
+      ? postJSON(`/api/transactions/${commit.txn.ID}/status`, { status: 'needs_review' })
+      : Promise.all([
+          postJSON(`/api/transactions/${commit.txn.ID}/categorize`, { category_id: null }),
+          commit.ruleID != null ? del(`/api/rules/${commit.ruleID}`) : Promise.resolve(),
+          commit.projectID != null ? assignTxnProject(commit.txn.ID, null) : Promise.resolve(),
+        ])
+    reverse
+      .then(() => {
+        invalidate()
+        restoreCard(commit)
+      })
+      .catch(() => toast.show({ message: "Couldn't undo — fix it from Transactions", tone: 'error' }))
+  }, [invalidate, restoreCard, toast])
+
   const handleDirectionCommit = useCallback((dir: SwipeDirection) => {
     const action = config[dir]
     if (!action) return
     fire('success') // fire synchronously in the gesture, before any await
     if (action.statusOverride === 'transfer') {
       if (current) {
+        const commit: Commit = { seq: ++seqRef.current, index: state.index, txn: current, kind: 'transfer' }
+        commitRef.current = commit
         postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
-          .then(invalidate)
-          .catch(() => { /* user can fix from list */ })
+          .then(() => {
+            invalidate()
+            toast.show({
+              message: 'Marked as transfer',
+              action: { label: 'Undo', onAction: () => undoCommit(commit.seq) },
+            })
+          })
+          .catch(() => failCommit(commit))
       }
       setState(s => ({ ...s, flyDirection: dir }))
     } else {
       setState(s => ({ ...s, pendingDirection: dir }))
     }
-  }, [config, current, invalidate])
+  }, [config, current, state.index, invalidate, toast, undoCommit, failCommit])
 
-  const handleCategorySelect = useCallback(async (categoryId: number) => {
+  const handleCategorySelect = useCallback(async (categoryId: number, projectId: number | null) => {
     if (!current) return
     fire('selection') // synchronous, before the network await
     const dir = state.pendingDirection
+    const categoryName = categories.find(c => c.ID === categoryId)?.Name ?? 'category'
+    const commit: Commit = {
+      seq: ++seqRef.current, index: state.index, txn: current, kind: 'categorize', categoryName,
+    }
+    commitRef.current = commit
     // Close panel and start card exit animation
     setState(s => ({ ...s, pendingDirection: null, flyDirection: dir }))
     try {
-      await postJSON(`/api/transactions/${current.ID}/categorize`, {
-        category_id: categoryId,
-        merchant_raw: current.MerchantRaw,
-        make_rule: state.makeRule,
-      })
+      const resp = await postJSON<{ ok: boolean; rule_id?: number }>(
+        `/api/transactions/${current.ID}/categorize`,
+        {
+          category_id: categoryId,
+          merchant_raw: current.MerchantRaw,
+          make_rule: state.makeRule,
+        },
+      )
+      commit.ruleID = resp?.rule_id
+      if (projectId != null) {
+        await assignTxnProject(current.ID, projectId)
+        commit.projectID = projectId
+      }
       invalidate()
+      const projectName = projectId != null
+        ? projects.data?.find(p => p.id === projectId)?.name
+        : undefined
+      toast.show({
+        message: projectName
+          ? `Sorted into ${categoryName} · ${projectName}`
+          : `Sorted into ${categoryName}`,
+        action: { label: 'Undo', onAction: () => undoCommit(commit.seq) },
+      })
     } catch {
-      // Card already animated out — user can recategorize from list view
+      failCommit(commit)
     }
-  }, [current, state.pendingDirection, state.makeRule, invalidate])
+  }, [current, categories, projects.data, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit])
 
   const handleExitComplete = useCallback(() => {
     setState(s => ({ ...s, flyDirection: null, index: s.index + 1, previewDir: null, previewProgress: 0 }))
@@ -150,8 +238,11 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       : { ...s, previewDir: dir, previewProgress: progress }))
   }, [])
 
+  // Bumped on panel cancel so the card springs back from its commit offset.
+  const [resetToken, setResetToken] = useState(0)
   const handleCancel = useCallback(() => {
-    setState(s => ({ ...s, pendingDirection: null }))
+    setState(s => ({ ...s, pendingDirection: null, previewDir: null, previewProgress: 0 }))
+    setResetToken(t => t + 1)
   }, [])
 
   const pendingAction = state.pendingDirection ? config[state.pendingDirection] : null
@@ -227,6 +318,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
                 txn={current}
                 config={config}
                 flying={state.flyDirection}
+                resetToken={resetToken}
                 onDirectionCommit={handleDirectionCommit}
                 onTripleTap={handleTripleTap}
                 onExitComplete={handleExitComplete}
@@ -237,7 +329,15 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         </div>
       </div>
 
-      <p className="text-center text-xs text-muted mt-4">Swipe a card to sort · triple-tap to skip</p>
+      <div className="flex items-center justify-center gap-1 mt-3">
+        <p className="text-xs text-muted">Swipe a card to sort ·</p>
+        <button
+          className="text-xs font-medium text-muted underline underline-offset-2 press min-h-11 px-2"
+          onClick={handleTripleTap}
+        >
+          Skip for now
+        </button>
+      </div>
 
       {current && current.Direction === 'credit' && (
         <button
@@ -249,10 +349,12 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       )}
 
       {/* SubcategoryPanel rendered outside card stack to avoid clipping */}
-      {pendingAction && pendingAction.bucket && (
+      {pendingAction && pendingAction.bucket && current && (
         <SubcategoryPanel
           action={pendingAction}
+          txn={current}
           categories={categories}
+          projects={projects.data ?? []}
           makeRule={state.makeRule}
           onMakeRuleChange={v => setState(s => ({ ...s, makeRule: v }))}
           onSelect={handleCategorySelect}

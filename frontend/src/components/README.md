@@ -162,8 +162,21 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   type / category / source as direct toggle chips (no per-dimension sheet),
   with removable active-filter tokens. `FilterChips` (the older sheet-per-
   dimension picker) is still used by the Insights `SearchSheet`.
-- `AddTransactionSheet` / `LinkRefundSheet` / `SubcategoryPanel` — further
-  `Dialog` composition examples.
+- `SubcategoryPanel` — the swipe deck's post-swipe picker (a `Dialog`): bucket
+  categories as tap targets, optional project chips with date-window matches
+  surfaced first as suggestions (project rides along with the categorize call),
+  and an income group when the card is a credit. Selection reports
+  `(categoryId, projectId)` in one shot — no separate save step.
+- `SwipeDeck` / `SwipeCard` — the review sorting deck. Every commit
+  (categorize or transfer) shows an undo toast that restores the card and
+  reverses the write (including deleting a just-created rule / project
+  assignment); a failed save puts the card back with an error toast instead of
+  failing silently. Cards carry an account chip (registered name or masked
+  last4) plus a why-is-this-here line from `lib/reviewMeta`. Commits fire on
+  distance or on flick velocity (`lib/swipe.flickDirection`); skipping is the
+  visible "Skip for now" button or a triple tap.
+- `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition
+  examples.
 
 ## Known deliberate exceptions
 

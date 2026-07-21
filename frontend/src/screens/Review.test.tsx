@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Review } from "./Review";
+import { ToastProvider } from "../components/Toast";
 import type { Scope } from "../lib/scope";
 
 // fetch mock: needs-review txns vary by the `from` query param so we can prove
@@ -30,7 +31,7 @@ function stubFetch() {
 
 function wrap(scope: Scope) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><Review scope={scope} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ToastProvider><Review scope={scope} /></ToastProvider></QueryClientProvider>);
 }
 
 beforeEach(() => stubFetch());
@@ -58,7 +59,7 @@ describe("Review screen", () => {
     expect(await screen.findByText("JUNE SHOP")).toBeInTheDocument();
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    rerender(<QueryClientProvider client={qc}><Review scope={{ kind: "month", period: "2026-05" }} /></QueryClientProvider>);
+    rerender(<QueryClientProvider client={qc}><ToastProvider><Review scope={{ kind: "month", period: "2026-05" }} /></ToastProvider></QueryClientProvider>);
     expect(await screen.findByText("MAY SHOP")).toBeInTheDocument();
     expect(screen.queryByText("JUNE SHOP")).not.toBeInTheDocument();
   });

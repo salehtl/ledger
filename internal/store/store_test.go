@@ -1,9 +1,48 @@
 package store
 
 import (
+	"fmt"
 	"sort"
+	"sync"
 	"testing"
 )
+
+// Concurrent API writes share one SQLite file; without a busy timeout the
+// second writer fails immediately with SQLITE_BUSY and the API 500s (seen
+// live when the review deck's undo fires two reversal writes at once).
+func TestConcurrentWritesDoNotBusyError(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*10)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				if _, err := st.InsertRule(RuleRow{
+					MatchType:  "contains",
+					Pattern:    fmt.Sprintf("MERCHANT-%d-%d", w, i),
+					CategoryID: 1,
+					Priority:   100,
+					Source:     "manual",
+				}); err != nil {
+					errs <- err
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent write failed: %v", err)
+	}
+}
 
 func TestOpenCreatesDatabaseFile(t *testing.T) {
 	dir := t.TempDir()

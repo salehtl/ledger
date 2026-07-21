@@ -63,6 +63,22 @@ describe("toast enter/exit motion", () => {
     expect(el.style.transition).toContain("opacity");
   });
 
+  it("does not start the drag (pointer capture) when the press lands on a button", () => {
+    // Real browsers retarget the click to the capture element, which would
+    // swallow the action button's onClick — so a press on a button must never
+    // begin the swipe-to-dismiss gesture.
+    render(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    const capture = vi.fn();
+    const toast = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
+    toast.setPointerCapture = capture;
+    const undo = screen.getByRole("button", { name: /undo/i });
+    fireEvent.pointerDown(undo, { clientX: 0, pointerId: 1 });
+    expect(capture).not.toHaveBeenCalled();
+    fireEvent.pointerDown(toast, { clientX: 0, pointerId: 1 });
+    expect(capture).toHaveBeenCalled();
+  });
+
   it("snaps back (does not dismiss) when the pointer is cancelled mid-drag", () => {
     render(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
