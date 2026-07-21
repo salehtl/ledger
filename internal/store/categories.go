@@ -45,7 +45,19 @@ type ReviewItem struct {
 	BucketSnapshot string // frozen bucket at categorization time; "" when unset
 	RefundOfID     *int64 // set when this credit is a linked refund of another transaction
 	ProjectID      *int64 // set when this transaction is assigned to a life-project
+	Last4          string // account last-4 from the bank email; "" when unknown
+	AccountName    string // registered account name matching Last4; "" when unregistered
 }
+
+// reviewItemColumns is the shared SELECT list every scanReviewItems query uses;
+// the two lists must stay in lockstep. The account name is a scalar subquery so
+// a duplicated last4 in accounts can never fan a transaction into extra rows.
+const reviewItemColumns = `t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
+	COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
+	t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
+	COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id, t.project_id,
+	COALESCE(t.last4,''),
+	COALESCE((SELECT a.name FROM accounts a WHERE a.last4 = t.last4 AND a.is_active=1 LIMIT 1),'')`
 
 // nullableStr maps an empty string to SQL NULL.
 func nullableStr(s string) any {
@@ -140,15 +152,18 @@ func (s *Store) SelectCategories() ([]CategoryRow, error) {
 	return out, rows.Err()
 }
 
-// InsertRule writes a new categorization rule.
-func (s *Store) InsertRule(r RuleRow) error {
+// InsertRule writes a new categorization rule and returns its ID.
+func (s *Store) InsertRule(r RuleRow) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(
+	res, err := s.DB.Exec(
 		`INSERT INTO rules (match_type, pattern, category_id, priority, source, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		r.MatchType, r.Pattern, r.CategoryID, r.Priority, r.Source, now,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 // SelectRules returns all rules ordered by priority ascending (lower = higher priority).
@@ -230,10 +245,7 @@ func (s *Store) UpdateTransactionStatus(txID int64, status string) error {
 // on merchant_raw; LIKE wildcards in the term are escaped so they match
 // literally.
 func (s *Store) SelectTransactions(status, from, to, search string) ([]ReviewItem, error) {
-	q := `SELECT t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
-	             COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
-	             t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
-	             COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id, t.project_id
+	q := `SELECT ` + reviewItemColumns + `
 	      FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
 	      WHERE 1=1`
 	var args []any
@@ -288,6 +300,7 @@ func scanReviewItems(rows interface {
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 			&catID, &r.CategoryName, &r.Bucket,
 			&r.Kind, &r.BucketSnapshot, &refundOf, &projectID,
+			&r.Last4, &r.AccountName,
 		); err != nil {
 			return nil, err
 		}
