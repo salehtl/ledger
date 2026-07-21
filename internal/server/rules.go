@@ -81,7 +81,7 @@ func (s *Server) handlePostRule(w http.ResponseWriter, r *http.Request) {
 	if req.Priority == 0 {
 		req.Priority = 100
 	}
-	if err := s.catStore.InsertRule(store.RuleRow{
+	if _, err := s.catStore.InsertRule(store.RuleRow{
 		MatchType:  req.MatchType,
 		Pattern:    req.Pattern,
 		CategoryID: req.CategoryID,

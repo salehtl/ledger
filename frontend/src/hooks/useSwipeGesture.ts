@@ -1,6 +1,6 @@
 // frontend/src/hooks/useSwipeGesture.ts
 import { useRef, useState, useCallback } from 'react'
-import { detectDirection, SWIPE_THRESHOLD, type SwipeDirection } from '../lib/swipe'
+import { detectDirection, flickDirection, SWIPE_THRESHOLD, type SwipeDirection } from '../lib/swipe'
 
 export interface GestureState {
   dx: number
@@ -31,7 +31,7 @@ export function useSwipeGesture(
   onDirectionCommit: (dir: SwipeDirection) => void,
   onTripleTap: () => void,
 ): UseSwipeGestureResult {
-  const startRef = useRef<{ x: number; y: number } | null>(null)
+  const startRef = useRef<{ x: number; y: number; t: number } | null>(null)
   const tapCountRef = useRef(0)
   const tapTimerRef = useRef<ReturnType<typeof setTimeout>>()
   // Use refs for callbacks to avoid stale closures in pointer handlers
@@ -45,7 +45,7 @@ export function useSwipeGesture(
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     // Capture so we keep receiving events even if pointer leaves element
     e.currentTarget.setPointerCapture(e.pointerId)
-    startRef.current = { x: e.clientX, y: e.clientY }
+    startRef.current = { x: e.clientX, y: e.clientY, t: Date.now() }
     setState(s => ({ ...s, dx: 0, dy: 0, dragging: true, lockedDirection: null }))
   }, [])
 
@@ -60,6 +60,7 @@ export function useSwipeGesture(
     if (!startRef.current) return
     const dx = e.clientX - startRef.current.x
     const dy = e.clientY - startRef.current.y
+    const elapsed = Date.now() - startRef.current.t
     startRef.current = null
 
     if (Math.hypot(dx, dy) < 8) {
@@ -75,7 +76,9 @@ export function useSwipeGesture(
       return
     }
 
-    const dir = detectDirection(dx, dy, SWIPE_THRESHOLD)
+    // Distance commit first; a quick throw below the distance threshold still
+    // commits on velocity so a flick feels as decisive as a full drag.
+    const dir = detectDirection(dx, dy, SWIPE_THRESHOLD) ?? flickDirection(dx, dy, elapsed)
     if (dir) {
       setState({ dx, dy, dragging: false, lockedDirection: dir })
       onCommitRef.current(dir)

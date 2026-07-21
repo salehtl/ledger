@@ -48,6 +48,10 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (reduced) return;
+    // A press starting on the action/dismiss buttons is a tap, not a drag.
+    // Capturing here would retarget the browser's click to the toast body and
+    // silently swallow the button's onClick.
+    if ((e.target as HTMLElement).closest("button")) return;
     dragX.current = { start: e.clientX, t: Date.now(), dx: 0 };
     e.currentTarget.setPointerCapture?.(e.pointerId);
     if (elRef.current) elRef.current.style.transition = "none";

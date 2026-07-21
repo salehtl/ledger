@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Txn } from "../../api/types";
 import { SwipeDeck } from "./SwipeDeck";
+import { ToastProvider } from "../Toast";
 
 function txn(p: Partial<Txn>): Txn {
   return {
@@ -17,7 +18,9 @@ function renderDeck(transactions: Txn[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <SwipeDeck transactions={transactions} categories={[]} />
+      <ToastProvider>
+        <SwipeDeck transactions={transactions} categories={[]} />
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }

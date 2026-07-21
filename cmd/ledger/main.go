@@ -255,7 +255,7 @@ func main() {
 			status = "confirmed"
 		}
 		if result.ProposedRule != nil {
-			_ = st.InsertRule(store.RuleRow{
+			_, _ = st.InsertRule(store.RuleRow{
 				MatchType:  result.ProposedRule.MatchType,
 				Pattern:    result.ProposedRule.Pattern,
 				CategoryID: result.ProposedRule.CategoryID,

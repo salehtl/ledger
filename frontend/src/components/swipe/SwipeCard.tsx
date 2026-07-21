@@ -2,6 +2,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { Heart, Home, PiggyBank, ArrowLeftRight, type LucideIcon } from 'lucide-react'
 import { formatFils, aedFils, nativeAmountTag } from '../../lib/money'
+import { accountLabel, reviewReason } from '../../lib/reviewMeta'
 import type { Txn } from '../../api/types'
 import {
   type SwipeConfig,
@@ -47,6 +48,9 @@ interface SwipeCardProps {
    * Call onExitComplete after animating.
    */
   flying?: SwipeDirection | null
+  /** Bump to snap the card back to center (e.g. the category panel was
+   *  cancelled after a commit left the card at its dragged offset). */
+  resetToken?: number
   onDirectionCommit: (dir: SwipeDirection) => void
   onTripleTap: () => void
   onExitComplete: () => void
@@ -58,6 +62,7 @@ export function SwipeCard({
   txn,
   config = DEFAULT_SWIPE_CONFIG,
   flying = null,
+  resetToken = 0,
   onDirectionCommit,
   onTripleTap,
   onExitComplete,
@@ -69,11 +74,12 @@ export function SwipeCard({
 
   const exitedRef = useRef(false)
 
-  // Reset gesture state when the card's transaction changes
+  // Reset gesture state when the card's transaction changes or the deck asks
+  // for a snap-back (panel cancelled with the card still at its drag offset).
   useEffect(() => {
     reset()
     exitedRef.current = false
-  }, [txn.ID, reset])
+  }, [txn.ID, resetToken, reset])
 
   const { dx, dy, dragging } = state
 
@@ -112,8 +118,10 @@ export function SwipeCard({
     <div
       style={{
         transform: `translateX(${tx}px) translateY(${ty}px) rotate(${rot}deg)`,
+        // Fly-out keeps moving from the release velocity — ease-out, not
+        // ease-in, so the card never hesitates at the moment of commitment.
         transition: flying
-          ? 'transform 0.35s ease-in, opacity 0.35s ease-in'
+          ? 'transform 0.3s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.3s cubic-bezier(0.23, 1, 0.32, 1)'
           : dragging
           ? 'none'
           : reduceMotion
@@ -127,6 +135,7 @@ export function SwipeCard({
         userSelect: 'none',
         willChange: 'transform',
       }}
+      data-testid="swipe-card"
       className="relative w-full bg-surface rounded-[12px] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -156,6 +165,15 @@ export function SwipeCard({
             {txn.MerchantRaw || '—'}
           </h2>
           <p className="text-sm text-muted mt-1">{date}</p>
+          {/* Where the money moved and why this card needs a human look */}
+          <div className="flex items-center justify-center gap-1.5 flex-wrap text-xs text-muted mt-1.5 px-2">
+            {accountLabel(txn) && (
+              <span className="px-2 py-0.5 rounded-full bg-surface-2 font-medium text-fg/80">
+                {accountLabel(txn)}
+              </span>
+            )}
+            <span>{reviewReason(txn)}</span>
+          </div>
         </div>
 
         {/* Amount — the hero, in the rounded display face */}

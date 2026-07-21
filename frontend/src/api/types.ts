@@ -30,6 +30,10 @@ export interface Txn {
   RefundOfID?: number | null;
   /** Set when this transaction is assigned to a life-project. */
   ProjectID?: number | null;
+  /** Account last-4 from the bank email; "" or absent when unknown. */
+  Last4?: string;
+  /** Registered account name matching Last4; "" or absent when unregistered. */
+  AccountName?: string;
 }
 export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }

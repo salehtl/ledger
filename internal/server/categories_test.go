@@ -187,7 +187,7 @@ func TestDeleteCategoryInUse(t *testing.T) {
 		t.Fatalf("InsertCategory: %v", err)
 	}
 	// Reference it from a rule so it is "in use".
-	if err := st.InsertRule(store.RuleRow{MatchType: "contains", Pattern: "x", CategoryID: id, Priority: 100, Source: "manual"}); err != nil {
+	if _, err := st.InsertRule(store.RuleRow{MatchType: "contains", Pattern: "x", CategoryID: id, Priority: 100, Source: "manual"}); err != nil {
 		t.Fatalf("InsertRule: %v", err)
 	}
 
