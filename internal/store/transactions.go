@@ -143,9 +143,13 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &raw); err != nil {
 			return nil, err
 		}
-		body, err := decodeBody(raw)
-		if err != nil {
-			return nil, err
+		body, derr := decodeBody(raw)
+		if derr != nil {
+			// Corrupt stored gzip must not stall the whole batch: pass the raw
+			// bytes through — the cascade will fail this one row and mark it
+			// unparsed with an error, keeping it visible and recoverable while
+			// every other row still parses.
+			body = raw
 		}
 		r.RawBody = body
 		out = append(out, r)

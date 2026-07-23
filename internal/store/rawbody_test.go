@@ -84,3 +84,40 @@ func TestLegacyPlainRowsStillReadAndCompact(t *testing.T) {
 		t.Fatalf("second compact = %d, %v; want 0, nil", n, err)
 	}
 }
+
+func TestCorruptGzipRowDoesNotStallBatch(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// One good row via the public API, one corrupt-gzip row planted directly.
+	good := []byte("legit body")
+	if _, err := st.InsertIngest(IngestRecord{
+		MessageUID: "good", FromAddr: "a@b.c", Subject: "s", ParseStatus: "unparsed",
+		RawBody: good, ReceivedAt: time.Now(), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte{0x1f, 0x8b, 0xde, 0xad, 0xbe, 0xef} // gzip magic, garbage stream
+	if _, err := st.DB.Exec(
+		`INSERT INTO ingest_log (message_uid, from_addr, subject, parse_status, raw_body, created_at)
+		 VALUES ('corrupt', 'a@b.c', 's', 'unparsed', ?, '2026-01-01T00:00:00Z')`, corrupt); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.SelectForParse(SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatalf("a corrupt row must not fail the whole select: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("both rows must come back, got %d", len(rows))
+	}
+	for _, r := range rows {
+		if r.ID != 0 && bytes.Equal(r.RawBody, good) {
+			return // good row round-tripped despite the corrupt neighbor
+		}
+	}
+	t.Fatal("good row's body did not round-trip")
+}
