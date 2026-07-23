@@ -325,7 +325,10 @@ func main() {
 		dialer := ingest.NewIMAPDialer(cfg.IMAP)
 		worker := ingest.New(dialer, st, interval, log.Default())
 		worker.SetPostProcess(func(ctx context.Context) (int, error) {
-			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
+			// Cap automatic retries: rows that failed 3 times wait for a parser
+			// fix + manual reprocess instead of burning CPU (and AI calls, when
+			// enabled) every poll cycle forever.
+			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true, MaxAttempts: 3})
 		})
 		mode := "poll"
 		if cfg.IMAP.UseIDLE {
