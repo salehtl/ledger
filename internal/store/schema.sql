@@ -150,3 +150,13 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at       TEXT    NOT NULL,
   updated_at       TEXT    NOT NULL
 );
+
+-- AI category-suggestion memo: every successful AI categorization is remembered
+-- (even below the auto-accept threshold) so an unreviewed merchant is never
+-- paid for twice across runs and restarts. Keyed by lowercased/trimmed merchant.
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+  merchant_norm TEXT PRIMARY KEY,
+  category_id   INTEGER NOT NULL REFERENCES categories(id),
+  confidence    REAL NOT NULL,
+  created_at    TEXT NOT NULL
+);
