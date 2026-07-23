@@ -207,7 +207,12 @@ func main() {
 	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
 	var aiExt parse.Extractor = parse.DisabledExtractor{}
 	if cfg.AI.Enabled {
-		aiCat = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
+		// Memo wrapper: a merchant the AI has already categorized is answered
+		// from the ai_suggestions table, not paid for again.
+		aiCat = categorize.MemoAI{
+			Inner: categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder),
+			Store: st,
+		}
 		if cfg.AI.AllowAIExtraction {
 			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
 		}
