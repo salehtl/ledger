@@ -109,6 +109,7 @@ type IngestForParse struct {
 type SelectForParseOpts struct {
 	OnlyUnparsed bool   // true: only parse_status='unparsed'; false: also 'low_confidence'
 	FromLike     string // optional: restrict to a sender substring (e.g. a bank)
+	MaxAttempts  int    // >0: skip rows already failed this many times (periodic hook); 0: no cap (manual reprocess)
 }
 
 // SelectForParse returns ingest rows for the cascade. Reprocess passes
@@ -123,6 +124,10 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"
 		args = append(args, "%"+opts.FromLike+"%")
+	}
+	if opts.MaxAttempts > 0 {
+		q += " AND parse_attempts < ?"
+		args = append(args, opts.MaxAttempts)
 	}
 	q += " ORDER BY id"
 	rows, err := s.DB.Query(q, args...)
@@ -143,11 +148,15 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	return out, rows.Err()
 }
 
-// MarkParsed stamps an ingest_log row's parse outcome.
+// MarkParsed stamps an ingest_log row's parse outcome. A failed parse
+// (status 'unparsed') consumes one automatic-retry attempt.
 func (s *Store) MarkParsed(ingestID int64, status, tier, parseErr string) error {
 	_, err := s.DB.Exec(
-		`UPDATE ingest_log SET parse_status=?, parse_tier=?, parse_error=? WHERE id=?`,
-		status, nullable(tier), nullable(parseErr), ingestID)
+		`UPDATE ingest_log
+		    SET parse_status=?, parse_tier=?, parse_error=?,
+		        parse_attempts = CASE WHEN ?='unparsed' THEN parse_attempts+1 ELSE parse_attempts END
+		  WHERE id=?`,
+		status, nullable(tier), nullable(parseErr), status, ingestID)
 	return err
 }
 

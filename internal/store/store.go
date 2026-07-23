@@ -111,6 +111,11 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "app_settings", "ai_cap_latched", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// Automatic parse retries are capped; the periodic ingest hook skips rows
+	// whose budget is spent. Manual reprocess ignores the cap.
+	if err := addColumnIfMissing(db, "ingest_log", "parse_attempts", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	// project_id links a transaction to a temporary life-project (projects
 	// table); the index is created here, not in schema.sql, since the column
 	// doesn't exist yet when schema.sql first runs on a pre-existing DB.
