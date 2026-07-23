@@ -32,3 +32,49 @@ func TestAISuggestionRoundTrip(t *testing.T) {
 		t.Fatalf("upsert did not overwrite, conf=%v", conf)
 	}
 }
+
+func TestAISuggestionFollowsCategoryRename(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var catID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories LIMIT 1`).Scan(&catID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutAISuggestion("cafe x", catID, 0.8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`UPDATE categories SET name='Renamed Cat' WHERE id=?`, catID); err != nil {
+		t.Fatal(err)
+	}
+	name, _, ok, err := st.GetAISuggestion("cafe x")
+	if err != nil || !ok || name != "Renamed Cat" {
+		t.Fatalf("memo must resolve the renamed category, got %q ok=%v err=%v", name, ok, err)
+	}
+}
+
+func TestAISuggestionDoesNotBlockCategoryDelete(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// A category no transaction or rule uses, but the AI once suggested.
+	res, err := st.DB.Exec(`INSERT INTO categories (name, bucket) VALUES ('Doomed', 'want')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catID, _ := res.LastInsertId()
+	if err := st.PutAISuggestion("doomed merchant", catID, 0.9); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`DELETE FROM categories WHERE id=?`, catID); err != nil {
+		t.Fatalf("memo rows must never block category deletion: %v", err)
+	}
+	// The cascade removed the memo; lookup misses and the caller re-asks the AI.
+	if _, _, ok, err := st.GetAISuggestion("doomed merchant"); err != nil || ok {
+		t.Fatalf("memo must miss after category delete, ok=%v err=%v", ok, err)
+	}
+}
