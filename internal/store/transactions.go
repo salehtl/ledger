@@ -99,10 +99,11 @@ func nullableID(id int64) any {
 
 // IngestForParse is one ingest_log row the processor will run the cascade over.
 type IngestForParse struct {
-	ID       int64
-	FromAddr string
-	Subject  string
-	RawBody  []byte
+	ID          int64
+	FromAddr    string
+	Subject     string
+	ParseStatus string
+	RawBody     []byte
 }
 
 // SelectForParseOpts filters which ingest rows to (re)process.
@@ -119,7 +120,7 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	if opts.OnlyUnparsed {
 		statuses = "('unparsed')"
 	}
-	q := `SELECT id, from_addr, subject, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
+	q := `SELECT id, from_addr, subject, parse_status, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
 	args := []any{}
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"
@@ -139,7 +140,7 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	for rows.Next() {
 		var r IngestForParse
 		var raw string
-		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &raw); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &raw); err != nil {
 			return nil, err
 		}
 		r.RawBody = []byte(raw)
