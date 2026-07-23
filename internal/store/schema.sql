@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS projects (
 -- paid for twice across runs and restarts. Keyed by lowercased/trimmed merchant.
 CREATE TABLE IF NOT EXISTS ai_suggestions (
   merchant_norm TEXT PRIMARY KEY,
-  category_id   INTEGER NOT NULL REFERENCES categories(id),
+  category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
   confidence    REAL NOT NULL,
   created_at    TEXT NOT NULL
 );
