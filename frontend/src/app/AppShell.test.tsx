@@ -75,8 +75,8 @@ describe("AppShell", () => {
     const before = summaryCalls();
 
     const main = screen.getByRole("main");
-    fireEvent.touchStart(main, { touches: [{ clientY: 0 }] });
-    fireEvent.touchMove(main, { touches: [{ clientY: 400 }] }); // past threshold
+    fireEvent.touchStart(main, { touches: [{ clientX: 0, clientY: 0 }] });
+    fireEvent.touchMove(main, { touches: [{ clientX: 0, clientY: 400 }] }); // past threshold
     fireEvent.touchEnd(main);
 
     await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));

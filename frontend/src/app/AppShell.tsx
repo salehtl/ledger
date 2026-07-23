@@ -50,7 +50,8 @@ export function AppShell() {
 
   const qc = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);
-  const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries());
+  // Disabled while offline: a pull would haptic-confirm a refresh that can't fetch.
+  const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries(), online);
 
   const bounds = scopeBounds(scope);
 
