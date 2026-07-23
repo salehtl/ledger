@@ -75,6 +75,9 @@ func main() {
 		case "import":
 			runImport(os.Args[2:])
 			return
+		case "compact":
+			runCompact(os.Args[2:])
+			return
 		case "vapid-keys":
 			priv, pub, err := push.GenerateKeys()
 			if err != nil {
@@ -370,6 +373,36 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+// runCompact gzips historical raw_body rows and VACUUMs to reclaim space.
+// Run it with the service stopped; VACUUM needs the database to itself.
+func runCompact(args []string) {
+	fs := flag.NewFlagSet("compact", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to config.toml (optional; uses defaults if empty)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("compact flags: %v", err)
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	st, err := store.Open(cfg.Server.DataDir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	n, err := st.CompressRawBodies()
+	if err != nil {
+		log.Fatalf("compress: %v (converted %d rows before failing; rerun to continue)", err, n)
+	}
+	log.Printf("compressed %d raw bodies; running VACUUM (may take a minute)…", n)
+	if err := st.Vacuum(); err != nil {
+		log.Fatalf("vacuum: %v", err)
+	}
+	log.Printf("compact done")
 }
 
 func runImport(args []string) {
