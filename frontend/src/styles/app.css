@@ -89,6 +89,25 @@ input, select, textarea { font-size: max(16px, 1rem); }
 }
 /* Monospaced tabular figures for money/counts/percentages everywhere. */
 .tnum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Rolling number (odometer) — see components/RollingNumber.tsx. Wheels roll on
+   mount and on value change; transform-only so rolls stay composited and a
+   mid-roll retarget transitions smoothly instead of restarting. All cells are
+   bottom-aligned 1lh boxes so wheel columns and static separators share a
+   baseline. The row scales down (never up) when the value would overflow. */
+.rolling-number { display: block; overflow: hidden; }
+.rolling-row {
+  display: inline-block; white-space: nowrap;
+  transform-origin: left center;
+  transition: transform 200ms var(--ease-out); /* fit-scale changes, not rolls */
+}
+.rolling-cell { display: inline-block; height: 1lh; vertical-align: bottom; }
+.rolling-wheel { overflow: hidden; }
+.rolling-wheel-track { display: block; transition: transform 650ms var(--ease-in-out); }
+.rolling-wheel-digit { display: block; height: 1lh; }
+@media (prefers-reduced-motion: reduce) {
+  .rolling-wheel-track, .rolling-row { transition: none; }
+}
 .money-neg { color: var(--color-bad); }
 .money-zero { color: var(--color-muted); }
 

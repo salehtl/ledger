@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects } from "../api/client";
 import type { Summary, MonthlyTotal } from "../api/types";
 import { Money } from "../components/Money";
+import { RollingNumber } from "../components/RollingNumber";
 import { Card } from "../components/ui/Card";
 import { ProgressBar } from "../components/ui/ProgressBar";
 import { SectionLabel } from "../components/ui/SectionLabel";
@@ -101,7 +102,7 @@ export function Home({
           branded surface; everything below stays quiet on neutral cards. */}
       <div className="rounded-[var(--radius-card)] bg-hero text-hero-fg shadow-1 p-5">
         <p className="text-sm opacity-80">{heroLabel}</p>
-        <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-tight tnum"><Money fils={spent} /></p>
+        <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-tight tnum"><RollingNumber value={formatFils(spent)} /></p>
         <p className="text-sm opacity-80 mt-2">of <span className="tnum"><Money fils={budget} /></span> budget</p>
         <div className="mt-4"><ProgressBar pct={pct} pace={pace} tone={heroTone} onAccent label="Total budget used" /></div>
         <div className="flex items-center justify-between mt-2 text-sm">

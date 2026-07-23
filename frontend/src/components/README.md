@@ -121,6 +121,15 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   apply `.tnum` itself: wrap it (or its container) in a `.tnum` element for
   tabular digit alignment, as every existing call site does.
 
+### RollingNumber
+- **Purpose:** odometer display for one hero number — per-digit 0–9 wheels
+  roll on mount (spin-up from zero) and on value change; scales down (never
+  up) instead of overflowing its container. Pass pre-formatted text
+  (`formatFils(...)`); geometry lives in `lib/rollingNumber`.
+- **Use when:** a single prominent live number (Home hero).
+- **Don't use when:** lists/rows of amounts (→ `Money` — rolling every row is
+  noise), or anything keyboard-driven.
+
 ### EmptyState
 - **Purpose:** canonical empty/error state (icon chip + title + hint). Used
   for both "no data" and query-error states.
