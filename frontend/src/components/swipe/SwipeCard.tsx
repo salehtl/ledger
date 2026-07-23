@@ -136,6 +136,8 @@ export function SwipeCard({
         willChange: 'transform',
       }}
       data-testid="swipe-card"
+      // Downward card drags are a commit gesture — PTR must never claim them.
+      data-ptr-exempt=""
       className="relative w-full bg-surface rounded-[12px] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
