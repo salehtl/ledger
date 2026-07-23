@@ -84,7 +84,7 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 
 	reqBody := anthropicCategReq{
 		Model:     a.model,
-		MaxTokens: 200,
+		MaxTokens: 60, // reply is one ~20-token JSON line; this is a runaway guard
 		System:    categorizerSystemPrompt,
 		Messages: []categMsg{
 			{Role: "user", Content: userMsg},

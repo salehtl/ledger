@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactNode } from "react";
@@ -21,7 +21,12 @@ class FakeEventSource {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("useLiveEvents", () => {
@@ -36,6 +41,7 @@ describe("useLiveEvents", () => {
     renderHook(() => useLiveEvents(), { wrapper });
 
     FakeEventSource.last!.emit("message", JSON.stringify({ type: "new_transaction", data: {} }));
+    vi.advanceTimersByTime(300); // debounce delay
     expect(spy).toHaveBeenCalledTimes(LIVE_INVALIDATE_KEYS.length);
     expect(spy).toHaveBeenCalledWith({ queryKey: ["summary"] });
     expect(spy).toHaveBeenCalledWith({ queryKey: ["insights-categories"] });
@@ -48,6 +54,7 @@ describe("useLiveEvents", () => {
     renderHook(() => useLiveEvents(), { wrapper });
 
     FakeEventSource.last!.emit("message", JSON.stringify({ type: "drift_alert", data: [] }));
+    vi.advanceTimersByTime(300); // debounce delay
     expect(spy).not.toHaveBeenCalled();
   });
 });

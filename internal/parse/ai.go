@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ledger/internal/anthropic"
 )
@@ -35,6 +36,22 @@ const extractorSystemPrompt = `Extract financial transaction data from this bank
 Respond ONLY with valid JSON on one line (no extra text):
 {"posted_at":"2024-01-15T00:00:00Z","amount_fils":3825,"currency":"AED","direction":"debit","merchant_raw":"AMAZON.AE","last4":"1234","confidence":0.8}
 Rules: posted_at is ISO8601 UTC; amount_fils is a positive integer, the amount in minor units (×100) of the transaction currency (e.g. USD 10.09 → 1009 with currency "USD"); currency is the 3-letter code shown in the email, "AED" if none shown; direction is exactly "debit" or "credit"; last4 may be empty string "".`
+
+// maxExtractBodyBytes bounds what one extraction sends to the API. Real bank
+// alerts fit comfortably; anything beyond this is boilerplate the model does
+// not need, and unbounded bodies are the dominant input-token cost.
+const maxExtractBodyBytes = 8 << 10
+
+func truncateBody(s string) string {
+	if len(s) <= maxExtractBodyBytes {
+		return s
+	}
+	cut := s[:maxExtractBodyBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
 
 type extractReq struct {
 	Model     string   `json:"model"`
@@ -101,9 +118,9 @@ func NewAnthropicExtractor(apiKey, model string, gate func() error, rec anthropi
 func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (ParsedTxn, error) {
 	payload := extractReq{
 		Model:     a.model,
-		MaxTokens: 400,
+		MaxTokens: 200, // reply is one ~100-token JSON line; this is a runaway guard
 		System:    extractorSystemPrompt,
-		Messages:  []extMsg{{Role: "user", Content: textBody}},
+		Messages:  []extMsg{{Role: "user", Content: truncateBody(textBody)}},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

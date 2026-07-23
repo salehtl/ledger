@@ -99,16 +99,18 @@ func nullableID(id int64) any {
 
 // IngestForParse is one ingest_log row the processor will run the cascade over.
 type IngestForParse struct {
-	ID       int64
-	FromAddr string
-	Subject  string
-	RawBody  []byte
+	ID          int64
+	FromAddr    string
+	Subject     string
+	ParseStatus string
+	RawBody     []byte
 }
 
 // SelectForParseOpts filters which ingest rows to (re)process.
 type SelectForParseOpts struct {
 	OnlyUnparsed bool   // true: only parse_status='unparsed'; false: also 'low_confidence'
 	FromLike     string // optional: restrict to a sender substring (e.g. a bank)
+	MaxAttempts  int    // >0: skip rows already failed this many times (periodic hook); 0: no cap (manual reprocess)
 }
 
 // SelectForParse returns ingest rows for the cascade. Reprocess passes
@@ -118,11 +120,15 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	if opts.OnlyUnparsed {
 		statuses = "('unparsed')"
 	}
-	q := `SELECT id, from_addr, subject, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
+	q := `SELECT id, from_addr, subject, parse_status, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
 	args := []any{}
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"
 		args = append(args, "%"+opts.FromLike+"%")
+	}
+	if opts.MaxAttempts > 0 {
+		q += " AND parse_attempts < ?"
+		args = append(args, opts.MaxAttempts)
 	}
 	q += " ORDER BY id"
 	rows, err := s.DB.Query(q, args...)
@@ -133,21 +139,33 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	var out []IngestForParse
 	for rows.Next() {
 		var r IngestForParse
-		var raw string
-		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &raw); err != nil {
+		var raw []byte
+		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &raw); err != nil {
 			return nil, err
 		}
-		r.RawBody = []byte(raw)
+		body, derr := decodeBody(raw)
+		if derr != nil {
+			// Corrupt stored gzip must not stall the whole batch: pass the raw
+			// bytes through — the cascade will fail this one row and mark it
+			// unparsed with an error, keeping it visible and recoverable while
+			// every other row still parses.
+			body = raw
+		}
+		r.RawBody = body
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// MarkParsed stamps an ingest_log row's parse outcome.
+// MarkParsed stamps an ingest_log row's parse outcome. A failed parse
+// (status 'unparsed') consumes one automatic-retry attempt.
 func (s *Store) MarkParsed(ingestID int64, status, tier, parseErr string) error {
 	_, err := s.DB.Exec(
-		`UPDATE ingest_log SET parse_status=?, parse_tier=?, parse_error=? WHERE id=?`,
-		status, nullable(tier), nullable(parseErr), ingestID)
+		`UPDATE ingest_log
+		    SET parse_status=?, parse_tier=?, parse_error=?,
+		        parse_attempts = CASE WHEN ?='unparsed' THEN parse_attempts+1 ELSE parse_attempts END
+		  WHERE id=?`,
+		status, nullable(tier), nullable(parseErr), status, ingestID)
 	return err
 }
 

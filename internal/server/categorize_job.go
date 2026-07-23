@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,11 +83,12 @@ func (s *Server) runCategorize(ctx context.Context, items []store.ReviewItem) {
 			return
 		default:
 		}
-		res, cached := cache[item.MerchantRaw]
+		key := strings.ToLower(strings.TrimSpace(item.MerchantRaw))
+		res, cached := cache[key]
 		if !cached {
 			catID, status, ok, err := s.recatFn(ctx, item.MerchantRaw)
 			res = recatOutcome{catID: catID, status: status, ok: ok, err: err}
-			cache[item.MerchantRaw] = res
+			cache[key] = res
 		}
 		if res.ok {
 			_ = s.catStore.UpdateTransactionCategory(item.ID, res.catID, res.status)
