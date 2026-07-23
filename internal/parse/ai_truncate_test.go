@@ -35,7 +35,7 @@ func TestExtractTruncatesOversizedBody(t *testing.T) {
 }
 
 func TestTruncateBodyKeepsValidUTF8(t *testing.T) {
-	s := strings.Repeat("é", maxExtractBodyBytes) // 2 bytes per rune; cap lands mid-rune
+	s := strings.Repeat("€", maxExtractBodyBytes) // 3 bytes per rune; the cap lands mid-rune
 	got := truncateBody(s)
 	if len(got) > maxExtractBodyBytes {
 		t.Fatalf("not truncated: %d", len(got))
