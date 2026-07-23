@@ -31,22 +31,22 @@ func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
-	// busy_timeout rides on the DSN so every pooled connection gets it —
+	// These pragmas ride on the DSN so every pooled connection gets them —
 	// a PRAGMA via db.Exec only reaches the one connection that runs it.
-	// Without it a second concurrent writer fails instantly with SQLITE_BUSY.
-	dsn := filepath.Join(dataDir, "ledger.db") + "?_pragma=busy_timeout(5000)"
+	// busy_timeout: a second concurrent writer waits instead of failing with
+	// SQLITE_BUSY. synchronous(NORMAL): crash-safe under WAL at roughly half
+	// the fsync cost of the FULL default. foreign_keys: enforced everywhere,
+	// not just on whichever connection ran a one-shot Exec.
+	dsn := filepath.Join(dataDir, "ledger.db") +
+		"?_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// WAL improves concurrent read/write; foreign keys enforce the schema's refs.
+	// WAL improves concurrent read/write; foreign keys are now set on the DSN.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set journal_mode: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON;"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set foreign_keys: %w", err)
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
@@ -109,6 +109,11 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := addColumnIfMissing(db, "app_settings", "ai_cap_latched", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// Automatic parse retries are capped; the periodic ingest hook skips rows
+	// whose budget is spent. Manual reprocess ignores the cap.
+	if err := addColumnIfMissing(db, "ingest_log", "parse_attempts", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	// project_id links a transaction to a temporary life-project (projects

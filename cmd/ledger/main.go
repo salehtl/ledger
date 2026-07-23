@@ -75,6 +75,9 @@ func main() {
 		case "import":
 			runImport(os.Args[2:])
 			return
+		case "compact":
+			runCompact(os.Args[2:])
+			return
 		case "vapid-keys":
 			priv, pub, err := push.GenerateKeys()
 			if err != nil {
@@ -207,7 +210,12 @@ func main() {
 	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
 	var aiExt parse.Extractor = parse.DisabledExtractor{}
 	if cfg.AI.Enabled {
-		aiCat = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
+		// Memo wrapper: a merchant the AI has already categorized is answered
+		// from the ai_suggestions table, not paid for again.
+		aiCat = categorize.MemoAI{
+			Inner: categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder),
+			Store: st,
+		}
 		if cfg.AI.AllowAIExtraction {
 			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
 		}
@@ -325,7 +333,10 @@ func main() {
 		dialer := ingest.NewIMAPDialer(cfg.IMAP)
 		worker := ingest.New(dialer, st, interval, log.Default())
 		worker.SetPostProcess(func(ctx context.Context) (int, error) {
-			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true})
+			// Cap automatic retries: rows that failed 3 times wait for a parser
+			// fix + manual reprocess instead of burning CPU (and AI calls, when
+			// enabled) every poll cycle forever.
+			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true, MaxAttempts: 3})
 		})
 		mode := "poll"
 		if cfg.IMAP.UseIDLE {
@@ -362,6 +373,36 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+// runCompact gzips historical raw_body rows and VACUUMs to reclaim space.
+// Run it with the service stopped; VACUUM needs the database to itself.
+func runCompact(args []string) {
+	fs := flag.NewFlagSet("compact", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to config.toml (optional; uses defaults if empty)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("compact flags: %v", err)
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	st, err := store.Open(cfg.Server.DataDir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	n, err := st.CompressRawBodies()
+	if err != nil {
+		log.Fatalf("compress: %v (converted %d rows before failing; rerun to continue)", err, n)
+	}
+	log.Printf("compressed %d raw bodies; running VACUUM (may take a minute)…", n)
+	if err := st.Vacuum(); err != nil {
+		log.Fatalf("vacuum: %v", err)
+	}
+	log.Printf("compact done")
 }
 
 func runImport(args []string) {

@@ -22,6 +22,9 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
+# This box doubles as the dev machine; cap the service so a leak can never
+# starve interactive work. Steady-state RSS is ~250M.
+MemoryMax=384M
 LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadWritePaths=/var/lib/ledger

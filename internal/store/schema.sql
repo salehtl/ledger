@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS ingest_log (
   created_at    TEXT NOT NULL
 );
 
+-- Drift monitor aggregates over a recent created_at window every 5 minutes;
+-- without this it full-scans the table each time.
+CREATE INDEX IF NOT EXISTS idx_ingest_created ON ingest_log(created_at);
+
 -- The transactions themselves
 CREATE TABLE IF NOT EXISTS transactions (
   id              INTEGER PRIMARY KEY,
@@ -71,6 +75,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_tx_posted ON transactions(posted_at);
 CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_fingerprint ON transactions(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_tx_ingest ON transactions(ingest_id);
 
 -- Budget configuration (singleton)
 CREATE TABLE IF NOT EXISTS budget_config (
@@ -149,4 +154,14 @@ CREATE TABLE IF NOT EXISTS projects (
   completed_at     TEXT,
   created_at       TEXT    NOT NULL,
   updated_at       TEXT    NOT NULL
+);
+
+-- AI category-suggestion memo: every successful AI categorization is remembered
+-- (even below the auto-accept threshold) so an unreviewed merchant is never
+-- paid for twice across runs and restarts. Keyed by lowercased/trimmed merchant.
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+  merchant_norm TEXT PRIMARY KEY,
+  category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  confidence    REAL NOT NULL,
+  created_at    TEXT NOT NULL
 );
