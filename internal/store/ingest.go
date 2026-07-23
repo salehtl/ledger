@@ -39,7 +39,7 @@ func (s *Store) InsertIngest(r IngestRecord) (bool, error) {
 		r.FromAddr,
 		r.Subject,
 		r.ParseStatus,
-		string(r.RawBody),
+		compressBody(r.RawBody),
 		rfc3339OrEmpty(r.CreatedAt),
 	)
 	if err != nil {

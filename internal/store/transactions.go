@@ -139,11 +139,15 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	var out []IngestForParse
 	for rows.Next() {
 		var r IngestForParse
-		var raw string
+		var raw []byte
 		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &raw); err != nil {
 			return nil, err
 		}
-		r.RawBody = []byte(raw)
+		body, err := decodeBody(raw)
+		if err != nil {
+			return nil, err
+		}
+		r.RawBody = body
 		out = append(out, r)
 	}
 	return out, rows.Err()
