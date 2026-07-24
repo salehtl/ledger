@@ -225,7 +225,7 @@ func main() {
 	}
 
 	cascade := &parse.Cascade{
-		Parsers:   []parse.BankParser{parse.DIBParser{}, parse.ENBDParser{}},
+		Parsers:   []parse.BankParser{parse.DIBParser{}, parse.ENBDParser{}, parse.ENBDAlertParser{}},
 		Heuristic: parse.HeuristicParser{},
 		AI:        aiExt,
 	}
