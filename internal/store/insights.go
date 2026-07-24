@@ -74,7 +74,7 @@ func (s *Store) SelectMonthlyTotals(months int) ([]MonthlyTotalRow, error) {
 	}
 	now := time.Now().UTC()
 	firstOfThis := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	start := firstOfThis.AddDate(0, -(months-1), 0).Format("2006-01-02")
+	start := firstOfThis.AddDate(0, -(months - 1), 0).Format("2006-01-02")
 	// The carve-out applies to the spending series only — income is never
 	// carved out, so a credit inside an excluded project still counts.
 	rows, err := s.DB.Query(

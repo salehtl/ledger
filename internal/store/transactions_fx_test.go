@@ -43,7 +43,7 @@ func TestInsertTransactionSetsAmountAED(t *testing.T) {
 func TestInsertManualTransactionSetsAmountAED(t *testing.T) {
 	s := openFXTestStore(t)
 	id, err := s.InsertManualTransaction(ManualTxn{
-		PostedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		PostedAt:   time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 		AmountFils: 1000, Currency: "USD", Direction: "debit", MerchantRaw: "m",
 	})
 	if err != nil {
