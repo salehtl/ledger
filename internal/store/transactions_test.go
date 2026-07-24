@@ -623,3 +623,24 @@ func TestNetTransferPairsEachLegUsedOnce(t *testing.T) {
 		t.Errorf("transfer rows = %d, want 2", transfers)
 	}
 }
+
+func TestSelectForParseReturnsReceivedAt(t *testing.T) {
+	st := newTestStore(t)
+	recv := time.Date(2026, 7, 24, 13, 51, 40, 0, time.UTC)
+	if _, err := st.InsertIngest(IngestRecord{
+		MessageUID: "recv1", FromAddr: "a@b.c", Subject: "s",
+		ReceivedAt: recv, ParseStatus: "unparsed", RawBody: []byte("x"), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.SelectForParse(SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows", len(rows))
+	}
+	if !rows[0].ReceivedAt.Equal(recv) {
+		t.Errorf("ReceivedAt = %v, want %v", rows[0].ReceivedAt, recv)
+	}
+}
