@@ -112,6 +112,32 @@ func TestDIBUnrecognizedReturnsError(t *testing.T) {
 	}
 }
 
+// dibDebitNoDate is dibDebit with the بتاريخ (date) anchor dropped from the
+// intro sentence — amount/merchant anchors still match, but the date anchor
+// is missing.
+const dibDebitNoDate = `إشعار خصم
+عزيزي المتعامل,
+إشعار خصم من الحساب بالتفاصيل التالية.
+المبلغ
+AED 170.00
+من حساب
+001-520-XXXX081-01
+حساب جاري
+المعاملة
+OUTWARD UAE FUNDS TRANS IPI
+الحالة
+تمت بنجاح`
+
+func TestDIBMissingDateAnchorReturnsError(t *testing.T) {
+	// DIB must fail hard when its date anchor is absent, rather than leaving
+	// PostedAt zero — a zero PostedAt is the template-tier fallback opt-in
+	// signal (currently reserved for ENBDAlertParser), and DIB must not
+	// silently inherit it.
+	if _, err := (DIBParser{}).Parse("", dibDebitNoDate); err == nil {
+		t.Error("expected error when date anchor is missing")
+	}
+}
+
 const dibTransferOut = `إشعار تحويل
 عزيزي المتعامل,
 إشعار تحويل من الحساب بتاريخ 20-08-2025 بالتفاصيل التالية.
