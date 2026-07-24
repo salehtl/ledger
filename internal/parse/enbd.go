@@ -28,7 +28,7 @@ var (
 	enbdPayeeRe = regexp.MustCompile(`(?i)Beneficiary Name:\s*\n\s*(.+)`)
 )
 
-func (ENBDParser) Parse(textBody string) (ParsedTxn, error) {
+func (ENBDParser) Parse(subject, textBody string) (ParsedTxn, error) {
 	am := enbdDebitRe.FindStringSubmatch(textBody)
 	if am == nil {
 		return ParsedTxn{}, fmt.Errorf("enbd: 'Debit Amount' anchor not found")

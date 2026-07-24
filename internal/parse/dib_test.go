@@ -52,7 +52,7 @@ func TestDIBMatches(t *testing.T) {
 }
 
 func TestDIBCardPurchase(t *testing.T) {
-	got, err := DIBParser{}.Parse(dibCardPurchase)
+	got, err := DIBParser{}.Parse("", dibCardPurchase)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestDIBCardPurchase(t *testing.T) {
 }
 
 func TestDIBDebit(t *testing.T) {
-	got, err := DIBParser{}.Parse(dibDebit)
+	got, err := DIBParser{}.Parse("", dibDebit)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestDIBDebit(t *testing.T) {
 }
 
 func TestDIBDeposit(t *testing.T) {
-	got, err := DIBParser{}.Parse(dibDeposit)
+	got, err := DIBParser{}.Parse("", dibDeposit)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestDIBDeposit(t *testing.T) {
 }
 
 func TestDIBUnrecognizedReturnsError(t *testing.T) {
-	if _, err := (DIBParser{}).Parse("just some text with no DIB anchors"); err == nil {
+	if _, err := (DIBParser{}).Parse("", "just some text with no DIB anchors"); err == nil {
 		t.Error("expected error when anchors absent")
 	}
 }
@@ -139,7 +139,7 @@ IB FUNDS TRANSFER CREDIT
 تمت بنجاح`
 
 func TestDIBTransferOutgoingIsDebit(t *testing.T) {
-	got, err := DIBParser{}.Parse(dibTransferOut)
+	got, err := DIBParser{}.Parse("", dibTransferOut)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestDIBTransferOutgoingIsDebit(t *testing.T) {
 }
 
 func TestDIBTransferIncomingIsCredit(t *testing.T) {
-	got, err := DIBParser{}.Parse(dibTransferIn)
+	got, err := DIBParser{}.Parse("", dibTransferIn)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

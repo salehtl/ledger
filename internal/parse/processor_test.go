@@ -313,7 +313,7 @@ type stubEmptyMerchantParser struct{}
 
 func (stubEmptyMerchantParser) Bank() string                { return "stub" }
 func (stubEmptyMerchantParser) Matches(from, _ string) bool { return from == "stub@bank.com" }
-func (stubEmptyMerchantParser) Parse(_ string) (ParsedTxn, error) {
+func (stubEmptyMerchantParser) Parse(_, _ string) (ParsedTxn, error) {
 	return ParsedTxn{
 		PostedAt: time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC), AmountFils: 10000,
 		Currency: "AED", Direction: "debit", MerchantRaw: "", Confidence: 0.97,
@@ -527,7 +527,7 @@ func (stubTransferParser) Bank() string { return "stub" }
 func (stubTransferParser) Matches(from, subject string) bool {
 	return from == "stub@bank.com"
 }
-func (stubTransferParser) Parse(_ string) (ParsedTxn, error) {
+func (stubTransferParser) Parse(_, _ string) (ParsedTxn, error) {
 	return ParsedTxn{
 		PostedAt:    time.Date(2025, 8, 19, 0, 0, 0, 0, time.UTC),
 		AmountFils:  10000,
@@ -639,7 +639,7 @@ func (stubDebitLegParser) Bank() string { return "debit" }
 func (stubDebitLegParser) Matches(from, _ string) bool {
 	return from == "debit@bank.com"
 }
-func (stubDebitLegParser) Parse(_ string) (ParsedTxn, error) {
+func (stubDebitLegParser) Parse(_, _ string) (ParsedTxn, error) {
 	return ParsedTxn{
 		PostedAt:    time.Date(2025, 8, 19, 12, 30, 0, 0, time.UTC), // 30 min after credit
 		AmountFils:  50000,

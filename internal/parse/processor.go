@@ -67,7 +67,13 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 		// Recover the original sender/subject and drop the forwarding preamble
 		// for inline-forwarded bank mail; a non-forward passes through unchanged.
 		from, subject, fwdDate, text := Unwrap(row.FromAddr, row.Subject, text)
-		_ = fwdDate // consumed in the cascade fallback (next change)
+		// posted_at fallback for templates whose format has no body date: the
+		// forwarded Date header (transaction time even for late forwards),
+		// else the mailbox arrival time.
+		fallback := row.ReceivedAt
+		if fd, err := ParseForwardDate(fwdDate); err == nil {
+			fallback = fd
+		}
 		// A low_confidence row was already extracted by the AI tier once —
 		// re-running AI would just re-bill for the same guess. Reprocess exists
 		// so a *fixed deterministic parser* can upgrade the row; run the cascade
@@ -78,7 +84,7 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			c.AI = nil
 			casc = &c
 		}
-		res := casc.Run(ctx, from, subject, text)
+		res := casc.Run(ctx, from, subject, text, fallback)
 		if res.Status == StatusUnparsed {
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue

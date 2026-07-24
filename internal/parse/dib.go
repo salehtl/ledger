@@ -27,7 +27,7 @@ var (
 	digitsRe    = regexp.MustCompile(`[0-9]`)
 )
 
-func (DIBParser) Parse(textBody string) (ParsedTxn, error) {
+func (DIBParser) Parse(subject, textBody string) (ParsedTxn, error) {
 	am := dibAmountRe.FindStringSubmatch(textBody)
 	if am == nil {
 		return ParsedTxn{}, fmt.Errorf("dib: amount anchor المبلغ not found")

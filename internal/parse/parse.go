@@ -40,11 +40,14 @@ type ParsedTxn struct {
 }
 
 // BankParser is a per-bank template tier. Matches is a cheap sender/subject
-// check; Parse runs on the HTML-stripped plain-text body.
+// check; Parse runs on the HTML-stripped plain-text body plus the (unwrapped)
+// subject, which some formats need for data the body lacks (e.g. the account
+// last4 in ENBD advice subjects). A parser for a format with no body date may
+// return a zero PostedAt; the cascade fills it from the email's own date.
 type BankParser interface {
 	Bank() string
 	Matches(from, subject string) bool
-	Parse(textBody string) (ParsedTxn, error)
+	Parse(subject, textBody string) (ParsedTxn, error)
 }
 
 // Validate gates a result regardless of tier. A failure routes the email to
