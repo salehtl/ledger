@@ -144,6 +144,8 @@ func TestParseForwardDate(t *testing.T) {
 		{"Jul 24, 2026 at 4:11 PM", time.Date(2026, 7, 24, 16, 11, 0, 0, time.UTC)},
 		{"Fri, Jul 24, 2026 at 4:11 PM", time.Date(2026, 7, 24, 16, 11, 0, 0, time.UTC)},
 		{"24 July 2026 at 17:51:40 GMT+4", time.Date(2026, 7, 24, 17, 51, 40, 0, time.UTC)},
+		{"Jul 24, 2026 at 4:11 PM", time.Date(2026, 7, 24, 16, 11, 0, 0, time.UTC)},
+		{"Jul 24, 2026 at 4:11 PM", time.Date(2026, 7, 24, 16, 11, 0, 0, time.UTC)},
 	}
 	for _, c := range cases {
 		got, err := ParseForwardDate(c.in)

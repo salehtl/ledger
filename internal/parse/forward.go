@@ -107,9 +107,15 @@ var fwdDateLayouts = []string{
 	"2 January 2006 at 15:04",
 }
 
+// nbspReplacer normalizes non-breaking space variants that mail clients
+// insert before AM/PM (e.g. Apple Mail's narrow no-break space, U+202F, on
+// recent OSes; U+00A0 also appears in the wild) to plain spaces so the
+// fwdDateLayouts patterns match.
+var nbspReplacer = strings.NewReplacer(" ", " ", " ", " ")
+
 // ParseForwardDate parses a forwarded-header Date value recovered by Unwrap.
 func ParseForwardDate(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
+	s = nbspReplacer.Replace(strings.TrimSpace(s))
 	candidates := []string{s}
 	if i := strings.LastIndex(s, " "); i > 0 {
 		candidates = append(candidates, strings.TrimSpace(s[:i]))

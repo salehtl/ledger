@@ -42,11 +42,15 @@ func (DIBParser) Parse(subject, textBody string) (ParsedTxn, error) {
 		Tier:       TierTemplate,
 		Confidence: 0.97,
 	}
-	if dm := dibDateRe.FindStringSubmatch(textBody); dm != nil {
-		if d, derr := ParseDIBDate(dm[1]); derr == nil {
-			p.PostedAt = d
-		}
+	dm := dibDateRe.FindStringSubmatch(textBody)
+	if dm == nil {
+		return ParsedTxn{}, fmt.Errorf("dib: بتاريخ date anchor not found")
 	}
+	d, derr := ParseDIBDate(dm[1])
+	if derr != nil {
+		return ParsedTxn{}, fmt.Errorf("dib date: %w", derr)
+	}
+	p.PostedAt = d
 
 	isCard := strings.Contains(textBody, "إشعار مشتريات")
 	if isCard {
