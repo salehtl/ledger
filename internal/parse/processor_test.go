@@ -3,6 +3,7 @@ package parse
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -756,5 +757,58 @@ func TestProcessorIsTransferLegArrivingSecondNetsCounterpart(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("transfer-status count = %d, want 2 (IsTransfer leg arriving second must net its counterpart)", count)
+	}
+}
+
+// TestProcessorParsesForwardedENBDAlert exercises the full path
+// ProcessPending -> BodyText -> Unwrap -> cascade -> InsertTransaction for a
+// forwarded Emirates NBD account alert. ReceivedAt (13:51, mailbox arrival)
+// is deliberately different from the forwarded Date header (16:11, the
+// actual transaction time) to prove the header wins.
+func TestProcessorParsesForwardedENBDAlert(t *testing.T) {
+	st := procTestStore(t)
+	raw := []byte("From: salehtl@icloud.com\r\n" +
+		"To: ledgerdino@gmail.com\r\n" +
+		"Subject: Fwd: Emirates NBD Transaction advice for account ending with 3701\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"Begin forwarded message:\n" +
+		"From:\nalert@emiratesnbd.com\n" +
+		"Subject:\nEmirates NBD Transaction advice for account ending with 3701\n" +
+		"Date:\nJul 24, 2026 at 4:11 PM\n" +
+		"To:\nSALEHTL@icloud.com\n" +
+		"Dear Customer,\n" +
+		"AED 250,000.00 has been withdrawn from your account 067XXX17XXX01. The available balance is AED 51,566.07.\n")
+	if _, err := st.InsertIngest(store.IngestRecord{
+		MessageUID:  "fwd-enbd-1",
+		FromAddr:    "salehtl@icloud.com",
+		Subject:     "Fwd: Emirates NBD Transaction advice for account ending with 3701",
+		ReceivedAt:  time.Date(2026, 7, 24, 13, 51, 40, 0, time.UTC), // forward arrival != txn time
+		ParseStatus: "unparsed",
+		RawBody:     raw,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := &Cascade{Parsers: []BankParser{ENBDAlertParser{}}}
+	n, err := NewProcessor(st, c).ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("created %d transactions, want 1", n)
+	}
+	var amount int64
+	var direction, last4, postedAt, status string
+	if err := st.DB.QueryRow(
+		`SELECT amount, direction, last4, posted_at, status FROM transactions`).
+		Scan(&amount, &direction, &last4, &postedAt, &status); err != nil {
+		t.Fatal(err)
+	}
+	if amount != 25_000_000 || direction != "debit" || last4 != "3701" || status != "needs_review" {
+		t.Errorf("amount/direction/last4/status = %d/%s/%s/%s", amount, direction, last4, status)
+	}
+	if !strings.HasPrefix(postedAt, "2026-07-24T16:11") {
+		t.Errorf("posted_at = %q, want the forwarded Date (16:11), not received_at (13:51)", postedAt)
 	}
 }
