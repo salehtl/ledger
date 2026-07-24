@@ -7,11 +7,11 @@ import (
 
 func TestParseAEDToFils(t *testing.T) {
 	cases := map[string]int64{
-		"AED 215.00":     21500,
-		"AED 10,000.00":  1000000,
-		"AED 1,234.56":   123456,
-		"215.00":         21500,
-		"AED 0.50":       50,
+		"AED 215.00":    21500,
+		"AED 10,000.00": 1000000,
+		"AED 1,234.56":  123456,
+		"215.00":        21500,
+		"AED 0.50":      50,
 	}
 	for in, want := range cases {
 		got, cur, err := ParseAEDToFils(in)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 )
 
 // Status values mirror ingest_log.parse_status.
@@ -31,7 +32,7 @@ type Cascade struct {
 // Run descends the ladder and stops at the first validated, accepted result.
 // When nothing resolves, Result.Err carries each attempted tier's failure so
 // ingest_log.parse_error explains the unparsed row.
-func (c *Cascade) Run(ctx context.Context, from, subject, textBody string) Result {
+func (c *Cascade) Run(ctx context.Context, from, subject, textBody string, fallbackDate time.Time) Result {
 	var errs []string
 	fail := func(tier string, err error) {
 		errs = append(errs, tier+": "+strings.TrimPrefix(err.Error(), tier+": "))
@@ -42,8 +43,13 @@ func (c *Cascade) Run(ctx context.Context, from, subject, textBody string) Resul
 		if !bp.Matches(from, subject) {
 			continue
 		}
-		p, err := bp.Parse(textBody)
+		p, err := bp.Parse(subject, textBody)
 		if err == nil {
+			// A template may leave PostedAt zero when its format carries no
+			// body date; the email's own date is trustworthy for advice mail.
+			if p.PostedAt.IsZero() {
+				p.PostedAt = fallbackDate
+			}
 			if verr := Validate(p); verr == nil {
 				return Result{Txn: p, Status: StatusParsed, Tier: TierTemplate}
 			} else {

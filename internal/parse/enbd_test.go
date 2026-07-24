@@ -35,7 +35,7 @@ func TestENBDMatches(t *testing.T) {
 }
 
 func TestENBDParseLocalTransfer(t *testing.T) {
-	got, err := ENBDParser{}.Parse(enbdLocalTransfer)
+	got, err := ENBDParser{}.Parse("", enbdLocalTransfer)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
