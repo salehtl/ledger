@@ -103,6 +103,7 @@ type IngestForParse struct {
 	FromAddr    string
 	Subject     string
 	ParseStatus string
+	ReceivedAt  time.Time
 	RawBody     []byte
 }
 
@@ -120,7 +121,7 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	if opts.OnlyUnparsed {
 		statuses = "('unparsed')"
 	}
-	q := `SELECT id, from_addr, subject, parse_status, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
+	q := `SELECT id, from_addr, subject, parse_status, received_at, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
 	args := []any{}
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"
@@ -140,8 +141,14 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	for rows.Next() {
 		var r IngestForParse
 		var raw []byte
-		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &raw); err != nil {
+		var recv sql.NullString
+		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &recv, &raw); err != nil {
 			return nil, err
+		}
+		if recv.Valid && recv.String != "" {
+			if t, perr := time.Parse(time.RFC3339, recv.String); perr == nil {
+				r.ReceivedAt = t
+			}
 		}
 		body, derr := decodeBody(raw)
 		if derr != nil {
