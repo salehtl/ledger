@@ -16,6 +16,15 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   hues; ours carry the app's design tokens in separate light and dark tables,
   plus `mix`, `isDarkTheme` and `subscribeDitherTheme`. See the header comment
   in that file.
+- **`scales.ts`**: `computeBands` now passes d3's `stackOffsetDiverging` for
+  `stackType === "stacked"`. Upstream left `.offset()` undefined, which d3
+  resolves to `stackOffsetNone` — plain cumulative stacking, which piles a
+  negative series on top of the positive one instead of splitting it below
+  zero, and never drives `min` below 0 (it reads `point[0]`). `FlowBars` is a
+  diverging in-vs-out chart, so under the upstream behaviour "Out" painted on
+  top of "In" and a deficit month's bar fell outside the canvas. Upstream's own
+  doc comment claimed the diverging behaviour, so this makes the code match it.
+  Guarded by `scales.test.ts` (also ours — upstream ships no test here).
 - **`bar.tsx`**: upstream's dev-only prop-validation warning gated on
   `process.env.NODE_ENV !== "production"`. This app's Vite build never
   defines a `process` global (no Node-compat shim, no `define` entry), so the
