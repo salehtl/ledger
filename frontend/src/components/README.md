@@ -306,27 +306,28 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   component's own `overflow-hidden` box at these heights, so it costs a
   filtered, `plus-lighter`-blended layer per instance and shows nothing. Opt in
   only on a taller surface.
-- **Bucket density (the signature).** `--color-need`/`--color-want`/
-  `--color-save` all resolve to the same ink, so the 50/30/20 buckets are told
-  apart by a segment's `density` (`Density` from this file) instead of hue:
-  needs `"dense"`, wants `"medium"`, saving `"sparse"`. A bucket at or over its
-  budget renders `"solid"` — the same texture-not-colour reading as
-  `ProgressBar`'s `pct >= 1.0`, and wired to agree with it: `bucketDensity`
-  takes an `isOverBudget` flag, and `overBudgetBuckets` (`lib/insights.ts`)
-  turns a period's `BucketSummary[]` (`pct_used >= 1.0`) into the set of names
-  callers pass in. `Insights.tsx` threads its `summary` query's buckets through
-  to both `ComparativeSummary` (`overBudgetBuckets` prop) and `LensBreakdown`'s
-  `buckets` lens (`bucketRows`'s `overBudget` param) so their bars go solid in
-  step with Home's `ProgressBar`s for the same period. `color` still selects
-  the ink *seed* on every segment (unchanged for `red`/`grey`, which aren't
-  buckets); `density` is the new, separate axis. `bucketDensity`/`bucketDither`
-  in `lib/ditherColor.ts` are
-  the single source of truth for both. Density is never the sole encoding —
+- **Bucket encoding (double-encoded for accessibility).** The 50/30/20 buckets
+  are deliberately encoded twice: by hue *and* by dither density. `bucketDither`
+  (`lib/ditherColor.ts`) selects the hue (amber for needs, lilac for wants, sage
+  for saving); `bucketDensity` selects the texture: needs `"dense"`, wants
+  `"medium"`, saving `"sparse"`. The redundancy is intentional — anyone who
+  cannot resolve the dot pattern still gets the hue, and anyone who cannot
+  distinguish the hue still reads the density. A bucket at or over its budget
+  renders `"solid"` (both axes at full strength) — the same texture-not-colour
+  reading as `ProgressBar`'s `pct >= 1.0`, and wired to agree with it:
+  `bucketDensity` takes an `isOverBudget` flag, and `overBudgetBuckets`
+  (`lib/insights.ts`) turns a period's `BucketSummary[]` (`pct_used >= 1.0`)
+  into the set of names callers pass in. `Insights.tsx` threads its `summary`
+  query's buckets through to both `ComparativeSummary` (`overBudgetBuckets` prop)
+  and `LensBreakdown`'s `buckets` lens (`bucketRows`'s `overBudget` param) so
+  their bars go solid in step with Home's `ProgressBar`s for the same period.
+  `bucketDensity`/`bucketDither` in `lib/ditherColor.ts` are the single source
+  of truth for both axes. Hue and density together are never the sole encoding —
   every call site (`ComparativeSummary`'s legend, `LensBreakdown`'s row name)
   states the bucket in visible text next to the bar, since the bar itself stays
-  `aria-hidden`. Same **red is rationed** rule as everywhere else: this
-  encoding exists specifically so buckets never need another spent-ink use —
-  don't reach for `--color-accent` on a bucket bar to "help" it read as urgent.
+  `aria-hidden`. Same **red is rationed** rule as everywhere else: this encoding
+  exists specifically so buckets never need another spent-ink use — don't reach
+  for `--color-accent` on a bucket bar to "help" it read as urgent.
 
 ### ActiveBandHighlight (`charts/`)
 - **Purpose:** the surface-tint band drawn behind the active month's bar in

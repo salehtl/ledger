@@ -11,11 +11,14 @@ import { segmentBounds } from "../../lib/ditherFill";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 
 /**
- * How the 50/30/20 buckets are told apart now that they share one ink: the
- * threshold the Bayer matrix is compared against is biased per segment. Positive
- * bias lights more cells (denser), negative lights fewer (sparser), and a bias
- * of 1 clears every threshold so the fill goes solid — which is how over-budget
- * reads, matching ProgressBar.
+ * One half of the double encoding that tells 50/30/20 buckets apart: `bucketDither`
+ * selects the hue (amber/lilac/sage), and this selects the dither texture for
+ * intentional redundancy — anyone who can't resolve the dot pattern still gets the
+ * hue, and anyone who can't distinguish hue still reads the density. The threshold
+ * the Bayer matrix is compared against is biased per segment. Positive bias lights
+ * more cells (denser), negative lights fewer (sparser), and a bias of 1 clears
+ * every threshold so the fill goes solid — which is how over-budget reads, matching
+ * ProgressBar.
  */
 export type Density = "dense" | "medium" | "sparse" | "solid";
 
