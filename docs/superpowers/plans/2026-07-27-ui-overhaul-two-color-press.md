@@ -979,3 +979,25 @@ cd frontend && bun run test && bunx tsc -b
 git add frontend/src/styles/app.css frontend/src/components/dither-kit/ frontend/src/components/README.md
 git commit -m "fix(a11y): spot ink gets separate fill and text registers for AA"
 ```
+
+#### Task 12 — additional scope, added after the Task 11 review
+
+Run these **before** the Step 5 commit above; one commit covers the whole task.
+
+- [ ] **Step 6: Close the last three `text-accent`-as-text violations**
+
+Task 11's review confirmed these still render vermilion as *text* on a non-primary action. That breaks the rationing rule (four sanctioned contexts only) and is sub-AA on the dark ground, where red must be a fill.
+
+| File | Line | What it is |
+| --- | --- | --- |
+| `frontend/src/components/insights/DrillDownSheet.tsx` | 58 | "Back" |
+| `frontend/src/screens/Home.tsx` | 172 | "All ›" |
+| `frontend/src/components/swipe/SwipeDeck.tsx` | 344 | refund link |
+
+All three are secondary navigation, not a screen's single primary action. Change `text-accent` to `text-fg` at each. Verify with `grep -rn "text-accent" frontend/src/` — the only survivors should be genuine primary actions (e.g. `Button`'s primary variant, which uses `bg-accent text-accent-fg`, not `text-accent`). Report every remaining match and why it is legitimate.
+
+- [ ] **Step 7: Correct the hero row in the catalog**
+
+`frontend/src/components/README.md` documents the hero amount as 32px/500, but `frontend/src/screens/Home.tsx:286` renders `text-[2.75rem]` (44px) at `font-semibold` (600). **The code is right — a hero number should be the largest thing on the screen; the table's 32px came from a mockup rendered at mockup scale.** Update the table row to 44px/600 and mark it explicitly as the hero's own size rather than a general scale step.
+
+While there, add TopBar's chrome-specific `0.12em` stepper tracking as a noted variant of the 0.14em eyebrow row, so a reader working from the table alone can derive the real value.
