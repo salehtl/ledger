@@ -213,6 +213,20 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   An optional `tone` prop overrides the automatic reading. Includes optional
   pace marker and `onAccent` variant for the hero panel.
 
+### PixelSpinner
+- **Purpose:** the loading spinner and the pull-to-refresh gauge. Eight blocks
+  in a ring on the icon pack's 2-unit grid. With no `progress` it runs an
+  indeterminate travelling-brightness trail; with `progress` (0–1) it is a
+  determinate gauge that fills clockwise.
+- **Don't use when:** you want a rotating icon — nothing here rotates, on
+  purpose. Rotating a pixel glyph off-axis blurs the grid, and rotating it in
+  90° steps did nothing at all because the `Loader2` glyph is four-fold
+  symmetric. Brightness travels instead of the shape moving.
+- **Note:** it keeps animating under `prefers-reduced-motion` (slower). It is
+  pure opacity with nothing traversing the screen, and a wait with no indicator
+  is worse than a gentle one. Give it an accessible name (`role="status"`
+  `aria-label`) when it represents a real wait.
+
 ### SegmentedControl
 - **Purpose:** exclusive choice between 2–6 short options (filters, day
   windows). Generic over the value type. `fullWidth` stretches to equal-width,

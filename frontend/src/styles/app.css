@@ -93,15 +93,26 @@
   @keyframes stagger-in { from { opacity: 0; } to { opacity: 1; } }
 }
 
-/* Pixel-art spinner (Loader2 replacement). A smoothly-rotating pixel grid
-   shimmers at every off-axis angle, so this steps in 90° increments instead
-   of interpolating — each frame lands the icon back on a grid-aligned
-   rotation. Same job as Tailwind's `animate-spin`, dedicated class so the
-   stepped timing never leaks onto some future non-pixel spinner. */
-@keyframes spin-pixel-step { to { transform: rotate(360deg); } }
-.spin-pixel { animation: spin-pixel-step 1s steps(4, end) infinite; }
+/* Pixel-art spinner — see components/ui/PixelSpinner.tsx.
+
+   Nothing rotates. Rotating the pixel Loader2 glyph was a no-op: it is
+   four-fold symmetric, so the 90° steps that keep a pixel grid sharp mapped it
+   exactly onto itself and it looked frozen; off-axis rotation would move but
+   antialiases the grid. Instead eight fixed blocks each run this fade, phase
+   -shifted a step apart, so the brightness travels round the ring.
+
+   `steps(8, end)` quantises the fade into eight discrete levels — a comet
+   trail rather than a smooth ramp. A continuous fade reads vector, not pixel.
+
+   800ms: a brisk spinner makes a wait feel shorter than a languid one does. */
+@keyframes pixel-spin-trail { from { opacity: 1; } to { opacity: 0.15; } }
+.pixel-spinner-cell { animation: pixel-spin-trail 800ms steps(8, end) infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .spin-pixel { animation: none; }
+  /* Deliberately still animating. Reduced motion asks for less *movement*, not
+     less comprehension, and this is pure opacity — there is nothing travelling
+     across the screen to trigger on. Killing it outright (as the old rotating
+     spinner had to) leaves a wait with no indication it is still working. */
+  .pixel-spinner-cell { animation-duration: 1600ms; }
 }
 
 html, body, #root { height: 100%; }
