@@ -1,19 +1,21 @@
 type Tone = "good" | "warn" | "bad";
-const TONE_BG: Record<Tone, string> = { good: "bg-good", warn: "bg-warn", bad: "bg-bad" };
 
 /**
- * pct is a fraction (0..1+). Tone defaults to green <0.8, amber <1.0, red >=1.0,
- * but a `tone` prop can override it (e.g. to colour by projection, not spend).
- * An optional `pace` fraction draws a vertical "today" marker on the track.
- * `onAccent` styles the track for placement on a filled brand surface (the hero).
+ * pct is a fraction (0..1+). Over budget is a *texture* change, not a colour
+ * change: under budget the fill is dithered, at or over it fills to solid ink.
+ * The `tone` prop still overrides the automatic reading (e.g. to mark by
+ * projection rather than spend); "bad" means solid. An optional `pace` fraction
+ * draws a vertical "today" marker. `onAccent` styles the track for the hero.
  */
 export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
   pct: number; label?: string; pace?: number; tone?: Tone; onAccent?: boolean;
 }) {
   const clamped = Math.min(100, Math.max(0, pct * 100));
   const auto: Tone = pct >= 1.0 ? "bad" : pct >= 0.8 ? "warn" : "good";
+  const solid = (tone ?? auto) === "bad";
   const track = onAccent ? "bg-white/25" : "bg-surface-2";
   const marker = onAccent ? "bg-white" : "bg-fg/70";
+  const ink = onAccent ? "bg-white" : "bg-fg";
   return (
     <div
       role="progressbar"
@@ -21,9 +23,13 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={label}
-      className={`relative h-3 w-full rounded-full overflow-hidden ${track}`}
+      className={`relative h-3 w-full overflow-hidden rounded-[var(--radius-card)] ${track}`}
     >
-      <div className={`h-full rounded-full transition-[width] duration-300 ${TONE_BG[tone ?? auto]}`} style={{ width: `${clamped}%` }} />
+      <div
+        data-fill={solid ? "solid" : "dithered"}
+        className={`h-full transition-[width] duration-300 ${ink} ${solid ? "" : "dither-mask"}`}
+        style={{ width: `${clamped}%` }}
+      />
       {pace !== undefined && (
         <div
           data-pace

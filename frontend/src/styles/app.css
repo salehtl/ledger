@@ -126,6 +126,16 @@ input, select, textarea { font-size: max(16px, 1rem); }
 .money-neg { color: var(--color-bad); }
 .money-zero { color: var(--color-muted); }
 
+/* A CSS stand-in for the canvas dither, for DOM fills (ProgressBar). Two
+   alpha tiers on a 2px grid, matching dither-paint's OFF_TIER relationship —
+   a family resemblance to the canvas, not a pixel match. */
+.dither-mask {
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  -webkit-mask-size: 2px 2px;
+  mask-size: 2px 2px;
+}
+
 /* ---- Swipe Mode (edge-targeting deck) ---- */
 /* New card rises as the one above it flies off. */
 @keyframes swipe-card-in {
