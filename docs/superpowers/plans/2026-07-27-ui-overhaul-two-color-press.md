@@ -15,7 +15,7 @@
 - **Keep token names, change values.** `--color-bg`, `--color-fg`, `--color-muted`, `--color-border`, `--color-accent`, `--color-accent-fg` keep their names. `text-muted` alone appears 122 times across 81 files; renaming buys nothing.
 - **Light palette:** paper `#f2f1ef`, ink `#16161a`, ink-muted `#5e5e63`, rule `#d6d5d1`, track `#e3e2de`, spot `#d8452c`, spot-fg `#ffffff`.
 - **Dark palette (D1):** paper `#141416`, ink `#ecebe8`, ink-muted `#8b8b8f`, rule `#2b2b2f`, track `#232326`, spot `#d8452c`, spot-fg `#ffffff`.
-- **In dark, vermilion is a fill only — never text.** `#d8452c` on `#141416` is ~4.1:1, under AA. A red label in dark is a bug.
+- **In dark, `#d8452c` is a fill only — never text.** It is ~4.1:1 on `#141416`, under AA. The one place red text is allowed in dark is `.money-neg`, which uses the lifted tint `--color-bad: #f0866f` (~7.4:1). Any other red label in dark is a bug, and the lifted tint must never be used as a fill.
 - **Red is rationed.** Primary action, create plate, active-tab marker, review badge. Nowhere else.
 - **Radius:** `--radius-card` → `3px`. `--radius-sheet` stays `12px`.
 - **One shadow in the app**, used by `Dialog` only.
@@ -179,7 +179,11 @@ Replace the body of `@media (prefers-color-scheme: dark) { :root { … } }` with
 
     --color-good: #ecebe8;
     --color-warn: #8b8b8f;
-    --color-bad: #d8452c;
+    /* The spot ink has two values in dark, the way a press runs a tint of the
+       same plate: #d8452c is the FILL (behind white), #f0866f is the TEXT tint.
+       .money-neg paints negative amounts with this token, and #d8452c would be
+       ~4.1:1 here — under AA. #f0866f is ~7.4:1. Never widen this to fills. */
+    --color-bad: #f0866f;
 
     --color-foreground: #ecebe8;
     --color-muted-foreground: #8b8b8f;
