@@ -8,6 +8,7 @@ import { Tooltip } from "../dither-kit/tooltip";
 import type { ChartConfig } from "../dither-kit/chart-context";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 import { ActiveBandHighlight } from "./ActiveBandHighlight";
+import { SCRUB_SURFACE } from "./scrubSurface";
 
 // Module constant: a fresh object literal here would give the chart a new
 // `config` identity every render, busting configKeys → bands → the whole
@@ -32,7 +33,9 @@ export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; acti
   const marker = activeIndex(points, activePeriod);
 
   return (
-    <div role="img" aria-label={`Monthly spending trend. ${summary}`}>
+    // SCRUB_SURFACE: a finger-drag scrubs the detail box instead of starting a
+    // text selection. On the outer wrapper so the labels below are covered too.
+    <div role="img" aria-label={`Monthly spending trend. ${summary}`} style={SCRUB_SURFACE}>
       {/* `key` on the theme forces a canvas repaint when the OS theme flips —
           the dither is painted in raw RGB and can't inherit a CSS var.
           `relative`: the highlight below is positioned against this box. */}

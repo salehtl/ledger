@@ -139,6 +139,17 @@ export function CartesianRoot<TData extends Row>({
     onHoverChange?.(index)
   }
 
+  // LOCAL FORK: shared by pointerleave and pointercancel. Upstream only handles
+  // leave, which is enough for a mouse but not for touch — when the browser
+  // decides a finger-drag is a page scroll it cancels the pointer stream
+  // without ever firing leave, so the scrub state (and the tooltip) stayed
+  // stuck on screen while the page moved underneath it.
+  const endHover = () => {
+    ctx.setMouseInChart(false)
+    ctx.setHoverIndex(null)
+    onHoverChange?.(null)
+  }
+
   return (
     <ChartContext value={ctx}>
       <CommonChartContext value={ctx.common}>
@@ -147,11 +158,8 @@ export function CartesianRoot<TData extends Row>({
           className={cn("relative h-full w-full", className)}
           onPointerEnter={() => ctx.setMouseInChart(true)}
           onPointerMove={interactive ? (e) => onMove(e.clientX) : undefined}
-          onPointerLeave={() => {
-            ctx.setMouseInChart(false)
-            ctx.setHoverIndex(null)
-            onHoverChange?.(null)
-          }}
+          onPointerLeave={endHover}
+          onPointerCancel={endHover}
         >
           {ctx.ready && backChildren.length > 0 && (
             <svg
