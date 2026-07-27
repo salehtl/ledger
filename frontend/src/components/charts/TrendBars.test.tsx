@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TrendBars } from "./TrendBars";
 import { bandCenters } from "../../lib/trendBars";
 import type { TrendPoint } from "../../lib/insights";
@@ -22,6 +22,39 @@ describe("TrendBars", () => {
     // ever loses its aria-hidden treatment.
     render(<TrendBars points={points} />);
     expect(screen.getByRole("img")).toBeInTheDocument();
+  });
+
+  // Touch scrubbing. Without these the browser claims a finger-drag for native
+  // text selection: the labels highlight, the gesture is cancelled, and the
+  // detail box never appears. Every other pointer surface in the app already
+  // guards this way (SwipeableRow, Toast, SwipeCard).
+  it("claims horizontal drags for scrubbing and blocks text selection", () => {
+    render(<TrendBars points={points} />);
+    const chart = screen.getByRole("img", { name: /Monthly spending trend/ });
+    // pan-y, not none: a vertical drag must still scroll the page. jsdom's
+    // cssstyle has no touch-action property, so it never reaches the style
+    // attribute and toHaveStyle can't see it — read it off the style object,
+    // which does record what React assigned.
+    expect(chart.style.touchAction).toBe("pan-y");
+    expect(chart).toHaveStyle({ userSelect: "none" });
+  });
+
+  it("shows the detail box while scrubbing and hides it when the browser takes the gesture", async () => {
+    const { container } = render(<TrendBars points={points} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative");
+    if (!surface) throw new Error("chart pointer surface not found");
+
+    fireEvent.pointerEnter(surface);
+    fireEvent.pointerMove(surface, { clientX: 160 });
+    expect(container.querySelector(".dither-tooltip")).toBeInTheDocument();
+
+    // A vertical scroll makes the browser cancel the pointer stream without
+    // ever firing pointerleave; without a pointercancel handler the detail box
+    // stays stuck on screen while the page moves under it. It fades before
+    // unmounting, so assert the fade starts, then that it leaves.
+    fireEvent.pointerCancel(surface);
+    expect(container.querySelector<HTMLElement>(".dither-tooltip")?.style.opacity).toBe("0");
+    await waitFor(() => expect(container.querySelector(".dither-tooltip")).not.toBeInTheDocument());
   });
 
   it("summarizes every month in the accessible label", () => {
