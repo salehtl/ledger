@@ -1,5 +1,4 @@
 import type { TrendPoint } from "./insights";
-import { barHeightPct } from "./trendBars";
 
 export type NetSign = "pos" | "neg" | "zero";
 
@@ -9,10 +8,6 @@ export interface FlowColumn {
   label: string;
   income: number;
   spent: number;
-  /** Inflow bar height, 0–100% of the shared scale (above the axis). */
-  inPct: number;
-  /** Outflow bar height, 0–100% of the shared scale (below the axis). */
-  outPct: number;
   /** income − spent, in fils. */
   net: number;
   netSign: NetSign;
@@ -26,13 +21,11 @@ export interface FlowColumn {
 }
 
 /**
- * Project trend points onto chart columns. Income and spending share one gross
- * scale — the tallest of all inflow/outflow values is full height — so the two
- * directions are directly comparable and the net asymmetry reads honestly. The
- * net lane uses its own scale (see `netLanePct`).
+ * Project trend points onto chart columns. The net lane uses its own scale
+ * (see `netLanePct`); the bars themselves are laid out by the dither
+ * `BarChart` from `flowRows` below, on its own shared scale.
  */
 export function flowColumns(points: TrendPoint[]): FlowColumn[] {
-  const max = Math.max(0, ...points.flatMap((p) => [p.income, p.spent]));
   const nets = points.map((p) => p.income - p.spent);
   const maxAbsNet = Math.max(0, ...nets.map(Math.abs));
   return points.map((p, i) => {
@@ -44,13 +37,26 @@ export function flowColumns(points: TrendPoint[]): FlowColumn[] {
       label: p.label,
       income: p.income,
       spent: p.spent,
-      inPct: barHeightPct(p.income, max),
-      outPct: barHeightPct(p.spent, max),
       net,
       netSign,
       netLanePct,
     };
   });
+}
+
+/**
+ * Chart rows for the dithered bars. Spending is negated so a `stacked` bar
+ * chart splits it below the zero axis — d3's stack layout puts negative values
+ * under the baseline, which is exactly the in-above / out-below shape this
+ * chart has always had. `|| 0` keeps a zero month off negative zero.
+ */
+export function flowRows(cols: FlowColumn[]): { period: string; label: string; income: number; spent: number }[] {
+  return cols.map((c) => ({
+    period: c.period,
+    label: c.label,
+    income: c.income,
+    spent: -c.spent || 0,
+  }));
 }
 
 /** One decimal, trailing ".0" dropped. */
