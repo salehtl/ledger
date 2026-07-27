@@ -32,8 +32,9 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const focus = insightsFocus(scope);
   const focusMonth = focus.period;
   const prevMonth = addMonth(focusMonth, -1);
-  // The 6-month trend is always the trailing 6 real months (matches the static endpoint).
-  const periods = trailingPeriods(currentPeriod(), 6);
+  // The 6-month trend is always the trailing 6 real months (matches the static
+  // endpoint). Memoized for identity, not cost: it feeds the `points` memo.
+  const periods = useMemo(() => trailingPeriods(currentPeriod(), 6), []);
 
   const cur = useQuery({ queryKey: ["insights-categories", focusMonth], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${focusMonth}`) });
   const prev = useQuery({ queryKey: ["insights-categories", prevMonth], queryFn: () => getJSON<CategorySpend[]>(`/api/insights/categories?period=${prevMonth}`) });
@@ -66,6 +67,12 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
     return categoryRows(withShare([...deltas].sort((a, b) => b.spent - a.spent), total));
   }, [lens, curData, prevData, txns, total]);
 
+  // Memoized (and hoisted above the early returns, so it stays a hook): this is
+  // FlowBars' `data`, and dither-kit restarts the 900ms entrance wave whenever
+  // `data` changes *identity*. Unmemoized, every SSE-driven query invalidation
+  // anywhere on this screen replayed the chart's entrance.
+  const points = useMemo(() => trendSeries(trend.data ?? [], periods), [trend.data, periods]);
+
   // isPending, not isLoading: queries are pending-but-not-fetching during
   // persisted-cache restore, and isLoading is false in that window.
   if (cur.isPending || prev.isPending || summary.isPending) return <Skeleton rows={8} />;
@@ -76,7 +83,6 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const buckets = bucketComparison(curData, prevData);
   const income = summary.data?.income ?? 0;
   const savings = savingsRate(income, total);
-  const points = trendSeries(trend.data ?? [], periods);
   const label = `${monthLabel(focusMonth)} ${focusMonth.slice(0, 4)}`;
 
   const onDrill = (row: BreakdownRow) => {

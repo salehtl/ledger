@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { flowColumns, compactFils } from "./flowBars";
+import { flowColumns, flowRows, compactFils } from "./flowBars";
 import type { TrendPoint } from "./insights";
 
 const pt = (period: string, income: number, spent: number): TrendPoint => ({
@@ -10,15 +10,6 @@ const pt = (period: string, income: number, spent: number): TrendPoint => ({
 });
 
 describe("flowColumns", () => {
-  it("scales income and spending against a single shared max", () => {
-    // Max value across all in/out is 200000 (Feb income).
-    const cols = flowColumns([pt("2026-02", 200000, 100000), pt("2026-03", 50000, 100000)]);
-    expect(cols[0].inPct).toBe(100); // tallest bar overall
-    expect(cols[0].outPct).toBe(50);
-    expect(cols[1].inPct).toBe(25);
-    expect(cols[1].outPct).toBe(50);
-  });
-
   it("computes net and its sign", () => {
     const cols = flowColumns([pt("2026-02", 200000, 100000), pt("2026-03", 50000, 100000), pt("2026-04", 100000, 100000)]);
     expect(cols[0].net).toBe(100000);
@@ -42,10 +33,8 @@ describe("flowColumns", () => {
     expect(cols[1].netLanePct).toBe(-50); // -100000 of maxAbsNet 200000
   });
 
-  it("renders empty months flat with zero heights", () => {
+  it("renders an empty month with net zero", () => {
     const cols = flowColumns([pt("2026-05", 0, 0)]);
-    expect(cols[0].inPct).toBe(0);
-    expect(cols[0].outPct).toBe(0);
     expect(cols[0].net).toBe(0);
     expect(cols[0].netSign).toBe("zero");
   });
@@ -72,5 +61,28 @@ describe("compactFils", () => {
   });
   it("shows zero without a sign", () => {
     expect(compactFils(0)).toBe("0");
+  });
+});
+
+describe("flowRows", () => {
+  it("negates spending so stacked bars diverge around zero", () => {
+    const pts: TrendPoint[] = [
+      { period: "2026-05", label: "May", income: 200000, spent: 100000 },
+      { period: "2026-06", label: "Jun", income: 50000, spent: 100000 },
+    ];
+    expect(flowRows(flowColumns(pts))).toEqual([
+      { period: "2026-05", label: "May", income: 200000, spent: -100000 },
+      { period: "2026-06", label: "Jun", income: 50000, spent: -100000 },
+    ]);
+  });
+
+  it("leaves a zero month at zero rather than negative zero", () => {
+    const zero = flowRows(flowColumns([{ period: "2026-07", label: "Jul", income: 0, spent: 0 }]));
+    expect(Object.is(zero[0].spent, -0)).toBe(false);
+    expect(zero[0].spent).toBe(0);
+  });
+
+  it("returns an empty array for an empty series", () => {
+    expect(flowRows([])).toEqual([]);
   });
 });

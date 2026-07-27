@@ -11,7 +11,7 @@ import { pageTransition } from "../lib/motion";
  * onBack, untracked.
  */
 export function useEdgeBack(
-  panelRef: RefObject<HTMLDivElement>,
+  panelRef: RefObject<HTMLDivElement | null>,
   onBack: () => void,
   reduced: boolean,
 ) {

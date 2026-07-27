@@ -2,6 +2,8 @@ import { Card } from "../ui/Card";
 import { Money } from "../Money";
 import { bucketColor, BUCKET_LABEL } from "../../lib/insights";
 import type { BucketComparison, SavingsResult } from "../../lib/insights";
+import { DitherFill } from "../charts/DitherFill";
+import { bucketDither } from "../../lib/ditherColor";
 
 export function ComparativeSummary({ label, note, net, savings, buckets, onSelectBucket }: {
   label: string; note: string; net: number; savings: SavingsResult; buckets: BucketComparison[];
@@ -26,10 +28,12 @@ export function ComparativeSummary({ label, note, net, savings, buckets, onSelec
       </div>
 
       {/* Spending split: one bar showing the need/want/saving proportions. */}
-      <div className="mt-3 flex h-2.5 rounded-full overflow-hidden bg-surface-2" aria-hidden>
-        {total > 0 && buckets.filter((b) => b.spent > 0).map((b) => (
-          <div key={b.bucket} style={{ width: `${(b.spent / total) * 100}%`, background: bucketColor(b.bucket) }} />
-        ))}
+      <div className="mt-3">
+        <DitherFill
+          segments={buckets.filter((b) => b.spent > 0).map((b) => ({ value: b.spent, color: bucketDither(b.bucket) }))}
+          max={total}
+          height={12}
+        />
       </div>
 
       {/* Legend doubles as drill-in: tap a bucket to see its transactions. */}

@@ -4,8 +4,8 @@ import type { BreakdownRow } from "../../lib/lens";
 import { LensBreakdown } from "./LensBreakdown";
 
 const rows: BreakdownRow[] = [
-  { key: "cat:10", name: "Dining", color: "#1373d9", spent: 680, share: 0.4, delta: 100, deltaPct: 0.17, categoryId: 10 },
-  { key: "cat:11", name: "Shopping", color: "#7b35b8", spent: 560, share: 0.33, delta: -50, deltaPct: -0.08, categoryId: 11 },
+  { key: "cat:10", name: "Dining", ditherColor: "blue", spent: 680, share: 0.4, delta: 100, deltaPct: 0.17, categoryId: 10 },
+  { key: "cat:11", name: "Shopping", ditherColor: "purple", spent: 560, share: 0.33, delta: -50, deltaPct: -0.08, categoryId: 11 },
 ];
 
 describe("LensBreakdown", () => {
