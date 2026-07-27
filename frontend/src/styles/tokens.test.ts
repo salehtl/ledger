@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { PALETTE_LIGHT, PALETTE_DARK, type DitherColor } from "../components/dither-kit/palette";
 import { PALETTE_NAMES } from "../lib/paletteColor";
@@ -55,6 +55,37 @@ describe("palette tokens", () => {
     // alias with a literal and the buckets went flat.
     for (const b of ["need", "want", "save", "transfer"]) {
       expect(declared(DARK_CSS, b), `dark --color-${b} should not exist`).toBeNull();
+    }
+  });
+});
+
+describe("built output", () => {
+  // The source test above passed while the *shipped* CSS was missing the light
+  // value for `rose` and all six deep steps: they live only in runtime
+  // `var()` strings, so Tailwind tree-shook them out of @theme and those marks
+  // rendered as nothing on paper. Asserting on source could never catch that.
+  const distDir = resolve(process.cwd(), "../internal/web/dist/assets");
+  const builtCss = () => {
+    const dir = readdirSync(distDir).filter((f) => f.endsWith(".css"));
+    return dir.map((f) => readFileSync(resolve(distDir, f), "utf8")).join("\n");
+  };
+
+  it("ships every palette token, in both themes", () => {
+    const css = builtCss();
+    for (const name of PALETTE_NAMES) {
+      // Two declarations each: one per theme block.
+      const hits = css.match(new RegExp(`--color-${name}\\s*:`, "g")) ?? [];
+      expect(hits.length, `--color-${name} in built CSS`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("keeps the palette out of @theme so it cannot be tree-shaken", () => {
+    // Structural, not incidental: inside @theme these survive only while
+    // something references them at build time.
+    const src = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
+    const themeBlock = src.slice(src.indexOf("@theme"), src.indexOf("\n}", src.indexOf("@theme")));
+    for (const name of PALETTE_NAMES) {
+      expect(themeBlock.includes(`--color-${name}:`), `--color-${name} must not be in @theme`).toBe(false);
     }
   });
 });
