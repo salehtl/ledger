@@ -20,7 +20,6 @@
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
     "lucide-react": "^1.18.0",
-    "motion": "^12.42.2",
     "react": "^19",
     "react-dom": "^19",
     "tailwind-merge": "^3.6.0",
