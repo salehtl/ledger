@@ -1,5 +1,5 @@
 import type { Txn } from "../api/types";
-import { bucketColor, BUCKET_LABEL, CATEGORY_PALETTE, type BucketComparison, type CategoryDelta } from "./insights";
+import { BUCKET_LABEL, type BucketComparison, type CategoryDelta } from "./insights";
 import { merchantBreakdown } from "./analysis";
 import { bucketDither, categoryDither } from "./ditherColor";
 import type { DitherColor } from "../components/dither-kit/palette";
@@ -13,8 +13,13 @@ export type Lens = "buckets" | "categories" | "merchants";
 export interface BreakdownRow {
   key: string;
   name: string;
-  color: string;
-  /** dither-kit seed matching `color` — the canvas can't read a CSS var. */
+  /**
+   * dither-kit seed for this row's bar — the canvas paints raw RGB and can't
+   * read a CSS var. There is deliberately no parallel CSS-color field: every
+   * consumer of a breakdown row renders a `DitherFill`, and carrying the same
+   * color twice is how a legend drifts out of step with what it labels. The
+   * CSS-var side of the mapping lives in `lib/ditherColor.ts`.
+   */
   ditherColor: DitherColor;
   spent: number;
   share: number;
@@ -37,7 +42,6 @@ export function bucketRows(buckets: BucketComparison[], total: number): Breakdow
     .map((b) => ({
       key: b.bucket,
       name: BUCKET_LABEL[b.bucket] ?? b.bucket,
-      color: bucketColor(b.bucket),
       ditherColor: bucketDither(b.bucket),
       spent: b.spent,
       share: share(b.spent, total),
@@ -54,7 +58,6 @@ export function categoryRows(rows: (CategoryDelta & { pct: number })[]): Breakdo
   return rows.map((c, i) => ({
     key: `cat:${c.category_id}`,
     name: c.name,
-    color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
     ditherColor: categoryDither(i),
     spent: c.spent,
     share: c.pct,
@@ -73,7 +76,6 @@ export function merchantRows(txns: Txn[], total: number, limit = 20): BreakdownR
     .map((m, i) => ({
       key: `merchant:${m.merchant}`,
       name: m.merchant,
-      color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
       ditherColor: categoryDither(i),
       spent: m.spent,
       share: share(m.spent, total),
