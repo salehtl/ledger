@@ -18,3 +18,13 @@ frontend/node_modules
 
 # Agent worktree scratch space (never commit)
 .claire/
+
+# Brainstorming visual companion (local mockups)
+.superpowers/
+
+# Skills installed via `bunx skills add` — machine-local, and .claude/skills/
+# entries for them are symlinks into .agents/ that don't survive a clone.
+.agents/
+skills-lock.json
+.claude/skills/shadcn
+.claude/skills/migrate-radix-to-base

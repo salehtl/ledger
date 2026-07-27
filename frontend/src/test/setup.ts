@@ -63,3 +63,46 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+// jsdom has no ResizeObserver. dither-kit measures its container through one
+// (use-chart-dimensions.ts) and stays unrendered at 0x0, so report a fixed
+// phone-sized box and fire once on observe.
+if (typeof window.ResizeObserver === "undefined") {
+  class ResizeObserverStub {
+    constructor(private cb: ResizeObserverCallback) {}
+    observe(target: Element) {
+      Object.defineProperty(target, "clientWidth", { value: 320, configurable: true });
+      Object.defineProperty(target, "clientHeight", { value: 144, configurable: true });
+      this.cb([], this as unknown as ResizeObserver);
+    }
+    unobserve() {}
+    disconnect() {}
+  }
+  window.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+}
+
+// jsdom has no canvas 2D context. The dither engine calls into it every frame;
+// a no-op stub keeps the RAF loop alive without pulling in the `canvas` package.
+if (typeof HTMLCanvasElement !== "undefined") {
+  HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+    clearRect: vi.fn(),
+    fillRect: vi.fn(),
+    drawImage: vi.fn(),
+    putImageData: vi.fn(),
+    createImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4) })),
+    getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4) })),
+    save: vi.fn(),
+    restore: vi.fn(),
+    translate: vi.fn(),
+    scale: vi.fn(),
+    beginPath: vi.fn(),
+    closePath: vi.fn(),
+    moveTo: vi.fn(),
+    lineTo: vi.fn(),
+    stroke: vi.fn(),
+    fill: vi.fn(),
+    set fillStyle(_v: string) {},
+    set strokeStyle(_v: string) {},
+    set globalAlpha(_v: number) {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+}

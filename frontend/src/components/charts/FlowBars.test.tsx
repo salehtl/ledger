@@ -1,6 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import { FlowBars } from "./FlowBars";
+import { bandCenters } from "../../lib/trendBars";
+import { rgb, seedOfColor } from "../dither-kit/palette";
 import type { TrendPoint } from "../../lib/insights";
+
+// jsdom rewrites `rgba(r,g,b,1)` to `rgb(r,g,b)`, so compare the channels.
+const channels = (css: string) => (css.match(/\d+/g) ?? []).slice(0, 3).join(",");
+const swatch = (testId: string) => channels(screen.getByTestId(testId).style.background);
 
 const points: TrendPoint[] = [
   { period: "2026-05", label: "May", income: 200000, spent: 100000 },
@@ -8,12 +14,9 @@ const points: TrendPoint[] = [
 ];
 
 describe("FlowBars", () => {
-  it("scales income and spending against one shared max", () => {
-    render(<FlowBars points={points} />);
-    expect(screen.getByTestId("flow-in-2026-05").style.height).toBe("100%"); // tallest overall
-    expect(screen.getByTestId("flow-out-2026-05").style.height).toBe("50%");
-    expect(screen.getByTestId("flow-in-2026-06").style.height).toBe("25%");
-    expect(screen.getByTestId("flow-out-2026-06").style.height).toBe("50%");
+  it("renders a dithered bar canvas for the series", () => {
+    const { container } = render(<FlowBars points={points} />);
+    expect(container.querySelector("canvas")).toBeInTheDocument();
   });
 
   it("shows a signed net figure per month", () => {
@@ -41,8 +44,48 @@ describe("FlowBars", () => {
     expect(screen.getByTestId("net-dot-2026-06")).toBeInTheDocument();
   });
 
+  it("aligns each net dot with its bar's band center", () => {
+    // Regression test for the alignment bug Task 3 hit on TrendBars: a dither
+    // BarChart lays bars out on d3's padded band scale, not evenly-spaced
+    // centers. The net dots must sit at the same fractional centers
+    // lib/trendBars.ts's bandCenters() derives from the chart's own scale,
+    // or the net lane drifts off the bars it describes.
+    render(<FlowBars points={points} />);
+    const centers = bandCenters(points.length);
+    expect(screen.getByTestId("net-dot-2026-05").style.left).toBe(`${centers[0].center * 100}%`);
+    expect(screen.getByTestId("net-dot-2026-06").style.left).toBe(`${centers[1].center * 100}%`);
+  });
+
+  it("paints each legend swatch in the seed its series actually paints", () => {
+    // The chips were hand-picked CSS vars and drifted: "In" was --color-good
+    // while the income series paints the "green" seed (--color-save), and "Out"
+    // was --color-fg/40% while the spent series paints "grey" (--color-muted).
+    // Both now resolve from the same palette seeds the bars use.
+    render(<FlowBars points={points} />);
+    expect(swatch("flow-legend-income")).toBe(channels(rgb(seedOfColor("green").fill)));
+    expect(swatch("flow-legend-spent")).toBe(channels(rgb(seedOfColor("grey").fill)));
+  });
+
   it("renders nothing for an empty series", () => {
     const { container } = render(<FlowBars points={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("highlights the active month's band behind the bars", () => {
+    render(<FlowBars points={points} activePeriod="2026-06" />);
+    const centers = bandCenters(points.length);
+    const el = screen.getByTestId("active-band-highlight");
+    expect(el.style.left).toBe(`${(centers[1].center - centers[1].width / 2) * 100}%`);
+    expect(el.style.width).toBe(`${centers[1].width * 100}%`);
+  });
+
+  it("renders no highlight when no month is active", () => {
+    render(<FlowBars points={points} />);
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
+  });
+
+  it("renders no highlight for a period absent from the series", () => {
+    render(<FlowBars points={points} activePeriod="2099-01" />);
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
   });
 });

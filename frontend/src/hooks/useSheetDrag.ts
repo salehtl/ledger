@@ -8,7 +8,7 @@ import { sheetTransition } from "../lib/motion";
  * (no React state per move — avoids re-render churn and stays on the GPU).
  */
 export function useSheetDrag(
-  panelRef: RefObject<HTMLDivElement>,
+  panelRef: RefObject<HTMLDivElement | null>,
   onDismiss: () => void,
   reduced: boolean,
 ) {
