@@ -18,9 +18,10 @@
   --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
   --color-hero-fg: #f2f1ef;
 
-  /* Bucket hues are retired — buckets are encoded by dither density (Task 9).
-     These resolve to ink so any un-migrated call site degrades to legible
-     monochrome rather than to an undefined colour. */
+  /* Buckets are encoded by hue *and* density for redundancy. The hue is selected
+     by bucketDither() in lib/ditherColor.ts and rendered directly to the dither
+     canvas. These CSS vars are legacy fallbacks — they resolve to ink so any
+     un-migrated call site degrades to legible monochrome rather than undefined. */
   --color-need: #16161a;
   --color-want: #16161a;
   --color-save: #16161a;
@@ -195,6 +196,7 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-hero: #ecebe8;
     --color-hero-fg: #141416;
 
+    /* Buckets are encoded by hue *and* density. CSS vars are legacy fallbacks. */
     --color-need: #ecebe8;
     --color-want: #ecebe8;
     --color-save: #ecebe8;

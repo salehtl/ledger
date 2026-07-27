@@ -22,11 +22,11 @@ export function bucketDither(bucket: string): DitherColor {
 }
 
 /**
- * The signature encoding: `--color-need`/`--color-want`/`--color-save` all
- * resolve to the same ink now, so the 50/30/20 buckets are told apart by
- * dither density instead — needs densest, wants medium, saving sparsest.
- * `bucketDither` above still selects the ink *seed* (still needed for `red`/
- * `grey`, which aren't buckets); this selects the *texture*.
+ * Selects the texture (density) encoding for a bucket. Buckets are deliberately
+ * double-encoded: `bucketDither` above selects the hue (amber/lilac/sage), and
+ * this selects the dither texture — needs densest, wants medium, saving sparsest.
+ * The redundancy is deliberate: anyone who can't resolve the dot pattern still
+ * gets the hue, and anyone who can't distinguish the hue still reads the density.
  *
  * `isOverBudget` overrides the bucket's usual density to `"solid"` — a bucket
  * at or over its target renders full ink, exactly the texture-not-colour
