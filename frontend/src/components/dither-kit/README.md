@@ -31,6 +31,15 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   check throws `ReferenceError: process is not defined` on every render.
   Swapped for Vite's own `import.meta.env.DEV`, which is statically replaced
   at build time and behaves identically.
+- **`cartesian-root.tsx`**: added an `onPointerCancel` handler, sharing the
+  `endHover` teardown with `onPointerLeave`. Upstream handles leave only, which
+  is enough for a mouse but not for touch — when the browser decides a
+  finger-drag is a page scroll it cancels the pointer stream *without* firing
+  leave, so the scrub index (and the tooltip) stayed stuck on screen while the
+  page moved underneath. Note the touch fix is two-part: the charts themselves
+  must also declare `touch-action`/`user-select`, which they do via
+  `components/charts/scrubSurface.ts` — this half only cleans up after a
+  gesture the browser takes anyway.
 - **`bar-canvas.tsx`**: the bloom copy (`bloomCtx.clearRect` + `drawImage`)
   moved from the top of the RAF loop to *below* the `if (!needsFill) return`
   guard. Upstream re-copied the main canvas into the bloom layer on every frame
