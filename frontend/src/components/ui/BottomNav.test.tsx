@@ -31,7 +31,7 @@ describe("BottomNav", () => {
     const active = screen.getByRole("button", { current: "page" });
     expect(active.querySelector("[data-active-tick]")).not.toBeNull();
     expect(active.innerHTML).not.toContain("bg-accent/10");
-    expect(active.className).not.toContain("text-accent");
+    expect(active.className).toContain("text-fg");
   });
 
   it("the review badge spends the spot ink", () => {

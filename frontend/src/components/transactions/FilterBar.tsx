@@ -25,7 +25,7 @@ function Chip({ label, active, dot, onClick }: { label: string; active: boolean;
       aria-pressed={active}
       onClick={onClick}
       className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap press transition-colors ${
-        active ? "bg-accent/10 text-accent" : "bg-surface-2 text-muted hover:text-fg"
+        active ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted hover:text-fg"
       }`}
     >
       {dot && <span aria-hidden className="w-2 h-2 rounded-full shrink-0" style={{ background: dot }} />}
@@ -87,7 +87,7 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
               key={t.key}
               type="button"
               onClick={t.remove}
-              className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full text-xs font-medium bg-accent/10 text-accent press"
+              className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full text-xs font-medium bg-accent/10 text-fg press"
               aria-label={`Remove ${t.label} filter`}
             >
               {t.label}

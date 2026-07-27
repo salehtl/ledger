@@ -103,7 +103,12 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     return () => { clearTimeout(id); document.removeEventListener("visibilitychange", onVis); };
   }, []); // mount-only; beginRef holds the latest callback
 
-  const tone = toast.tone === "success" ? "bg-good" : toast.tone === "error" ? "bg-bad" : "bg-fg";
+  // "error" spends the app's one fill register (bg-accent) and so needs the
+  // fill's own constant-white text (text-accent-fg) rather than text-bg, which
+  // flips with theme and would go dark-on-vermilion in the dark theme.
+  const isError = toast.tone === "error";
+  const tone = toast.tone === "success" ? "bg-good" : isError ? "bg-accent" : "bg-fg";
+  const fg = isError ? "text-accent-fg" : "text-bg";
   const hidden = !mounted || leaving;
   return (
     <div
@@ -121,18 +126,18 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
         willChange: reduced ? "opacity" : "transform, opacity",
         touchAction: "pan-y",
       }}
-      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] text-bg px-3 py-2.5 rounded-lg shadow-lg ${tone}`}
+      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-lg shadow-lg ${tone}`}
     >
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
         <button
-          className="text-sm font-semibold text-bg/90 underline press"
+          className={`text-sm font-semibold ${fg}/90 underline press`}
           onClick={() => { try { toast.action!.onAction(); } finally { beginDismiss(); } }}
         >
           {toast.action.label}
         </button>
       )}
-      <button aria-label="Dismiss" className="text-bg/70 press" onClick={beginDismiss}>×</button>
+      <button aria-label="Dismiss" className={`${fg}/70 press`} onClick={beginDismiss}>×</button>
     </div>
   );
 }

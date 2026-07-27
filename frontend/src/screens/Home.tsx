@@ -23,8 +23,14 @@ import { useFirstReveal } from "../hooks/useFirstReveal";
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
 const TONE_TEXT = { good: "text-good", warn: "text-warn", bad: "text-bad" } as const;
-// Hero status badge: solid tone fill + text-bg (legible on any tone in both themes).
-const HERO_BADGE_BG = { good: "bg-good", warn: "bg-warn", bad: "bg-bad" } as const;
+// Hero status badge: solid tone fill + matching text. good/warn stay ink-family
+// fills paired with text-bg (flips with theme, stays legible against either).
+// bad now spends the app's one fill register (bg-accent) instead of the text
+// register — a fill is never rendered as text — and so pairs with the fill's
+// own constant-white text-accent-fg rather than text-bg, which would go
+// dark-on-vermilion at night.
+const HERO_BADGE_BG = { good: "bg-good", warn: "bg-warn", bad: "bg-accent" } as const;
+const HERO_BADGE_FG = { good: "text-bg", warn: "text-bg", bad: "text-accent-fg" } as const;
 const VERDICT_ICON = { under: Check, over: TrendingUp, overbudget: AlertTriangle } as const;
 
 /** "1,180 left" or "320 over" for a remaining amount (positive = under budget). */
@@ -115,7 +121,7 @@ export function Home({
         <div className="flex items-center justify-between mt-2 text-sm">
           <span className="tnum opacity-80">{remainingLabel(budget - spent)}</span>
           {isCurrent && (
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold text-bg ${HERO_BADGE_BG[heroTone]}`}>
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold ${HERO_BADGE_FG[heroTone]} ${HERO_BADGE_BG[heroTone]}`}>
               <HeroIcon size={13} aria-hidden />
               {VERDICT[heroStatus]}
             </span>

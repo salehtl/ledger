@@ -23,7 +23,7 @@ export function SegmentedControl<T extends string>({
         >
           {o.label}
           {o.badge != null && o.badge > 0 && (
-            <span className="tnum text-[11px] font-semibold rounded-full bg-accent/15 text-accent px-1.5 min-w-4 text-center">
+            <span className="tnum text-[11px] font-semibold rounded-full bg-accent/15 text-fg px-1.5 min-w-4 text-center">
               {o.badge}
             </span>
           )}
