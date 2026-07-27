@@ -82,8 +82,19 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Don't:** inline `bg-surface rounded-[var(--radius-card)] border border-border`.
 
 ### Pill
-- **Purpose:** small inline status/label badge with a semantic `tone`
-  (good/warn/bad/muted/neutral). Used for transaction status.
+- **Purpose:** small inline status/label badge with `tone`
+  `"default" | "muted" | "attention"`. Colour no longer carries status — the
+  label text does. Used for transaction status.
+- **Red is rationed:** `attention` (`bg-accent`) is the *only* tone that spends
+  the app's one spot ink, and vermilion appears in exactly four places
+  app-wide: the primary action, the create plate, the active-tab marker, and
+  the review badge. `Pill`'s only sanctioned `attention` use is the
+  `needs_review` status pill (`statusTone` in `lib/format.ts`) — every other
+  status, including data-quality notes like "no AED rate", is `default` or
+  `muted`. Never reach for `attention` just because a state feels warning-ish;
+  if two pills would land in the same row and both want `attention`, only the
+  more urgent one keeps it — demote the other to `default` and make its label
+  clearer instead.
 - **Don't use when:** the badge is a count overlay (BottomNav's tiny badge is
   a deliberate exception) or needs custom glyphs (→ `insights/DeltaBadge`).
 
