@@ -19,10 +19,13 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   - **Text on dark ground** (`--color-bad` in the dark override, `#f0866f`,
     unchanged) — 7.31:1 on `#141416`.
 
-  Never use a text register as a fill, or the fill register as text — e.g.
-  don't set `text-accent` for a label; `--color-accent` is 4.45:1 on light
-  paper and worse still on dark. See "Red is rationed" under `Pill` for where
-  the fill register is allowed to appear at all.
+  **The spot ink is only ever a fill — it is never coloured text, in either
+  theme.** Never use a text register as a fill, or the fill register as a
+  label's text colour; `--color-accent` applied to text is 4.45:1 on light
+  paper and worse still on dark, sub-AA either way. `.money-neg` (`app.css`)
+  is the single documented exception: it renders negative amounts in the
+  *text* register above, never the fill. See "Red is rationed" under `Pill`
+  for where the fill register is allowed to appear at all.
 - **Elevation is Dialog-only.** The app's one box-shadow utility (`app.css`)
   exists for exactly one surface — the `Dialog` sheet, which must read as
   above the page. Every other surface is paper: separation comes from a
@@ -181,11 +184,11 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   it's data, not prose.
 - **BottomNav active tab:** marked by a 2px vermilion tick (`data-active-tick`)
   sitting on the top hairline, plus `text-fg` on the label — never a tinted
-  pill behind the icon, never `text-accent` on the label (vermilion as text on
-  the dark ground is sub-AA; red is a fill in dark, never text). The review
-  badge is `bg-accent text-accent-fg` — one of exactly four sanctioned red
-  contexts app-wide (primary action, create plate, active-tab marker, review
-  badge).
+  pill behind the icon, and never the accent ink rendered as the label's own
+  coloured text (the spot ink is a fill only, in both themes; as text it's
+  sub-AA on the dark ground). The review badge is `bg-accent text-accent-fg`
+  — one of exactly four sanctioned red contexts app-wide (primary action,
+  create plate, active-tab marker, review badge).
 
 ### PeriodSheet
 - **Purpose:** month/range picker built on Dialog. Reuse it anywhere a scope
