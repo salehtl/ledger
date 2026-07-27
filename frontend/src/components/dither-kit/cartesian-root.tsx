@@ -3,7 +3,10 @@ import {
   type ComponentType,
   isValidElement,
   type ReactNode,
+  useEffect,
+  useRef,
 } from "react"
+import { scrubIntent } from "../../lib/chartScrub"
 import {
   type ChartConfig,
   ChartContext,
@@ -139,16 +142,63 @@ export function CartesianRoot<TData extends Row>({
     onHoverChange?.(index)
   }
 
-  // LOCAL FORK: shared by pointerleave and pointercancel. Upstream only handles
-  // leave, which is enough for a mouse but not for touch — when the browser
-  // decides a finger-drag is a page scroll it cancels the pointer stream
-  // without ever firing leave, so the scrub state (and the tooltip) stayed
-  // stuck on screen while the page moved underneath it.
+  // LOCAL FORK: shared by pointerleave, pointercancel and touchend. Upstream
+  // only handles leave, which is enough for a mouse but not for touch — when
+  // the browser decides a finger-drag is a page scroll it cancels the pointer
+  // stream without ever firing leave, so the scrub state (and the tooltip)
+  // stayed stuck on screen while the page moved underneath it.
   const endHover = () => {
     ctx.setMouseInChart(false)
     ctx.setHoverIndex(null)
     onHoverChange?.(null)
   }
+
+  // LOCAL FORK: touch axis lock. A chart sits inside a vertically scrolling
+  // page, so a finger on it is ambiguous — dragging across reads the chart,
+  // dragging up and down scrolls past it. Upstream scrubs on the very first
+  // pointermove, which on touch means any drag that merely starts over a chart
+  // is stolen from the page; declaring `touch-action` to fix that instead
+  // hands the axis to the compositor and breaks pull-to-refresh (see
+  // components/charts/scrubSurface.ts).
+  //
+  // So judge the direction first. Nothing happens inside the slop zone; past
+  // it the gesture commits for the rest of the touch — clearly horizontal
+  // scrubs (and calls preventDefault so the page holds still under the
+  // finger), clearly vertical is dropped so the page scrolls and PTR still
+  // works. `scrubIntent` is the mirror of `pullIntent`, and a test pins that
+  // the two can never claim the same gesture.
+  const scrub = useRef<{ x: number; y: number; phase: "undecided" | "scrubbing" | "rejected" } | null>(null)
+  // The listener is attached once; these refs keep it reading current values
+  // without re-binding on every render.
+  const live = useRef({ interactive, onMove, endHover, setMouseInChart: ctx.setMouseInChart })
+  live.current = { interactive, onMove, endHover, setMouseInChart: ctx.setMouseInChart }
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // Non-passive: claiming a horizontal scrub requires preventDefault().
+    const onTouchMove = (e: TouchEvent) => {
+      const t = scrub.current
+      const { interactive: on, onMove: move, endHover: end, setMouseInChart } = live.current
+      if (!(t && on) || t.phase === "rejected" || e.touches.length !== 1) return
+      const touch = e.touches[0]
+      if (t.phase === "undecided") {
+        const intent = scrubIntent(touch.clientX - t.x, touch.clientY - t.y)
+        if (intent === "reject") {
+          t.phase = "rejected"
+          end()
+          return
+        }
+        if (intent === "undecided") return
+        t.phase = "scrubbing"
+        setMouseInChart(true)
+      }
+      e.preventDefault()
+      move(touch.clientX)
+    }
+    el.addEventListener("touchmove", onTouchMove, { passive: false })
+    return () => el.removeEventListener("touchmove", onTouchMove)
+  }, [ref])
 
   return (
     <ChartContext value={ctx}>
@@ -156,10 +206,23 @@ export function CartesianRoot<TData extends Row>({
         <div
           ref={ref}
           className={cn("relative h-full w-full", className)}
-          onPointerEnter={() => ctx.setMouseInChart(true)}
-          onPointerMove={interactive ? (e) => onMove(e.clientX) : undefined}
+          // LOCAL FORK: touch pointers are handled by the axis lock above, not
+          // here. Letting them through would scrub on the first pointermove,
+          // which is the stealing-the-scroll behaviour the lock exists to stop.
+          // Mouse and pen keep upstream's immediate hover — there is no scroll
+          // to compete with.
+          onPointerEnter={(e) => { if (e.pointerType !== "touch") ctx.setMouseInChart(true) }}
+          onPointerMove={interactive ? (e) => { if (e.pointerType !== "touch") onMove(e.clientX) } : undefined}
           onPointerLeave={endHover}
           onPointerCancel={endHover}
+          onTouchStart={(e) => {
+            scrub.current =
+              e.touches.length === 1
+                ? { x: e.touches[0].clientX, y: e.touches[0].clientY, phase: "undecided" }
+                : null // a second finger is a pinch, never a scrub
+          }}
+          onTouchEnd={() => { scrub.current = null; endHover() }}
+          onTouchCancel={() => { scrub.current = null; endHover() }}
         >
           {ctx.ready && backChildren.length > 0 && (
             <svg

@@ -20,10 +20,12 @@ import type { CSSProperties } from "react";
  * non-passive `touchmove`. That call silently stopped working, and because
  * `<main>` is `overscroll-contain`, a downward drag at the top of the page did
  * nothing at all. Leaving `touch-action` at its default keeps those events
- * cancelable, so the pull still works when it starts on a chart; the scrub
- * needs nothing from `touch-action` because it reads pointer events, and
- * `onPointerCancel` (see dither-kit/cartesian-root.tsx) cleans up if the
- * browser does claim the gesture for a scroll.
+ * cancelable — which both pull-to-refresh and the chart's own scrub depend on,
+ * since each claims its gesture by calling `preventDefault()` once it is sure.
+ * Direction is decided by the axis lock in `lib/chartScrub.ts`, wired up in
+ * dither-kit/cartesian-root.tsx: horizontal scrubs, vertical is left to the
+ * page. `touch-action` would take that decision away from both of them and
+ * give it to the compositor.
  *
  * SwipeableRow and Toast still declare `pan-y`. That is the same latent bug,
  * but their surfaces are rarely at `scrollTop: 0` where a pull can start, so it

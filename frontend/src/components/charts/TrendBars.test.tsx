@@ -67,6 +67,51 @@ describe("TrendBars", () => {
     await waitFor(() => expect(container.querySelector(".dither-tooltip")).not.toBeInTheDocument());
   });
 
+  // The scroll-vs-scrub conflict. A chart sits inside a vertically scrolling
+  // page, so a finger on it is ambiguous until it moves. Scrubbing on the first
+  // touchmove steals the page's scroll; refusing to scrub makes the chart
+  // unreadable on touch. The axis lock decides once, past a slop zone.
+  const touch = (x: number, y: number) => ({ touches: [{ clientX: x, clientY: y }] });
+
+  it("scrubs a horizontal finger-drag", () => {
+    const { container } = render(<TrendBars points={points} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative")!;
+
+    fireEvent.touchStart(surface, touch(100, 400));
+    fireEvent.touchMove(surface, touch(140, 404)); // clearly across
+    expect(container.querySelector(".dither-tooltip")).toBeInTheDocument();
+  });
+
+  it("leaves a vertical finger-drag to the page, so scrolling and pull-to-refresh still work", () => {
+    const { container } = render(<TrendBars points={points} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative")!;
+
+    fireEvent.touchStart(surface, touch(100, 400));
+    fireEvent.touchMove(surface, touch(104, 440)); // clearly down
+    expect(container.querySelector(".dither-tooltip")).not.toBeInTheDocument();
+  });
+
+  it("commits to scrolling for the rest of the touch, even if the finger turns sideways", () => {
+    // Without the commit, a drag that starts vertical and drifts across would
+    // hand the gesture back mid-scroll and pop the detail box open.
+    const { container } = render(<TrendBars points={points} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative")!;
+
+    fireEvent.touchStart(surface, touch(100, 400));
+    fireEvent.touchMove(surface, touch(104, 440)); // rejected
+    fireEvent.touchMove(surface, touch(200, 445)); // now horizontal — too late
+    expect(container.querySelector(".dither-tooltip")).not.toBeInTheDocument();
+  });
+
+  it("does nothing inside the slop zone, so a tap never flickers the detail box", () => {
+    const { container } = render(<TrendBars points={points} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative")!;
+
+    fireEvent.touchStart(surface, touch(100, 400));
+    fireEvent.touchMove(surface, touch(103, 402)); // within slop
+    expect(container.querySelector(".dither-tooltip")).not.toBeInTheDocument();
+  });
+
   it("summarizes every month in the accessible label", () => {
     render(<TrendBars points={points} />);
     const chart = screen.getByRole("img", { name: /Monthly spending trend/ });
