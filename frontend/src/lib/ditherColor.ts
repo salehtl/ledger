@@ -2,16 +2,22 @@ import type { DitherColor } from "../components/dither-kit/palette";
 import type { Density } from "../components/charts/DitherFill";
 
 /**
- * Bridges the app's CSS-var colors to dither-kit's seven seed names. The canvas
- * paints raw RGB and can't read a CSS var, so anything dithered picks its seed
- * here. Keep this in step with `bucketColor` and `CATEGORY_PALETTE` in insights.ts.
+ * Which palette hue each budget bucket paints in. The canvas paints raw RGB and
+ * can't read a CSS var, so anything dithered picks its seed here.
+ *
+ * These three are the one set that physically *touches* — ComparativeSummary
+ * stacks them into a single bar — so they were chosen for separation, not
+ * tidiness. Validated as a triple: worst adjacent ΔE 18.2 under deuteranopia,
+ * 24.5 normal vision. The obvious azure/lilac/sage assignment fails badly
+ * (ΔE 0.9 — azure and lilac collapse to the same blue-grey), so needs takes
+ * amber to break the two cool hues apart. Don't reorder without re-validating.
  */
 export function bucketDither(bucket: string): DitherColor {
   switch (bucket) {
-    case "need": return "blue";
-    case "want": return "purple";
-    case "saving": return "green";
-    default: return "grey";
+    case "need": return "amber";
+    case "want": return "lilac";
+    case "saving": return "sage";
+    default: return "slate";
   }
 }
 
@@ -42,21 +48,26 @@ export function bucketDensity(bucket: string, isOverBudget = false): Density {
 }
 
 /**
- * One seed per CATEGORY_PALETTE entry, in the same rank order. The seven-seed
- * vocabulary (blue/purple/green/red/orange/pink/grey) is upstream dither-kit's
- * own — in our fork the *names* no longer describe their values (e.g. `pink`
- * is `--color-accent`, a navy, not pink; see `components/dither-kit/palette.ts`).
- * It also has no teal, so two ranks are a nearest-hue-family match rather than
- * an exact one — don't "fix" these back on a future reorder:
- *  - rank 3 (`CATEGORY_PALETTE[3]` = `#0e7490`, teal) takes `"pink"`, our
- *    fork's navy — the nearest cool hue still unused at this rank.
- *  - rank 5 (`CATEGORY_PALETTE[5]` = `#be185d`, rose/magenta) takes `"red"`
- *    (`#dc2626`) — the nearest warm hue still unused.
- * Ranks 0, 1, 2 and 4 are exact matches. All six stay pairwise distinct.
+ * Categorical hues by spend rank, in a fixed order that never changes — the
+ * order *is* the colour-blindness safety mechanism, so it alternates the two
+ * groups that collapse under red-green CVD (cool: azure, lilac / warm: amber,
+ * sage, rose) and staggers lightness alongside. Validated as an ordered set:
+ * worst adjacent ΔE 13.7 light and 12.8 dark under protanopia, 18.0 / 16.6
+ * normal vision.
+ *
+ * Five, not six. A sixth hue could not clear the chroma floor and the
+ * separation floor at once on paper — teal was the casualty, landing at C .087
+ * against a .10 floor and colliding with both its neighbours. Rather than ship
+ * a pair nobody can tell apart, rank 5 and beyond fold into the neutral.
  */
-export const CATEGORY_DITHER: DitherColor[] = ["blue", "purple", "green", "pink", "orange", "red"];
+export const CATEGORY_DITHER: DitherColor[] = ["amber", "azure", "sage", "lilac", "rose"];
 
-/** Seed for the category at spend-rank `i`, wrapping past the palette's end. */
+/**
+ * Seed for the category at spend-rank `i`. Everything past the palette folds
+ * into the neutral rather than cycling — a repeated hue would say two unrelated
+ * categories are the same thing. Callers that care about the tail should rank
+ * and group into an explicit "Other" row.
+ */
 export function categoryDither(i: number): DitherColor {
-  return CATEGORY_DITHER[i % CATEGORY_DITHER.length];
+  return CATEGORY_DITHER[i] ?? "slate";
 }

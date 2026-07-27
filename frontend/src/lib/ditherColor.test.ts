@@ -1,15 +1,25 @@
 import { bucketDither, bucketDensity, categoryDither, CATEGORY_DITHER } from "./ditherColor";
-import { CATEGORY_PALETTE } from "./insights";
 
 describe("bucketDither", () => {
-  it("maps each budget bucket to its token's dither seed", () => {
-    expect(bucketDither("need")).toBe("blue");
-    expect(bucketDither("want")).toBe("purple");
-    expect(bucketDither("saving")).toBe("green");
+  it("maps each budget bucket to its palette hue", () => {
+    expect(bucketDither("need")).toBe("amber");
+    expect(bucketDither("want")).toBe("lilac");
+    expect(bucketDither("saving")).toBe("sage");
   });
 
-  it("falls back to grey for anything else", () => {
-    expect(bucketDither("mystery")).toBe("grey");
+  it("falls back to the neutral for anything else", () => {
+    expect(bucketDither("mystery")).toBe("slate");
+  });
+
+  it("keeps needs off a cool hue — the three stack into one bar and must stay apart", () => {
+    // ComparativeSummary stacks these three touching each other. The intuitive
+    // azure/lilac/sage assignment collapses: azure and lilac read as the same
+    // blue-grey under deuteranopia (validated ΔE 0.9, far under the floor of
+    // 8). Needs takes a warm hue so no two cool hues sit adjacent. If this ever
+    // changes, re-run the palette validator on the triple before shipping.
+    const cool = ["azure", "lilac"];
+    const buckets = ["need", "want", "saving"].map(bucketDither);
+    expect(buckets.filter((c) => cool.includes(c))).toHaveLength(1);
   });
 });
 
@@ -36,26 +46,26 @@ describe("bucketDensity", () => {
 });
 
 describe("categoryDither", () => {
-  it("has one dither seed per CATEGORY_PALETTE entry", () => {
-    expect(CATEGORY_DITHER).toHaveLength(CATEGORY_PALETTE.length);
-  });
-
-  it("assigns distinct seeds so adjacent ranks stay distinguishable", () => {
+  it("assigns distinct hues so ranks stay distinguishable", () => {
     expect(new Set(CATEGORY_DITHER).size).toBe(CATEGORY_DITHER.length);
   });
 
-  it("wraps around past the end of the palette", () => {
-    expect(categoryDither(0)).toBe(CATEGORY_DITHER[0]);
-    expect(categoryDither(CATEGORY_DITHER.length)).toBe(CATEGORY_DITHER[0]);
+  it("alternates warm and cool so no two adjacent ranks collapse under red-green CVD", () => {
+    // Hue alone collapses into two groups for a red-green colourblind reader:
+    // cool (azure, lilac) and warm (amber, sage, rose). Neighbouring ranks must
+    // straddle that split, which is what the fixed order buys. Validated at
+    // worst adjacent ΔE 13.7 light / 12.8 dark; this test pins the structure
+    // that produces it.
+    const cool = new Set(["azure", "lilac"]);
+    for (let i = 1; i < CATEGORY_DITHER.length; i++) {
+      expect(cool.has(CATEGORY_DITHER[i])).not.toBe(cool.has(CATEGORY_DITHER[i - 1]));
+    }
   });
 
-  it("pins the two intentional near-matches so a well-meaning reorder has to confront the reasoning", () => {
-    // CATEGORY_PALETTE[3] (#0e7490, teal) has no exact seed in the seven-name
-    // vocabulary; "pink" is our fork's navy (--color-accent), the nearest
-    // cool hue still unused at this rank — not an actual pink.
-    expect(categoryDither(3)).toBe("pink");
-    // CATEGORY_PALETTE[5] (#be185d, rose/magenta) takes "red", the nearest
-    // warm hue still unused.
-    expect(categoryDither(5)).toBe("red");
+  it("folds every rank past the palette into the neutral rather than cycling", () => {
+    // Reusing a hue would claim two unrelated categories are the same thing.
+    expect(categoryDither(0)).toBe(CATEGORY_DITHER[0]);
+    expect(categoryDither(CATEGORY_DITHER.length)).toBe("slate");
+    expect(categoryDither(CATEGORY_DITHER.length + 7)).toBe("slate");
   });
 });

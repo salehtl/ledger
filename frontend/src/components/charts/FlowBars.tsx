@@ -18,8 +18,8 @@ import { SCRUB_SURFACE } from "./scrubSurface";
 // context value and re-playing the 900ms entrance wave on unrelated updates
 // (this app invalidates queries from SSE constantly).
 const FLOW_CONFIG: ChartConfig = {
-  income: { label: "In", color: "green" },
-  spent: { label: "Out", color: "grey" },
+  income: { label: "In", color: "azure" },
+  spent: { label: "Out", color: "amber" },
 };
 
 const NET_TEXT: Record<NetSign, string> = {

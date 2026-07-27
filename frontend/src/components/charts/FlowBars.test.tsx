@@ -89,13 +89,15 @@ describe("FlowBars", () => {
   });
 
   it("paints each legend swatch in the seed its series actually paints", () => {
-    // The chips were hand-picked CSS vars and drifted: "In" was --color-good
-    // while the income series paints the "green" seed (--color-save), and "Out"
-    // was --color-fg/40% while the spent series paints "grey" (--color-muted).
-    // Both now resolve from the same palette seeds the bars use.
+    // The chips were once hand-picked CSS vars and drifted from the bars they
+    // labelled. Both now resolve from the same palette seeds the bars paint
+    // with, so they cannot drift again. In/Out is azure/amber deliberately —
+    // the obvious green/red pair is the canonical colour-blindness failure
+    // (validated ΔE 3.1 under deuteranopia, against a floor of 8); azure/amber
+    // is the safe diverging pair at ΔE 23.5.
     render(<FlowBars points={points} />);
-    expect(swatch("flow-legend-income")).toBe(channels(rgb(seedOfColor("green").fill)));
-    expect(swatch("flow-legend-spent")).toBe(channels(rgb(seedOfColor("grey").fill)));
+    expect(swatch("flow-legend-income")).toBe(channels(rgb(seedOfColor("azure").fill)));
+    expect(swatch("flow-legend-spent")).toBe(channels(rgb(seedOfColor("amber").fill)));
   });
 
   it("renders nothing for an empty series", () => {

@@ -11,37 +11,68 @@ describe("mix", () => {
   });
 });
 
+const KEYS = ["azure", "amber", "lilac", "sage", "rose", "slate"] as const;
+
+// OKLab chroma, the "is this actually a hue or just grey" measure. Mirrors what
+// the palette validator computes; kept local so the test needs no dependency.
+const srgb = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+function chroma([r8, g8, b8]: [number, number, number]): number {
+  const [r, g, b] = [r8, g8, b8].map((v) => srgb(v / 255));
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  return Math.hypot(a, bb);
+}
+
 describe("palette seeds", () => {
-  it("carries the app's light tokens as fills", () => {
-    expect(PALETTE_LIGHT.blue.fill).toEqual([22, 22, 26]);    // --color-need (ink)
-    expect(PALETTE_LIGHT.purple.fill).toEqual([22, 22, 26]);  // --color-want (ink)
-    expect(PALETTE_LIGHT.green.fill).toEqual([22, 22, 26]);   // --color-save (ink)
-  });
-
-  it("carries the app's dark tokens as fills", () => {
-    expect(PALETTE_DARK.blue.fill).toEqual([236, 235, 232]);
-    expect(PALETTE_DARK.green.fill).toEqual([236, 235, 232]);
-  });
-
-  it("defines all seven keys in both themes", () => {
-    const keys = ["green", "blue", "purple", "pink", "orange", "red", "grey"];
-    for (const k of keys) {
+  it("defines every key in both themes", () => {
+    for (const k of KEYS) {
       expect(PALETTE_LIGHT).toHaveProperty(k);
       expect(PALETTE_DARK).toHaveProperty(k);
     }
   });
 
+  it("keeps every categorical hue above the chroma floor, so none reads as grey", () => {
+    // Below ~0.10 a hue stops doing identity work. This is the check that
+    // failed when the buckets were all set to ink and every chart came out the
+    // same colour — the bug this palette exists to fix.
+    for (const table of [PALETTE_LIGHT, PALETTE_DARK]) {
+      for (const k of KEYS) {
+        if (k === "slate") continue; // the neutral is grey on purpose
+        expect(chroma(table[k].fill)).toBeGreaterThanOrEqual(0.1);
+      }
+    }
+  });
+
+  it("keeps the hues clearly less saturated than the vermilion accent", () => {
+    // The whole point of a muted chart palette: #c93d26 (C ≈ 0.181) stays the
+    // loudest thing on screen. Chart hues sit around two thirds of that.
+    const ACCENT_CHROMA = 0.181;
+    for (const table of [PALETTE_LIGHT, PALETTE_DARK]) {
+      for (const k of KEYS) {
+        expect(chroma(table[k].fill)).toBeLessThan(ACCENT_CHROMA * 0.85);
+      }
+    }
+  });
+
+  it("keeps the neutral neutral", () => {
+    expect(chroma(PALETTE_LIGHT.slate.fill)).toBeLessThan(0.03);
+    expect(chroma(PALETTE_DARK.slate.fill)).toBeLessThan(0.03);
+  });
+
   it("darkens the line tint on light and lightens it on dark", () => {
-    // On the warm off-white surface a lighter line would wash out; on the dark
-    // surface it must lift off the background.
+    // On paper a lighter line would wash out; on the dark surface it must lift
+    // off the background.
     const lum = ([r, g, b]: [number, number, number]) => r + g + b;
-    expect(lum(PALETTE_LIGHT.blue.line)).toBeLessThan(lum(PALETTE_LIGHT.blue.fill));
-    expect(lum(PALETTE_DARK.blue.line)).toBeGreaterThan(lum(PALETTE_DARK.blue.fill));
+    expect(lum(PALETTE_LIGHT.azure.line)).toBeLessThan(lum(PALETTE_LIGHT.azure.fill));
+    expect(lum(PALETTE_DARK.azure.line)).toBeGreaterThan(lum(PALETTE_DARK.azure.fill));
   });
 
   it("resolves seeds through the active theme", () => {
     // jsdom reports no dark preference, so the light table is active.
-    expect(seedOfColor("blue").fill).toEqual(PALETTE_LIGHT.blue.fill);
+    expect(seedOfColor("azure").fill).toEqual(PALETTE_LIGHT.azure.fill);
   });
 });
 
