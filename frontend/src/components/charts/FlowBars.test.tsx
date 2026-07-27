@@ -1,7 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import { FlowBars } from "./FlowBars";
 import { bandCenters } from "../../lib/trendBars";
+import { rgb, seedOfColor } from "../dither-kit/palette";
 import type { TrendPoint } from "../../lib/insights";
+
+// jsdom rewrites `rgba(r,g,b,1)` to `rgb(r,g,b)`, so compare the channels.
+const channels = (css: string) => (css.match(/\d+/g) ?? []).slice(0, 3).join(",");
+const swatch = (testId: string) => channels(screen.getByTestId(testId).style.background);
 
 const points: TrendPoint[] = [
   { period: "2026-05", label: "May", income: 200000, spent: 100000 },
@@ -49,6 +54,16 @@ describe("FlowBars", () => {
     const centers = bandCenters(points.length);
     expect(screen.getByTestId("net-dot-2026-05").style.left).toBe(`${centers[0].center * 100}%`);
     expect(screen.getByTestId("net-dot-2026-06").style.left).toBe(`${centers[1].center * 100}%`);
+  });
+
+  it("paints each legend swatch in the seed its series actually paints", () => {
+    // The chips were hand-picked CSS vars and drifted: "In" was --color-good
+    // while the income series paints the "green" seed (--color-save), and "Out"
+    // was --color-fg/40% while the spent series paints "grey" (--color-muted).
+    // Both now resolve from the same palette seeds the bars use.
+    render(<FlowBars points={points} />);
+    expect(swatch("flow-legend-income")).toBe(channels(rgb(seedOfColor("green").fill)));
+    expect(swatch("flow-legend-spent")).toBe(channels(rgb(seedOfColor("grey").fill)));
   });
 
   it("renders nothing for an empty series", () => {
