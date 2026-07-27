@@ -31,6 +31,23 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   check throws `ReferenceError: process is not defined` on every render.
   Swapped for Vite's own `import.meta.env.DEV`, which is statically replaced
   at build time and behaves identically.
+- **`bar-canvas.tsx`**: the bloom copy (`bloomCtx.clearRect` + `drawImage`)
+  moved from the top of the RAF loop to *below* the `if (!needsFill) return`
+  guard. Upstream re-copied the main canvas into the bloom layer on every frame
+  regardless of whether anything repainted, so a settled chart kept dirtying a
+  blurred `plus-lighter` layer 60×/s forever — permanent compositor work and
+  battery draw on an always-open mobile PWA. It also now copies the frame it
+  belongs to instead of the previous one.
+- **`tooltip.tsx`**: `motion` (framer-motion) replaced with CSS transitions.
+  `motion` was imported by this one file and accounted for ~250KB of a 602KB
+  bundle, precached by the service worker. The card now stays mounted and fades
+  via `opacity`/`visibility` and glides via `left`/`top` transitions on the
+  app's `--ease-out` token, with the position frozen while hidden (so the exit
+  is a pure fade) and gliding armed one painted frame after it appears (so the
+  entrance doesn't fly in across the plot). Reduced-motion opt-out is the
+  `.dither-tooltip` rule in `src/styles/app.css` — inline styles can't carry a
+  media query. **If this file is ever re-pulled from upstream, `motion` comes
+  back as a dependency.**
 
 Everything else is upstream-verbatim. `package.json` has a `shadcn` script
 (`bun run shadcn ...`) that wraps `bunx --bun shadcn@latest ...` — use it to
@@ -51,3 +68,9 @@ Never `--overwrite` without re-applying the `palette.ts` fork.
 - The chrome components (`tooltip.tsx`, `x-axis.tsx`, `grid.tsx`) reference
   shadcn token names (`bg-popover`, `text-muted-foreground`, `stroke-border`).
   Those are aliased onto our palette in `src/styles/app.css`.
+- `components.json`'s `aliases.utils` points at `@/components/dither-kit/lib`,
+  not `@/lib/utils` — there is no `src/lib/utils.ts` in this app, and `cn`
+  lives in this directory's `lib.ts`. shadcn rewrites a registry component's
+  `@/lib/utils` import to that alias on install, so a future `add` resolves.
+- Unused vendored files (area, polar, dot, …) are kept on purpose: the registry
+  installs `core` as a unit, and pruning would break the `--diff` baseline.

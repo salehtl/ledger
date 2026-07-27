@@ -1,11 +1,15 @@
 /// <reference types="vitest" />
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
-  resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
+  // fileURLToPath, not `new URL(...).pathname`: the latter hands back a
+  // percent-encoded, leading-slash URL path, which is wrong for any repo path
+  // containing a space (or on Windows).
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   plugins: [
     react(),
     tailwindcss(),
