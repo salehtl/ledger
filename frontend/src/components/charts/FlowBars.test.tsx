@@ -3,21 +3,6 @@ import { FlowBars } from "./FlowBars";
 import { bandCenters } from "../../lib/trendBars";
 import type { TrendPoint } from "../../lib/insights";
 
-// dither-kit's canvas paints markerIndex with no DOM footprint, so the only
-// way to pin the wiring (and catch a regression like the one this test was
-// added for — the active-month highlight silently dropping when the bars
-// moved to canvas) is to capture the prop BarChart actually receives.
-type BarChartModule = typeof import("../dither-kit/bar-chart");
-vi.mock("../dither-kit/bar-chart", async (importOriginal) => {
-  const actual = await importOriginal<BarChartModule>();
-  const MockBarChart: BarChartModule["BarChart"] = (props) => (
-    <div data-testid="bar-chart-marker" data-marker-index={String(props.markerIndex ?? "null")}>
-      <actual.BarChart {...props} />
-    </div>
-  );
-  return { ...actual, BarChart: MockBarChart };
-});
-
 const points: TrendPoint[] = [
   { period: "2026-05", label: "May", income: 200000, spent: 100000 },
   { period: "2026-06", label: "Jun", income: 50000, spent: 100000 },
@@ -71,13 +56,21 @@ describe("FlowBars", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("wires the active month to the bar chart's marker index", () => {
+  it("highlights the active month's band behind the bars", () => {
     render(<FlowBars points={points} activePeriod="2026-06" />);
-    expect(screen.getByTestId("bar-chart-marker").dataset.markerIndex).toBe("1");
+    const centers = bandCenters(points.length);
+    const el = screen.getByTestId("active-band-highlight");
+    expect(el.style.left).toBe(`${(centers[1].center - centers[1].width / 2) * 100}%`);
+    expect(el.style.width).toBe(`${centers[1].width * 100}%`);
   });
 
-  it("passes no marker index when no month is active", () => {
+  it("renders no highlight when no month is active", () => {
     render(<FlowBars points={points} />);
-    expect(screen.getByTestId("bar-chart-marker").dataset.markerIndex).toBe("null");
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
+  });
+
+  it("renders no highlight for a period absent from the series", () => {
+    render(<FlowBars points={points} activePeriod="2099-01" />);
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
   });
 });

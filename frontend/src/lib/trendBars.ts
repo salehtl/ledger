@@ -36,3 +36,18 @@ export function bandCenters(n: number): { center: number; width: number }[] {
     width: step,
   }));
 }
+
+/**
+ * Left offset and width (0–1 fractions of the plot width) for a highlight
+ * spanning the active month's whole band — built from the same
+ * `bandCenters()` the bars and label rows use, so a highlight positioned from
+ * this lines up with the active bar by construction. Returns null when
+ * there's no active index or it's outside the series, so callers render
+ * nothing rather than a highlight with NaN geometry.
+ */
+export function activeBandRect(n: number, index: number | null): { left: number; width: number } | null {
+  if (index == null) return null;
+  const band = bandCenters(n)[index];
+  if (!band) return null;
+  return { left: band.center - band.width / 2, width: band.width };
+}

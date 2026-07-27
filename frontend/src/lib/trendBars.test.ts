@@ -1,4 +1,4 @@
-import { trendRows, activeIndex, bandCenters } from "./trendBars";
+import { trendRows, activeIndex, bandCenters, activeBandRect } from "./trendBars";
 import type { TrendPoint } from "./insights";
 
 const points: TrendPoint[] = [
@@ -59,5 +59,28 @@ describe("bandCenters", () => {
     for (let i = 0; i < centers.length; i++) {
       expect(centers[i] + centers[centers.length - 1 - i]).toBeCloseTo(1, 10);
     }
+  });
+});
+
+describe("activeBandRect", () => {
+  it("returns null when there is no active index", () => {
+    expect(activeBandRect(3, null)).toBeNull();
+  });
+
+  it("returns null when the index is outside the series", () => {
+    expect(activeBandRect(3, -1)).toBeNull();
+    expect(activeBandRect(3, 3)).toBeNull();
+  });
+
+  it("derives left/width from the active band's center and width", () => {
+    const centers = bandCenters(3);
+    const rect = activeBandRect(3, 1);
+    expect(rect).not.toBeNull();
+    expect(rect?.left).toBeCloseTo(centers[1].center - centers[1].width / 2, 10);
+    expect(rect?.width).toBeCloseTo(centers[1].width, 10);
+  });
+
+  it("returns null for an empty series regardless of index", () => {
+    expect(activeBandRect(0, 0)).toBeNull();
   });
 });
