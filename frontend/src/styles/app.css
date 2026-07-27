@@ -32,11 +32,11 @@
   --color-popover: #ffffff;               /* = --color-surface */
   --color-popover-foreground: #1c1b1b;    /* = --color-fg */
 
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  /* Rounded numeric face — kept only for the swipe-deck amount. */
-  --font-rounded: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
-  /* Monospaced figures — money, counts, percentages (applied via .tnum). */
-  --font-mono: "Roboto Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Monospaced figures — money, counts, percentages, labels, dates (via .tnum
+     and directly). Geist Mono does far more than figures in this design: every
+     non-prose string is mono. */
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 
   --radius-card: 8px;           /* Material "large", sharpened */
   --radius-sheet: 12px;         /* Material "extra-large" — bottom sheets, sharpened */

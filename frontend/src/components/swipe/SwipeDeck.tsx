@@ -275,7 +275,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       <div className="flex items-end justify-between mb-3 px-1">
         <div>
           <p className="text-[11px] uppercase tracking-[0.18em] text-muted mb-0.5">Remaining</p>
-          <p className="font-rounded font-bold text-fg leading-none" style={{ fontSize: '2rem' }}>{remaining}</p>
+          <p className="tnum font-bold text-fg leading-none" style={{ fontSize: '2rem' }}>{remaining}</p>
         </div>
         <p className="text-sm text-muted mb-1 tabular-nums">{state.index} of {total} sorted</p>
       </div>
