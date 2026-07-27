@@ -226,6 +226,17 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   (pct < 1.0) renders dithered, at or over budget (pct ≥ 1.0) fills solid ink.
   An optional `tone` prop overrides the automatic reading. Includes optional
   pace marker and `onAccent` variant for the hero panel.
+- **`color`** paints the fill in a palette hue (`DitherColor`) instead of the
+  default ink, so a bucket bar matches the swatch dot beside its label. Pass
+  `bucketDither(bucket)` from `lib/ditherColor.ts` — never a literal — so the
+  bar, the dot, and Insights' bars stay one mapping.
+- **`color` is ignored under `onAccent`, on purpose.** The hero bar totals all
+  three buckets, so no single bucket hue is honest for it, and mid-chroma ink on
+  the branded accent ground is a contrast problem. The guard is in the component,
+  not left to call sites.
+- Shares its dot texture (`.dither-mask`, `styles/app.css`) with `DitherFill`.
+  That class is the app's one definition of "dotted" — change it there, not by
+  adding a second mask.
 
 ### PixelSpinner
 - **Purpose:** the loading spinner and the pull-to-refresh gauge. Eight blocks
