@@ -144,6 +144,31 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 ### PullToRefreshIndicator / IngestHealthBanner
 - **Purpose:** app-shell plumbing: PTR spinner; app-wide warning strip.
 
+### DitherFill (`charts/`)
+- **Purpose:** a horizontal dithered magnitude/proportion bar, painted with
+  dither-kit's own Bayer-matrix primitives so it matches the vertical bar
+  charts' texture. Segments fill left→right against `max`.
+- **Use for:** horizontal magnitude or proportion bars that should match the
+  charts' dither texture (`LensBreakdown`'s row bars, `ComparativeSummary`'s
+  need/want/saving split).
+- **Don't use for:** progress or budget meters — those stay `ProgressBar`,
+  which is CSS and stays legible at 6px.
+- Minimum useful height is 10px; the dither cell is 2px, so anything thinner
+  reads as a flat block.
+
+### ActiveBandHighlight (`charts/`)
+- **Purpose:** the surface-tint band drawn behind the active month's bar in
+  `TrendBars`/`FlowBars`. dither-kit's `BarChart` colors per *series*, not per
+  *bar*, and its `markerIndex` prop is inert in dither-kit 0.1.0, so this is
+  the app's own stand-in for that emphasis. Must render *before* the chart's
+  canvas in DOM order (neither element carries a z-index) so it stays behind
+  the bars.
+- **Use for:** anything built on a dither-kit `BarChart` that needs to
+  emphasize one band by position rather than color.
+- **Don't use for:** anything outside that context — it positions itself via
+  `activeBandRect` (`lib/trendBars.ts`), which assumes the same d3 band
+  layout the charts lay their bars out on.
+
 ## Feature components
 
 Domain components live beside their feature (`transactions/`, `swipe/`,
@@ -186,6 +211,20 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   visible "Skip for now" button or a triple tap.
 - `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition
   examples.
+- `TrendBars` / `FlowBars` (`charts/`) — monthly spending / money-in-vs-out
+  charts, rendered as dither-kit `BarChart`s wrapped in app markup for the
+  bits dither-kit doesn't provide: the active-month band (`ActiveBandHighlight`),
+  band-center-aligned month labels, and (`FlowBars`) the net lane, thread and
+  In/Out legend. Both wrap the chart in one labelled `role="img"` and mark
+  dither-kit's own inner SVG `aria-hidden`, so assistive tech sees a single
+  accessible chart rather than two nested `role="img"`s. Used by Home and
+  Insights.
+- `LensBreakdown` (`insights/`) — ranked, drillable magnitude-bar list for the
+  selected analysis lens; each row's bar is a `DitherFill` scaled to the
+  largest row's spend, tapping opens the transactions behind it.
+- `ComparativeSummary` (`insights/`) — the month's net/saved hero plus one
+  `DitherFill` (12px) showing the need/want/saving split, with a
+  tap-to-drill legend beneath it.
 
 ## Known deliberate exceptions
 

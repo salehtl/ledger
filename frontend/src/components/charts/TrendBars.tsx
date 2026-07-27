@@ -31,21 +31,26 @@ export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; acti
         {/* Rendered first — not on a z-index — so DOM order keeps it behind
             the canvas painted by BarChart right after it. */}
         <ActiveBandHighlight n={rows.length} index={marker} />
-        <BarChart
-          data={rows}
-          config={{ spent: { label: "Spent", color: "grey" } }}
-          bloom="aura"
-          // Left/right stay zero so the plot area equals this container's
-          // full width — buildBandScale's own paddingOuter already gives
-          // the bars edge breathing room. The label row below (with no
-          // margins of its own) reads the exact same band-center fractions
-          // via lib/trendBars.ts's bandCenters(), so labels can't drift out
-          // from under their bars the way non-zero margins would cause.
-          margins={{ left: 0, right: 0, bottom: 4, top: 8 }}
-        >
-          <Bar dataKey="spent" variant="gradient" />
-          <Tooltip labelKey="label" valueFormatter={(v) => formatFils(v)} />
-        </BarChart>
+        {/* `aria-hidden`: dither-kit hardcodes its own role="img" on the inner
+            SVG; without this the wrapper's labelled role="img" above resolves
+            to two elements instead of one. */}
+        <div className="absolute inset-0" aria-hidden>
+          <BarChart
+            data={rows}
+            config={{ spent: { label: "Spent", color: "grey" } }}
+            bloom="aura"
+            // Left/right stay zero so the plot area equals this container's
+            // full width — buildBandScale's own paddingOuter already gives
+            // the bars edge breathing room. The label row below (with no
+            // margins of its own) reads the exact same band-center fractions
+            // via lib/trendBars.ts's bandCenters(), so labels can't drift out
+            // from under their bars the way non-zero margins would cause.
+            margins={{ left: 0, right: 0, bottom: 4, top: 8 }}
+          >
+            <Bar dataKey="spent" variant="gradient" />
+            <Tooltip labelKey="label" valueFormatter={(v) => formatFils(v)} />
+          </BarChart>
+        </div>
       </div>
 
       {/* Month labels stay our own markup: dither-kit's <XAxis> can't carry

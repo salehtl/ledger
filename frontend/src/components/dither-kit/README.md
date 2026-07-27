@@ -23,12 +23,14 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   Swapped for Vite's own `import.meta.env.DEV`, which is statically replaced
   at build time and behaves identically.
 
-Everything else is upstream-verbatim. To check for upstream changes:
+Everything else is upstream-verbatim. `package.json` has a `shadcn` script
+(`bun run shadcn ...`) that wraps `bunx --bun shadcn@latest ...` — use it to
+check for upstream changes:
 
 ```bash
 cd frontend
-bunx --bun shadcn@latest add https://tripwire.sh/r/bar-chart.json --dry-run
-bunx --bun shadcn@latest add https://tripwire.sh/r/bar-chart.json --diff <file>
+bun run shadcn add https://tripwire.sh/r/bar-chart.json --dry-run
+bun run shadcn add https://tripwire.sh/r/bar-chart.json --diff <file>
 ```
 
 Never `--overwrite` without re-applying the `palette.ts` fork.
