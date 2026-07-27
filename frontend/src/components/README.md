@@ -133,15 +133,28 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   `"default" | "muted" | "attention"`. Colour no longer carries status — the
   label text does. Used for transaction status.
 - **Red is rationed:** `attention` (`bg-accent`) is the *only* tone that spends
-  the app's one spot ink, and vermilion appears in exactly four places
-  app-wide: the primary action, the create plate, the active-tab marker, and
-  the review badge. `Pill`'s only sanctioned `attention` use is the
-  `needs_review` status pill (`statusTone` in `lib/format.ts`) — every other
-  status, including data-quality notes like "no AED rate", is `default` or
-  `muted`. Never reach for `attention` just because a state feels warning-ish;
-  if two pills would land in the same row and both want `attention`, only the
-  more urgent one keeps it — demote the other to `default` and make its label
-  clearer instead.
+  the app's one spot ink at full opacity. Full-opacity vermilion marks five
+  things app-wide: the primary action, the create plate, the active-tab
+  marker, the review badge, and alert-severity feedback (`Toast`'s error tone,
+  `Home`'s hero over-budget badge) — there is only one red, so an urgent or
+  destructive state is told apart by its *label*, never a second colour.
+  `Pill`'s only sanctioned `attention` use is the `needs_review` status pill
+  (`statusTone` in `lib/format.ts`) — every other status, including
+  data-quality notes like "no AED rate", is `default` or `muted`. Never reach
+  for `attention` just because a state feels warning-ish; if two pills would
+  land in the same row and both want `attention`, only the more urgent one
+  keeps it — demote the other to `default` and make its label clearer instead.
+
+  Separately, several components tint `bg-accent` at low alpha (`/10`, `/15`,
+  `/30`) to mark *selected* filter state instead of full-opacity fill:
+  `FilterBar`'s chips and active-filter tokens, `FilterChips`'s dimension
+  buttons, `SegmentedControl`'s badge, and `Transactions`'s filter-toggle
+  button. This is a second, unreconciled convention for "selected," not a
+  sixth sanctioned full-opacity use — `BottomNav` deliberately rejected a
+  tinted pill for its active tab in favor of a 2px tick (see below), so the
+  two patterns disagree about whether a tint should mean "selected" at all.
+  Recorded here as a known inconsistency to resolve later, not as settled
+  guidance to copy.
 - **Don't use when:** the badge is a count overlay (BottomNav's tiny badge is
   a deliberate exception) or needs custom glyphs (→ `insights/DeltaBadge`).
 
@@ -187,8 +200,11 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   pill behind the icon, and never the accent ink rendered as the label's own
   coloured text (the spot ink is a fill only, in both themes; as text it's
   sub-AA on the dark ground). The review badge is `bg-accent text-accent-fg`
-  — one of exactly four sanctioned red contexts app-wide (primary action,
-  create plate, active-tab marker, review badge).
+  — one of the sanctioned full-opacity red contexts app-wide (primary action,
+  create plate, active-tab marker, review badge, alert-severity feedback; see
+  "Red is rationed" under `Pill`). Its 2px tick is also the app's answer to
+  "how do you mark selected without a tint" — contrast with the low-alpha
+  `bg-accent/NN` tints used for that job elsewhere (same section).
 
 ### PeriodSheet
 - **Purpose:** month/range picker built on Dialog. Reuse it anywhere a scope
@@ -266,7 +282,7 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   every call site (`ComparativeSummary`'s legend, `LensBreakdown`'s row name)
   states the bucket in visible text next to the bar, since the bar itself stays
   `aria-hidden`. Same **red is rationed** rule as everywhere else: this
-  encoding exists specifically so buckets never need a fourth spent-ink use —
+  encoding exists specifically so buckets never need another spent-ink use —
   don't reach for `--color-accent` on a bucket bar to "help" it read as urgent.
 
 ### ActiveBandHighlight (`charts/`)
