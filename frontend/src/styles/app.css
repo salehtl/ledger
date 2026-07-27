@@ -12,7 +12,7 @@
   --color-fg: #16161a;          /* ink */
   --color-muted: #5e5e63;       /* ink, low emphasis */
 
-  --color-accent: #d8452c;      /* the one spot ink */
+  --color-accent: #c93d26;      /* the one spot ink, as a FILL. 5.03:1 with white. */
   --color-accent-fg: #ffffff;
 
   --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
@@ -30,7 +30,10 @@
      the one semantic use that survives. */
   --color-good: #16161a;
   --color-warn: #5e5e63;
-  --color-bad: #d8452c;
+  /* Negative money prints in the spot ink's TEXT register, not its fill. On
+     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
+     a fill — --color-accent is the fill. */
+  --color-bad: #b8331d;
 
   /* shadcn token names, aliased onto our palette — dither-kit's vendored chrome
      (tooltip, axes, grid) is written against these. */
@@ -168,9 +171,9 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-fg: #ecebe8;
     --color-muted: #8b8b8f;
 
-    /* Spot stays #d8452c in dark. It is ~4.1:1 on this ground — legal as a fill
-       behind white, under AA as text. Never use it for a label in dark. */
-    --color-accent: #d8452c;
+    /* Spot stays #c93d26 in dark, 5.03:1 behind white — legal as a fill,
+       under AA as text. Never use it for a label in dark. */
+    --color-accent: #c93d26;
     --color-accent-fg: #ffffff;
 
     --color-hero: #ecebe8;
@@ -183,9 +186,10 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-good: #ecebe8;
     --color-warn: #8b8b8f;
     /* The spot ink has two values in dark, the way a press runs a tint of the
-       same plate: #d8452c is the FILL (behind white), #f0866f is the TEXT tint.
-       .money-neg paints negative amounts with this token, and #d8452c would be
-       ~4.1:1 here — under AA. #f0866f is ~7.4:1. Never widen this to fills. */
+       same plate: #c93d26 is the FILL (behind white), #f0866f is the TEXT tint.
+       .money-neg paints negative amounts with this token, and #c93d26 would be
+       5.03:1 here — sub-AA for text. #f0866f is 7.31:1. Never widen this to
+       fills. Unchanged by the Task 12 contrast audit. */
     --color-bad: #f0866f;
 
     --color-foreground: #ecebe8;

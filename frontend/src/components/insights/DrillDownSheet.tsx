@@ -55,7 +55,7 @@ export function DrillDownSheet({ target, txns, frozen, categories, onClose }: {
   return (
     <Dialog title={title} onClose={onClose}>
       {target.type === "bucket" && narrowed && (
-        <button aria-label="Back" className="text-sm text-accent mb-2" onClick={() => setNarrowed(null)}>← Back</button>
+        <button aria-label="Back" className="text-sm text-fg mb-2" onClick={() => setNarrowed(null)}>← Back</button>
       )}
       <p className="text-sm text-muted mb-3">{rows.length} transaction{rows.length === 1 ? "" : "s"} · <span className="tnum"><Money fils={-total} /></span></p>
 
