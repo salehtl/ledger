@@ -1001,3 +1001,59 @@ All three are secondary navigation, not a screen's single primary action. Change
 `frontend/src/components/README.md` documents the hero amount as 32px/500, but `frontend/src/screens/Home.tsx:286` renders `text-[2.75rem]` (44px) at `font-semibold` (600). **The code is right — a hero number should be the largest thing on the screen; the table's 32px came from a mockup rendered at mockup scale.** Update the table row to 44px/600 and mark it explicitly as the hero's own size rather than a general scale step.
 
 While there, add TopBar's chrome-specific `0.12em` stepper tracking as a noted variant of the 0.14em eyebrow row, so a reader working from the table alone can derive the real value.
+
+---
+
+### Task 13: Finish the register separation
+
+Added after the Task 12 review. Task 12 fixed the three named `text-accent` sites; a full grep shows **10 surviving `text-accent` matches and 3 `bg-bad` matches**. Both break the register rule the design now depends on.
+
+**Why these are defects, not polish:**
+
+- `text-accent` is the *fill* register (`#c93d26`) used as text. On light paper that is **4.45:1**; on the dark ground it is **~4.1:1**. Sub-AA in both themes. There is a correct text register for each theme and this is not it.
+- `bg-bad` is the *text* register (`#b8331d` light / `#f0866f` dark) used as a fill. The lifted dark tint especially was chosen for legibility as small text, never as a background.
+
+**Files:** every match from the two greps below, plus `frontend/src/components/README.md`.
+
+- [ ] **Step 1: Enumerate**
+
+```bash
+cd frontend
+grep -rn "text-accent\b" src/ | grep -v "text-accent-fg"
+grep -rn "bg-bad" src/
+```
+
+Record every match before changing anything.
+
+- [ ] **Step 2: Replace `text-accent` with `text-fg`**
+
+Known sites include `Button.tsx`'s `ghost` variant, `FilterBar.tsx`, `FilterChips.tsx`, `SegmentedControl.tsx`'s badge, and `Transactions.tsx`'s filter button. All are low-emphasis or selected-state affordances, not a screen's single primary action, so all become `text-fg`.
+
+Red is rationed to four contexts app-wide — primary action, create plate, active-tab marker, review badge — and **none of them express themselves as coloured text.** They are all fills. After this step there should be no `text-accent` left in `src/` at all. `text-accent-fg` (white *on* the fill) is a different token and stays.
+
+- [ ] **Step 3: Replace `bg-bad` fills with the fill register**
+
+`bg-bad` appears in `Button`'s danger variant, `Toast`, and `Home`'s hero badge. Each becomes `bg-accent text-accent-fg`.
+
+**The ruling this encodes:** there is only one red in a two-colour press. A destructive action and a primary action share the fill register, and the *label* carries the difference — "Delete" versus "Save". This is the same resolution `Pill` already took when its five semantic tones collapsed to three. Do not invent a second red to keep them apart.
+
+`.money-neg` continues to use `--color-bad` as **text**. That is its correct register and must not change.
+
+- [ ] **Step 4: Verify**
+
+```bash
+cd frontend
+grep -rn "text-accent\b" src/ | grep -v "text-accent-fg"   # expect: no output
+grep -rn "bg-bad" src/                                      # expect: no output
+grep -rn "money-neg" src/styles/app.css                     # expect: still present, using --color-bad
+bun run test && bunx tsc -b
+```
+
+- [ ] **Step 5: Record the rule and commit**
+
+Add to `frontend/src/components/README.md` under Conventions: the three registers, their measured ratios, and the flat rule that **the spot ink is only ever a fill — it is never coloured text in either theme**, with `.money-neg` named as the single exception (it uses the per-theme text register, not the fill).
+
+```bash
+git add frontend/src/
+git commit -m "fix(a11y): the spot ink is a fill only, never coloured text"
+```
