@@ -13,14 +13,14 @@ describe("mix", () => {
 
 describe("palette seeds", () => {
   it("carries the app's light tokens as fills", () => {
-    expect(PALETTE_LIGHT.blue.fill).toEqual([19, 115, 217]);    // --color-need
-    expect(PALETTE_LIGHT.purple.fill).toEqual([123, 53, 184]);  // --color-want
-    expect(PALETTE_LIGHT.green.fill).toEqual([46, 125, 82]);    // --color-save
+    expect(PALETTE_LIGHT.blue.fill).toEqual([22, 22, 26]);    // --color-need (ink)
+    expect(PALETTE_LIGHT.purple.fill).toEqual([22, 22, 26]);  // --color-want (ink)
+    expect(PALETTE_LIGHT.green.fill).toEqual([22, 22, 26]);   // --color-save (ink)
   });
 
   it("carries the app's dark tokens as fills", () => {
-    expect(PALETTE_DARK.blue.fill).toEqual([150, 205, 255]);
-    expect(PALETTE_DARK.green.fill).toEqual([142, 231, 170]);
+    expect(PALETTE_DARK.blue.fill).toEqual([236, 235, 232]);
+    expect(PALETTE_DARK.green.fill).toEqual([236, 235, 232]);
   });
 
   it("defines all seven keys in both themes", () => {

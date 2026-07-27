@@ -1,8 +1,9 @@
 import type { Txn } from "../api/types";
 import { BUCKET_LABEL, type BucketComparison, type CategoryDelta } from "./insights";
 import { merchantBreakdown } from "./analysis";
-import { bucketDither, categoryDither } from "./ditherColor";
+import { bucketDither, bucketDensity, categoryDither } from "./ditherColor";
 import type { DitherColor } from "../components/dither-kit/palette";
+import type { Density } from "../components/charts/DitherFill";
 
 // The three dimensions you can slice spending by on the Insights page.
 export type Lens = "buckets" | "categories" | "merchants";
@@ -21,6 +22,14 @@ export interface BreakdownRow {
    * CSS-var side of the mapping lives in `lib/ditherColor.ts`.
    */
   ditherColor: DitherColor;
+  /**
+   * Dither density for this row's bar — only set for bucket rows (need/want/
+   * saving are told apart by texture, not hue, now that they share one ink).
+   * Category and merchant rows leave this undefined, which `DitherFill`
+   * defaults to `"medium"` (a zero bias): they were never bucket-encoded and
+   * don't gain a texture meaning by omission.
+   */
+  density?: Density;
   spent: number;
   share: number;
   count?: number;
@@ -35,14 +44,22 @@ function share(spent: number, total: number): number {
   return total > 0 ? spent / total : 0;
 }
 
-/** Bucket rows (need/want/saving) ranked by spend, with month-over-month deltas. */
-export function bucketRows(buckets: BucketComparison[], total: number): BreakdownRow[] {
+/**
+ * Bucket rows (need/want/saving) ranked by spend, with month-over-month
+ * deltas. `overBudget` is the set of bucket names at or over target for the
+ * period shown (see `overBudgetBuckets` in `lib/insights.ts`) — when a bucket
+ * is in it, its density goes `"solid"` regardless of its usual dense/medium/
+ * sparse reading. Omit it (or pass an empty set) where over-budget data isn't
+ * available; every bucket then falls back to its plain identity density.
+ */
+export function bucketRows(buckets: BucketComparison[], total: number, overBudget: Set<string> = new Set()): BreakdownRow[] {
   return [...buckets]
     .sort((a, b) => b.spent - a.spent)
     .map((b) => ({
       key: b.bucket,
       name: BUCKET_LABEL[b.bucket] ?? b.bucket,
       ditherColor: bucketDither(b.bucket),
+      density: bucketDensity(b.bucket, overBudget.has(b.bucket)),
       spent: b.spent,
       share: share(b.spent, total),
       delta: b.delta,

@@ -43,15 +43,26 @@ export function bucketKey(a: SwipeAction): BucketKey {
 /**
  * Source of truth for swipe colors, derived from the bucket — not from the
  * action's persisted colorClass — so the palette applies even to configs saved
- * before a redesign, and Need/Want/Save/Transfer never collide. Matches the
- * app's bucket tokens (need=blue, save=green) with a distinct violet for Want
- * and a neutral slate for Transfer (which isn't real spending).
+ * before a redesign, and Need/Want/Save/Transfer never collide.
+ *
+ * These feed inline styles (ring/box-shadow, edge-wash background, commit
+ * badge) that concatenate an alpha suffix onto the hex string (e.g.
+ * `${color}1f`) or interpolate it into a CSS gradient/shadow — a `var(...)`
+ * reference can't be built that way, so the values must stay literal hex, not
+ * CSS custom properties. Bucket hues are retired app-wide (buckets are told
+ * apart by dither density and by the action's own text label, not colour —
+ * see `components/README.md`'s DitherFill section), so all three real buckets
+ * collapse to the same ink and Transfer (not real spending) to muted:
+ *   need / want / saving -> #16161a (mirrors --color-fg)
+ *   transfer             -> #5e5e63 (mirrors --color-muted)
+ * Visually this makes the three buckets identical in the deck by design —
+ * they're distinguished by density and by `action.label`, not by hue.
  */
 export const BUCKET_COLOR: Record<BucketKey, string> = {
-  need: '#2563eb',
-  want: '#7c3aed',
-  saving: '#059669',
-  transfer: '#64748b',
+  need: '#16161a',
+  want: '#16161a',
+  saving: '#16161a',
+  transfer: '#5e5e63',
 }
 
 export function actionColor(a: SwipeAction): string {

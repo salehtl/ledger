@@ -150,7 +150,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           aria-expanded={filterOpen}
           aria-label="Filters"
           className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border press ${
-            activeFilters > 0 ? "border-accent/30 bg-accent/10 text-accent" : "border-border bg-surface text-muted"
+            activeFilters > 0 ? "border-accent/30 bg-accent/10 text-fg" : "border-border bg-surface text-muted"
           }`}
         >
           <SlidersHorizontal size={16} aria-hidden />
@@ -195,7 +195,9 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   : { label: "Categorize", icon: <Tag size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" };
                 const trail: SwipeActionSpec | undefined = archived
                   ? undefined
-                  : { label: "Archive", icon: <Archive size={18} aria-hidden />, color: "#64748b", fg: "#ffffff" };
+                  // #5e5e63 mirrors --color-muted: SwipeableRow's inline style needs a
+                  // literal hex (see lib/swipe.ts's BUCKET_COLOR comment), not a var().
+                  : { label: "Archive", icon: <Archive size={18} aria-hidden />, color: "#5e5e63", fg: "#ffffff" };
                 const onCommit = (action: "lead" | "trail") => {
                   if (action === "lead") {
                     if (archived) void restoreTxn(t);

@@ -184,7 +184,7 @@ export function SwipeCard({
             {credit ? 'Received' : 'Spent'} · AED
           </span>
           <span
-            className="font-rounded font-bold tabular-nums leading-none"
+            className="tnum font-bold leading-none"
             style={{ fontSize: '3rem', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
           >
             {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}

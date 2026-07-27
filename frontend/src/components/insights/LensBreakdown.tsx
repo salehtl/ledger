@@ -39,7 +39,7 @@ export function LensBreakdown({ rows, onDrill, emptyLabel = "No spending this mo
                 </span>
               </div>
               <div className="mt-1.5">
-                <DitherFill segments={[{ value: r.spent, color: r.ditherColor }]} max={max} height={10} />
+                <DitherFill segments={[{ value: r.spent, color: r.ditherColor, density: r.density }]} max={max} height={10} />
               </div>
             </button>
           </li>

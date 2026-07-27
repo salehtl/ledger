@@ -43,7 +43,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-3">
-          <p className="truncate font-medium">{txn.MerchantRaw || "—"}</p>
+          <p className="truncate text-sm font-medium tracking-[-0.01em]">{txn.MerchantRaw || "—"}</p>
           <span
             className="tnum font-medium shrink-0"
             style={amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
@@ -54,7 +54,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-1.5 min-w-0">
-            <p className="text-xs text-muted truncate">{meta}</p>
+            <p className="font-mono text-[10px] tracking-[0.04em] text-muted truncate">{meta}</p>
             {project && (
               <span className="inline-flex items-center gap-1 text-xs text-muted shrink-0">
                 <span aria-hidden className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: project.color }} />
@@ -64,7 +64,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {native && <span className="tnum text-xs text-muted">{native}</span>}
-            {noRate && <Pill tone="warn">no AED rate</Pill>}
+            {noRate && <Pill>no AED rate</Pill>}
             {showStatus && <Pill tone={statusTone(txn.Status)}>{statusLabel(txn.Status)}</Pill>}
           </div>
         </div>

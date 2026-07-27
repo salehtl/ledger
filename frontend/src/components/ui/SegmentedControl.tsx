@@ -19,11 +19,11 @@ export function SegmentedControl<T extends string>({
           onClick={() => { fire("selection"); onChange(o.value); }}
           className={`rounded text-sm font-medium transition-colors press inline-flex items-center justify-center gap-1.5 whitespace-nowrap py-2 ${
             fullWidth ? "flex-1 min-w-0 px-2" : "px-4"
-          } ${value === o.value ? "bg-surface text-fg shadow-1" : "text-muted hover:text-fg"}`}
+          } ${value === o.value ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
         >
           {o.label}
           {o.badge != null && o.badge > 0 && (
-            <span className="tnum text-[11px] font-semibold rounded-full bg-accent/15 text-accent px-1.5 min-w-4 text-center">
+            <span className="tnum text-[11px] font-semibold rounded-full bg-accent/15 text-fg px-1.5 min-w-4 text-center">
               {o.badge}
             </span>
           )}

@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { DitherFill } from "./DitherFill";
+import { DENSITY_BIAS, DitherFill } from "./DitherFill";
 
 describe("DitherFill", () => {
   it("renders a canvas", () => {
@@ -54,5 +54,17 @@ describe("DitherFill", () => {
       <DitherFill segments={[{ value: 1, color: "green" }]} max={1} height={12} />,
     );
     expect(container.firstElementChild).toHaveStyle({ height: "12px" });
+  });
+
+  it("density bias is ordered dense > medium > sparse, and solid is unconditional", () => {
+    expect(DENSITY_BIAS.dense).toBeGreaterThan(DENSITY_BIAS.medium);
+    expect(DENSITY_BIAS.medium).toBeGreaterThan(DENSITY_BIAS.sparse);
+    // A bias >= 1 lights every cell regardless of the Bayer threshold, because
+    // the ramp t is in [0,1] and thresholds are < 1.
+    expect(DENSITY_BIAS.solid).toBeGreaterThanOrEqual(1);
+  });
+
+  it("medium is the default, so existing call sites are unchanged", () => {
+    expect(DENSITY_BIAS.medium).toBe(0);
   });
 });

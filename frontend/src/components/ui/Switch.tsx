@@ -18,7 +18,7 @@ export function Switch({ className = "", ...rest }: InputHTMLAttributes<HTMLInpu
       />
       <span
         aria-hidden
-        className="absolute left-1 top-1 h-5 w-5 rounded-full bg-surface shadow-1 transition-transform duration-200 motion-reduce:transition-none peer-checked:translate-x-5 peer-disabled:opacity-60"
+        className="absolute left-1 top-1 h-5 w-5 rounded-full bg-surface transition-transform duration-200 motion-reduce:transition-none peer-checked:translate-x-5 peer-disabled:opacity-60"
       />
     </span>
   );

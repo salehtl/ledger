@@ -11,7 +11,7 @@ const SIZES: Record<Size, string> = {
 };
 const TONES: Record<Tone, string> = {
   muted: "text-muted hover:bg-surface-2",
-  accent: "text-accent hover:bg-surface-2",
+  accent: "text-fg hover:bg-surface-2",
   danger: "text-muted hover:text-bad active:text-bad",
 };
 
