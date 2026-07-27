@@ -1,6 +1,8 @@
 import type { Txn } from "../api/types";
 import { bucketColor, BUCKET_LABEL, CATEGORY_PALETTE, type BucketComparison, type CategoryDelta } from "./insights";
 import { merchantBreakdown } from "./analysis";
+import { bucketDither, categoryDither } from "./ditherColor";
+import type { DitherColor } from "../components/dither-kit/palette";
 
 // The three dimensions you can slice spending by on the Insights page.
 export type Lens = "buckets" | "categories" | "merchants";
@@ -12,6 +14,8 @@ export interface BreakdownRow {
   key: string;
   name: string;
   color: string;
+  /** dither-kit seed matching `color` — the canvas can't read a CSS var. */
+  ditherColor: DitherColor;
   spent: number;
   share: number;
   count?: number;
@@ -34,6 +38,7 @@ export function bucketRows(buckets: BucketComparison[], total: number): Breakdow
       key: b.bucket,
       name: BUCKET_LABEL[b.bucket] ?? b.bucket,
       color: bucketColor(b.bucket),
+      ditherColor: bucketDither(b.bucket),
       spent: b.spent,
       share: share(b.spent, total),
       delta: b.delta,
@@ -50,6 +55,7 @@ export function categoryRows(rows: (CategoryDelta & { pct: number })[]): Breakdo
     key: `cat:${c.category_id}`,
     name: c.name,
     color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
+    ditherColor: categoryDither(i),
     spent: c.spent,
     share: c.pct,
     delta: c.delta,
@@ -68,6 +74,7 @@ export function merchantRows(txns: Txn[], total: number, limit = 20): BreakdownR
       key: `merchant:${m.merchant}`,
       name: m.merchant,
       color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
+      ditherColor: categoryDither(i),
       spent: m.spent,
       share: share(m.spent, total),
       count: m.count,

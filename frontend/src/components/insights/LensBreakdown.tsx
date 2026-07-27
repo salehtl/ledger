@@ -4,6 +4,7 @@ import { Card } from "../ui/Card";
 import { Money } from "../Money";
 import { EmptyState } from "../EmptyState";
 import { DeltaBadge } from "./DeltaBadge";
+import { DitherFill } from "../charts/DitherFill";
 
 // A ranked, drillable bar list for the selected analysis lens. Each row is a
 // magnitude bar (scaled to the largest row) plus its amount, share, and any
@@ -37,8 +38,8 @@ export function LensBreakdown({ rows, onDrill, emptyLabel = "No spending this mo
                   <ChevronRight size={16} className="text-muted shrink-0" aria-hidden />
                 </span>
               </div>
-              <div className="mt-1.5 h-1.5 rounded-full bg-surface-2 overflow-hidden" aria-hidden>
-                <div className="h-full rounded-full" style={{ width: `${(r.spent / max) * 100}%`, background: r.color }} />
+              <div className="mt-1.5">
+                <DitherFill segments={[{ value: r.spent, color: r.ditherColor }]} max={max} height={10} />
               </div>
             </button>
           </li>
