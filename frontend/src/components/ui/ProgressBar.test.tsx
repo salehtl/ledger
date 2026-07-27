@@ -68,4 +68,33 @@ describe("ProgressBar", () => {
     expect(fill.className).toContain("bg-fg");
     expect(marker.className).toContain("bg-fg/70");
   });
+
+  it("paints the fill in the given hue instead of the default ink", () => {
+    const { getByRole } = render(<ProgressBar pct={0.5} color="amber" label="Needs" />);
+    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
+    expect(fill.style.background).toBe("var(--color-amber)");
+    expect(fill.className).not.toContain("bg-fg");
+  });
+
+  it("keeps the default ink when no hue is given", () => {
+    const { getByRole } = render(<ProgressBar pct={0.5} label="Needs" />);
+    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
+    expect(fill.className).toContain("bg-fg");
+    expect(fill.style.background).toBe("");
+  });
+
+  it("onAccent overrides a hue — the hero totals all three buckets, so no single bucket hue is honest for it, and mid-chroma ink on the accent ground is a contrast problem", () => {
+    const { getByRole } = render(<ProgressBar pct={0.5} color="amber" onAccent />);
+    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
+    expect(fill.style.background).toBe("");
+    expect(fill.className).toContain("bg-hero-fg");
+  });
+
+  it("a hue still goes solid at or over budget — over is a texture change, not a colour change", () => {
+    const { getByRole } = render(<ProgressBar pct={1.2} color="lilac" label="Wants" />);
+    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
+    expect(fill).toHaveAttribute("data-fill", "solid");
+    expect(fill.className).not.toContain("dither-mask");
+    expect(fill.style.background).toBe("var(--color-lilac)");
+  });
 });

@@ -1,3 +1,6 @@
+import type { DitherColor } from "../dither-kit/palette";
+import { hueVar } from "../../lib/paletteColor";
+
 type Tone = "good" | "warn" | "bad";
 
 /**
@@ -6,9 +9,15 @@ type Tone = "good" | "warn" | "bad";
  * The `tone` prop still overrides the automatic reading (e.g. to mark by
  * projection rather than spend); "bad" means solid. An optional `pace` fraction
  * draws a vertical "today" marker. `onAccent` styles the track for the hero.
+ *
+ * `color` paints the fill in a palette hue instead of the default ink, so a
+ * bucket bar matches the swatch dot beside its label. It is deliberately
+ * ignored under `onAccent`: the hero bar totals all three buckets, so no single
+ * bucket hue is honest for it, and mid-chroma ink on the branded accent ground
+ * is a contrast problem.
  */
-export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
-  pct: number; label?: string; pace?: number; tone?: Tone; onAccent?: boolean;
+export function ProgressBar({ pct, label, pace, tone, onAccent = false, color }: {
+  pct: number; label?: string; pace?: number; tone?: Tone; onAccent?: boolean; color?: DitherColor;
 }) {
   const clamped = Math.min(100, Math.max(0, pct * 100));
   const auto: Tone = pct >= 1.0 ? "bad" : pct >= 0.8 ? "warn" : "good";
@@ -16,6 +25,7 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
   const track = onAccent ? "bg-hero-fg/25" : "bg-surface-2";
   const marker = onAccent ? "bg-hero-fg" : "bg-fg/70";
   const ink = onAccent ? "bg-hero-fg" : "bg-fg";
+  const hue = !onAccent && color !== undefined ? hueVar(color) : undefined;
   return (
     <div
       role="progressbar"
@@ -27,8 +37,8 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
     >
       <div
         data-fill={solid ? "solid" : "dithered"}
-        className={`h-full transition-[width] duration-300 ${ink} ${solid ? "" : "dither-mask"}`}
-        style={{ width: `${clamped}%` }}
+        className={`h-full transition-[width] duration-300 ${hue ? "" : ink} ${solid ? "" : "dither-mask"}`}
+        style={{ width: `${clamped}%`, ...(hue ? { background: hue } : {}) }}
       />
       {pace !== undefined && (
         <div
