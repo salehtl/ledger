@@ -145,16 +145,27 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Purpose:** app-shell plumbing: PTR spinner; app-wide warning strip.
 
 ### DitherFill (`charts/`)
-- **Purpose:** a horizontal dithered magnitude/proportion bar, painted with
-  dither-kit's own Bayer-matrix primitives so it matches the vertical bar
-  charts' texture. Segments fill left→right against `max`.
+- **Purpose:** a horizontal dithered magnitude/proportion bar. Shares the bar
+  charts' *dither* — dither-kit's 4×4 Bayer matrix and its `OFF_TIER` alpha for
+  an off cell, thresholded against a density ramped along the row — so it reads
+  as the same family. Segments fill left→right against `max`.
 - **Use for:** horizontal magnitude or proportion bars that should match the
   charts' dither texture (`LensBreakdown`'s row bars, `ComparativeSummary`'s
   need/want/saving split).
 - **Don't use for:** progress or budget meters — those stay `ProgressBar`,
   which is CSS and stays legible at 6px.
-- Minimum useful height is 10px; the dither cell is 2px, so anything thinner
-  reads as a flat block.
+- Not pixel-identical to the charts, and not trying to be: the charts'
+  `paintColumn` also modulates alpha with density and caps each column with a
+  border outline + feather row, while this thresholds to two flat alphas with no
+  outline. `backingSize` also floors the backing at 8 rows, so at 10–12px the
+  vertical cell is 1.25–1.5px against a 2px horizontal one — cells are not
+  square, and "2px" is not a height threshold.
+- Minimum useful height is 10px — below that the ramp has too few rows to read
+  as texture.
+- `bloom` defaults to `"off"`: the aura preset's 15px blur is clipped by the
+  component's own `overflow-hidden` box at these heights, so it costs a
+  filtered, `plus-lighter`-blended layer per instance and shows nothing. Opt in
+  only on a taller surface.
 
 ### ActiveBandHighlight (`charts/`)
 - **Purpose:** the surface-tint band drawn behind the active month's bar in

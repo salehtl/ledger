@@ -7,16 +7,30 @@ import {
   type BloomInput,
 } from "../dither-kit/dither-paint";
 import { rgb, seedOfColor, type DitherColor } from "../dither-kit/palette";
+import { segmentBounds } from "../../lib/ditherFill";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 
 export type DitherSegment = { value: number; color: DitherColor };
 
 /**
  * A horizontal dithered magnitude bar. dither-kit's charts are vertical-only,
- * so this paints the same ordered dither — its Bayer matrix, cell size and
- * off-tier alpha — across a row instead of down a column, keeping the texture
- * identical to the charts beside it. Segments fill left to right; whatever is
- * left of `max` stays track.
+ * so this paints across a row instead of down a column, sharing the charts'
+ * *dither*: the same 4×4 Bayer matrix and the same `OFF_TIER` alpha for an
+ * "off" cell, thresholded against a density ramped along the row. Segments fill
+ * left to right; whatever is left of `max` stays track.
+ *
+ * It is a family resemblance, not a pixel match. The charts' `paintColumn` also
+ * modulates alpha with density (`0.3 + density*0.7`) and caps each column with a
+ * `BORDER_ALPHA` outline plus a feather row; this only thresholds, to two flat
+ * alphas, and draws no outline. And `backingSize` floors the backing at 8 rows,
+ * so at the 10–12px heights actually in use a vertical cell is 1.25–1.5px
+ * against a 2px horizontal one — the cells are not square.
+ *
+ * `bloom` defaults off: the aura preset is a 15px blur clipped by this
+ * component's own `overflow-hidden` box, so it is invisible at these heights
+ * while still costing a filtered, `plus-lighter`-blended layer per instance
+ * (~20 of them in a scrolling `LensBreakdown`). Callers on a taller surface can
+ * opt back in.
  *
  * Rendered aria-hidden: every caller already states the value in text.
  */
@@ -24,7 +38,7 @@ export function DitherFill({
   segments,
   max,
   height = 10,
-  bloom = "aura",
+  bloom = "off",
   className = "",
 }: {
   segments: DitherSegment[];
@@ -59,13 +73,11 @@ export function DitherFill({
       if (!c) return;
       c.clearRect(0, 0, cols, rows);
 
-      const total = max > 0 ? max : 1;
-      let x0 = 0;
-      for (const seg of segments) {
-        const span = Math.round((Math.max(0, seg.value) / total) * cols);
+      const bounds = segmentBounds(segments.map((s) => s.value), max, cols);
+      segments.forEach((seg, i) => {
         const seed = seedOfColor(seg.color);
-        const end = Math.min(cols, x0 + span);
-        for (let x = x0; x < end; x++) {
+        const [x0, x1] = bounds[i];
+        for (let x = x0; x < x1; x++) {
           for (let y = 0; y < rows; y++) {
             // Ramp density from the bottom up, matching the charts' gradient
             // fill, then threshold it through the shared Bayer matrix.
@@ -75,8 +87,7 @@ export function DitherFill({
             c.fillRect(x, y, 1, 1);
           }
         }
-        x0 = end;
-      }
+      });
 
       const bloomCanvas = bloomRef.current;
       const bc = bloomCanvas?.getContext("2d");
