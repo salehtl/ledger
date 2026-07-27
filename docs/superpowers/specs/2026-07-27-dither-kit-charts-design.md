@@ -328,3 +328,32 @@ Six commits, in order. Each must leave `bun run test` and `tsc -b` green.
 - **Bloom on light surfaces.** `bloom="aura"` was chosen deliberately; if it
   reads as haze on the warm off-white background, the dial drops to `"low"` or
   `"off"` without any structural change.
+
+## Corrections (post-implementation)
+
+Three prescriptions in this spec were wrong and were caught in review. Recorded
+here so the document doesn't mislead a later reader.
+
+1. **§5's `stackType="stacked"` claim was false.** `computeBands` passed
+   `undefined` to d3's `.offset()`, which resolves to `stackOffsetNone` — plain
+   cumulative stacking that does **not** split negatives below zero. Upstream's
+   own doc comment in `scales.ts` asserted otherwise and was the source of the
+   error. Shipped behaviour would have painted "Out" on top of "In" above zero,
+   and clipped any month where spending exceeded income off the canvas — the
+   exact case the chart exists to show. Fixed by forking `computeBands` to use
+   `stackOffsetDiverging`, pinned by `dither-kit/scales.test.ts`.
+2. **§4's `markerIndex` mechanism does not exist.** dither-kit 0.1.0 accepts
+   `markerIndex` and stores it in context, but no renderer reads it. Active-month
+   emphasis is instead drawn by `components/charts/ActiveBandHighlight.tsx`,
+   positioned from `bandCenters()`.
+3. **The chart `margins` in §4/§5 misaligned labels from bars.** d3's `scaleBand`
+   places bands with `paddingInner`/`paddingOuter`, not at evenly spaced centres,
+   so any markup positioned at `(i + 0.5) / n` drifts off its bar. All such
+   markup now derives from `bandCenters()`, which delegates to the same
+   `buildBandScale` the canvas paints with.
+
+Two further decisions were revised during implementation: `motion` was stripped
+from the vendored tooltip in favour of a CSS transition (−128KB of a 602KB
+bundle) rather than dropping the tooltip, and `DitherFill` defaults `bloom` to
+`"off"` because a 15px blur inside a 10px `overflow-hidden` bar is clipped away
+while still costing a blurred compositor layer per row.
