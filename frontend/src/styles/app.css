@@ -34,30 +34,6 @@
      a fill — --color-accent is the fill. */
   --color-bad: #b8331d;
 
-  /* ── Categorical palette ────────────────────────────────────────────────
-     The one place these six hues are written for CSS consumers. They mirror
-     PALETTE_LIGHT/PALETTE_DARK in components/dither-kit/palette.ts, which the
-     canvas needs as literals because it paints raw RGB and cannot read a
-     custom property; a test asserts the two agree. Chroma sits at roughly two
-     thirds the accent's, so they read as muted and never compete with the one
-     spot ink. Chosen with the palette validator, not by eye — see
-     lib/ditherColor.ts for the measured separations. */
-  --color-azure: #1660a0;
-  --color-amber: #b5771e;
-  --color-lilac: #7556a5;
-  --color-sage:  #409457;
-  --color-rose:  #c5646e;
-  --color-slate: #76767e;
-
-  /* A second, deeper step per hue — separated on lightness, the axis that
-     survives red-green colour blindness. Projects draw from all twelve; the
-     bucket aliases below only ever use the base steps. */
-  --color-azure-deep: #003c6c;
-  --color-amber-deep: #855405;
-  --color-lilac-deep: #51317c;
-  --color-sage-deep:  #0d6d32;
-  --color-rose-deep:  #9a3d49;
-  --color-slate-deep: #515159;
 
   /* Buckets alias the palette rather than repeating a hex: a bucket and a
      project painted "amber" must be the same amber, and the only way to
@@ -90,6 +66,31 @@
    CSS easings are too weak; these give entrances/exits intentional punch.
    Usable in CSS rules and in JS inline styles via var(--ease-*). */
 :root {
+  /* ── Categorical palette ────────────────────────────────────────────────
+     Deliberately NOT in @theme. These are consumed only through runtime
+     `var(--color-…)` strings (projectColor(), bucketColor()), which Tailwind
+     cannot see, so inside @theme it tree-shakes every one nothing references
+     at build time — which shipped `rose` and all six deep steps with no light
+     value, making those marks vanish on paper. A plain :root can't be shaken.
+     The bucket aliases stay in @theme because bg-need/-want/-save are real
+     utilities. Values mirror dither-kit/palette.ts; tokens.test.ts asserts it. */
+  --color-azure: #1660a0;
+  --color-amber: #b5771e;
+  --color-lilac: #7556a5;
+  --color-sage:  #409457;
+  --color-rose:  #c5646e;
+  --color-slate: #76767e;
+
+  /* A second, deeper step per hue — separated on lightness, the axis that
+     survives red-green colour blindness. Projects draw from all twelve; the
+     bucket aliases below only ever use the base steps. */
+  --color-azure-deep: #003c6c;
+  --color-amber-deep: #855405;
+  --color-lilac-deep: #51317c;
+  --color-sage-deep:  #0d6d32;
+  --color-rose-deep:  #9a3d49;
+  --color-slate-deep: #515159;
+
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* entering/exiting UI */
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement   */
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);   /* iOS-like sheet curve  */
