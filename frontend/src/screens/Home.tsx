@@ -17,7 +17,7 @@ import {
 } from "../lib/insights";
 import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope";
 import { formatFils, flowAmount, aedFils, nativeAmountTag } from "../lib/money";
-import { AlertTriangle, Check, TrendingUp } from "lucide-react";
+import { AlertTriangle, Check, TrendingUp } from "../components/ui/PixelIcon";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, X } from "../ui/PixelIcon";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";

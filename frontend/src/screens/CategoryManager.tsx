@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "../components/ui/PixelIcon";
 import { getJSON, postJSON, getCategoryUsage, deleteCategory } from "../api/client";
 import type { Category } from "../api/types";
 import { useToast } from "../components/Toast";

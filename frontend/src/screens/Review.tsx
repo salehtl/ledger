@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, CheckCircle2 } from "../components/ui/PixelIcon";
 import { getJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SwipeDeck } from "../components/swipe/SwipeDeck";
@@ -35,13 +35,13 @@ export function Review({ scope }: { scope: Scope }) {
     <div className="flex flex-col min-h-[60vh]">
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
-          <Loader2 size={36} className="animate-spin text-muted" />
+          <Loader2 size={36} className="spin-pixel text-muted" />
         </div>
       )}
 
       {!loading && empty && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 py-16 text-center">
-          <p className="text-5xl">✅</p>
+          <CheckCircle2 size={48} className="text-good" />
           <h2 className="text-xl font-bold text-fg">All caught up here</h2>
           <p className="text-muted">Everything in {scopeLabel(scope)} is categorized.</p>
         </div>

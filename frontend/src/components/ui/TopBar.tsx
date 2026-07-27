@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "./PixelIcon";
 import { type Scope, addMonth, scopeLabel } from "../../lib/scope";
 import { IconButton } from "./IconButton";
 import { PeriodSheet } from "./PeriodSheet";

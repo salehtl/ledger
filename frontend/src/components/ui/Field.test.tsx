@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { Search } from "lucide-react";
+import { Search } from "./PixelIcon";
 import { Input, Select } from "./Field";
 
 it("renders a 16px control (text-base) so iOS Safari doesn't zoom on focus", () => {

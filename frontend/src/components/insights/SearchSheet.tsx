@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Search } from "../ui/PixelIcon";
 import type { Category, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
 import { Input } from "../ui/Field";

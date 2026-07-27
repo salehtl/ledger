@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2 } from "./ui/PixelIcon";
 import { EmptyState } from "./EmptyState";
 
 describe("EmptyState", () => {

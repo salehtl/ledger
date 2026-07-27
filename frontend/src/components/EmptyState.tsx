@@ -1,5 +1,5 @@
-import { type LucideIcon } from "lucide-react";
-export function EmptyState({ icon: Icon, title, hint }: { icon?: LucideIcon; title: string; hint?: string }) {
+import { type PixelIconType } from "./ui/PixelIcon";
+export function EmptyState({ icon: Icon, title, hint }: { icon?: PixelIconType; title: string; hint?: string }) {
   return (
     <div className="text-center py-10 px-4 text-muted">
       {Icon && (
