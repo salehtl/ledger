@@ -1,11 +1,13 @@
-import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Pill } from "./Pill";
 
-describe("Pill", () => {
-  it("renders its label with a tone class", () => {
-    const { container } = render(<Pill tone="warn">Needs review</Pill>);
-    expect(screen.getByText("Needs review")).toBeInTheDocument();
-    expect(container.firstChild).toHaveClass("text-warn");
-  });
+test("attention is the only tone that spends the spot ink", () => {
+  render(<Pill tone="attention">Needs review</Pill>);
+  expect(screen.getByText("Needs review").className).toContain("bg-accent");
+});
+
+test("default and muted print in ink only", () => {
+  render(<><Pill>Cleared</Pill><Pill tone="muted">Archived</Pill></>);
+  expect(screen.getByText("Cleared").className).not.toContain("accent");
+  expect(screen.getByText("Archived").className).toContain("text-muted");
 });

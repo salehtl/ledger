@@ -64,7 +64,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {native && <span className="tnum text-xs text-muted">{native}</span>}
-            {noRate && <Pill tone="warn">no AED rate</Pill>}
+            {noRate && <Pill>no AED rate</Pill>}
             {showStatus && <Pill tone={statusTone(txn.Status)}>{statusLabel(txn.Status)}</Pill>}
           </div>
         </div>

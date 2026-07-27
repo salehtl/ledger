@@ -1,3 +1,5 @@
+import type { Tone } from "../components/ui/Pill";
+
 const STATUS_LABELS: Record<string, string> = {
   needs_review: "Needs review",
   confirmed: "Confirmed",
@@ -10,15 +12,17 @@ export function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-export type Tone = "good" | "warn" | "bad" | "muted" | "neutral";
-
+/**
+ * Only `needs_review` spends the app's one rationed red (the review badge —
+ * see components/README.md). Every other status prints in ink or muted ink;
+ * the label carries the meaning colour used to.
+ */
 export function statusTone(status: string): Tone {
   switch (status) {
-    case "confirmed": return "good";
-    case "needs_review": return "warn";
+    case "needs_review": return "attention";
     case "ignored": return "muted";
     case "archived": return "muted";
-    default: return "neutral";
+    default: return "default";
   }
 }
 

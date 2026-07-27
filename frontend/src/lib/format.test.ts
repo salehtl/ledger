@@ -41,10 +41,10 @@ describe("statusLabel", () => {
 
 describe("statusTone", () => {
   it("maps statuses to a pill tone", () => {
-    expect(statusTone("confirmed")).toBe("good");
-    expect(statusTone("needs_review")).toBe("warn");
+    expect(statusTone("confirmed")).toBe("default");
+    expect(statusTone("needs_review")).toBe("attention");
     expect(statusTone("ignored")).toBe("muted");
-    expect(statusTone("transfer")).toBe("neutral");
+    expect(statusTone("transfer")).toBe("default");
   });
   it("tones archived as muted", () => {
     expect(statusTone("archived")).toBe("muted");
