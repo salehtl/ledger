@@ -1,10 +1,11 @@
+import type { TrendPoint } from "./insights";
+import { buildBandScale } from "../components/dither-kit/scales";
+
 /** Bar height as a 0-100 percentage of the tallest bar; 0 when there is no data. */
 export function barHeightPct(value: number, max: number): number {
   if (max <= 0 || value <= 0) return 0;
   return Math.min(100, (value / max) * 100);
 }
-
-import type { TrendPoint } from "./insights";
 
 /** One row per month, in the shape the dither BarChart consumes. */
 export function trendRows(points: TrendPoint[]): { period: string; label: string; spent: number }[] {
@@ -16,4 +17,28 @@ export function activeIndex(points: TrendPoint[], activePeriod?: string): number
   if (!activePeriod) return null;
   const i = points.findIndex((p) => p.period === activePeriod);
   return i === -1 ? null : i;
+}
+
+/**
+ * Fractional (0-1) horizontal center and slot width for each of `n` bar
+ * bands. Delegates to dither-kit's own `buildBandScale` (the same d3
+ * `scaleBand`, same `paddingInner`/`paddingOuter`) called with a plot width
+ * of 1, so the result is a pure fraction and — because it's literally the
+ * same function BarChart uses to lay out bars, not a second copy of its
+ * padding constants — can never drift from what the canvas actually paints.
+ *
+ * Only meaningful when the chart's `margins.left`/`right` are zero: d3's
+ * band scale ranges over the *plot* width, and this treats plot width as
+ * equal to the container width so a label row with no margins of its own
+ * can share these exact fractions.
+ */
+export function bandCenters(n: number): { center: number; width: number }[] {
+  if (n <= 0) return [];
+  const scale = buildBandScale(n, 1);
+  const bandwidth = scale.bandwidth();
+  const step = scale.step();
+  return Array.from({ length: n }, (_, i) => ({
+    center: (scale(i) ?? 0) + bandwidth / 2,
+    width: step,
+  }));
 }
