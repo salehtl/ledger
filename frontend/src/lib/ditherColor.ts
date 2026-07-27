@@ -2,8 +2,10 @@ import type { DitherColor } from "../components/dither-kit/palette";
 import type { Density } from "../components/charts/DitherFill";
 
 /**
- * Which palette hue each budget bucket paints in. The canvas paints raw RGB and
- * can't read a CSS var, so anything dithered picks its seed here.
+ * Which palette hue each budget bucket paints in. Canvas consumers
+ * (`TrendBars`, `FlowBars`, `SwipeDeck`) need raw RGB and can't read a CSS var,
+ * so the seed is chosen here; DOM consumers pass the same name through
+ * `hueVar` (`lib/paletteColor.ts`) and let the cascade resolve it.
  *
  * These three are the one set that physically *touches* — ComparativeSummary
  * stacks them into a single bar — so they were chosen for separation, not
@@ -22,29 +24,23 @@ export function bucketDither(bucket: string): DitherColor {
 }
 
 /**
- * Selects the texture (density) encoding for a bucket. Buckets are deliberately
- * double-encoded: `bucketDither` above selects the hue (amber/lilac/sage), and
- * this selects the dither texture — needs densest, wants medium, saving sparsest.
- * The redundancy is deliberate: anyone who can't resolve the dot pattern still
- * gets the hue, and anyone who can't distinguish the hue still reads the density.
+ * Texture for a bucket's bar: `"solid"` at or over budget, `"dotted"` otherwise —
+ * exactly the texture-not-colour reading `ProgressBar` gives its own fill at
+ * `pct >= 1.0`, so Home and Insights agree on what "over" looks like.
  *
- * `isOverBudget` overrides the bucket's usual density to `"solid"` — a bucket
- * at or over its target renders full ink, exactly the texture-not-colour
- * reading `ProgressBar` already gives its own fill at `pct >= 1.0`. This
- * function stays pure and only knows the bucket's identity plus whatever the
- * caller already determined about its spend-vs-target for the period shown;
- * it does not reach for that data itself (see `overBudgetBuckets` in
- * `lib/insights.ts`, which turns a period's `BucketSummary[]` into the set of
- * over-budget bucket names callers pass in here).
+ * The `bucket` argument no longer affects the result. Density used to encode
+ * bucket identity redundantly with hue (need dense, want medium, saving
+ * sparse), from when Insights' bars were monochrome. Once both screens shared
+ * one dot texture that channel went away, and buckets now read the way category
+ * and merchant rows always have: by hue, beside a visible text label. The
+ * parameter stays so call sites and `BreakdownRow` are unchanged.
+ *
+ * This function stays pure and only knows what the caller already determined
+ * about spend-vs-target for the period shown; it does not reach for that data
+ * itself (see `overBudgetBuckets` in `lib/insights.ts`).
  */
-export function bucketDensity(bucket: string, isOverBudget = false): Density {
-  if (isOverBudget) return "solid";
-  switch (bucket) {
-    case "need": return "dense";
-    case "want": return "medium";
-    case "saving": return "sparse";
-    default: return "medium";
-  }
+export function bucketDensity(_bucket: string, isOverBudget = false): Density {
+  return isOverBudget ? "solid" : "dotted";
 }
 
 /**

@@ -6,8 +6,12 @@ import type { DitherColor } from "../dither-kit/palette";
  * Whether a segment reads as spending in progress or spending past its limit.
  * Dotted is the resting state; solid means at or over budget — the same
  * texture-not-colour reading `ProgressBar` gives its own fill at `pct >= 1.0`.
+ *
+ * This is a *state* channel only. It used to double as bucket identity
+ * (need dense, want medium, saving sparse) back when Insights' bars had no hue
+ * of their own; hue carries identity now.
  */
-export type Density = "dense" | "medium" | "sparse" | "solid";
+export type Density = "dotted" | "solid";
 
 export type DitherSegment = { value: number; color: DitherColor; density?: Density };
 

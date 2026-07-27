@@ -59,8 +59,8 @@ export function bucketKey(a: SwipeAction): BucketKey {
  * even in light three of the four rails were identical.
  *
  * Both are fixed by resolving through `palette.ts`, which carries a light and
- * a dark table. Buckets are deliberately double-encoded by hue *and* density —
- * redundancy is an accessibility win, and it is what the charts already do.
+ * a dark table. Buckets are told apart by hue, the same mapping the bars and
+ * the swatch dots use — `bucketDither` is the single source of truth.
  */
 const BUCKET_SEED: Record<BucketKey, Parameters<typeof seedOfColor>[0]> = {
   need: bucketDither('need'),

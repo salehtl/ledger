@@ -61,9 +61,9 @@
 
   /* Buckets alias the palette rather than repeating a hex: a bucket and a
      project painted "amber" must be the same amber, and the only way to
-     guarantee that is for one of them not to hold a value. Restoring these
-     implements the ruling that buckets are double-encoded by hue *and*
-     density — the density signature is unchanged. */
+     guarantee that is for one of them not to hold a value. Hue carries bucket
+     identity; dither density is a separate state channel (solid at or over
+     budget, dotted otherwise) — see lib/ditherColor.ts's bucketDensity. */
   --color-need:     var(--color-amber);
   --color-want:     var(--color-lilac);
   --color-save:     var(--color-sage);

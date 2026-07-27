@@ -19,8 +19,9 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Buckets carry a hue again.** `--color-need`/`-want`/`-save`/`-transfer` are
   aliases onto the categorical palette (`--color-amber`/`-lilac`/`-sage`/`-slate`),
   which mirrors `dither-kit/palette.ts`; a test in `styles/tokens.test.ts`
-  asserts the two agree. Hue is *additional* to the density signature, not a
-  replacement — buckets stay double-encoded.
+  asserts the two agree. Hue carries bucket identity; dither density is a
+  separate state channel (see **Texture is state, not identity** below), not
+  a second identity signature.
 - **Projects store a palette name, never a hex.** `lib/paletteColor.ts`'s
   `projectColor()` resolves it to a var so it follows the theme; a stored
   light-mode hex does not (azure is 2.82:1 on the dark ground). Legacy `#hex`
@@ -343,28 +344,30 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   repaint effect, and a theme subscription per instance — ~20 in a scrolling
   `LensBreakdown`. There is no `bloom` prop any more; it was clipped by the
   component's own `overflow-hidden` box at these heights and showed nothing.
-- **Bucket encoding (double-encoded for accessibility).** The 50/30/20 buckets
-  are deliberately encoded twice: by hue *and* by dither density. `bucketDither`
-  (`lib/ditherColor.ts`) selects the hue (amber for needs, lilac for wants, sage
-  for saving); `bucketDensity` selects the texture: needs `"dense"`, wants
-  `"medium"`, saving `"sparse"`. The redundancy is intentional — anyone who
-  cannot resolve the dot pattern still gets the hue, and anyone who cannot
-  distinguish the hue still reads the density. A bucket at or over its budget
-  renders `"solid"` (both axes at full strength) — the same texture-not-colour
-  reading as `ProgressBar`'s `pct >= 1.0`, and wired to agree with it:
-  `bucketDensity` takes an `isOverBudget` flag, and `overBudgetBuckets`
-  (`lib/insights.ts`) turns a period's `BucketSummary[]` (`pct_used >= 1.0`)
-  into the set of names callers pass in. `Insights.tsx` threads its `summary`
-  query's buckets through to both `ComparativeSummary` (`overBudgetBuckets` prop)
-  and `LensBreakdown`'s `buckets` lens (`bucketRows`'s `overBudget` param) so
-  their bars go solid in step with Home's `ProgressBar`s for the same period.
-  `bucketDensity`/`bucketDither` in `lib/ditherColor.ts` are the single source
-  of truth for both axes. Hue and density together are never the sole encoding —
-  every call site (`ComparativeSummary`'s legend, `LensBreakdown`'s row name)
-  states the bucket in visible text next to the bar, since the bar itself stays
-  `aria-hidden`. Same **red is rationed** rule as everywhere else: this encoding
-  exists specifically so buckets never need another spent-ink use — don't reach
-  for `--color-accent` on a bucket bar to "help" it read as urgent.
+- **Bucket encoding.** The 50/30/20 buckets are told apart by **hue**:
+  `bucketDither` (`lib/ditherColor.ts`) maps amber → needs, lilac → wants,
+  sage → saving, and is the single source of truth — the bars, the swatch dots,
+  and the swipe rails all resolve through it. The hue is never the sole
+  encoding: every call site (`ComparativeSummary`'s legend, `LensBreakdown`'s
+  row name, Home's bucket label) states the bucket in visible text next to the
+  bar, since the bar itself is `aria-hidden`.
+- **Texture is state, not identity.** `bucketDensity` returns `"solid"` at or
+  over budget and `"dotted"` otherwise — the same reading as `ProgressBar`'s
+  `pct >= 1.0`, and wired to agree with it: `bucketDensity` takes an
+  `isOverBudget` flag, and `overBudgetBuckets` (`lib/insights.ts`) turns a
+  period's `BucketSummary[]` (`pct_used >= 1.0`) into the set of names callers
+  pass in. `Insights.tsx` threads its `summary` query's buckets through to both
+  `ComparativeSummary` (`overBudgetBuckets` prop) and `LensBreakdown`'s buckets
+  lens (`bucketRows`'s `overBudget` param) so their bars go solid in step with
+  Home's `ProgressBar`s for the same period.
+- Density used to double as bucket identity (need dense, want medium, saving
+  sparse), from when Insights' bars were monochrome and hue was unavailable.
+  Once Home and Insights shared one dot texture, hue took over identity — which
+  is how category and merchant rows had always worked anyway. Don't reintroduce
+  a per-bucket pitch.
+- Same **red is rationed** rule as everywhere else: this encoding exists
+  specifically so buckets never need another spent-ink use — don't reach for
+  `--color-accent` on a bucket bar to "help" it read as urgent.
 
 ### ActiveBandHighlight (`charts/`)
 - **Purpose:** the surface-tint band drawn behind the active month's bar in

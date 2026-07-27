@@ -15,19 +15,18 @@ export interface BreakdownRow {
   key: string;
   name: string;
   /**
-   * dither-kit seed for this row's bar — the canvas paints raw RGB and can't
-   * read a CSS var. There is deliberately no parallel CSS-color field: every
+   * Palette hue for this row's bar, as a name rather than a CSS colour.
+   * There is deliberately no parallel CSS-color field: every
    * consumer of a breakdown row renders a `DitherFill`, and carrying the same
    * color twice is how a legend drifts out of step with what it labels. The
    * CSS-var side of the mapping lives in `lib/ditherColor.ts`.
    */
   ditherColor: DitherColor;
   /**
-   * Dither density for this row's bar — only set for bucket rows (need/want/
-   * saving are told apart by texture, not hue, now that they share one ink).
-   * Category and merchant rows leave this undefined, which `DitherFill`
-   * defaults to `"medium"` (a zero bias): they were never bucket-encoded and
-   * don't gain a texture meaning by omission.
+   * Bar texture for this row — `"solid"` when the row is at or over budget.
+   * Only set for bucket rows, since only buckets have a target to be over.
+   * Category and merchant rows leave it undefined, which `DitherFill` renders
+   * dotted.
    */
   density?: Density;
   spent: number;
@@ -48,9 +47,8 @@ function share(spent: number, total: number): number {
  * Bucket rows (need/want/saving) ranked by spend, with month-over-month
  * deltas. `overBudget` is the set of bucket names at or over target for the
  * period shown (see `overBudgetBuckets` in `lib/insights.ts`) — when a bucket
- * is in it, its density goes `"solid"` regardless of its usual dense/medium/
- * sparse reading. Omit it (or pass an empty set) where over-budget data isn't
- * available; every bucket then falls back to its plain identity density.
+ * is in it, its bar renders solid instead of dotted. Omit it (or pass an empty
+ * set) where over-budget data isn't available; every bucket then renders dotted.
  */
 export function bucketRows(buckets: BucketComparison[], total: number, overBudget: Set<string> = new Set()): BreakdownRow[] {
   return [...buckets]
