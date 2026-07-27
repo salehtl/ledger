@@ -43,3 +43,18 @@ export function projectColor(stored: string | null | undefined): string {
   if (stored?.startsWith("#")) return stored;
   return "var(--color-slate)";
 }
+
+/**
+ * CSS colour for a categorical palette hue.
+ *
+ * No fallback branch, unlike `projectColor`: the compile-time assertion above
+ * pins `PALETTE_NAMES` to `DitherColor`, so a `DitherColor` is always a name
+ * with a matching `--color-…` var in both the light and dark tables.
+ *
+ * Anything painted in the DOM rather than on canvas should come through here,
+ * so an OS theme flip is handled by the cascade instead of a `useDitherTheme()`
+ * subscription and a repaint.
+ */
+export function hueVar(color: DitherColor): string {
+  return `var(--color-${color})`;
+}
