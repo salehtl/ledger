@@ -7,7 +7,7 @@ import { flowAmount, aedFils, nativeAmountTag } from "../../lib/money";
 import { statusLabel, statusTone, shortDate } from "../../lib/format";
 import { sourceLabel } from "../../lib/transactions";
 import { bucketColor } from "../../lib/insights";
-import { Tag, ArrowLeftRight, EyeOff, Archive, ArchiveRestore, Link2, Link2Off } from "lucide-react";
+import { Tag, ArrowLeftRight, EyeOff, Archive, ArchiveRestore, Link2, Link2Off } from "../ui/PixelIcon";
 
 /**
  * The one place a transaction's actions live. Tapping a row opens this; swipe

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "./PixelIcon";
 import { Dialog } from "./Dialog";
 import { Button } from "./Button";
 import { IconButton } from "./IconButton";

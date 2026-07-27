@@ -62,7 +62,34 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Overlays**: every sheet/modal is a `Dialog`. Full-screen drill-ins are a
   `SettingsPage`. No hand-rolled `fixed inset-0` overlays.
 - **Loading**: `Skeleton` for list-shaped primary loads; a centered `Loader2`
-  spinner only for non-list loads (Review deck) and inline waits.
+  spinner only for non-list loads (Review deck) and inline waits. Spin it with
+  the `spin-pixel` class (`app.css`), never Tailwind's `animate-spin` — see
+  "Icons" below for why.
+- **Icons.** `components/ui/PixelIcon.tsx`, generated from the
+  [`pixelarticons`](https://pixelarticons.com) devDependency (MIT) by
+  `scripts/generate-pixel-icons.mjs` (`bun run generate:icons`) — see
+  `pixelIcons.ts`'s header for provenance. **Never** import from `lucide-react`
+  (removed) and never use an emoji or a typographic glyph (`←`, `✅`, …) as a
+  standalone icon; text-only characters (`·` separators, `—` dashes, the `›`
+  in "All ›") are fine, they're read as text, not chrome.
+  - **Native grid: 24×24 viewBox, 12×12 effective pixel-art grid** (every path
+    aligns to a 2-unit cell). Pass `size` as a multiple of 12 (12, 24, 36, 48,
+    …) wherever the call site can, so no edge lands on a fractional device
+    pixel and blurs. Existing call sites carry over lucide's old ad hoc sizes
+    (13, 14, 16, 18, 20, 22, 36, 72) uncorrected — treat 12-multiples as the
+    rule for anything new, not a retroactive audit of every icon in the app.
+  - **Colour is `currentColor` only** — every icon inherits `text-fg` /
+    `text-muted` / `text-accent-fg` from an ancestor; never a hardcoded `fill`.
+  - **Call signature is drop-in-compatible with the old lucide imports**: each
+    icon is a named export (`Search`, `Home`, …) usable as `<Icon size={22} />`
+    with an optional `className`; `PixelIconType` replaces lucide's
+    `LucideIcon` as the prop type for "icon passed as a component" (`Fab`,
+    `Field`'s `icon` prop, `EmptyState`, `nav.ts`'s `TABS`).
+  - **Decorative by default**, matching lucide's own behaviour: an icon is
+    `aria-hidden` unless the call site already gave it an accessible identity
+    (`aria-label`, `role`, `title`) — e.g. `PullToRefreshIndicator`'s
+    `role="status"` spinner. The accessible name otherwise lives on the parent
+    (`IconButton`'s required `label`).
 - **Component logic** that grows beyond trivial goes into a pure `lib/`
   function with its own test (see CLAUDE.md).
 - **Sans/Mono division of labour.** Geist Sans takes prose, merchant names and

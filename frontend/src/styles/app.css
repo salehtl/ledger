@@ -93,6 +93,17 @@
   @keyframes stagger-in { from { opacity: 0; } to { opacity: 1; } }
 }
 
+/* Pixel-art spinner (Loader2 replacement). A smoothly-rotating pixel grid
+   shimmers at every off-axis angle, so this steps in 90° increments instead
+   of interpolating — each frame lands the icon back on a grid-aligned
+   rotation. Same job as Tailwind's `animate-spin`, dedicated class so the
+   stepped timing never leaks onto some future non-pixel spinner. */
+@keyframes spin-pixel-step { to { transform: rotate(360deg); } }
+.spin-pixel { animation: spin-pixel-step 1s steps(4, end) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .spin-pixel { animation: none; }
+}
+
 html, body, #root { height: 100%; }
 body { background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans);
        -webkit-text-size-adjust: 100%; }

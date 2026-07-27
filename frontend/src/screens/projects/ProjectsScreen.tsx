@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { FolderKanban } from "lucide-react";
+import { FolderKanban } from "../../components/ui/PixelIcon";
 import { getProjects } from "../../api/client";
 import { Button } from "../../components/ui/Button";
 import { SectionLabel } from "../../components/ui/SectionLabel";
