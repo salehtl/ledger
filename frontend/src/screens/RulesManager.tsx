@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "../components/ui/PixelIcon";
 import { getJSON, postJSON, del } from "../api/client";
 import type { Category, Rule } from "../api/types";
 import { useToast } from "../components/Toast";

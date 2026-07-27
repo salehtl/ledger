@@ -1,4 +1,4 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight } from "../ui/PixelIcon";
 import type { BreakdownRow } from "../../lib/lens";
 import { Card } from "../ui/Card";
 import { Money } from "../Money";

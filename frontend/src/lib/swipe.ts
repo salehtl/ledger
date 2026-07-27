@@ -12,7 +12,7 @@ export interface SwipeAction {
   colorClass: string
   /** Tailwind text class for panel headers. */
   textClass: string
-  /** lucide-react icon component name. */
+  /** PixelIcon component name (see components/ui/PixelIcon.tsx). */
   icon: string
 }
 

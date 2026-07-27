@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, type CSSProperties } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Heart, type LucideIcon } from 'lucide-react'
+import { CheckCircle, Heart, type PixelIconType } from '../ui/PixelIcon'
 import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
 import { useToast } from '../Toast'
@@ -50,7 +50,7 @@ const WASH: Record<SwipeDirection, (c: string) => string> = {
 
 function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeAction; active: boolean }) {
   const color = actionColor(action)
-  const Icon: LucideIcon = SWIPE_ICONS[action.icon] ?? Heart
+  const Icon: PixelIconType = SWIPE_ICONS[action.icon] ?? Heart
   const { style, vertical } = RAIL_POS[dir]
   return (
     <div className="absolute z-10 pointer-events-none" style={style}>

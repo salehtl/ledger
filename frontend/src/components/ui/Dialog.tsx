@@ -1,6 +1,6 @@
 // frontend/src/components/ui/Dialog.tsx
 import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { X } from "./PixelIcon";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motion";
 import { useSheetDrag } from "../../hooks/useSheetDrag";

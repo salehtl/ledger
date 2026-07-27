@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Check } from "lucide-react";
+import { Check } from "../../components/ui/PixelIcon";
 
 /**
  * Autosave feedback. Call `flash()` after a change commits successfully; the

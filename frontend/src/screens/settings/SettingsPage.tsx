@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "../../components/ui/PixelIcon";
 import { IconButton } from "../../components/ui/IconButton";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { useEdgeBack } from "../../hooks/useEdgeBack";

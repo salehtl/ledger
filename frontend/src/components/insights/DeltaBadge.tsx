@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowDown } from "lucide-react";
+import { ArrowUp, ArrowDown } from "../ui/PixelIcon";
 import { formatFils } from "../../lib/money";
 
 /** Magnitude text: a rounded percent when available, else an absolute fils amount. */

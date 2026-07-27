@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { Plus } from "lucide-react";
+import { Plus } from "./PixelIcon";
 import { Fab } from "./Fab";
 
 it("renders an accessible labelled button and fires onClick", () => {

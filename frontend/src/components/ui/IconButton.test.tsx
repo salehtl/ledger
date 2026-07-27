@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "./PixelIcon";
 import { IconButton } from "./IconButton";
 import * as haptics from "../../lib/haptics";
 

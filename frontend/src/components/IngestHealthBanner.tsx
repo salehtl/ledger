@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { TriangleAlert, X } from "lucide-react";
+import { TriangleAlert, X } from "./ui/PixelIcon";
 import { useIngestHealth } from "../hooks/useIngestHealth";
 import { bannerMessage, dismissKey } from "../lib/ingestHealth";
 import { IconButton } from "./ui/IconButton";

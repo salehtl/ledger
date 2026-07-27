@@ -1,4 +1,4 @@
-import type { LucideIcon } from "lucide-react";
+import type { PixelIconType } from "./PixelIcon";
 import { fire } from "../../lib/feedback";
 
 /**
@@ -7,7 +7,7 @@ import { fire } from "../../lib/feedback";
  * this design floats. If it needs separating from content beneath it, that is a
  * layout problem, not an elevation problem.
  */
-export function Fab({ icon: Icon, label, onClick }: { icon: LucideIcon; label: string; onClick: () => void }) {
+export function Fab({ icon: Icon, label, onClick }: { icon: PixelIconType; label: string; onClick: () => void }) {
   return (
     <button
       type="button"

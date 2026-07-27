@@ -20,7 +20,7 @@ import {
 import { type Lens, type BreakdownRow, bucketRows, categoryRows, merchantRows } from "../lib/lens";
 import { addMonth, insightsFocus, DEFAULT_SCOPE, type Scope } from "../lib/scope";
 import { monthRange } from "../lib/transactions";
-import { AlertTriangle, Search } from "lucide-react";
+import { AlertTriangle, Search } from "../components/ui/PixelIcon";
 
 const LENS_OPTIONS: { value: Lens; label: string }[] = [
   { value: "buckets", label: "Buckets" },

@@ -1,7 +1,7 @@
 // frontend/src/components/transactions/LinkRefundSheet.tsx
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2 } from "../ui/PixelIcon";
 import { getRefundCandidates, linkRefund } from "../../api/client";
 import type { Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
@@ -44,7 +44,7 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
       </p>
       {candidates.isPending && (
         <div className="flex justify-center py-8">
-          <Loader2 size={24} className="animate-spin text-muted" />
+          <Loader2 size={24} className="spin-pixel text-muted" />
         </div>
       )}
       {candidates.isError && <p className="text-sm text-bad py-4">Couldn't load purchases.</p>}
