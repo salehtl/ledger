@@ -11,6 +11,7 @@ import type { ChartConfig } from "../dither-kit/chart-context";
 import { rgb, seedOfColor } from "../dither-kit/palette";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 import { ActiveBandHighlight } from "./ActiveBandHighlight";
+import { SCRUB_SURFACE } from "./scrubSurface";
 
 // Module constant: a fresh object literal here would give the chart a new
 // `config` identity every render, busting configKeys → bands → the whole
@@ -66,7 +67,10 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
     .join("; ");
 
   return (
-    <div>
+    // SCRUB_SURFACE: a finger-drag scrubs the detail box instead of starting a
+    // text selection. On the outer wrapper so the net lane and its figures are
+    // covered too — iOS extends a selection into whatever text is nearest.
+    <div style={SCRUB_SURFACE}>
       {/* Swatches resolve from the *same* palette seeds the bars paint with
           (FLOW_CONFIG), not hand-picked CSS vars — the two drifted apart once
           already. `dark` above is the re-render trigger on an OS theme flip. */}
