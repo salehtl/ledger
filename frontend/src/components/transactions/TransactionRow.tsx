@@ -38,7 +38,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
     >
       <span
         aria-hidden
-        className="w-1 self-stretch rounded-full shrink-0"
+        className="w-1 self-stretch rounded-[var(--radius)] shrink-0"
         style={{ background: txn.Bucket ? bucketColor(txn.Bucket) : "var(--color-border)" }}
       />
       <div className="flex-1 min-w-0">
@@ -57,7 +57,7 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
             <p className="font-mono text-[10px] tracking-[0.04em] text-muted truncate">{meta}</p>
             {project && (
               <span className="inline-flex items-center gap-1 text-xs text-muted shrink-0">
-                <span aria-hidden className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: project.color }} />
+                <span aria-hidden className="w-1.5 h-1.5 rounded-[var(--radius)] shrink-0" style={{ background: project.color }} />
                 <span className="truncate max-w-24">{project.name}</span>
               </span>
             )}

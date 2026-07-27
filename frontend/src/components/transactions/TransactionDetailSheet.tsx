@@ -45,7 +45,7 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onStatus, o
 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted mb-4">
         <span className="inline-flex items-center gap-1.5">
-          <span aria-hidden className="w-2 h-2 rounded-full" style={{ background: txn.Bucket ? bucketColor(txn.Bucket) : "var(--color-border)" }} />
+          <span aria-hidden className="w-2 h-2 rounded-[var(--radius)]" style={{ background: txn.Bucket ? bucketColor(txn.Bucket) : "var(--color-border)" }} />
           {txn.CategoryName || "Uncategorized"}
         </span>
         <span aria-hidden>·</span>

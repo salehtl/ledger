@@ -51,7 +51,7 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
             const { Icon, word } = SWIPE_DIRS[dir];
             return (
               <div key={dir} className="flex items-center gap-3">
-                <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2" aria-hidden><Icon size={16} /></span>
+                <span className="w-9 h-9 grid place-items-center rounded-[var(--radius)] bg-surface-2" aria-hidden><Icon size={16} /></span>
                 <span className="text-sm w-12">{word}</span>
                 <Select value={value} aria-label={`${word} swipe action`} onChange={(e) => setSwipeDir(dir, e.target.value)} className="flex-1">
                   <option value="want">Want</option>

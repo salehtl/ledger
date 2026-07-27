@@ -19,7 +19,7 @@ function SplitBar({ need, want, saving }: { need: number; want: number; saving: 
   const bar = "h-full transition-[width] duration-300 motion-reduce:transition-none";
   return (
     <div
-      className="h-3 flex overflow-hidden rounded-full bg-surface-2"
+      className="h-3 flex overflow-hidden rounded-[var(--radius)] bg-surface-2"
       role="img"
       aria-label={`Budget split: need ${fractionToPercent(need)}%, want ${fractionToPercent(want)}%, saving ${fractionToPercent(saving)}%`}
     >

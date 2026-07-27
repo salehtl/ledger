@@ -46,7 +46,7 @@ export function SubcategoryPanel({
     <button
       key={cat.ID}
       onClick={() => onSelect(cat.ID, projectID)}
-      className="min-h-14 py-3 px-4 rounded-lg border border-border text-base font-medium text-fg hover:bg-surface-2 press text-left"
+      className="min-h-14 py-3 px-4 rounded-[var(--radius)] border border-border text-base font-medium text-fg hover:bg-surface-2 press text-left"
     >
       {cat.Name}
     </button>
@@ -55,7 +55,7 @@ export function SubcategoryPanel({
   return (
     <Dialog
       title={action.label}
-      titleAdornment={<span aria-hidden className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />}
+      titleAdornment={<span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: color }} />}
       titleStyle={{ color }}
       onClose={onCancel}
     >
@@ -74,12 +74,12 @@ export function SubcategoryPanel({
                   aria-pressed={selected}
                   data-suggested={p.suggested}
                   onClick={() => setProjectID(selected ? null : p.id)}
-                  className="min-h-11 px-3.5 rounded-full text-sm font-medium inline-flex items-center gap-2 press border transition-colors"
+                  className="min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press border transition-colors"
                   style={selected
                     ? { backgroundColor: p.color, borderColor: p.color, color: '#fff' }
                     : { borderColor: p.suggested ? p.color : 'var(--color-border)', color: 'var(--color-fg)' }}
                 >
-                  <span aria-hidden className="w-2 h-2 rounded-full shrink-0"
+                  <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0"
                     style={{ backgroundColor: selected ? 'currentColor' : p.color }} />
                   {p.name}
                   {p.suggested && !selected && <span className="text-xs text-muted">these dates</span>}

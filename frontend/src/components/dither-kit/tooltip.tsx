@@ -102,7 +102,7 @@ export function Tooltip({
   return (
     <div
       className={cn(
-        "dither-tooltip pointer-events-none absolute z-10 rounded-md border px-2 py-1 shadow-sm",
+        "dither-tooltip pointer-events-none absolute z-10 rounded-[var(--radius)] border px-2 py-1 shadow-sm",
         VARIANT[variant]
       )}
       style={{
@@ -126,7 +126,7 @@ export function Tooltip({
             style={{ opacity: item.dimmed ? 0.4 : 1 }}
           >
             <span
-              className="size-2 rounded-[1px]"
+              className="size-2 rounded-[var(--radius)]"
               style={{ backgroundColor: rgb(item.seed.fill) }}
             />
             <span className="text-muted-foreground">{item.label}</span>

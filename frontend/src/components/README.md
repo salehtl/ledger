@@ -10,14 +10,12 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Tokens only, for colour.** Colors and easings come from `src/styles/app.css`
   (`--color-*`, `--ease-*`). Never raw hex in component code (project colours
   in `ProjectForm.tsx`'s `COLOR_PRESETS` are the one exception — user data, not
-  app chrome). **Radius is not yet tokens-only in practice**: `--radius-card`
-  (3px) and `--radius-sheet` (12px) are the intended scale, but a Task 12 audit
-  found only ~7 of ~73 live radius utilities actually reference
-  `--radius-card` — the rest are untouched Tailwind defaults (`rounded-lg`
-  ×11, `rounded-md` ×12, bare `rounded` ×14, `rounded-full` ×27, the last
-  mostly avatars/dots/ticks that were never meant to carry the card radius).
-  Treat `--radius-card`/`--radius-sheet` as what to reach for on new work;
-  reconciling the drift on existing surfaces is known follow-up, not done.
+  app chrome). **Radius is one sharp token, everywhere:** `--radius: 2px`. There
+  is no second radius scale (`--radius-card`/`--radius-sheet` are retired) and
+  no bare Tailwind radius utility — no `rounded-full`, `rounded-lg`,
+  `rounded-md`, `rounded-xl`, or arbitrary `rounded-[Npx]`, not even for
+  formerly-circular dots, avatars, or toggle knobs. Every radius call site is
+  `rounded-[var(--radius)]`, full stop.
 - **The spot ink has three registers.** One plate, different tints for
   different jobs (ordinary two-colour press practice) — a contrast audit found
   the shipped single value sub-AA in two of these three roles:
@@ -171,7 +169,7 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Purpose:** the paper content surface (`bg-surface`, card radius,
   `border border-border`, `p-4`) — bounded by a hairline, not a shadow.
   `className="!p-0"` + an inner `divide-y` list is the list-card idiom.
-- **Don't:** inline `bg-surface rounded-[var(--radius-card)] border border-border`.
+- **Don't:** inline `bg-surface rounded-[var(--radius)] border border-border`.
 
 ### Pill
 - **Purpose:** small inline status/label badge with `tone`
@@ -406,8 +404,6 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
 - `insights/DeltaBadge`: direction arrows + domain colors, stays bespoke.
 - Insights' search trigger: a `button` styled as a fake input (it opens
   `SearchSheet`), kept because a real input would summon the keyboard.
-- Swipe deck cards use `rounded-[12px]` and wide-tracked eyebrows — display
-  surface, intentionally denser than the card idiom.
 - `FilterBar` chips and `SwipeableRow` action icons run at 36px inside their
   dense panels/rows — the sanctioned exception to the 44px target, same as
   `IconButton size="sm"`.

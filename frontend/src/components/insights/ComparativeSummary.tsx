@@ -43,7 +43,7 @@ export function ComparativeSummary({ label, note, net, savings, buckets, overBud
         {buckets.map((b) => {
           const chip = (
             <>
-              <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: bucketColor(b.bucket) }} aria-hidden />
+              <span className="inline-block w-2.5 h-2.5 rounded-[var(--radius)] shrink-0" style={{ background: bucketColor(b.bucket) }} aria-hidden />
               <span className="text-sm">{BUCKET_LABEL[b.bucket] ?? b.bucket}</span>
               <span className="text-xs text-muted tnum"><Money fils={b.spent} /></span>
             </>

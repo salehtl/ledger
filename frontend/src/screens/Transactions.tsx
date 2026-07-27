@@ -149,7 +149,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           onClick={() => { fire("selection"); setFilterOpen((o) => !o); }}
           aria-expanded={filterOpen}
           aria-label="Filters"
-          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border press ${
+          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] border press ${
             activeFilters > 0 ? "border-accent/30 bg-accent/10 text-fg" : "border-border bg-surface text-muted"
           }`}
         >
@@ -162,7 +162,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           disabled={exporting}
           aria-label="Export CSV"
           title="Export CSV — current status, period and search"
-          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-md border border-border bg-surface text-muted press disabled:opacity-50"
+          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-[var(--radius)] border border-border bg-surface text-muted press disabled:opacity-50"
         >
           <Download size={16} aria-hidden />
         </button>

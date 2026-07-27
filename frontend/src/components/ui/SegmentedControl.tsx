@@ -11,19 +11,19 @@ export function SegmentedControl<T extends string>({
   fullWidth?: boolean;
 }) {
   return (
-    <div className={`p-1 bg-surface-2 rounded-md gap-1 ${fullWidth ? "flex w-full" : "inline-flex"}`}>
+    <div className={`p-1 bg-surface-2 rounded-[var(--radius)] gap-1 ${fullWidth ? "flex w-full" : "inline-flex"}`}>
       {options.map((o) => (
         <button
           key={o.value}
           aria-pressed={value === o.value}
           onClick={() => { fire("selection"); onChange(o.value); }}
-          className={`rounded text-sm font-medium transition-colors press inline-flex items-center justify-center gap-1.5 whitespace-nowrap py-2 ${
+          className={`rounded-[var(--radius)] text-sm font-medium transition-colors press inline-flex items-center justify-center gap-1.5 whitespace-nowrap py-2 ${
             fullWidth ? "flex-1 min-w-0 px-2" : "px-4"
           } ${value === o.value ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
         >
           {o.label}
           {o.badge != null && o.badge > 0 && (
-            <span className="tnum text-[11px] font-semibold rounded-full bg-accent/15 text-fg px-1.5 min-w-4 text-center">
+            <span className="tnum text-[11px] font-semibold rounded-[var(--radius)] bg-accent/15 text-fg px-1.5 min-w-4 text-center">
               {o.badge}
             </span>
           )}

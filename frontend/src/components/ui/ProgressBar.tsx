@@ -23,7 +23,7 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={label}
-      className={`relative h-3 w-full overflow-hidden rounded-[var(--radius-card)] ${track}`}
+      className={`relative h-3 w-full overflow-hidden rounded-[var(--radius)] ${track}`}
     >
       <div
         data-fill={solid ? "solid" : "dithered"}

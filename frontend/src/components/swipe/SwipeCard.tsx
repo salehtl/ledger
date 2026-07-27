@@ -138,7 +138,7 @@ export function SwipeCard({
       data-testid="swipe-card"
       // Downward card drags are a commit gesture — PTR must never claim them.
       data-ptr-exempt=""
-      className="relative w-full bg-surface rounded-[12px] cursor-grab active:cursor-grabbing overflow-hidden"
+      className="relative w-full bg-surface rounded-[var(--radius)] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -154,7 +154,7 @@ export function SwipeCard({
       <div className="px-7 pt-9 pb-8 flex flex-col items-center gap-5">
         {/* Merchant monogram — keeps a stable color per merchant */}
         <div
-          className="w-[72px] h-[72px] rounded-xl flex items-center justify-center"
+          className="w-[72px] h-[72px] rounded-[var(--radius)] flex items-center justify-center"
           style={{ backgroundColor: `hsl(${hue} 72% 93%)`, color: `hsl(${hue} 58% 38%)` }}
         >
           <span className="text-3xl font-bold">
@@ -170,7 +170,7 @@ export function SwipeCard({
           {/* Where the money moved and why this card needs a human look */}
           <div className="flex items-center justify-center gap-1.5 flex-wrap text-xs text-muted mt-1.5 px-2">
             {accountLabel(txn) && (
-              <span className="px-2 py-0.5 rounded-full bg-surface-2 font-medium text-fg/80">
+              <span className="px-2 py-0.5 rounded-[var(--radius)] bg-surface-2 font-medium text-fg/80">
                 {accountLabel(txn)}
               </span>
             )}
@@ -198,7 +198,7 @@ export function SwipeCard({
       {/* Confirming badge — appears at the committed/leaning edge */}
       {action && color && dir && (dragging || flying) && (
         <div
-          className="absolute flex items-center gap-2 px-4 py-2 rounded-full text-bg font-semibold shadow-lg pointer-events-none"
+          className="absolute flex items-center gap-2 px-4 py-2 rounded-[var(--radius)] text-bg font-semibold shadow-lg pointer-events-none"
           style={{
             ...BADGE_POS[dir].style,
             backgroundColor: color,

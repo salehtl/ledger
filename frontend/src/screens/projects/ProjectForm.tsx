@@ -109,7 +109,7 @@ export function ProjectForm({
                 aria-label={`Color ${c}`}
                 aria-pressed={color === c}
                 onClick={() => setColor(c)}
-                className={`w-8 h-8 rounded-full press ${
+                className={`w-8 h-8 rounded-[var(--radius)] press ${
                   color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
                 }`}
                 style={{ backgroundColor: c }}

@@ -116,7 +116,7 @@ export function Home({
     <div className="space-y-4">
       {/* hero: spent vs budget, with today's pace + projection — the one bold,
           branded surface; everything below stays quiet on neutral cards. */}
-      <div className="rounded-[var(--radius-card)] bg-hero text-hero-fg p-5">
+      <div className="rounded-[var(--radius)] bg-hero text-hero-fg p-5">
         <p className="text-sm opacity-80">{heroLabel}</p>
         <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-[-0.02em] tnum"><RollingNumber value={formatFils(spent)} /></p>
         <p className="text-sm opacity-80 mt-2">of <span className="tnum"><Money fils={budget} /></span> budget</p>
@@ -124,7 +124,7 @@ export function Home({
         <div className="flex items-center justify-between mt-2 text-sm">
           <span className="tnum opacity-80">{remainingLabel(budget - spent)}</span>
           {isCurrent && (
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold ${HERO_BADGE_FG[heroTone]} ${HERO_BADGE_BG[heroTone]}`}>
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius)] text-xs font-semibold ${HERO_BADGE_FG[heroTone]} ${HERO_BADGE_BG[heroTone]}`}>
               <HeroIcon size={13} aria-hidden />
               {VERDICT[heroStatus]}
             </span>
@@ -149,7 +149,7 @@ export function Home({
               <div key={b.bucket}>
                 <div className="flex items-center justify-between text-sm mb-1.5">
                   <span className="flex items-center gap-2 font-medium">
-                    <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: bucketColor(b.bucket) }} />
+                    <span className="inline-block w-2.5 h-2.5 rounded-[var(--radius)]" style={{ background: bucketColor(b.bucket) }} />
                     {name}
                   </span>
                   <span className="tnum text-muted"><Money fils={b.spent} /> / <Money fils={b.target} /></span>

@@ -118,7 +118,7 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
               {(usage.data?.recent ?? []).map((row, i) => (
                 <div key={i} className="flex items-center justify-between gap-2 px-4 py-2.5 text-xs">
                   <span className="flex items-center gap-2 min-w-0">
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 ${row.path === "extract" ? "bg-surface-2 text-muted" : "bg-surface-2 text-fg"}`}>{row.path}</span>
+                    <span className={`shrink-0 rounded-[var(--radius)] px-1.5 py-0.5 ${row.path === "extract" ? "bg-surface-2 text-muted" : "bg-surface-2 text-fg"}`}>{row.path}</span>
                     <span className="truncate text-muted">{row.detail || row.model}</span>
                   </span>
                   <span className="tnum text-right shrink-0">

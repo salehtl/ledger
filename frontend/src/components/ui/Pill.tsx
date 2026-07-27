@@ -16,7 +16,7 @@ const TONES: Record<Tone, string> = {
 
 export function Pill({ tone = "default", children }: { tone?: Tone; children: ReactNode }) {
   return (
-    <span className={`inline-flex items-center whitespace-nowrap rounded-[var(--radius-card)] px-2.5 py-1 text-xs font-medium ${TONES[tone]}`}>
+    <span className={`inline-flex items-center whitespace-nowrap rounded-[var(--radius)] px-2.5 py-1 text-xs font-medium ${TONES[tone]}`}>
       {children}
     </span>
   );
