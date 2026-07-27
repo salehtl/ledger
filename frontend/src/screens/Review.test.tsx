@@ -51,7 +51,8 @@ describe("Review screen", () => {
 
   it("shows a scope-aware empty state when nothing needs review", async () => {
     wrap({ kind: "month", period: "2026-03" }); // fetch returns [] for this month
-    expect(await screen.findByText(/everything in mar 2026 is categorized/i)).toBeInTheDocument();
+    // The scope name is the point — the state is per-period, not global.
+    expect(await screen.findByText(/nothing in mar 2026 needs a look/i)).toBeInTheDocument();
   });
 
   it("re-renders the deck when the scope changes", async () => {

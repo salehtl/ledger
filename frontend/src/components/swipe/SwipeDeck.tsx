@@ -4,6 +4,7 @@ import { CheckCircle, Heart, type PixelIconType } from '../ui/PixelIcon'
 import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
 import { useToast } from '../Toast'
+import { useDitherTheme } from '../../hooks/useDitherTheme'
 import type { Txn, Category } from '../../api/types'
 import {
   type SwipeConfig,
@@ -11,6 +12,7 @@ import {
   type SwipeAction,
   DEFAULT_SWIPE_CONFIG,
   actionColor,
+  onActionColor,
 } from '../../lib/swipe'
 import { SwipeCard, SWIPE_ICONS } from './SwipeCard'
 import { SubcategoryPanel } from './SubcategoryPanel'
@@ -58,7 +60,9 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
         className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
-          color: active ? '#ffffff' : color,
+          // Ink or paper, whichever reads on this fill — white was fine on the
+          // darker seeds and ~3:1 on the lighter ones.
+          color: active ? onActionColor(color) : color,
           transform: `scale(${active ? 1.08 : 1})`,
           boxShadow: active ? `0 10px 24px -8px ${color}` : 'none',
         }}
@@ -83,6 +87,9 @@ interface Commit {
 }
 
 export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CONFIG }: SwipeDeckProps) {
+  // Bucket colours resolve against the active theme at call time, so the deck
+  // has to re-render when the OS flips or the rails keep the old theme's hues.
+  useDitherTheme()
   const qc = useQueryClient()
   const toast = useToast()
   const commitRef = useRef<Commit | null>(null)
@@ -251,10 +258,10 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   if (done) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-5 text-center px-8">
-        <CheckCircle size={72} className="text-good" />
-        <h2 className="text-2xl font-bold text-fg">All caught up!</h2>
+        <CheckCircle size={72} className="text-fg" />
+        <h2 className="text-2xl font-semibold text-fg">All caught up</h2>
         <p className="text-muted">
-          {state.index} transaction{state.index !== 1 ? 's' : ''} categorized this session
+          <span className="tnum">{state.index}</span> transaction{state.index !== 1 ? 's' : ''} sorted this session
         </p>
       </div>
     )
@@ -271,13 +278,18 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
   return (
     <div className="flex-1 flex flex-col w-full max-w-sm mx-auto px-4">
-      {/* Header — remaining count is the motivating number */}
-      <div className="flex items-end justify-between mb-3 px-1">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-muted mb-0.5">Remaining</p>
-          <p className="tnum font-bold text-fg leading-none" style={{ fontSize: '2rem' }}>{remaining}</p>
-        </div>
-        <p className="tnum text-sm text-muted mb-1">{state.index} of {total} sorted</p>
+      {/* Header. The count, the total and the bar used to be three separate
+          tellings of one fact — a big "28", a "12 of 40 sorted" sentence, and
+          the fill below. The sentence is gone and the total rides on the count
+          as a denominator, so the number states the work left, the denominator
+          states the size of the job, and the bar is the only thing showing
+          proportion. Mono throughout: these are figures, not prose. */}
+      <div className="mb-3 px-1">
+        <p className="tnum text-[11px] uppercase tracking-[0.18em] text-muted mb-0.5">Remaining</p>
+        <p className="tnum leading-none text-fg" style={{ fontSize: '2rem', fontWeight: 500 }}>
+          {remaining}
+          <span className="text-muted" style={{ fontSize: '1rem' }}> / {total}</span>
+        </p>
       </div>
       <div className="h-1.5 bg-border rounded-[var(--radius)] overflow-hidden mb-4">
         <div
@@ -302,13 +314,17 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           <EdgeRail key={dir} dir={dir} action={config[dir]} active={activeDir === dir} />
         ))}
 
-        {/* Sizing box keeps the ghost the same size as the front card */}
-        <div className="relative w-[80%] max-w-[320px]">
+        {/* Sizing box keeps the ghost the same size as the front card. The
+            vertical margin is the up/down rails' band: they sit at the arena's
+            top and bottom edges, and the card is tall enough to reach both, so
+            without it Transfer and Save render on top of the card. It only
+            became visible when the rails stopped being a 12%-ink wash. */}
+        <div className="relative w-[80%] max-w-[320px] my-11">
           {/* Ghost card behind gives depth */}
           {next && (
             <div
               aria-hidden
-              className="absolute inset-0 bg-surface rounded-[var(--radius)] shadow-lg"
+              className="absolute inset-0 bg-surface border border-border rounded-[var(--radius)] shadow-lg"
               style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
             />
           )}
