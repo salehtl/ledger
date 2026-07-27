@@ -15,6 +15,7 @@ import {
   totalSpent, totalBudget, totalProjection, paceStatus, paceTone,
   trendSeries, trailingPeriods, bucketColor, currentPeriod, monthLabel,
 } from "../lib/insights";
+import { bucketDither } from "../lib/ditherColor";
 import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope";
 import { formatFils, flowAmount, aedFils, nativeAmountTag } from "../lib/money";
 import { AlertTriangle, Check, TrendingUp } from "../components/ui/PixelIcon";
@@ -154,7 +155,7 @@ export function Home({
                   </span>
                   <span className="tnum text-muted"><Money fils={b.spent} /> / <Money fils={b.target} /></span>
                 </div>
-                <ProgressBar pct={b.pct_used} pace={pace} tone={tone} label={`${name} budget used`} />
+                <ProgressBar pct={b.pct_used} pace={pace} tone={tone} color={bucketDither(b.bucket)} label={`${name} budget used`} />
                 <div className="flex items-center justify-between mt-1.5 text-xs">
                   <span className="tnum text-muted">{remainingLabel(b.remaining)}</span>
                   {isCurrent && <span className={`font-medium ${TONE_TEXT[tone]}`}>{VERDICT[status]}</span>}
