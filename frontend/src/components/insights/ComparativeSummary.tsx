@@ -3,7 +3,7 @@ import { Money } from "../Money";
 import { bucketColor, BUCKET_LABEL } from "../../lib/insights";
 import type { BucketComparison, SavingsResult } from "../../lib/insights";
 import { DitherFill } from "../charts/DitherFill";
-import { bucketDither } from "../../lib/ditherColor";
+import { bucketDither, bucketDensity } from "../../lib/ditherColor";
 
 export function ComparativeSummary({ label, note, net, savings, buckets, onSelectBucket }: {
   label: string; note: string; net: number; savings: SavingsResult; buckets: BucketComparison[];
@@ -30,7 +30,7 @@ export function ComparativeSummary({ label, note, net, savings, buckets, onSelec
       {/* Spending split: one bar showing the need/want/saving proportions. */}
       <div className="mt-3">
         <DitherFill
-          segments={buckets.filter((b) => b.spent > 0).map((b) => ({ value: b.spent, color: bucketDither(b.bucket) }))}
+          segments={buckets.filter((b) => b.spent > 0).map((b) => ({ value: b.spent, color: bucketDither(b.bucket), density: bucketDensity(b.bucket) }))}
           max={total}
           height={12}
         />

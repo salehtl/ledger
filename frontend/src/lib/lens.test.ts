@@ -25,6 +25,17 @@ describe("bucketRows", () => {
     expect(rows[1].deltaPct).toBeCloseTo(-0.2, 5); // need: -100/500
     expect(rows[0].key).toBe("want");
   });
+
+  it("assigns the signature density by bucket, not by rank", () => {
+    const buckets: BucketComparison[] = [
+      { bucket: "need", spent: 100, prevSpent: 100, delta: 0 },
+      { bucket: "want", spent: 300, prevSpent: 300, delta: 0 }, // ranks first (highest spend)
+      { bucket: "saving", spent: 200, prevSpent: 200, delta: 0 },
+    ];
+    const rows = bucketRows(buckets, 600);
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.density]));
+    expect(byKey).toEqual({ need: "dense", want: "medium", saving: "sparse" });
+  });
 });
 
 describe("categoryRows", () => {
