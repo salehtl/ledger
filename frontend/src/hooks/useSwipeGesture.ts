@@ -33,7 +33,7 @@ export function useSwipeGesture(
 ): UseSwipeGestureResult {
   const startRef = useRef<{ x: number; y: number; t: number } | null>(null)
   const tapCountRef = useRef(0)
-  const tapTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const tapTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   // Use refs for callbacks to avoid stale closures in pointer handlers
   const onCommitRef = useRef(onDirectionCommit)
   const onTripleTapRef = useRef(onTripleTap)

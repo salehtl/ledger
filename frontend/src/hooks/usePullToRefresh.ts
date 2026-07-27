@@ -21,7 +21,7 @@ type Track = { x: number; y: number; phase: "undecided" | "pulling" | "rejected"
  * until its promise settles.
  */
 export function usePullToRefresh(
-  ref: RefObject<HTMLElement>,
+  ref: RefObject<HTMLElement | null>,
   onRefresh: () => Promise<unknown>,
   enabled = true,
 ): { pullDistance: number; refreshing: boolean } {

@@ -37,7 +37,7 @@ export function BudgetPage({ onClose }: { onClose: () => void }) {
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [error, setError] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const cfg = draft ?? budget.data ?? null;
   const split = cfg ? splitSegments(cfg.need_pct, cfg.want_pct, cfg.saving_pct) : null;
