@@ -1,4 +1,6 @@
 // frontend/src/lib/swipe.ts
+import { seedOfColor, type Rgb } from '../components/dither-kit/palette'
+import { bucketDither } from './ditherColor'
 
 export type SwipeDirection = 'left' | 'right' | 'up' | 'down'
 
@@ -41,32 +43,72 @@ export function bucketKey(a: SwipeAction): BucketKey {
 }
 
 /**
- * Source of truth for swipe colors, derived from the bucket — not from the
- * action's persisted colorClass — so the palette applies even to configs saved
- * before a redesign, and Need/Want/Save/Transfer never collide.
+ * Source of truth for swipe colours, derived from the bucket — not from the
+ * action's persisted `colorClass` — so the palette applies even to configs
+ * saved before a redesign, and Need/Want/Save/Transfer never collide.
  *
- * These feed inline styles (ring/box-shadow, edge-wash background, commit
- * badge) that concatenate an alpha suffix onto the hex string (e.g.
- * `${color}1f`) or interpolate it into a CSS gradient/shadow — a `var(...)`
- * reference can't be built that way, so the values must stay literal hex, not
- * CSS custom properties. Bucket hues are retired app-wide (buckets are told
- * apart by dither density and by the action's own text label, not colour —
- * see `components/README.md`'s DitherFill section), so all three real buckets
- * collapse to the same ink and Transfer (not real spending) to muted:
- *   need / want / saving -> #16161a (mirrors --color-fg)
- *   transfer             -> #5e5e63 (mirrors --color-muted)
- * Visually this makes the three buckets identical in the deck by design —
- * they're distinguished by density and by `action.label`, not by hue.
+ * Which palette hue each bucket paints in. Resolved through the same seeds the
+ * charts use, so a bucket looks the same on the deck as it does in a chart.
+ *
+ * This replaces a literal-hex map that had two problems. It hardcoded
+ * `#16161a` while documenting itself as "mirrors --color-fg" — true in light,
+ * but in dark `--color-fg` becomes `#ecebe8` and the literal stayed near-black,
+ * putting every inactive rail at 1.02:1 on the dark ground. The rails, which
+ * are the only thing telling you what each direction does, were invisible
+ * until you dragged at one. It also collapsed need/want/saving to one ink, so
+ * even in light three of the four rails were identical.
+ *
+ * Both are fixed by resolving through `palette.ts`, which carries a light and
+ * a dark table. Buckets are deliberately double-encoded by hue *and* density —
+ * redundancy is an accessibility win, and it is what the charts already do.
  */
-export const BUCKET_COLOR: Record<BucketKey, string> = {
-  need: '#16161a',
-  want: '#16161a',
-  saving: '#16161a',
-  transfer: '#5e5e63',
+const BUCKET_SEED: Record<BucketKey, Parameters<typeof seedOfColor>[0]> = {
+  need: bucketDither('need'),
+  want: bucketDither('want'),
+  saving: bucketDither('saving'),
+  transfer: 'slate', // not real spending — the neutral, as everywhere else
 }
 
+const toHex = ([r, g, b]: Rgb) =>
+  `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
+
+/**
+ * Hex for a swipe action's bucket, in the currently active theme.
+ *
+ * Stays hex rather than a `var(--…)` reference because callers append an alpha
+ * suffix (`${color}1f`) and interpolate it into gradients and shadows, neither
+ * of which accepts a custom property. Components that render this must call
+ * `useDitherTheme()` so an OS theme flip re-renders them — the value is
+ * resolved at call time, not subscribed to.
+ */
 export function actionColor(a: SwipeAction): string {
-  return BUCKET_COLOR[bucketKey(a)]
+  return toHex(seedOfColor(BUCKET_SEED[bucketKey(a)]).fill)
+}
+
+const INK = '#16161a'
+const PAPER = '#ffffff'
+const channel = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+const luminance = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) => channel(parseInt(hex.substr(i, 2), 16) / 255))
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+const contrast = (a: string, b: string) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Label colour for text sitting *on* a filled bucket swatch — ink or paper,
+ * whichever contrasts better against that fill.
+ *
+ * The active rail and the commit badge previously hardcoded white. White is
+ * right on the darker seeds but not on the lighter ones: amber and sage in
+ * dark leave a small semibold label at ~3:1, under the floor for its size.
+ * Picking per fill keeps every combination legible without hand-maintaining a
+ * table that would drift the next time the palette moves.
+ */
+export function onActionColor(fill: string): string {
+  return contrast(PAPER, fill) >= contrast(INK, fill) ? PAPER : INK
 }
 
 const STORAGE_KEY = 'ledger-swipe-config'

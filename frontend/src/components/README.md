@@ -59,10 +59,12 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   class directly.
 - **Overlays**: every sheet/modal is a `Dialog`. Full-screen drill-ins are a
   `SettingsPage`. No hand-rolled `fixed inset-0` overlays.
-- **Loading**: `Skeleton` for list-shaped primary loads; a centered `Loader2`
-  spinner only for non-list loads (Review deck) and inline waits. Spin it with
-  the `spin-pixel` class (`app.css`), never Tailwind's `animate-spin` — see
-  "Icons" below for why.
+- **Loading**: `Skeleton` for list-shaped primary loads; a centered
+  `PixelSpinner` only for non-list loads (Review deck) and inline waits. Never
+  Tailwind's `animate-spin`, and never a rotating `Loader2` — that glyph is
+  four-fold symmetric, so the 90° steps that keep a pixel grid sharp map it
+  onto itself and it looks frozen. `PixelSpinner` travels brightness round a
+  ring instead; see its entry below.
 - **Icons.** `components/ui/PixelIcon.tsx`, generated from the
   [`pixelarticons`](https://pixelarticons.com) devDependency (MIT) by
   `scripts/generate-pixel-icons.mjs` (`bun run generate:icons`) — see
@@ -388,6 +390,14 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   surfaced first as suggestions (project rides along with the categorize call),
   and an income group when the card is a credit. Selection reports
   `(categoryId, projectId)` in one shot — no separate save step.
+- `SwipeDeck` / `SwipeCard` — the review sorting deck. Bucket colour comes from
+  `lib/swipe.ts`'s `actionColor`, which resolves through the chart palette, so a
+  bucket looks the same on a rail as in a chart and both themes are covered.
+  Text sitting *on* a bucket fill (active rail, commit badge) must use
+  `onActionColor(fill)` rather than a fixed white — the lighter seeds leave
+  white at roughly 3:1. The merchant monogram is deliberately uncoloured: you
+  only ever see one card, so a per-merchant hue encoded nothing comparable and
+  competed with the amount, which is the card's hero.
 - `SwipeDeck` / `SwipeCard` — the review sorting deck. Every commit
   (categorize or transfer) shows an undo toast that restores the card and
   reverses the write (including deleting a just-created rule / project

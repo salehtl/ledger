@@ -1,13 +1,15 @@
 // frontend/src/lib/swipe.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
+  actionColor,
+  onActionColor,
+  DEFAULT_SWIPE_CONFIG,
   detectDirection,
   flickDirection,
   overlayProgress,
   previewDirection,
   loadSwipeConfig,
   saveSwipeConfig,
-  DEFAULT_SWIPE_CONFIG,
   SWIPE_THRESHOLD,
 } from './swipe'
 
@@ -98,3 +100,59 @@ describe('loadSwipeConfig / saveSwipeConfig', () => {
     expect(loadSwipeConfig().left.bucket).toBe('need')
   })
 })
+
+describe("bucket colours", () => {
+  const asTheme = (dark: boolean) =>
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: (q: string) => ({
+        matches: dark && q.includes("dark"),
+        media: q,
+        addEventListener() {},
+        removeEventListener() {},
+      }),
+    });
+
+  const forEachBucket = () =>
+    (["left", "right", "up", "down"] as const).map((d) => actionColor(DEFAULT_SWIPE_CONFIG[d]));
+
+  it("tells the buckets apart", () => {
+    // These used to be one literal ink for need/want/saving, which made three
+    // of the four rails identical — the only thing left telling you what a
+    // direction did was its label.
+    const colors = forEachBucket();
+    expect(new Set(colors).size).toBe(colors.length);
+  });
+
+  it("re-resolves against the active theme", () => {
+    // The bug this replaces: a hardcoded #16161a documented as "mirrors
+    // --color-fg". True in light; in dark --color-fg flips to #ecebe8 and the
+    // literal did not, leaving every inactive rail at 1.02:1 on the dark
+    // ground. Any static value fails this test.
+    asTheme(false);
+    const light = forEachBucket();
+    asTheme(true);
+    const dark = forEachBucket();
+    light.forEach((c, i) => expect(dark[i]).not.toBe(c));
+  });
+
+  it("picks a label ink that is legible on every bucket fill", () => {
+    // The active rail and the commit badge hardcoded white, which sat at ~3:1
+    // on the lighter seeds. onActionColor chooses per fill.
+    const channel = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    const lum = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => channel(parseInt(hex.substr(i, 2), 16) / 255));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: string, b: string) => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    for (const dark of [false, true]) {
+      asTheme(dark);
+      for (const fill of forEachBucket()) {
+        expect(contrast(onActionColor(fill), fill)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+});

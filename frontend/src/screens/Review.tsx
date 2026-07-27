@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, CheckCircle2 } from "../components/ui/PixelIcon";
+import { CheckCircle2 } from "../components/ui/PixelIcon";
+import { PixelSpinner } from "../components/ui/PixelSpinner";
 import { getJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SwipeDeck } from "../components/swipe/SwipeDeck";
@@ -35,15 +36,17 @@ export function Review({ scope }: { scope: Scope }) {
     <div className="flex flex-col min-h-[60vh]">
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
-          <Loader2 size={36} className="spin-pixel text-muted" />
+          <PixelSpinner size={36} role="status" aria-label="Loading transactions" className="text-muted" />
         </div>
       )}
 
       {!loading && empty && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 py-16 text-center">
-          <CheckCircle2 size={48} className="text-good" />
-          <h2 className="text-xl font-bold text-fg">All caught up here</h2>
-          <p className="text-muted">Everything in {scopeLabel(scope)} is categorized.</p>
+          <CheckCircle2 size={48} className="text-fg" />
+          {/* Same words the deck uses when you finish sorting — one state, one
+              name, whether you cleared it just now or arrived to nothing. */}
+          <h2 className="text-xl font-semibold text-fg">All caught up</h2>
+          <p className="text-muted">Nothing in {scopeLabel(scope)} needs a look.</p>
         </div>
       )}
 

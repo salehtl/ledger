@@ -5,6 +5,7 @@ import { formatFils, aedFils, nativeAmountTag } from '../../lib/money'
 import { accountLabel, reviewReason } from '../../lib/reviewMeta'
 import type { Txn } from '../../api/types'
 import {
+  onActionColor,
   type SwipeConfig,
   type SwipeDirection,
   DEFAULT_SWIPE_CONFIG,
@@ -31,13 +32,6 @@ const BADGE_POS: Record<SwipeDirection, { style: CSSProperties; center: string }
   right: { style: { right: 16, top: '50%' },   center: 'translateY(-50%)' },
   up:    { style: { top: 16, left: '50%' },    center: 'translateX(-50%)' },
   down:  { style: { bottom: 16, left: '50%' }, center: 'translateX(-50%)' },
-}
-
-/** Stable hue from a merchant string, so each merchant keeps its own color. */
-function hueFor(s: string): number {
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360
-  return h
 }
 
 interface SwipeCardProps {
@@ -109,7 +103,6 @@ export function SwipeCard({
   })
 
   const credit = txn.Direction === 'credit'
-  const hue = hueFor(txn.MerchantRaw || '?')
 
   // Ring strength tracks the drag; capped so it stays tasteful.
   const ring = color ? Math.min(progress, 1) : 0
@@ -138,7 +131,7 @@ export function SwipeCard({
       data-testid="swipe-card"
       // Downward card drags are a commit gesture — PTR must never claim them.
       data-ptr-exempt=""
-      className="relative w-full bg-surface rounded-[var(--radius)] cursor-grab active:cursor-grabbing overflow-hidden"
+      className="relative w-full bg-surface border border-border rounded-[var(--radius)] cursor-grab active:cursor-grabbing overflow-hidden"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -153,11 +146,13 @@ export function SwipeCard({
       {/* Card body */}
       <div className="px-7 pt-9 pb-8 flex flex-col items-center gap-5">
         {/* Merchant monogram — keeps a stable color per merchant */}
-        <div
-          className="w-[72px] h-[72px] rounded-[var(--radius)] flex items-center justify-center"
-          style={{ backgroundColor: `hsl(${hue} 72% 93%)`, color: `hsl(${hue} 58% 38%)` }}
-        >
-          <span className="text-3xl font-bold">
+        {/* Merchant initial. Deliberately not colour-coded: you only ever see
+            one card, so a per-merchant hue encoded nothing you could compare
+            against — it was the loudest thing on a card whose hero is the
+            amount. A ruled plate with a mono initial keeps the anchor and
+            gives the amount the room back. */}
+        <div className="w-[72px] h-[72px] rounded-[var(--radius)] border border-border flex items-center justify-center">
+          <span className="tnum text-3xl font-medium text-muted">
             {(txn.MerchantRaw || '?').charAt(0).toUpperCase()}
           </span>
         </div>
@@ -166,11 +161,11 @@ export function SwipeCard({
           <h2 className="text-xl font-semibold text-fg leading-tight px-2 line-clamp-2 break-words">
             {txn.MerchantRaw || '—'}
           </h2>
-          <p className="text-sm text-muted mt-1">{date}</p>
+          <p className="tnum text-xs text-muted mt-1">{date}</p>
           {/* Where the money moved and why this card needs a human look */}
           <div className="flex items-center justify-center gap-1.5 flex-wrap text-xs text-muted mt-1.5 px-2">
             {accountLabel(txn) && (
-              <span className="px-2 py-0.5 rounded-[var(--radius)] bg-surface-2 font-medium text-fg/80">
+              <span className="tnum px-2 py-0.5 rounded-[var(--radius)] bg-surface-2 text-[11px] text-fg/80">
                 {accountLabel(txn)}
               </span>
             )}
@@ -185,12 +180,14 @@ export function SwipeCard({
           </span>
           <span
             className="tnum font-bold leading-none"
-            style={{ fontSize: '3rem', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
+            // No colour split for credits: --color-good is retired, and the
+            // sign plus the "Received" eyebrow already say which way it went.
+            style={{ fontSize: '3rem', color: 'var(--color-fg)' }}
           >
             {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}
           </span>
           {nativeAmountTag(txn) && (
-            <p className="text-xs text-muted">{nativeAmountTag(txn)}{aedFils(txn) === null ? " · no AED rate" : ""}</p>
+            <p className="tnum text-xs text-muted">{nativeAmountTag(txn)}{aedFils(txn) === null ? " · no AED rate" : ""}</p>
           )}
         </div>
       </div>
@@ -198,10 +195,12 @@ export function SwipeCard({
       {/* Confirming badge — appears at the committed/leaning edge */}
       {action && color && dir && (dragging || flying) && (
         <div
-          className="absolute flex items-center gap-2 px-4 py-2 rounded-[var(--radius)] text-bg font-semibold shadow-lg pointer-events-none"
+          className="absolute flex items-center gap-2 px-4 py-2 rounded-[var(--radius)] font-semibold shadow-lg pointer-events-none"
           style={{
             ...BADGE_POS[dir].style,
             backgroundColor: color,
+            // text-bg was paper-on-near-black in dark: ~1:1. Pick per fill.
+            color: onActionColor(color),
             opacity: flying ? 1 : Math.min(progress * 1.2, 1),
             transform: `${BADGE_POS[dir].center} scale(${0.85 + ring * 0.15})`,
           }}

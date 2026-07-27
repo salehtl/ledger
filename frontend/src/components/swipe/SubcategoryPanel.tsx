@@ -56,7 +56,11 @@ export function SubcategoryPanel({
     <Dialog
       title={action.label}
       titleAdornment={<span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: color }} />}
-      titleStyle={{ color }}
+      // Title stays ink. The swatch beside it carries the bucket's hue — a
+      // coloured heading was invisible before only because every bucket
+      // resolved to ink; now that they don't, it would put a mid-chroma label
+      // at ~3.3:1 and break the two-ink register for text.
+      titleStyle={undefined}
       onClose={onCancel}
     >
       {ranked.length > 0 && (
