@@ -42,4 +42,22 @@ describe("TrendBars", () => {
     expect(screen.getByTestId("trend-label-2026-05").style.left).toBe(`${centers[0].center * 100}%`);
     expect(screen.getByTestId("trend-label-2026-06").style.left).toBe(`${centers[1].center * 100}%`);
   });
+
+  it("highlights the active month's band behind the bars", () => {
+    render(<TrendBars points={points} activePeriod="2026-06" />);
+    const centers = bandCenters(points.length);
+    const el = screen.getByTestId("active-band-highlight");
+    expect(el.style.left).toBe(`${(centers[1].center - centers[1].width / 2) * 100}%`);
+    expect(el.style.width).toBe(`${centers[1].width * 100}%`);
+  });
+
+  it("renders no highlight when no month is active", () => {
+    render(<TrendBars points={points} />);
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
+  });
+
+  it("renders no highlight for a period absent from the series", () => {
+    render(<TrendBars points={points} activePeriod="2099-01" />);
+    expect(screen.queryByTestId("active-band-highlight")).not.toBeInTheDocument();
+  });
 });

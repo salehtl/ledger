@@ -7,6 +7,7 @@ import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
 import { Tooltip } from "../dither-kit/tooltip";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
+import { ActiveBandHighlight } from "./ActiveBandHighlight";
 
 const NET_TEXT: Record<NetSign, string> = {
   pos: "text-[var(--color-good)]",
@@ -41,8 +42,9 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
   const cx = (i: number) => centers[i].center * 100;
   // FlowColumn is structurally a TrendPoint (period/label/income/spent) plus
   // net fields, so lib/trendBars.ts's own activeIndex works unchanged —
-  // reused rather than re-implementing the lookup, matching TrendBars's
-  // markerIndex wiring so the active month gets the same bar-level emphasis.
+  // reused rather than re-implementing the lookup. Feeds ActiveBandHighlight
+  // below, not dither-kit's markerIndex prop (inert in 0.1.0 — see that
+  // component's doc comment).
   const marker = activeIndex(cols, activePeriod);
   const cy = (netLanePct: number) => 50 - netLanePct / 2; // −100..100 → y 100..0
   const threadPts = cols.map((c, i) => `${cx(i)},${cy(c.netLanePct)}`).join(" ");
@@ -67,6 +69,9 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
         role="img"
         aria-label={`Money in vs out over ${n} months. ${summary}`}
       >
+        {/* Rendered first — not on a z-index — so DOM order keeps it behind
+            the canvas wrapper right after it. */}
+        <ActiveBandHighlight n={n} index={marker} />
         {/* `key` on the theme forces a canvas repaint when the OS theme flips.
             `aria-hidden`: dither-kit hardcodes its own role="img" on the inner
             SVG; without this the wrapper's labelled role="img" above resolves
@@ -80,7 +85,6 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
               spent: { label: "Out", color: "grey" },
             }}
             bloom="aura"
-            markerIndex={marker}
             margins={{ left: 0, right: 0, top: 4, bottom: 4 }}
           >
             <Bar dataKey="income" variant="gradient" />

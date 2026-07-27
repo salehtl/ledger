@@ -5,11 +5,13 @@ import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
 import { Tooltip } from "../dither-kit/tooltip";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
+import { ActiveBandHighlight } from "./ActiveBandHighlight";
 
 /**
  * Monthly spending, as dithered bars. dither-kit colors per *series*, not per
- * *bar*, so the active month is marked with the chart's crosshair
- * (`markerIndex`) and a bolded label rather than a differently-colored bar.
+ * *bar*, so the active month is marked with our own band highlight (see
+ * ActiveBandHighlight — dither-kit's `markerIndex` is inert in 0.1.0, see its
+ * doc comment) and a bolded label rather than a differently-colored bar.
  */
 export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; activePeriod?: string }) {
   const dark = useDitherTheme();
@@ -18,17 +20,21 @@ export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; acti
 
   const summary = rows.map((r) => `${r.label}: ${formatFils(r.spent)}`).join("; ");
   const centers = bandCenters(rows.length);
+  const marker = activeIndex(points, activePeriod);
 
   return (
     <div role="img" aria-label={`Monthly spending trend. ${summary}`}>
       {/* `key` on the theme forces a canvas repaint when the OS theme flips —
-          the dither is painted in raw RGB and can't inherit a CSS var. */}
-      <div className="h-32" key={dark ? "dark" : "light"}>
+          the dither is painted in raw RGB and can't inherit a CSS var.
+          `relative`: the highlight below is positioned against this box. */}
+      <div className="relative h-32" key={dark ? "dark" : "light"}>
+        {/* Rendered first — not on a z-index — so DOM order keeps it behind
+            the canvas painted by BarChart right after it. */}
+        <ActiveBandHighlight n={rows.length} index={marker} />
         <BarChart
           data={rows}
           config={{ spent: { label: "Spent", color: "grey" } }}
           bloom="aura"
-          markerIndex={activeIndex(points, activePeriod)}
           // Left/right stay zero so the plot area equals this container's
           // full width — buildBandScale's own paddingOuter already gives
           // the bars edge breathing room. The label row below (with no
