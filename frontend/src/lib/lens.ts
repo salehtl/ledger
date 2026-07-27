@@ -1,8 +1,9 @@
 import type { Txn } from "../api/types";
 import { BUCKET_LABEL, type BucketComparison, type CategoryDelta } from "./insights";
 import { merchantBreakdown } from "./analysis";
-import { bucketDither, categoryDither } from "./ditherColor";
+import { bucketDither, bucketDensity, categoryDither } from "./ditherColor";
 import type { DitherColor } from "../components/dither-kit/palette";
+import type { Density } from "../components/charts/DitherFill";
 
 // The three dimensions you can slice spending by on the Insights page.
 export type Lens = "buckets" | "categories" | "merchants";
@@ -21,6 +22,14 @@ export interface BreakdownRow {
    * CSS-var side of the mapping lives in `lib/ditherColor.ts`.
    */
   ditherColor: DitherColor;
+  /**
+   * Dither density for this row's bar — only set for bucket rows (need/want/
+   * saving are told apart by texture, not hue, now that they share one ink).
+   * Category and merchant rows leave this undefined, which `DitherFill`
+   * defaults to `"medium"` (a zero bias): they were never bucket-encoded and
+   * don't gain a texture meaning by omission.
+   */
+  density?: Density;
   spent: number;
   share: number;
   count?: number;
@@ -43,6 +52,7 @@ export function bucketRows(buckets: BucketComparison[], total: number): Breakdow
       key: b.bucket,
       name: BUCKET_LABEL[b.bucket] ?? b.bucket,
       ditherColor: bucketDither(b.bucket),
+      density: bucketDensity(b.bucket),
       spent: b.spent,
       share: share(b.spent, total),
       delta: b.delta,

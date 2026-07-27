@@ -1,4 +1,5 @@
 import type { DitherColor } from "../components/dither-kit/palette";
+import type { Density } from "../components/charts/DitherFill";
 
 /**
  * Bridges the app's CSS-var colors to dither-kit's seven seed names. The canvas
@@ -11,6 +12,25 @@ export function bucketDither(bucket: string): DitherColor {
     case "want": return "purple";
     case "saving": return "green";
     default: return "grey";
+  }
+}
+
+/**
+ * The signature encoding: `--color-need`/`--color-want`/`--color-save` all
+ * resolve to the same ink now, so the 50/30/20 buckets are told apart by
+ * dither density instead — needs densest, wants medium, saving sparsest.
+ * `bucketDither` above still selects the ink *seed* (still needed for `red`/
+ * `grey`, which aren't buckets); this selects the *texture*. Callers that also
+ * know a bucket is at or over its budget for the period shown should override
+ * this with `"solid"` themselves (see `ProgressBar`'s `pct >= 1.0` threshold) —
+ * this function only knows the bucket's identity, not its spend-vs-target.
+ */
+export function bucketDensity(bucket: string): Density {
+  switch (bucket) {
+    case "need": return "dense";
+    case "want": return "medium";
+    case "saving": return "sparse";
+    default: return "medium";
   }
 }
 
