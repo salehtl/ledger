@@ -23,6 +23,16 @@ describe("bucketDensity", () => {
   it("falls back to medium (zero bias) for anything else", () => {
     expect(bucketDensity("mystery")).toBe("medium");
   });
+
+  it("overrides every bucket's density to solid when isOverBudget is true", () => {
+    expect(bucketDensity("need", true)).toBe("solid");
+    expect(bucketDensity("want", true)).toBe("solid");
+    expect(bucketDensity("saving", true)).toBe("solid");
+  });
+
+  it("defaults isOverBudget to false, so an un-migrated call site is unaffected", () => {
+    expect(bucketDensity("need")).toBe(bucketDensity("need", false));
+  });
 });
 
 describe("categoryDither", () => {

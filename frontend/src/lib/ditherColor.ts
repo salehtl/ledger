@@ -20,12 +20,19 @@ export function bucketDither(bucket: string): DitherColor {
  * resolve to the same ink now, so the 50/30/20 buckets are told apart by
  * dither density instead — needs densest, wants medium, saving sparsest.
  * `bucketDither` above still selects the ink *seed* (still needed for `red`/
- * `grey`, which aren't buckets); this selects the *texture*. Callers that also
- * know a bucket is at or over its budget for the period shown should override
- * this with `"solid"` themselves (see `ProgressBar`'s `pct >= 1.0` threshold) —
- * this function only knows the bucket's identity, not its spend-vs-target.
+ * `grey`, which aren't buckets); this selects the *texture*.
+ *
+ * `isOverBudget` overrides the bucket's usual density to `"solid"` — a bucket
+ * at or over its target renders full ink, exactly the texture-not-colour
+ * reading `ProgressBar` already gives its own fill at `pct >= 1.0`. This
+ * function stays pure and only knows the bucket's identity plus whatever the
+ * caller already determined about its spend-vs-target for the period shown;
+ * it does not reach for that data itself (see `overBudgetBuckets` in
+ * `lib/insights.ts`, which turns a period's `BucketSummary[]` into the set of
+ * over-budget bucket names callers pass in here).
  */
-export function bucketDensity(bucket: string): Density {
+export function bucketDensity(bucket: string, isOverBudget = false): Density {
+  if (isOverBudget) return "solid";
   switch (bucket) {
     case "need": return "dense";
     case "want": return "medium";

@@ -44,15 +44,22 @@ function share(spent: number, total: number): number {
   return total > 0 ? spent / total : 0;
 }
 
-/** Bucket rows (need/want/saving) ranked by spend, with month-over-month deltas. */
-export function bucketRows(buckets: BucketComparison[], total: number): BreakdownRow[] {
+/**
+ * Bucket rows (need/want/saving) ranked by spend, with month-over-month
+ * deltas. `overBudget` is the set of bucket names at or over target for the
+ * period shown (see `overBudgetBuckets` in `lib/insights.ts`) — when a bucket
+ * is in it, its density goes `"solid"` regardless of its usual dense/medium/
+ * sparse reading. Omit it (or pass an empty set) where over-budget data isn't
+ * available; every bucket then falls back to its plain identity density.
+ */
+export function bucketRows(buckets: BucketComparison[], total: number, overBudget: Set<string> = new Set()): BreakdownRow[] {
   return [...buckets]
     .sort((a, b) => b.spent - a.spent)
     .map((b) => ({
       key: b.bucket,
       name: BUCKET_LABEL[b.bucket] ?? b.bucket,
       ditherColor: bucketDither(b.bucket),
-      density: bucketDensity(b.bucket),
+      density: bucketDensity(b.bucket, overBudget.has(b.bucket)),
       spent: b.spent,
       share: share(b.spent, total),
       delta: b.delta,
