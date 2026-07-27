@@ -13,9 +13,9 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false }: {
   const clamped = Math.min(100, Math.max(0, pct * 100));
   const auto: Tone = pct >= 1.0 ? "bad" : pct >= 0.8 ? "warn" : "good";
   const solid = (tone ?? auto) === "bad";
-  const track = onAccent ? "bg-white/25" : "bg-surface-2";
-  const marker = onAccent ? "bg-white" : "bg-fg/70";
-  const ink = onAccent ? "bg-white" : "bg-fg";
+  const track = onAccent ? "bg-hero-fg/25" : "bg-surface-2";
+  const marker = onAccent ? "bg-hero-fg" : "bg-fg/70";
+  const ink = onAccent ? "bg-hero-fg" : "bg-fg";
   return (
     <div
       role="progressbar"

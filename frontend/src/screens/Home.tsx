@@ -23,14 +23,17 @@ import { useFirstReveal } from "../hooks/useFirstReveal";
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
 const TONE_TEXT = { good: "text-good", warn: "text-warn", bad: "text-bad" } as const;
-// Hero status badge: solid tone fill + matching text. good/warn stay ink-family
-// fills paired with text-bg (flips with theme, stays legible against either).
-// bad now spends the app's one fill register (bg-accent) instead of the text
-// register — a fill is never rendered as text — and so pairs with the fill's
-// own constant-white text-accent-fg rather than text-bg, which would go
-// dark-on-vermilion at night.
-const HERO_BADGE_BG = { good: "bg-good", warn: "bg-warn", bad: "bg-accent" } as const;
-const HERO_BADGE_FG = { good: "text-bg", warn: "text-bg", bad: "text-accent-fg" } as const;
+// Hero status badge lives on the hero panel, which inverts between themes
+// (bg-hero/text-hero-fg swap #16161a<->#f2f1ef). good/warn invert *again* on
+// top of that so the chip reads as a distinct plate rather than vanishing
+// into its own parent: fill bg-hero-fg, text text-hero — --color-good is
+// byte-identical to --color-hero in both themes, so a bg-good fill here is
+// invisible without this inversion. bad spends the app's one fill register
+// (bg-accent) instead — a fill is never rendered as text — and so pairs with
+// the fill's own constant-white text-accent-fg rather than text-hero, which
+// would go dark-on-vermilion at night.
+const HERO_BADGE_BG = { good: "bg-hero-fg", warn: "bg-hero-fg", bad: "bg-accent" } as const;
+const HERO_BADGE_FG = { good: "text-hero", warn: "text-hero", bad: "text-accent-fg" } as const;
 const VERDICT_ICON = { under: Check, over: TrendingUp, overbudget: AlertTriangle } as const;
 
 /** "1,180 left" or "320 over" for a remaining amount (positive = under budget). */

@@ -195,7 +195,9 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   : { label: "Categorize", icon: <Tag size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" };
                 const trail: SwipeActionSpec | undefined = archived
                   ? undefined
-                  : { label: "Archive", icon: <Archive size={18} aria-hidden />, color: "#64748b", fg: "#ffffff" };
+                  // #5e5e63 mirrors --color-muted: SwipeableRow's inline style needs a
+                  // literal hex (see lib/swipe.ts's BUCKET_COLOR comment), not a var().
+                  : { label: "Archive", icon: <Archive size={18} aria-hidden />, color: "#5e5e63", fg: "#ffffff" };
                 const onCommit = (action: "lead" | "trail") => {
                   if (action === "lead") {
                     if (archived) void restoreTxn(t);

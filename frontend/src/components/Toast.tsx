@@ -131,13 +131,13 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
         <button
-          className={`text-sm font-semibold ${fg}/90 underline press`}
+          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline press`}
           onClick={() => { try { toast.action!.onAction(); } finally { beginDismiss(); } }}
         >
           {toast.action.label}
         </button>
       )}
-      <button aria-label="Dismiss" className={`${fg}/70 press`} onClick={beginDismiss}>×</button>
+      <button aria-label="Dismiss" className={`${isError ? "text-accent-fg/70" : "text-bg/70"} press`} onClick={beginDismiss}>×</button>
     </div>
   );
 }

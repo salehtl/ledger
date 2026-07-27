@@ -7,8 +7,17 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 ## Conventions (apply to all UI work)
 
-- **Tokens only.** Colors, radii, easings come from `src/styles/app.css`
-  (`--color-*`, `--radius-card` (3px), `--radius-sheet` (12px), `--ease-*`). Never raw hex.
+- **Tokens only, for colour.** Colors and easings come from `src/styles/app.css`
+  (`--color-*`, `--ease-*`). Never raw hex in component code (project colours
+  in `ProjectForm.tsx`'s `COLOR_PRESETS` are the one exception — user data, not
+  app chrome). **Radius is not yet tokens-only in practice**: `--radius-card`
+  (3px) and `--radius-sheet` (12px) are the intended scale, but a Task 12 audit
+  found only ~7 of ~73 live radius utilities actually reference
+  `--radius-card` — the rest are untouched Tailwind defaults (`rounded-lg`
+  ×11, `rounded-md` ×12, bare `rounded` ×14, `rounded-full` ×27, the last
+  mostly avatars/dots/ticks that were never meant to carry the card radius).
+  Treat `--radius-card`/`--radius-sheet` as what to reach for on new work;
+  reconciling the drift on existing surfaces is known follow-up, not done.
 - **The spot ink has three registers.** One plate, different tints for
   different jobs (ordinary two-colour press practice) — a contrast audit found
   the shipped single value sub-AA in two of these three roles:
@@ -19,18 +28,27 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   - **Text on dark ground** (`--color-bad` in the dark override, `#f0866f`,
     unchanged) — 7.31:1 on `#141416`.
 
-  **The spot ink is only ever a fill — it is never coloured text, in either
-  theme.** Never use a text register as a fill, or the fill register as a
-  label's text colour; `--color-accent` applied to text is 4.45:1 on light
-  paper and worse still on dark, sub-AA either way. `.money-neg` (`app.css`)
-  is the single documented exception: it renders negative amounts in the
-  *text* register above, never the fill. See "Red is rationed" under `Pill`
-  for where the fill register is allowed to appear at all.
-- **Elevation is Dialog-only.** The app's one box-shadow utility (`app.css`)
-  exists for exactly one surface — the `Dialog` sheet, which must read as
-  above the page. Every other surface is paper: separation comes from a
-  `border border-border` hairline, never a shadow. Don't reach for that
-  utility outside `Dialog.tsx`.
+  **The *fill* register (`--color-accent`) is only ever a fill — it is never
+  coloured text, in either theme.** Never use `--color-accent` as a label's
+  text colour; applied to text it's 4.45:1 on light paper and worse still on
+  dark, sub-AA either way. The *text* register (`--color-bad`) is a different
+  story: it is deliberately used as coloured text at roughly 20 live
+  `text-bad` sites app-wide (not just `.money-neg`), and every one of them is
+  contrast-safe because it uses the correct per-theme text register described
+  above. So: the fill is never text; the text register is text in more places
+  than just `.money-neg`, by design. See "Red is rationed" under `Pill` for
+  where the fill register is allowed to appear at all.
+- **Elevation is mostly Dialog-only, not exclusively.** The app's one
+  box-shadow *token* (`.shadow-1` in `app.css`) exists for exactly one
+  surface — the `Dialog` sheet, which must read as above the page — and nothing
+  else should reach for that class. In practice, though, four other surfaces
+  carry a Tailwind default shadow utility (not the token): `Toast.tsx`
+  (`shadow-lg`), `swipe/SwipeDeck.tsx` (`shadow-lg`, the resting-stack card),
+  `swipe/SwipeCard.tsx` (`shadow-lg`, the commit-direction chip), and
+  `dither-kit/tooltip.tsx` (`shadow-sm`, vendored chrome). Everywhere else,
+  separation is a `border border-border` hairline, never a shadow. Reconciling
+  those four (token vs. ad hoc utility, and whether they should be elevated at
+  all) is known follow-up; don't add a fifth without checking here first.
 - **Touch targets.** Interactive elements are ≥44px (`min-h-11`) by default.
   36px (`IconButton size="sm"`) is allowed only inside dense stacked rows.
 - **16px inputs.** Form controls use `Input`/`Select` (text-base). Anything
