@@ -12,7 +12,7 @@ const VARIANT: Record<TooltipVariant, string> = {
   "frosted-glass": "bg-popover/70 backdrop-blur-sm",
 }
 
-// FORKED: upstream animated this with `motion` (framer-motion) — ~250KB of JS,
+// FORKED: upstream animated this with `motion` (framer-motion) — 128KB of JS,
 // precached by the service worker, for one tooltip. The same shape in CSS: fade
 // in/out on `opacity`, glide between points on `left`/`top`, both on the app's
 // `--ease-out` token. `.dither-tooltip` carries the reduced-motion opt-out (see

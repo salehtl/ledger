@@ -39,15 +39,20 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   battery draw on an always-open mobile PWA. It also now copies the frame it
   belongs to instead of the previous one.
 - **`tooltip.tsx`**: `motion` (framer-motion) replaced with CSS transitions.
-  `motion` was imported by this one file and accounted for ~250KB of a 602KB
-  bundle, precached by the service worker. The card now stays mounted and fades
-  via `opacity`/`visibility` and glides via `left`/`top` transitions on the
-  app's `--ease-out` token, with the position frozen while hidden (so the exit
-  is a pure fade) and gliding armed one painted frame after it appears (so the
-  entrance doesn't fly in across the plot). Reduced-motion opt-out is the
-  `.dither-tooltip` rule in `src/styles/app.css` — inline styles can't carry a
-  media query. **If this file is ever re-pulled from upstream, `motion` comes
-  back as a dependency.**
+  `motion` was imported by this one file and accounted for 128KB of a 602KB
+  bundle, precached by the service worker. A `present` state, cleared by a
+  `setTimeout(FADE_MS)`, stands in for `<AnimatePresence>`: the card mounts on
+  hover, stays mounted through the exit fade, then unmounts (`return null`)
+  — staying mounted permanently would leave a copy of every hovered label
+  sitting in the DOM. While mounted it fades via `opacity` and glides via
+  `left`/`top` transitions on the app's `--ease-out` token; the position is
+  frozen while hidden (so the exit is a pure fade), and an `armed` flag, set
+  one painted frame after mount via a double `requestAnimationFrame`, gates
+  the transition so the entrance doesn't glide in from wherever the previous
+  hover left the card. Reduced-motion opt-out is the `.dither-tooltip` rule in
+  `src/styles/app.css` — inline styles can't carry a media query. **If this
+  file is ever re-pulled from upstream, `motion` comes back as a
+  dependency.**
 
 Everything else is upstream-verbatim. `package.json` has a `shadcn` script
 (`bun run shadcn ...`) that wraps `bunx --bun shadcn@latest ...` — use it to
