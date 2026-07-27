@@ -5,7 +5,7 @@ export function BottomNav({
   active, reviewCount, onNavigate,
 }: { active: TabId; reviewCount: number; onNavigate: (id: TabId) => void }) {
   return (
-    <nav className="shrink-0 bg-surface grid grid-cols-5 pb-[env(safe-area-inset-bottom)]">
+    <nav className="shrink-0 grid grid-cols-5 bg-bg border-t border-border pb-[env(safe-area-inset-bottom)]">
       {TABS.map((t) => {
         const Icon = t.icon;
         const isActive = active === t.id;
@@ -15,15 +15,18 @@ export function BottomNav({
             aria-label={t.id === "review" && reviewCount > 0 ? `Review, ${reviewCount} need review` : t.label}
             aria-current={isActive ? "page" : undefined}
             onClick={() => { fire("navigation"); onNavigate(t.id); }}
-            className={`min-h-14 flex flex-col items-center justify-center gap-1 text-xs press ${isActive ? "text-accent font-medium" : "text-muted"}`}
+            className={`relative min-h-14 flex flex-col items-center justify-center gap-1 press font-mono text-[8px] uppercase tracking-[0.1em] ${isActive ? "text-fg font-medium" : "text-muted"}`}
           >
+            {/* The active mark: a 2px spot tick on the top rule. */}
+            {isActive && (
+              <span data-active-tick aria-hidden className="absolute top-0 left-1/2 h-0.5 w-6 -translate-x-1/2 bg-accent" />
+            )}
             <span className="relative">
-              {/* Material active-indicator pill behind the icon */}
-              <span className={`flex items-center justify-center w-14 h-8 rounded-lg transition-colors ${isActive ? "bg-accent/10" : ""}`}>
+              <span className="flex items-center justify-center w-14 h-8">
                 <Icon size={22} aria-hidden />
               </span>
               {t.id === "review" && reviewCount > 0 && (
-                <span className="absolute -top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-full bg-bad text-bg text-[10px] leading-4 text-center">
+                <span className="absolute -top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-[2px] bg-accent text-accent-fg text-[10px] leading-4 text-center">
                   {reviewCount}
                 </span>
               )}
