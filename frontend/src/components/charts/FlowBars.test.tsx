@@ -3,6 +3,21 @@ import { FlowBars } from "./FlowBars";
 import { bandCenters } from "../../lib/trendBars";
 import type { TrendPoint } from "../../lib/insights";
 
+// dither-kit's canvas paints markerIndex with no DOM footprint, so the only
+// way to pin the wiring (and catch a regression like the one this test was
+// added for — the active-month highlight silently dropping when the bars
+// moved to canvas) is to capture the prop BarChart actually receives.
+type BarChartModule = typeof import("../dither-kit/bar-chart");
+vi.mock("../dither-kit/bar-chart", async (importOriginal) => {
+  const actual = await importOriginal<BarChartModule>();
+  const MockBarChart: BarChartModule["BarChart"] = (props) => (
+    <div data-testid="bar-chart-marker" data-marker-index={String(props.markerIndex ?? "null")}>
+      <actual.BarChart {...props} />
+    </div>
+  );
+  return { ...actual, BarChart: MockBarChart };
+});
+
 const points: TrendPoint[] = [
   { period: "2026-05", label: "May", income: 200000, spent: 100000 },
   { period: "2026-06", label: "Jun", income: 50000, spent: 100000 },
@@ -54,5 +69,15 @@ describe("FlowBars", () => {
   it("renders nothing for an empty series", () => {
     const { container } = render(<FlowBars points={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("wires the active month to the bar chart's marker index", () => {
+    render(<FlowBars points={points} activePeriod="2026-06" />);
+    expect(screen.getByTestId("bar-chart-marker").dataset.markerIndex).toBe("1");
+  });
+
+  it("passes no marker index when no month is active", () => {
+    render(<FlowBars points={points} />);
+    expect(screen.getByTestId("bar-chart-marker").dataset.markerIndex).toBe("null");
   });
 });

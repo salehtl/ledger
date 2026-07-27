@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { TrendPoint } from "../../lib/insights";
 import { flowColumns, flowRows, compactFils, type NetSign } from "../../lib/flowBars";
-import { bandCenters } from "../../lib/trendBars";
+import { bandCenters, activeIndex } from "../../lib/trendBars";
 import { formatFils } from "../../lib/money";
 import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
@@ -39,6 +39,11 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
   // own 0–100 coordinate box; only the x axis is shared with the bars.
   const centers = bandCenters(n);
   const cx = (i: number) => centers[i].center * 100;
+  // FlowColumn is structurally a TrendPoint (period/label/income/spent) plus
+  // net fields, so lib/trendBars.ts's own activeIndex works unchanged —
+  // reused rather than re-implementing the lookup, matching TrendBars's
+  // markerIndex wiring so the active month gets the same bar-level emphasis.
+  const marker = activeIndex(cols, activePeriod);
   const cy = (netLanePct: number) => 50 - netLanePct / 2; // −100..100 → y 100..0
   const threadPts = cols.map((c, i) => `${cx(i)},${cy(c.netLanePct)}`).join(" ");
 
@@ -75,6 +80,7 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
               spent: { label: "Out", color: "grey" },
             }}
             bloom="aura"
+            markerIndex={marker}
             margins={{ left: 0, right: 0, top: 4, bottom: 4 }}
           >
             <Bar dataKey="income" variant="gradient" />
