@@ -14,6 +14,16 @@ describe("TrendBars", () => {
     expect(screen.getByRole("img", { name: /Monthly spending trend/ })).toBeInTheDocument();
   });
 
+  it("exposes exactly one accessible chart role", () => {
+    // dither-kit hardcodes role="img" on its own inner SVG; the BarChart
+    // wrapper must be aria-hidden or this resolves to two elements instead
+    // of the one labelled role="img" the component intends. getByRole
+    // throws on more than one match, so this fails loudly if the wrapper
+    // ever loses its aria-hidden treatment.
+    render(<TrendBars points={points} />);
+    expect(screen.getByRole("img")).toBeInTheDocument();
+  });
+
   it("summarizes every month in the accessible label", () => {
     render(<TrendBars points={points} />);
     const chart = screen.getByRole("img", { name: /Monthly spending trend/ });
