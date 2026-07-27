@@ -26,4 +26,14 @@ describe("categoryDither", () => {
     expect(categoryDither(0)).toBe(CATEGORY_DITHER[0]);
     expect(categoryDither(CATEGORY_DITHER.length)).toBe(CATEGORY_DITHER[0]);
   });
+
+  it("pins the two intentional near-matches so a well-meaning reorder has to confront the reasoning", () => {
+    // CATEGORY_PALETTE[3] (#0e7490, teal) has no exact seed in the seven-name
+    // vocabulary; "pink" is our fork's navy (--color-accent), the nearest
+    // cool hue still unused at this rank — not an actual pink.
+    expect(categoryDither(3)).toBe("pink");
+    // CATEGORY_PALETTE[5] (#be185d, rose/magenta) takes "red", the nearest
+    // warm hue still unused.
+    expect(categoryDither(5)).toBe("red");
+  });
 });

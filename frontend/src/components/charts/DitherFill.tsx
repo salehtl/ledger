@@ -69,7 +69,7 @@ export function DitherFill({
           for (let y = 0; y < rows; y++) {
             // Ramp density from the bottom up, matching the charts' gradient
             // fill, then threshold it through the shared Bayer matrix.
-            const t = rows > 1 ? 1 - y / (rows - 1) : 1;
+            const t = rows > 1 ? y / (rows - 1) : 1;
             const on = t > BAYER[y % 4][x % 4];
             c.fillStyle = rgb(seed.fill, 1, on ? 1 : OFF_TIER);
             c.fillRect(x, y, 1, 1);
