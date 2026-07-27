@@ -38,8 +38,20 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   check throws `ReferenceError: process is not defined` on every render.
   Swapped for Vite's own `import.meta.env.DEV`, which is statically replaced
   at build time and behaves identically.
+- **`cartesian-root.tsx`, touch axis lock.** Upstream scrubs on the first
+  `pointermove`, which is right for a mouse and wrong for a finger: a chart
+  lives inside a vertically scrolling page, so any drag that merely *starts*
+  over one was stolen from the page. Touch pointers are now excluded from the
+  pointer handlers and go through a non-passive `touchmove` listener that waits
+  out a slop zone, then commits for the rest of the touch — clearly horizontal
+  scrubs and calls `preventDefault()`, clearly vertical is dropped so the page
+  scrolls and pull-to-refresh still works. The decision lives in
+  `lib/chartScrub.ts` as `scrubIntent`, the mirror of `pullIntent`; a test pins
+  that the two can never claim the same gesture. Mouse and pen keep upstream's
+  immediate hover. Note this is why the charts must **not** declare a
+  `touch-action` — see `components/charts/scrubSurface.ts`.
 - **`cartesian-root.tsx`**: added an `onPointerCancel` handler, sharing the
-  `endHover` teardown with `onPointerLeave`. Upstream handles leave only, which
+  `endHover` teardown with `onPointerLeave` and the new touch end/cancel. Upstream handles leave only, which
   is enough for a mouse but not for touch — when the browser decides a
   finger-drag is a page scroll it cancels the pointer stream *without* firing
   leave, so the scrub index (and the tooltip) stayed stuck on screen while the
