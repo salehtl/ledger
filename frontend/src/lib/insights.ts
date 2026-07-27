@@ -23,6 +23,7 @@ export function bucketColor(bucket: string): string {
     case "need": return "var(--color-need)";
     case "want": return "var(--color-want)";
     case "saving": return "var(--color-save)";
+    case "transfer": return "var(--color-transfer)";
     default: return "var(--color-muted)";
   }
 }

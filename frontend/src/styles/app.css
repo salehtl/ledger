@@ -18,14 +18,6 @@
   --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
   --color-hero-fg: #f2f1ef;
 
-  /* Buckets are encoded by hue *and* density for redundancy. The hue is selected
-     by bucketDither() in lib/ditherColor.ts and rendered directly to the dither
-     canvas. These CSS vars are legacy fallbacks — they resolve to ink so any
-     un-migrated call site degrades to legible monochrome rather than undefined. */
-  --color-need: #16161a;
-  --color-want: #16161a;
-  --color-save: #16161a;
-
   /* Semantic colours are retired — over-budget is a texture change. `bad` keeps
      a red because negative money still reads as red in .money-neg, and that is
      the one semantic use that survives. */
@@ -41,6 +33,31 @@
      light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
      a fill — --color-accent is the fill. */
   --color-bad: #b8331d;
+
+  /* ── Categorical palette ────────────────────────────────────────────────
+     The one place these six hues are written for CSS consumers. They mirror
+     PALETTE_LIGHT/PALETTE_DARK in components/dither-kit/palette.ts, which the
+     canvas needs as literals because it paints raw RGB and cannot read a
+     custom property; a test asserts the two agree. Chroma sits at roughly two
+     thirds the accent's, so they read as muted and never compete with the one
+     spot ink. Chosen with the palette validator, not by eye — see
+     lib/ditherColor.ts for the measured separations. */
+  --color-azure: #1660a0;
+  --color-amber: #b5771e;
+  --color-lilac: #7556a5;
+  --color-sage:  #409457;
+  --color-rose:  #c5646e;
+  --color-slate: #76767e;
+
+  /* Buckets alias the palette rather than repeating a hex: a bucket and a
+     project painted "amber" must be the same amber, and the only way to
+     guarantee that is for one of them not to hold a value. Restoring these
+     implements the ruling that buckets are double-encoded by hue *and*
+     density — the density signature is unchanged. */
+  --color-need:     var(--color-amber);
+  --color-want:     var(--color-lilac);
+  --color-save:     var(--color-sage);
+  --color-transfer: var(--color-slate);
 
   /* shadcn token names, aliased onto our palette — dither-kit's vendored chrome
      (tooltip, axes, grid) is written against these. */
@@ -207,11 +224,6 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-hero: #ecebe8;
     --color-hero-fg: #141416;
 
-    /* Buckets are encoded by hue *and* density. CSS vars are legacy fallbacks. */
-    --color-need: #ecebe8;
-    --color-want: #ecebe8;
-    --color-save: #ecebe8;
-
     --color-good: #ecebe8;
     /* Same ruling as light: full-strength ink (--color-fg), not muted. */
     --color-warn: #ecebe8;
@@ -221,6 +233,15 @@ input, select, textarea { font-size: max(16px, 1rem); }
        5.03:1 here — sub-AA for text. #f0866f is 7.31:1. Never widen this to
        fills. Unchanged by the Task 12 contrast audit. */
     --color-bad: #f0866f;
+
+    /* Same six hues, re-stepped for the dark ground. The bucket aliases above
+       are inherited — only the palette values change per theme. */
+    --color-azure: #2c72b3;
+    --color-amber: #c58632;
+    --color-lilac: #8365b5;
+    --color-sage:  #53a768;
+    --color-rose:  #cc6a74;
+    --color-slate: #7f7f87;
 
     --color-foreground: #ecebe8;
     --color-muted-foreground: #8b8b8f;

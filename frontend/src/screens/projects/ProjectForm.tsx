@@ -7,9 +7,13 @@ import { Input } from "../../components/ui/Field";
 import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
 import { useToast } from "../../components/Toast";
+import { PALETTE_NAMES, projectColor } from "../../lib/paletteColor";
 import { SettingsPage } from "../settings/SettingsPage";
 
-const COLOR_PRESETS = ["#1373d9", "#7b35b8", "#2e7d52", "#b45309", "#dc2626", "#0891b2"];
+// Palette names, not hex. A stored hex can't follow the theme — the
+// light-mode azure sits at 2.82:1 on the dark ground. projectColor() turns a
+// name into a var the cascade re-resolves. See lib/paletteColor.ts.
+const COLOR_PRESETS = PALETTE_NAMES;
 
 /**
  * Create-or-edit drill-in for a project. Budget is entered in AED and
@@ -106,13 +110,13 @@ export function ProjectForm({
               <button
                 key={c}
                 type="button"
-                aria-label={`Color ${c}`}
+                aria-label={c}
                 aria-pressed={color === c}
                 onClick={() => setColor(c)}
                 className={`w-8 h-8 rounded-[var(--radius)] press ${
                   color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
                 }`}
-                style={{ backgroundColor: c }}
+                style={{ backgroundColor: projectColor(c) }}
               />
             ))}
           </div>
