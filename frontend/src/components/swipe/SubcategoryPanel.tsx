@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Category, Project, Txn } from '../../api/types'
 import { type SwipeAction, actionColor } from '../../lib/swipe'
+import { projectColor } from '../../lib/paletteColor'
 import { orderProjectsForReview } from '../../lib/projectMath'
 import { Dialog } from '../ui/Dialog'
 
@@ -80,11 +81,11 @@ export function SubcategoryPanel({
                   onClick={() => setProjectID(selected ? null : p.id)}
                   className="min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press border transition-colors"
                   style={selected
-                    ? { backgroundColor: p.color, borderColor: p.color, color: '#fff' }
-                    : { borderColor: p.suggested ? p.color : 'var(--color-border)', color: 'var(--color-fg)' }}
+                    ? { backgroundColor: projectColor(p.color), borderColor: projectColor(p.color), color: '#fff' }
+                    : { borderColor: p.suggested ? projectColor(p.color) : 'var(--color-border)', color: 'var(--color-fg)' }}
                 >
                   <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0"
-                    style={{ backgroundColor: selected ? 'currentColor' : p.color }} />
+                    style={{ backgroundColor: selected ? 'currentColor' : projectColor(p.color) }} />
                   {p.name}
                   {p.suggested && !selected && <span className="text-xs text-muted">these dates</span>}
                 </button>

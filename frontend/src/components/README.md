@@ -16,6 +16,18 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   `rounded-md`, `rounded-xl`, or arbitrary `rounded-[Npx]`, not even for
   formerly-circular dots, avatars, or toggle knobs. Every radius call site is
   `rounded-[var(--radius)]`, full stop.
+- **Buckets carry a hue again.** `--color-need`/`-want`/`-save`/`-transfer` are
+  aliases onto the categorical palette (`--color-amber`/`-lilac`/`-sage`/`-slate`),
+  which mirrors `dither-kit/palette.ts`; a test in `styles/tokens.test.ts`
+  asserts the two agree. Hue is *additional* to the density signature, not a
+  replacement — buckets stay double-encoded.
+- **Projects store a palette name, never a hex.** `lib/paletteColor.ts`'s
+  `projectColor()` resolves it to a var so it follows the theme; a stored
+  light-mode hex does not (azure is 2.82:1 on the dark ground). Legacy `#hex`
+  values pass through.
+- **A project mark is a ring; a bucket mark is a solid fill.** They share the
+  palette and `TransactionRow` renders both on one line, so form is what keeps
+  them apart.
 - **The spot ink has three registers.** One plate, different tints for
   different jobs (ordinary two-colour press practice) — a contrast audit found
   the shipped single value sub-AA in two of these three roles:

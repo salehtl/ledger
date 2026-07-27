@@ -4,6 +4,7 @@ import { flowAmount, aedFils, nativeAmountTag } from "../../lib/money";
 import { Pill } from "../ui/Pill";
 import { statusLabel, statusTone, shortDate } from "../../lib/format";
 import { bucketColor } from "../../lib/insights";
+import { projectColor } from "../../lib/paletteColor";
 
 /**
  * One calm transaction line: merchant + amount on top, category · date beneath.
@@ -57,7 +58,9 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
             <p className="font-mono text-[10px] tracking-[0.04em] text-muted truncate">{meta}</p>
             {project && (
               <span className="inline-flex items-center gap-1 text-xs text-muted shrink-0">
-                <span aria-hidden className="w-1.5 h-1.5 rounded-[var(--radius)] shrink-0" style={{ background: project.color }} />
+                {/* A ring, not a fill: this row also carries a solid bucket dot, and the
+                    two share a palette. Form keeps them apart at identical hue. */}
+                <span aria-hidden className="w-1.5 h-1.5 rounded-[var(--radius)] shrink-0 border" style={{ borderColor: projectColor(project.color) }} />
                 <span className="truncate max-w-24">{project.name}</span>
               </span>
             )}
