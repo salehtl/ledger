@@ -53,9 +53,9 @@ export const PALETTE_LIGHT: Record<DitherColor, Seed> = {
   blue: light([22, 22, 26]),      // --color-need   ink
   purple: light([22, 22, 26]),    // --color-want   ink
   green: light([22, 22, 26]),     // --color-save   ink
-  red: light([216, 69, 44]),      // --color-bad    #d8452c
+  red: light([184, 51, 29]),      // --color-bad    #b8331d
   orange: light([94, 94, 99]),    // --color-warn   #5e5e63
-  pink: light([216, 69, 44]),     // --color-accent #d8452c
+  pink: light([201, 61, 38]),     // --color-accent #c93d26
   grey: light([94, 94, 99]),      // --color-muted  #5e5e63
 };
 
@@ -64,9 +64,9 @@ export const PALETTE_DARK: Record<DitherColor, Seed> = {
   blue: dark([236, 235, 232]),    // --color-need   ink
   purple: dark([236, 235, 232]),  // --color-want   ink
   green: dark([236, 235, 232]),   // --color-save   ink
-  red: dark([216, 69, 44]),       // --color-bad    #d8452c
+  red: dark([240, 134, 111]),     // --color-bad    #f0866f  (unchanged)
   orange: dark([139, 139, 143]),  // --color-warn   #8b8b8f
-  pink: dark([216, 69, 44]),      // --color-accent #d8452c
+  pink: dark([201, 61, 38]),      // --color-accent #c93d26
   grey: dark([139, 139, 143]),    // --color-muted  #8b8b8f
 };
 

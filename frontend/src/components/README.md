@@ -9,6 +9,20 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 - **Tokens only.** Colors, radii, easings come from `src/styles/app.css`
   (`--color-*`, `--radius-card` (3px), `--radius-sheet` (12px), `--ease-*`). Never raw hex.
+- **The spot ink has three registers.** One plate, different tints for
+  different jobs (ordinary two-colour press practice) — a contrast audit found
+  the shipped single value sub-AA in two of these three roles:
+  - **Fill** (`--color-accent`, `#c93d26`) — always paired with
+    `--color-accent-fg: #ffffff` on top. 5.03:1.
+  - **Text on light paper** (`--color-bad`, `#b8331d`) — 5.27:1 on
+    `--color-bg` (`#f2f1ef`). This is what `.money-neg` renders.
+  - **Text on dark ground** (`--color-bad` in the dark override, `#f0866f`,
+    unchanged) — 7.31:1 on `#141416`.
+
+  Never use a text register as a fill, or the fill register as text — e.g.
+  don't set `text-accent` for a label; `--color-accent` is 4.45:1 on light
+  paper and worse still on dark. See "Red is rationed" under `Pill` for where
+  the fill register is allowed to appear at all.
 - **Elevation is Dialog-only.** The app's one box-shadow utility (`app.css`)
   exists for exactly one surface — the `Dialog` sheet, which must read as
   above the page. Every other surface is paper: separation comes from a
@@ -41,7 +55,7 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
   | Role | Face | Size | Weight | Tracking |
   | --- | --- | --- | --- | --- |
-  | Hero amount | Mono | 32px | 500 | -0.02em |
+  | Hero amount (Home) | Mono | 44px | 600 | -0.02em |
   | Screen title | Sans | 16px | 600 | -0.015em |
   | Row primary | Sans | 14px | 500 | -0.01em |
   | Row meta | Mono | 10px | 400 | 0.04em |
@@ -49,8 +63,17 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   | Nav label | Mono | 8px | 500 | 0.10em, uppercase |
   | Button | Sans | 13px | 500 | normal |
 
+  The hero amount is not a general scale step — it is the one live number on
+  Home (`text-[2.75rem] font-semibold`, `screens/Home.tsx`), sized to be the
+  largest thing on the screen. Don't derive other "big number" treatments from
+  it; if a mockup implies 32px/500 for a hero, that is the mockup rendered at
+  mockup scale, not this token.
+
   The swipe deck's display eyebrows (`0.18em` tracking) are a deliberate,
-  recorded exception to the eyebrow row above — leave them.
+  recorded exception to the eyebrow row above — leave them. TopBar's period
+  stepper is another named variant of the same eyebrow row: `0.12em` tracking
+  (tighter than the standard `0.14em`) at eyebrow weight/size, because it's
+  chrome sitting next to a sans screen title rather than a standalone label.
 
 ## Primitives — `components/ui/`
 

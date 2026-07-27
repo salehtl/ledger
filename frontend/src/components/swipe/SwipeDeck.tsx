@@ -341,7 +341,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
       {current && current.Direction === 'credit' && (
         <button
-          className="mx-auto mt-2 text-sm font-medium text-accent"
+          className="mx-auto mt-2 text-sm font-medium text-fg"
           onClick={() => setLinkOpen(true)}
         >
           This is a refund — link the purchase
