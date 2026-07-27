@@ -8,29 +8,26 @@ const points: TrendPoint[] = [
 ];
 
 describe("TrendBars", () => {
-  it("renders a bar per point, scaled to the tallest month", () => {
+  it("keeps the accessible chart role and label", () => {
     render(<TrendBars points={points} />);
-    expect(screen.getByTestId("trend-bar-2026-05").style.height).toBe("50%");
-    expect(screen.getByTestId("trend-bar-2026-06").style.height).toBe("100%");
-    expect(screen.getByText("May")).toBeInTheDocument();
-    expect(screen.getByText("Jun")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Monthly spending trend/ })).toBeInTheDocument();
   });
 
-  it("highlights only the active period", () => {
+  it("summarizes every month in the accessible label", () => {
+    render(<TrendBars points={points} />);
+    const chart = screen.getByRole("img", { name: /Monthly spending trend/ });
+    expect(chart.getAttribute("aria-label")).toMatch(/May: 50\.00/);
+    expect(chart.getAttribute("aria-label")).toMatch(/Jun: 100\.00/);
+  });
+
+  it("emphasizes only the active month's label", () => {
     render(<TrendBars points={points} activePeriod="2026-06" />);
-    expect(screen.getByTestId("trend-bar-2026-06").className).toContain("--color-accent");
-    expect(screen.getByTestId("trend-bar-2026-05").className).toContain("--color-surface-2");
+    expect(screen.getByText("Jun").className).toContain("font-medium");
+    expect(screen.getByText("May").className).not.toContain("font-medium");
   });
 
-  it("renders flat (0%) bars when every month is zero", () => {
-    render(
-      <TrendBars points={[{ period: "2026-05", label: "May", spent: 0, income: 0 }]} />,
-    );
-    expect(screen.getByTestId("trend-bar-2026-05").style.height).toBe("0%");
-  });
-
-  it("keeps the accessible chart role", () => {
-    render(<TrendBars points={points} />);
-    expect(screen.getByRole("img", { name: "Monthly spending trend" })).toBeInTheDocument();
+  it("renders nothing for an empty series", () => {
+    const { container } = render(<TrendBars points={[]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });
