@@ -4,21 +4,21 @@ import { DENSITY_BIAS, DitherFill } from "./DitherFill";
 describe("DitherFill", () => {
   it("renders a canvas", () => {
     const { container } = render(
-      <DitherFill segments={[{ value: 50, color: "blue" }]} max={100} />,
+      <DitherFill segments={[{ value: 50, color: "azure" }]} max={100} />,
     );
     expect(container.querySelector("canvas")).toBeInTheDocument();
   });
 
   it("is hidden from assistive tech — callers state the numbers in text", () => {
     const { container } = render(
-      <DitherFill segments={[{ value: 50, color: "blue" }]} max={100} />,
+      <DitherFill segments={[{ value: 50, color: "azure" }]} max={100} />,
     );
     expect(container.firstElementChild).toHaveAttribute("aria-hidden", "true");
   });
 
   it("survives a zero max without dividing by zero", () => {
     const { container } = render(
-      <DitherFill segments={[{ value: 0, color: "blue" }]} max={0} />,
+      <DitherFill segments={[{ value: 0, color: "azure" }]} max={0} />,
     );
     expect(container.querySelector("canvas")).toBeInTheDocument();
   });
@@ -33,7 +33,7 @@ describe("DitherFill", () => {
     // blended layer per row is real compositing cost for a glow the
     // overflow-hidden wrapper crops away.
     const { container } = render(
-      <DitherFill segments={[{ value: 50, color: "blue" }]} max={100} />,
+      <DitherFill segments={[{ value: 50, color: "azure" }]} max={100} />,
     );
     const bloom = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
     expect(bloom.style.opacity).toBe("0");
@@ -43,7 +43,7 @@ describe("DitherFill", () => {
 
   it("still honours an explicit bloom opt-in", () => {
     const { container } = render(
-      <DitherFill segments={[{ value: 50, color: "blue" }]} max={100} bloom="aura" />,
+      <DitherFill segments={[{ value: 50, color: "azure" }]} max={100} bloom="aura" />,
     );
     const bloom = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
     expect(bloom.style.filter).toContain("blur");
@@ -51,7 +51,7 @@ describe("DitherFill", () => {
 
   it("applies the requested height", () => {
     const { container } = render(
-      <DitherFill segments={[{ value: 1, color: "green" }]} max={1} height={12} />,
+      <DitherFill segments={[{ value: 1, color: "sage" }]} max={1} height={12} />,
     );
     expect(container.firstElementChild).toHaveStyle({ height: "12px" });
   });

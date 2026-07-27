@@ -1,23 +1,48 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // FORKED FROM UPSTREAM dither-kit 0.1.0.
-// Upstream ships seven hardcoded RGB seeds tuned for dark surfaces. This app has
-// its own token palette and both a light and a dark theme, so the seed *values*
-// carry our tokens while the seven `DitherColor` keys and the `Seed` shape are
-// kept intact — every dither-kit consumer keeps working unchanged.
-// A future `shadcn add --diff` will show this file as divergent. That is
-// intentional; re-apply the fork rather than accepting upstream.
+//
+// Two departures from upstream:
+//
+// 1. The seed *values* are this app's chart palette, in separate light and dark
+//    tables, because the canvas paints raw RGB and cannot inherit a CSS var.
+// 2. The `DitherColor` keys are **renamed** to describe the hues they actually
+//    carry (azure/amber/lilac/sage/rose/slate). Upstream's names were
+//    green/blue/purple/pink/orange/red/grey; once the values were retuned those
+//    names lied — at one point `pink` held a navy — and a reviewer nearly
+//    "fixed" the mapping back. Names now match values.
+//
+// A future `shadcn add --diff` shows this file as divergent. That is intended;
+// re-apply the fork rather than accepting upstream. `DitherColor` is referenced
+// as a type by several vendored files, but only ever as a key of `config`, so
+// the rename is contained to our own chart code.
+//
+// Palette derivation lives in docs/superpowers/specs — the short version: the
+// two-color press theme puts everything on paper (#f2f1ef) or near-black
+// (#141416) with one vermilion accent (#c93d26, OKLCH L .56 / C .18). Chart
+// hues sit at C ≈ .12 — around two thirds the accent's chroma — so they read as
+// muted next to it and never compete with the one spot colour. Every set below
+// was checked with the dataviz validator (OKLCH lightness band, chroma floor,
+// protan/deutan separation, normal-vision floor, contrast) rather than picked
+// by eye; see `ditherColor.ts` for which sets are the ones that actually touch.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type Rgb = [number, number, number];
 
+/**
+ * The chart palette. Five categorical hues plus a neutral.
+ *
+ * Ordering matters: adjacent entries in a chart must alternate between the two
+ * groups that collapse under red-green colour blindness — cool (azure, lilac)
+ * and warm (amber, sage, rose) — and differ in lightness. `ditherColor.ts` owns
+ * the assignments and documents the validated ΔE for each.
+ */
 export type DitherColor =
-  | "green"
-  | "blue"
-  | "purple"
-  | "pink"
-  | "orange"
-  | "red"
-  | "grey";
+  | "azure"
+  | "amber"
+  | "lilac"
+  | "sage"
+  | "rose"
+  | "slate";
 
 export type Seed = { fill: Rgb; line: Rgb; star: Rgb };
 
@@ -34,9 +59,9 @@ export function mix(a: Rgb, b: Rgb, t: number): Rgb {
 }
 
 // Upstream derives `line` and `star` as successively lighter tints of `fill`,
-// which works on its dark canvas. On our warm off-white surface a lighter line
-// washes out, so the light table tints toward black instead. Same relationship,
-// mirrored for the background it sits on.
+// which works on its dark canvas. On paper a lighter line washes out, so the
+// light table tints toward black instead. Same relationship, mirrored for the
+// background it sits on.
 const light = (fill: Rgb): Seed => ({
   fill,
   line: mix(fill, BLACK, 0.25),
@@ -48,26 +73,30 @@ const dark = (fill: Rgb): Seed => ({
   star: mix(fill, WHITE, 0.7),
 });
 
-/** Light theme — values are the `@theme` tokens in styles/app.css. */
+/**
+ * Light theme, on paper (#f2f1ef). Lightness is staggered deliberately — under
+ * red-green colour blindness hue alone collapses, so neighbouring series lean
+ * on the lightness difference to stay apart. Every entry clears 3:1 on paper as
+ * a solid; the ordered dither then lifts the rendered bar lighter than the
+ * swatch, which is what keeps these reading soft rather than heavy.
+ */
 export const PALETTE_LIGHT: Record<DitherColor, Seed> = {
-  blue: light([22, 22, 26]),      // --color-need   ink
-  purple: light([22, 22, 26]),    // --color-want   ink
-  green: light([22, 22, 26]),     // --color-save   ink
-  red: light([184, 51, 29]),      // --color-bad    #b8331d
-  orange: light([94, 94, 99]),    // --color-warn   #5e5e63
-  pink: light([201, 61, 38]),     // --color-accent #c93d26
-  grey: light([94, 94, 99]),      // --color-muted  #5e5e63
+  azure: light([22, 96, 160]),   // #1660a0  OKLCH L .48 C .124 h 250
+  amber: light([181, 119, 30]),  // #b5771e  OKLCH L .62 C .124 h 70
+  lilac: light([117, 86, 165]),  // #7556a5  OKLCH L .52 C .124 h 300
+  sage: light([64, 148, 87]),    // #409457  OKLCH L .60 C .124 h 150
+  rose: light([197, 100, 110]),  // #c5646e  OKLCH L .62 C .124 h 15
+  slate: light([118, 118, 126]), // #76767e  the neutral — "everything else"
 };
 
-/** Dark theme — values are the prefers-color-scheme: dark overrides. */
+/** Dark theme, on #141416. Same hues, re-stepped for the dark surface. */
 export const PALETTE_DARK: Record<DitherColor, Seed> = {
-  blue: dark([236, 235, 232]),    // --color-need   ink
-  purple: dark([236, 235, 232]),  // --color-want   ink
-  green: dark([236, 235, 232]),   // --color-save   ink
-  red: dark([240, 134, 111]),     // --color-bad    #f0866f  (unchanged)
-  orange: dark([139, 139, 143]),  // --color-warn   #8b8b8f
-  pink: dark([201, 61, 38]),      // --color-accent #c93d26
-  grey: dark([139, 139, 143]),    // --color-muted  #8b8b8f
+  azure: dark([44, 114, 179]),   // #2c72b3  OKLCH L .54 C .124 h 250
+  amber: dark([197, 134, 50]),   // #c58632  OKLCH L .67 C .124 h 70
+  lilac: dark([131, 101, 181]),  // #8365b5  OKLCH L .57 C .124 h 300
+  sage: dark([83, 167, 104]),    // #53a768  OKLCH L .66 C .124 h 150
+  rose: dark([204, 106, 116]),   // #cc6a74  OKLCH L .64 C .124 h 15
+  slate: dark([127, 127, 135]),  // #7f7f87  the neutral
 };
 
 // Theme tracking. The canvas paints raw RGB, so it cannot inherit a CSS var —

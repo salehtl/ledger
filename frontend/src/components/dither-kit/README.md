@@ -12,10 +12,17 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
 
 ## Local changes
 
-- **`palette.ts` is forked.** Upstream's seven seeds are dark-surface arcade
-  hues; ours carry the app's design tokens in separate light and dark tables,
-  plus `mix`, `isDarkTheme` and `subscribeDitherTheme`. See the header comment
-  in that file.
+- **`palette.ts` is forked, values *and* keys.** Upstream's seven seeds are
+  dark-surface arcade hues named green/blue/purple/pink/orange/red/grey. Ours
+  are a validated five-hue chart palette plus a neutral, in separate light and
+  dark tables, and the keys are **renamed** to match what they hold:
+  `azure | amber | lilac | sage | rose | slate`. The rename is deliberate —
+  after the values were retuned the upstream names lied (`pink` held a navy at
+  one point) and a reviewer nearly "corrected" the mapping back to the wrong
+  hues. Also adds `mix`, `isDarkTheme` and `subscribeDitherTheme`. See the
+  header comment in that file, and `lib/ditherColor.ts` for the assignments and
+  the measured separations behind them. A `--diff` here will look large; do not
+  accept upstream over it.
 - **`scales.ts`**: `computeBands` now passes d3's `stackOffsetDiverging` for
   `stackType === "stacked"`. Upstream left `.offset()` undefined, which d3
   resolves to `stackOffsetNone` — plain cumulative stacking, which piles a

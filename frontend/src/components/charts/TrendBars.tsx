@@ -13,7 +13,7 @@ import { SCRUB_SURFACE } from "./scrubSurface";
 // Module constant: a fresh object literal here would give the chart a new
 // `config` identity every render, busting configKeys → bands → the whole
 // context value and re-playing the 900ms entrance wave on unrelated updates.
-const TREND_CONFIG: ChartConfig = { spent: { label: "Spent", color: "grey" } };
+const TREND_CONFIG: ChartConfig = { spent: { label: "Spent", color: "amber" } };
 
 /**
  * Monthly spending, as dithered bars. dither-kit colors per *series*, not per
