@@ -94,8 +94,10 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   intentionally wider-set; leave them.
 
 ### ProgressBar
-- **Purpose:** budget progress with auto tone (green <80%, amber <100%,
-  red ≥100%), optional pace marker, `onAccent` variant for the hero panel.
+- **Purpose:** budget progress with auto tone signaled by texture: under budget
+  (pct < 1.0) renders dithered, at or over budget (pct ≥ 1.0) fills solid ink.
+  An optional `tone` prop overrides the automatic reading. Includes optional
+  pace marker and `onAccent` variant for the hero panel.
 
 ### SegmentedControl
 - **Purpose:** exclusive choice between 2–6 short options (filters, day
