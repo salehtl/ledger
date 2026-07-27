@@ -8,7 +8,12 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 ## Conventions (apply to all UI work)
 
 - **Tokens only.** Colors, radii, easings come from `src/styles/app.css`
-  (`--color-*`, `--radius-card`, `--radius-sheet`, `--ease-*`). Never raw hex.
+  (`--color-*`, `--radius-card` (3px), `--radius-sheet` (12px), `--ease-*`). Never raw hex.
+- **Elevation is Dialog-only.** The app's one box-shadow utility (`app.css`)
+  exists for exactly one surface — the `Dialog` sheet, which must read as
+  above the page. Every other surface is paper: separation comes from a
+  `border border-border` hairline, never a shadow. Don't reach for that
+  utility outside `Dialog.tsx`.
 - **Touch targets.** Interactive elements are ≥44px (`min-h-11`) by default.
   36px (`IconButton size="sm"`) is allowed only inside dense stacked rows.
 - **16px inputs.** Form controls use `Input`/`Select` (text-base). Anything
@@ -58,6 +63,9 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Purpose:** the one modal/bottom-sheet. Scrim, slide-up, focus trap,
   Escape, drag-to-dismiss, safe-area padding, `85dvh` scroll containment.
   `titleAdornment`/`titleStyle` decorate the header (see SubcategoryPanel).
+  The one elevated surface in the app (see `app.css`'s box-shadow utility) —
+  a sheet must read as above the page; everywhere else uses a
+  `border-border` hairline instead.
 - **Use when:** anything overlays the current screen but keeps context.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
 
@@ -68,10 +76,10 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
 
 ### Card
-- **Purpose:** the elevated content surface (`bg-surface`, card radius,
-  `shadow-1`, `p-4`). `className="!p-0"` + an inner `divide-y` list is the
-  list-card idiom.
-- **Don't:** inline `bg-surface rounded-[var(--radius-card)] shadow-1`.
+- **Purpose:** the paper content surface (`bg-surface`, card radius,
+  `border border-border`, `p-4`) — bounded by a hairline, not a shadow.
+  `className="!p-0"` + an inner `divide-y` list is the list-card idiom.
+- **Don't:** inline `bg-surface rounded-[var(--radius-card)] border border-border`.
 
 ### Pill
 - **Purpose:** small inline status/label badge with a semantic `tone`

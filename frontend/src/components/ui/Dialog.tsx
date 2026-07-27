@@ -95,7 +95,7 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{ transition: sheetTransition(reduced), willChange: reduced ? "auto" : "transform" }}
-        className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
+        className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius-sheet)] sm:rounded-[var(--radius-sheet)] shadow-1 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
       >
         <div
           className="touch-none cursor-grab active:cursor-grabbing sm:cursor-default"
