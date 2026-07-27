@@ -132,6 +132,13 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Purpose:** app chrome. TopBar owns the page title + period scope stepper;
   BottomNav owns tab navigation (5 tabs, review badge). Screens never render
   their own h1 outside these.
+- **BottomNav active tab:** marked by a 2px vermilion tick (`data-active-tick`)
+  sitting on the top hairline, plus `text-fg` on the label — never a tinted
+  pill behind the icon, never `text-accent` on the label (vermilion as text on
+  the dark ground is sub-AA; red is a fill in dark, never text). The review
+  badge is `bg-accent text-accent-fg` — one of exactly four sanctioned red
+  contexts app-wide (primary action, create plate, active-tab marker, review
+  badge).
 
 ### PeriodSheet
 - **Purpose:** month/range picker built on Dialog. Reuse it anywhere a scope
