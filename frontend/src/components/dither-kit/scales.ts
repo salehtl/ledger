@@ -1,5 +1,9 @@
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale"
-import { stack as d3Stack, stackOffsetExpand } from "d3-shape"
+import {
+  stack as d3Stack,
+  stackOffsetDiverging,
+  stackOffsetExpand,
+} from "d3-shape"
 
 export type StackType = "default" | "stacked" | "percent"
 
@@ -12,10 +16,18 @@ const num = (v: unknown) =>
  * Per-series [y0, y1] bands for every row. For `default` every series sits on
  * the zero baseline (y0 = 0), so a negative value yields `[0, v]` with `v < 0`
  * and draws below the baseline; for `stacked`/`percent` they pile on top of
- * each other via d3's stack layout (which splits negatives below zero). The
- * shape `bands[key][i] = [y0, y1]` is what both the SVG area paths and the
- * canvas overlay read from. `max`/`min` bound the value range so the y-scale
- * can span a diverging (below-zero) domain.
+ * each other via d3's stack layout. The shape `bands[key][i] = [y0, y1]` is
+ * what both the SVG area paths and the canvas overlay read from. `max`/`min`
+ * bound the value range so the y-scale can span a diverging (below-zero)
+ * domain.
+ *
+ * FORKED FROM UPSTREAM: `stacked` uses d3's `stackOffsetDiverging`, not the
+ * default (`stackOffsetNone`). Upstream left `.offset()` undefined, which
+ * resolves to `stackOffsetNone` — plain cumulative stacking that piles negative
+ * values on top of the positive ones instead of splitting them below zero, and
+ * that never drives `min` below 0. An in-vs-out chart (income up, spending
+ * down) needs the diverging offset: positives stack up from zero, negatives
+ * stack down from zero. `percent` keeps `stackOffsetExpand`.
  */
 export function computeBands(
   data: Row[],
@@ -44,9 +56,9 @@ export function computeBands(
   const series = d3Stack<Row>()
     .keys(keys)
     .value((row, key) => num(row[key]))
-    .offset(stackType === "percent" ? stackOffsetExpand : (undefined as never))(
-    data
-  )
+    .offset(
+      stackType === "percent" ? stackOffsetExpand : stackOffsetDiverging
+    )(data)
 
   const bands: Record<string, [number, number][]> = {}
   let max = 0
