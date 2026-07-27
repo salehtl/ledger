@@ -202,9 +202,16 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   apart by a segment's `density` (`Density` from this file) instead of hue:
   needs `"dense"`, wants `"medium"`, saving `"sparse"`. A bucket at or over its
   budget renders `"solid"` — the same texture-not-colour reading as
-  `ProgressBar`'s `pct >= 1.0`. `color` still selects the ink *seed* on every
-  segment (unchanged for `red`/`grey`, which aren't buckets); `density` is the
-  new, separate axis. `bucketDensity`/`bucketDither` in `lib/ditherColor.ts` are
+  `ProgressBar`'s `pct >= 1.0`, and wired to agree with it: `bucketDensity`
+  takes an `isOverBudget` flag, and `overBudgetBuckets` (`lib/insights.ts`)
+  turns a period's `BucketSummary[]` (`pct_used >= 1.0`) into the set of names
+  callers pass in. `Insights.tsx` threads its `summary` query's buckets through
+  to both `ComparativeSummary` (`overBudgetBuckets` prop) and `LensBreakdown`'s
+  `buckets` lens (`bucketRows`'s `overBudget` param) so their bars go solid in
+  step with Home's `ProgressBar`s for the same period. `color` still selects
+  the ink *seed* on every segment (unchanged for `red`/`grey`, which aren't
+  buckets); `density` is the new, separate axis. `bucketDensity`/`bucketDither`
+  in `lib/ditherColor.ts` are
   the single source of truth for both. Density is never the sole encoding —
   every call site (`ComparativeSummary`'s legend, `LensBreakdown`'s row name)
   states the bucket in visible text next to the bar, since the bar itself stays

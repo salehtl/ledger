@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
   totalProjection, paceStatus, paceTone, categoryDeltas, withShare, bucketComparison,
-  topMovers, savingsRate,
+  topMovers, savingsRate, overBudgetBuckets,
 } from "./insights";
 import type { CategoryDelta } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
@@ -12,6 +12,26 @@ const buckets: BucketSummary[] = [
   { bucket: "want", target: 200000, spent: 180000, remaining: 20000, pct_used: 0.9, projection: 240000 },
   { bucket: "saving", target: 100000, spent: 92000, remaining: 8000, pct_used: 0.92, projection: 100000 },
 ];
+
+describe("overBudgetBuckets", () => {
+  it("is empty when every bucket is under its target", () => {
+    expect(overBudgetBuckets(buckets)).toEqual(new Set());
+  });
+
+  it("includes a bucket at exactly pct_used 1.0 (matches ProgressBar's pct >= 1.0)", () => {
+    const atTarget: BucketSummary[] = [{ bucket: "need", target: 100, spent: 100, remaining: 0, pct_used: 1.0, projection: 100 }];
+    expect(overBudgetBuckets(atTarget)).toEqual(new Set(["need"]));
+  });
+
+  it("includes only the buckets that are at or over target, not the whole list", () => {
+    const mixed: BucketSummary[] = [
+      { bucket: "need", target: 300000, spent: 210000, remaining: 90000, pct_used: 0.7, projection: 300000 },
+      { bucket: "want", target: 200000, spent: 240000, remaining: -40000, pct_used: 1.2, projection: 240000 },
+      { bucket: "saving", target: 100000, spent: 100000, remaining: 0, pct_used: 1.0, projection: 100000 },
+    ];
+    expect(overBudgetBuckets(mixed)).toEqual(new Set(["want", "saving"]));
+  });
+});
 
 describe("totals", () => {
   it("sums spent and target across buckets", () => {

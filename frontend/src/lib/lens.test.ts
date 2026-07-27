@@ -36,6 +36,22 @@ describe("bucketRows", () => {
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r.density]));
     expect(byKey).toEqual({ need: "dense", want: "medium", saving: "sparse" });
   });
+
+  it("defaults to no over-budget overrides when the param is omitted", () => {
+    const buckets: BucketComparison[] = [{ bucket: "need", spent: 100, prevSpent: 100, delta: 0 }];
+    expect(bucketRows(buckets, 100)[0].density).toBe("dense");
+  });
+
+  it("overrides a bucket's density to solid when it's in the overBudget set, leaving the others alone", () => {
+    const buckets: BucketComparison[] = [
+      { bucket: "need", spent: 100, prevSpent: 100, delta: 0 },
+      { bucket: "want", spent: 100, prevSpent: 100, delta: 0 },
+      { bucket: "saving", spent: 100, prevSpent: 100, delta: 0 },
+    ];
+    const rows = bucketRows(buckets, 300, new Set(["want"]));
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.density]));
+    expect(byKey).toEqual({ need: "dense", want: "solid", saving: "sparse" });
+  });
 });
 
 describe("categoryRows", () => {

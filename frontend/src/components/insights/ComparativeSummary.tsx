@@ -5,8 +5,10 @@ import type { BucketComparison, SavingsResult } from "../../lib/insights";
 import { DitherFill } from "../charts/DitherFill";
 import { bucketDither, bucketDensity } from "../../lib/ditherColor";
 
-export function ComparativeSummary({ label, note, net, savings, buckets, onSelectBucket }: {
+export function ComparativeSummary({ label, note, net, savings, buckets, overBudgetBuckets = new Set(), onSelectBucket }: {
   label: string; note: string; net: number; savings: SavingsResult; buckets: BucketComparison[];
+  /** Bucket names at or over target for the period shown (see `overBudgetBuckets` in `lib/insights.ts`) — those bars render solid instead of their usual density. */
+  overBudgetBuckets?: Set<string>;
   onSelectBucket?: (bucket: string) => void;
 }) {
   const total = buckets.reduce((s, b) => s + b.spent, 0);
@@ -30,7 +32,7 @@ export function ComparativeSummary({ label, note, net, savings, buckets, onSelec
       {/* Spending split: one bar showing the need/want/saving proportions. */}
       <div className="mt-3">
         <DitherFill
-          segments={buckets.filter((b) => b.spent > 0).map((b) => ({ value: b.spent, color: bucketDither(b.bucket), density: bucketDensity(b.bucket) }))}
+          segments={buckets.filter((b) => b.spent > 0).map((b) => ({ value: b.spent, color: bucketDither(b.bucket), density: bucketDensity(b.bucket, overBudgetBuckets.has(b.bucket)) }))}
           max={total}
           height={12}
         />

@@ -80,4 +80,36 @@ describe("Insights", () => {
     // The drill-down sheet shows the bucket's transaction (title + row).
     expect((await screen.findAllByText("Deliveroo")).length).toBeGreaterThan(0);
   });
+
+  it("still renders the buckets lens and its labels when a bucket is over budget", async () => {
+    // summary.buckets carries pct_used for the focus month; "want" at/over its
+    // target should thread through to a solid density on both the hero split
+    // (ComparativeSummary) and the buckets-lens row (LensBreakdown) without
+    // breaking rendering or dropping the bucket's visible text label.
+    const overBudgetSummary: Summary = {
+      ...summary,
+      buckets: [
+        { bucket: "need", target: 300000, spent: 210000, remaining: 90000, pct_used: 0.7, projection: 300000 },
+        { bucket: "want", target: 100000, spent: 130000, remaining: -30000, pct_used: 1.3, projection: 130000 },
+        { bucket: "saving", target: 100000, spent: 10000, remaining: 90000, pct_used: 0.1, projection: 10000 },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/insights/categories")) return new Response(JSON.stringify(cats));
+      if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+      if (url.includes("/api/summary")) return new Response(JSON.stringify(overBudgetSummary));
+      if (url.includes("/api/transactions")) return new Response(JSON.stringify(monthTxns));
+      if (url.includes("/api/categories")) return new Response(JSON.stringify([]));
+      if (url.includes("/api/budget")) return new Response(JSON.stringify(budget));
+      return new Response("[]");
+    }));
+    wrap();
+    // Hero legend (ComparativeSummary) still names every bucket.
+    expect((await screen.findAllByText("Wants")).length).toBeGreaterThan(0);
+    // Switch to the buckets lens; its row label survives too.
+    fireEvent.click(await screen.findByRole("button", { name: "Buckets" }));
+    expect((await screen.findAllByText("Wants")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Needs")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Savings")).length).toBeGreaterThan(0);
+  });
 });
