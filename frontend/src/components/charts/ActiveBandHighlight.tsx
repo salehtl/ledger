@@ -25,7 +25,7 @@ export function ActiveBandHighlight({ n, index }: { n: number; index: number | n
     <div
       data-testid="active-band-highlight"
       aria-hidden
-      className="absolute inset-y-0 rounded-lg bg-surface-2/40"
+      className="absolute inset-y-0 rounded-[var(--radius)] bg-surface-2/40"
       style={{ left: `${rect.left * 100}%`, width: `${rect.width * 100}%` }}
     />
   );

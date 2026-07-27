@@ -13,7 +13,7 @@ export function Fab({ icon: Icon, label, onClick }: { icon: PixelIconType; label
       type="button"
       aria-label={label}
       onClick={() => { fire("selection"); onClick(); }}
-      className="press fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-[var(--radius-card)] bg-accent text-accent-fg hover:opacity-90 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)]"
+      className="press fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-accent text-accent-fg hover:opacity-90 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)]"
     >
       <Icon size={24} aria-hidden />
     </button>

@@ -26,7 +26,7 @@ export function BottomNav({
                 <Icon size={22} aria-hidden />
               </span>
               {t.id === "review" && reviewCount > 0 && (
-                <span className="absolute -top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-[2px] bg-accent text-accent-fg text-[10px] leading-4 text-center">
+                <span className="absolute -top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-[var(--radius)] bg-accent text-accent-fg text-[10px] leading-4 text-center">
                   {reviewCount}
                 </span>
               )}

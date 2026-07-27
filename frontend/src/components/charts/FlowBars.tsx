@@ -76,10 +76,10 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
           already. `dark` above is the re-render trigger on an OS theme flip. */}
       <div className="mb-3 flex items-center gap-4 text-[11px] text-muted">
         <span className="flex items-center gap-1.5">
-          <span data-testid="flow-legend-income" className="h-2 w-2 rounded-full" style={{ background: rgb(seedOfColor(FLOW_CONFIG.income.color).fill) }} aria-hidden /> In
+          <span data-testid="flow-legend-income" className="h-2 w-2 rounded-[var(--radius)]" style={{ background: rgb(seedOfColor(FLOW_CONFIG.income.color).fill) }} aria-hidden /> In
         </span>
         <span className="flex items-center gap-1.5">
-          <span data-testid="flow-legend-spent" className="h-2 w-2 rounded-full" style={{ background: rgb(seedOfColor(FLOW_CONFIG.spent.color).fill) }} aria-hidden /> Out
+          <span data-testid="flow-legend-spent" className="h-2 w-2 rounded-[var(--radius)]" style={{ background: rgb(seedOfColor(FLOW_CONFIG.spent.color).fill) }} aria-hidden /> Out
         </span>
       </div>
 
@@ -126,7 +126,7 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
           <span
             key={c.period}
             data-testid={`net-dot-${c.period}`}
-            className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-[var(--color-surface)]"
+            className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius)] ring-2 ring-[var(--color-surface)]"
             style={{ left: `${cx(i)}%`, top: `${cy(c.netLanePct)}%`, background: NET_DOT[c.netSign] }}
           />
         ))}

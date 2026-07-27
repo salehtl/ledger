@@ -21,7 +21,7 @@ export function ProjectCard({ project, onOpen }: { project: Project; onOpen: () 
       <Card className={`space-y-2 ${over ? "border border-bad/40" : ""}`}>
         <div className="flex items-center gap-2">
           {color && (
-            <span aria-hidden className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+            <span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: color }} />
           )}
           <span className="font-medium text-fg truncate flex-1">{name}</span>
           <span className={`tnum text-sm ${over ? "text-bad font-semibold" : "text-fg"}`}>

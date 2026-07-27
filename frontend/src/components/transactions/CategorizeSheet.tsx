@@ -124,13 +124,13 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
                     type="button"
                     aria-pressed={selected}
                     onClick={() => setCatID(selected ? null : c.ID)}
-                    className={`min-h-11 px-3.5 rounded-lg text-sm font-medium inline-flex items-center gap-2 press transition-colors ${
+                    className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press transition-colors ${
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
                   >
                     <span
                       aria-hidden
-                      className="w-2 h-2 rounded-full shrink-0"
+                      className="w-2 h-2 rounded-[var(--radius)] shrink-0"
                       style={{ background: selected ? "currentColor" : bucketColor(c.Bucket) }}
                     />
                     {c.Name}

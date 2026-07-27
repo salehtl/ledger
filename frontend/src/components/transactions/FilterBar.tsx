@@ -24,11 +24,11 @@ function Chip({ label, active, dot, onClick }: { label: string; active: boolean;
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap press transition-colors ${
+      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap press transition-colors ${
         active ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted hover:text-fg"
       }`}
     >
-      {dot && <span aria-hidden className="w-2 h-2 rounded-full shrink-0" style={{ background: dot }} />}
+      {dot && <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ background: dot }} />}
       {label}
     </button>
   );
@@ -87,7 +87,7 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
               key={t.key}
               type="button"
               onClick={t.remove}
-              className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full text-xs font-medium bg-accent/10 text-fg press"
+              className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-[var(--radius)] text-xs font-medium bg-accent/10 text-fg press"
               aria-label={`Remove ${t.label} filter`}
             >
               {t.label}
@@ -105,7 +105,7 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
       )}
 
       {open && (
-        <div className="rounded-[var(--radius-card)] border border-border p-3 space-y-4">
+        <div className="rounded-[var(--radius)] border border-border p-3 space-y-4">
           <section>
             <SectionLabel className="mb-2">Bucket</SectionLabel>
             <div className="flex flex-wrap gap-2">
@@ -146,7 +146,7 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
                   placeholder="Filter categories…"
                   value={catQuery}
                   onChange={(e) => setCatQuery(e.target.value)}
-                  className="w-full min-h-11 mb-2 px-3 rounded-md border border-border bg-surface-2 text-base"
+                  className="w-full min-h-11 mb-2 px-3 rounded-[var(--radius)] border border-border bg-surface-2 text-base"
                 />
               )}
               <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto overscroll-contain">

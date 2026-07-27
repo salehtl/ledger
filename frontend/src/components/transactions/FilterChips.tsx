@@ -83,7 +83,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             key={d.key}
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
-            className={`flex items-center gap-1 px-3.5 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors press ${
+            className={`flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap transition-colors press ${
               count > 0 ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted"
             }`}
           >
@@ -96,7 +96,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
       {active > 0 && (
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
-          className="flex items-center gap-1 px-3.5 py-2 rounded-md text-sm font-medium text-muted whitespace-nowrap press hover:text-fg"
+          className="flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium text-muted whitespace-nowrap press hover:text-fg"
         >
           <X size={14} aria-hidden /> Clear
         </button>
@@ -110,7 +110,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             <ul className="space-y-1">
               {current.options.map((o) => (
                 <li key={o.value}>
-                  <label className="flex items-center gap-3 px-2 py-3 rounded-md hover:bg-surface-2 cursor-pointer">
+                  <label className="flex items-center gap-3 px-2 py-3 rounded-[var(--radius)] hover:bg-surface-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={current.selected.includes(o.value)}

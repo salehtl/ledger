@@ -126,7 +126,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
         willChange: reduced ? "opacity" : "transform, opacity",
         touchAction: "pan-y",
       }}
-      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-lg shadow-lg ${tone}`}
+      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
     >
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (

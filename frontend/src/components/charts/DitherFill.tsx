@@ -132,7 +132,7 @@ export function DitherFill({
     <div
       ref={wrapRef}
       aria-hidden="true"
-      className={`relative w-full overflow-hidden rounded-full bg-surface-2 ${className}`}
+      className={`relative w-full overflow-hidden rounded-[var(--radius)] bg-surface-2 ${className}`}
       style={{ height }}
     >
       <canvas ref={canvasRef} className={layer} style={pixelated} />

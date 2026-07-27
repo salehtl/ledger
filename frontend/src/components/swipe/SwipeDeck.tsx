@@ -55,7 +55,7 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
   return (
     <div className="absolute z-10 pointer-events-none" style={style}>
       <div
-        className={`flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-[transform,background-color,color,box-shadow] duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
+        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           color: active ? '#ffffff' : color,
@@ -279,9 +279,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         </div>
         <p className="tnum text-sm text-muted mb-1">{state.index} of {total} sorted</p>
       </div>
-      <div className="h-1.5 bg-border rounded-full overflow-hidden mb-4">
+      <div className="h-1.5 bg-border rounded-[var(--radius)] overflow-hidden mb-4">
         <div
-          className="h-full bg-accent rounded-full transition-all duration-300"
+          className="h-full bg-accent rounded-[var(--radius)] transition-all duration-300"
           style={{ width: `${progress * 100}%` }}
         />
       </div>
@@ -292,7 +292,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         {activeDir && activeColor && (
           <div
             aria-hidden
-            className="absolute inset-0 pointer-events-none rounded-[28px] transition-opacity duration-150"
+            className="absolute inset-0 pointer-events-none rounded-[var(--radius)] transition-opacity duration-150"
             style={{ opacity: washOpacity, background: WASH[activeDir](activeColor) }}
           />
         )}
@@ -308,7 +308,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           {next && (
             <div
               aria-hidden
-              className="absolute inset-0 bg-surface rounded-[12px] shadow-lg"
+              className="absolute inset-0 bg-surface rounded-[var(--radius)] shadow-lg"
               style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
             />
           )}
