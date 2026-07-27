@@ -901,3 +901,81 @@ These are the spec's three risks. They need a real phone over Tailscale, not a t
 1. **Moiré** — dither at bucket-bar and pill sizes on a high-DPI screen can shimmer. If it does, raise `CELL` for `DitherFill` only, or widen the density spread.
 2. **Overspend legibility** — does solid fill read as "over" at a glance, without a legend?
 3. **Night legibility** — D1 is the high-contrast dark ground. If it is harsh in a dark room, the fallback is lifting `--color-bg` toward a warmer graphite (`#1e1d1c`) with ink `#e6e3de`.
+
+---
+
+### Task 12: Accessible spot ink
+
+Added mid-execution. A contrast audit of the shipped palette found two sub-AA pairings that the design's own rules require fixing. Run this **after Task 11 and before Task 10**.
+
+**Files:**
+- Modify: `frontend/src/styles/app.css` (light `@theme` and dark override)
+- Modify: `frontend/src/components/dither-kit/palette.ts` (the `pink` and `red` seeds in both tables)
+
+**The measurements** (WCAG 2.1 relative luminance, computed, not estimated):
+
+| Pairing | Before | After |
+| --- | --- | --- |
+| white on `--color-accent` (badge 10px, button labels 13px) | `#d8452c` → **4.37:1** ❌ | `#c93d26` → **5.03:1** ✅ |
+| `--color-bad` as text on light paper `#f2f1ef` (`.money-neg`) | `#d8452c` → **3.87:1** ❌ | `#b8331d` → **5.27:1** ✅ |
+| `--color-bad` as text on dark ground `#141416` (`.money-neg`) | `#f0866f` → 7.31:1 ✅ | unchanged |
+
+**The resulting rule — the spot ink has three registers**, which is ordinary two-colour press practice (one plate, different tints for different jobs):
+
+- **Fill:** `#c93d26`, always with `--color-accent-fg: #ffffff` on it.
+- **Text on light paper:** `#b8331d`.
+- **Text on dark ground:** `#f0866f`.
+
+Never use a text register as a fill or a fill register as text.
+
+- [ ] **Step 1: Update the light `@theme`**
+
+```css
+  --color-accent: #c93d26;      /* the one spot ink, as a FILL. 5.03:1 with white. */
+  --color-accent-fg: #ffffff;
+```
+
+and
+
+```css
+  /* Negative money prints in the spot ink's TEXT register, not its fill. On
+     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
+     a fill — --color-accent is the fill. */
+  --color-bad: #b8331d;
+```
+
+- [ ] **Step 2: Update the dark override**
+
+```css
+    --color-accent: #c93d26;
+    --color-accent-fg: #ffffff;
+```
+
+`--color-bad` in dark stays `#f0866f` — already 7.31:1 and already documented as the dark text register. Do not change it.
+
+- [ ] **Step 3: Realign the two affected dither seeds**
+
+In `palette.ts`, `pink` mirrors `--color-accent` and `red` mirrors `--color-bad`. Update both tables:
+
+```ts
+// PALETTE_LIGHT
+  red: light([184, 51, 29]),      // --color-bad    #b8331d
+  pink: light([201, 61, 38]),     // --color-accent #c93d26
+// PALETTE_DARK
+  red: dark([240, 134, 111]),     // --color-bad    #f0866f  (unchanged)
+  pink: dark([201, 61, 38]),      // --color-accent #c93d26
+```
+
+Update `frontend/src/components/dither-kit/palette.test.ts` expectations to match.
+
+- [ ] **Step 4: Record the rule in the catalog**
+
+Add the three-register rule to the Conventions section of `frontend/src/components/README.md`, with the measured ratios.
+
+- [ ] **Step 5: Verify, then commit**
+
+```bash
+cd frontend && bun run test && bunx tsc -b
+git add frontend/src/styles/app.css frontend/src/components/dither-kit/ frontend/src/components/README.md
+git commit -m "fix(a11y): spot ink gets separate fill and text registers for AA"
+```
