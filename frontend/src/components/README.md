@@ -122,8 +122,11 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   Settings rows wrap it in a full-row `<label>`.
 
 ### Fab
-- **Purpose:** the screen's single floating creation action, positioned above
-  the bottom nav. One per screen, max.
+- **Purpose:** the screen's single creation action: a square vermilion plate
+  above the bottom nav, flush to the 16px content margin. Deliberately not
+  elevated — nothing in this design floats. If it needs separating from
+  content beneath it, that is a layout problem, not an elevation problem.
+  One per screen, max.
 
 ### TopBar / BottomNav
 - **Purpose:** app chrome. TopBar owns the page title + period scope stepper;
