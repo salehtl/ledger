@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { FlowBars } from "./FlowBars";
+import { bandCenters } from "../../lib/trendBars";
 import type { TrendPoint } from "../../lib/insights";
 
 const points: TrendPoint[] = [
@@ -8,12 +9,9 @@ const points: TrendPoint[] = [
 ];
 
 describe("FlowBars", () => {
-  it("scales income and spending against one shared max", () => {
-    render(<FlowBars points={points} />);
-    expect(screen.getByTestId("flow-in-2026-05").style.height).toBe("100%"); // tallest overall
-    expect(screen.getByTestId("flow-out-2026-05").style.height).toBe("50%");
-    expect(screen.getByTestId("flow-in-2026-06").style.height).toBe("25%");
-    expect(screen.getByTestId("flow-out-2026-06").style.height).toBe("50%");
+  it("renders a dithered bar canvas for the series", () => {
+    const { container } = render(<FlowBars points={points} />);
+    expect(container.querySelector("canvas")).toBeInTheDocument();
   });
 
   it("shows a signed net figure per month", () => {
@@ -39,6 +37,18 @@ describe("FlowBars", () => {
     render(<FlowBars points={points} />);
     expect(screen.getByTestId("net-dot-2026-05")).toBeInTheDocument();
     expect(screen.getByTestId("net-dot-2026-06")).toBeInTheDocument();
+  });
+
+  it("aligns each net dot with its bar's band center", () => {
+    // Regression test for the alignment bug Task 3 hit on TrendBars: a dither
+    // BarChart lays bars out on d3's padded band scale, not evenly-spaced
+    // centers. The net dots must sit at the same fractional centers
+    // lib/trendBars.ts's bandCenters() derives from the chart's own scale,
+    // or the net lane drifts off the bars it describes.
+    render(<FlowBars points={points} />);
+    const centers = bandCenters(points.length);
+    expect(screen.getByTestId("net-dot-2026-05").style.left).toBe(`${centers[0].center * 100}%`);
+    expect(screen.getByTestId("net-dot-2026-06").style.left).toBe(`${centers[1].center * 100}%`);
   });
 
   it("renders nothing for an empty series", () => {
