@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "../../components/ui/PixelIcon";
 import { getRates, putRate, deleteRate } from "../../api/client";
 import { parseRateForm } from "../../lib/rates";
 import { Button } from "../../components/ui/Button";

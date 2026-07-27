@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Field";
+import { ArrowLeft, ArrowRight, ArrowUp, ArrowDown, type PixelIconType } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import {
@@ -11,11 +12,11 @@ import {
   type SwipeDirection,
 } from "../../lib/swipe";
 
-const SWIPE_DIRS: Record<SwipeDirection, { arrow: string; word: string }> = {
-  left: { arrow: "←", word: "Left" },
-  right: { arrow: "→", word: "Right" },
-  up: { arrow: "↑", word: "Up" },
-  down: { arrow: "↓", word: "Down" },
+const SWIPE_DIRS: Record<SwipeDirection, { Icon: PixelIconType; word: string }> = {
+  left: { Icon: ArrowLeft, word: "Left" },
+  right: { Icon: ArrowRight, word: "Right" },
+  up: { Icon: ArrowUp, word: "Up" },
+  down: { Icon: ArrowDown, word: "Down" },
 };
 
 export function SwipePage({ onClose }: { onClose: () => void }) {
@@ -47,10 +48,10 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
           {(["left", "right", "up", "down"] as const).map((dir) => {
             const current = swipeCfg[dir];
             const value = current.statusOverride === "transfer" ? "transfer" : current.bucket ?? "";
-            const { arrow, word } = SWIPE_DIRS[dir];
+            const { Icon, word } = SWIPE_DIRS[dir];
             return (
               <div key={dir} className="flex items-center gap-3">
-                <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2 text-sm" aria-hidden>{arrow}</span>
+                <span className="w-9 h-9 grid place-items-center rounded-lg bg-surface-2" aria-hidden><Icon size={16} /></span>
                 <span className="text-sm w-12">{word}</span>
                 <Select value={value} aria-label={`${word} swipe action`} onChange={(e) => setSwipeDir(dir, e.target.value)} className="flex-1">
                   <option value="want">Want</option>

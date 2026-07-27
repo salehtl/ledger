@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { X } from "../ui/PixelIcon";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import { SectionLabel } from "../ui/SectionLabel";
 import { bucketColor } from "../../lib/insights";

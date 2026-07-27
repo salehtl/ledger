@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight } from "../../components/ui/PixelIcon";
 import { getAccounts, getJSON, getProjects, getRates } from "../../api/client";
 import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
 import { Switch } from "../../components/ui/Switch";
@@ -198,7 +198,7 @@ export function SettingsHub({
         <HubRow label="Clear all categorization" tone="danger" onClick={onClear} />
       </Group>
 
-      <p className="text-center text-xs text-muted pb-4">Icons by Lucide (ISC)</p>
+      <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
     </div>
   );
 }

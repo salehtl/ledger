@@ -1,5 +1,5 @@
 import type { InputHTMLAttributes, SelectHTMLAttributes } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { PixelIconType } from "./PixelIcon";
 
 // text-base (16px) is load-bearing: iOS Safari zooms the viewport onto any
 // focused control whose font-size is below 16px. Never swap it for text-sm.
@@ -9,7 +9,7 @@ const BASE = "w-full min-h-11 py-2 pr-3 rounded-md border border-border text-bas
 const bg = (inset: boolean) => (inset ? "bg-surface-2" : "bg-surface");
 
 export function Input({ inset = false, icon: Icon, className = "", ...rest }:
-  { inset?: boolean; icon?: LucideIcon; className?: string } & InputHTMLAttributes<HTMLInputElement>) {
+  { inset?: boolean; icon?: PixelIconType; className?: string } & InputHTMLAttributes<HTMLInputElement>) {
   const control = (
     <input className={`${BASE} ${Icon ? "pl-9" : "pl-3"} ${bg(inset)} ${className}`} {...rest} />
   );

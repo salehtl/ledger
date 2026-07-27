@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ArrowLeft } from "../ui/PixelIcon";
 import type { Category, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
 import { Money } from "../Money";
@@ -55,7 +56,9 @@ export function DrillDownSheet({ target, txns, frozen, categories, onClose }: {
   return (
     <Dialog title={title} onClose={onClose}>
       {target.type === "bucket" && narrowed && (
-        <button aria-label="Back" className="text-sm text-fg mb-2" onClick={() => setNarrowed(null)}>← Back</button>
+        <button aria-label="Back" className="inline-flex items-center gap-1 text-sm text-fg mb-2" onClick={() => setNarrowed(null)}>
+          <ArrowLeft size={16} /> Back
+        </button>
       )}
       <p className="text-sm text-muted mb-3">{rows.length} transaction{rows.length === 1 ? "" : "s"} · <span className="tnum"><Money fils={-total} /></span></p>
 

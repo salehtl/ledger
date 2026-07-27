@@ -8,14 +8,14 @@ describe("PullToRefreshIndicator", () => {
     render(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
     const status = screen.getByRole("status", { name: /refreshing/i });
     expect(status).toBeInTheDocument();
-    expect(status.classList.contains("animate-spin")).toBe(true);
+    expect(status.classList.contains("spin-pixel")).toBe(true);
   });
 
   it("grows the overlay with pull distance and does not spin", () => {
     render(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
     const overlay = screen.getByTestId("ptr-indicator");
     expect(overlay).toHaveStyle({ height: "32px" });
-    expect(overlay.querySelector(".animate-spin")).toBeNull();
+    expect(overlay.querySelector(".spin-pixel")).toBeNull();
   });
 
   it("uses the threshold height while refreshing", () => {

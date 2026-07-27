@@ -20,7 +20,7 @@ import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, filtersActive, exportUrl, exportFilename, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
-import { AlertTriangle, ListOrdered, Search, Plus, Download, SlidersHorizontal, Tag, Archive, ArchiveRestore } from "lucide-react";
+import { AlertTriangle, ListOrdered, Search, Plus, Download, SlidersHorizontal, Tag, Archive, ArchiveRestore } from "../components/ui/PixelIcon";
 import { useTxnActions } from "../hooks/useTxnActions";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 import { fire } from "../lib/feedback";

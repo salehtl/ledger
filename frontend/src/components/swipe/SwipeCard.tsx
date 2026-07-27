@@ -1,6 +1,6 @@
 // frontend/src/components/swipe/SwipeCard.tsx
 import { useEffect, useRef, type CSSProperties } from 'react'
-import { Heart, Home, PiggyBank, ArrowLeftRight, type LucideIcon } from 'lucide-react'
+import { Heart, Home, PiggyBank, ArrowLeftRight, type PixelIconType } from '../ui/PixelIcon'
 import { formatFils, aedFils, nativeAmountTag } from '../../lib/money'
 import { accountLabel, reviewReason } from '../../lib/reviewMeta'
 import type { Txn } from '../../api/types'
@@ -15,7 +15,7 @@ import {
 import { useSwipeGesture } from '../../hooks/useSwipeGesture'
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion'
 
-export const SWIPE_ICONS: Record<string, LucideIcon> = { Heart, Home, PiggyBank, ArrowLeftRight }
+export const SWIPE_ICONS: Record<string, PixelIconType> = { Heart, Home, PiggyBank, ArrowLeftRight }
 
 // Pixel values the card animates to on exit
 const EXIT: Record<SwipeDirection, { x: number; y: number; rot: number }> = {
@@ -100,7 +100,7 @@ export function SwipeCard({
   const rot = exit ? exit.rot : dx * 0.04
 
   const color = action ? actionColor(action) : null
-  const Icon: LucideIcon | null = action ? (SWIPE_ICONS[action.icon] ?? Heart) : null
+  const Icon: PixelIconType | null = action ? (SWIPE_ICONS[action.icon] ?? Heart) : null
 
   const date = new Date(txn.PostedAt).toLocaleDateString('en-AE', {
     month: 'short',
