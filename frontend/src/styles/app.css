@@ -49,6 +49,16 @@
   --color-rose:  #c5646e;
   --color-slate: #76767e;
 
+  /* A second, deeper step per hue — separated on lightness, the axis that
+     survives red-green colour blindness. Projects draw from all twelve; the
+     bucket aliases below only ever use the base steps. */
+  --color-azure-deep: #003c6c;
+  --color-amber-deep: #855405;
+  --color-lilac-deep: #51317c;
+  --color-sage-deep:  #0d6d32;
+  --color-rose-deep:  #9a3d49;
+  --color-slate-deep: #515159;
+
   /* Buckets alias the palette rather than repeating a hex: a bucket and a
      project painted "amber" must be the same amber, and the only way to
      guarantee that is for one of them not to hold a value. Restoring these
@@ -57,7 +67,8 @@
   --color-need:     var(--color-amber);
   --color-want:     var(--color-lilac);
   --color-save:     var(--color-sage);
-  --color-transfer: var(--color-slate);
+  /* A transfer is a real destination, not an "other" — it gets a hue. */
+  --color-transfer: var(--color-azure);
 
   /* shadcn token names, aliased onto our palette — dither-kit's vendored chrome
      (tooltip, axes, grid) is written against these. */
@@ -242,6 +253,15 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-sage:  #53a768;
     --color-rose:  #cc6a74;
     --color-slate: #7f7f87;
+
+    /* On near-black the base is already the dark end, so the second step goes
+       lighter — a deeper one would collapse into the ground. */
+    --color-azure-deep: #4f94d7;
+    --color-amber-deep: #eaa858;
+    --color-lilac-deep: #a486d9;
+    --color-sage-deep:  #76ca89;
+    --color-rose-deep:  #f28c95;
+    --color-slate-deep: #a0a0a9;
 
     --color-foreground: #ecebe8;
     --color-muted-foreground: #8b8b8f;

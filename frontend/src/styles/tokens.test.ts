@@ -46,7 +46,7 @@ describe("palette tokens", () => {
     expect(declared(LIGHT_CSS, "need")).toBe("var(--color-amber)");
     expect(declared(LIGHT_CSS, "want")).toBe("var(--color-lilac)");
     expect(declared(LIGHT_CSS, "save")).toBe("var(--color-sage)");
-    expect(declared(LIGHT_CSS, "transfer")).toBe("var(--color-slate)");
+    expect(declared(LIGHT_CSS, "transfer")).toBe("var(--color-azure)");
   });
 
   it("does not re-declare the bucket aliases in the dark block", () => {
@@ -78,7 +78,7 @@ describe("bucket contrast", () => {
       [PALETTE_DARK, "#141416"],
     ];
     for (const [table, ground] of grounds) {
-      for (const name of ["amber", "lilac", "sage", "slate"] as DitherColor[]) {
+      for (const name of ["amber", "lilac", "sage", "azure"] as DitherColor[]) {
         expect(contrast(hex(table[name].fill), ground), `${name} on ${ground}`)
           .toBeGreaterThanOrEqual(3);
       }

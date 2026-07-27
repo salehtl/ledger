@@ -105,7 +105,7 @@ export function ProjectForm({
 
         <div>
           <p className="text-sm mb-1.5">Color</p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {COLOR_PRESETS.map((c) => (
               <button
                 key={c}
