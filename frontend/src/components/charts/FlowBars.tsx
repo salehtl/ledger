@@ -6,8 +6,20 @@ import { formatFils } from "../../lib/money";
 import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
 import { Tooltip } from "../dither-kit/tooltip";
+import { ReferenceLine } from "../dither-kit/reference-line";
+import type { ChartConfig } from "../dither-kit/chart-context";
+import { rgb, seedOfColor } from "../dither-kit/palette";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 import { ActiveBandHighlight } from "./ActiveBandHighlight";
+
+// Module constant: a fresh object literal here would give the chart a new
+// `config` identity every render, busting configKeys → bands → the whole
+// context value and re-playing the 900ms entrance wave on unrelated updates
+// (this app invalidates queries from SSE constantly).
+const FLOW_CONFIG: ChartConfig = {
+  income: { label: "In", color: "green" },
+  spent: { label: "Out", color: "grey" },
+};
 
 const NET_TEXT: Record<NetSign, string> = {
   pos: "text-[var(--color-good)]",
@@ -55,12 +67,15 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
 
   return (
     <div>
+      {/* Swatches resolve from the *same* palette seeds the bars paint with
+          (FLOW_CONFIG), not hand-picked CSS vars — the two drifted apart once
+          already. `dark` above is the re-render trigger on an OS theme flip. */}
       <div className="mb-3 flex items-center gap-4 text-[11px] text-muted">
         <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ background: "var(--color-good)" }} aria-hidden /> In
+          <span data-testid="flow-legend-income" className="h-2 w-2 rounded-full" style={{ background: rgb(seedOfColor(FLOW_CONFIG.income.color).fill) }} aria-hidden /> In
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ background: "var(--color-fg)", opacity: 0.4 }} aria-hidden /> Out
+          <span data-testid="flow-legend-spent" className="h-2 w-2 rounded-full" style={{ background: rgb(seedOfColor(FLOW_CONFIG.spent.color).fill) }} aria-hidden /> Out
         </span>
       </div>
 
@@ -80,15 +95,16 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
           <BarChart
             data={rows}
             stackType="stacked"
-            config={{
-              income: { label: "In", color: "green" },
-              spent: { label: "Out", color: "grey" },
-            }}
+            config={FLOW_CONFIG}
             bloom="aura"
             margins={{ left: 0, right: 0, top: 4, bottom: 4 }}
           >
             <Bar dataKey="income" variant="gradient" />
             <Bar dataKey="spent" variant="gradient" />
+            {/* The zero baseline. Not the vertical midpoint: the y domain is
+                [−maxOut, +maxIn], so where this line sits *is* the reading —
+                high line = a heavy-spending stretch, low line = a saving one. */}
+            <ReferenceLine y={0} />
             <Tooltip labelKey="label" valueFormatter={(v) => formatFils(Math.abs(v))} />
           </BarChart>
         </div>
