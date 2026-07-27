@@ -162,4 +162,23 @@ describe("Home", () => {
     await screen.findByText("SPINNEYS");
     expect(screen.queryByText(/project spend/i)).not.toBeInTheDocument();
   });
+
+  it("paints each bucket bar in its own hue, matching the swatch beside its label", async () => {
+    wrap();
+    const fillOf = async (label: string) => {
+      const bar = await screen.findByLabelText(label);
+      return (bar.querySelector("[data-fill]") as HTMLElement).style.background;
+    };
+    expect(await fillOf("Needs budget used")).toBe("var(--color-amber)");
+    expect(await fillOf("Wants budget used")).toBe("var(--color-lilac)");
+    expect(await fillOf("Savings budget used")).toBe("var(--color-sage)");
+  });
+
+  it("leaves the hero total bar monochrome — it sums all three buckets, so no single bucket hue is honest for it", async () => {
+    wrap();
+    const hero = await screen.findByLabelText("Total budget used");
+    const fill = hero.querySelector("[data-fill]") as HTMLElement;
+    expect(fill.style.background).toBe("");
+    expect(fill.className).toContain("bg-hero-fg");
+  });
 });
