@@ -7,6 +7,17 @@ export function totalBudget(buckets: BucketSummary[]): number {
   return buckets.reduce((s, b) => s + b.target, 0);
 }
 
+/**
+ * Bucket names that have reached or passed their target for the period a
+ * `BucketSummary[]` describes — the same `pct_used >= 1.0` threshold
+ * `ProgressBar` uses for its own solid-fill "at or over budget" reading, so
+ * the two surfaces agree on what "over" means. Feeds `bucketDensity`'s
+ * `isOverBudget` param wherever a bucket bar needs to make the same call.
+ */
+export function overBudgetBuckets(buckets: BucketSummary[]): Set<string> {
+  return new Set(buckets.filter((b) => b.pct_used >= 1.0).map((b) => b.bucket));
+}
+
 export function bucketColor(bucket: string): string {
   switch (bucket) {
     case "need": return "var(--color-need)";

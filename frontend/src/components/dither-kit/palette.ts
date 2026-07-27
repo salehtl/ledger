@@ -50,24 +50,24 @@ const dark = (fill: Rgb): Seed => ({
 
 /** Light theme — values are the `@theme` tokens in styles/app.css. */
 export const PALETTE_LIGHT: Record<DitherColor, Seed> = {
-  blue: light([19, 115, 217]),    // --color-need   #1373d9
-  purple: light([123, 53, 184]),  // --color-want   #7b35b8
-  green: light([46, 125, 82]),    // --color-save   #2e7d52
-  red: light([220, 38, 38]),      // --color-bad    #dc2626
-  orange: light([180, 83, 9]),    // --color-warn   #b45309
-  pink: light([0, 79, 155]),      // --color-accent #004f9b
-  grey: light([69, 71, 74]),      // --color-muted  #45474a
+  blue: light([22, 22, 26]),      // --color-need   ink
+  purple: light([22, 22, 26]),    // --color-want   ink
+  green: light([22, 22, 26]),     // --color-save   ink
+  red: light([184, 51, 29]),      // --color-bad    #b8331d
+  orange: light([94, 94, 99]),    // --color-warn   #5e5e63
+  pink: light([201, 61, 38]),     // --color-accent #c93d26
+  grey: light([94, 94, 99]),      // --color-muted  #5e5e63
 };
 
 /** Dark theme — values are the prefers-color-scheme: dark overrides. */
 export const PALETTE_DARK: Record<DitherColor, Seed> = {
-  blue: dark([150, 205, 255]),    // --color-need   #96cdff
-  purple: dark([199, 166, 232]),  // --color-want   #c7a6e8
-  green: dark([142, 231, 170]),   // --color-save   #8ee7aa
-  red: dark([252, 165, 165]),     // --color-bad    #fca5a5
-  orange: dark([254, 231, 138]),  // --color-warn   #fee78a
-  pink: dark([190, 230, 255]),    // --color-accent #bee6ff
-  grey: dark([197, 198, 204]),    // --color-muted  #c5c6cc
+  blue: dark([236, 235, 232]),    // --color-need   ink
+  purple: dark([236, 235, 232]),  // --color-want   ink
+  green: dark([236, 235, 232]),   // --color-save   ink
+  red: dark([240, 134, 111]),     // --color-bad    #f0866f  (unchanged)
+  orange: dark([139, 139, 143]),  // --color-warn   #8b8b8f
+  pink: dark([201, 61, 38]),      // --color-accent #c93d26
+  grey: dark([139, 139, 143]),    // --color-muted  #8b8b8f
 };
 
 // Theme tracking. The canvas paints raw RGB, so it cannot inherit a CSS var —

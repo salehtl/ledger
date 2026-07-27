@@ -1,45 +1,61 @@
 @import "tailwindcss";
 
-/* Design tokens (Tailwind v4 CSS-first config). Spending-app palette:
-   neutral surfaces, one indigo accent, semantic + per-bucket colors. */
+/* Design tokens (Tailwind v4 CSS-first config). */
 @theme {
-  --color-bg: #fcf8f8;          /* warm off-white surface */
-  --color-surface: #ffffff;     /* card, one tonal step up from bg */
-  --color-surface-2: #f1edec;   /* inset surfaces: segmented track, chips */
-  --color-border: #c5c6ca;      /* outlineVariant — hairlines, used sparingly */
-  --color-fg: #1c1b1b;          /* onSurface */
-  --color-muted: #45474a;       /* onSurfaceVariant */
+  /* Two-color press: paper, ink, one vermilion spot. Named roles are kept from
+     the previous Material palette so no utility class has to change; only the
+     values are new. See docs/superpowers/specs/2026-07-27-ui-overhaul-design.md */
+  --color-bg: #f2f1ef;          /* paper */
+  --color-surface: #f2f1ef;     /* same paper — the tonal ladder is gone */
+  --color-surface-2: #e3e2de;   /* track: progress/dither backing only */
+  --color-border: #d6d5d1;      /* hairline rule */
+  --color-fg: #16161a;          /* ink */
+  --color-muted: #5e5e63;       /* ink, low emphasis */
 
-  --color-accent: #004f9b;      /* Thunderbird primary blue */
+  --color-accent: #c93d26;      /* the one spot ink, as a FILL. 5.03:1 with white. */
   --color-accent-fg: #ffffff;
 
-  --color-hero: #004f9b;        /* branded hero panel fill */
-  --color-hero-fg: #ffffff;
+  --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
+  --color-hero-fg: #f2f1ef;
 
-  --color-need: #1373d9;        /* blue */
-  --color-want: #7b35b8;        /* tertiary purple */
-  --color-save: #2e7d52;        /* green */
+  /* Bucket hues are retired — buckets are encoded by dither density (Task 9).
+     These resolve to ink so any un-migrated call site degrades to legible
+     monochrome rather than to an undefined colour. */
+  --color-need: #16161a;
+  --color-want: #16161a;
+  --color-save: #16161a;
 
-  --color-good: #047857;        /* success — emerald, AA on white (5.5:1) */
-  --color-warn: #b45309;        /* warning — burnt amber, AA on white (5.0:1) */
-  --color-bad: #dc2626;         /* error — vivid red, AA on white (4.8:1) */
+  /* Semantic colours are retired — over-budget is a texture change. `bad` keeps
+     a red because negative money still reads as red in .money-neg, and that is
+     the one semantic use that survives. */
+  --color-good: #16161a;
+  /* Warn is full-strength ink, not muted — a contrast audit found it was
+     byte-identical to --color-muted, so every warning rendered *quieter* than
+     body text. This design moves meaning to the label, not to a hue: a
+     warning is emphasised by being full-strength ink (same value as
+     --color-fg) rather than by a warning colour. Never a new hue, never the
+     rationed spot ink. */
+  --color-warn: #16161a;
+  /* Negative money prints in the spot ink's TEXT register, not its fill. On
+     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
+     a fill — --color-accent is the fill. */
+  --color-bad: #b8331d;
 
-  /* shadcn token names, aliased onto our palette — dither-kit's vendored
-     chrome (tooltip, axes, grid) is written against these. Values mirror the
-     tokens above; no new colors are introduced. */
-  --color-foreground: #1c1b1b;            /* = --color-fg */
-  --color-muted-foreground: #45474a;      /* = --color-muted */
-  --color-popover: #ffffff;               /* = --color-surface */
-  --color-popover-foreground: #1c1b1b;    /* = --color-fg */
+  /* shadcn token names, aliased onto our palette — dither-kit's vendored chrome
+     (tooltip, axes, grid) is written against these. */
+  --color-foreground: #16161a;
+  --color-muted-foreground: #5e5e63;
+  --color-popover: #f2f1ef;
+  --color-popover-foreground: #16161a;
 
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  /* Rounded numeric face — kept only for the swipe-deck amount. */
-  --font-rounded: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
-  /* Monospaced figures — money, counts, percentages (applied via .tnum). */
-  --font-mono: "Roboto Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Monospaced figures — money, counts, percentages, labels, dates (via .tnum
+     and directly). Geist Mono does far more than figures in this design: every
+     non-prose string is mono. */
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 
-  --radius-card: 8px;           /* Material "large", sharpened */
-  --radius-sheet: 12px;         /* Material "extra-large" — bottom sheets, sharpened */
+  --radius-card: 3px;           /* print-tight; was 8px Material "large" */
+  --radius-sheet: 12px;         /* sheets stay iOS-round for drag-to-dismiss */
 }
 
 /* Motion tokens — strong custom easings (Emil Kowalski's craft bar). Built-in
@@ -90,8 +106,8 @@ html { -webkit-tap-highlight-color: transparent; }
    outranks) only catches future controls that forget. */
 input, select, textarea { font-size: max(16px, 1rem); }
 
-/* Material tonal elevation. On light it's a soft drop shadow; on dark the
-   shadow is near-invisible and the lighter surface tone provides separation. */
+/* The one shadow in the app. A sheet must read as above the page; nothing else
+   is elevated — separation everywhere else is a 1px --color-border hairline. */
 .shadow-1 {
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.10);
 }
@@ -119,6 +135,16 @@ input, select, textarea { font-size: max(16px, 1rem); }
 .money-neg { color: var(--color-bad); }
 .money-zero { color: var(--color-muted); }
 
+/* A CSS stand-in for the canvas dither, for DOM fills (ProgressBar). Two
+   alpha tiers on a 2px grid, matching dither-paint's OFF_TIER relationship —
+   a family resemblance to the canvas, not a pixel match. */
+.dither-mask {
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  -webkit-mask-size: 2px 2px;
+  mask-size: 2px 2px;
+}
+
 /* ---- Swipe Mode (edge-targeting deck) ---- */
 /* New card rises as the one above it flies off. */
 @keyframes swipe-card-in {
@@ -141,33 +167,41 @@ input, select, textarea { font-size: max(16px, 1rem); }
 
 /* ---- Dark theme (automatic, follows the OS) ----
    Overrides the same CSS vars the light @theme set; utilities pick these up
-   with no markup changes. Values = Thunderbird Android dark color scheme. */
+   with no markup changes. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #131314;
-    --color-surface: #201f20;
-    --color-surface-2: #2a2a2b;
-    --color-border: #44474c;
-    --color-fg: #e5e2e3;
-    --color-muted: #c5c6cc;
+    --color-bg: #141416;
+    --color-surface: #141416;
+    --color-surface-2: #232326;
+    --color-border: #2b2b2f;
+    --color-fg: #ecebe8;
+    --color-muted: #8b8b8f;
 
-    --color-accent: #bee6ff;
-    --color-accent-fg: #003549;
+    /* Spot stays #c93d26 in dark, 5.03:1 behind white — legal as a fill,
+       under AA as text. Never use it for a label in dark. */
+    --color-accent: #c93d26;
+    --color-accent-fg: #ffffff;
 
-    --color-hero: #00344a;
-    --color-hero-fg: #bee6ff;
+    --color-hero: #ecebe8;
+    --color-hero-fg: #141416;
 
-    --color-need: #96cdff;
-    --color-want: #c7a6e8;
-    --color-save: #8ee7aa;
+    --color-need: #ecebe8;
+    --color-want: #ecebe8;
+    --color-save: #ecebe8;
 
-    --color-good: #8ee7aa;
-    --color-warn: #fee78a;
-    --color-bad: #fca5a5;
+    --color-good: #ecebe8;
+    /* Same ruling as light: full-strength ink (--color-fg), not muted. */
+    --color-warn: #ecebe8;
+    /* The spot ink has two values in dark, the way a press runs a tint of the
+       same plate: #c93d26 is the FILL (behind white), #f0866f is the TEXT tint.
+       .money-neg paints negative amounts with this token, and #c93d26 would be
+       5.03:1 here — sub-AA for text. #f0866f is 7.31:1. Never widen this to
+       fills. Unchanged by the Task 12 contrast audit. */
+    --color-bad: #f0866f;
 
-    --color-foreground: #e5e2e3;
-    --color-muted-foreground: #c5c6cc;
-    --color-popover: #201f20;
-    --color-popover-foreground: #e5e2e3;
+    --color-foreground: #ecebe8;
+    --color-muted-foreground: #8b8b8f;
+    --color-popover: #141416;
+    --color-popover-foreground: #ecebe8;
   }
 }

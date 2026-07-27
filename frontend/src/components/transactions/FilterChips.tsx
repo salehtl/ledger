@@ -84,7 +84,7 @@ export function FilterChips({ filters, categories, txns, onChange }: {
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
             className={`flex items-center gap-1 px-3.5 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors press ${
-              count > 0 ? "bg-accent/10 text-accent" : "bg-surface-2 text-muted"
+              count > 0 ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted"
             }`}
           >
             {d.label}{count > 0 ? ` · ${count}` : ""}

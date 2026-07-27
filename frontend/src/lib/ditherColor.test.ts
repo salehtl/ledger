@@ -1,4 +1,4 @@
-import { bucketDither, categoryDither, CATEGORY_DITHER } from "./ditherColor";
+import { bucketDither, bucketDensity, categoryDither, CATEGORY_DITHER } from "./ditherColor";
 import { CATEGORY_PALETTE } from "./insights";
 
 describe("bucketDither", () => {
@@ -10,6 +10,28 @@ describe("bucketDither", () => {
 
   it("falls back to grey for anything else", () => {
     expect(bucketDither("mystery")).toBe("grey");
+  });
+});
+
+describe("bucketDensity", () => {
+  it("maps each budget bucket to its signature density: needs densest, wants medium, saving sparsest", () => {
+    expect(bucketDensity("need")).toBe("dense");
+    expect(bucketDensity("want")).toBe("medium");
+    expect(bucketDensity("saving")).toBe("sparse");
+  });
+
+  it("falls back to medium (zero bias) for anything else", () => {
+    expect(bucketDensity("mystery")).toBe("medium");
+  });
+
+  it("overrides every bucket's density to solid when isOverBudget is true", () => {
+    expect(bucketDensity("need", true)).toBe("solid");
+    expect(bucketDensity("want", true)).toBe("solid");
+    expect(bucketDensity("saving", true)).toBe("solid");
+  });
+
+  it("defaults isOverBudget to false, so an un-migrated call site is unaffected", () => {
+    expect(bucketDensity("need")).toBe(bucketDensity("need", false));
   });
 });
 

@@ -10,7 +10,23 @@ import { rgb, seedOfColor, type DitherColor } from "../dither-kit/palette";
 import { segmentBounds } from "../../lib/ditherFill";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 
-export type DitherSegment = { value: number; color: DitherColor };
+/**
+ * How the 50/30/20 buckets are told apart now that they share one ink: the
+ * threshold the Bayer matrix is compared against is biased per segment. Positive
+ * bias lights more cells (denser), negative lights fewer (sparser), and a bias
+ * of 1 clears every threshold so the fill goes solid — which is how over-budget
+ * reads, matching ProgressBar.
+ */
+export type Density = "dense" | "medium" | "sparse" | "solid";
+
+export const DENSITY_BIAS: Record<Density, number> = {
+  dense: 0.22,
+  medium: 0,
+  sparse: -0.22,
+  solid: 1,
+};
+
+export type DitherSegment = { value: number; color: DitherColor; density?: Density };
 
 /**
  * A horizontal dithered magnitude bar. dither-kit's charts are vertical-only,
@@ -54,7 +70,7 @@ export function DitherFill({
 
   // Segments arrive as a fresh array each render; key the effect on their
   // content so a parent re-render doesn't repaint the canvas needlessly.
-  const sig = segments.map((s) => `${s.color}:${s.value}`).join("|");
+  const sig = segments.map((s) => `${s.color}:${s.value}:${s.density ?? "medium"}`).join("|");
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -76,13 +92,15 @@ export function DitherFill({
       const bounds = segmentBounds(segments.map((s) => s.value), max, cols);
       segments.forEach((seg, i) => {
         const seed = seedOfColor(seg.color);
+        const bias = DENSITY_BIAS[seg.density ?? "medium"];
         const [x0, x1] = bounds[i];
         for (let x = x0; x < x1; x++) {
           for (let y = 0; y < rows; y++) {
             // Ramp density from the bottom up, matching the charts' gradient
-            // fill, then threshold it through the shared Bayer matrix.
+            // fill, then threshold it through the shared Bayer matrix — offset
+            // by this segment's density bias.
             const t = rows > 1 ? y / (rows - 1) : 1;
-            const on = t > BAYER[y % 4][x % 4];
+            const on = t + bias > BAYER[y % 4][x % 4];
             c.fillStyle = rgb(seed.fill, 1, on ? 1 : OFF_TIER);
             c.fillRect(x, y, 1, 1);
           }

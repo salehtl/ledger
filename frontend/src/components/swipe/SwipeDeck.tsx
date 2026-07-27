@@ -275,9 +275,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       <div className="flex items-end justify-between mb-3 px-1">
         <div>
           <p className="text-[11px] uppercase tracking-[0.18em] text-muted mb-0.5">Remaining</p>
-          <p className="font-rounded font-bold text-fg leading-none" style={{ fontSize: '2rem' }}>{remaining}</p>
+          <p className="tnum font-bold text-fg leading-none" style={{ fontSize: '2rem' }}>{remaining}</p>
         </div>
-        <p className="text-sm text-muted mb-1 tabular-nums">{state.index} of {total} sorted</p>
+        <p className="tnum text-sm text-muted mb-1">{state.index} of {total} sorted</p>
       </div>
       <div className="h-1.5 bg-border rounded-full overflow-hidden mb-4">
         <div
@@ -341,7 +341,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
       {current && current.Direction === 'credit' && (
         <button
-          className="mx-auto mt-2 text-sm font-medium text-accent"
+          className="mx-auto mt-2 text-sm font-medium text-fg"
           onClick={() => setLinkOpen(true)}
         >
           This is a refund — link the purchase

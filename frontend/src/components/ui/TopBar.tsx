@@ -16,7 +16,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
   return (
     <header className="shrink-0 bg-bg pt-[env(safe-area-inset-top)]">
       <div className="min-h-[48px] px-4 flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold truncate">{title}</h1>
+        <h1 className="text-base font-semibold tracking-[-0.015em] truncate">{title}</h1>
         {showScope && (
           <div className="flex items-center gap-0.5">
             {isMonth && (
@@ -31,7 +31,7 @@ export function TopBar({ title, scope, onScopeChange, showScope }: {
               onClick={() => setOpen(true)}
               aria-haspopup="dialog"
               aria-expanded={open}
-              className="min-h-11 px-3 py-1.5 rounded-md text-sm font-medium bg-surface-2 text-fg truncate press"
+              className="min-h-11 px-3 py-1.5 rounded-md font-mono text-[10px] font-medium uppercase tracking-[0.12em] bg-surface-2 text-fg truncate press"
             >
               {scopeLabel(scope)}
             </button>

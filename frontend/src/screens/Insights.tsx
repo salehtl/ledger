@@ -15,7 +15,7 @@ import { DrillDownSheet, type DrillTarget } from "../components/insights/DrillDo
 import { SearchSheet } from "../components/insights/SearchSheet";
 import {
   trendSeries, trailingPeriods, currentPeriod, monthLabel,
-  categoryDeltas, withShare, bucketComparison, topMovers, savingsRate,
+  categoryDeltas, withShare, bucketComparison, topMovers, savingsRate, overBudgetBuckets,
 } from "../lib/insights";
 import { type Lens, type BreakdownRow, bucketRows, categoryRows, merchantRows } from "../lib/lens";
 import { addMonth, insightsFocus, DEFAULT_SCOPE, type Scope } from "../lib/scope";
@@ -59,13 +59,18 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const curData = cur.data ?? [];
   const prevData = prev.data ?? [];
   const total = curData.reduce((s, c) => s + c.spent, 0);
+  // Buckets at or over target for the focus month — same `summary` query the
+  // hero net/income figures already use, just not previously threaded down to
+  // the bucket bars. Feeds `bucketRows`/`ComparativeSummary` so their density
+  // agrees with `ProgressBar`'s solid-at-`pct >= 1.0` reading on Home.
+  const overBudget = useMemo(() => overBudgetBuckets(summary.data?.buckets ?? []), [summary.data]);
 
   const rows = useMemo<BreakdownRow[]>(() => {
-    if (lens === "buckets") return bucketRows(bucketComparison(curData, prevData), total);
+    if (lens === "buckets") return bucketRows(bucketComparison(curData, prevData), total, overBudget);
     if (lens === "merchants") return merchantRows(txns, total);
     const deltas = categoryDeltas(curData, prevData);
     return categoryRows(withShare([...deltas].sort((a, b) => b.spent - a.spent), total));
-  }, [lens, curData, prevData, txns, total]);
+  }, [lens, curData, prevData, txns, total, overBudget]);
 
   // Memoized (and hoisted above the early returns, so it stays a hook): this is
   // FlowBars' `data`, and dither-kit restarts the 900ms entrance wave whenever
@@ -100,7 +105,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
         <Search size={16} aria-hidden /> Search transactions…
       </button>
 
-      <ComparativeSummary label={label} note={focus.note} net={savings.net} savings={savings} buckets={buckets} onSelectBucket={(bucket) => setDrill({ type: "bucket", bucket })} />
+      <ComparativeSummary label={label} note={focus.note} net={savings.net} savings={savings} buckets={buckets} overBudgetBuckets={overBudget} onSelectBucket={(bucket) => setDrill({ type: "bucket", bucket })} />
 
       <div>
         <SectionLabel className="mb-1.5">Analyze by</SectionLabel>

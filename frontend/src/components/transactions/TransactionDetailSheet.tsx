@@ -53,7 +53,7 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onStatus, o
         <span aria-hidden>·</span>
         <span>{sourceLabel(txn.Source)}</span>
         {native && <><span aria-hidden>·</span><span className="tnum">{native}</span></>}
-        {aed === null && <Pill tone="warn">no AED rate</Pill>}
+        {aed === null && <Pill>no AED rate</Pill>}
         {txn.RefundOfID != null && <Pill tone="muted">refund</Pill>}
       </div>
 
