@@ -7,7 +7,10 @@ import type { DitherColor } from "../components/dither-kit/palette";
  * RGB. The type alias keeps the two from drifting apart in name: adding a hue
  * to the palette without adding it here is a type error.
  */
-export const PALETTE_NAMES = ["azure", "amber", "lilac", "sage", "rose", "slate"] as const;
+export const PALETTE_NAMES = [
+  "azure", "amber", "lilac", "sage", "rose", "slate",
+  "azure-deep", "amber-deep", "lilac-deep", "sage-deep", "rose-deep", "slate-deep",
+] as const;
 
 export type PaletteName = (typeof PALETTE_NAMES)[number];
 

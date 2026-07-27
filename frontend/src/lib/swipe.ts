@@ -66,7 +66,7 @@ const BUCKET_SEED: Record<BucketKey, Parameters<typeof seedOfColor>[0]> = {
   need: bucketDither('need'),
   want: bucketDither('want'),
   saving: bucketDither('saving'),
-  transfer: 'slate', // not real spending — the neutral, as everywhere else
+  transfer: 'azure', // its own hue — a transfer is a real destination, not an "other"
 }
 
 const toHex = ([r, g, b]: Rgb) =>

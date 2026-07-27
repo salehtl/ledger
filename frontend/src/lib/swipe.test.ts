@@ -102,8 +102,13 @@ describe('loadSwipeConfig / saveSwipeConfig', () => {
 })
 
 describe("bucket colours", () => {
+  // configurable *and* writable: setup.ts re-defines window.matchMedia in a
+  // global beforeEach, and a non-configurable stub here silently poisons every
+  // test file that runs after this one — which is how this showed up as an
+  // order-dependent flake in an unrelated suite.
   const asTheme = (dark: boolean) =>
     Object.defineProperty(window, "matchMedia", {
+      configurable: true,
       writable: true,
       value: (q: string) => ({
         matches: dark && q.includes("dark"),

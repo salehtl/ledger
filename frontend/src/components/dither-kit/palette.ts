@@ -42,7 +42,17 @@ export type DitherColor =
   | "lilac"
   | "sage"
   | "rose"
-  | "slate";
+  | "slate"
+  // A second, deeper step per hue. Separated from its base on *lightness*,
+  // which is the axis that survives red-green colour blindness — a second
+  // chroma step would collapse. Twelve marks is enough for an open-ended
+  // project list without inventing hues a two-ink design can't carry.
+  | "azure-deep"
+  | "amber-deep"
+  | "lilac-deep"
+  | "sage-deep"
+  | "rose-deep"
+  | "slate-deep";
 
 export type Seed = { fill: Rgb; line: Rgb; star: Rgb };
 
@@ -87,6 +97,12 @@ export const PALETTE_LIGHT: Record<DitherColor, Seed> = {
   sage: light([64, 148, 87]),    // #409457  OKLCH L .60 C .124 h 150
   rose: light([197, 100, 110]),  // #c5646e  OKLCH L .62 C .124 h 15
   slate: light([118, 118, 126]), // #76767e  the neutral — "everything else"
+  "azure-deep": light([0, 60, 108]),   // #003c6c
+  "amber-deep": light([133, 84, 5]),   // #855405
+  "lilac-deep": light([81, 49, 124]),  // #51317c
+  "sage-deep": light([13, 109, 50]),   // #0d6d32
+  "rose-deep": light([154, 61, 73]),   // #9a3d49
+  "slate-deep": light([81, 81, 89]),   // #515159
 };
 
 /** Dark theme, on #141416. Same hues, re-stepped for the dark surface. */
@@ -97,6 +113,14 @@ export const PALETTE_DARK: Record<DitherColor, Seed> = {
   sage: dark([83, 167, 104]),    // #53a768  OKLCH L .66 C .124 h 150
   rose: dark([204, 106, 116]),   // #cc6a74  OKLCH L .64 C .124 h 15
   slate: dark([127, 127, 135]),  // #7f7f87  the neutral
+  // On near-black the base is already the dark end, so the second step goes
+  // *lighter* rather than deeper — a deeper one would collapse into the ground.
+  "azure-deep": dark([79, 148, 215]),  // #4f94d7
+  "amber-deep": dark([234, 168, 88]),  // #eaa858
+  "lilac-deep": dark([164, 134, 217]), // #a486d9
+  "sage-deep": dark([118, 202, 137]),  // #76ca89
+  "rose-deep": dark([242, 140, 149]),  // #f28c95
+  "slate-deep": dark([160, 160, 169]), // #a0a0a9
 };
 
 // Theme tracking. The canvas paints raw RGB, so it cannot inherit a CSS var —
