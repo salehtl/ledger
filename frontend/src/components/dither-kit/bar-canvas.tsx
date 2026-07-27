@@ -141,15 +141,6 @@ export function BarCanvas() {
       raf = requestAnimationFrame(draw)
       const s = state.current
       if (!s.ready) return
-      if (bloomCtx) {
-        const on =
-          s.bloom !== "off" &&
-          (!s.bloomOnHover || s.isMouseInChart || s.hovered)
-        if (on) {
-          bloomCtx.clearRect(0, 0, cols, rows)
-          bloomCtx.drawImage(canvas, 0, 0)
-        }
-      }
       if (s.revision !== lastRevision) {
         lastRevision = s.revision
         animStart = 0 // re-play the wave on data change / replay
@@ -189,6 +180,22 @@ export function BarCanvas() {
       if (!needsFill) return
       paint(prog)
       needsFill = false
+
+      // FORKED: upstream re-copied the main canvas into the bloom layer at the
+      // top of every frame, unconditionally — so a *static* chart dirtied a
+      // blurred, plus-lighter-composited layer 60×/s forever, and the
+      // compositor re-blurred it each time. Below the `needsFill` guard it runs
+      // only when the main canvas actually repainted, and it now copies the
+      // frame it belongs to rather than the previous one.
+      if (bloomCtx) {
+        const on =
+          s.bloom !== "off" &&
+          (!s.bloomOnHover || s.isMouseInChart || s.hovered)
+        if (on) {
+          bloomCtx.clearRect(0, 0, cols, rows)
+          bloomCtx.drawImage(canvas, 0, 0)
+        }
+      }
     }
 
     raf = requestAnimationFrame(draw)

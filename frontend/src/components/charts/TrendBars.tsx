@@ -1,11 +1,18 @@
+import { useMemo } from "react";
 import type { TrendPoint } from "../../lib/insights";
 import { trendRows, activeIndex, bandCenters } from "../../lib/trendBars";
 import { formatFils } from "../../lib/money";
 import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
 import { Tooltip } from "../dither-kit/tooltip";
+import type { ChartConfig } from "../dither-kit/chart-context";
 import { useDitherTheme } from "../../hooks/useDitherTheme";
 import { ActiveBandHighlight } from "./ActiveBandHighlight";
+
+// Module constant: a fresh object literal here would give the chart a new
+// `config` identity every render, busting configKeys → bands → the whole
+// context value and re-playing the 900ms entrance wave on unrelated updates.
+const TREND_CONFIG: ChartConfig = { spent: { label: "Spent", color: "grey" } };
 
 /**
  * Monthly spending, as dithered bars. dither-kit colors per *series*, not per
@@ -15,7 +22,9 @@ import { ActiveBandHighlight } from "./ActiveBandHighlight";
  */
 export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; activePeriod?: string }) {
   const dark = useDitherTheme();
-  const rows = trendRows(points);
+  // Memoized: `rows` is the chart's `data`, and dither-kit bumps its revision
+  // (which restarts the entrance animation) on a `data` *identity* change.
+  const rows = useMemo(() => trendRows(points), [points]);
   if (rows.length === 0) return null;
 
   const summary = rows.map((r) => `${r.label}: ${formatFils(r.spent)}`).join("; ");
@@ -37,7 +46,7 @@ export function TrendBars({ points, activePeriod }: { points: TrendPoint[]; acti
         <div className="absolute inset-0" aria-hidden>
           <BarChart
             data={rows}
-            config={{ spent: { label: "Spent", color: "grey" } }}
+            config={TREND_CONFIG}
             bloom="aura"
             // Left/right stay zero so the plot area equals this container's
             // full width — buildBandScale's own paddingOuter already gives

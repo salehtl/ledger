@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects } from "../api/client";
 import type { Summary, MonthlyTotal } from "../api/types";
@@ -52,8 +53,9 @@ export function Home({
   onOpenProjects?: () => void;
 }) {
   // The 6-month trend is always the trailing 6 real months (it matches the
-  // static /api/insights/trend), independent of the selected scope.
-  const periods = trailingPeriods(currentPeriod(), 6);
+  // static /api/insights/trend), independent of the selected scope. Memoized
+  // for identity, not cost: it feeds the `points` memo below.
+  const periods = useMemo(() => trailingPeriods(currentPeriod(), 6), []);
 
   // Summary aggregates over the whole scope: a single month, a from..to span, or
   // all time. Pace/projection/recent below stay scoped to the live current month.
@@ -78,6 +80,12 @@ export function Home({
   // Hook must be before early returns (React rules); gates on first populated recent list paint.
   const firstReveal = useFirstReveal(!summary.isPending && (summary.data?.recent.length ?? 0) > 0);
 
+  // Memoized (and hoisted above the early returns, so it stays a hook): this is
+  // TrendBars' `data`, and dither-kit restarts the 900ms entrance wave whenever
+  // `data` changes *identity*. Unmemoized, every SSE-driven query invalidation
+  // anywhere on this screen replayed the chart's entrance.
+  const points = useMemo(() => trendSeries(trend.data ?? [], periods), [trend.data, periods]);
+
   // isPending, not isLoading: with the persisted-cache provider, queries sit
   // pending-but-not-fetching while the cache restores, and isLoading is false
   // there even though data is still undefined.
@@ -94,7 +102,6 @@ export function Home({
   const heroStatus = paceStatus(spent, budget, projection);
   const heroTone = paceTone(heroStatus);
   const HeroIcon = VERDICT_ICON[heroStatus];
-  const points = trendSeries(trend.data ?? [], periods);
 
   return (
     <div className="space-y-4">
