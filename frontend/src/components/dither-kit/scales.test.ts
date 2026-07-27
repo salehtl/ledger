@@ -61,8 +61,10 @@ describe("computeBands · stacked", () => {
     const bottom = y(min);
     expect(bottom).toBeGreaterThan(0);
     expect(bottom).toBeLessThanOrEqual(100);
-    // Zero is not the vertical midpoint: the scale is asymmetric.
-    expect(y(0)).toBeGreaterThan(0);
+    // Zero is not the vertical midpoint, which is why <ReferenceLine y={0} />
+    // carries information: the domain is [-100000, +200000], so the zero
+    // baseline sits two thirds of the way down a 100px plot, not at 50.
+    expect(y(0)).toBeCloseTo(200 / 3, 6);
     expect(y(0)).toBeLessThan(bottom);
   });
 
