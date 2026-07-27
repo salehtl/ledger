@@ -29,7 +29,13 @@
      a red because negative money still reads as red in .money-neg, and that is
      the one semantic use that survives. */
   --color-good: #16161a;
-  --color-warn: #5e5e63;
+  /* Warn is full-strength ink, not muted — a contrast audit found it was
+     byte-identical to --color-muted, so every warning rendered *quieter* than
+     body text. This design moves meaning to the label, not to a hue: a
+     warning is emphasised by being full-strength ink (same value as
+     --color-fg) rather than by a warning colour. Never a new hue, never the
+     rationed spot ink. */
+  --color-warn: #16161a;
   /* Negative money prints in the spot ink's TEXT register, not its fill. On
      light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
      a fill — --color-accent is the fill. */
@@ -184,7 +190,8 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-save: #ecebe8;
 
     --color-good: #ecebe8;
-    --color-warn: #8b8b8f;
+    /* Same ruling as light: full-strength ink (--color-fg), not muted. */
+    --color-warn: #ecebe8;
     /* The spot ink has two values in dark, the way a press runs a tint of the
        same plate: #c93d26 is the FILL (behind white), #f0866f is the TEXT tint.
        .money-neg paints negative amounts with this token, and #c93d26 would be

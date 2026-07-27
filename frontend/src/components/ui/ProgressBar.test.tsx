@@ -43,6 +43,29 @@ describe("ProgressBar", () => {
 
   it("uses a translucent track on accent surfaces", () => {
     const { getByRole } = render(<ProgressBar pct={0.5} onAccent />);
-    expect((getByRole("progressbar") as HTMLElement).className).toContain("bg-white/25");
+    expect((getByRole("progressbar") as HTMLElement).className).toContain("bg-hero-fg/25");
+  });
+
+  it("onAccent never hardcodes white — the hero panel inverts between themes, so a literal bg-white fill is invisible in dark", () => {
+    const { getByRole } = render(<ProgressBar pct={0.6} pace={0.5} onAccent />);
+    const bar = getByRole("progressbar") as HTMLElement;
+    const fill = bar.querySelector("[data-fill]") as HTMLElement;
+    const marker = bar.querySelector("[data-pace]") as HTMLElement;
+    for (const el of [bar, fill, marker]) {
+      expect(el.className).not.toMatch(/bg-white\b/);
+    }
+    expect(bar.className).toContain("bg-hero-fg/25");
+    expect(fill.className).toContain("bg-hero-fg");
+    expect(marker.className).toContain("bg-hero-fg");
+  });
+
+  it("the non-accent (default) variant is unchanged by the onAccent fix", () => {
+    const { getByRole } = render(<ProgressBar pct={0.6} pace={0.5} />);
+    const bar = getByRole("progressbar") as HTMLElement;
+    const fill = bar.querySelector("[data-fill]") as HTMLElement;
+    const marker = bar.querySelector("[data-pace]") as HTMLElement;
+    expect(bar.className).toContain("bg-surface-2");
+    expect(fill.className).toContain("bg-fg");
+    expect(marker.className).toContain("bg-fg/70");
   });
 });
