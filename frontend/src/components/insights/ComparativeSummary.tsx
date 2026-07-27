@@ -7,7 +7,7 @@ import { bucketDither, bucketDensity } from "../../lib/ditherColor";
 
 export function ComparativeSummary({ label, note, net, savings, buckets, overBudgetBuckets = new Set(), onSelectBucket }: {
   label: string; note: string; net: number; savings: SavingsResult; buckets: BucketComparison[];
-  /** Bucket names at or over target for the period shown (see `overBudgetBuckets` in `lib/insights.ts`) — those bars render solid instead of their usual density. */
+  /** Bucket names at or over target for the period shown (see `overBudgetBuckets` in `lib/insights.ts`) — those bars render solid instead of dotted. */
   overBudgetBuckets?: Set<string>;
   onSelectBucket?: (bucket: string) => void;
 }) {

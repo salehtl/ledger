@@ -89,6 +89,18 @@ describe("DitherFill", () => {
     expect((container.querySelector("[data-fill]") as HTMLElement).style.width).toBe("0%");
   });
 
+  it("renders a nonzero segment at full width when max is zero", () => {
+    // segmentBounds (lib/ditherFill.ts) clamps max <= 0 to 1, so a segment with
+    // a positive value but a zero max fills the bar rather than vanishing.
+    // Reachable from ComparativeSummary, whose `max` is the sum of bucket
+    // spend: a negative bucket can cancel a positive one to a zero total while
+    // the positive bucket still survives the `b.spent > 0` filter.
+    const { container } = render(
+      <DitherFill segments={[{ value: 1, color: "azure" }]} max={0} />,
+    );
+    expect((container.querySelector("[data-fill]") as HTMLElement).style.width).toBe("100%");
+  });
+
   it("survives an empty segment list", () => {
     const { container } = render(<DitherFill segments={[]} max={100} />);
     expect(container.querySelectorAll("[data-fill]")).toHaveLength(0);
