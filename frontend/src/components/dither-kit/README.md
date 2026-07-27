@@ -96,7 +96,9 @@ Never `--overwrite` without re-applying the `palette.ts` fork.
 ## Notes
 
 - Bars are **vertical only**. Horizontal bars use `components/charts/DitherFill.tsx`,
-  which is built on this package's painting primitives.
+  which no longer consumes this package's painting primitives — it renders
+  CSS-masked DOM and imports only the `DitherColor` type, so a dither-kit
+  re-sync does not affect it.
 - The chrome components (`tooltip.tsx`, `x-axis.tsx`, `grid.tsx`) reference
   shadcn token names (`bg-popover`, `text-muted-foreground`, `stroke-border`).
   Those are aliased onto our palette in `src/styles/app.css`.

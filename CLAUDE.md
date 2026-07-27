@@ -98,8 +98,9 @@ registry (charts, v0.1.0) — not an npm package. Only `core` + `bar-chart` are
 installed. `palette.ts` is deliberately forked to carry the app's design tokens
 in light and dark tables; see `components/dither-kit/README.md` before running
 `shadcn add --diff` against it. dither-kit's bars are vertical-only, so
-horizontal magnitude bars use `components/charts/DitherFill.tsx`, built on the
-same painting primitives.
+horizontal magnitude bars use `components/charts/DitherFill.tsx`, which renders
+DOM masked with the `.dither-mask` CSS class (`styles/app.css`) — the same dot
+texture `components/ui/ProgressBar.tsx` uses — rather than canvas.
 
 `frontend/src/components/README.md` is the **UI component catalog**: every shared component's purpose plus when to use / not use it, and the mobile conventions (44px targets, 16px inputs, `.press` feedback, Dialog-only overlays). Check it before building UI; update it in the same commit whenever you add or change a shared component.
 
