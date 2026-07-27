@@ -30,6 +30,27 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   spinner only for non-list loads (Review deck) and inline waits.
 - **Component logic** that grows beyond trivial goes into a pure `lib/`
   function with its own test (see CLAUDE.md).
+- **Sans/Mono division of labour.** Geist Sans takes prose, merchant names and
+  screen titles — anything a person reads as a sentence. Geist Mono takes
+  *everything else*: every figure, date, category label, count, eyebrow, chart
+  axis and nav label. Geist alone is a neutral grotesk that reads as Inter by
+  another name; pushing Mono well past a "figures" role is what makes the app
+  feel technical and ledger-like. When a string's classification is unclear,
+  ask "would a person read this as a sentence?" — yes is Sans, no is Mono.
+  The scale:
+
+  | Role | Face | Size | Weight | Tracking |
+  | --- | --- | --- | --- | --- |
+  | Hero amount | Mono | 32px | 500 | -0.02em |
+  | Screen title | Sans | 16px | 600 | -0.015em |
+  | Row primary | Sans | 14px | 500 | -0.01em |
+  | Row meta | Mono | 10px | 400 | 0.04em |
+  | Eyebrow / label | Mono | 10px | 500 | 0.14em, uppercase |
+  | Nav label | Mono | 8px | 500 | 0.10em, uppercase |
+  | Button | Sans | 13px | 500 | normal |
+
+  The swipe deck's display eyebrows (`0.18em` tracking) are a deliberate,
+  recorded exception to the eyebrow row above — leave them.
 
 ## Primitives — `components/ui/`
 
@@ -99,8 +120,8 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   a deliberate exception) or needs custom glyphs (→ `insights/DeltaBadge`).
 
 ### SectionLabel
-- **Purpose:** the one eyebrow/section-heading style (11px, semibold,
-  uppercase, 0.08em tracking, muted). `as` picks `p`/`h2`/`legend`.
+- **Purpose:** the one eyebrow/section-heading style (mono, 10px, medium,
+  uppercase, 0.14em tracking, muted). `as` picks `p`/`h2`/`legend`.
 - **Exception:** the swipe deck's display eyebrows (0.18em tracking) are
   intentionally wider-set; leave them.
 
@@ -132,6 +153,9 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 - **Purpose:** app chrome. TopBar owns the page title + period scope stepper;
   BottomNav owns tab navigation (5 tabs, review badge). Screens never render
   their own h1 outside these.
+- **TopBar type:** the title is sans (screen-title row of the scale); the
+  period-scope stepper is mono micro-caps (eyebrow-weight, tighter tracking) —
+  it's data, not prose.
 - **BottomNav active tab:** marked by a 2px vermilion tick (`data-active-tick`)
   sitting on the top hairline, plus `text-fg` on the label — never a tinted
   pill behind the icon, never `text-accent` on the label (vermilion as text on

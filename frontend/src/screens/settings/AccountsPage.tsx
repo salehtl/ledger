@@ -83,7 +83,7 @@ export function AccountsPage({ onClose }: { onClose: () => void }) {
             {(accounts.data ?? []).map((a) => (
               <div key={a.id} className="flex items-center gap-2">
                 <span className="text-sm font-medium flex-1 truncate">{a.name}</span>
-                <span className="text-xs text-muted tabular-nums">•••• {a.last4}</span>
+                <span className="tnum text-xs text-muted">•••• {a.last4}</span>
                 <IconButton label={`Delete ${a.name}`} tone="danger" className="-mr-2" onClick={() => remove(a.id)}>
                   <Trash2 size={16} />
                 </IconButton>
