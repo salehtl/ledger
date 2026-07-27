@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { TrendBars } from "./TrendBars";
+import { bandCenters } from "../../lib/trendBars";
 import type { TrendPoint } from "../../lib/insights";
 
 const points: TrendPoint[] = [
@@ -29,5 +30,16 @@ describe("TrendBars", () => {
   it("renders nothing for an empty series", () => {
     const { container } = render(<TrendBars points={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("aligns each label with its bar's band center", () => {
+    // Regression test for a bug where the label row's flex layout drifted
+    // from the bars' d3 band-scale centers, worst at the first/last month.
+    // Pins the component's wiring to lib/trendBars.ts's bandCenters — the
+    // single source of truth the chart's own bars are laid out from.
+    render(<TrendBars points={points} />);
+    const centers = bandCenters(points.length);
+    expect(screen.getByTestId("trend-label-2026-05").style.left).toBe(`${centers[0].center * 100}%`);
+    expect(screen.getByTestId("trend-label-2026-06").style.left).toBe(`${centers[1].center * 100}%`);
   });
 });
