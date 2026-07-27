@@ -83,7 +83,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const buckets = bucketComparison(curData, prevData);
   const income = summary.data?.income ?? 0;
   const savings = savingsRate(income, total);
-  const label =`${monthLabel(focusMonth)} ${focusMonth.slice(0, 4)}`;
+  const label = `${monthLabel(focusMonth)} ${focusMonth.slice(0, 4)}`;
 
   const onDrill = (row: BreakdownRow) => {
     if (lens === "buckets") setDrill({ type: "bucket", bucket: row.key });
