@@ -24,23 +24,26 @@ describe("bucketDither", () => {
 });
 
 describe("bucketDensity", () => {
-  it("maps each budget bucket to its signature density: needs densest, wants medium, saving sparsest", () => {
-    expect(bucketDensity("need")).toBe("dense");
-    expect(bucketDensity("want")).toBe("medium");
-    expect(bucketDensity("saving")).toBe("sparse");
+  it("is dotted for every bucket — hue tells buckets apart, not texture", () => {
+    // Density used to encode bucket identity redundantly with hue. Once Home
+    // and Insights shared one dot texture that second channel went away;
+    // category and merchant rows had never carried it either.
+    expect(bucketDensity("need")).toBe("dotted");
+    expect(bucketDensity("want")).toBe("dotted");
+    expect(bucketDensity("saving")).toBe("dotted");
   });
 
-  it("falls back to medium (zero bias) for anything else", () => {
-    expect(bucketDensity("mystery")).toBe("medium");
+  it("is dotted for an unknown bucket", () => {
+    expect(bucketDensity("mystery")).toBe("dotted");
   });
 
-  it("overrides every bucket's density to solid when isOverBudget is true", () => {
+  it("goes solid for any bucket at or over budget — texture is now purely a state channel", () => {
     expect(bucketDensity("need", true)).toBe("solid");
     expect(bucketDensity("want", true)).toBe("solid");
     expect(bucketDensity("saving", true)).toBe("solid");
   });
 
-  it("defaults isOverBudget to false, so an un-migrated call site is unaffected", () => {
+  it("treats an omitted isOverBudget as under budget", () => {
     expect(bucketDensity("need")).toBe(bucketDensity("need", false));
   });
 });
