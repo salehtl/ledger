@@ -24,19 +24,29 @@ describe("TrendBars", () => {
     expect(screen.getByRole("img")).toBeInTheDocument();
   });
 
-  // Touch scrubbing. Without these the browser claims a finger-drag for native
+  // Touch scrubbing. Without this the browser claims a finger-drag for native
   // text selection: the labels highlight, the gesture is cancelled, and the
-  // detail box never appears. Every other pointer surface in the app already
-  // guards this way (SwipeableRow, Toast, SwipeCard).
-  it("claims horizontal drags for scrubbing and blocks text selection", () => {
+  // detail box never appears.
+  it("blocks text selection so a finger-drag scrubs instead of highlighting", () => {
+    render(<TrendBars points={points} />);
+    expect(screen.getByRole("img", { name: /Monthly spending trend/ })).toHaveStyle({
+      userSelect: "none",
+    });
+  });
+
+  it("declares no touch-action, or pull-to-refresh dies on this screen", () => {
+    // usePullToRefresh owns its gesture by calling preventDefault() on a
+    // non-passive touchmove. Declaring a touch-action that permits the pan
+    // hands that axis to the compositor, which dispatches touchmove as
+    // non-cancelable — preventDefault then silently no-ops and, because <main>
+    // is overscroll-contain, a downward drag at the top of the page does
+    // nothing at all. This shipped once as `pan-y`; it must not come back.
     render(<TrendBars points={points} />);
     const chart = screen.getByRole("img", { name: /Monthly spending trend/ });
-    // pan-y, not none: a vertical drag must still scroll the page. jsdom's
-    // cssstyle has no touch-action property, so it never reaches the style
-    // attribute and toHaveStyle can't see it — read it off the style object,
-    // which does record what React assigned.
-    expect(chart.style.touchAction).toBe("pan-y");
-    expect(chart).toHaveStyle({ userSelect: "none" });
+    // jsdom has no touch-action in cssstyle, so an unset property reads as
+    // undefined rather than ""; normalise so this passes either way and still
+    // fails loudly if a value is ever assigned.
+    expect(chart.style.touchAction ?? "").toBe("");
   });
 
   it("shows the detail box while scrubbing and hides it when the browser takes the gesture", async () => {
