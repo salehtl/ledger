@@ -1,4 +1,4 @@
-import { projectColor, PALETTE_NAMES, isPaletteName } from "./paletteColor";
+import { projectColor, PALETTE_NAMES, isPaletteName, hueVar } from "./paletteColor";
 
 describe("projectColor", () => {
   it("resolves a palette name to its CSS var", () => {
@@ -44,5 +44,25 @@ describe("isPaletteName", () => {
     expect(isPaletteName("#b5771e")).toBe(false);
     expect(isPaletteName("")).toBe(false);
     expect(isPaletteName(null)).toBe(false);
+  });
+});
+
+describe("hueVar", () => {
+  it("resolves a palette hue to its CSS custom property", () => {
+    expect(hueVar("amber")).toBe("var(--color-amber)");
+    expect(hueVar("lilac")).toBe("var(--color-lilac)");
+    expect(hueVar("sage")).toBe("var(--color-sage)");
+  });
+
+  it("handles the -deep shades, which are palette names like any other", () => {
+    expect(hueVar("azure-deep")).toBe("var(--color-azure-deep)");
+  });
+
+  it("covers every palette name — a hue with no var would render as nothing", () => {
+    // var(--color-chartreuse) is valid CSS that resolves to nothing, so a
+    // missing var fails silently at runtime. This is the guard against that.
+    for (const name of PALETTE_NAMES) {
+      expect(hueVar(name)).toBe(`var(--color-${name})`);
+    }
   });
 });
