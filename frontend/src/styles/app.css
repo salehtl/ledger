@@ -24,6 +24,14 @@
   --color-warn: #b45309;        /* warning — burnt amber, AA on white (5.0:1) */
   --color-bad: #dc2626;         /* error — vivid red, AA on white (4.8:1) */
 
+  /* shadcn token names, aliased onto our palette — dither-kit's vendored
+     chrome (tooltip, axes, grid) is written against these. Values mirror the
+     tokens above; no new colors are introduced. */
+  --color-foreground: #1c1b1b;            /* = --color-fg */
+  --color-muted-foreground: #45474a;      /* = --color-muted */
+  --color-popover: #ffffff;               /* = --color-surface */
+  --color-popover-foreground: #1c1b1b;    /* = --color-fg */
+
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   /* Rounded numeric face — kept only for the swipe-deck amount. */
   --font-rounded: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
@@ -148,5 +156,10 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-good: #8ee7aa;
     --color-warn: #fee78a;
     --color-bad: #fca5a5;
+
+    --color-foreground: #e5e2e3;
+    --color-muted-foreground: #c5c6cc;
+    --color-popover: #201f20;
+    --color-popover-foreground: #e5e2e3;
   }
 }
