@@ -35,7 +35,7 @@ describe("categoryRows", () => {
     ];
     const rows = categoryRows(input);
     expect(rows[0]).toMatchObject({ name: "Dining", categoryId: 10, share: 0.6, delta: 200, key: "cat:10" });
-    expect(rows[0].color).not.toBe(rows[1].color); // distinct hues by rank
+    expect(rows[0].ditherColor).not.toBe(rows[1].ditherColor); // distinct seeds by rank
   });
 });
 
