@@ -13,7 +13,7 @@
     "components": "@/components",
     "ui": "@/components/ui",
     "lib": "@/lib",
-    "utils": "@/lib/utils",
+    "utils": "@/components/dither-kit/lib",
     "hooks": "@/hooks"
   }
 }
