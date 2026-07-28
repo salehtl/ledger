@@ -140,6 +140,10 @@
   @keyframes stagger-in { from { opacity: 0; } to { opacity: 1; } }
 }
 
+/* One-shot entry for a single row born in place (inline add). Shares the
+   stagger keyframes — reduced motion therefore keeps the fade only. */
+.row-in { animation: stagger-in 150ms var(--ease-out); }
+
 /* Pixel-art spinner — see components/ui/PixelSpinner.tsx.
 
    Nothing rotates. Rotating the pixel Loader2 glyph was a no-op: it is
