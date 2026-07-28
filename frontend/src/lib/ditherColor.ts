@@ -25,8 +25,10 @@ export function bucketDither(bucket: string): DitherColor {
 
 /**
  * Texture for a bucket's bar: `"solid"` at or over budget, `"dotted"` otherwise —
- * exactly the texture-not-colour reading `ProgressBar` gives its own fill at
- * `pct >= 1.0`, so Home and Insights agree on what "over" looks like.
+ * the same `pct >= 1.0` threshold `ProgressBar` calls "over budget", so Home
+ * and Insights agree on *when* a bucket is over even though they say it
+ * differently: these hue-carrying bars say it with texture, `ProgressBar` says
+ * it with its pace ink (see `derivePaceStatus`).
  *
  * The `bucket` argument no longer affects the result. Density used to encode
  * bucket identity redundantly with hue (need dense, want medium, saving

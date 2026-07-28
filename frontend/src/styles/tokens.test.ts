@@ -101,6 +101,29 @@ describe("bucket contrast", () => {
     return (hi + 0.05) / (lo + 0.05);
   };
 
+  it("keeps the over-pace ink legible on paper, on the dark ground, and on the bar track", () => {
+    // ProgressBar's middle stop. A bar fill is a non-text graphic → 3:1 floor,
+    // and it must clear it against the track it is printed on, not just the
+    // page. The under/exceeded stops alias --color-fg/--color-bad, which the
+    // rest of the design already holds to that bar.
+    const grounds: [string, string[]][] = [
+      [declared(LIGHT_CSS, "pace-over")!, ["#f2f1ef", "#e3e2de"]],
+      [declared(DARK_CSS, "pace-over")!, ["#141416", "#232326"]],
+    ];
+    for (const [ink, ons] of grounds) {
+      for (const ground of ons) {
+        expect(contrast(ink, ground), `${ink} on ${ground}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it("keeps the over-pace ink distinct from the spot ink it sits next to", () => {
+    // Amber and vermilion are the bar's two warm states; if they read as the
+    // same signal the ramp has only two stops, not three.
+    expect(contrast(declared(LIGHT_CSS, "pace-over")!, "#b8331d")).toBeGreaterThanOrEqual(1.3);
+    expect(contrast(declared(DARK_CSS, "pace-over")!, "#f0866f")).toBeGreaterThanOrEqual(1.3);
+  });
+
   it("keeps every bucket hue legible on its own ground", () => {
     // The check that would have caught the swipe rails sitting at 1.02:1 in
     // dark: a bucket mark is a non-text graphic, so 3:1 is the floor.

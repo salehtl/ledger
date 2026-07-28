@@ -18,9 +18,10 @@
   --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
   --color-hero-fg: #f2f1ef;
 
-  /* Semantic colours are retired — over-budget is a texture change. `bad` keeps
-     a red because negative money still reads as red in .money-neg, and that is
-     the one semantic use that survives. */
+  /* Semantic colours are retired everywhere except the progress/pace bar, whose
+     three states outgrew the two a texture has (see the pace inks below).
+     Elsewhere over-budget is still a texture change, and `bad` keeps a red
+     because negative money reads as red in .money-neg. */
   --color-good: #16161a;
   /* Warn is full-strength ink, not muted — a contrast audit found it was
      byte-identical to --color-muted, so every warning rendered *quieter* than
@@ -30,8 +31,10 @@
      rationed spot ink. */
   --color-warn: #16161a;
   /* Negative money prints in the spot ink's TEXT register, not its fill. On
-     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as
-     a fill — --color-accent is the fill. */
+     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as a
+     fill behind text — --color-accent is that fill. The one non-text use is
+     --color-pace-exceeded below: a dotted bar carries no text, and the bar has
+     to match the `text-bad` verdict label printed beside it. */
   --color-bad: #b8331d;
 
 
@@ -90,6 +93,21 @@
   --color-sage-deep:  #0d6d32;
   --color-rose-deep:  #9a3d49;
   --color-slate-deep: #515159;
+
+  /* ── Pace inks ──────────────────────────────────────────────────────────
+     The one ramp a progress/pace bar's dots travel: ink while inside pace,
+     amber-orange once past pace, the negative-money red once past budget.
+     This is the single exception to "over is a texture change, never a hue"
+     (see --color-warn): a pace bar has *three* states, and texture only has
+     two, so the middle state had nowhere to go. Scoped to the bar — the
+     verdict *labels* beside it still take their emphasis from ink weight.
+     Not in @theme: consumed only as runtime `var()` strings from ProgressBar,
+     which Tailwind can't see, so @theme would tree-shake them away.
+     `--color-pace-over` is warmer and lighter than the rationed spot ink so
+     the two never read as the same signal at a glance. */
+  --color-pace-under: var(--color-fg);
+  --color-pace-over: #c0641a;
+  --color-pace-exceeded: var(--color-bad);
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* entering/exiting UI */
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement   */
@@ -263,6 +281,14 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-sage-deep:  #76ca89;
     --color-rose-deep:  #f28c95;
     --color-slate-deep: #a0a0a9;
+
+    /* Re-stepped for the dark ground like the palette above; the under/
+       exceeded ends are aliases and inherit. Deliberately *not* lightened as
+       far as the palette's dark steps go: --color-bad is the light salmon
+       #f0866f here, and a bright orange landed within 1.05:1 of it — two
+       warm stops the eye reads as one. This sits 1.4:1 below it, so the ramp
+       still separates on lightness, the axis that survives colour blindness. */
+    --color-pace-over: #c4741f;
 
     --color-foreground: #ecebe8;
     --color-muted-foreground: #8b8b8f;

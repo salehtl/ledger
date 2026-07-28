@@ -10,8 +10,9 @@ export function totalBudget(buckets: BucketSummary[]): number {
 /**
  * Bucket names that have reached or passed their target for the period a
  * `BucketSummary[]` describes — the same `pct_used >= 1.0` threshold
- * `ProgressBar` uses for its own solid-fill "at or over budget" reading, so
- * the two surfaces agree on what "over" means. Feeds `bucketDensity`'s
+ * `ProgressBar` calls "overbudget", so the two surfaces agree on what "over"
+ * means even though one says it in texture and the other in ink. Feeds
+ * `bucketDensity`'s
  * `isOverBudget` param wherever a bucket bar needs to make the same call.
  */
 export function overBudgetBuckets(buckets: BucketSummary[]): Set<string> {
@@ -97,6 +98,26 @@ export function paceStatus(spent: number, target: number, projection: number): P
 /** Tone for a pace status, matching the app's semantic colors. */
 export function paceTone(status: PaceStatus): "good" | "warn" | "bad" {
   return status === "overbudget" ? "bad" : status === "over" ? "warn" : "good";
+}
+
+/**
+ * The same verdict from geometry alone: how much of the budget is spent
+ * (`pct`, a 0..1+ fraction) against how much of the period has elapsed
+ * (`pace`, 0..1). `ProgressBar`'s default when a caller has no better signal.
+ *
+ * `pace` is optional because "over pace" is only meaningful when there is a
+ * period to be ahead of: an open-ended project has no end date, so it has no
+ * linear pace line and can only ever read under or over *budget*. Passing no
+ * pace collapses the ramp to those two states rather than guessing a third.
+ *
+ * Home passes its own `paceStatus` instead — a run-rate *projection* is a
+ * better read of a month in progress than today's raw spend-vs-elapsed, and
+ * the bar must agree with the verdict label printed beside it.
+ */
+export function derivePaceStatus(pct: number, pace?: number): PaceStatus {
+  if (pct >= 1.0) return "overbudget";
+  if (pace !== undefined && pct > pace) return "over";
+  return "under";
 }
 
 export interface CategoryDelta {

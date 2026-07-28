@@ -1,31 +1,53 @@
-import type { DitherColor } from "../dither-kit/palette";
-import { hueVar } from "../../lib/paletteColor";
-
-type Tone = "good" | "warn" | "bad";
+import { type PaceStatus, derivePaceStatus } from "../../lib/insights";
 
 /**
- * pct is a fraction (0..1+). Over budget is a *texture* change, not a colour
- * change: under budget the fill is dithered, at or over it fills to solid ink.
- * The `tone` prop still overrides the automatic reading (e.g. to mark by
- * projection rather than spend); "bad" means solid. An optional `pace` fraction
- * draws a vertical "today" marker. `onAccent` styles the track for the hero.
+ * The app's one progress/pace bar: a dotted fill over the grey track, plus an
+ * optional "today" marker.
  *
- * `color` paints the fill in a palette hue instead of the default ink, so a
- * bucket bar matches the swatch dot beside its label. It is deliberately
- * ignored under `onAccent`: the hero bar totals all three buckets, so no single
- * bucket hue is honest for it, and mid-chroma ink on the branded accent ground
- * is a contrast problem.
+ * The fill is always the same dot texture; what changes with state is the ink
+ * it's printed in — the three-stop pace ramp:
+ *
+ *   under      inside pace          `--color-pace-under`     (ink)
+ *   over       past pace            `--color-pace-over`      (amber-orange)
+ *   overbudget past the budget      `--color-pace-exceeded`  (red)
+ *
+ * `pct` is a fraction (0..1+) of the budget spent; `pace` (0..1) is how much of
+ * the period has elapsed and draws the marker. With no `pace` there is no
+ * period to be ahead of, so the ramp collapses to under/overbudget — this is
+ * how an open-ended project (no end date) never shows amber.
+ *
+ * `status` overrides the geometric reading when the caller has a better signal:
+ * Home passes its run-rate `paceStatus`, so the bar and the verdict label
+ * printed beside it can never disagree.
+ *
+ * `onAccent` styles the bar for the hero panel, where the ramp is carried by
+ * *texture* instead of ink: neither the amber nor the red clears 3:1 on that
+ * ground in both themes, and the hero panel prints in one colour by design. It
+ * dots for under/over and fills solid once over budget.
  */
-export function ProgressBar({ pct, label, pace, tone, onAccent = false, color }: {
-  pct: number; label?: string; pace?: number; tone?: Tone; onAccent?: boolean; color?: DitherColor;
+const PACE_INK: Record<PaceStatus, string> = {
+  under: "var(--color-pace-under)",
+  over: "var(--color-pace-over)",
+  overbudget: "var(--color-pace-exceeded)",
+};
+
+export function ProgressBar({ pct, label, pace, status, onAccent = false }: {
+  /** Fraction of the budget spent (0..1+); over 1 clamps the width, not the state. */
+  pct: number;
+  /** Accessible name for the bar. */
+  label?: string;
+  /** Fraction of the period elapsed (0..1). Draws the marker and enables "over pace". */
+  pace?: number;
+  /** Overrides the geometric verdict derived from `pct`/`pace`. */
+  status?: PaceStatus;
+  /** Hero-panel variant: single-colour, state carried by texture. */
+  onAccent?: boolean;
 }) {
   const clamped = Math.min(100, Math.max(0, pct * 100));
-  const auto: Tone = pct >= 1.0 ? "bad" : pct >= 0.8 ? "warn" : "good";
-  const solid = (tone ?? auto) === "bad";
+  const state = status ?? derivePaceStatus(pct, pace);
+  const solid = onAccent && state === "overbudget";
   const track = onAccent ? "bg-hero-fg/25" : "bg-surface-2";
   const marker = onAccent ? "bg-hero-fg" : "bg-fg/70";
-  const ink = onAccent ? "bg-hero-fg" : "bg-fg";
-  const hue = !onAccent && color !== undefined ? hueVar(color) : undefined;
   return (
     <div
       role="progressbar"
@@ -37,8 +59,9 @@ export function ProgressBar({ pct, label, pace, tone, onAccent = false, color }:
     >
       <div
         data-fill={solid ? "solid" : "dithered"}
-        className={`h-full transition-[width] duration-300 ${hue ? "" : ink} ${solid ? "" : "dither-mask"}`}
-        style={{ width: `${clamped}%`, ...(hue ? { background: hue } : {}) }}
+        data-state={state}
+        className={`h-full transition-[width] duration-300 ${onAccent ? "bg-hero-fg" : ""} ${solid ? "" : "dither-mask"}`}
+        style={{ width: `${clamped}%`, ...(onAccent ? {} : { background: PACE_INK[state] }) }}
       />
       {pace !== undefined && (
         <div

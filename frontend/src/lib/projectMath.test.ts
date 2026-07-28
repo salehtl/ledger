@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { projectRemaining, projectPctUsed, isOverBudget, projectCoversDate, orderProjectsForReview } from "./projectMath";
+import { projectRemaining, projectPctUsed, isOverBudget, projectCoversDate, orderProjectsForReview, projectPace, todayISO } from "./projectMath";
 import type { Project } from "../api/types";
 
 function project(p: Partial<Project>): Project {
@@ -54,5 +54,49 @@ describe("orderProjectsForReview", () => {
     expect(out.map((p) => p.id)).toEqual([1, 2]);
     expect(out[0].suggested).toBe(true);
     expect(out[1].suggested).toBe(false);
+  });
+});
+
+describe("projectPace", () => {
+  const window = (starts_on: string, ends_on: string) => project({ starts_on, ends_on });
+
+  it("is null without both bounds — an end date is what makes a pace line meaningful", () => {
+    expect(projectPace(window("2026-07-01", ""), "2026-07-10")).toBeNull();
+    expect(projectPace(window("", "2026-07-31"), "2026-07-10")).toBeNull();
+    expect(projectPace(window("", ""), "2026-07-10")).toBeNull();
+  });
+
+  it("measures the elapsed fraction of an inclusive day window", () => {
+    // 2026-07-01..2026-07-10 is ten days; the 5th is the fifth day.
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-07-05")).toBeCloseTo(0.5);
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-07-01")).toBeCloseTo(0.1);
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-07-10")).toBe(1);
+  });
+
+  it("a one-day project is fully elapsed on its only day", () => {
+    expect(projectPace(window("2026-07-05", "2026-07-05"), "2026-07-05")).toBe(1);
+  });
+
+  it("clamps outside the window instead of going negative or past 1", () => {
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-06-01")).toBe(0);
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-12-01")).toBe(1);
+  });
+
+  it("is null for an inverted window rather than a nonsense ramp", () => {
+    expect(projectPace(window("2026-07-10", "2026-07-01"), "2026-07-05")).toBeNull();
+  });
+
+  it("accepts a full RFC3339 stamp for today, not just a date", () => {
+    expect(projectPace(window("2026-07-01", "2026-07-10"), "2026-07-05T18:30:00Z")).toBeCloseTo(0.5);
+  });
+
+  it("is null when a bound isn't a parseable date", () => {
+    expect(projectPace(window("not-a-date", "2026-07-10"), "2026-07-05")).toBeNull();
+  });
+});
+
+describe("todayISO", () => {
+  it("returns a zero-padded local YYYY-MM-DD", () => {
+    expect(todayISO()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });

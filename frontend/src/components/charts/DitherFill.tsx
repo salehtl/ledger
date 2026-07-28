@@ -5,7 +5,10 @@ import type { DitherColor } from "../dither-kit/palette";
 /**
  * Whether a segment reads as spending in progress or spending past its limit.
  * Dotted is the resting state; solid means at or over budget — the same
- * texture-not-colour reading `ProgressBar` gives its own fill at `pct >= 1.0`.
+ * `pct >= 1.0` threshold `ProgressBar` calls "over budget". These bars keep the
+ * texture reading because they carry the *bucket hue* and can't also carry a
+ * state hue; `ProgressBar` gave its texture up for the three-stop pace ramp
+ * (ink → amber → red), which needed a channel with three values.
  *
  * This is a *state* channel only. It used to double as bucket identity
  * (need dense, want medium, saving sparse) back when Insights' bars had no hue
