@@ -1,7 +1,7 @@
 // frontend/src/components/transactions/AddTransactionSheet.tsx
 import { useState } from "react";
 import type { Category } from "../../api/types";
-import { Dialog } from "../ui/Dialog";
+import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
 import { buildManualTxnPayload, type ManualTxnPayload } from "../../lib/transactions";
@@ -55,10 +55,10 @@ export function AddTransactionSheet({ categories, onSubmit, onClose }: {
         </label>
         {error && <p role="alert" className="text-bad text-sm">{error}</p>}
       </div>
-      <div className="flex justify-end gap-2 mt-4">
+      <DialogFooter>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" onClick={submit}>Add</Button>
-      </div>
+      </DialogFooter>
     </Dialog>
   );
 }

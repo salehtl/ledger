@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, X } from "../ui/PixelIcon";
-import { Dialog } from "../ui/Dialog";
+import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import type { Category, Txn } from "../../api/types";
@@ -123,12 +123,12 @@ export function FilterChips({ filters, categories, txns, onChange }: {
               ))}
             </ul>
           )}
-          <div className="flex justify-between items-center pt-3 mt-2 border-t border-border">
+          <DialogFooter className="justify-between">
             <Button variant="ghost" onClick={() => current.onChange([])} disabled={current.selected.length === 0}>
               Clear
             </Button>
             <Button variant="primary" onClick={() => setOpen(null)}>Done</Button>
-          </div>
+          </DialogFooter>
         </Dialog>
       )}
     </div>

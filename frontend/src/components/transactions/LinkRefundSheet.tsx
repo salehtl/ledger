@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PixelSpinner } from "../ui/PixelSpinner";
 import { getRefundCandidates, linkRefund } from "../../api/client";
 import type { Txn } from "../../api/types";
-import { Dialog } from "../ui/Dialog";
+import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Money } from "../Money";
 import { aedFils, nativeAmountTag } from "../../lib/money";
@@ -76,9 +76,9 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
         </ul>
       )}
       {error && <p className="text-sm text-bad mt-2">{error}</p>}
-      <div className="flex justify-end mt-3">
+      <DialogFooter>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-      </div>
+      </DialogFooter>
     </Dialog>
   );
 }

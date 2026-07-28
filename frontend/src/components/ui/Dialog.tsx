@@ -6,6 +6,18 @@ import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motio
 import { useSheetDrag } from "../../hooks/useSheetDrag";
 import { IconButton } from "./IconButton";
 
+/** Persistent action rail for a scrollable bottom sheet. */
+export function DialogFooter({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      data-dialog-footer=""
+      className={`sticky bottom-0 z-20 -mx-4 -mb-[max(1rem,env(safe-area-inset-bottom))] mt-4 flex items-center justify-end gap-2 border-t border-border bg-surface px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-10px_24px_-18px_rgba(0,0,0,0.45)] ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function Dialog({ title, titleAdornment, titleStyle, onClose, children }: {
   title: string;
   titleAdornment?: ReactNode;
