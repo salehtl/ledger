@@ -12,8 +12,8 @@ import { aedFils, nativeAmountTag } from "../../lib/money";
 import { bucketColor } from "../../lib/insights";
 import { assignTxnProject, getProjects } from "../../api/client";
 
-const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
-const BUCKET_ORDER = ["need", "want", "saving"];
+const BUCKET_LABEL: Record<string, string> = { income: "Income", need: "Needs", want: "Wants", saving: "Savings", excluded: "Excluded" };
+const BUCKET_ORDER = ["income", "need", "want", "saving", "excluded"];
 
 /**
  * Pick a category as a grid of tap targets grouped by bucket — no radio list.
@@ -22,13 +22,14 @@ const BUCKET_ORDER = ["need", "want", "saving"];
  * Tapping the selected category deselects it; saving with no selection on a
  * categorized transaction decategorizes it (back to the review queue).
  */
-export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefund, onUnlinkRefund }: {
+export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefund, onUnlinkRefund, title = "Categorize" }: {
   txn: Txn;
   categories: Category[];
   onSubmit: (body: { category_id: number | null; make_rule: boolean }) => void;
   onClose: () => void;
   onLinkRefund?: () => void;
   onUnlinkRefund?: () => void;
+  title?: string;
 }) {
   const [catID, setCatID] = useState<number | null>(txn.CategoryID ?? null);
   const [makeRule, setMakeRule] = useState(false);
@@ -61,9 +62,10 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
     const matched = categories.filter((c) => c.IsActive && (!q || c.Name.toLowerCase().includes(q)));
     const byBucket = new Map<string, Category[]>();
     for (const c of matched) {
-      const list = byBucket.get(c.Bucket) ?? [];
+      const group = c.Kind === "income" ? "income" : c.Kind === "excluded" ? "excluded" : c.Bucket;
+      const list = byBucket.get(group) ?? [];
       list.push(c);
-      byBucket.set(c.Bucket, list);
+      byBucket.set(group, list);
     }
     return [...byBucket.entries()].sort(
       ([a], [b]) => (BUCKET_ORDER.indexOf(a) + 1 || 99) - (BUCKET_ORDER.indexOf(b) + 1 || 99),
@@ -71,9 +73,9 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
   }, [categories, query]);
 
   return (
-    <Dialog title="Categorize" onClose={onClose}>
+    <Dialog title={title} onClose={onClose}>
       <p className="text-sm text-muted mb-3 truncate">
-        {txn.MerchantRaw || "—"} · <Money fils={-(aedFils(txn) ?? txn.AmountFils)} />
+        {txn.MerchantRaw || "—"} · <Money fils={(txn.Direction === "credit" ? 1 : -1) * (aedFils(txn) ?? txn.AmountFils)} />
         {nativeAmountTag(txn) ? ` · ${nativeAmountTag(txn)}` : ""}
         {aedFils(txn) === null ? " · no AED rate" : ""}
       </p>
@@ -131,7 +133,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
                     <span
                       aria-hidden
                       className="w-2 h-2 rounded-[var(--radius)] shrink-0"
-                      style={{ background: selected ? "currentColor" : bucketColor(c.Bucket) }}
+                      style={{ background: selected ? "currentColor" : c.Kind === "income" ? "var(--color-good)" : bucketColor(c.Bucket) }}
                     />
                     {c.Name}
                   </button>

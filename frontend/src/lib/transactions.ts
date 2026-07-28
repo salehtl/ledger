@@ -19,11 +19,15 @@ export interface TxnTotals {
   spentFils: number;
 }
 
-/** Count plus total spend (sum of debit amounts) across the given rows. */
+/** Count plus actual expenditure across the given rows. Income, transfers, and
+ * excluded categories are not spending, even when a transfer arrived as a
+ * debit leg. */
 export function txnTotals(rows: Txn[]): TxnTotals {
   let spentFils = 0;
   for (const t of rows) {
-    if (t.Direction === "debit") spentFils += aedFils(t) ?? 0;
+    if (t.Direction === "debit" && t.Status !== "transfer" && t.Kind !== "excluded") {
+      spentFils += aedFils(t) ?? 0;
+    }
   }
   return { count: rows.length, spentFils };
 }

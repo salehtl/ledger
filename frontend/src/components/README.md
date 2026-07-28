@@ -428,7 +428,8 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 Domain components live beside their feature (`transactions/`, `swipe/`,
 `insights/`, `charts/`) and compose the primitives above. Notable:
 
-- `TransactionRow` — one calm, tap-only list line (merchant + amount, then
+- `TransactionRow` — one calm, tap-only list line (merchant wraps to two lines
+  beside the amount, then
   `category · date`); a status pill shows only for review/archived rows. Tapping
   is the whole action surface — it has no inline buttons. Used by the
   Transactions list and the Insights drill-down/search sheets.
@@ -469,6 +470,9 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   assignment); a failed save puts the card back with an error toast instead of
   failing silently. Cards carry an account chip (registered name or masked
   last4) plus a why-is-this-here line from `lib/reviewMeta`. Commits fire on
+  category selection, including Transfer (which offers excluded categories),
+  and email-backed cards expose a read-only source-message preview. Credits use
+  the semantic positive ink and the category picker surfaces Income first.
   distance or on flick velocity (`lib/swipe.flickDirection`); skipping is the
   visible "Skip for now" button or a triple tap.
 - `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition

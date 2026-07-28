@@ -17,6 +17,7 @@ import {
 import { SwipeCard, SWIPE_ICONS } from './SwipeCard'
 import { SubcategoryPanel } from './SubcategoryPanel'
 import { LinkRefundSheet } from '../transactions/LinkRefundSheet'
+import { EmailPreviewSheet } from '../transactions/EmailPreviewSheet'
 
 interface SwipeDeckProps {
   transactions: Txn[]
@@ -105,6 +106,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     previewProgress: 0,
   })
   const [linkOpen, setLinkOpen] = useState(false)
+  const [emailOpen, setEmailOpen] = useState(false)
 
   // Active projects for the panel's assign-on-sort chips (same cache key as
   // the list view's CategorizeSheet).
@@ -149,7 +151,10 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     fire('selection')
     commitRef.current = null
     const reverse = commit.kind === 'transfer'
-      ? postJSON(`/api/transactions/${commit.txn.ID}/status`, { status: 'needs_review' })
+      ? Promise.all([
+          postJSON(`/api/transactions/${commit.txn.ID}/categorize`, { category_id: null }),
+          postJSON(`/api/transactions/${commit.txn.ID}/status`, { status: 'needs_review' }),
+        ])
       : Promise.all([
           postJSON(`/api/transactions/${commit.txn.ID}/categorize`, { category_id: null }),
           commit.ruleID != null ? del(`/api/rules/${commit.ruleID}`) : Promise.resolve(),
@@ -167,33 +172,22 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     const action = config[dir]
     if (!action) return
     fire('success') // fire synchronously in the gesture, before any await
-    if (action.statusOverride === 'transfer') {
-      if (current) {
-        const commit: Commit = { seq: ++seqRef.current, index: state.index, txn: current, kind: 'transfer' }
-        commitRef.current = commit
-        postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
-          .then(() => {
-            invalidate()
-            toast.show({
-              message: 'Marked as transfer',
-              action: { label: 'Undo', onAction: () => undoCommit(commit.seq) },
-            })
-          })
-          .catch(() => failCommit(commit))
-      }
-      setState(s => ({ ...s, flyDirection: dir }))
-    } else {
-      setState(s => ({ ...s, pendingDirection: dir }))
-    }
-  }, [config, current, state.index, invalidate, toast, undoCommit, failCommit])
+    setState(s => ({ ...s, pendingDirection: dir }))
+  }, [config])
 
   const handleCategorySelect = useCallback(async (categoryId: number, projectId: number | null) => {
     if (!current) return
     fire('selection') // synchronous, before the network await
     const dir = state.pendingDirection
-    const categoryName = categories.find(c => c.ID === categoryId)?.Name ?? 'category'
+    const action = dir ? config[dir] : null
+    const chosen = categories.find(c => c.ID === categoryId)
+    // A transfer swipe only excludes when an excluded category is picked; a
+    // credit sorted into Salary/Freelance from the same panel is confirmed
+    // income and must not carry transfer status.
+    const isTransfer = action?.statusOverride === 'transfer' && chosen?.Kind !== 'income'
+    const categoryName = chosen?.Name ?? 'category'
     const commit: Commit = {
-      seq: ++seqRef.current, index: state.index, txn: current, kind: 'categorize', categoryName,
+      seq: ++seqRef.current, index: state.index, txn: current, kind: isTransfer ? 'transfer' : 'categorize', categoryName,
     }
     commitRef.current = commit
     // Close panel and start card exit animation
@@ -204,10 +198,13 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         {
           category_id: categoryId,
           merchant_raw: current.MerchantRaw,
-          make_rule: state.makeRule,
+          make_rule: !isTransfer && state.makeRule,
         },
       )
       commit.ruleID = resp?.rule_id
+      if (isTransfer) {
+        await postJSON(`/api/transactions/${current.ID}/status`, { status: 'transfer' })
+      }
       if (projectId != null) {
         await assignTxnProject(current.ID, projectId)
         commit.projectID = projectId
@@ -217,7 +214,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         ? projects.data?.find(p => p.id === projectId)?.name
         : undefined
       toast.show({
-        message: projectName
+        message: isTransfer
+          ? `Excluded as ${categoryName}`
+          : projectName
           ? `Sorted into ${categoryName} · ${projectName}`
           : `Sorted into ${categoryName}`,
         action: { label: 'Undo', onAction: () => undoCommit(commit.seq) },
@@ -225,7 +224,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     } catch {
       failCommit(commit)
     }
-  }, [current, categories, projects.data, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit])
+  }, [current, categories, projects.data, config, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit])
 
   const handleExitComplete = useCallback(() => {
     setState(s => ({ ...s, flyDirection: null, index: s.index + 1, previewDir: null, previewProgress: 0 }))
@@ -339,6 +338,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
                 onTripleTap={handleTripleTap}
                 onExitComplete={handleExitComplete}
                 onPreview={handlePreview}
+                onOpenEmail={() => setEmailOpen(true)}
               />
             </div>
           )}
@@ -365,7 +365,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       )}
 
       {/* SubcategoryPanel rendered outside card stack to avoid clipping */}
-      {pendingAction && pendingAction.bucket && current && (
+      {pendingAction && current && (
         <SubcategoryPanel
           action={pendingAction}
           txn={current}
@@ -388,6 +388,10 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           }}
           onClose={() => setLinkOpen(false)}
         />
+      )}
+
+      {emailOpen && current && (
+        <EmailPreviewSheet txn={current} onClose={() => setEmailOpen(false)} />
       )}
     </div>
   )

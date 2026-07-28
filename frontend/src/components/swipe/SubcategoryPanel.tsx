@@ -35,9 +35,10 @@ export function SubcategoryPanel({
   const color = actionColor(action)
   const [projectID, setProjectID] = useState<number | null>(null)
 
-  const visible = categories.filter(
-    c => c.Kind === 'spending' && c.Bucket === action.bucket && c.IsActive,
-  )
+  const transfer = action.statusOverride === 'transfer'
+  const visible = categories.filter(c => c.IsActive && (
+    transfer ? c.Kind === 'excluded' : c.Kind === 'spending' && c.Bucket === action.bucket
+  ))
   const income = txn.Direction === 'credit'
     ? categories.filter(c => c.Kind === 'income' && c.IsActive)
     : []
@@ -98,7 +99,7 @@ export function SubcategoryPanel({
       {income.length > 0 && (
         <div className="mb-4" data-testid="income-group">
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted mb-2">
-            Or is this income?
+            {transfer ? 'Is this income?' : 'Or is this income?'}
           </p>
           <div className="grid grid-cols-2 gap-2">
             {income.map(categoryButton)}
@@ -106,7 +107,8 @@ export function SubcategoryPanel({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 mb-4">
+      {transfer && <p className="text-sm text-muted mb-3">Choose why this movement should be excluded from spending.</p>}
+      <div className="grid grid-cols-2 gap-2 mb-4" data-testid={transfer ? "excluded-group" : undefined}>
         {visible.map(categoryButton)}
       </div>
 

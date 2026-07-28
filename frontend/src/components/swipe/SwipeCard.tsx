@@ -50,6 +50,7 @@ interface SwipeCardProps {
   onExitComplete: () => void
   /** Live drag feedback so the deck can light the matching edge. */
   onPreview?: (dir: SwipeDirection | null, progress: number) => void
+  onOpenEmail?: () => void
 }
 
 export function SwipeCard({
@@ -61,6 +62,7 @@ export function SwipeCard({
   onTripleTap,
   onExitComplete,
   onPreview,
+  onOpenEmail,
 }: SwipeCardProps) {
   const { state, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, reset } =
     useSwipeGesture(onDirectionCommit, onTripleTap)
@@ -171,6 +173,16 @@ export function SwipeCard({
             )}
             <span>{reviewReason(txn)}</span>
           </div>
+          {txn.Source === 'email' && onOpenEmail && (
+            <button
+              type="button"
+              className="mt-2 min-h-11 px-3 text-xs font-medium text-fg underline underline-offset-2 press"
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); onOpenEmail() }}
+            >
+              View source email
+            </button>
+          )}
         </div>
 
         {/* Amount — the hero, in the rounded display face */}
@@ -180,9 +192,7 @@ export function SwipeCard({
           </span>
           <span
             className="tnum font-bold leading-none"
-            // No colour split for credits: --color-good is retired, and the
-            // sign plus the "Received" eyebrow already say which way it went.
-            style={{ fontSize: '3rem', color: 'var(--color-fg)' }}
+            style={{ fontSize: '3rem', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
           >
             {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}
           </span>

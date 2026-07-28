@@ -29,6 +29,14 @@ describe("TransactionRow", () => {
     expect(screen.getByText("−50.00")).toBeInTheDocument();
     rerender(<TransactionRow txn={mk({ Direction: "credit", AmountFils: 5000 })} onOpen={() => {}} />);
     expect(screen.getByText("+50.00")).toBeInTheDocument();
+    expect(screen.getByText("+50.00")).toHaveStyle({ color: "var(--color-good)" });
+  });
+
+  it("keeps the complete merchant title available when the visual title wraps", () => {
+    const merchant = "A VERY LONG MERCHANT DESCRIPTION WITH REFERENCE DETAILS";
+    render(<TransactionRow txn={mk({ MerchantRaw: merchant })} onOpen={() => {}} />);
+    expect(screen.getByText(merchant)).toHaveAttribute("title", merchant);
+    expect(screen.getByText(merchant)).toHaveClass("line-clamp-2", "break-words");
   });
 
   it("shows the converted AED amount with a native tag for foreign rows", () => {

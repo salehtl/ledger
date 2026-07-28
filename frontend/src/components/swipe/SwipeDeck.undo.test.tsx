@@ -17,6 +17,8 @@ function txn(p: Partial<Txn>): Txn {
 const CATS: Category[] = [
   { ID: 11, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
   { ID: 12, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
+  { ID: 13, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true },
+  { ID: 14, Name: "Salary", Kind: "income", Bucket: "", IsActive: true },
 ];
 
 interface Call { url: string; method: string; body: unknown; }
@@ -30,7 +32,8 @@ function mockFetch(respond: (url: string, method: string) => unknown = () => ({ 
     const url = String(input);
     const method = init?.method ?? "GET";
     calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null });
-    return new Response(JSON.stringify(respond(url, method)));
+    const payload = respond(url, method);
+    return new Response(JSON.stringify(url.startsWith("/api/projects") && !Array.isArray(payload) ? [] : payload));
   });
   return calls;
 }
@@ -81,9 +84,10 @@ describe("SwipeDeck undo", () => {
 
     const el = card();
     swipe(el, 0, -120); // up = transfer
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
     completeExit(el);
 
-    expect(await screen.findByText(/marked as transfer/i)).toBeInTheDocument();
+    expect(await screen.findByText(/excluded as transfers/i)).toBeInTheDocument();
     const statusCall = calls.find((c) => c.url === "/api/transactions/7/status");
     expect(statusCall?.body).toEqual({ status: "transfer" });
 
@@ -96,6 +100,30 @@ describe("SwipeDeck undo", () => {
     expect(await screen.findByText("Own account top-up")).toBeInTheDocument();
     const revert = last(calls.filter((c) => c.url === "/api/transactions/7/status"));
     expect(revert?.body).toEqual({ status: "needs_review" });
+  });
+
+  it("picking an income category on a transfer swipe confirms income, not transfer status", async () => {
+    const calls = mockFetch();
+    renderDeck([txn({ ID: 7, Direction: "credit", MerchantRaw: "ACME payroll" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
+
+    const el = card();
+    swipe(el, 0, -120); // up = transfer edge
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Salary" }));
+    completeExit(el);
+
+    expect(await screen.findByText(/sorted into salary/i)).toBeInTheDocument();
+    const cat = calls.find((c) => c.url === "/api/transactions/7/categorize");
+    expect(cat?.body).toMatchObject({ category_id: 14 });
+    // No transfer status was written
+    expect(calls.some((c) => c.url === "/api/transactions/7/status")).toBe(false);
+
+    // Undo just decategorizes — it must not touch status either
+    fireEvent.click(screen.getByRole("button", { name: /undo/i }));
+    expect(await screen.findByText("ACME payroll")).toBeInTheDocument();
+    const decat = last(calls.filter((c) => c.url === "/api/transactions/7/categorize"));
+    expect(decat?.body).toMatchObject({ category_id: null });
+    expect(calls.some((c) => c.url === "/api/transactions/7/status")).toBe(false);
   });
 
   it("categorize shows an undo toast; undo decategorizes and deletes the created rule", async () => {
@@ -162,6 +190,7 @@ describe("SwipeDeck undo", () => {
 
     const el = card();
     swipe(el, 0, -120);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
     completeExit(el);
 
     expect(await screen.findByText(/couldn't save/i)).toBeInTheDocument();
@@ -199,12 +228,14 @@ describe("SwipeDeck undo", () => {
 
     let el = card();
     swipe(el, 0, -120);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
     completeExit(el);
-    await screen.findByText(/marked as transfer/i);
+    await screen.findByText(/excluded as transfers/i);
 
     // Commit the second card too, then press the FIRST toast's undo
     el = card();
     swipe(el, 0, -120);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
     completeExit(el);
 
     const undoButtons = await screen.findAllByRole("button", { name: /undo/i });

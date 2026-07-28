@@ -14,10 +14,11 @@ import { Tag, ArrowLeftRight, EyeOff, Archive, ArchiveRestore, Link2, Link2Off }
  * only covers the two commonest moves, everything else is here. Actions are
  * gated by status so a row never shows a move that doesn't apply to it.
  */
-export function TransactionDetailSheet({ txn, onClose, onCategorize, onStatus, onArchive, onRestore, onLinkRefund, onUnlinkRefund }: {
+export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer, onStatus, onArchive, onRestore, onLinkRefund, onUnlinkRefund }: {
   txn: Txn;
   onClose: () => void;
   onCategorize: () => void;
+  onTransfer: () => void;
   onStatus: (status: string) => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -65,7 +66,7 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onStatus, o
 
         {needsReview && (
           <div className="grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={() => onStatus("transfer")}>
+            <Button variant="secondary" onClick={onTransfer}>
               <ArrowLeftRight size={16} aria-hidden /> Transfer
             </Button>
             <Button variant="secondary" onClick={() => onStatus("ignored")}>
