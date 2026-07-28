@@ -163,16 +163,39 @@ describe("Home", () => {
     expect(screen.queryByText(/project spend/i)).not.toBeInTheDocument();
   });
 
-  it("paints each bucket bar in its own hue, matching the swatch beside its label", async () => {
+  it("paints each bucket bar on the pace ramp, not in its bucket hue — hue is identity, the bar is state", async () => {
+    // The swatch dot beside the label still carries the bucket's hue; the bar
+    // carries the verdict, so the two are never competing signals.
     wrap();
     const fillOf = async (label: string) => {
       const bar = await screen.findByLabelText(label);
       return (bar.querySelector("[data-fill]") as HTMLElement).style.background;
     };
-    expect(await fillOf("Needs budget used")).toBe("var(--color-amber)");
-    expect(await fillOf("Wants budget used")).toBe("var(--color-lilac)");
-    expect(await fillOf("Savings budget used")).toBe("var(--color-sage)");
+    // needs: projected exactly on target → under. wants: projected 2.4k over
+    // a 2k target → over pace. savings: projected on target → under.
+    expect(await fillOf("Needs budget used")).toBe("var(--color-pace-under)");
+    expect(await fillOf("Wants budget used")).toBe("var(--color-pace-over)");
+    expect(await fillOf("Savings budget used")).toBe("var(--color-pace-under)");
   });
+
+  it("turns a bucket bar red once it is over budget", async () => {
+    const blown = {
+      ...summary,
+      buckets: [{ bucket: "need", target: 300000, spent: 330000, remaining: -30000, pct_used: 1.1, projection: 400000 }],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/summary")) return new Response(JSON.stringify(blown));
+      if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+      return new Response("[]");
+    }));
+    wrap();
+    const bar = await screen.findByLabelText("Needs budget used");
+    const fill = bar.querySelector("[data-fill]") as HTMLElement;
+    expect(fill.style.background).toBe("var(--color-pace-exceeded)");
+    // Red *dots*, not a solid bar — the texture is constant across the ramp.
+    expect(fill).toHaveAttribute("data-fill", "dithered");
+  });
+
 
   it("leaves the hero total bar monochrome — it sums all three buckets, so no single bucket hue is honest for it", async () => {
     wrap();

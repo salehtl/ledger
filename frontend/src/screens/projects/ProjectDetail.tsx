@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJSON, getProject, updateProject, deleteProject } from "../../api/client";
 import type { Category, Project, Txn } from "../../api/types";
 import { formatFils } from "../../lib/money";
-import { isOverBudget, projectPctUsed, projectRemaining } from "../../lib/projectMath";
+import { isOverBudget, projectPace, projectPctUsed, projectRemaining, todayISO } from "../../lib/projectMath";
 import { Card } from "../../components/ui/Card";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import { SectionLabel } from "../../components/ui/SectionLabel";
@@ -113,6 +113,8 @@ export function ProjectDetail({
   const pct = projectPctUsed(p.budget_fils, p.net_spent_fils);
   const remaining = projectRemaining(p.budget_fils, p.net_spent_fils);
   const over = isOverBudget(p.budget_fils, p.net_spent_fils);
+  // Only a both-bounds project has a linear pace line — see `projectPace`.
+  const pace = projectPace(p, todayISO());
   const dates = [p.starts_on, p.ends_on].filter(Boolean).join(" – ");
 
   return (
@@ -126,7 +128,7 @@ export function ProjectDetail({
 
           {p.budget_fils != null && pct != null ? (
             <div className="space-y-1">
-              <ProgressBar pct={pct} label={`${p.name} budget used`} />
+              <ProgressBar pct={pct} pace={pace ?? undefined} label={`${p.name} budget used`} />
               <p className={`text-xs ${over ? "text-bad font-medium" : "text-muted"}`}>
                 {over
                   ? `${formatFils(Math.abs(remaining ?? 0))} over budget`

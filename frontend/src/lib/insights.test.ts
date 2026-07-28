@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   totalSpent, totalBudget, donutSlices, trendSeries, bucketColor, monthLabel,
   totalProjection, paceStatus, paceTone, categoryDeltas, withShare, bucketComparison,
-  topMovers, savingsRate, overBudgetBuckets,
+  topMovers, savingsRate, overBudgetBuckets, derivePaceStatus,
 } from "./insights";
 import type { CategoryDelta } from "./insights";
 import type { BucketSummary, CategorySpend, MonthlyTotal } from "../api/types";
@@ -114,6 +114,25 @@ describe("pace", () => {
     expect(paceTone("under")).toBe("good");
     expect(paceTone("over")).toBe("warn");
     expect(paceTone("overbudget")).toBe("bad");
+  });
+});
+
+describe("derivePaceStatus", () => {
+  it("reads spend against elapsed time", () => {
+    expect(derivePaceStatus(0.3, 0.5)).toBe("under");
+    expect(derivePaceStatus(0.5, 0.5)).toBe("under");  // exactly on pace is not over it
+    expect(derivePaceStatus(0.7, 0.5)).toBe("over");
+  });
+
+  it("over budget beats over pace", () => {
+    expect(derivePaceStatus(1.0, 0.5)).toBe("overbudget");
+    expect(derivePaceStatus(1.4, 0.99)).toBe("overbudget");
+  });
+
+  it("without a pace there is nothing to be ahead of — only under or over budget", () => {
+    expect(derivePaceStatus(0.99)).toBe("under");
+    expect(derivePaceStatus(0)).toBe("under");
+    expect(derivePaceStatus(1.2)).toBe("overbudget");
   });
 });
 

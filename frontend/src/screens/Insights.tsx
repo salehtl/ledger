@@ -61,8 +61,8 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const total = curData.reduce((s, c) => s + c.spent, 0);
   // Buckets at or over target for the focus month — same `summary` query the
   // hero net/income figures already use, just not previously threaded down to
-  // the bucket bars. Feeds `bucketRows`/`ComparativeSummary` so their density
-  // agrees with `ProgressBar`'s solid-at-`pct >= 1.0` reading on Home.
+  // the bucket bars. Feeds `bucketRows`/`ComparativeSummary` so their bars go
+  // solid at the same `pct >= 1.0` point Home's `ProgressBar`s turn red.
   const overBudget = useMemo(() => overBudgetBuckets(summary.data?.buckets ?? []), [summary.data]);
 
   const rows = useMemo<BreakdownRow[]>(() => {

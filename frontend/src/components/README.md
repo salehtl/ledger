@@ -49,6 +49,12 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   above. So: the fill is never text; the text register is text in more places
   than just `.money-neg`, by design. See "Red is rationed" under `Pill` for
   where the fill register is allowed to appear at all.
+
+  **One non-text use of the text register:** `ProgressBar`'s over-budget stop
+  (`--color-pace-exceeded`, an alias of `--color-bad`). A dotted bar carries no
+  text on it, so the "never a fill" rule — which is about contrast behind white
+  labels — doesn't bite, and the bar has to be the same red as the `text-bad`
+  verdict label sitting under it. Don't generalise this into other fills.
 - **Elevation is mostly Dialog-only, not exclusively.** The app's one
   box-shadow *token* (`.shadow-1` in `app.css`) exists for exactly one
   surface — the `Dialog` sheet, which must read as above the page — and nothing
@@ -223,21 +229,51 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   intentionally wider-set; leave them.
 
 ### ProgressBar
-- **Purpose:** budget progress with auto tone signaled by texture: under budget
-  (pct < 1.0) renders dithered, at or over budget (pct ≥ 1.0) fills solid ink.
-  An optional `tone` prop overrides the automatic reading. Includes optional
-  pace marker and `onAccent` variant for the hero panel.
-- **`color`** paints the fill in a palette hue (`DitherColor`) instead of the
-  default ink, so a bucket bar matches the swatch dot beside its label. Pass
-  `bucketDither(bucket)` from `lib/ditherColor.ts` — never a literal — so the
-  bar, the dot, and Insights' bars stay one mapping.
-- **`color` is ignored under `onAccent`, on purpose.** The hero bar totals all
-  three buckets, so no single bucket hue is honest for it, and mid-chroma ink on
-  the branded accent ground is a contrast problem. The guard is in the component,
-  not left to call sites.
+- **Purpose:** the app's one progress/pace bar — Home's hero and bucket lines,
+  every project budget bar. Dotted fill over the grey track, optional "today"
+  marker. Use it for anything with a target; `DitherFill` is for bars without
+  one.
+- **The pace ramp is the whole point.** Texture is constant; the *ink* moves
+  through three stops: `--color-pace-under` (ink) → `--color-pace-over`
+  (amber-orange, past pace) → `--color-pace-exceeded` (red, past budget). Never
+  hardcode those hues at a call site; the map lives in the component.
+- **Props:** `pct` (0..1+ of budget spent), `pace` (0..1 of the period elapsed —
+  draws the marker *and* enables the amber stop), `status` (overrides the
+  geometric verdict), `label`, `onAccent`.
+- **No `pace` means no amber, deliberately.** An open-ended project has nothing
+  to be ahead of, so the ramp collapses to under/over-budget. That is why
+  project bars pass `projectPace(...)` (`lib/projectMath.ts`), which is null
+  unless the project has both a start and an end date.
+- **Pass `status` when you have a better signal than geometry.** Home passes its
+  run-rate `paceStatus` so the bar can never disagree with the "Over pace" /
+  "Over budget" label printed beside it. Otherwise the component derives it via
+  `derivePaceStatus` (`lib/insights.ts`).
+- **The bar carries state, not identity.** It used to take a bucket hue
+  (`color`); that prop is gone. Hue stays on the swatch dot beside the label —
+  two hues on one row (identity + state) read as one confused signal.
+- **`onAccent` carries the ramp as texture, not ink.** On the hero panel it dots
+  for under/over and fills solid once over budget: neither the amber nor the red
+  clears 3:1 on that ground in both themes, and the hero prints in one colour by
+  design. The guard is in the component, not left to call sites.
 - Shares its dot texture (`.dither-mask`, `styles/app.css`) with `DitherFill`.
   That class is the app's one definition of "dotted" — change it there, not by
   adding a second mask.
+
+### ColorSwatch
+- **Purpose:** the project colour mark — a hairline square in the project's hue,
+  hatched with 45° lines of the same hue. Beside a project name in `ProjectCard`
+  and inline in `TransactionRow`'s meta line.
+- **Hatched, not outlined.** An empty outline left the hue as four hairlines
+  around a hole, so a 10px box read as "grey box" long before it read as "blue".
+  Hatching roughly triples the inked area while keeping the mark *drawn* rather
+  than filled — rows carry solid bucket dots in the same palette, and form is
+  what tells the two apart at identical hue.
+- **`size`:** `md` (10px, card/header) or `sm` (6px, inline in a row). The hatch
+  pitch tightens with the box so both keep visible lines.
+- Always `aria-hidden`; every call site prints the project name beside it, so
+  colour is never the sole carrier of identity. Resolves through `projectColor`
+  (`lib/paletteColor.ts`), so a stored palette name follows the theme and an
+  unknown value degrades to the neutral instead of vanishing.
 
 ### PixelSpinner
 - **Purpose:** the loading spinner and the pull-to-refresh gauge. Eight blocks
@@ -335,6 +371,11 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   uses. That class is the app's one definition of "dotted": both bars are the
   same dot grid at the same 2px pitch, differing only in hue. Change the texture
   there, never by adding a second mask.
+- **These bars kept the texture reading; `ProgressBar` didn't.** A `DitherFill`
+  segment already spends its hue on bucket identity, so state has to go
+  somewhere else — texture. `ProgressBar` carries no identity, so it spends its
+  ink on the three-stop pace ramp and stays dotted throughout. Both still flip
+  at the same `pct >= 1.0`.
 - **Hues resolve through `hueVar`** (`lib/paletteColor.ts`) to `var(--color-…)`,
   so theme is handled by the cascade. Do not reach for `palette.ts`'s raw RGB
   seeds here — those are for canvas consumers (`TrendBars`, `FlowBars`,
@@ -352,14 +393,14 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   row name, Home's bucket label) states the bucket in visible text next to the
   bar, since the bar itself is `aria-hidden`.
 - **Texture is state, not identity.** `bucketDensity` returns `"solid"` at or
-  over budget and `"dotted"` otherwise — the same reading as `ProgressBar`'s
-  `pct >= 1.0`, and wired to agree with it: `bucketDensity` takes an
+  over budget and `"dotted"` otherwise — the same `pct >= 1.0` threshold
+  `ProgressBar` calls "overbudget", and wired to agree with it: `bucketDensity` takes an
   `isOverBudget` flag, and `overBudgetBuckets` (`lib/insights.ts`) turns a
   period's `BucketSummary[]` (`pct_used >= 1.0`) into the set of names callers
   pass in. `Insights.tsx` threads its `summary` query's buckets through to both
   `ComparativeSummary` (`overBudgetBuckets` prop) and `LensBreakdown`'s buckets
-  lens (`bucketRows`'s `overBudget` param) so their bars go solid in step with
-  Home's `ProgressBar`s for the same period.
+  lens (`bucketRows`'s `overBudget` param) so their bars go solid at the same
+  point Home's `ProgressBar`s turn red for the period.
 - Density used to double as bucket identity (need dense, want medium, saving
   sparse), from when Insights' bars were monochrome and hue was unavailable.
   Once Home and Insights shared one dot texture, hue took over identity — which

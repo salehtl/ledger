@@ -1,37 +1,71 @@
 import { render, screen } from "@testing-library/react";
 import { ProgressBar } from "./ProgressBar";
 
+const fillOf = (bar: HTMLElement) => bar.querySelector("[data-fill]") as HTMLElement;
+
 describe("ProgressBar", () => {
   it("clamps width to 0..100 and sets aria-valuenow", () => {
     const { getByRole } = render(<ProgressBar pct={1.4} />);
     const bar = getByRole("progressbar");
     expect(bar).toHaveAttribute("aria-valuenow", "100");
-    const fill = bar.firstChild as HTMLElement;
-    expect(fill.style.width).toBe("100%");
+    expect(fillOf(bar).style.width).toBe("100%");
   });
 
-  it("a bucket under budget renders a dithered fill", () => {
-    render(<ProgressBar pct={0.5} label="Needs" />);
-    const fill = screen.getByRole("progressbar").querySelector("[data-fill]");
+  it("prints ink dots while inside pace", () => {
+    const { getByRole } = render(<ProgressBar pct={0.3} pace={0.5} label="Needs" />);
+    const fill = fillOf(getByRole("progressbar"));
+    expect(fill).toHaveAttribute("data-state", "under");
     expect(fill).toHaveAttribute("data-fill", "dithered");
+    expect(fill.className).toContain("dither-mask");
+    expect(fill.style.background).toBe("var(--color-pace-under)");
   });
 
-  it("a bucket at or over budget fills solid — over is a texture change, not a colour change", () => {
-    render(<ProgressBar pct={1.12} label="Wants" />);
-    const fill = screen.getByRole("progressbar").querySelector("[data-fill]");
-    expect(fill).toHaveAttribute("data-fill", "solid");
+  it("turns amber once past pace but still inside budget", () => {
+    const { getByRole } = render(<ProgressBar pct={0.7} pace={0.5} label="Wants" />);
+    const fill = fillOf(getByRole("progressbar"));
+    expect(fill).toHaveAttribute("data-state", "over");
+    expect(fill.style.background).toBe("var(--color-pace-over)");
   });
 
-  it("an explicit tone still overrides the automatic one — tone='bad' forces solid", () => {
-    render(<ProgressBar pct={0.2} label="Saving" tone="bad" />);
-    const fill = screen.getByRole("progressbar").querySelector("[data-fill]");
-    expect(fill).toHaveAttribute("data-fill", "solid");
+  it("turns red once past budget", () => {
+    const { getByRole } = render(<ProgressBar pct={1.12} pace={0.5} label="Wants" />);
+    const fill = fillOf(getByRole("progressbar"));
+    expect(fill).toHaveAttribute("data-state", "overbudget");
+    expect(fill.style.background).toBe("var(--color-pace-exceeded)");
   });
 
-  it("an explicit tone can override auto-bad back to dithered — tone='good' forces dithered even at high pct", () => {
-    render(<ProgressBar pct={1.5} label="Projection" tone="good" />);
-    const fill = screen.getByRole("progressbar").querySelector("[data-fill]");
-    expect(fill).toHaveAttribute("data-fill", "dithered");
+  it("stays dotted in every state — over is a colour change, not a texture change", () => {
+    for (const pct of [0.3, 0.7, 1.4]) {
+      const { getByRole, unmount } = render(<ProgressBar pct={pct} pace={0.5} />);
+      const fill = fillOf(getByRole("progressbar"));
+      expect(fill, `pct=${pct}`).toHaveAttribute("data-fill", "dithered");
+      unmount();
+    }
+  });
+
+  it("never reads over-pace without a pace — an open-ended project has nothing to be ahead of", () => {
+    const { getByRole } = render(<ProgressBar pct={0.9} label="Trip" />);
+    const fill = fillOf(getByRole("progressbar"));
+    expect(fill).toHaveAttribute("data-state", "under");
+    expect(fill.style.background).toBe("var(--color-pace-under)");
+  });
+
+  it("still reads over-budget without a pace", () => {
+    const { getByRole } = render(<ProgressBar pct={1.05} label="Trip" />);
+    expect(fillOf(getByRole("progressbar"))).toHaveAttribute("data-state", "overbudget");
+  });
+
+  it("an explicit status overrides the geometric reading", () => {
+    // Home passes its run-rate verdict so the bar agrees with the label beside it.
+    const { getByRole } = render(<ProgressBar pct={0.2} pace={0.5} status="over" label="Saving" />);
+    const fill = fillOf(getByRole("progressbar"));
+    expect(fill).toHaveAttribute("data-state", "over");
+    expect(fill.style.background).toBe("var(--color-pace-over)");
+  });
+
+  it("an explicit status can pull a high pct back to under", () => {
+    const { getByRole } = render(<ProgressBar pct={1.5} status="under" label="Projection" />);
+    expect(fillOf(getByRole("progressbar"))).toHaveAttribute("data-state", "under");
   });
 
   it("draws a pace marker at the given fraction", () => {
@@ -39,6 +73,11 @@ describe("ProgressBar", () => {
     const marker = getByRole("progressbar").querySelector("[data-pace]") as HTMLElement;
     expect(marker).not.toBeNull();
     expect(marker.style.left).toBe("50%");
+  });
+
+  it("omits the marker when no pace is given", () => {
+    const { getByRole } = render(<ProgressBar pct={0.6} />);
+    expect(getByRole("progressbar").querySelector("[data-pace]")).toBeNull();
   });
 
   it("uses a translucent track on accent surfaces", () => {
@@ -49,52 +88,26 @@ describe("ProgressBar", () => {
   it("onAccent never hardcodes white — the hero panel inverts between themes, so a literal bg-white fill is invisible in dark", () => {
     const { getByRole } = render(<ProgressBar pct={0.6} pace={0.5} onAccent />);
     const bar = getByRole("progressbar") as HTMLElement;
-    const fill = bar.querySelector("[data-fill]") as HTMLElement;
     const marker = bar.querySelector("[data-pace]") as HTMLElement;
-    for (const el of [bar, fill, marker]) {
+    for (const el of [bar, fillOf(bar), marker]) {
       expect(el.className).not.toMatch(/bg-white\b/);
     }
     expect(bar.className).toContain("bg-hero-fg/25");
-    expect(fill.className).toContain("bg-hero-fg");
+    expect(fillOf(bar).className).toContain("bg-hero-fg");
     expect(marker.className).toContain("bg-hero-fg");
   });
 
-  it("the non-accent (default) variant is unchanged by the onAccent fix", () => {
-    const { getByRole } = render(<ProgressBar pct={0.6} pace={0.5} />);
-    const bar = getByRole("progressbar") as HTMLElement;
-    const fill = bar.querySelector("[data-fill]") as HTMLElement;
-    const marker = bar.querySelector("[data-pace]") as HTMLElement;
-    expect(bar.className).toContain("bg-surface-2");
-    expect(fill.className).toContain("bg-fg");
-    expect(marker.className).toContain("bg-fg/70");
-  });
+  it("onAccent carries state as texture, not ink — neither pace hue clears 3:1 on the hero ground in both themes", () => {
+    const over = render(<ProgressBar pct={0.7} pace={0.5} onAccent />);
+    const overFill = fillOf(over.getByRole("progressbar"));
+    expect(overFill.style.background).toBe("");
+    expect(overFill).toHaveAttribute("data-fill", "dithered");
+    over.unmount();
 
-  it("paints the fill in the given hue instead of the default ink", () => {
-    const { getByRole } = render(<ProgressBar pct={0.5} color="amber" label="Needs" />);
-    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
-    expect(fill.style.background).toBe("var(--color-amber)");
-    expect(fill.className).not.toContain("bg-fg");
-  });
-
-  it("keeps the default ink when no hue is given", () => {
-    const { getByRole } = render(<ProgressBar pct={0.5} label="Needs" />);
-    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
-    expect(fill.className).toContain("bg-fg");
-    expect(fill.style.background).toBe("");
-  });
-
-  it("onAccent overrides a hue — the hero totals all three buckets, so no single bucket hue is honest for it, and mid-chroma ink on the accent ground is a contrast problem", () => {
-    const { getByRole } = render(<ProgressBar pct={0.5} color="amber" onAccent />);
-    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
-    expect(fill.style.background).toBe("");
-    expect(fill.className).toContain("bg-hero-fg");
-  });
-
-  it("a hue still goes solid at or over budget — over is a texture change, not a colour change", () => {
-    const { getByRole } = render(<ProgressBar pct={1.2} color="lilac" label="Wants" />);
-    const fill = getByRole("progressbar").querySelector("[data-fill]") as HTMLElement;
-    expect(fill).toHaveAttribute("data-fill", "solid");
-    expect(fill.className).not.toContain("dither-mask");
-    expect(fill.style.background).toBe("var(--color-lilac)");
+    render(<ProgressBar pct={1.2} pace={0.5} onAccent label="Total" />);
+    const badFill = fillOf(screen.getByRole("progressbar"));
+    expect(badFill.style.background).toBe("");
+    expect(badFill).toHaveAttribute("data-fill", "solid");
+    expect(badFill.className).not.toContain("dither-mask");
   });
 });
