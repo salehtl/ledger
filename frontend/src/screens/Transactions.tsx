@@ -42,6 +42,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [detail, setDetail] = useState<Txn | null>(null);
   const [categorizeTxn, setCategorizeTxn] = useState<Txn | null>(null);
+  const [categorizeAsTransfer, setCategorizeAsTransfer] = useState(false);
   const [linkTxn, setLinkTxn] = useState<Txn | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -225,7 +226,8 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
         <TransactionDetailSheet
           txn={detail}
           onClose={() => setDetail(null)}
-          onCategorize={() => { const t = detail; setDetail(null); setCategorizeTxn(t); }}
+          onCategorize={() => { const t = detail; setDetail(null); setCategorizeAsTransfer(false); setCategorizeTxn(t); }}
+          onTransfer={() => { const t = detail; setDetail(null); setCategorizeAsTransfer(true); setCategorizeTxn(t); }}
           onStatus={(s) => { const t = detail; setDetail(null); void setStatus(t, s); }}
           onArchive={() => { const t = detail; setDetail(null); void archiveTxn(t); }}
           onRestore={() => { const t = detail; setDetail(null); void restoreTxn(t); }}
@@ -237,9 +239,15 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
       {categorizeTxn && cats.data && (
         <CategorizeSheet
           txn={categorizeTxn}
-          categories={cats.data}
-          onSubmit={async (body) => { if (await categorize(categorizeTxn, body)) setCategorizeTxn(null); }}
-          onClose={() => setCategorizeTxn(null)}
+          categories={categorizeAsTransfer ? cats.data.filter((c) => c.Kind === "excluded") : cats.data}
+          title={categorizeAsTransfer ? "Classify transfer" : "Categorize"}
+          onSubmit={async (body) => {
+            if (!await categorize(categorizeTxn, body)) return;
+            if (categorizeAsTransfer) await setStatus(categorizeTxn, "transfer");
+            setCategorizeTxn(null);
+            setCategorizeAsTransfer(false);
+          }}
+          onClose={() => { setCategorizeTxn(null); setCategorizeAsTransfer(false); }}
           onLinkRefund={() => { setLinkTxn(categorizeTxn); setCategorizeTxn(null); }}
           onUnlinkRefund={() => { const t = categorizeTxn; setCategorizeTxn(null); void unlinkRefund(t); }}
         />

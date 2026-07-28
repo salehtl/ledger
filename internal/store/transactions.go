@@ -26,6 +26,36 @@ type TransactionRow struct {
 	IngestID    int64
 }
 
+// TransactionEmail is the retained source message for one email-backed
+// transaction. Manual/imported rows have no source email.
+type TransactionEmail struct {
+	From       string `json:"from"`
+	Subject    string `json:"subject"`
+	ReceivedAt string `json:"received_at"`
+	Body       string `json:"body"`
+}
+
+func (s *Store) TransactionEmail(txID int64) (TransactionEmail, bool, error) {
+	var out TransactionEmail
+	var stored []byte
+	err := s.DB.QueryRow(`SELECT COALESCE(i.from_addr,''), COALESCE(i.subject,''),
+		COALESCE(i.received_at,''), i.raw_body
+		FROM transactions t JOIN ingest_log i ON i.id=t.ingest_id WHERE t.id=?`, txID).
+		Scan(&out.From, &out.Subject, &out.ReceivedAt, &stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, false, nil
+	}
+	if err != nil {
+		return out, false, err
+	}
+	body, err := decodeBody(stored)
+	if err != nil {
+		return out, false, err
+	}
+	out.Body = string(body)
+	return out, true, nil
+}
+
 // Fingerprint is sha256(last4 | amount | direction | normalize(merchant) | day),
 // matching §6.4. With no account seeded yet we use Last4 in place of account_id.
 func (r TransactionRow) Fingerprint() string {

@@ -104,6 +104,16 @@ describe("txnTotals", () => {
     expect(txnTotals(rows)).toEqual({ count: 3, spentFils: 6500 });
   });
 
+  it("excludes transfer rows and excluded categories from expenditure", () => {
+    const rows = [
+      mk({ AmountFils: 5000, Direction: "debit" }),
+      mk({ AmountFils: 9000, Direction: "debit", Status: "transfer" }),
+      mk({ AmountFils: 4000, Direction: "debit", Kind: "excluded", CategoryName: "Reimbursements" }),
+      mk({ AmountFils: 3000, Direction: "credit" }),
+    ];
+    expect(txnTotals(rows)).toEqual({ count: 4, spentFils: 5000 });
+  });
+
   it("returns zeroes for an empty list", () => {
     expect(txnTotals([])).toEqual({ count: 0, spentFils: 0 });
   });

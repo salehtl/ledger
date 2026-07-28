@@ -4,7 +4,7 @@ import type { Category, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
 import { Input } from "../ui/Field";
 import { EmptyState } from "../EmptyState";
-import { FilterChips } from "../transactions/FilterChips";
+import { FilterBar } from "../transactions/FilterBar";
 import { TransactionRow } from "../transactions/TransactionRow";
 import { CategorizeSheet } from "../transactions/CategorizeSheet";
 import { useTxnActions } from "../../hooks/useTxnActions";
@@ -37,9 +37,10 @@ export function SearchSheet({ txns, categories, onClose }: {
           onChange={(e) => setTerm(e.target.value)}
         />
       </div>
-      <div className="mb-3">
-        <FilterChips filters={filters} categories={categories} txns={txns} onChange={setFilters} />
-      </div>
+      <FilterBar filters={filters} categories={categories} txns={txns} open onChange={setFilters} />
+      <p className="mb-2 mt-3 text-xs text-muted tnum" aria-live="polite">
+        {rows.length} result{rows.length === 1 ? "" : "s"}
+      </p>
       {rows.length === 0 ? (
         <EmptyState title="No transactions match" />
       ) : (

@@ -86,6 +86,29 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(items)
 }
 
+func (s *Server) handleTransactionEmail(w http.ResponseWriter, r *http.Request) {
+	if s.catStore == nil {
+		http.Error(w, `{"error":"transactions unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	txID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || txID <= 0 {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	email, ok, err := s.catStore.TransactionEmail(txID)
+	if err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, `{"error":"source email unavailable"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(email)
+}
+
 // handleClearCategorization moves every transaction back to needs_review and
 // clears its category, leaving learned rules intact. Destructive bulk reset
 // exposed in the Settings "Danger zone".

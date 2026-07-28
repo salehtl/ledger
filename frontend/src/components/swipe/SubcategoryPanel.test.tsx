@@ -142,3 +142,41 @@ describe('SubcategoryPanel income for credits', () => {
     expect(screen.queryByTestId('income-group')).toBeNull()
   })
 })
+
+describe('SubcategoryPanel transfers', () => {
+  function renderTransferPanel(txnOverrides: Partial<Txn> = {}, onSelect = vi.fn()) {
+    render(
+      <SubcategoryPanel
+        action={DEFAULT_SWIPE_CONFIG.up}
+        txn={txn(txnOverrides)}
+        categories={[...CATS, { ID: 8, Name: 'Transfers', Kind: 'excluded', Bucket: '', IsActive: true }]}
+        makeRule={false}
+        onMakeRuleChange={() => {}}
+        onSelect={onSelect}
+        onCancel={() => {}}
+      />,
+    )
+    return onSelect
+  }
+
+  it('offers excluded categories for the transfer action', () => {
+    const onSelect = renderTransferPanel()
+    fireEvent.click(within(screen.getByTestId('excluded-group')).getByText('Transfers'))
+    expect(onSelect).toHaveBeenCalledWith(8, null)
+  })
+
+  it('offers income categories on a transfer swipe when the card is a credit', () => {
+    const onSelect = renderTransferPanel({ Direction: 'credit' })
+    const income = screen.getByTestId('income-group')
+    fireEvent.click(within(income).getByText('Salary'))
+    expect(onSelect).toHaveBeenCalledWith(6, null)
+    // Excluded picks still there alongside
+    expect(within(screen.getByTestId('excluded-group')).getByText('Transfers')).toBeInTheDocument()
+  })
+
+  it('hides income categories on a transfer swipe for debits', () => {
+    renderTransferPanel()
+    expect(screen.queryByTestId('income-group')).toBeNull()
+    expect(screen.queryByText('Salary')).toBeNull()
+  })
+})

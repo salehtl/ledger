@@ -43,10 +43,10 @@ export function TransactionRow({ txn, onOpen, projectsById }: {
         style={{ background: txn.Bucket ? bucketColor(txn.Bucket) : "var(--color-border)" }}
       />
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline justify-between gap-3">
-          <p className="truncate text-sm font-medium tracking-[-0.01em]">{txn.MerchantRaw || "—"}</p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="line-clamp-2 break-words text-sm font-medium leading-5 tracking-[-0.01em]" title={txn.MerchantRaw || undefined}>{txn.MerchantRaw || "—"}</p>
           <span
-            className="tnum font-medium shrink-0"
+            className="tnum font-medium leading-5 shrink-0"
             style={amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
             title={amount.flow === "in" ? "Money in" : "Money out"}
           >

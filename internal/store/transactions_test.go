@@ -644,3 +644,32 @@ func TestSelectForParseReturnsReceivedAt(t *testing.T) {
 		t.Errorf("ReceivedAt = %v, want %v", rows[0].ReceivedAt, recv)
 	}
 }
+
+func TestTransactionEmailReturnsDecodedSource(t *testing.T) {
+	st := newTestStore(t)
+	created, err := st.InsertIngest(IngestRecord{
+		MessageUID: "email-preview", FromAddr: "bank@example.com", Subject: "Card purchase",
+		ReceivedAt: time.Now(), ParseStatus: "parsed", RawBody: []byte("From: bank@example.com\r\n\r\nAED 42.00 at Cafe"), CreatedAt: time.Now(),
+	})
+	if err != nil || !created {
+		t.Fatalf("insert ingest: created=%v err=%v", created, err)
+	}
+	var ingestID int64
+	if err := st.DB.QueryRow(`SELECT id FROM ingest_log WHERE message_uid='email-preview'`).Scan(&ingestID); err != nil {
+		t.Fatal(err)
+	}
+	txID, ok, err := st.InsertTransaction(TransactionRow{
+		PostedAt: time.Now(), AmountFils: 4200, Currency: "AED", Direction: "debit",
+		MerchantRaw: "Cafe", Status: "needs_review", IngestID: ingestID,
+	})
+	if err != nil || !ok {
+		t.Fatalf("insert transaction: ok=%v err=%v", ok, err)
+	}
+	email, ok, err := st.TransactionEmail(txID)
+	if err != nil || !ok {
+		t.Fatalf("TransactionEmail: ok=%v err=%v", ok, err)
+	}
+	if email.Subject != "Card purchase" || email.Body != "From: bank@example.com\r\n\r\nAED 42.00 at Cafe" {
+		t.Fatalf("unexpected email: %#v", email)
+	}
+}

@@ -35,6 +35,7 @@ export interface Txn {
   /** Registered account name matching Last4; "" or absent when unregistered. */
   AccountName?: string;
 }
+export interface TransactionEmail { from: string; subject: string; received_at: string; body: string; }
 export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
 export interface BudgetConfig {
