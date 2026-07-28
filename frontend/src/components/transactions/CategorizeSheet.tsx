@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Category, Txn } from "../../api/types";
 import { Money } from "../Money";
-import { Dialog } from "../ui/Dialog";
+import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
 import { Switch } from "../ui/Switch";
@@ -154,7 +154,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
         <p className="text-xs text-muted mb-4">Saving with no category moves this back to the review queue.</p>
       )}
 
-      <div className="flex justify-end gap-2">
+      <DialogFooter>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button
           variant="primary"
@@ -163,7 +163,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
         >
           Save
         </Button>
-      </div>
+      </DialogFooter>
     </Dialog>
   );
 }

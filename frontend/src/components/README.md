@@ -178,6 +178,9 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
   a sheet must read as above the page; everywhere else uses a
   `border-border` hairline instead.
 - **Use when:** anything overlays the current screen but keeps context.
+- **Action footer:** wrap bottom actions in `DialogFooter`. It stays `sticky`
+  at the sheet bottom with an opaque surface, safe-area padding, and `z-20`, so
+  long content scrolls underneath without hiding the primary action.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
@@ -427,6 +430,14 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 
 Domain components live beside their feature (`transactions/`, `swipe/`,
 `insights/`, `charts/`) and compose the primitives above. Notable:
+
+- `CategoryManager` — searchable category inventory grouped by spending,
+  income, and excluded semantics. Collapsed rows are calm text (bucket dot +
+  name + usage figure only when in use); tapping a row expands an inline
+  editor with explicit-save rename, bucket dot-chips, and a usage-guarded
+  delete. Creation is progressive disclosure with a segmented kind control.
+- `RulesManager` — searchable learned-rule inventory with active rules first,
+  explicit active/paused state, and confirmation before permanent deletion.
 
 - `TransactionRow` — one calm, tap-only list line (merchant wraps to two lines
   beside the amount, then

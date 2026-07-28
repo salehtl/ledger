@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { Dialog } from "./Dialog";
+import { Dialog, DialogFooter } from "./Dialog";
 import { SHEET_EXIT_MS } from "../../lib/motion";
 
 describe("Dialog", () => {
@@ -11,6 +11,12 @@ describe("Dialog", () => {
     render(<Dialog title="Choose period" onClose={vi.fn()}>body</Dialog>);
     expect(screen.getByRole("dialog", { name: "Choose period" })).toBeInTheDocument();
     expect(screen.getByText("body")).toBeInTheDocument();
+  });
+
+  it("keeps footer actions sticky above scrolling content", () => {
+    const { container } = render(<Dialog title="T" onClose={() => {}}><div>body</div><DialogFooter><button>Save</button></DialogFooter></Dialog>);
+    const footer = container.querySelector("[data-dialog-footer]");
+    expect(footer).toHaveClass("sticky", "bottom-0", "z-20", "bg-surface");
   });
 
   it("gives the panel a transform transition for the slide", () => {

@@ -9,7 +9,7 @@ import { ProgressBar } from "../../components/ui/ProgressBar";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Switch } from "../../components/ui/Switch";
 import { Button } from "../../components/ui/Button";
-import { Dialog } from "../../components/ui/Dialog";
+import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { TransactionRow } from "../../components/transactions/TransactionRow";
 import { CategorizeSheet } from "../../components/transactions/CategorizeSheet";
 import { useTxnActions } from "../../hooks/useTxnActions";
@@ -215,10 +215,10 @@ export function ProjectDetail({
           <p className="text-sm text-muted mb-4">
             This removes "{p.name}" and unassigns its transactions. This can't be undone.
           </p>
-          <div className="flex justify-end gap-2">
+          <DialogFooter>
             <Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
             <Button variant="danger" onClick={confirmDeleteProject}>Delete</Button>
-          </div>
+          </DialogFooter>
         </Dialog>
       )}
     </SettingsPage>

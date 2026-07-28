@@ -5,7 +5,7 @@ import { type Scope } from "../lib/scope";
 import { CategoryManager } from "./CategoryManager";
 import { RulesManager } from "./RulesManager";
 import { Button } from "../components/ui/Button";
-import { Dialog } from "../components/ui/Dialog";
+import { Dialog, DialogFooter } from "../components/ui/Dialog";
 import { useToast } from "../components/Toast";
 import { SettingsHub, type SettingsPageId } from "./settings/SettingsHub";
 import { BudgetPage } from "./settings/BudgetPage";
@@ -88,12 +88,12 @@ export function Settings({
             This moves {txnCount} transaction{txnCount === 1 ? "" : "s"} back to Needs review and clears their categories.
             Learned rules are kept. This can't be undone.
           </p>
-          <div className="flex justify-end gap-2">
+          <DialogFooter>
             <Button variant="ghost" onClick={() => setClearOpen(false)}>Cancel</Button>
             <Button variant="danger" onClick={clearCategorization} disabled={clearBusy}>
               {clearBusy ? "Clearing…" : "Clear"}
             </Button>
-          </div>
+          </DialogFooter>
         </Dialog>
       )}
     </>
