@@ -7,6 +7,7 @@ import { CategoryManager } from "./CategoryManager";
 const CATS = [
   { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
   { ID: 2, Name: "Salary", Kind: "income", Bucket: "", IsActive: true },
+  { ID: 3, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
 ];
 
 function mockFetch(usage: Record<number, { transactions: number; rules: number }>, overrides?: (url: string, init?: RequestInit) => Response | null) {
@@ -39,24 +40,23 @@ function wrap() {
   );
 }
 
-/** Expand a category's row into its inline editor. */
-async function expand(name: string) {
-  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`edit ${name}`, "i") }));
-}
+const USAGE = { 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 }, 3: { transactions: 0, rules: 0 } };
 
 describe("CategoryManager", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", mockFetch({ 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 } }));
+    vi.stubGlobal("fetch", mockFetch(USAGE));
   });
 
-  it("renders categories grouped by kind as calm text rows, not inputs", async () => {
+  it("renders one section per bucket plus income and excluded", async () => {
     wrap();
     expect(await screen.findByText("Groceries")).toBeInTheDocument();
-    expect(screen.getByText("Salary")).toBeInTheDocument();
-    // Collapsed rows carry no form fields
+    const needs = screen.getByTestId("section-need");
+    expect(within(needs).getByText("Needs")).toBeInTheDocument();
+    expect(within(needs).getByText("Groceries")).toBeInTheDocument();
+    expect(within(screen.getByTestId("section-want")).getByText("Dining")).toBeInTheDocument();
+    expect(within(screen.getByTestId("section-income")).getByText("Salary")).toBeInTheDocument();
+    // Rows are calm text, not form fields
     expect(screen.queryByLabelText("Rename Groceries")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Spending").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Income").length).toBeGreaterThanOrEqual(1);
   });
 
   it("overlay has a solid theme background, not a broken CSS-var class (regression)", async () => {
@@ -68,33 +68,46 @@ describe("CategoryManager", () => {
     expect(overlay.className).not.toMatch(/bg-\[--/);
   });
 
-  it("shows compact usage on collapsed rows, and stays quiet for unused ones", async () => {
+  it("shows compact usage on in-use rows and stays quiet on unused ones", async () => {
     wrap();
     expect(await screen.findByText(/3 txns · 1 rule/i)).toBeInTheDocument();
     expect(screen.queryByText(/unused/i)).not.toBeInTheDocument();
   });
 
-  it("expanding a row reveals the editor; rename saves via the Save button", async () => {
-    const fetchMock = mockFetch({ 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 } });
+  it("tapping a name edits it in place; Enter saves", async () => {
+    const fetchMock = mockFetch(USAGE);
     vi.stubGlobal("fetch", fetchMock);
     wrap();
-    await expand("Groceries");
+    fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
     const input = screen.getByLabelText("Rename Groceries");
     fireEvent.change(input, { target: { value: "Food & Groceries" } });
-    fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+    fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT");
       expect(call).toBeTruthy();
-      expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Food & Groceries" });
+      expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Food & Groceries", bucket: "need" });
     });
   });
 
-  it("bucket dot-chips in the expanded row move the category", async () => {
-    const fetchMock = mockFetch({ 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 } });
+  it("Escape cancels an in-place edit without saving", async () => {
+    const fetchMock = mockFetch(USAGE);
     vi.stubGlobal("fetch", fetchMock);
     wrap();
-    await expand("Groceries");
-    fireEvent.click(screen.getByRole("button", { name: "Wants" }));
+    fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+    const input = screen.getByLabelText("Rename Groceries");
+    fireEvent.change(input, { target: { value: "Oops" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByLabelText("Rename Groceries")).not.toBeInTheDocument();
+    expect(screen.getByText("Groceries")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some((c) => c[1]?.method === "PUT")).toBe(false);
+  });
+
+  it("while editing, bucket dots move the category in one tap", async () => {
+    const fetchMock = mockFetch(USAGE);
+    vi.stubGlobal("fetch", fetchMock);
+    wrap();
+    fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+    fireEvent.click(screen.getByRole("button", { name: /move to wants/i }));
     await waitFor(() => {
       const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT");
       expect(call).toBeTruthy();
@@ -102,39 +115,29 @@ describe("CategoryManager", () => {
     });
   });
 
-  it("delete is disabled with an explanation while the category is in use", async () => {
-    wrap();
-    await expand("Groceries");
-    const btn = screen.getByRole("button", { name: /groceries in use/i });
-    expect(btn).toBeDisabled();
-    expect(screen.getByText(/reassign/i)).toBeInTheDocument();
-  });
-
-  it("delete fires for an unused category", async () => {
-    const fetchMock = mockFetch({ 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 } });
+  it("delete is always visible: disabled with the reason while in use, live otherwise", async () => {
+    const fetchMock = mockFetch(USAGE);
     vi.stubGlobal("fetch", fetchMock);
     wrap();
-    await expand("Salary");
-    const btn = screen.getByRole("button", { name: "Delete Salary" });
-    expect(btn).not.toBeDisabled();
-    fireEvent.click(btn);
+    const guarded = await screen.findByRole("button", { name: /groceries in use/i });
+    expect(guarded).toBeDisabled();
+    const live = await screen.findByRole("button", { name: "Delete Salary" });
+    expect(live).not.toBeDisabled();
+    fireEvent.click(live);
     await waitFor(() => {
-      const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/2" && c[1]?.method === "DELETE");
-      expect(call).toBeTruthy();
+      expect(fetchMock.mock.calls.some((c) => c[0] === "/api/categories/2" && c[1]?.method === "DELETE")).toBe(true);
     });
   });
 
-  it("add form picks kind with a segmented control and bucket with dot-chips", async () => {
-    const fetchMock = mockFetch({});
+  it("section-header + adds a new category in place with kind and bucket inferred", async () => {
+    const fetchMock = mockFetch(USAGE);
     vi.stubGlobal("fetch", fetchMock);
     wrap();
     await screen.findByText("Groceries");
-    fireEvent.click(screen.getByRole("button", { name: /^new$/i }));
-    const form = screen.getByTestId("new-category-form");
-    // Spending default -> bucket chips present; pick Wants
-    fireEvent.click(within(form).getByRole("button", { name: "Wants" }));
-    fireEvent.change(screen.getByLabelText(/new category name/i), { target: { value: "Hobbies" } });
-    fireEvent.click(screen.getByRole("button", { name: /create category/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add to wants/i }));
+    const input = screen.getByLabelText("New category in Wants");
+    fireEvent.change(input, { target: { value: "Hobbies" } });
+    fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories" && c[1]?.method === "POST");
       expect(call).toBeTruthy();
@@ -142,14 +145,33 @@ describe("CategoryManager", () => {
     });
   });
 
-  it("switching the new-category kind to income hides the bucket chips", async () => {
+  it("adding under Income infers the income kind with no bucket", async () => {
+    const fetchMock = mockFetch(USAGE);
+    vi.stubGlobal("fetch", fetchMock);
     wrap();
     await screen.findByText("Groceries");
-    fireEvent.click(screen.getByRole("button", { name: /^new$/i }));
-    const form = screen.getByTestId("new-category-form");
-    expect(within(form).getByRole("button", { name: "Needs" })).toBeInTheDocument();
-    fireEvent.click(within(form).getByRole("button", { name: "Income" }));
-    expect(within(form).queryByRole("button", { name: "Needs" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /add to income/i }));
+    const input = screen.getByLabelText("New category in Income");
+    fireEvent.change(input, { target: { value: "Dividends" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories" && c[1]?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Dividends", kind: "income", bucket: "" });
+    });
+  });
+
+  it("Escape abandons an inline add without posting", async () => {
+    const fetchMock = mockFetch(USAGE);
+    vi.stubGlobal("fetch", fetchMock);
+    wrap();
+    await screen.findByText("Groceries");
+    fireEvent.click(screen.getByRole("button", { name: /add to needs/i }));
+    const input = screen.getByLabelText("New category in Needs");
+    fireEvent.change(input, { target: { value: "Nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByLabelText("New category in Needs")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST")).toBe(false);
   });
 
   it("filters categories by name", async () => {
@@ -161,21 +183,18 @@ describe("CategoryManager", () => {
   });
 
   it("rename with duplicate name shows friendly toast", async () => {
-    const fetchMock = mockFetch(
-      { 1: { transactions: 3, rules: 1 }, 2: { transactions: 0, rules: 0 } },
-      (url, init) => {
-        if (url === "/api/categories/1" && init?.method === "PUT") {
-          return new Response(JSON.stringify({ error: "name exists" }), { status: 409 });
-        }
-        return null;
-      },
-    );
+    const fetchMock = mockFetch(USAGE, (url, init) => {
+      if (url === "/api/categories/1" && init?.method === "PUT") {
+        return new Response(JSON.stringify({ error: "name exists" }), { status: 409 });
+      }
+      return null;
+    });
     vi.stubGlobal("fetch", fetchMock);
     wrap();
-    await expand("Groceries");
+    fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
     const input = screen.getByLabelText("Rename Groceries");
     fireEvent.change(input, { target: { value: "Salary" } });
-    fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+    fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       expect(screen.getByText("A category with that name already exists.")).toBeInTheDocument();
     });

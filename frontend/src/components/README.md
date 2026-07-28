@@ -431,11 +431,12 @@ commit.** Colocated `*.test.tsx` files are the behavioral spec.
 Domain components live beside their feature (`transactions/`, `swipe/`,
 `insights/`, `charts/`) and compose the primitives above. Notable:
 
-- `CategoryManager` — searchable category inventory grouped by spending,
-  income, and excluded semantics. Collapsed rows are calm text (bucket dot +
-  name + usage figure only when in use); tapping a row expands an inline
-  editor with explicit-save rename, bucket dot-chips, and a usage-guarded
-  delete. Creation is progressive disclosure with a segmented kind control.
+- `CategoryManager` — category inventory where the sections ARE the taxonomy
+  (Needs / Wants / Savings / Income / Excluded). Each section header carries
+  its own `+` that births an inline row knowing its kind and bucket; rows are
+  one line always — tap the name to rename in place (Enter/blur saves, Escape
+  cancels), bucket dots swap into the row while editing, delete is always
+  visible and usage-guarded. No per-row accordions.
 - `RulesManager` — searchable learned-rule inventory with active rules first,
   explicit active/paused state, and confirmation before permanent deletion.
 
