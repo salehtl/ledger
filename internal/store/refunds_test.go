@@ -244,3 +244,53 @@ func TestSelectRefundCandidatesRejectsNonCredit(t *testing.T) {
 		t.Errorf("SelectRefundCandidates(missing) = %v, want ErrRefundNotFound", err)
 	}
 }
+
+// TestRefundMachinerySurvivesSplit: splitting a purchase clears its own
+// category, but it must stay findable as a refund candidate and linkable —
+// the scope's "the parent keeps its refund machinery". The credit inherits
+// the dominant split line's category.
+func TestRefundMachinerySurvivesSplit(t *testing.T) {
+	st := openTestStore(t)
+	purchase := seedTxn(t, st, "debit", "Amazon", 10000, "2026-07-01T10:00:00Z", "Groceries")
+	var groceries, dining int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&groceries); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Dining'`).Scan(&dining); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceTransactionSplits(purchase, []TransactionSplitRow{
+		{CategoryID: dining, AmountFils: 4000},
+		{CategoryID: groceries, AmountFils: 6000}, // dominant line
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	credit := seedTxn(t, st, "credit", "Amazon refund", 10000, "2026-07-05T10:00:00Z", "")
+	items, err := st.SelectRefundCandidates(credit, 20)
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	found := false
+	for _, it := range items {
+		if it.ID == purchase {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("split parent %d missing from refund candidates: %+v", purchase, items)
+	}
+
+	if err := st.LinkRefund(credit, purchase); err != nil {
+		t.Fatalf("link to split parent: %v", err)
+	}
+	var gotCat sql.NullInt64
+	var status string
+	if err := st.DB.QueryRow(`SELECT category_id, status FROM transactions WHERE id=?`, credit).
+		Scan(&gotCat, &status); err != nil {
+		t.Fatal(err)
+	}
+	if !gotCat.Valid || gotCat.Int64 != groceries || status != "confirmed" {
+		t.Fatalf("credit after link: cat=%v status=%s, want largest-line category %d confirmed", gotCat, status, groceries)
+	}
+}

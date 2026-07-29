@@ -53,7 +53,7 @@ type CategoryStore interface {
 	UpdateTransactionStatus(txID int64, status string) error
 	UpdateCategory(store.CategoryRow) error
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
-	CategoryUsage(id int64) (txns int, rules int, err error)
+	CategoryUsage(id int64) (txns, rules, assignments int, err error)
 	DeleteCategory(id int64) error
 	ClearAllCategorization() (int64, error)
 	ArchiveTransaction(txID int64) error
@@ -103,6 +103,18 @@ type Server struct {
 	transfersStore  TransfersStore
 	projectStore    ProjectStore
 	aiKeyPresent    bool
+
+	// v3 stores (targets/envelopes/scheduled/balances/reports/splits) and the
+	// in-memory notification state the emitters in notify.go share.
+	targetsStore   TargetsStore
+	envelopeStore  EnvelopeStore
+	scheduledStore ScheduledStore
+	balancesStore  BalancesStore
+	reportsStore   ReportsStore
+	splitsStore    SplitsStore
+	notifyStore    NotifyStore
+	noteStore      NoteStore
+	notifyState
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.
@@ -200,6 +212,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("DELETE /api/rates/{currency}", s.handleDeleteRate)
 	s.mux.HandleFunc("GET /api/accounts", s.handleGetAccounts)
 	s.mux.HandleFunc("POST /api/accounts", s.handlePostAccount)
+	s.mux.HandleFunc("PUT /api/accounts/{id}", s.handlePutAccount)
 	s.mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	s.mux.HandleFunc("POST /api/transfers/sweep", s.handleTransfersSweep)
 	s.mux.HandleFunc("GET /api/rules", s.handleGetRules)
@@ -211,6 +224,35 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)
 	s.mux.HandleFunc("GET /api/insights/categories", s.handleGetCategorySpend)
 	s.mux.HandleFunc("GET /api/insights/trend", s.handleGetTrend)
+	s.mux.HandleFunc("GET /api/targets", s.handleGetTargets)
+	s.mux.HandleFunc("GET /api/targets/{categoryId}", s.handleGetTarget)
+	s.mux.HandleFunc("PUT /api/targets/{categoryId}", s.handlePutTarget)
+	s.mux.HandleFunc("DELETE /api/targets/{categoryId}", s.handleDeleteTarget)
+	s.mux.HandleFunc("GET /api/envelopes", s.handleGetEnvelopes)
+	s.mux.HandleFunc("POST /api/envelopes/assign", s.handleEnvelopesAssign)
+	s.mux.HandleFunc("POST /api/envelopes/move", s.handleEnvelopesMove)
+	s.mux.HandleFunc("POST /api/envelopes/auto-assign", s.handleEnvelopesAutoAssign)
+	s.mux.HandleFunc("GET /api/scheduled", s.handleGetScheduled)
+	s.mux.HandleFunc("POST /api/scheduled", s.handlePostScheduled)
+	s.mux.HandleFunc("PUT /api/scheduled/{id}", s.handlePutScheduled)
+	s.mux.HandleFunc("DELETE /api/scheduled/{id}", s.handleDeleteScheduled)
+	s.mux.HandleFunc("POST /api/scheduled/{id}/confirm", s.handleScheduledConfirm)
+	s.mux.HandleFunc("POST /api/scheduled/{id}/dismiss", s.handleScheduledDismiss)
+	s.mux.HandleFunc("POST /api/scheduled/{id}/pause", s.handleScheduledPause)
+	s.mux.HandleFunc("GET /api/upcoming", s.handleGetUpcoming)
+	s.mux.HandleFunc("GET /api/accounts/balances", s.handleGetAccountBalanceSummaries)
+	s.mux.HandleFunc("GET /api/accounts/{id}/balances", s.handleGetAccountBalances)
+	s.mux.HandleFunc("POST /api/accounts/{id}/balances", s.handlePostAccountBalance)
+	s.mux.HandleFunc("POST /api/accounts/{id}/checkin", s.handleAccountCheckin)
+	s.mux.HandleFunc("POST /api/accounts/{id}/adjust", s.handleAccountAdjust)
+	s.mux.HandleFunc("GET /api/reports/networth", s.handleReportNetWorth)
+	s.mux.HandleFunc("GET /api/reports/income-expense", s.handleReportIncomeExpense)
+	s.mux.HandleFunc("GET /api/reports/age-of-money", s.handleReportAgeOfMoney)
+	s.mux.HandleFunc("PUT /api/transactions/{id}/splits", s.handlePutSplits)
+	s.mux.HandleFunc("GET /api/transactions/{id}/splits", s.handleGetSplits)
+	s.mux.HandleFunc("PUT /api/transactions/{id}/note", s.handlePutTransactionNote)
+	s.mux.HandleFunc("GET /api/settings/notifications", s.handleGetNotifySettings)
+	s.mux.HandleFunc("PUT /api/settings/notifications", s.handlePutNotifySettings)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.handlePushUnsubscribe)

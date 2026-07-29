@@ -165,3 +165,77 @@ CREATE TABLE IF NOT EXISTS ai_suggestions (
   confidence    REAL NOT NULL,
   created_at    TEXT NOT NULL
 );
+
+-- v3: per-category budgeting target (envelope depth). One target per category.
+CREATE TABLE IF NOT EXISTS category_targets (
+  category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL,                    -- 'set_aside' | 'refill' | 'save_by_date'
+  amount_fils INTEGER NOT NULL,                 -- AED fils
+  cadence     TEXT NOT NULL DEFAULT 'monthly',  -- 'weekly' | 'monthly' | 'yearly'
+  due_date    TEXT,                             -- 'YYYY-MM-DD'; save_by_date only
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+-- v3: per-month envelope assignments ("give every dirham a job").
+CREATE TABLE IF NOT EXISTS envelope_assignments (
+  id            INTEGER PRIMARY KEY,
+  month         TEXT NOT NULL,                  -- 'YYYY-MM'
+  category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  assigned_fils INTEGER NOT NULL,               -- AED fils
+  updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_envelope_month_cat ON envelope_assignments(month, category_id);
+
+-- v3: recurring bills/income — hand-entered or mined from ingest history by
+-- the deterministic detector. Matcher bookkeeping lives on the row.
+CREATE TABLE IF NOT EXISTS scheduled_transactions (
+  id                  INTEGER PRIMARY KEY,
+  normalized_merchant TEXT NOT NULL,
+  label               TEXT NOT NULL DEFAULT '',
+  amount_fils         INTEGER NOT NULL,         -- expected amount, AED fils
+  tolerance_pct       INTEGER NOT NULL DEFAULT 10, -- ± percent points (integer; money math never uses floats)
+  interval_days       INTEGER NOT NULL,         -- 7/14/30/365-style cadence
+  next_due            TEXT NOT NULL,            -- 'YYYY-MM-DD'
+  direction           TEXT NOT NULL DEFAULT 'debit', -- 'debit' | 'credit'
+  category_id         INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  account_id          INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+  source              TEXT NOT NULL DEFAULT 'manual',   -- 'manual' | 'detected'
+  status              TEXT NOT NULL DEFAULT 'active',   -- 'proposed' | 'active' | 'paused' | 'dismissed'
+  last_matched_tx_id  INTEGER REFERENCES transactions(id),
+  last_matched_at     TEXT,
+  last_amount_fils    INTEGER,                  -- most recent matched amount
+  missed              INTEGER NOT NULL DEFAULT 0, -- next_due + grace passed, no match
+  price_change        INTEGER NOT NULL DEFAULT 0, -- last match was outside tolerance
+  provenance          TEXT NOT NULL DEFAULT '',   -- detector provenance JSON (count, avg interval, last amounts, tx ids); '' for manual rows
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_next_due ON scheduled_transactions(next_due);
+
+-- v3: split transactions — divide one transaction across categories. Split
+-- amounts are in the PARENT's currency minor units and always sum exactly to
+-- the parent amount (enforced by the store, not by SQL). The parent keeps its
+-- fingerprint/ingest provenance and carries category_id NULL while split.
+CREATE TABLE IF NOT EXISTS transaction_splits (
+  id             INTEGER PRIMARY KEY,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  category_id    INTEGER NOT NULL REFERENCES categories(id),
+  amount_fils    INTEGER NOT NULL,              -- parent-currency minor units, > 0
+  note           TEXT,
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_splits_tx ON transaction_splits(transaction_id);
+
+-- v3: balance ground truth — 30-second check-ins and balance adjustments.
+-- Latest row per account is the account's stated balance anchor.
+CREATE TABLE IF NOT EXISTS account_balances (
+  id           INTEGER PRIMARY KEY,
+  account_id   INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  as_of        TEXT NOT NULL,                   -- RFC3339
+  balance_fils INTEGER NOT NULL,                -- AED fils; may be negative (credit cards)
+  source       TEXT NOT NULL DEFAULT 'checkin', -- 'checkin' | 'adjustment'
+  note         TEXT,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_balances_account ON account_balances(account_id, as_of);

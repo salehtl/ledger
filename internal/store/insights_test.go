@@ -157,3 +157,67 @@ func TestMonthlyTotalsNetSpendingCredits(t *testing.T) {
 		t.Errorf("income = %d, want 0 (refund is not income)", totals[0].IncomeFils)
 	}
 }
+
+// TestInsightsUnchangedBySplit: SelectCategorySpend and SelectMonthlyTotals
+// totals are identical before and after splitting a confirmed transaction —
+// split lines re-categorize the spend, they never delete it.
+func TestInsightsUnchangedBySplit(t *testing.T) {
+	st := newTestStore(t)
+	groc := insertCategory(t, st, "InsSplitGroc", "spending", "need")
+	fun := insertCategory(t, st, "InsSplitFun", "spending", "want")
+
+	// Current month so the trailing SelectMonthlyTotals window includes it.
+	period := time.Now().UTC().Format("2006-01")
+	day := period + "-10"
+	txID := insertTxn(t, st, groc, "debit", 20_000, day, "confirmed")
+
+	categoryTotal := func() (total int64, byCat map[int64]int64) {
+		rows, err := st.SelectCategorySpend(period, false)
+		if err != nil {
+			t.Fatalf("SelectCategorySpend: %v", err)
+		}
+		byCat = map[int64]int64{}
+		for _, r := range rows {
+			total += r.AmountFils
+			byCat[r.CategoryID] += r.AmountFils
+		}
+		return total, byCat
+	}
+	trendSpend := func() int64 {
+		rows, err := st.SelectMonthlyTotals(1)
+		if err != nil {
+			t.Fatalf("SelectMonthlyTotals: %v", err)
+		}
+		for _, r := range rows {
+			if r.Period == period {
+				return r.SpentFils
+			}
+		}
+		return 0
+	}
+
+	if total, _ := categoryTotal(); total != 20_000 {
+		t.Fatalf("pre-split category total = %d, want 20000", total)
+	}
+	if got := trendSpend(); got != 20_000 {
+		t.Fatalf("pre-split trend spend = %d, want 20000", got)
+	}
+
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: groc, AmountFils: 15_000},
+		{CategoryID: fun, AmountFils: 5_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	total, byCat := categoryTotal()
+	if total != 20_000 {
+		t.Fatalf("post-split category total = %d, want 20000 (splitting deleted insight spend)", total)
+	}
+	if byCat[groc] != 15_000 || byCat[fun] != 5_000 {
+		t.Errorf("post-split per-category = %v, want groc 15000 / fun 5000", byCat)
+	}
+	if got := trendSpend(); got != 20_000 {
+		t.Errorf("post-split trend spend = %d, want 20000", got)
+	}
+}

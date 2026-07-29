@@ -419,3 +419,97 @@ func TestPostCategorizeClear(t *testing.T) {
 		t.Errorf("rules = %d, want 0 (make_rule ignored on clear)", len(rules))
 	}
 }
+
+// TestPostManualTransactionWithAccount: the reconcile discrepancy card's
+// "open manual entry" path — an entry created with account_id carries the
+// account's last4 so expected-balance math converges.
+func TestPostManualTransactionWithAccount(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	acctID, err := st.InsertAccount("Main", "DIB", "7788")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"posted_at": "2026-07-15", "amount_fils": 9000, "direction": "debit",
+		"merchant_raw": "ATM cash", "account_id": acctID,
+	})
+	r := httptest.NewRequest("POST", "/api/transactions", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body)
+	}
+	var last4 string
+	st.DB.QueryRow(`SELECT COALESCE(last4,'') FROM transactions WHERE source='manual'`).Scan(&last4)
+	if last4 != "7788" {
+		t.Errorf("last4 = %q, want 7788", last4)
+	}
+
+	// Unknown account → 400, and nothing is written.
+	body, _ = json.Marshal(map[string]any{
+		"posted_at": "2026-07-15", "amount_fils": 9000, "direction": "debit",
+		"merchant_raw": "ATM cash", "account_id": 999999,
+	})
+	r = httptest.NewRequest("POST", "/api/transactions", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown account: status = %d, want 400; body: %s", w.Code, w.Body)
+	}
+	var n int
+	st.DB.QueryRow(`SELECT count(*) FROM transactions WHERE source='manual'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("manual rows = %d, want 1 (rejected write persisted)", n)
+	}
+}
+
+// TestPostCategorizeSplitParentConflicts: a split parent's category stays
+// NULL (its lines carry the truth). The categorize endpoint must 409 instead
+// of silently corrupting the split invariant — the embedded UI renders split
+// parents as ordinary rows, so this tap WILL happen.
+func TestPostCategorizeSplitParentConflicts(t *testing.T) {
+	st := newTestServerStore(t)
+	txID := seedTestTransaction(t, st)
+	if err := st.UpdateTransactionStatus(txID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	cats, _ := st.SelectCategories()
+	var need, want int64
+	for _, c := range cats {
+		switch c.Name {
+		case "Groceries":
+			need = c.ID
+		case "Shopping":
+			want = c.ID
+		}
+	}
+	if need == 0 || want == 0 {
+		t.Fatal("seed categories missing")
+	}
+	if err := st.ReplaceTransactionSplits(txID, []store.TransactionSplitRow{
+		{CategoryID: need, AmountFils: 11_500},
+		{CategoryID: want, AmountFils: 10_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServerWithStore(t, st)
+	body, _ := json.Marshal(map[string]any{"category_id": need})
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/categorize", txID), bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body)
+	}
+	var parentCat sql.NullInt64
+	if err := st.DB.QueryRow(`SELECT category_id FROM transactions WHERE id=?`, txID).Scan(&parentCat); err != nil {
+		t.Fatal(err)
+	}
+	if parentCat.Valid {
+		t.Fatalf("split parent got categorized to %d despite 409", parentCat.Int64)
+	}
+}

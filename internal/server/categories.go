@@ -91,15 +91,18 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 		return
 	}
-	txns, rules, err := s.catStore.CategoryUsage(id)
+	txns, rules, assignments, err := s.catStore.CategoryUsage(id)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	if txns > 0 || rules > 0 {
+	// Assigned envelope months block too: envelope_assignments is ON DELETE
+	// CASCADE, so deleting past this guard would silently rewrite historical
+	// budget state (assigned totals, RTA) with no warning.
+	if txns > 0 || rules > 0 || assignments > 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]any{"error": "in use", "transactions": txns, "rules": rules})
+		json.NewEncoder(w).Encode(map[string]any{"error": "in use", "transactions": txns, "rules": rules, "assignments": assignments})
 		return
 	}
 	if err := s.catStore.DeleteCategory(id); err != nil {
@@ -120,13 +123,13 @@ func (s *Server) handleGetCategoryUsage(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 		return
 	}
-	txns, rules, err := s.catStore.CategoryUsage(id)
+	txns, rules, assignments, err := s.catStore.CategoryUsage(id)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"transactions": txns, "rules": rules})
+	json.NewEncoder(w).Encode(map[string]int{"transactions": txns, "rules": rules, "assignments": assignments})
 }
 
 func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +154,24 @@ func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 	if req.Kind == "spending" && req.Bucket == "" {
 		http.Error(w, `{"error":"bucket required for spending categories"}`, http.StatusBadRequest)
 		return
+	}
+	// Changing kind away from 'spending' with envelope assignments on the
+	// books would orphan them: EnvelopeMonthSummary lists only active spending
+	// categories, so every assigned fil would silently vanish from Plan and
+	// RTA would overstate — the exact rewrite of historical budget state the
+	// DELETE guard 409s against. Same guard, same shape.
+	if req.Kind != "spending" {
+		_, _, assignments, err := s.catStore.CategoryUsage(id)
+		if err != nil {
+			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+			return
+		}
+		if assignments > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"error": "in use", "assignments": assignments})
+			return
+		}
 	}
 	if err := s.catStore.UpdateCategory(store.CategoryRow{ID: id, Name: req.Name, Kind: req.Kind, Bucket: req.Bucket}); err != nil {
 		writeCategoryDBErr(w, err)

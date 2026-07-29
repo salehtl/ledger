@@ -50,7 +50,7 @@ func ComputeRange(cfg store.BudgetConfig, income int64, spend []store.SpendRow, 
 }
 
 func computeJars(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64, projectExcluded int64) Summary {
-	pct := map[string]float64{"need": cfg.NeedPct, "want": cfg.WantPct, "saving": cfg.SavingPct}
+	pct := bucketPcts(cfg)
 
 	net := map[string]int64{}
 	for _, r := range spend {

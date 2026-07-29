@@ -67,8 +67,28 @@ func monthRange(period string) (string, string, error) {
 	return start, end, nil
 }
 
-// SelectMonthSpend returns confirmed, spending-kind transactions in the period.
-// The bucket is the category's current bucket, or bucket_snapshot when frozen.
+// jarAED is the AED expression the jar/insights aggregates have always used:
+// amount_aed with a 0 fallback (a row without an AED snapshot contributes
+// nothing rather than a raw foreign amount).
+const jarAED = `COALESCE(t.amount_aed, 0)`
+
+// projectCarveOut is the monthly-budget project exclusion: confirmed spend
+// assigned to a carved-out life project (count_in_monthly=0) stays out of the
+// monthly aggregates — jars, envelopes and insights must all agree on it, or
+// the same transaction would count on one surface and not another. Requires
+// the transactions alias `t`; the split-line queries share it because the
+// project link lives on the parent.
+const projectCarveOut = `(t.project_id IS NULL
+	         OR EXISTS (SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.count_in_monthly = 1))`
+
+// SelectMonthSpend returns confirmed, spending-kind activity in the period,
+// one row per transaction (or per split line). The bucket is the category's
+// current bucket, or bucket_snapshot when frozen. Split parents are excluded
+// (their category is NULL while split — and defensively by NOT EXISTS);
+// their split LINES contribute instead, under each line's own category,
+// AED-scaled from the parent so splitting a transaction never changes the
+// month's jar totals. Split lines always use the line category's current
+// bucket: splitting clears the parent's bucket_snapshot.
 func (s *Store) SelectMonthSpend(period string, frozen bool) ([]SpendRow, error) {
 	start, end, err := monthRange(period)
 	if err != nil {
@@ -78,37 +98,55 @@ func (s *Store) SelectMonthSpend(period string, frozen bool) ([]SpendRow, error)
 	if frozen {
 		bucketExpr = "COALESCE(t.bucket_snapshot, c.bucket)"
 	}
-	rows, err := s.DB.Query(
-		`SELECT `+bucketExpr+`, t.direction, COALESCE(t.amount_aed, 0)
+	var out []SpendRow
+	collect := func(query string) error {
+		rows, err := s.DB.Query(query, start, end)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r SpendRow
+			var bucket *string
+			if err := rows.Scan(&bucket, &r.Direction, &r.AmountFils); err != nil {
+				return err
+			}
+			if bucket != nil {
+				r.Bucket = *bucket
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	}
+	if err := collect(
+		`SELECT ` + bucketExpr + `, t.direction, ` + jarAED + `
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='spending'
 		    AND t.posted_at >= ? AND t.posted_at < ?
-		    AND (t.project_id IS NULL
-		         OR EXISTS (SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.count_in_monthly = 1))`,
-		start, end,
-	)
-	if err != nil {
+		    AND NOT EXISTS (SELECT 1 FROM transaction_splits sp WHERE sp.transaction_id = t.id)
+		    AND ` + projectCarveOut,
+	); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []SpendRow
-	for rows.Next() {
-		var r SpendRow
-		var bucket *string
-		if err := rows.Scan(&bucket, &r.Direction, &r.AmountFils); err != nil {
-			return nil, err
-		}
-		if bucket != nil {
-			r.Bucket = *bucket
-		}
-		out = append(out, r)
+	if err := collect(
+		`SELECT c.bucket, t.direction, ` + splitAEDFils(jarAED) + `
+		   FROM transaction_splits sp
+		   JOIN transactions t ON t.id = sp.transaction_id
+		   JOIN categories c ON c.id = sp.category_id
+		  WHERE t.status='confirmed' AND c.kind='spending' AND t.amount > 0
+		    AND t.posted_at >= ? AND t.posted_at < ?
+		    AND ` + projectCarveOut,
+	); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SelectMonthProjectExcluded returns the net AED spend in the period that was
 // carved out of the monthly jars (confirmed spending txns whose project has
 // count_in_monthly=0). Used for the "excludes AED X in project spend" note.
+// Split parents contribute through their spending-category split lines (the
+// project link lives on the parent).
 func (s *Store) SelectMonthProjectExcluded(period string, frozen bool) (int64, error) {
 	start, end, err := monthRange(period)
 	if err != nil {
@@ -116,19 +154,39 @@ func (s *Store) SelectMonthProjectExcluded(period string, frozen bool) (int64, e
 	}
 	var total int64
 	err = s.DB.QueryRow(
-		`SELECT COALESCE(SUM(CASE t.direction WHEN 'debit' THEN COALESCE(t.amount_aed, t.amount)
-		                                      WHEN 'credit' THEN -COALESCE(t.amount_aed, t.amount) ELSE 0 END), 0)
+		`SELECT COALESCE(SUM(CASE t.direction WHEN 'debit' THEN `+projAmt+`
+		                                      WHEN 'credit' THEN -`+projAmt+` ELSE 0 END), 0)
 		   FROM transactions t
 		   JOIN categories c ON c.id = t.category_id
 		   JOIN projects p ON p.id = t.project_id
 		  WHERE t.status='confirmed' AND c.kind='spending' AND p.count_in_monthly = 0
-		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		    AND t.posted_at >= ? AND t.posted_at < ?
+		    AND NOT EXISTS (SELECT 1 FROM transaction_splits sp WHERE sp.transaction_id = t.id)`,
 		start, end,
 	).Scan(&total)
-	return total, err
+	if err != nil {
+		return 0, err
+	}
+	scaled := splitAEDFils(projAmt)
+	var splitTotal int64
+	err = s.DB.QueryRow(
+		`SELECT COALESCE(SUM(CASE t.direction WHEN 'debit' THEN `+scaled+`
+		                                      WHEN 'credit' THEN -`+scaled+` ELSE 0 END), 0)
+		   FROM transaction_splits sp
+		   JOIN transactions t ON t.id = sp.transaction_id
+		   JOIN categories c ON c.id = sp.category_id
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE t.status='confirmed' AND c.kind='spending' AND p.count_in_monthly = 0
+		    AND t.amount > 0
+		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		start, end,
+	).Scan(&splitTotal)
+	return total + splitTotal, err
 }
 
-// SelectMonthIncome sums confirmed income-kind credits in the period.
+// SelectMonthIncome sums confirmed income-kind credits in the period. A split
+// credit contributes through its income-category split lines (AED-scaled), so
+// splitting a salary/refund credit never deletes it from income or RTA.
 func (s *Store) SelectMonthIncome(period string) (int64, error) {
 	start, end, err := monthRange(period)
 	if err != nil {
@@ -136,13 +194,28 @@ func (s *Store) SelectMonthIncome(period string) (int64, error) {
 	}
 	var total int64
 	err = s.DB.QueryRow(
-		`SELECT COALESCE(SUM(COALESCE(t.amount_aed, 0)), 0)
+		`SELECT COALESCE(SUM(`+jarAED+`), 0)
 		   FROM transactions t JOIN categories c ON c.id = t.category_id
 		  WHERE t.status='confirmed' AND c.kind='income' AND t.direction='credit'
-		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		    AND t.posted_at >= ? AND t.posted_at < ?
+		    AND NOT EXISTS (SELECT 1 FROM transaction_splits sp WHERE sp.transaction_id = t.id)`,
 		start, end,
 	).Scan(&total)
-	return total, err
+	if err != nil {
+		return 0, err
+	}
+	var splitTotal int64
+	err = s.DB.QueryRow(
+		`SELECT COALESCE(SUM(`+splitAEDFils(jarAED)+`), 0)
+		   FROM transaction_splits sp
+		   JOIN transactions t ON t.id = sp.transaction_id
+		   JOIN categories c ON c.id = sp.category_id
+		  WHERE t.status='confirmed' AND c.kind='income' AND t.direction='credit'
+		    AND t.amount > 0
+		    AND t.posted_at >= ? AND t.posted_at < ?`,
+		start, end,
+	).Scan(&splitTotal)
+	return total + splitTotal, err
 }
 
 // SelectEarliestPeriod returns the "YYYY-MM" of the earliest confirmed

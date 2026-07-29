@@ -184,3 +184,118 @@ func TestMonthSpendExcludesTransferLegs(t *testing.T) {
 		t.Errorf("month spend = %d fils, want 100000 (transfer leg leaked into spend)", total)
 	}
 }
+
+// sumMonthSpend nets a SelectMonthSpend result (debit +, credit −) and buckets
+// the debit-side fils.
+func sumMonthSpend(t *testing.T, st *Store, period string) (total int64, byBucket map[string]int64) {
+	t.Helper()
+	rows, err := st.SelectMonthSpend(period, false)
+	if err != nil {
+		t.Fatalf("SelectMonthSpend: %v", err)
+	}
+	byBucket = map[string]int64{}
+	for _, r := range rows {
+		if r.Direction == "credit" {
+			total -= r.AmountFils
+			byBucket[r.Bucket] -= r.AmountFils
+			continue
+		}
+		total += r.AmountFils
+		byBucket[r.Bucket] += r.AmountFils
+	}
+	return total, byBucket
+}
+
+// TestMonthSpendUnchangedBySplit is the "splitting must never delete money
+// from the jars" regression: the Home 50/30/20 summary total is identical
+// before and after splitting — the split only re-buckets the fils.
+func TestMonthSpendUnchangedBySplit(t *testing.T) {
+	st := newTestStore(t)
+	need := insertCategory(t, st, "SplitJarNeed", "spending", "need")
+	want := insertCategory(t, st, "SplitJarWant", "spending", "want")
+
+	txID := insertTxn(t, st, need, "debit", 20_000, "2026-07-10", "confirmed")
+	if total, _ := sumMonthSpend(t, st, "2026-07"); total != 20_000 {
+		t.Fatalf("pre-split total = %d, want 20000", total)
+	}
+
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: need, AmountFils: 15_000},
+		{CategoryID: want, AmountFils: 5_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	total, byBucket := sumMonthSpend(t, st, "2026-07")
+	if total != 20_000 {
+		t.Fatalf("post-split total = %d, want 20000 (splitting deleted spend from the jars)", total)
+	}
+	if byBucket["need"] != 15_000 || byBucket["want"] != 5_000 {
+		t.Errorf("post-split buckets = %v, want need 15000 / want 5000", byBucket)
+	}
+
+	// Un-splitting leaves the parent uncategorized → it drops out until
+	// recategorized (documented API behavior), not silently double-counted.
+	if err := st.ReplaceTransactionSplits(txID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if total, _ := sumMonthSpend(t, st, "2026-07"); total != 0 {
+		t.Errorf("un-split uncategorized parent leaked %d fils into spend", total)
+	}
+}
+
+// TestMonthIncomeUnchangedBySplit: splitting an income credit across income
+// categories must not delete it from month income (jar income AND the
+// envelope RTA when income_source=categories).
+func TestMonthIncomeUnchangedBySplit(t *testing.T) {
+	st := newTestStore(t)
+	salaryA := insertCategory(t, st, "SplitIncA", "income", "")
+	salaryB := insertCategory(t, st, "SplitIncB", "income", "")
+	spend := insertCategory(t, st, "SplitIncSpend", "spending", "need")
+
+	txID := insertTxn(t, st, salaryA, "credit", 300_000, "2026-07-01", "confirmed")
+	if got, err := st.SelectMonthIncome("2026-07"); err != nil || got != 300_000 {
+		t.Fatalf("pre-split income = %d err=%v, want 300000", got, err)
+	}
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: salaryA, AmountFils: 250_000},
+		{CategoryID: salaryB, AmountFils: 40_000},
+		{CategoryID: spend, AmountFils: 10_000}, // spending line: not income
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.SelectMonthIncome("2026-07"); err != nil || got != 290_000 {
+		t.Fatalf("post-split income = %d err=%v, want 290000 (income lines only)", got, err)
+	}
+}
+
+// TestMonthProjectExcludedUnchangedBySplit: the "excludes AED X in project
+// spend" note keeps its figure when a project-carved transaction is split.
+func TestMonthProjectExcludedUnchangedBySplit(t *testing.T) {
+	st := newTestStore(t)
+	need := insertCategory(t, st, "SplitProjNeed", "spending", "need")
+	want := insertCategory(t, st, "SplitProjWant", "spending", "want")
+	projID, err := st.InsertProject(ProjectRow{Name: "Split Reno", Status: "active"}) // count_in_monthly=0
+	if err != nil {
+		t.Fatal(err)
+	}
+	txID := insertTxn(t, st, need, "debit", 80_000, "2026-07-12", "confirmed")
+	if err := st.AssignTransactionProject(txID, &projID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.SelectMonthProjectExcluded("2026-07", false); err != nil || got != 80_000 {
+		t.Fatalf("pre-split excluded = %d err=%v, want 80000", got, err)
+	}
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: need, AmountFils: 50_000},
+		{CategoryID: want, AmountFils: 30_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.SelectMonthProjectExcluded("2026-07", false); err != nil || got != 80_000 {
+		t.Fatalf("post-split excluded = %d err=%v, want 80000", got, err)
+	}
+	// And the carved-out spend still never leaks into the jars.
+	if total, _ := sumMonthSpend(t, st, "2026-07"); total != 0 {
+		t.Errorf("project-excluded split leaked %d fils into month spend", total)
+	}
+}
