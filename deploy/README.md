@@ -48,6 +48,22 @@ tailscale serve status
 
 The app is now reachable **only** from your tailnet devices, over HTTPS, never publicly.
 
+### 3a. Storybook design-system docs (optional)
+
+The static Storybook build is published on its own port so the PWA's service worker
+(whose scope is `/` on the app origin) can never intercept it:
+
+```bash
+cd frontend && bun run build-storybook
+rm -rf /srv/ledger-storybook && mkdir -p /srv/ledger-storybook
+cp -r storybook-static/. /srv/ledger-storybook/
+sudo tailscale serve --bg --https=8443 /srv/ledger-storybook   # one-time; persists across reboots
+```
+
+Docs live at `https://dinosaur.<tailnet>.ts.net:8443/`. After changing stories or
+`src/docs/Foundations.mdx`, re-run the build + copy (the serve config stays).
+To stop serving: `sudo tailscale serve --https=8443 off`.
+
 ## 4. Verify on a phone
 
 On a phone joined to the tailnet, open `https://dinosaur.<tailnet>.ts.net/`.
