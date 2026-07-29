@@ -91,3 +91,47 @@ func TestMatchPicksClosestAmountThenDateThenID(t *testing.T) {
 		t.Fatalf("tie on id: got (%d, %v), want (2, true)", got, ok)
 	}
 }
+
+// TestMatchRescue: the dead-zone matcher only serves MISSED schedules, only
+// on the early side of next_due, and only within the schedule's own STRICT
+// tolerance band — never the loose 50% floor Match applies on/after due.
+func TestMatchRescue(t *testing.T) {
+	sched := Schedule{
+		ID: 1, NormalizedMerchant: "netflix.com", AmountFils: 3_900,
+		TolerancePct: 10, IntervalDays: 30, NextDue: d(t, "2026-02-04"),
+		Direction: "debit", Missed: true,
+	}
+	tx := func(day string, amt int64) Txn {
+		return Txn{ID: 99, PostedAt: d(t, day), AmountFils: amt, Merchant: "NETFLIX.COM", Direction: "debit"}
+	}
+
+	// The canonical dead-zone arrival (offset −10, outside early window 7).
+	if id, ok := MatchRescue(tx("2026-01-25", 3_900), []Schedule{sched}); !ok || id != 1 {
+		t.Fatalf("dead-zone arrival: got (%d,%v), want (1,true)", id, ok)
+	}
+	// Healthy schedules are never rescued — normal Match owns them.
+	healthy := sched
+	healthy.Missed = false
+	if _, ok := MatchRescue(tx("2026-01-25", 3_900), []Schedule{healthy}); ok {
+		t.Fatal("rescued a schedule that is not missed")
+	}
+	// Strict band only: 5_400 is within Match's 50% floor but outside the
+	// schedule's own ±10% — an off-phase re-anchor must not accept it.
+	if _, ok := MatchRescue(tx("2026-01-25", 5_400), []Schedule{sched}); ok {
+		t.Fatal("rescued an amount outside the schedule's own tolerance")
+	}
+	// Window edges: −1 in; 0 out (Match's territory); −(interval−1) in;
+	// −interval (the previous cycle's due date) out.
+	if _, ok := MatchRescue(tx("2026-02-03", 3_900), []Schedule{sched}); !ok {
+		t.Fatal("offset -1 must rescue")
+	}
+	if _, ok := MatchRescue(tx("2026-02-04", 3_900), []Schedule{sched}); ok {
+		t.Fatal("offset 0 must be left to normal Match")
+	}
+	if _, ok := MatchRescue(tx("2026-01-06", 3_900), []Schedule{sched}); !ok {
+		t.Fatal("offset -(interval-1) must rescue")
+	}
+	if _, ok := MatchRescue(tx("2026-01-05", 3_900), []Schedule{sched}); ok {
+		t.Fatal("offset -interval is the previous cycle, not rescueable")
+	}
+}

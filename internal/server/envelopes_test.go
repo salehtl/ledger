@@ -3,6 +3,9 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"ledger/internal/budget"
@@ -322,5 +325,47 @@ func TestEnvelopesOverspendSettlesForItsExactCost(t *testing.T) {
 	if e := envOf(apr, cats[1]); e.CarryoverFils != 100_00 || e.AvailableFils != 100_00 || e.OverspendDebtFils != 0 {
 		t.Fatalf("Apr carry/avail/debt = %d/%d/%d, want 10000/10000/0 (money must not vanish)",
 			e.CarryoverFils, e.AvailableFils, e.OverspendDebtFils)
+	}
+}
+
+// TestEnvelopesAutoAssignConcurrentRTANonNegative: auto-assign is
+// read-plan-apply — compute the summary, plan against its RTA, apply deltas.
+// Each apply is atomic, but without envelopeMu spanning the PAIR two
+// overlapping requests (double-tap/retry) could both observe the full
+// positive RTA and both apply complete plans, driving RTA negative and
+// violating the contract's "auto-assign can never drive RTA negative".
+func TestEnvelopesAutoAssignConcurrentRTANonNegative(t *testing.T) {
+	srv, st, cats := newEnvelopeTestServer(t)
+	if err := st.UpsertCategoryTarget(store.CategoryTargetRow{
+		CategoryID: cats[0], TargetType: "set_aside", AmountFils: 500_00,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const parallel = 4
+	var wg sync.WaitGroup
+	for i := 0; i < parallel; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest("POST", "/api/envelopes/auto-assign",
+				strings.NewReader(`{"month":"2026-07"}`))
+			r.Header.Set("Content-Type", "application/json")
+			srv.ServeHTTP(httptest.NewRecorder(), r)
+		}()
+	}
+	wg.Wait()
+
+	w := doJSON(t, srv, "GET", "/api/envelopes?month=2026-07", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET = %d", w.Code)
+	}
+	sum := decodeSummary(t, w.Body.Bytes())
+	if sum.ReadyToAssignFils < 0 {
+		t.Fatalf("RTA = %d after concurrent auto-assign; the compute→apply pair is not serialized", sum.ReadyToAssignFils)
+	}
+	// Exactly one plan's worth of money landed: full income assigned, RTA 0.
+	if sum.AssignedFils != 3000_00 || sum.ReadyToAssignFils != 0 {
+		t.Fatalf("assigned=%d rta=%d, want 3000_00/0", sum.AssignedFils, sum.ReadyToAssignFils)
 	}
 }

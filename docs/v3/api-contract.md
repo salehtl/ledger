@@ -604,9 +604,13 @@ or status; un-splitting (empty set) additionally sets the parent's status to
 `needs_review` (see above). Broadcasts `tx`.
 
 While a transaction is split, `POST /api/transactions/{id}/categorize`
-returns `409 {"error":"transaction is split"}` — the parent's category must
-stay `null` (its lines carry the categories; categorizing it would
-double-count). Un-split first, then categorize.
+returns `409 {"error":"transaction is split"}` — **both** branches: with a
+`category_id` (the parent's category must stay `null`; its lines carry the
+categories, categorizing it would double-count) and with `category_id`
+null/0 (decategorizing would park a needs_review parent with lines still
+attached, silently dropping the whole amount from every aggregate). Linking
+a split **credit** as a refund is refused with the same 409. The one way out
+of the split state is `PUT /splits` with an empty array.
 
 Split lines feed **every** money aggregate under their own categories — the
 Home 50/30/20 jars, insights category/trend, envelopes, income, and reports —
@@ -736,14 +740,22 @@ Payload = full schedule object plus `due_in_days` (negative = overdue).
 
 ### `missed_bill`
 
-Fired from the recurring sweep the moment a schedule passes next_due + grace
-with no matching email. Payload = full schedule object (`missed: true`).
+Fired from the recurring sweep when a schedule passes next_due + grace with no
+matching email. The sweep runs after every ingest batch **and** on the hourly
+notifier tick, so detection is clocked by time even while IMAP is unreachable;
+worst-case latency from the grace deadline is one tick. Payload = full
+schedule object (`missed: true`).
 
 ### `schedule_detected`
 
 Fired when the detector proposes a new recurring bill (after ingest batches
-that created transactions, after reprocess, after CSV import). Payload = full
-schedule object (`status: "proposed"`, with `provenance`).
+that created transactions, and after reprocess). Payload = full schedule
+object (`status: "proposed"`, with `provenance`).
+
+A committed `ledger import` also runs detection, but as a separate process it
+only **persists** the proposals — no SSE/push fires for them. They appear on
+the next `GET /api/scheduled`, so refetch after an import rather than waiting
+for an event.
 
 ### Existing events (unchanged, for reference)
 

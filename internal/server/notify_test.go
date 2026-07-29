@@ -231,3 +231,162 @@ func TestEmitScheduleEventsSSEAlwaysOn(t *testing.T) {
 		t.Errorf("provenance not passed through: %v", det)
 	}
 }
+
+// TestEvaluateBudgetThresholdsMonthRollover: the dedup state is recorded per
+// month. Comparing a new month's levels against LAST month's would swallow
+// the new month's first crossing whenever the envelope ended the old month at
+// an equal-or-higher level — the canonical case being a bill that is its
+// envelope's whole budget (rent on the 1st): July ends at 100, August's first
+// evaluation is triggered by the August rent insert itself, and 100 > 100
+// never fires. The rollover must reset the baseline to zero (while staying
+// primed).
+func TestEvaluateBudgetThresholdsMonthRollover(t *testing.T) {
+	srv, st, ch := newNotifyTestServer(t)
+	cat := projInsertCategory(t, st, "RolloverCat", "spending", "need")
+	month := time.Now().UTC().Format("2006-01")
+	day := time.Now().UTC().Format("2006-01-02")
+	if err := st.UpsertEnvelopeAssignment(month, cat, 100_00); err != nil {
+		t.Fatal(err)
+	}
+	// The envelope sits at 100% and the state is primed there.
+	projInsertTxn(t, st, cat, "debit", 100_00, day, "confirmed")
+	srv.EvaluateBudgetThresholds()
+	drainEvents(t, ch)
+	srv.EvaluateBudgetThresholds()
+	if evs := eventsOfType(drainEvents(t, ch), "budget_threshold"); len(evs) != 0 {
+		t.Fatalf("same level re-fired: %v", evs)
+	}
+
+	// Simulate the month boundary on a long-running server: the recorded
+	// levels belong to the PREVIOUS month. (Wall time can't be injected, so
+	// the test moves the recorded month back instead of the clock forward —
+	// the same divergence the first evaluation of a new month sees.)
+	srv.thresholdMu.Lock()
+	srv.thresholdMonth = time.Now().UTC().AddDate(0, -1, 0).Format("2006-01")
+	srv.thresholdMu.Unlock()
+
+	// First evaluation of the "new" month: same level 100 as the old month —
+	// it must fire, because for THIS month it is a fresh upward crossing.
+	srv.EvaluateBudgetThresholds()
+	evs := eventsOfType(drainEvents(t, ch), "budget_threshold")
+	if len(evs) != 1 {
+		t.Fatalf("new month's first crossing: got %d events, want 1: %v", len(evs), evs)
+	}
+	if data := evs[0]["data"].(map[string]any); data["level"] != float64(100) || data["name"] != "RolloverCat" {
+		t.Fatalf("event data = %v", data)
+	}
+
+	// And once per month still holds: no re-fire at the same level.
+	srv.EvaluateBudgetThresholds()
+	if evs := eventsOfType(drainEvents(t, ch), "budget_threshold"); len(evs) != 0 {
+		t.Fatalf("re-fired after rollover crossing: %v", evs)
+	}
+}
+
+// TestPutNotifySettingsPrimesThresholds: while notify_thresholds is off every
+// evaluation returns before touching state, so turning it ON via the API must
+// re-prime at then-current levels. Without that, the first mutation after
+// enabling runs the unprimed transition and its crossing — exactly the one
+// the user just asked to hear about — is silently recorded as baseline.
+func TestPutNotifySettingsPrimesThresholds(t *testing.T) {
+	srv, st, ch := newNotifyTestServer(t)
+	cat := projInsertCategory(t, st, "PrimeCat", "spending", "need")
+	month := time.Now().UTC().Format("2006-01")
+	day := time.Now().UTC().Format("2006-01-02")
+	if err := st.UpsertEnvelopeAssignment(month, cat, 100_00); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thresholds off; spending reaches 90% unheard, and unprimed.
+	if err := st.UpdateNotifySettings(false, 3); err != nil {
+		t.Fatal(err)
+	}
+	projInsertTxn(t, st, cat, "debit", 90_00, day, "confirmed")
+	srv.EvaluateBudgetThresholds()
+	if evs := eventsOfType(drainEvents(t, ch), "budget_threshold"); len(evs) != 0 {
+		t.Fatalf("disabled setting emitted: %v", evs)
+	}
+
+	// Enable via the API: the handler primes silently at the current 80-level.
+	w := doJSON(t, srv, "PUT", "/api/settings/notifications", map[string]any{
+		"notify_thresholds": true, "notify_upcoming_days": 3,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT = %d; body: %s", w.Code, w.Body)
+	}
+	if evs := eventsOfType(drainEvents(t, ch), "budget_threshold"); len(evs) != 0 {
+		t.Fatalf("the enable-PUT prime must be silent, got: %v", evs)
+	}
+
+	// The FIRST crossing after enabling must fire (the swallowed-crossing bug:
+	// an unprimed state would record this 100 as baseline and emit nothing).
+	projInsertTxn(t, st, cat, "debit", 15_00, day, "confirmed")
+	srv.EvaluateBudgetThresholds()
+	evs := eventsOfType(drainEvents(t, ch), "budget_threshold")
+	if len(evs) != 1 {
+		t.Fatalf("first crossing after enable: got %d events, want 1: %v", len(evs), evs)
+	}
+	if data := evs[0]["data"].(map[string]any); data["level"] != float64(100) {
+		t.Fatalf("event data = %v", data)
+	}
+}
+
+// TestManualEntryAndRestoreEvaluateThresholds: a categorized manual entry
+// (POST /api/transactions) inserts directly as confirmed activity, and
+// restoring an archived debit brings activity back — both must evaluate
+// thresholds immediately, like confirm/categorize/split/assign, instead of
+// leaving the crossing to fire on some later unrelated mutation.
+func TestManualEntryAndRestoreEvaluateThresholds(t *testing.T) {
+	srv, st, ch := newNotifyTestServer(t)
+	srv.SetCategoryStore(st)
+	cat := projInsertCategory(t, st, "ManualCat", "spending", "need")
+	month := time.Now().UTC().Format("2006-01")
+	day := time.Now().UTC().Format("2006-01-02")
+	if err := st.UpsertEnvelopeAssignment(month, cat, 100_00); err != nil {
+		t.Fatal(err)
+	}
+	srv.EvaluateBudgetThresholds() // prime at level 0
+	drainEvents(t, ch)
+
+	// Manual entry pushes the envelope to 90% → the 80 crossing fires NOW.
+	w := doJSON(t, srv, "POST", "/api/transactions", map[string]any{
+		"posted_at": day, "amount_fils": 90_00, "direction": "debit",
+		"merchant_raw": "Manual Shop", "category_id": cat,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST = %d; body: %s", w.Code, w.Body)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	evs := eventsOfType(drainEvents(t, ch), "budget_threshold")
+	if len(evs) != 1 {
+		t.Fatalf("manual entry crossing: got %d events, want 1: %v", len(evs), evs)
+	}
+	if data := evs[0]["data"].(map[string]any); data["level"] != float64(80) {
+		t.Fatalf("event data = %v", data)
+	}
+
+	// Archive removes the activity (downward — silent, but the state follows).
+	if w := doJSON(t, srv, "POST", "/api/transactions/"+itoa(created.ID)+"/archive", nil); w.Code != http.StatusOK {
+		t.Fatalf("archive = %d", w.Code)
+	}
+	if evs := eventsOfType(drainEvents(t, ch), "budget_threshold"); len(evs) != 0 {
+		t.Fatalf("downward move emitted: %v", evs)
+	}
+
+	// Restore re-crosses 80% → must fire again, immediately.
+	if w := doJSON(t, srv, "POST", "/api/transactions/"+itoa(created.ID)+"/restore", nil); w.Code != http.StatusOK {
+		t.Fatalf("restore = %d", w.Code)
+	}
+	evs = eventsOfType(drainEvents(t, ch), "budget_threshold")
+	if len(evs) != 1 {
+		t.Fatalf("restore crossing: got %d events, want 1: %v", len(evs), evs)
+	}
+	if data := evs[0]["data"].(map[string]any); data["level"] != float64(80) {
+		t.Fatalf("event data = %v", data)
+	}
+}

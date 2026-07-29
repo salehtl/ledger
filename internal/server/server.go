@@ -6,6 +6,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"ledger/internal/monitor"
@@ -115,6 +116,14 @@ type Server struct {
 	notifyStore    NotifyStore
 	noteStore      NoteStore
 	notifyState
+
+	// envelopeMu serializes the envelope mutation handlers (assign, move,
+	// auto-assign). Auto-assign is read-plan-apply: without serialization two
+	// overlapping requests (double-tap/retry) can both observe the same
+	// positive RTA and both apply full delta plans, driving RTA negative —
+	// violating the contract's "auto-assign can never drive RTA negative".
+	// Each store apply is atomic; the compute→apply PAIR needs the lock.
+	envelopeMu sync.Mutex
 }
 
 // New builds a Server that serves /api/health and the embedded webFS bundle.

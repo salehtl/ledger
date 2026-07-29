@@ -429,3 +429,62 @@ func TestRunnerGapArrivalMatchesRearmedCycle(t *testing.T) {
 		t.Errorf("next_due = %s, want 2026-07-31 (anchored to the matched bill)", got.NextDue)
 	}
 }
+
+// TestRunnerRescuesPhaseShiftedBill: a failed charge retried ~20 days later,
+// with every later renewal billing from the new date, shifts the bill's phase
+// into the dead zone between the late window and the next cycle's early
+// window. RearmStale preserves the ORIGINAL phase, so without the rescue pass
+// every arrival lands at offset −10 forever: the schedule stays flagged
+// missed while the bill is actually paid monthly, and (being in
+// ScheduledMerchantSet) is never re-proposed either. The rescue pass must
+// re-phase onto the new date after the first shifted arrival.
+func TestRunnerRescuesPhaseShiftedBill(t *testing.T) {
+	st := newTestStore(t)
+	r := NewRunner(st)
+	missedEvents := 0
+	r.SetOnMissed(func(store.ScheduledTxnRow) { missedEvents++ })
+
+	schedID, err := st.InsertScheduled(store.ScheduledTxnRow{
+		NormalizedMerchant: "netflix.com", AmountFils: 3_900, TolerancePct: 10,
+		IntervalDays: 30, NextDue: "2026-01-05", Direction: "debit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Same-merchant noise inside the dead zone but outside the strict ±10%
+	// band: must never hijack the phase.
+	insertTxn(t, st, "2026-01-23", 9_900, "NETFLIX.COM", "debit", "confirmed")
+
+	// The January 5 charge fails; the retry lands on the 25th and every later
+	// renewal bills from the new date. Drive the runner daily like ingest.
+	arrivals := map[string]bool{
+		"2026-01-25": true, "2026-02-24": true, "2026-03-26": true,
+		"2026-04-25": true, "2026-05-25": true,
+	}
+	var lastArrival int64
+	for day := d(t, "2026-01-06"); !day.After(d(t, "2026-06-01")); day = day.AddDate(0, 0, 1) {
+		if arrivals[day.Format("2006-01-02")] {
+			lastArrival = insertTxn(t, st, day.Format("2006-01-02"), 3_900, "netflix.com", "debit", "needs_review")
+		}
+		if err := r.PostProcess(day); err != nil {
+			t.Fatalf("post-process %s: %v", day.Format("2006-01-02"), err)
+		}
+	}
+
+	got := mustSchedule(t, st, schedID)
+	if got.LastMatchedTxID == nil || *got.LastMatchedTxID != lastArrival {
+		t.Fatalf("last matched = %v, want the 2026-05-25 arrival (%d) — schedule stuck in the dead zone", got.LastMatchedTxID, lastArrival)
+	}
+	if got.Missed {
+		t.Errorf("still flagged missed after five paid cycles")
+	}
+	if got.NextDue != "2026-06-24" {
+		t.Errorf("next_due = %s, want 2026-06-24 (re-phased onto the new billing date)", got.NextDue)
+	}
+	// Exactly one genuine miss (the failed January 5 cycle); the four later
+	// renewals on the new cadence must not re-flag.
+	if missedEvents != 1 {
+		t.Errorf("onMissed fired %d times, want 1", missedEvents)
+	}
+}

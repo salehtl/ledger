@@ -258,9 +258,25 @@ func (s *Store) UpdateTransactionCategory(txID, categoryID int64, status string)
 // bucket snapshot are cleared and it returns to the review queue. Orthogonal
 // links (project, refund) are left intact — unlike the bulk
 // ClearAllCategorization reset, this is a routine single-row correction.
+// A split parent is refused (ErrTxSplit), mirroring UpdateTransactionCategory:
+// its category is already NULL, so "decategorizing" it would only flip status
+// to needs_review with the split lines still attached — the whole amount would
+// silently drop out of every aggregate (split-line sums require the parent
+// confirmed) and the row would jam (re-categorizing 409s while split). The
+// sanctioned way out of the split state is PUT splits with an empty array.
 func (s *Store) ClearTransactionCategory(txID int64) error {
+	var one int
+	err := s.DB.QueryRow(
+		`SELECT 1 FROM transaction_splits WHERE transaction_id=? LIMIT 1`, txID,
+	).Scan(&one)
+	if err == nil {
+		return fmt.Errorf("%w: transaction %d has split lines; remove the splits first", ErrTxSplit, txID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(
+	_, err = s.DB.Exec(
 		`UPDATE transactions SET category_id=NULL, bucket_snapshot=NULL, status='needs_review', updated_at=? WHERE id=?`,
 		now, txID,
 	)
@@ -422,10 +438,24 @@ func (s *Store) SnapshotBucketForCategory(categoryID int64, bucket string) error
 
 // ClearAllCategorization moves every transaction back to needs_review and clears
 // its category and frozen bucket snapshot. Learned rules are left intact, so
-// re-categorizing known merchants stays fast. Returns the number of rows affected.
+// re-categorizing known merchants stays fast. Split lines of the reset rows are
+// deleted too — leaving them would strand needs_review parents that 409 on
+// every categorize attempt ("transaction is split") until each one is manually
+// un-split. Returns the number of transaction rows affected.
 func (s *Store) ClearAllCategorization() (int64, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`DELETE FROM transaction_splits
+		  WHERE transaction_id IN (SELECT id FROM transactions WHERE status!='archived')`,
+	); err != nil {
+		return 0, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.DB.Exec(
+	res, err := tx.Exec(
 		`UPDATE transactions
 		    SET category_id=NULL, bucket_snapshot=NULL, refund_of_id=NULL, status='needs_review', updated_at=?
 		  WHERE status!='archived'`,
@@ -434,7 +464,11 @@ func (s *Store) ClearAllCategorization() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
 // DeleteRule removes one rule by id.

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"ledger/internal/store"
@@ -174,5 +175,53 @@ func TestPutTransactionNote(t *testing.T) {
 	}
 	if w := doJSON(t, srv, "PUT", "/api/transactions/424242/note", map[string]any{"note": "x"}); w.Code != http.StatusNotFound {
 		t.Fatalf("missing txn status = %d, want 404", w.Code)
+	}
+}
+
+// TestDecategorizeSplitParentConflict: the decategorize branch of POST
+// /api/transactions/{id}/categorize (category_id null) must refuse a split
+// parent with the same 409 the categorize branch uses. Without the guard the
+// parent lands in needs_review with its lines still attached: the whole
+// amount silently drops out of jars/envelopes/reports (split aggregates
+// require the parent confirmed) and the review item can't be categorized —
+// a dead end only PUT splits [] escapes.
+func TestDecategorizeSplitParentConflict(t *testing.T) {
+	srv, st, catA, catB := newSplitsTestServer(t)
+	txID := projInsertTxn(t, st, catA, "debit", 100_00, "2026-07-10", "confirmed")
+	path := "/api/transactions/" + itoa(txID)
+
+	w := doJSON(t, srv, "PUT", path+"/splits", map[string]any{
+		"splits": []map[string]any{
+			{"category_id": catA, "amount_fils": 60_00},
+			{"category_id": catB, "amount_fils": 40_00},
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT splits = %d; body: %s", w.Code, w.Body)
+	}
+
+	w = doJSON(t, srv, "POST", path+"/categorize", map[string]any{"category_id": nil})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("decategorize split parent = %d, want 409; body: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "transaction is split") {
+		t.Fatalf("409 body = %s, want the same 'transaction is split' error the categorize branch uses", w.Body)
+	}
+	var status string
+	if err := st.DB.QueryRow(`SELECT status FROM transactions WHERE id=?`, txID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "confirmed" {
+		t.Fatalf("status after refused decategorize = %q, want confirmed", status)
+	}
+
+	// The sanctioned path back to the review queue: un-split via the API.
+	w = doJSON(t, srv, "PUT", path+"/splits", map[string]any{"splits": []map[string]any{}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("un-split = %d; body: %s", w.Code, w.Body)
+	}
+	w = doJSON(t, srv, "POST", path+"/categorize", map[string]any{"category_id": nil})
+	if w.Code != http.StatusOK {
+		t.Fatalf("decategorize after un-split = %d; body: %s", w.Code, w.Body)
 	}
 }

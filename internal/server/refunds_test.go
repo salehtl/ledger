@@ -140,3 +140,40 @@ func TestUnlinkRefundEndpoint(t *testing.T) {
 		t.Errorf("second unlink status = %d, want 404", w.Code)
 	}
 }
+
+// TestLinkRefundSplitCreditConflict: POST link-refund on a credit that has
+// split lines must 409 with the same "transaction is split" the categorize
+// path uses — linking would write an inherited category onto a split parent,
+// which the list contract promises always has CategoryID null.
+func TestLinkRefundSplitCreditConflict(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	debitID := seedServerTxn(t, st, "debit", "Carrefour", 10_000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedServerTxn(t, st, "credit", "Refund", 10_000, "2026-07-03T10:00:00Z", "")
+	catA := projInsertCategory(t, st, "RefSplit409A", "spending", "need")
+	catB := projInsertCategory(t, st, "RefSplit409B", "spending", "want")
+	if err := st.ReplaceTransactionSplits(creditID, []store.TransactionSplitRow{
+		{CategoryID: catA, AmountFils: 6_000},
+		{CategoryID: catB, AmountFils: 4_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/transactions/%d/link-refund", creditID),
+		strings.NewReader(fmt.Sprintf(`{"target_id":%d}`, debitID)))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 409 {
+		t.Fatalf("link split credit = %d, want 409; body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "transaction is split") {
+		t.Fatalf("409 body = %s", w.Body.String())
+	}
+	var refundOf *int64
+	if err := st.DB.QueryRow(`SELECT refund_of_id FROM transactions WHERE id=?`, creditID).Scan(&refundOf); err != nil {
+		t.Fatal(err)
+	}
+	if refundOf != nil {
+		t.Fatalf("refund_of_id = %v after refused link, want NULL", *refundOf)
+	}
+}

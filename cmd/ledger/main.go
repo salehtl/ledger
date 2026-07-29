@@ -404,11 +404,24 @@ func main() {
 	// tends to happen, and that crossing would be swallowed as baseline.
 	srv.EvaluateBudgetThresholds()
 
-	// Upcoming-bill notifier: hourly sweep over active schedules due within the
-	// notify_upcoming_days horizon (0 disables). Deduped per (schedule,
-	// next_due) inside the server, so the tick frequency only bounds latency.
-	go func() {
+	// Hourly notifier: the recurring match/miss sweep plus the upcoming-bill
+	// check. The sweep also rides every ingest sync, but it must be clocked by
+	// TIME too — it is a pure DB pass, and an IMAP outage (dial failure,
+	// expired credentials) skips the ingest post-process hook entirely, which
+	// is precisely when bill emails go silently missing. Without this a
+	// schedule could sit past next_due + grace for days with no missed_bill
+	// event until the mailbox recovered. Upcoming-bill events are deduped per
+	// (schedule, next_due) inside the server, so tick frequency only bounds
+	// latency. Sweep first, so a bill that just went missing is flagged before
+	// the upcoming check reads schedule state.
+	notifierTick := func() {
+		if err := recurRunner.PostProcess(time.Now()); err != nil {
+			log.Printf("recur: hourly sweep: %v", err)
+		}
 		srv.CheckUpcomingBills(time.Now())
+	}
+	go func() {
+		notifierTick()
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for {
@@ -416,7 +429,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				srv.CheckUpcomingBills(time.Now())
+				notifierTick()
 			}
 		}
 	}()
