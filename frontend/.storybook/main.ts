@@ -1,8 +1,17 @@
 import type { StorybookConfig } from "@storybook/react-vite";
+import remarkGfm from "remark-gfm";
 
 const config: StorybookConfig = {
   stories: ["../src/**/*.mdx", "../src/**/*.stories.@(ts|tsx)"],
-  addons: ["@storybook/addon-docs", "@storybook/addon-a11y"],
+  addons: [
+    {
+      // MDX3 drops GFM syntax (pipe tables) unless remark-gfm is wired in —
+      // Foundations.mdx's type table needs it.
+      name: "@storybook/addon-docs",
+      options: { mdxPluginOptions: { mdxCompileOptions: { remarkPlugins: [remarkGfm] } } },
+    },
+    "@storybook/addon-a11y",
+  ],
   framework: { name: "@storybook/react-vite", options: {} },
   // The project vite config is merged in automatically (tailwind v4 plugin
   // included — that's how the tokens render). vite-plugin-pwa registers
