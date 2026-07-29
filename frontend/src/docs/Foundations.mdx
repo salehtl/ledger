@@ -5,7 +5,9 @@ import { Meta, ColorPalette, ColorItem, Typeset } from "@storybook/addon-docs/bl
 # ledger — Foundations
 
 Two-colour press: paper, ink, one vermilion spot. Hue carries identity, texture carries
-state, red is rationed. Values live in `src/styles/app.css`; **components never hold a raw hex.**
+state, red is rationed. Values live in `src/styles/app.css`; **components never hold a raw hex**
+(one sanctioned exception: `ProjectForm`'s `COLOR_PRESETS`, which is user data). Swatches below
+show the light-theme table — the dark table lives beside it in `app.css`.
 
 ## Ground & ink
 
@@ -73,8 +75,8 @@ else: every figure, date, category label, count, eyebrow, chart axis and nav lab
 | Row primary | Sans | 14px | 500 | -0.01em |
 | Row meta | Mono | 10px | 400 | 0.04em |
 | Eyebrow / label | Mono | 10px | 500 | 0.14em, uppercase |
-| Nav label | Mono | 8px | 500 | 0.10em, uppercase |
-| Button | Sans | 13px | 500 | normal |
+| Nav label | Mono | 8px | 500 (active) / 400 | 0.10em, uppercase |
+| Button | Sans | 14px | 500 | normal |
 
 ## Radius & texture
 
