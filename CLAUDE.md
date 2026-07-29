@@ -40,7 +40,14 @@ CGO_ENABLED=0 go build -o ledger ./cmd/ledger
 cd frontend
 bun run dev        # Vite dev server
 bun run test       # vitest (run mode)
+bun run storybook        # design-system docs + component workbench (port 6006)
+bun run build-storybook  # static build (storybook-static/, gitignored)
 ```
+
+Every `X.stories.tsx` has a colocated `X.stories.test.tsx` rendering the same stories
+via portable stories; `src/test/storybook.test.tsx` renders every story in the repo as
+a regression net. When you add or change a shared component, update its stories in the
+same commit.
 
 The API client uses relative URLs (`/api/...`); there is no dev proxy configured — run against the Go binary or add one if doing pure-vite dev.
 
