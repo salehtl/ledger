@@ -1,0 +1,83 @@
+import { Meta, ColorPalette, ColorItem, Typeset } from "@storybook/addon-docs/blocks";
+
+<Meta title="Foundations" />
+
+# ledger — Foundations
+
+Two-colour press: paper, ink, one vermilion spot. Hue carries identity, texture carries
+state, red is rationed. Values live in `src/styles/app.css`; **components never hold a raw hex.**
+
+## Ground & ink
+
+<ColorPalette>
+  <ColorItem title="--color-bg / --color-surface" subtitle="paper — the tonal ladder is gone" colors={{ paper: "#f2f1ef" }} />
+  <ColorItem title="--color-surface-2" subtitle="track: progress/dither backing only" colors={{ track: "#e3e2de" }} />
+  <ColorItem title="--color-border" subtitle="hairline rule — separation is never a shadow" colors={{ border: "#d6d5d1" }} />
+  <ColorItem title="--color-fg" subtitle="ink" colors={{ ink: "#16161a" }} />
+  <ColorItem title="--color-muted" subtitle="ink, low emphasis" colors={{ muted: "#5e5e63" }} />
+  <ColorItem title="--color-hero / --color-hero-fg" subtitle="the hero panel prints inverted" colors={{ hero: "#16161a", "hero-fg": "#f2f1ef" }} />
+</ColorPalette>
+
+## The spot ink — three registers
+
+One plate, three tints. The **fill** register is only ever a fill (white text on top);
+the **text** register is what negative money prints in. Never swap them.
+
+<ColorPalette>
+  <ColorItem title="--color-accent" subtitle="FILL only — 5.03:1 with white on top" colors={{ accent: "#c93d26" }} />
+  <ColorItem title="--color-accent-fg" subtitle="text on the accent fill" colors={{ "accent-fg": "#ffffff" }} />
+  <ColorItem title="--color-bad" subtitle="TEXT register — negative money, 5.27:1 on paper" colors={{ bad: "#b8331d" }} />
+</ColorPalette>
+
+## Pace ramp
+
+The one ramp a progress bar's ink travels — the single exception to
+"over is a texture change, never a hue", because a pace bar has three states and texture only has two.
+
+<ColorPalette>
+  <ColorItem title="--color-pace-under" subtitle="alias of --color-fg" colors={{ under: "#16161a" }} />
+  <ColorItem title="--color-pace-over" subtitle="warmer + lighter than the spot ink, on purpose" colors={{ over: "#c0641a" }} />
+  <ColorItem title="--color-pace-exceeded" subtitle="alias of --color-bad" colors={{ exceeded: "#b8331d" }} />
+</ColorPalette>
+
+## Categorical palette
+
+Six hues × two lightness steps — separated on the axis that survives red-green colour
+blindness. Buckets alias the base steps (need = amber, want = lilac, save = sage,
+transfer = azure); projects draw from all twelve.
+
+<ColorPalette>
+  <ColorItem title="azure" subtitle="--color-azure / -deep · transfer" colors={{ base: "#1660a0", deep: "#003c6c" }} />
+  <ColorItem title="amber" subtitle="--color-amber / -deep · need" colors={{ base: "#b5771e", deep: "#855405" }} />
+  <ColorItem title="lilac" subtitle="--color-lilac / -deep · want" colors={{ base: "#7556a5", deep: "#51317c" }} />
+  <ColorItem title="sage" subtitle="--color-sage / -deep · save" colors={{ base: "#409457", deep: "#0d6d32" }} />
+  <ColorItem title="rose" subtitle="--color-rose / -deep" colors={{ base: "#c5646e", deep: "#9a3d49" }} />
+  <ColorItem title="slate" subtitle="--color-slate / -deep" colors={{ base: "#76767e", deep: "#515159" }} />
+</ColorPalette>
+
+## Type
+
+Geist takes prose — anything a person reads as a sentence. Geist Mono takes everything
+else: every figure, date, category label, count, eyebrow, chart axis and nav label.
+
+<Typeset fontFamily='"Geist Mono Variable", monospace' fontSizes={[44]} fontWeight={600} sampleText="6,420.50" />
+<Typeset fontFamily='"Geist Variable", sans-serif' fontSizes={[16]} fontWeight={600} sampleText="Transactions" />
+<Typeset fontFamily='"Geist Variable", sans-serif' fontSizes={[14]} fontWeight={500} sampleText="CARREFOUR HYPERMARKET" />
+<Typeset fontFamily='"Geist Mono Variable", monospace' fontSizes={[10]} fontWeight={400} sampleText="2026-07-28 · Groceries" />
+<Typeset fontFamily='"Geist Mono Variable", monospace' fontSizes={[10]} fontWeight={500} sampleText="BUDGET PACE" />
+
+| Role | Face | Size | Weight | Tracking |
+| --- | --- | --- | --- | --- |
+| Hero amount (Home) | Mono | 44px | 600 | -0.02em |
+| Screen title | Sans | 16px | 600 | -0.015em |
+| Row primary | Sans | 14px | 500 | -0.01em |
+| Row meta | Mono | 10px | 400 | 0.04em |
+| Eyebrow / label | Mono | 10px | 500 | 0.14em, uppercase |
+| Nav label | Mono | 8px | 500 | 0.10em, uppercase |
+| Button | Sans | 13px | 500 | normal |
+
+## Radius & texture
+
+- `--radius: 2px` — one sharp radius everywhere, including former circles. No second scale.
+- `.dither-mask` is the app's one definition of "dotted" (2px pitch) — `ProgressBar` and
+  `DitherFill` share it. Texture is **state** (dotted → solid at/over budget), never identity.
