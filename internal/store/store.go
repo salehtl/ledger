@@ -122,8 +122,35 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "transactions", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
 		return err
 	}
-	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tx_project ON transactions(project_id)`)
-	return err
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tx_project ON transactions(project_id)`); err != nil {
+		return err
+	}
+	// v3: budget vs tracking accounts — tracking (investments, property) counts
+	// in net worth only, never in envelopes.
+	if err := addColumnIfMissing(db, "accounts", "kind", "TEXT NOT NULL DEFAULT 'budget'"); err != nil {
+		return err
+	}
+	// v3: user memo on a transaction, distinct from the parsed description.
+	if err := addColumnIfMissing(db, "transactions", "note", "TEXT"); err != nil {
+		return err
+	}
+	// v3: merchant clean-name piggybacks the rules engine — a rule with a
+	// display_name renames every past and future match in transaction listings.
+	if err := addColumnIfMissing(db, "rules", "display_name", "TEXT"); err != nil {
+		return err
+	}
+	// v3: notification preferences — budget-threshold pushes on/off and how many
+	// days ahead upcoming-bill pushes fire (0 = off).
+	if err := addColumnIfMissing(db, "app_settings", "notify_thresholds", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "app_settings", "notify_upcoming_days", "INTEGER NOT NULL DEFAULT 3"); err != nil {
+		return err
+	}
+	// v3: detector provenance for proposed schedules (count, avg interval, last
+	// amounts, matched tx ids as JSON). In the CREATE TABLE for fresh databases;
+	// guarded here for databases created before the column existed.
+	return addColumnIfMissing(db, "scheduled_transactions", "provenance", "TEXT NOT NULL DEFAULT ''")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

@@ -83,8 +83,10 @@ func TestOpenAppliesFullSchema(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"accounts", "ai_suggestions", "ai_usage", "app_settings", "budget_config", "categories", "fx_rates", "import_log",
-		"ingest_log", "projects", "push_subscriptions", "rules", "transactions",
+		"account_balances", "accounts", "ai_suggestions", "ai_usage", "app_settings", "budget_config",
+		"categories", "category_targets", "envelope_assignments", "fx_rates", "import_log",
+		"ingest_log", "projects", "push_subscriptions", "rules", "scheduled_transactions",
+		"transaction_splits", "transactions",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tables = %v, want %v", got, want)

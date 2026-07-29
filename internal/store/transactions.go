@@ -213,6 +213,26 @@ func nullable(s string) any {
 	return s
 }
 
+// ErrTxNotFound reports an operation against a transaction id that doesn't exist.
+var ErrTxNotFound = errors.New("transaction not found")
+
+// UpdateTransactionNote sets (or clears, when note is empty) the user memo on
+// one transaction. The memo is user truth, distinct from the parsed description.
+func (s *Store) UpdateTransactionNote(txID int64, note string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.DB.Exec(
+		`UPDATE transactions SET note=?, updated_at=? WHERE id=?`,
+		nullable(note), now, txID,
+	)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("%w: id %d", ErrTxNotFound, txID)
+	}
+	return nil
+}
+
 // ArchiveTransaction soft-deletes a transaction: it stashes the current status
 // in archived_from and sets status='archived'. Archived rows are hidden from the
 // default transaction list and fall out of budgets/insights (which count only
@@ -244,6 +264,10 @@ func (s *Store) RestoreTransaction(txID int64) error {
 }
 
 // ManualTxn is a user-entered transaction. CategoryID 0 means uncategorized.
+// AccountID 0 means unattributed; a positive AccountID stamps the row with
+// that account's last4 so the manual entry participates in reconciliation
+// expected-balance math (AccountActivitySince) and net worth — the reconcile
+// discrepancy card's "open manual entry" path must converge the delta.
 type ManualTxn struct {
 	PostedAt    time.Time
 	AmountFils  int64
@@ -251,6 +275,7 @@ type ManualTxn struct {
 	Direction   string // "debit" | "credit"
 	MerchantRaw string
 	CategoryID  int64
+	AccountID   int64
 }
 
 // InsertManualTransaction writes a user-entered transaction (source='manual',
@@ -266,6 +291,17 @@ func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
 	amountAED, err := s.amountAEDValue(m.AmountFils, currency)
 	if err != nil {
 		return 0, err
+	}
+	last4 := ""
+	if m.AccountID > 0 {
+		acct, ok, err := s.SelectAccount(m.AccountID)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("%w: account %d not found", ErrBalanceInvalid, m.AccountID)
+		}
+		last4 = acct.Last4
 	}
 	status := "needs_review"
 	var catID any
@@ -287,11 +323,11 @@ func (s *Store) InsertManualTransaction(m ManualTxn) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
 		`INSERT INTO transactions
-		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, category_id, status,
+		   (posted_at, amount, amount_aed, currency, direction, merchant_raw, last4, category_id, status,
 		    confidence, fingerprint, source, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
 		m.PostedAt.UTC().Format(time.RFC3339Nano), m.AmountFils, amountAED, currency, m.Direction,
-		m.MerchantRaw, catID, status, 1.0, fp, now, now,
+		m.MerchantRaw, nullable(last4), catID, status, 1.0, fp, now, now,
 	)
 	if err != nil {
 		return 0, err

@@ -64,7 +64,21 @@ func (s *Store) LinkRefund(creditID, debitID int64) error {
 		return fmt.Errorf("%w: purchase %d is not confirmed", ErrRefundBadLink, debitID)
 	}
 	if !catID.Valid {
-		return fmt.Errorf("%w: purchase %d has no category", ErrRefundBadLink, debitID)
+		// A split parent's own category is NULL (the lines carry it) but it is
+		// still a refundable purchase — the scope's "the parent keeps its
+		// refund machinery". The credit inherits the dominant split line's
+		// category (largest amount, then lowest id — deterministic).
+		err := tx.QueryRow(
+			`SELECT category_id FROM transaction_splits
+			  WHERE transaction_id=? ORDER BY amount_fils DESC, id ASC LIMIT 1`, debitID,
+		).Scan(&catID.Int64)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: purchase %d has no category", ErrRefundBadLink, debitID)
+		}
+		if err != nil {
+			return err
+		}
+		catID.Valid = true
 	}
 
 	var snapVal any
@@ -106,9 +120,11 @@ func (s *Store) UnlinkRefund(txID int64) error {
 	return nil
 }
 
-// SelectRefundCandidates lists confirmed, categorized spending debits the
-// credit could plausibly refund: posted between 90 days before and 1 day
-// after the credit. Exact amount+currency matches rank first, then newest.
+// SelectRefundCandidates lists confirmed spending debits the credit could
+// plausibly refund: posted between 90 days before and 1 day after the credit.
+// Split parents (category NULL, lines spending-categorized) stay findable —
+// splitting never removes a purchase's refund machinery. Exact
+// amount+currency matches rank first, then newest.
 func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem, error) {
 	if limit <= 0 {
 		limit = 20
@@ -135,8 +151,11 @@ func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem,
 	upper := posted.UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
 	rows, err := s.DB.Query(
 		`SELECT `+reviewItemColumns+`
-		   FROM transactions t JOIN categories c ON c.id = t.category_id
-		  WHERE t.direction='debit' AND t.status='confirmed' AND c.kind='spending'
+		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+		  WHERE t.direction='debit' AND t.status='confirmed'
+		    AND (c.kind='spending'
+		         OR (t.category_id IS NULL
+		             AND EXISTS (SELECT 1 FROM transaction_splits sp WHERE sp.transaction_id = t.id)))
 		    AND t.posted_at >= ? AND t.posted_at <= ?
 		  ORDER BY CASE WHEN t.amount = ? AND t.currency = ? THEN 0 ELSE 1 END, t.posted_at DESC
 		  LIMIT ?`,

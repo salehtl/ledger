@@ -26,6 +26,7 @@ import (
 	"ledger/internal/monitor"
 	"ledger/internal/parse"
 	"ledger/internal/push"
+	"ledger/internal/recur"
 	"ledger/internal/server"
 	"ledger/internal/store"
 	"ledger/internal/web"
@@ -138,6 +139,16 @@ func main() {
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
 	srv.SetProjectStore(st)
+	// v3 surfaces: envelopes/targets, recurring bills, balances/reconcile,
+	// reports, splits/notes, notification preferences.
+	srv.SetTargetsStore(st)
+	srv.SetEnvelopeStore(st)
+	srv.SetScheduledStore(st)
+	srv.SetBalancesStore(st)
+	srv.SetReportsStore(st)
+	srv.SetSplitsStore(st)
+	srv.SetNoteStore(st)
+	srv.SetNotifyStore(st)
 
 	// VAPID push sender (optional — only enabled when both keys are set).
 	var pushSend *push.Sender
@@ -238,7 +249,19 @@ func main() {
 		}
 		return cat, cat != nil
 	})
-	srv.SetReprocessor(processor)
+	// Recurring-bill engine: deterministic detection of recurring merchants from
+	// confirmed history, matching of arriving bills to active schedules, and
+	// missed-bill sweeps. Runs behind the store; no AI involved. The hooks feed
+	// the schedule_detected / missed_bill SSE+push events (push gated by the
+	// notify settings inside the server emitters).
+	recurRunner := recur.NewRunner(st)
+	recurRunner.SetOnDetected(srv.EmitScheduleDetected)
+	recurRunner.SetOnMissed(srv.EmitMissedBill)
+
+	// Reprocess re-runs the cascade over retained mail and can backfill months
+	// of transactions at once, so it is followed by a match/sweep pass and — when
+	// it produced rows — a detection run over the refreshed history.
+	srv.SetReprocessor(reprocessWithRecur{inner: processor, runner: recurRunner})
 	srv.SetRecategorizeFn(func(ctx context.Context, merchantRaw string) (int64, string, bool, error) {
 		cat, err := buildCategorizer(st, domainCats, aiCat)
 		if err != nil {
@@ -286,6 +309,9 @@ func main() {
 			"amount":       amountFils,
 			"direction":    direction,
 		})
+		// A rules-confirmed insert can push an envelope or jar past 80%/100%;
+		// the evaluator diffs in-memory state so unchanged levels stay silent.
+		srv.EvaluateBudgetThresholds()
 		if pushSend != nil {
 			subs, _ := st.SelectPushSubs()
 			payload, _ := json.Marshal(map[string]string{
@@ -336,7 +362,12 @@ func main() {
 			// Cap automatic retries: rows that failed 3 times wait for a parser
 			// fix + manual reprocess instead of burning CPU (and AI calls, when
 			// enabled) every poll cycle forever.
-			return processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true, MaxAttempts: 3})
+			n, err := processor.ProcessPending(ctx, store.SelectForParseOpts{OnlyUnparsed: true, MaxAttempts: 3})
+			// Recurring pass rides every sync: match arriving bills to active
+			// schedules and sweep for bills whose email never came. Errors here
+			// must never fail the ingest cycle itself.
+			runRecur(recurRunner, n)
+			return n, err
 		})
 		mode := "poll"
 		if cfg.IMAP.UseIDLE {
@@ -366,6 +397,30 @@ func main() {
 
 	go mon.Start(ctx)
 
+	// Prime the budget-threshold diff state before any mutation can run: the
+	// first evaluation only records baseline levels (nothing is emitted).
+	// Without this the priming would ride the FIRST post-restart mutation —
+	// e.g. the morning's first bill email — which is exactly when a crossing
+	// tends to happen, and that crossing would be swallowed as baseline.
+	srv.EvaluateBudgetThresholds()
+
+	// Upcoming-bill notifier: hourly sweep over active schedules due within the
+	// notify_upcoming_days horizon (0 disables). Deduped per (schedule,
+	// next_due) inside the server, so the tick frequency only bounds latency.
+	go func() {
+		srv.CheckUpcomingBills(time.Now())
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				srv.CheckUpcomingBills(time.Now())
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	log.Println("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -373,6 +428,37 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+// runRecur is the shared post-batch recurring pass: always match+sweep, and
+// re-mine history for new patterns only when the batch created transactions.
+// Failures are logged, never propagated — recurring intelligence must not take
+// down ingest.
+func runRecur(runner *recur.Runner, created int) {
+	now := time.Now()
+	if err := runner.PostProcess(now); err != nil {
+		log.Printf("recur: match/sweep: %v", err)
+	}
+	if created > 0 {
+		if n, err := runner.DetectAndPropose(now); err != nil {
+			log.Printf("recur: detect: %v", err)
+		} else if n > 0 {
+			log.Printf("recur: proposed %d recurring schedule(s)", n)
+		}
+	}
+}
+
+// reprocessWithRecur decorates the parse reprocessor so a manual reprocess is
+// followed by the same recurring pass the ingest hook runs.
+type reprocessWithRecur struct {
+	inner  server.Reprocessor
+	runner *recur.Runner
+}
+
+func (r reprocessWithRecur) Reprocess(ctx context.Context, bank string) (int, error) {
+	n, err := r.inner.Reprocess(ctx, bank)
+	runRecur(r.runner, n)
+	return n, err
 }
 
 // runCompact gzips historical raw_body rows and VACUUMs to reclaim space.
@@ -482,6 +568,15 @@ func runImport(args []string) {
 	fmt.Printf("  Errors:             %d\n", result.RowsError)
 	if !*dryRun {
 		fmt.Printf("  Rules derived:      %d\n", result.DerivedRules)
+		// A historical backfill is the richest mining ground the detector will
+		// ever see: propose recurring schedules from the imported history now.
+		if result.RowsAdded > 0 {
+			if n, err := recur.NewRunner(st).DetectAndPropose(time.Now()); err != nil {
+				log.Printf("recur: detect after import: %v", err)
+			} else if n > 0 {
+				fmt.Printf("  Recurring proposed: %d\n", n)
+			}
+		}
 	}
 	if result.RowsError > 0 {
 		fmt.Fprintln(os.Stderr, "\nWARNING: some rows had errors — check output above")

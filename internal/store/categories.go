@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -15,15 +17,17 @@ type CategoryRow struct {
 	IsActive bool
 }
 
-// RuleRow represents a row in the rules table.
+// RuleRow represents a row in the rules table. DisplayName, when set, is the
+// merchant clean-name shown for every transaction the rule matches.
 type RuleRow struct {
-	ID         int64
-	MatchType  string // "contains" | "exact" | "regex"
-	Pattern    string
-	CategoryID int64
-	Priority   int
-	Source     string // "manual" | "ai_confirmed"
-	IsActive   bool
+	ID          int64
+	MatchType   string // "contains" | "exact" | "regex"
+	Pattern     string
+	CategoryID  int64
+	Priority    int
+	Source      string // "manual" | "ai_confirmed"
+	IsActive    bool
+	DisplayName string // "" = no clean-name
 }
 
 // ReviewItem is a flattened transaction row returned for manual review.
@@ -47,17 +51,29 @@ type ReviewItem struct {
 	ProjectID      *int64 // set when this transaction is assigned to a life-project
 	Last4          string // account last-4 from the bank email; "" when unknown
 	AccountName    string // registered account name matching Last4; "" when unregistered
+	Note           string // user memo, distinct from the parsed description; "" when unset
+	DisplayName    string // merchant clean-name from the highest-priority matching rule; "" when none
 }
 
 // reviewItemColumns is the shared SELECT list every scanReviewItems query uses;
 // the two lists must stay in lockstep. The account name is a scalar subquery so
 // a duplicated last4 in accounts can never fan a transaction into extra rows.
+// The display-name subquery mirrors the Go categorizer's case-insensitive
+// exact/contains matching (categorize.ruleMatches); regex rules cannot resolve
+// a display name here (SQLite has no regex built in) — the rename flow always
+// writes contains/exact rules, so that path never carries a clean-name anyway.
 const reviewItemColumns = `t.id, t.posted_at, t.amount, t.amount_aed, t.currency, t.direction,
 	COALESCE(t.merchant_raw,''), t.status, COALESCE(t.confidence,0), COALESCE(t.source,''),
 	t.category_id, COALESCE(c.name,''), COALESCE(c.bucket,''),
 	COALESCE(c.kind,''), COALESCE(t.bucket_snapshot,''), t.refund_of_id, t.project_id,
 	COALESCE(t.last4,''),
-	COALESCE((SELECT a.name FROM accounts a WHERE a.last4 = t.last4 AND a.is_active=1 LIMIT 1),'')`
+	COALESCE((SELECT a.name FROM accounts a WHERE a.last4 = t.last4 AND a.is_active=1 LIMIT 1),''),
+	COALESCE(t.note,''),
+	COALESCE((SELECT r.display_name FROM rules r
+	   WHERE r.is_active=1 AND r.display_name IS NOT NULL AND r.display_name != '' AND r.pattern != ''
+	     AND ((r.match_type='exact' AND lower(r.pattern) = lower(t.merchant_raw))
+	       OR (r.match_type='contains' AND instr(lower(t.merchant_raw), lower(r.pattern)) > 0))
+	   ORDER BY r.priority ASC, r.id ASC LIMIT 1),'')`
 
 // nullableStr maps an empty string to SQL NULL.
 func nullableStr(s string) any {
@@ -156,9 +172,9 @@ func (s *Store) SelectCategories() ([]CategoryRow, error) {
 func (s *Store) InsertRule(r RuleRow) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.DB.Exec(
-		`INSERT INTO rules (match_type, pattern, category_id, priority, source, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		r.MatchType, r.Pattern, r.CategoryID, r.Priority, r.Source, now,
+		`INSERT INTO rules (match_type, pattern, category_id, priority, source, display_name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.MatchType, r.Pattern, r.CategoryID, r.Priority, r.Source, nullableStr(r.DisplayName), now,
 	)
 	if err != nil {
 		return 0, err
@@ -166,10 +182,17 @@ func (s *Store) InsertRule(r RuleRow) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SetRuleDisplayName sets (or clears, when name is empty) the merchant
+// clean-name carried by one rule.
+func (s *Store) SetRuleDisplayName(id int64, name string) error {
+	_, err := s.DB.Exec(`UPDATE rules SET display_name=? WHERE id=?`, nullableStr(name), id)
+	return err
+}
+
 // SelectRules returns all rules ordered by priority ascending (lower = higher priority).
 func (s *Store) SelectRules() ([]RuleRow, error) {
 	return scanRules(s.DB.Query(
-		`SELECT id, match_type, pattern, category_id, priority, source, is_active
+		`SELECT id, match_type, pattern, category_id, priority, source, is_active, COALESCE(display_name,'')
 		 FROM rules ORDER BY priority ASC`,
 	))
 }
@@ -177,7 +200,7 @@ func (s *Store) SelectRules() ([]RuleRow, error) {
 // SelectActiveRules returns only enabled rules, priority ascending — for the categorizer.
 func (s *Store) SelectActiveRules() ([]RuleRow, error) {
 	return scanRules(s.DB.Query(
-		`SELECT id, match_type, pattern, category_id, priority, source, is_active
+		`SELECT id, match_type, pattern, category_id, priority, source, is_active, COALESCE(display_name,'')
 		 FROM rules WHERE is_active=1 ORDER BY priority ASC`,
 	))
 }
@@ -191,7 +214,7 @@ func scanRules(rows *sql.Rows, qerr error) ([]RuleRow, error) {
 	for rows.Next() {
 		var r RuleRow
 		var active int
-		if err := rows.Scan(&r.ID, &r.MatchType, &r.Pattern, &r.CategoryID, &r.Priority, &r.Source, &active); err != nil {
+		if err := rows.Scan(&r.ID, &r.MatchType, &r.Pattern, &r.CategoryID, &r.Priority, &r.Source, &active, &r.DisplayName); err != nil {
 			return nil, err
 		}
 		r.IsActive = active == 1
@@ -207,9 +230,24 @@ func (s *Store) SetRuleActive(id int64, active bool) error {
 }
 
 // UpdateTransactionCategory sets category_id and status on one transaction.
+// A split parent is refused (ErrTxSplit): its category must stay NULL while
+// the split lines carry the categories — a categorized split parent would
+// double-count on any aggregate that lacks the defensive NOT EXISTS guard
+// (its whole amount via the category arm, its lines again via the split arm).
+// Remove the splits first, then recategorize.
 func (s *Store) UpdateTransactionCategory(txID, categoryID int64, status string) error {
+	var one int
+	err := s.DB.QueryRow(
+		`SELECT 1 FROM transaction_splits WHERE transaction_id=? LIMIT 1`, txID,
+	).Scan(&one)
+	if err == nil {
+		return fmt.Errorf("%w: transaction %d has split lines; remove the splits first", ErrTxSplit, txID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(
+	_, err = s.DB.Exec(
 		`UPDATE transactions SET category_id=?, status=?, updated_at=? WHERE id=?`,
 		categoryID, status, now, txID,
 	)
@@ -300,7 +338,7 @@ func scanReviewItems(rows interface {
 			&r.MerchantRaw, &r.Status, &r.Confidence, &r.Source,
 			&catID, &r.CategoryName, &r.Bucket,
 			&r.Kind, &r.BucketSnapshot, &refundOf, &projectID,
-			&r.Last4, &r.AccountName,
+			&r.Last4, &r.AccountName, &r.Note, &r.DisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -333,16 +371,34 @@ func (s *Store) DeleteCategory(id int64) error {
 	return err
 }
 
-// CategoryUsage returns how many transactions and rules reference a category.
+// CategoryUsage returns how many transactions, rules and non-zero envelope
+// assignments reference a category. Split lines count into txns:
+// transaction_splits has a plain FK to categories (no cascade), so a category
+// referenced by a split must block deletion the same way a directly
+// categorized transaction does. Envelope assignments count because they are
+// ON DELETE CASCADE — deleting a category with assigned months would silently
+// rewrite historical budget state (past assigned totals and RTA); zero-amount
+// assignment rows carry no money and don't block. category_targets and
+// scheduled_transactions references deliberately do NOT block: a target is
+// per-category config that naturally dies with its category (CASCADE), and
+// schedules detach cleanly (SET NULL).
 // Used to enforce block-if-in-use deletes.
-func (s *Store) CategoryUsage(id int64) (txns int, rules int, err error) {
-	if err = s.DB.QueryRow(`SELECT count(*) FROM transactions WHERE category_id=?`, id).Scan(&txns); err != nil {
-		return 0, 0, err
+func (s *Store) CategoryUsage(id int64) (txns, rules, assignments int, err error) {
+	if err = s.DB.QueryRow(
+		`SELECT (SELECT count(*) FROM transactions WHERE category_id=?)
+		      + (SELECT count(*) FROM transaction_splits WHERE category_id=?)`,
+		id, id).Scan(&txns); err != nil {
+		return 0, 0, 0, err
 	}
 	if err = s.DB.QueryRow(`SELECT count(*) FROM rules WHERE category_id=?`, id).Scan(&rules); err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return txns, rules, nil
+	if err = s.DB.QueryRow(
+		`SELECT count(*) FROM envelope_assignments WHERE category_id=? AND assigned_fils != 0`,
+		id).Scan(&assignments); err != nil {
+		return 0, 0, 0, err
+	}
+	return txns, rules, assignments, nil
 }
 
 // UpdateCategory overwrites name/kind/bucket for one category.

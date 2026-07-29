@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,9 +46,16 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.catStore.UpdateTransactionCategory(txID, *req.CategoryID, "confirmed"); err != nil {
+		if errors.Is(err, store.ErrTxSplit) {
+			// A split parent's category stays NULL; its lines carry the truth.
+			// Categorizing it would double-count the amount — un-split first.
+			http.Error(w, `{"error":"transaction is split"}`, http.StatusConflict)
+			return
+		}
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
+	s.EvaluateBudgetThresholds()
 	resp := map[string]any{"ok": true}
 	if req.MakeRule && req.MerchantRaw != "" {
 		ruleID, err := s.catStore.InsertRule(store.RuleRow{
@@ -83,8 +91,82 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 		items = []store.ReviewItem{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	json.NewEncoder(w).Encode(s.decorateSplits(items))
 }
+
+// txnListItem decorates a ReviewItem with its split lines. The embedded item
+// keeps the list's Go-field-name JSON shape; Splits joins it under the same
+// convention and is omitted for unsplit transactions.
+type txnListItem struct {
+	store.ReviewItem
+	Splits []store.TransactionSplitRow `json:",omitempty"`
+}
+
+// decorateSplits attaches split lines to a transaction list in one batched
+// query. Without a wired splits store the list passes through undecorated.
+func (s *Server) decorateSplits(items []store.ReviewItem) []txnListItem {
+	out := make([]txnListItem, len(items))
+	for i, it := range items {
+		out[i] = txnListItem{ReviewItem: it}
+	}
+	if s.splitsStore == nil || len(items) == 0 {
+		return out
+	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	byTx, err := s.splitsStore.SelectSplitsForTransactions(ids)
+	if err != nil {
+		return out // decoration is best-effort; the list itself must not fail
+	}
+	for i := range out {
+		out[i].Splits = byTx[out[i].ID]
+	}
+	return out
+}
+
+// putNoteReq is the body of PUT /api/transactions/{id}/note. An empty note
+// clears the memo.
+type putNoteReq struct {
+	Note string `json:"note"`
+}
+
+func (s *Server) handlePutTransactionNote(w http.ResponseWriter, r *http.Request) {
+	if s.noteStore == nil {
+		errJSON(w, http.StatusServiceUnavailable, "notes unavailable")
+		return
+	}
+	txID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || txID <= 0 {
+		errJSON(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req putNoteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.noteStore.UpdateTransactionNote(txID, req.Note); err != nil {
+		if errors.Is(err, store.ErrTxNotFound) {
+			errJSON(w, http.StatusNotFound, "transaction not found")
+			return
+		}
+		errJSON(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	s.BroadcastEvent("tx", nil)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
+// NoteStore is the store surface the transaction-note endpoint needs.
+type NoteStore interface {
+	UpdateTransactionNote(txID int64, note string) error
+}
+
+// SetNoteStore wires the note store. Required for PUT /api/transactions/{id}/note.
+func (s *Server) SetNoteStore(ns NoteStore) { s.noteStore = ns }
 
 func (s *Server) handleTransactionEmail(w http.ResponseWriter, r *http.Request) {
 	if s.catStore == nil {
@@ -168,6 +250,10 @@ type manualTxnReq struct {
 	Direction   string `json:"direction"`
 	MerchantRaw string `json:"merchant_raw"`
 	CategoryID  int64  `json:"category_id"`
+	// AccountID optionally attributes the entry to a registered account: the
+	// row is stamped with the account's last4 so reconciliation expected-
+	// balance math and net worth see it (the discrepancy card's manual path).
+	AccountID int64 `json:"account_id"`
 }
 
 // parseManualDate accepts a full RFC3339 timestamp or a bare YYYY-MM-DD date.
@@ -215,7 +301,12 @@ func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 		Direction:   req.Direction,
 		MerchantRaw: strings.TrimSpace(req.MerchantRaw),
 		CategoryID:  req.CategoryID,
+		AccountID:   req.AccountID,
 	})
+	if errors.Is(err, store.ErrBalanceInvalid) {
+		http.Error(w, `{"error":"unknown account"}`, http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
@@ -259,6 +350,9 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	if err := s.catStore.UpdateTransactionStatus(txID, req.Status); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
+	}
+	if req.Status == "confirmed" {
+		s.EvaluateBudgetThresholds()
 	}
 	s.BroadcastEvent("tx", nil)
 	w.Header().Set("Content-Type", "application/json")

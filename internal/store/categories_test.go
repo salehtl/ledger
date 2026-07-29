@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -182,6 +183,43 @@ func TestUpdateTransactionCategory(t *testing.T) {
 	}
 	if status != "categorized" {
 		t.Errorf("status = %q, want %q", status, "categorized")
+	}
+}
+
+// TestUpdateTransactionCategoryRefusesSplitParent: a split parent's category
+// must stay NULL — the split lines carry the categories. Categorizing it
+// would make the amount count twice on any aggregate arm without a NOT EXISTS
+// guard (whole via the category, again via the lines), so the store refuses
+// with ErrTxSplit; un-splitting first makes the categorize legal again.
+func TestUpdateTransactionCategoryRefusesSplitParent(t *testing.T) {
+	st := newTestStore(t)
+	spend := insertCategory(t, st, "SplitGuardS", "spending", "need")
+	other := insertCategory(t, st, "SplitGuardO", "spending", "want")
+	txID := insertTxn(t, st, spend, "debit", 10_000, "2026-07-01", "confirmed")
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: spend, AmountFils: 6_000},
+		{CategoryID: other, AmountFils: 4_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.UpdateTransactionCategory(txID, spend, "confirmed"); !errors.Is(err, ErrTxSplit) {
+		t.Fatalf("categorize split parent: want ErrTxSplit, got %v", err)
+	}
+	var catID *int64
+	if err := st.DB.QueryRow(`SELECT category_id FROM transactions WHERE id=?`, txID).Scan(&catID); err != nil {
+		t.Fatal(err)
+	}
+	if catID != nil {
+		t.Fatalf("split parent category = %v, want NULL after refused categorize", *catID)
+	}
+
+	// Un-split, then categorize normally.
+	if err := st.ReplaceTransactionSplits(txID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateTransactionCategory(txID, other, "confirmed"); err != nil {
+		t.Fatalf("categorize after un-split: %v", err)
 	}
 }
 
@@ -367,12 +405,12 @@ func TestCategoryUsage(t *testing.T) {
 	}
 
 	// Initially unused.
-	txns, rules, err := st.CategoryUsage(groceriesID)
+	txns, rules, assignments, err := st.CategoryUsage(groceriesID)
 	if err != nil {
 		t.Fatalf("CategoryUsage: %v", err)
 	}
-	if txns != 0 || rules != 0 {
-		t.Fatalf("fresh category usage = (%d,%d), want (0,0)", txns, rules)
+	if txns != 0 || rules != 0 || assignments != 0 {
+		t.Fatalf("fresh category usage = (%d,%d,%d), want (0,0,0)", txns, rules, assignments)
 	}
 
 	// Assign one transaction and one rule.
@@ -389,12 +427,28 @@ func TestCategoryUsage(t *testing.T) {
 		t.Fatalf("InsertRule: %v", err)
 	}
 
-	txns, rules, err = st.CategoryUsage(groceriesID)
+	txns, rules, assignments, err = st.CategoryUsage(groceriesID)
 	if err != nil {
 		t.Fatalf("CategoryUsage: %v", err)
 	}
-	if txns != 1 || rules != 1 {
-		t.Fatalf("usage = (%d,%d), want (1,1)", txns, rules)
+	if txns != 1 || rules != 1 || assignments != 0 {
+		t.Fatalf("usage = (%d,%d,%d), want (1,1,0)", txns, rules, assignments)
+	}
+
+	// Envelope assignments count too (they are ON DELETE CASCADE — deleting
+	// would silently rewrite past budget state), but a zeroed-out assignment
+	// row carries no money and does not block.
+	if err := st.UpsertEnvelopeAssignment("2026-07", groceriesID, 100_000); err != nil {
+		t.Fatalf("UpsertEnvelopeAssignment: %v", err)
+	}
+	if _, _, assignments, err = st.CategoryUsage(groceriesID); err != nil || assignments != 1 {
+		t.Fatalf("usage after assignment = %d err=%v, want 1", assignments, err)
+	}
+	if err := st.UpsertEnvelopeAssignment("2026-07", groceriesID, 0); err != nil {
+		t.Fatalf("zero assignment: %v", err)
+	}
+	if _, _, assignments, err = st.CategoryUsage(groceriesID); err != nil || assignments != 0 {
+		t.Fatalf("usage after zeroing = %d err=%v, want 0 (zero rows don't block)", assignments, err)
 	}
 }
 

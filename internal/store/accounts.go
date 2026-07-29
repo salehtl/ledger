@@ -1,36 +1,75 @@
 package store
 
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
 // Account is one of the user's own bank accounts (the accounts table). The
 // registry exists so self-transfer matching can recognize "both legs are my
-// accounts"; nothing else references it yet.
+// accounts"; v3 also hangs balance check-ins and net worth off it. Kind is
+// 'budget' (spendable, participates in envelopes) or 'tracking' (investments,
+// property — net worth only).
 type Account struct {
 	ID       int64
 	Name     string
 	Bank     string
 	Last4    string
 	Currency string
+	Kind     string // 'budget' | 'tracking'
 	IsActive bool
+}
+
+const accountColumns = `id, name, bank, COALESCE(last4,''), currency, COALESCE(kind,'budget'), is_active`
+
+func scanAccount(sc interface{ Scan(...any) error }) (Account, error) {
+	var a Account
+	var active int
+	if err := sc.Scan(&a.ID, &a.Name, &a.Bank, &a.Last4, &a.Currency, &a.Kind, &active); err != nil {
+		return a, err
+	}
+	a.IsActive = active == 1
+	return a, nil
 }
 
 // SelectAccounts returns all accounts, insertion order.
 func (s *Store) SelectAccounts() ([]Account, error) {
-	rows, err := s.DB.Query(
-		`SELECT id, name, bank, COALESCE(last4,''), currency, is_active FROM accounts ORDER BY id`)
+	rows, err := s.DB.Query(`SELECT ` + accountColumns + ` FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Account
 	for rows.Next() {
-		var a Account
-		var active int
-		if err := rows.Scan(&a.ID, &a.Name, &a.Bank, &a.Last4, &a.Currency, &active); err != nil {
+		a, err := scanAccount(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.IsActive = active == 1
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SelectAccount fetches one account by id; ok=false when it doesn't exist.
+func (s *Store) SelectAccount(id int64) (Account, bool, error) {
+	a, err := scanAccount(s.DB.QueryRow(`SELECT `+accountColumns+` FROM accounts WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, false, nil
+	}
+	if err != nil {
+		return a, false, err
+	}
+	return a, true, nil
+}
+
+// UpdateAccountKind flips an account between 'budget' and 'tracking'.
+func (s *Store) UpdateAccountKind(id int64, kind string) error {
+	if kind != "budget" && kind != "tracking" {
+		return fmt.Errorf("account kind must be 'budget' or 'tracking', got %q", kind)
+	}
+	_, err := s.DB.Exec(`UPDATE accounts SET kind=? WHERE id=?`, kind, id)
+	return err
 }
 
 // InsertAccount registers an own account. Validation (non-empty name, 4-digit
