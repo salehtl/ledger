@@ -20,13 +20,21 @@ import { Review } from "../screens/Review";
 import { IngestHealthBanner } from "../components/IngestHealthBanner";
 import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
 import { ProjectsFlow } from "../screens/projects/ProjectsFlow";
+import { PlanScreen } from "../screens/plan/PlanScreen";
+import { RecurringScreen } from "../screens/recurring/RecurringScreen";
+import { ReportsScreen } from "../screens/reports/ReportsScreen";
+import { AccountsScreen } from "../screens/accounts/AccountsScreen";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
+  plan: "Plan",
   transactions: "Transactions",
   review: "Review",
   insights: "Insights",
   settings: "Settings",
+  recurring: "Recurring",
+  reports: "Reports",
+  accounts: "Accounts",
 };
 
 export function AppShell() {
@@ -78,10 +86,14 @@ export function AppShell() {
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
           {tab === "home" && <Home scope={scope} onOpenProject={openProject} onOpenProjects={openProjects} />}
+          {tab === "plan" && <PlanScreen scope={scope} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
           {tab === "settings" && <Settings scope={scope} intent={settingsIntent} onOpenProjects={openProjects} />}
+          {tab === "recurring" && <RecurringScreen />}
+          {tab === "reports" && <ReportsScreen scope={scope} />}
+          {tab === "accounts" && <AccountsScreen />}
         </div>
       </main>
       <BottomNav
