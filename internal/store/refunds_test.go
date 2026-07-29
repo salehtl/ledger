@@ -294,3 +294,54 @@ func TestRefundMachinerySurvivesSplit(t *testing.T) {
 		t.Fatalf("credit after link: cat=%v status=%s, want largest-line category %d confirmed", gotCat, status, groceries)
 	}
 }
+
+// TestLinkRefundRejectsSplitCredit: linking a credit that has split lines
+// would write category_id + status='confirmed' onto a split parent — breaking
+// the "split parents keep CategoryID null" invariant — while the promised
+// netting silently never happened (every aggregate excludes a categorized
+// split parent via its defensive NOT EXISTS guard). LinkRefund must refuse
+// with the same ErrTxSplit UpdateTransactionCategory uses; un-splitting first
+// (ReplaceTransactionSplits with nil) is the sanctioned path.
+func TestLinkRefundRejectsSplitCredit(t *testing.T) {
+	st := openTestStore(t)
+	debitID := seedTxn(t, st, "debit", "Carrefour", 10_000, "2026-07-01T10:00:00Z", "Groceries")
+	creditID := seedTxn(t, st, "credit", "Mixed refund", 10_000, "2026-07-03T10:00:00Z", "")
+	lineIncome := insertCategory(t, st, "RefSplitIncome", "income", "")
+	lineSpend := insertCategory(t, st, "RefSplitSpend", "spending", "need")
+	if err := st.ReplaceTransactionSplits(creditID, []TransactionSplitRow{
+		{CategoryID: lineIncome, AmountFils: 6_000},
+		{CategoryID: lineSpend, AmountFils: 4_000},
+	}); err != nil {
+		t.Fatalf("split credit: %v", err)
+	}
+
+	if err := st.LinkRefund(creditID, debitID); !errors.Is(err, ErrTxSplit) {
+		t.Fatalf("LinkRefund on split credit: want ErrTxSplit, got %v", err)
+	}
+
+	// Nothing may have been written: no link, category still NULL, lines intact.
+	var refundOf, catID sql.NullInt64
+	var status string
+	if err := st.DB.QueryRow(`SELECT refund_of_id, category_id, status FROM transactions WHERE id=?`, creditID).
+		Scan(&refundOf, &catID, &status); err != nil {
+		t.Fatal(err)
+	}
+	if refundOf.Valid || catID.Valid {
+		t.Errorf("split credit after refused link: refund_of=%v category=%v, want NULL/NULL", refundOf, catID)
+	}
+	var lines int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transaction_splits WHERE transaction_id=?`, creditID).Scan(&lines); err != nil {
+		t.Fatal(err)
+	}
+	if lines != 2 {
+		t.Errorf("split lines after refused link = %d, want 2", lines)
+	}
+
+	// Un-split, then the link succeeds normally.
+	if err := st.ReplaceTransactionSplits(creditID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkRefund(creditID, debitID); err != nil {
+		t.Fatalf("LinkRefund after un-split: %v", err)
+	}
+}

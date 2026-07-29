@@ -74,6 +74,20 @@ func (s *Server) handlePutNotifySettings(w http.ResponseWriter, r *http.Request)
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	if dto.NotifyThresholds {
+		// Re-prime the threshold diff state at then-current levels, mirroring
+		// the startup prime in main.go. While the setting was off every
+		// evaluation returned before touching state, so without this the FIRST
+		// mutation after enabling would run the unprimed transition and its
+		// crossing — exactly the one the user just asked to hear about — would
+		// be silently recorded as baseline. Resetting first also discards any
+		// stale levels recorded before the setting was last turned off.
+		s.thresholdMu.Lock()
+		s.thresholdLevels = nil
+		s.thresholdMonth = ""
+		s.thresholdMu.Unlock()
+		s.EvaluateBudgetThresholds()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dto)
 }
@@ -184,6 +198,19 @@ func (s *Server) EvaluateBudgetThresholds() {
 
 	s.thresholdMu.Lock()
 	prev := s.thresholdLevels
+	if prev != nil && s.thresholdMonth != month {
+		// Month rollover: the recorded levels are LAST month's, and comparing
+		// against them would swallow the new month's first crossings whenever
+		// an envelope ended the old month at an equal-or-higher level. The
+		// canonical case is a bill that is its envelope's whole budget (rent
+		// on the 1st): every month ends at 100, the first evaluation of the
+		// new month is triggered by the new rent insert itself, and 100 > 100
+		// never fires. Reset to an empty — but still primed — baseline so
+		// new-month crossings compare against 0, keeping the contract's "once
+		// per upward crossing per month".
+		prev = map[string]int{}
+	}
+	s.thresholdMonth = month
 	cur := make(map[string]int, len(crossings))
 	var emit []budget.ThresholdCrossing
 	for _, c := range crossings {
@@ -265,6 +292,7 @@ func (s *Server) CheckUpcomingBills(now time.Time) {
 type notifyState struct {
 	thresholdMu     sync.Mutex
 	thresholdLevels map[string]int // budget.ThresholdCrossing.Key → level; nil = unprimed
+	thresholdMonth  string         // YYYY-MM the levels were recorded for; reset on rollover
 	upcomingMu      sync.Mutex
 	upcomingSent    map[int64]string // schedule id → next_due already notified
 }

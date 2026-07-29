@@ -800,3 +800,79 @@ func TestClearTransactionCategory(t *testing.T) {
 		t.Errorf("project_id = %v, want %d (must survive decategorization)", projectID, pid)
 	}
 }
+
+// TestClearTransactionCategoryRefusesSplitParent: the decategorize path must
+// carry the same split guard as categorize. Without it, "decategorizing" a
+// split parent (category already NULL) would only flip status to needs_review
+// with the lines still attached — the whole amount silently drops out of
+// every aggregate (split-line sums require the parent confirmed) and the row
+// jams: re-categorizing 409s with "transaction is split". PUT splits [] is
+// the sanctioned way out of the split state.
+func TestClearTransactionCategoryRefusesSplitParent(t *testing.T) {
+	st := newTestStore(t)
+	spend := insertCategory(t, st, "ClearGuardS", "spending", "need")
+	other := insertCategory(t, st, "ClearGuardO", "spending", "want")
+	txID := insertTxn(t, st, spend, "debit", 10_000, "2026-07-01", "confirmed")
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: spend, AmountFils: 6_000},
+		{CategoryID: other, AmountFils: 4_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.ClearTransactionCategory(txID); !errors.Is(err, ErrTxSplit) {
+		t.Fatalf("decategorize split parent: want ErrTxSplit, got %v", err)
+	}
+	var status string
+	var lines int
+	if err := st.DB.QueryRow(`SELECT status FROM transactions WHERE id=?`, txID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transaction_splits WHERE transaction_id=?`, txID).Scan(&lines); err != nil {
+		t.Fatal(err)
+	}
+	if status != "confirmed" || lines != 2 {
+		t.Fatalf("after refused decategorize: status=%q lines=%d, want confirmed/2 (the split amount must keep counting)", status, lines)
+	}
+
+	// Un-split (which itself parks the parent in the review queue), then a
+	// plain decategorize is legal again.
+	if err := st.ReplaceTransactionSplits(txID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClearTransactionCategory(txID); err != nil {
+		t.Fatalf("decategorize after un-split: %v", err)
+	}
+}
+
+// TestClearAllCategorizationDeletesSplitLines: the danger-zone bulk reset must
+// not strand needs_review parents with split lines still attached — those
+// rows would 409 on every categorize attempt ("transaction is split") until
+// each one was manually un-split, a dead end for a whole-history reset.
+func TestClearAllCategorizationDeletesSplitLines(t *testing.T) {
+	st := newTestStore(t)
+	spend := insertCategory(t, st, "ResetSplitS", "spending", "need")
+	other := insertCategory(t, st, "ResetSplitO", "spending", "want")
+	txID := insertTxn(t, st, spend, "debit", 10_000, "2026-07-01", "confirmed")
+	if err := st.ReplaceTransactionSplits(txID, []TransactionSplitRow{
+		{CategoryID: spend, AmountFils: 6_000},
+		{CategoryID: other, AmountFils: 4_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.ClearAllCategorization(); err != nil {
+		t.Fatal(err)
+	}
+	var lines int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transaction_splits`).Scan(&lines); err != nil {
+		t.Fatal(err)
+	}
+	if lines != 0 {
+		t.Fatalf("split lines after bulk reset = %d, want 0", lines)
+	}
+	// The reset row must be recoverable through the normal review flow.
+	if err := st.UpdateTransactionCategory(txID, spend, "confirmed"); err != nil {
+		t.Fatalf("re-categorize after reset: %v", err)
+	}
+}

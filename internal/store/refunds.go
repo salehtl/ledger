@@ -45,6 +45,22 @@ func (s *Store) LinkRefund(creditID, debitID int64) error {
 	if creditStatus == "archived" {
 		return fmt.Errorf("%w: credit %d is archived", ErrRefundBadLink, creditID)
 	}
+	// A split CREDIT is refused (ErrTxSplit), mirroring UpdateTransactionCategory:
+	// linking would write category_id + status='confirmed' onto a parent whose
+	// lines carry the truth, violating the "split parents keep CategoryID null"
+	// invariant — and the promised netting would silently never happen, because
+	// every aggregate excludes a categorized split parent via its defensive
+	// NOT EXISTS guard. Un-split the credit first (PUT splits []), then link.
+	// (A split DEBIT target is fine and handled below — the credit inherits the
+	// dominant split line's category.)
+	var one int
+	err = tx.QueryRow(`SELECT 1 FROM transaction_splits WHERE transaction_id=? LIMIT 1`, creditID).Scan(&one)
+	if err == nil {
+		return fmt.Errorf("%w: credit %d has split lines; remove the splits first", ErrTxSplit, creditID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 
 	var debitDir, debitStatus string
 	var catID sql.NullInt64

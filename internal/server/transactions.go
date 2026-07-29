@@ -37,6 +37,15 @@ func (s *Server) handleCategorize(w http.ResponseWriter, r *http.Request) {
 	if req.CategoryID == nil || *req.CategoryID == 0 {
 		// Decategorize: back to the review queue; never write a rule.
 		if err := s.catStore.ClearTransactionCategory(txID); err != nil {
+			if errors.Is(err, store.ErrTxSplit) {
+				// Same guard as the categorize branch below: a split parent
+				// leaves the split state only via PUT /splits with [] —
+				// decategorizing it would strand confirmed split lines on a
+				// needs_review parent and silently drop the whole amount from
+				// every aggregate.
+				http.Error(w, `{"error":"transaction is split"}`, http.StatusConflict)
+				return
+			}
 			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 			return
 		}
@@ -238,6 +247,12 @@ func (s *Server) archiveOrRestore(w http.ResponseWriter, r *http.Request, archiv
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
+	// Archiving removes a confirmed row's activity; restoring brings it back.
+	// Either direction can move an envelope/jar across (or back under) 80%/100%,
+	// so refresh the threshold diff state like every other activity-moving
+	// mutation — otherwise a crossing caused by a restore stays silent until
+	// some later evaluated mutation happens to run.
+	s.EvaluateBudgetThresholds()
 	s.BroadcastEvent("tx", nil)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -310,6 +325,13 @@ func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
+	}
+	if req.CategoryID > 0 {
+		// A categorized manual entry inserts directly as confirmed activity
+		// (the reconcile discrepancy card's "open manual entry" path) —
+		// evaluate thresholds like the confirm/categorize/split/assign paths,
+		// so a crossing it causes notifies now, not on some later mutation.
+		s.EvaluateBudgetThresholds()
 	}
 	s.BroadcastEvent("tx", nil)
 	w.Header().Set("Content-Type", "application/json")

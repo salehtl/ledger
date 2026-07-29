@@ -18,6 +18,10 @@ func writeRefundErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrRefundNotFound):
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	case errors.Is(err, store.ErrTxSplit):
+		// Same 409 the categorize path uses: a split credit must be un-split
+		// (PUT /splits []) before it can carry an inherited refund category.
+		http.Error(w, `{"error":"transaction is split"}`, http.StatusConflict)
 	case errors.Is(err, store.ErrRefundBadLink):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

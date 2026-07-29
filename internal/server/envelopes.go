@@ -113,6 +113,8 @@ func (s *Server) handleEnvelopesAssign(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusServiceUnavailable, "envelopes unavailable")
 		return
 	}
+	s.envelopeMu.Lock()
+	defer s.envelopeMu.Unlock()
 	var req assignReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errJSON(w, http.StatusBadRequest, "invalid json")
@@ -162,6 +164,8 @@ func (s *Server) handleEnvelopesMove(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusServiceUnavailable, "envelopes unavailable")
 		return
 	}
+	s.envelopeMu.Lock()
+	defer s.envelopeMu.Unlock()
 	var req moveReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errJSON(w, http.StatusBadRequest, "invalid json")
@@ -209,6 +213,11 @@ func (s *Server) handleEnvelopesAutoAssign(w http.ResponseWriter, r *http.Reques
 		errJSON(w, http.StatusServiceUnavailable, "envelopes unavailable")
 		return
 	}
+	// The lock must span compute→apply: auto-assign plans against a summary it
+	// read outside the store transaction, so two interleaved requests could
+	// both see the same positive RTA and both apply full plans (RTA negative).
+	s.envelopeMu.Lock()
+	defer s.envelopeMu.Unlock()
 	var req autoAssignReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errJSON(w, http.StatusBadRequest, "invalid json")

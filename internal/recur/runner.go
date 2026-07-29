@@ -159,7 +159,87 @@ func (r *Runner) PostProcess(now time.Time) error {
 			return err
 		}
 	}
+
+	// Dead-zone rescue: schedules still flagged missed after matching + re-arm
+	// get one wider pass (MatchRescue) over arrivals earlier than their early
+	// window. Without it a bill whose billing phase permanently shifted by
+	// ~(late, interval−early) days can never match again — rearm preserves the
+	// original phase, so every arrival lands outside the early window forever.
+	// A rescue match re-phases via MarkScheduledMatched (next_due = arrival +
+	// interval) and clears the missed flag, so later arrivals match normally —
+	// hence the follow-up matchLoop for backfill batches.
+	rescued, err := r.rescuePass(schedules, taken)
+	if err != nil {
+		return err
+	}
+	if rescued > 0 {
+		if err := matchLoop(); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// rescuePass runs MatchRescue over candidates spanning every missed schedule's
+// rescue window (the cycle before next_due). Matched schedules advance in the
+// store and in the in-memory slice, exactly like matchPass. Returns how many
+// rescues it made.
+func (r *Runner) rescuePass(schedules []Schedule, taken map[int64]bool) (int, error) {
+	var from, to time.Time
+	any := false
+	for _, s := range schedules {
+		if !s.Missed || s.IntervalDays <= 0 {
+			continue
+		}
+		lo := s.NextDue.AddDate(0, 0, -int(s.IntervalDays-1))
+		hi := s.NextDue
+		if !any {
+			from, to, any = lo, hi, true
+			continue
+		}
+		if lo.Before(from) {
+			from = lo
+		}
+		if hi.After(to) {
+			to = hi
+		}
+	}
+	if !any {
+		return 0, nil
+	}
+	txns, err := r.st.SelectRecurTxnsBetween(from, to)
+	if err != nil {
+		return 0, err
+	}
+	rescued := 0
+	for _, t := range txns {
+		if taken[t.ID] {
+			continue
+		}
+		sid, ok := MatchRescue(Txn{
+			ID:         t.ID,
+			PostedAt:   t.PostedAt,
+			AmountFils: t.AmountFils,
+			Merchant:   t.Merchant,
+			Direction:  t.Direction,
+		}, schedules)
+		if !ok {
+			continue
+		}
+		if err := r.st.MarkScheduledMatched(sid, t.ID, t.PostedAt, t.AmountFils); err != nil {
+			return rescued, err
+		}
+		taken[t.ID] = true
+		rescued++
+		for i := range schedules {
+			if schedules[i].ID == sid {
+				schedules[i].NextDue = dayOf(t.PostedAt).AddDate(0, 0, int(schedules[i].IntervalDays))
+				schedules[i].Missed = false
+				break
+			}
+		}
+	}
+	return rescued, nil
 }
 
 // matchPass fetches the candidate transactions spanning every schedule's
