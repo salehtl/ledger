@@ -3,7 +3,9 @@
 Every shared component: what it's for, when to use it, when not to. **Rule: before
 hand-rolling any button, field, sheet, badge, label, or card, check this catalog.
 If you add or meaningfully change a shared component, update this file in the same
-commit.** Colocated `*.test.tsx` files are the behavioral spec.
+commit.** Colocated `*.test.tsx` files are the behavioral spec. Each shared component
+also carries a colocated `*.stories.tsx` — Storybook (`bun run storybook`) is the
+living catalog; update the story in the same commit as the component.
 
 ## Conventions (apply to all UI work)
 
