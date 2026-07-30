@@ -178,6 +178,92 @@ Note: `cmd/ledger` (1 src, 0 tests) and `internal/web` (embed shim, 0 tests) are
 - **Disposition:** VERIFIED — no known-failing seed remains. `fileParallelism: false` / `singleFork` left untouched per binding constraint.
 
 ## Task 5 — Time & timezone dependence
+
+**Step 1 — both suites at UTC+14 and UTC−9, plus default TZ (re-verification after Step 3's fix):**
+
+```
+$ TZ=Pacific/Kiritimati go test ./...                → all packages ok (no test files: cmd/ledger, internal/web)
+$ TZ=America/Anchorage  go test ./...                → all packages ok
+$ go test ./...                                      → all packages ok
+$ cd frontend
+$ TZ=Pacific/Kiritimati bun run test                 → 163 files / 1292 tests passed, 49-61s
+$ TZ=America/Anchorage  bun run test                 → 163 files / 1292 tests passed, 51-53s
+$ bun run test                                        → 163 files / 1292 tests passed, 51.44s
+```
+
+Both Go TZ runs were green on the *first* try — no fix needed there. The frontend's first UTC+14/UTC−9 runs were also green (163/163), because none of the frontend suite's `2026-…` fixtures happened to be exercised against the wall clock in a way the two extreme offsets alone would flip (a TZ shift moves the calendar-day boundary by hours, not months). The real hazard found in Step 2 needed a simulated *future date*, not a TZ shift, to demonstrate — see below.
+
+**Step 2 — date-passage audit (Go priority list):**
+
+| Package | Wall-clock read | Test clock handling | Verdict |
+|---|---|---|---|
+| `internal/budget` (`budget.go`, `age.go`, `envelope.go`, `thresholds.go`) | `Compute`/`MonthProgress`/`AgeOfMoney`/`ComputeEnvelopes`/`CurrentThresholdLevels` all take `now time.Time` / date strings as explicit params — **no internal `time.Now()` call anywhere in the package**. | All tests (`budget_test.go`, `age_test.go`) pass fixed `time.Date(2026, …, time.UTC)` values. | **Safe by construction** — pure, fully clock-injected. |
+| `internal/server/envelopes.go` | `envelopeMonth()` defaults to `time.Now().UTC().Format("2006-01")` only when `?month=` is absent (line 35); `computeEnvelopeSummary`/`ComputeEnvelopes` take the resolved `month` string, never touch the clock again. | Every test in `envelopes_test.go` passes an explicit `?month=2026-07` — the wall-clock default path is never hit. | **Safe** — no hardcoded-date-vs-real-`Now()` comparison exists in this package's tests. |
+| `internal/store/targets.go` | No `time.Now()` at all; `validateTarget` only `time.Parse`s `due_date` for format, never compares it to today. | `targets_test.go` (incl. `TestCategoryTargetCRUD`, which uses `st.SetNow(func() int64 { return 1_000_000 })`) never depends on real `Now()`. | **Safe.** |
+| `internal/recur` (`detect.go`, `match.go`, `sweep.go`, `runner.go`) | Every entry point (`Detect`, `Match`, `MatchRescue`, `Sweep`, `RearmStale`, `Runner.DetectAndPropose`, `Runner.PostProcess`) takes `now time.Time` explicitly — **no internal `time.Now()` call in the package**. Production wiring (`cmd/ledger/main.go:419,452,457,588`) passes the real `time.Now()` at the call site, outside the package. | All ~40 cases across `detect_test.go`/`match_test.go`/`sweep_test.go`/`runner_test.go` use a `d(t, "2026-…")` fixed-date helper. | **Safe by construction.** |
+| `internal/server/scheduled.go` | `handleGetUpcoming` reads `time.Now().UTC()` directly (line 317) to compute `due_in_days` from each row's stored `next_due`. | `TestUpcomingFeed` derives its fixture `next_due` dates from `time.Now().UTC()` too (`due := func(days int) string { return today.AddDate(0,0,days).Format(...) }`, `runner_test.go`/`scheduled_test.go:144`) — production and test read the *same* wall clock in the same process, so they move together. `TestScheduledValidationAndNotFound` uses literal `"2026-08-01"` but only for input-shape validation (400 vs not), never compared to `Now()`. | **Safe** — self-consistent, not a hardcoded-date-meets-real-clock pattern. Noted as a design fact, not a hazard: if this ever needed a `SetNow`-style seam (e.g. to unit-test `due_in_days` deterministically) it would have to be threaded through `Server`, which does not currently have a clock field — **[DEFERRED: no clock seam, but no demonstrated failure to justify adding one]**. |
+| `internal/store/insights.go` | `SelectMonthlyTotals` reads `time.Now().UTC()` directly (line 95) to anchor the trailing-N-month window; no `SetNow`-style seam on this path (the `Store.now` field exists for other purposes — usage timestamps/cap windows — but is not read here). | `insights_test.go` explicitly derives its fixtures from `time.Now()` (`TestMonthlyTotalsNetSpendingCredits` line 135: `// SelectMonthlyTotals is anchored to time.Now, so seed rows in the current month`; `TestInsightsUnchangedBySplit` line 170 likewise). | **Safe** — self-consistent by explicit design (comment in the test acknowledges the coupling). **[DEFERRED: no clock seam]** for the same reason as above — `SelectMonthlyTotals`/`SelectCategorySpend` have no injected-clock path, but nothing here demonstrates a failure; adding `SetNow` wiring to this one query is a bigger change than this pass's scope (Step 3 fixes only demonstrated hazards). |
+
+**Step 2 — date-passage audit (frontend priority list):**
+
+| Module | Wall-clock read | Test clock handling | Verdict |
+|---|---|---|---|
+| `lib/envelope.ts` | `monthProgress(month, today = new Date())` — explicit injectable default. | `envelope.test.ts` always passes an explicit `today` (`new Date(2026, 6, 31)` etc.) — never relies on the default. | **Safe.** |
+| `lib/recurring.ts` | None — every function (`daysUntil`, `dueLabel`, `recentlyPaid`, `splitUpcoming`, …) takes `todayISO`/`dueInDays` as an explicit parameter; no `new Date()` anywhere in the file. | N/A. | **Safe by construction.** |
+| `lib/reports.ts` | None in the pure helpers; `yoyRows(trend, now: string)` takes `now` as an explicit param. | N/A. | **Safe by construction.** |
+| `lib/insights.ts` | `currentPeriod()` (line 75) and one internal `new Date(Date.UTC(...))` inside `yoyRows`-adjacent code call the wall clock directly, with no injectable override. | Not tested directly (`insights.test.ts` never calls `currentPeriod()`); every screen-level caller either (a) uses it as a *default* that's self-referential in tests (`lib/scope.test.ts`, `components/ui/PeriodSheet.test.tsx` — both compare against `currentPeriod()` computed again inside the assertion, so real "today" cancels out), or (b) is one of the hazards below. | **Safe as authored**; the risk is entirely at call sites — see PlanScreen finding below (fixed) and the audit of Home/Insights/ReportsScreen (all safe — see Step 3). |
+| `lib/projectMath.ts` | `todayISO()` (line 17) calls the wall clock directly, no override param. `projectPace(p, today: string)` itself is pure/injectable. | `projectMath.test.ts`'s `todayISO` test only regex-matches the format (`toMatch(/^\d{4}-\d{2}-\d{2}$/)`), never a specific value; every `projectPace`/`projectCoversDate`/`orderProjectsForReview` test passes an explicit date string. | **Safe.** |
+| `screens/recurring/RecurringScreen.tsx` | Calls `todayISO()` (real wall clock) to compute `recentlyPaid(all, todayISO())`. | `RecurringScreen.test.tsx`'s "recently paid" test seeds `last_matched_at` with `new Date().toISOString()` — production and test read the same wall clock in the same process; self-consistent. `due_in_days` in every other test is server-shaped fixture data (never computed client-side), so the countdown-copy tests (`dueLabel`) never touch the clock at all. | **Safe.** |
+| `screens/plan/PlanScreen.tsx` | `pace = monthProgress(month)` — called **without** the `today` override, so it silently defaults to the real wall clock; gates the pace marker AND the upcoming-bill claim hints (`claims = pace !== undefined ? claimsByCategory(...) : new Map()`) on `month === real-current-month`. | **HAZARD — demonstrated and fixed, see below.** | **Fixed.** |
+
+**Step 3 — demonstrated hazard, red → green:**
+
+- **Where:** `frontend/src/screens/plan/PlanScreen.test.tsx` (test bug; production code in `frontend/src/screens/plan/PlanScreen.tsx:61-65` is correct/intentional).
+- **What:** Every fixture in `PlanScreen.test.tsx` pins the envelope month to `"2026-07"` (the `JULY` scope constant), but `PlanScreen.tsx:61` calls `monthProgress(month)` with no `today` argument, so it defaults to `new Date()` — the real wall clock. `monthProgress` returns `undefined` whenever `month` isn't the calendar month `today` sits in, and `PlanScreen.tsx:65` gates the entire upcoming-bill "claim hint" feature (`Netflix due in 2d · 39.00 — short 19.00`) on `pace !== undefined`. The suite happened to be authored (and this review run) during July 2026, so it passed by coincidence; the day the real clock crossed into August 2026 the test `"shows target progress and the upcoming-bill claim hint with its shortfall"` would start failing with the claim-hint text simply absent from the DOM — a silent, calendar-triggered regression with no code change.
+- **Red demonstration:** temporarily added `vi.useFakeTimers({ now: new Date("2026-12-15T12:00:00Z"), shouldAdvanceTime: true })` at the top of that one test (no other change) and ran `bunx vitest run src/screens/plan/PlanScreen.test.tsx -t "shows target progress"`:
+  ```
+  ❯ src/screens/plan/PlanScreen.test.tsx:178:25
+      176|     expect(within(groceries).getByText(/needs 400\.00 more/)).toBeInTh…
+      177|     const subs = screen.getByRole("button", { name: "Open Subscription…
+      178|     expect(within(subs).getByText(/Netflix due in 2d · 39\.00 — short …
+         |                         ^
+   Test Files  1 failed (1)
+        Tests  1 failed | 12 skipped (13)
+  ```
+  Confirmed RED exactly as predicted — the claim-hint text is missing from the rendered button because `pace` came back `undefined` once `month="2026-07"` no longer matched the (simulated) real current month.
+- **Fix (committed):** reverted the throwaway single-test patch; instead pinned the whole suite's wall clock once, in `beforeEach`/`afterEach`:
+  ```ts
+  beforeEach(() => {
+    // ... pins to "2026-07-15T12:00:00Z" — inside the JULY fixture month
+    vi.useFakeTimers({ now: new Date("2026-07-15T12:00:00Z"), shouldAdvanceTime: true });
+    summary = makeSummary();
+    calls = [];
+    ...
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  ```
+  `shouldAdvanceTime: true` keeps RTL's `findBy*`/`waitFor` setTimeout-based polling working normally under fake timers, so no other test in the file needed to change. Re-ran the full file green (13/13), and re-ran it inside all three TZ configurations (UTC+14, UTC−9, default) as part of Step 4 — all green. The fix makes the suite's outcome independent of the real calendar date, permanently (not just past the specific December date used for the red demonstration).
+- **Disposition:** FIXED. Commit includes the diff to `PlanScreen.test.tsx` only — no production code changed (the production behavior — hiding the pace marker/claim hints on non-current months — is correct and intentional, per the comment at `PlanScreen.tsx:62-64`).
+
+**Step 2/3 — frontend screens double-checked for the same pattern (Home, Insights, ReportsScreen) — no hazard found:**
+
+- `screens/Home.tsx` also computes `isCurrent = scope.kind === "month" && scope.period === currentPeriod()`, but `Home.test.tsx`'s `wrap()` never passes an explicit `scope` prop for the tests that check pace-dependent UI ("surfaces pace: projection and an over-pace verdict", the bucket-bar-color tests) — the component's default scope (`DEFAULT_SCOPE` from `lib/scope.ts`) is itself `{ period: currentPeriod() }`, so `isCurrent` is tautologically `true` regardless of the real date; the mocked `/api/summary` fixture's `month_progress: 0.5` and bucket figures are fixture-relative, not real-date-relative. The one test that explicitly sets a non-"month" scope (`{ kind: "range", from: "2026-03", to: "2026-06" }`) asserts pace/projection are *absent*, which is trivially true for any range scope regardless of the real date. **No hazard.**
+- `screens/Insights.tsx` computes `periods = trailingPeriods(currentPeriod(), 6)` and `yoy = yoySummary(yoyRows(trend24.data, currentPeriod()))`, both real-wall-clock-anchored, against a fixture `trend`/`trend24` array that only contains a `"2026-06"` data point. No test in `Insights.test.tsx` asserts on the specific trend-chart bars, period labels, or the YoY percentage value produced by these — the only relevant assertion is presence of the "Spending trends" tile button by role name, and `comparableMonths > 0 ? pctLabel(...) : "—"` is never checked against a specific string. **No hazard** (would need an assertion on the actual computed value to be one).
+- `screens/reports/ReportsScreen.tsx` computes `yoy = yoyRows(trend.data, currentPeriod())` the same way; `ReportsScreen.test.tsx`'s only relevant assertion is text presence ("Spending trends", "spent, last 12 months"), never a specific YoY figure. **No hazard.**
+- `components/projects/ProjectCard.tsx` / `screens/projects/ProjectDetail.tsx` call `projectPace(project, todayISO())` — real wall clock — but every test fixture in `ProjectCard.test.tsx`/`ProjectDetail.test.tsx` sets `starts_on: "", ends_on: ""` (open-ended), which makes `projectPace` return `null` unconditionally regardless of `today`; the date-windowed project fixtures that do exist (`SwipeDeck.undo.test.tsx`, `SubcategoryPanel.test.tsx`, `projectMath.test.ts`) are consumed only by `orderProjectsForReview(projects, txn.PostedAt)` (an explicit transaction date, not the wall clock) or by direct pure-function unit tests that pass `today` explicitly. **No hazard.**
+
+**Summary:**
+
+| # | Severity | Where | Disposition |
+|---|---|---|---|
+| 1 | HIGH-if-untested, actually LOW (test-only bug, prod correct) | `frontend/src/screens/plan/PlanScreen.test.tsx` (prod: `PlanScreen.tsx:61-65`) | **FIXED** — clock pinned via `vi.useFakeTimers`/`vi.useRealTimers` in `beforeEach`/`afterEach`; red demonstrated and re-verified green under both TZ extremes. |
+| 2 | INFO | `internal/server/scheduled.go:317` (`handleGetUpcoming`) reads `time.Now().UTC()` with no `SetNow`-style seam | **DEFERRED: no clock seam** — safe today only because the one test exercising it (`TestUpcomingFeed`) derives its own fixture dates from the same `time.Now()` call; no failure demonstrated, no seam exists to inject a simulated future/past date if one were ever needed. |
+| 3 | INFO | `internal/store/insights.go:95` (`SelectMonthlyTotals`) reads `time.Now().UTC()` with no `SetNow`-style seam (the `Store.now` field exists but isn't wired to this query) | **DEFERRED: no clock seam** — same shape as #2; tests explicitly acknowledge the coupling (`insights_test.go:134`) rather than hiding it, and no failure was demonstrated. |
+
+No production-code changes were made — every hazard found had its root cause in a test (or was safe by design). All four Step-1 TZ invocations plus the two default-TZ suites are green after the fix (see Step 1 evidence block, re-run at the top of this section).
+
 ## Task 6 — Assertion quality
 ## Task 7 — Coverage map
 ## Task 8 — Harness & Storybook seams
