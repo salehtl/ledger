@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider, type Persister } from "@tanstack/react-query-persist-client";
@@ -81,6 +81,15 @@ let summary: EnvelopeSummary;
 let calls: { url: string; method: string; body: unknown }[];
 
 beforeEach(() => {
+  // PlanScreen.tsx's monthProgress(month) defaults to `new Date()` — the pace
+  // marker and upcoming-bill claim hints only render when `month` is the real
+  // wall-clock's current month (see the comment above `claims` in
+  // PlanScreen.tsx). Every fixture here is fixed to "2026-07" (JULY), so
+  // without pinning the clock this suite silently depended on being run
+  // during July 2026 — the "claim hint" assertion below would start failing
+  // the moment the real date crossed into August. shouldAdvanceTime keeps
+  // setTimeout-based polling (RTL's findBy/waitFor) working normally.
+  vi.useFakeTimers({ now: new Date("2026-07-15T12:00:00Z"), shouldAdvanceTime: true });
   summary = makeSummary();
   calls = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -106,6 +115,10 @@ beforeEach(() => {
   }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 function wrap(scope: Scope = JULY) {
