@@ -1,6 +1,12 @@
 import { useCallback, useRef, type PointerEvent, type RefObject } from "react";
 import { edgeBackOffset, inEdgeZone, shouldGoBack } from "../lib/edgeBack";
-import { pageTransition } from "../lib/motion";
+// TEMPORARY: lib/motion.ts was rewritten (Task 1) onto the new Framer Motion
+// token API and no longer exports this CSS-transition-string helper. Task 4
+// deletes this file, replacing edge-swipe-back with Framer's `drag` prop;
+// the value here is copied verbatim from the deleted export so behavior is
+// unchanged until then.
+const pageTransition = (reduced: boolean) =>
+  reduced ? "none" : `transform 300ms var(--ease-drawer)`;
 
 /**
  * iOS-style interactive edge-swipe-back. Spread the returned handlers onto a

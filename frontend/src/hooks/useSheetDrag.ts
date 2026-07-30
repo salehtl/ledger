@@ -1,6 +1,12 @@
 import { useCallback, useRef, type PointerEvent, type RefObject } from "react";
 import { sheetOffset, shouldDismiss } from "../lib/sheetDrag";
-import { sheetTransition } from "../lib/motion";
+// TEMPORARY: lib/motion.ts was rewritten (Task 1) onto the new Framer Motion
+// token API and no longer exports this CSS-transition-string helper. Task 4
+// deletes this file, replacing drag-to-dismiss with Framer's `drag` prop;
+// the value here is copied verbatim from the deleted export so behavior is
+// unchanged until then.
+const sheetTransition = (reduced: boolean) =>
+  reduced ? "none" : `transform 300ms var(--ease-drawer)`;
 
 /**
  * Pointer drag-to-dismiss for a bottom sheet. Spread the returned handlers onto

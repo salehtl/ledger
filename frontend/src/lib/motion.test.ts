@@ -1,25 +1,41 @@
 import { describe, it, expect } from "vitest";
-import { sheetTransition, scrimTransition, SHEET_ENTER_MS, SHEET_EXIT_MS } from "./motion";
+import {
+  EASE_OUT, EASE_DRAWER, DUR,
+  SHEET_ENTER, SHEET_EXIT, PRESS_TRANSITION, FADE,
+  SPRING_SNAP, SPRING_SHEET, SPRING_ROW,
+} from "./motion";
 
-describe("sheetTransition", () => {
-  it("uses the drawer curve and enter duration when motion is allowed", () => {
-    expect(sheetTransition(false)).toBe(`transform ${SHEET_ENTER_MS}ms var(--ease-drawer)`);
-  });
-  it("drops the transform transition under reduced motion", () => {
-    expect(sheetTransition(true)).toBe("none");
-  });
-});
-
-describe("scrimTransition", () => {
-  it("animates opacity with the ease-out curve (kept even under reduced motion)", () => {
-    expect(scrimTransition()).toContain("opacity");
-    expect(scrimTransition()).toContain("var(--ease-out)");
+describe("easing tokens", () => {
+  it("exports cubic-bezier control points as 4-tuples", () => {
+    expect(EASE_OUT).toEqual([0.23, 1, 0.32, 1]);
+    expect(EASE_DRAWER).toEqual([0.32, 0.72, 0, 1]);
   });
 });
 
-describe("timing constants", () => {
-  it("stay within the UI budget (<300ms exit, <=300ms enter)", () => {
-    expect(SHEET_EXIT_MS).toBeLessThan(300);
-    expect(SHEET_ENTER_MS).toBeLessThanOrEqual(300);
+describe("duration budget", () => {
+  it("keeps every UI duration at or under 300ms", () => {
+    for (const [name, seconds] of Object.entries(DUR)) {
+      expect(seconds, `${name} exceeds the 300ms UI budget`).toBeLessThanOrEqual(0.3);
+    }
+  });
+  it("makes the sheet exit snappier than its enter", () => {
+    expect(SHEET_EXIT.duration!).toBeLessThan(SHEET_ENTER.duration!);
+  });
+});
+
+describe("transition tokens", () => {
+  it("gives duration-based transitions the ease-out curve", () => {
+    expect(PRESS_TRANSITION.ease).toEqual(EASE_OUT);
+    expect(FADE.ease).toEqual(EASE_OUT);
+  });
+  it("gives sheets the drawer curve", () => {
+    expect(SHEET_ENTER.ease).toEqual(EASE_DRAWER);
+    expect(SHEET_EXIT.ease).toEqual(EASE_DRAWER);
+  });
+  it("exports springs, not durations, for gesture-driven motion", () => {
+    for (const s of [SPRING_SNAP, SPRING_SHEET, SPRING_ROW]) {
+      expect(s.type).toBe("spring");
+      expect(s.duration).toBeUndefined();
+    }
   });
 });

@@ -1,11 +1,20 @@
 // frontend/src/components/ui/Dialog.tsx
 import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { useReducedMotion } from "motion/react";
 import { X } from "./PixelIcon";
-import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
-import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motion";
 import { useSheetDrag } from "../../hooks/useSheetDrag";
 import { useVisualViewport } from "../../hooks/useVisualViewport";
 import { IconButton } from "./IconButton";
+const usePrefersReducedMotion = () => useReducedMotion() ?? false;
+// TEMPORARY: lib/motion.ts was rewritten (Task 1) onto the new Framer Motion
+// token API and no longer exports these CSS-transition-string helpers.
+// Task 4 rewrites this file onto AnimatePresence/drag and drops this block;
+// the values here are copied verbatim from the deleted exports so behavior
+// is unchanged until then.
+const SHEET_EXIT_MS = 240;
+const sheetTransition = (reduced: boolean) =>
+  reduced ? "none" : `transform 300ms var(--ease-drawer)`;
+const scrimTransition = () => "opacity 200ms var(--ease-out)";
 
 /**
  * Persistent action rail for a scrollable bottom sheet.

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
-import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
+import { useReducedMotion } from "motion/react";
+const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 import { shouldDismissToast } from "../lib/toastSwipe";
 
 export interface ToastAction { label: string; onAction: () => void; }
