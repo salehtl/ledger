@@ -1,7 +1,12 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON } from "../api/client";
 import type { CategorySpend, MonthlyTotal, Summary, Txn, Category, BudgetConfig } from "../api/types";
+import { Money } from "../components/Money";
+import { SettingsPage } from "./settings/SettingsPage";
+import { ReportsScreen, type ReportSection } from "./reports/ReportsScreen";
+import { useAgeOfMoney, useNetWorth, useTrend24 } from "./reports/api";
+import { deltaSummary, pctLabel, yoyRows, yoySummary } from "../lib/reports";
 import { Card } from "../components/ui/Card";
 import { SectionLabel } from "../components/ui/SectionLabel";
 import { Skeleton } from "../components/Skeleton";
@@ -52,6 +57,13 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const [lens, setLens] = useState<Lens>("categories");
   const [drill, setDrill] = useState<DrillTarget | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // The Reports suite opens as a full-screen drill-in over Insights; a tile
+  // names the report it lands on. The queries behind the tile stats double as
+  // a prefetch, so the drill-in opens already-warm.
+  const [reportsFocus, setReportsFocus] = useState<ReportSection | null>(null);
+  const networth = useNetWorth(12);
+  const ageOfMoney = useAgeOfMoney();
+  const trend24 = useTrend24();
 
   const txns = monthTxns.data ?? [];
   const frozen = budget.data?.freeze_history ?? false;
@@ -90,6 +102,11 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   const savings = savingsRate(income, total);
   const label = `${monthLabel(focusMonth)} ${focusMonth.slice(0, 4)}`;
 
+  // Tile stats — each a single glanceable figure; the report itself is one tap in.
+  const nwDelta = deltaSummary((networth.data?.months ?? []).map((m) => m.networth_fils));
+  const yoy = yoySummary(yoyRows(trend24.data ?? [], currentPeriod()));
+  const aom = ageOfMoney.data;
+
   const onDrill = (row: BreakdownRow) => {
     if (lens === "buckets") setDrill({ type: "bucket", bucket: row.key });
     else if (lens === "merchants") setDrill({ type: "merchant", merchant: row.name });
@@ -124,6 +141,36 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
           : <FlowBars points={points} activePeriod={focusMonth} />}
       </Card>
 
+      <div>
+        <SectionLabel className="mb-1.5">Reports</SectionLabel>
+        <div className="grid grid-cols-2 gap-2">
+          <ReportTile
+            label="Net worth"
+            stat={<Money fils={nwDelta.latest} />}
+            meta={nwDelta.pct === null ? "from balance check-ins" : `${pctLabel(nwDelta.pct)} vs last month`}
+            onOpen={() => setReportsFocus("networth")}
+          />
+          <ReportTile
+            label="Income v expense"
+            stat={<Money fils={savings.net} />}
+            meta="net this month · by category"
+            onOpen={() => setReportsFocus("income-expense")}
+          />
+          <ReportTile
+            label="Age of money"
+            stat={aom !== undefined && aom.sample_size > 0 ? `${aom.age_days} days` : "—"}
+            meta={aom !== undefined && aom.sample_size > 0 ? `last ${aom.sample_size} spends` : "needs more history"}
+            onOpen={() => setReportsFocus("age")}
+          />
+          <ReportTile
+            label="Spending trends"
+            stat={yoy.comparableMonths > 0 ? pctLabel(yoy.pct) : "—"}
+            meta={yoy.comparableMonths > 0 ? "spend vs a year ago" : "builds with history"}
+            onOpen={() => setReportsFocus("trends")}
+          />
+        </div>
+      </div>
+
       {drill && (
         <DrillDownSheet
           key={`${drill.type}:${drill.type === "bucket" ? drill.bucket : drill.type === "category" ? drill.categoryId : drill.merchant}`}
@@ -133,6 +180,35 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
       {searchOpen && (
         <SearchSheet txns={txns} categories={cats.data ?? []} onClose={() => setSearchOpen(false)} />
       )}
+      {reportsFocus !== null && (
+        <SettingsPage title="Reports" onClose={() => setReportsFocus(null)}>
+          <ReportsScreen focus={reportsFocus} />
+        </SettingsPage>
+      )}
     </div>
+  );
+}
+
+/** One reports entry tile: eyebrow label, a single glanceable figure, and a
+ *  one-line qualifier. Navigation with a stat, not a data surface — the full
+ *  report (with its own loading/empty/error states) is the tap away. */
+function ReportTile({ label, stat, meta, onOpen }: {
+  label: string;
+  stat: ReactNode;
+  meta: string;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="min-h-11 rounded-[var(--radius)] border border-border bg-surface p-3 text-left press"
+    >
+      <span className="flex items-center justify-between font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">
+        {label} <span aria-hidden>›</span>
+      </span>
+      <span className="mt-1 block tnum text-base font-semibold">{stat}</span>
+      <span className="mt-0.5 block font-mono text-[10px] tracking-[0.04em] text-muted">{meta}</span>
+    </button>
   );
 }

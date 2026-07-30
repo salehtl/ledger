@@ -35,6 +35,13 @@ beforeEach(() => {
     if (url.includes("/api/transactions")) return new Response(JSON.stringify(monthTxns));
     if (url.includes("/api/categories")) return new Response(JSON.stringify([]));
     if (url.includes("/api/budget")) return new Response(JSON.stringify(budget));
+    if (url.includes("/api/reports/networth")) return new Response(JSON.stringify({ months: [] }));
+    if (url.includes("/api/reports/income-expense")) {
+      return new Response(JSON.stringify({ months: [], rows: [], net_by_month_fils: [] }));
+    }
+    if (url.includes("/api/reports/age-of-money")) {
+      return new Response(JSON.stringify({ age_days: 24, sample_size: 10 }));
+    }
     return new Response("[]");
   }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -79,6 +86,25 @@ describe("Insights", () => {
     fireEvent.click(wantsButtons[0]);
     // The drill-down sheet shows the bucket's transaction (title + row).
     expect((await screen.findAllByText("Deliveroo")).length).toBeGreaterThan(0);
+  });
+
+  it("shows the reports entry tiles with their stats", async () => {
+    wrap();
+    expect(await screen.findByText("Reports")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Net worth/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Income v expense/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Spending trends/ })).toBeInTheDocument();
+    // The age-of-money stat lands on its tile once the query resolves.
+    expect(await screen.findByText("24 days")).toBeInTheDocument();
+    expect(screen.getByText(/last 10 spends/)).toBeInTheDocument();
+  });
+
+  it("a tile opens the full-screen reports drill-in", async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole("button", { name: /Age of money/ }));
+    // Reports content mounts over Insights (trends header meta is unique to it).
+    expect(await screen.findByText("year over year")).toBeInTheDocument();
+    expect(await screen.findByText("No balance check-ins yet")).toBeInTheDocument();
   });
 
   it("still renders the buckets lens and its labels when a bucket is over budget", async () => {
