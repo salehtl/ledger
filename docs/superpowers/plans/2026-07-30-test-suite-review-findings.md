@@ -35,8 +35,8 @@ confirmed below; the embedded frontend dist does not need rebuilding.
 | 16 | `LinkRefundSheet.test.tsx` empty-state test had no explicit `expect(...)`, relying only on `findByText` throwing | low | FIXED — explicit presence + candidate-list-absence assertions added | `bad8130` |
 | 17 | Coverage map: Go 78.4% combined, frontend 78.25% stmts; top risk `frontend/src/hooks/useTxnActions.ts` (44.64% stmts, no dedicated test file) — the shared mutation hook behind categorize/archive/restore/unlink-refund and every toast-undo closure | info | RECORDED — no fix (quantity-gap mapping only); `@vitest/coverage-v8` dev dep added so this map can be re-run | `59f9d64` |
 | 18 | Harness `nav.mjs` was missing 4 reachable full-screen destinations (`account-detail`, `project-detail`, `project-form`, `project-bulk-backfill`) | info | FIXED (harness code, not app code) — 4 screen ids + `tapLast()` helper added (a covered-DOM `.first()` selector bug the new ids exposed) | `c6b4d0a` |
-| 19 | `AccountDetail` overlay doesn't mark `AccountsScreen`'s own content `inert` while open — 6 background controls stay focusable/tabbable | medium | DEFERRED (real UI bug, out of scope for a seam-mapping task) — fix shape: `inert={detailId !== null \|\| addOpen}`, matching `ProjectsFlow`'s convention | `c6b4d0a` |
-| 20 | `ProjectForm`'s 12 color-swatch buttons are 32×32px — under both the 44px minimum and the 36px `data-dense-target` escape hatch | medium | DEFERRED (real UI bug, out of scope) — fix shape: grow to 44×44, or add `data-dense-target` and grow to ≥36×36 | `c6b4d0a` |
+| 19 | `AccountDetail` overlay doesn't mark `AccountsScreen`'s own content `inert` while open — 6 background controls stay focusable/tabbable | medium | FIXED in follow-up pass — inert list body + `onDetailChange` covers the host header; `account-detail` re-audits 0 issues | `1fb906f` |
+| 20 | `ProjectForm`'s 12 color-swatch buttons are 32×32px — under both the 44px minimum and the 36px `data-dense-target` escape hatch | medium | FIXED in follow-up pass — 44×44 button with 32px inner swatch; `project-form` re-audits 0 issues | `1fb906f` |
 | 21 | Nested sheets (`SplitSheet`, `RenameMerchantSheet`, `LinkRefundSheet`, `EmailPreviewSheet`, `FilterChips`) opened from inside an already-open sheet are structurally invisible to `probe.mjs`'s generic crawl | info | DEFERRED — `probe.mjs` design change, out of scope | `c6b4d0a` |
 | 22 | `probe.mjs` can't distinguish "opened a sheet" from "fired a mutation"; the new full-screen destinations (`project-detail`'s status toggle, `project-bulk-backfill`'s commit button) would corrupt scratch fixture data with no undo if probed | info | DEFERRED — not executed for that reason; `probe.mjs` heuristic fix out of scope | `c6b4d0a` |
 | 23 | `nav.mjs`'s `interactions` field / `--state` flag are dead — no harness script reads them | info | DEFERRED — wire it up or remove the dead comment, out of scope | `c6b4d0a` |
@@ -83,9 +83,9 @@ Three biggest residual risks, in order:
    see into nested sheets, can't see gesture-triggered sheets, and can't tell
    a mutating button from a sheet-opener — meaning newly added full-screen
    destinations are geometry-audited by `shoot.mjs` but not exercised by
-   `probe.mjs` until that heuristic is fixed. Meanwhile `AccountDetail`'s
-   inert leak (a real focus/screen-reader escape) and `ProjectForm`'s
-   sub-44px swatches (a real tap-target defect) sit recorded but unfixed.
+   `probe.mjs` until that heuristic is fixed. (`AccountDetail`'s inert leak
+   and `ProjectForm`'s sub-44px swatches — originally recorded here as
+   unfixed — were both fixed in the follow-up pass, commit `1fb906f`.)
 
 Recommended next investments, in the same order: (1) a direct
 `useTxnActions.ts` test file covering the undo-closure re-POST and its error
@@ -687,14 +687,14 @@ exactly what this harness exists to find:
 - **Where:** `frontend/src/screens/accounts/AccountsScreen.tsx:113` (`{detail && <AccountDetail .../>}`, no `inert` wrapper on the rest of the screen).
 - **What:** `audit.mjs`'s `background-layer-not-inert` check found 6 controls on the underlying `AccountsScreen` still focusable/tabbable while `AccountDetail`'s full-screen overlay sits on top — including the Accounts screen's own "Back from Accounts" button. Contrast with `ProjectsFlow.tsx`, which wraps every covered layer in `<div className="contents" inert={...}>` (0 audit issues on `project-detail`) — `AccountsScreen` is the one full-screen-drill-in host in the app that skips this pattern. Concretely: Tab from inside the open `AccountDetail` panel can currently reach the covered Accounts list's controls, and a screen-reader's cursor can wander onto them too.
 - **Evidence:** `harness/shoot.mjs --screens account-detail` → `background-layer-not-inert`, count 1, detail: *"6 control(s) on the screen underneath this overlay are still focusable... (e.g. button...[aria-label="Back from Accounts"])"*.
-- **Disposition:** DEFERRED (finding only — Task 8 is a harness/seam audit, not a UI-bugfix pass). Fix shape: wrap `AccountsScreen`'s own content in `inert={detailId !== null || addOpen}`, matching the existing `ProjectsFlow`/`AppShell` convention.
+- **Disposition:** ~~DEFERRED~~ **FIXED in `1fb906f`** (follow-up pass, 2026-07-30): list body wrapped in `inert={detail !== undefined}` per the `ProjectsFlow` convention, plus a new `onDetailChange` callback so `AppShell` marks the hosting `SettingsPage` header `covered` (the `Settings`/`onSubpageChange` idiom — the leaked "Back from Accounts" button belongs to the host, not this screen). Unit-tested in `AccountsScreen.test.tsx`; re-audit: `account-detail` shoots 0 issues.
 
 #### [SEVERITY: medium] `ProjectForm`'s color swatches are 32×32px, under the 44px tap-target minimum
 
 - **Where:** `frontend/src/screens/projects/ProjectForm.tsx:117` (`className="w-8 h-8 rounded-[var(--radius)] press"`, no `data-dense-target`).
 - **What:** `audit.mjs`'s `tap-target-too-small` check flagged all 12 palette buttons (`aria-label="azure"`, `"amber"`, `"lilac"`, ... `"slate-deep"`) at 32×32px — below both the documented 44px minimum and the 36px `data-dense-target` escape hatch (`components/README.md`: "Touch targets... 36px (`IconButton size="sm"`) is allowed only inside dense stacked rows"). This is the first time this screen has been reached by the geometry auditor (it had no nav entry before this task), so the gap was previously invisible to the harness.
 - **Evidence:** `harness/shoot.mjs --screens project-form` → `tap-target-too-small`, count 12, each `32x32px, minimum is 44x44`. Screenshot confirms visually: the color row has no padding/gap large enough to compensate for the small hit box.
-- **Disposition:** DEFERRED (finding only, same reasoning as above). Fix shape: either grow the buttons to 44×44 (adjusting the grid's `gap-2` accordingly) or add `data-dense-target` and grow to at least 36×36 if the 9-color-plus-4-"deep"-variant grid must stay compact.
+- **Disposition:** ~~DEFERRED~~ **FIXED in `1fb906f`** (follow-up pass, 2026-07-30): button grown to the full 44×44 with the 32px swatch as an inner span (visual rhythm kept); `-m-1` returns 4px of the invisible padding to the layout so neighboring targets sit exactly adjacent without overlapping. Re-audit: `project-form` shoots 0 issues.
 
 ### Step 4 — sheet/dialog coverage (`Dialog`-rendering components vs. what the harness opens)
 
