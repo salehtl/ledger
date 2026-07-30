@@ -1,11 +1,8 @@
-import { useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { m, useMotionValue, useTransform } from "motion/react";
 import { fire } from "../../lib/feedback";
-import { useReducedMotion } from "motion/react";
-const usePrefersReducedMotion = () => useReducedMotion() ?? false;
-import {
-  swipeAxis, swipeOffset, swipeCommits, swipeProgress,
-  ROW_COMMIT, type RowActions, type RowSwipeAction,
-} from "../../lib/rowSwipe";
+import { SPRING_ROW } from "../../lib/motion";
+import { swipeCommits, ROW_COMMIT, type RowActions, type RowSwipeAction } from "../../lib/rowSwipe";
 
 export interface SwipeActionSpec {
   label: string;
@@ -32,54 +29,23 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
   children: ReactNode;
 }) {
   const actions: RowActions = { lead: !!lead, trail: !!trail };
-  const reduced = usePrefersReducedMotion();
-  const [dx, setDx] = useState(0);
-  const [dragging, setDragging] = useState(false);
-  const start = useRef<{ x: number; y: number } | null>(null);
-  const raw = useRef(0);
-  const axis = useRef<"h" | "v" | null>(null);
   const moved = useRef(false);
 
+  // The live offset. A motion value, not React state: the previous version
+  // called setDx() on every pointermove, which re-rendered the row and
+  // dirtied layout on two `width`-driven panels — per frame, inside a
+  // scrolling list.
+  const x = useMotionValue(0);
+
+  // The panels are full-width and revealed by clip-path, so nothing animates
+  // a layout property. clip-path also keeps the label's text from reflowing
+  // as the panel grows, which a width animation could not avoid.
+  const leadClip = useTransform(x, (v) => `inset(0 ${Math.max(0, 100 - (v / ROW_COMMIT) * 100)}% 0 0)`);
+  const trailClip = useTransform(x, (v) => `inset(0 0 0 ${Math.max(0, 100 - (-v / ROW_COMMIT) * 100)}%)`);
+  const leadOpacity = useTransform(x, [0, ROW_COMMIT], [0, 1], { clamp: true });
+  const trailOpacity = useTransform(x, [0, -ROW_COMMIT], [0, 1], { clamp: true });
+
   if (!lead && !trail) return <>{children}</>;
-
-  const onPointerDown = (e: PointerEvent) => {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    start.current = { x: e.clientX, y: e.clientY };
-    axis.current = null;
-    moved.current = false;
-  };
-
-  const onPointerMove = (e: PointerEvent) => {
-    const s = start.current;
-    if (!s) return;
-    const ddx = e.clientX - s.x;
-    const ddy = e.clientY - s.y;
-    if (axis.current === null) {
-      const a = swipeAxis(ddx, ddy);
-      if (!a) return;
-      axis.current = a;
-      if (a === "h") {
-        setDragging(true);
-        try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* older browsers */ }
-      }
-    }
-    if (axis.current !== "h") return;
-    moved.current = true;
-    raw.current = ddx;
-    setDx(swipeOffset(ddx, actions));
-  };
-
-  const endGesture = () => {
-    if (axis.current === "h") {
-      const committed = swipeCommits(raw.current, actions);
-      setDragging(false);
-      setDx(0);
-      if (committed) { fire("selection"); onCommit(committed); }
-    }
-    start.current = null;
-    axis.current = null;
-    raw.current = 0;
-  };
 
   // A swipe must not also register as a tap on the child (which opens detail).
   const onClickCapture = (e: React.MouseEvent) => {
@@ -90,45 +56,48 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
     }
   };
 
-  const progress = swipeProgress(dx);
-  const committing = Math.abs(dx) >= ROW_COMMIT;
-
   return (
     <div className="relative overflow-hidden" onClickCapture={onClickCapture}>
       {lead && (
-        <div
+        <m.div
           aria-hidden
-          className="absolute inset-y-0 left-0 flex items-center gap-2 pl-4 text-sm font-medium"
-          style={{ width: Math.max(0, dx), background: lead.color, color: lead.fg ?? "#fff", opacity: dx > 0 ? progress : 0 }}
+          className="absolute inset-0 flex items-center gap-2 pl-4 text-sm font-medium"
+          style={{ clipPath: leadClip, opacity: leadOpacity, background: lead.color, color: lead.fg ?? "#fff" }}
         >
           {lead.icon}
-          {committing && dx > 0 && <span>{lead.label}</span>}
-        </div>
+          <span>{lead.label}</span>
+        </m.div>
       )}
       {trail && (
-        <div
+        <m.div
           aria-hidden
-          className="absolute inset-y-0 right-0 flex items-center justify-end gap-2 pr-4 text-sm font-medium"
-          style={{ width: Math.max(0, -dx), background: trail.color, color: trail.fg ?? "#fff", opacity: dx < 0 ? progress : 0 }}
+          className="absolute inset-0 flex items-center justify-end gap-2 pr-4 text-sm font-medium"
+          style={{ clipPath: trailClip, opacity: trailOpacity, background: trail.color, color: trail.fg ?? "#fff" }}
         >
-          {committing && dx < 0 && <span>{trail.label}</span>}
+          <span>{trail.label}</span>
           {trail.icon}
-        </div>
+        </m.div>
       )}
-      <div
+      <m.div
         className="relative bg-surface"
-        style={{
-          transform: `translateX(${dx}px)`,
-          transition: dragging || reduced ? "none" : "transform 240ms var(--ease-out)",
-          touchAction: "pan-y",
+        style={{ x }}
+        drag="x"
+        // Vertical drags must fall through to the scroller. Framer decides the
+        // axis on the first few pixels, exactly as the hand-rolled swipeAxis
+        // used to, and then locks it for the rest of the gesture.
+        dragDirectionLock
+        dragSnapToOrigin
+        dragElastic={0.4}
+        dragMomentum={false}
+        onDragStart={() => { moved.current = true; }}
+        onDragEnd={(_, info) => {
+          const committed = swipeCommits(info.offset.x, info.velocity.x, actions);
+          if (committed) { fire("selection"); onCommit(committed); }
         }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endGesture}
-        onPointerCancel={endGesture}
+        dragTransition={{ bounceStiffness: SPRING_ROW.stiffness, bounceDamping: SPRING_ROW.damping }}
       >
         {children}
-      </div>
+      </m.div>
     </div>
   );
 }
