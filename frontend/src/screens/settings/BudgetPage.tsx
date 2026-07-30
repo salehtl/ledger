@@ -22,7 +22,7 @@ import { SavedFlash, useSavedFlash } from "./SavedFlash";
  * shape ProgressBar uses for its fill, and for the same reason: `width` is a
  * layout property, and this bar's segments animate on every keystroke.
  */
-function SegmentFill({ start, width, className }: { start: number; width: number; className: string }) {
+export function SegmentFill({ start, width, className }: { start: number; width: number; className: string }) {
   // clipPath is not a transform, so Framer's global reducedMotion policy does
   // not cover it — this one is gated by hand.
   const reduced = useReducedMotion();

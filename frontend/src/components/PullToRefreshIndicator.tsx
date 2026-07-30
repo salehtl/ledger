@@ -13,14 +13,21 @@ import { SPRING_SNAP } from "../lib/motion";
  * also refetching — and did it on a built-in `ease-out`, the last one in the
  * codebase.
  *
- * During the pull the motion value is *set*, not animated, so it tracks the
- * finger 1:1. Only the release springs.
+ * During the pull the motion value is *jumped*, not animated, so it tracks
+ * the finger 1:1 and cancels any residual release spring from a quick
+ * re-pull. Only the release springs.
  */
 export function PullToRefreshIndicator({ pullDistance, refreshing }: {
   pullDistance: number;
   refreshing: boolean;
 }) {
-  const target = refreshing ? PULL_THRESHOLD : pullDistance;
+  // Clamped: resist() (lib/pullToRefresh.ts) legitimately returns up to
+  // MAX_PULL (96px), well past PULL_THRESHOLD (64px) — an ordinary firm pull
+  // reaches it. Unclamped, `next` below goes positive and translates the
+  // gauge below the clipper's visible [0, PULL_THRESHOLD] window, clipping
+  // the spinner fully out of view at exactly the moment the user is pulling
+  // hardest and watching it most closely.
+  const target = refreshing ? PULL_THRESHOLD : Math.min(pullDistance, PULL_THRESHOLD);
   const visible = refreshing || pullDistance > 0;
   const progress = Math.min(1, pullDistance / PULL_THRESHOLD);
 
@@ -30,9 +37,17 @@ export function PullToRefreshIndicator({ pullDistance, refreshing }: {
 
   useEffect(() => {
     const next = target - PULL_THRESHOLD;
-    // Dragging: follow the finger exactly. Releasing or entering the
-    // refreshing state: spring, so the gauge settles rather than snapping.
-    if (!refreshing && pullDistance > 0) y.set(next);
+    // Dragging: follow the finger exactly. `jump`, not `set`: MotionValue.set()
+    // does not stop an in-flight animate() (only .stop()/.jump() do), so a
+    // quick re-pull started before the previous release's spring has settled
+    // would have its finger-tracking .set() calls interleaved with, and
+    // periodically overwritten by, the old spring's residual rAF frames —
+    // visible as jitter. jump() cancels whatever's running and sets in one
+    // call, which is the "track the finger, cancel anything in flight"
+    // semantic this branch actually wants.
+    if (!refreshing && pullDistance > 0) y.jump(next);
+    // Releasing or entering the refreshing state: spring, so the gauge
+    // settles rather than snapping.
     else animate(y, next, SPRING_SNAP);
   }, [target, refreshing, pullDistance, y]);
 
