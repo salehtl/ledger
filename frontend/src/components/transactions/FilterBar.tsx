@@ -24,6 +24,10 @@ function Chip({ label, active, dot, onClick }: { label: string; active: boolean;
       type="button"
       aria-pressed={active}
       onClick={onClick}
+      // components/README.md sanctions 36px for these chips inside their dense
+      // filter panel; the marker tells the UI audit this is the exception, not
+      // an oversight.
+      data-dense-target=""
       className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap press transition-colors ${
         active ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted hover:text-fg"
       }`}
@@ -87,7 +91,8 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
               key={t.key}
               type="button"
               onClick={t.remove}
-              className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-[var(--radius)] text-xs font-medium bg-accent/10 text-fg press"
+              data-dense-target=""
+              className="inline-flex min-h-9 items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-[var(--radius)] text-xs font-medium bg-accent/10 text-fg press"
               aria-label={`Remove ${t.label} filter`}
             >
               {t.label}
@@ -97,7 +102,8 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
           <button
             type="button"
             onClick={() => onChange(EMPTY_FILTERS)}
-            className="text-xs font-medium text-muted hover:text-fg px-1.5 py-1 press"
+            data-dense-target=""
+            className="inline-flex min-h-9 items-center text-xs font-medium text-muted hover:text-fg px-2 py-1 press"
           >
             Clear all
           </button>
