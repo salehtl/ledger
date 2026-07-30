@@ -15,9 +15,11 @@ import {
   monthProgress,
   monthTitle,
   undoAssignments,
+  type CategoryClaim,
   type Envelope,
 } from "../../lib/envelope";
-import { useAssignEnvelopes, useAutoAssign, useEnvelopes, useUpcoming } from "./api";
+import { assignEnvelopesOnce, envelopesKey, useAutoAssign, useEnvelopes, useUpcoming, writeSummary } from "./api";
+import { useQueryClient } from "@tanstack/react-query";
 import { ReadyToAssignBanner } from "./ReadyToAssignBanner";
 import { EnvelopeRow } from "./EnvelopeRow";
 import { AssignSheet } from "./AssignSheet";
@@ -42,7 +44,7 @@ export function PlanScreen({ scope }: { scope: Scope }) {
   const envelopes = useEnvelopes(month);
   const upcoming = useUpcoming();
   const autoAssign = useAutoAssign(month);
-  const assign = useAssignEnvelopes(month);
+  const qc = useQueryClient();
   const toast = useToast();
   const [sheet, setSheet] = useState<SheetState>(null);
 
@@ -56,7 +58,10 @@ export function PlanScreen({ scope }: { scope: Scope }) {
   const s = envelopes.data;
   const groups = groupByBucket(s.envelopes);
   const pace = monthProgress(month);
-  const claims = claimsByCategory(upcoming.data?.items ?? []);
+  // Upcoming-bill claims are anchored to today; on any other month they'd
+  // contradict the month being shown, so they only render on the current one
+  // (the same months the pace marker exists for).
+  const claims = pace !== undefined ? claimsByCategory(upcoming.data?.items ?? []) : new Map<number, CategoryClaim>();
 
   const byId = (id: number): Envelope | undefined => s.envelopes.find((e) => e.category_id === id);
   const sheetEnvelope =
@@ -68,7 +73,19 @@ export function PlanScreen({ scope }: { scope: Scope }) {
         const undo = undoAssignments(res.allocations, res.summary);
         toast.show({
           message: autoAssignMessage(res.allocations),
-          action: undo.length > 0 ? { label: "Undo", onAction: () => assign.mutate(undo) } : undefined,
+          action:
+            undo.length > 0
+              ? {
+                  label: "Undo",
+                  // Plain call, not the mutation hook: the toast outlives this
+                  // screen, and an unmounted hook drops its callbacks — the
+                  // undo would neither write the cache nor report failure.
+                  onAction: () =>
+                    assignEnvelopesOnce(month, undo)
+                      .then((summary) => writeSummary(qc, summary))
+                      .catch(() => toast.show({ message: "Couldn't undo", tone: "error" })),
+                }
+              : undefined,
         });
       },
       onError: (err) => toast.show({ message: `Couldn't auto-assign — ${err.message}`, tone: "error" }),
@@ -92,6 +109,12 @@ export function PlanScreen({ scope }: { scope: Scope }) {
       {focus.note !== "" && (
         <p className="px-1 font-mono text-[10px] tracking-[0.04em] text-muted">
           Showing {monthTitle(month)} — {focus.note}
+        </p>
+      )}
+
+      {pace !== undefined && upcoming.isError && (
+        <p className="px-1 font-mono text-[10px] tracking-[0.04em] text-muted">
+          Upcoming bills unavailable — claim hints hidden.
         </p>
       )}
 

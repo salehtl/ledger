@@ -228,6 +228,19 @@ export function dueLabel(days: number): string {
   return `due in ${days}d`;
 }
 
+/** The single most pressing upcoming bill: missed bills first, then soonest due. */
+export function nextUpcoming(items: UpcomingItem[]): UpcomingItem | null {
+  if (items.length === 0) return null;
+  return [...items].sort(
+    (a, b) => Number(b.missed ?? false) - Number(a.missed ?? false) || a.due_in_days - b.due_in_days,
+  )[0];
+}
+
+/** "NETFLIX due in 2d" — the pocket-strip line for the most pressing bill. */
+export function nextUpcomingLabel(item: UpcomingItem): string {
+  return `${item.label || item.merchant} ${dueLabel(item.due_in_days)}`;
+}
+
 /** One-line claim hint for a row: "Netflix due in 2d · 39.00". */
 export function claimText(c: CategoryClaim): string {
   const name = c.soonest.label || c.soonest.merchant;
@@ -285,10 +298,12 @@ export function allocationsTotal(allocations: Allocation[]): number {
 }
 
 /** Toast copy after auto-assign. */
+// Figure-free on purpose: toasts set their body in Sans, and §1.3 keeps money
+// out of Sans — the assigned numbers land in the rows on screen anyway.
 export function autoAssignMessage(allocations: Allocation[]): string {
   if (allocations.length === 0) return "Nothing to assign";
   const n = allocations.length;
-  return `Assigned ${formatFils(allocationsTotal(allocations))} across ${n} envelope${n === 1 ? "" : "s"}`;
+  return `Assigned ${n} envelope${n === 1 ? "" : "s"}`;
 }
 
 /** The absolute assignment set that reverses an auto-assign: for each touched
