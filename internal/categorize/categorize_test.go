@@ -100,6 +100,27 @@ func TestRuleMatchContainsCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestRuleMatchContainsCaseInsensitivePattern(t *testing.T) {
+	// Mirrors TestRuleMatchContainsCaseInsensitive but flips which side carries
+	// the case mismatch: here the merchant is already lowercase and the RULE
+	// PATTERN itself is mixed-case, so this only passes if matchRule lowercases
+	// r.Pattern too (not just the merchant).
+	rules := []Rule{
+		{MatchType: "contains", Pattern: "Carrefour", CategoryID: 1, Priority: 10},
+	}
+	c := New(rules, testCats, DisabledAI{}, 0.85, false)
+	res, err := c.Categorize(context.Background(), "pos purchase - carrefour market")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.CategoryID != 1 {
+		t.Errorf("expected CategoryID=1, got %d", res.CategoryID)
+	}
+	if res.Source != "rule" {
+		t.Errorf("expected Source=rule, got %q", res.Source)
+	}
+}
+
 func TestRuleMatchRegex(t *testing.T) {
 	rules := []Rule{
 		{MatchType: "regex", Pattern: `^FIGMA`, CategoryID: 2, Priority: 10},

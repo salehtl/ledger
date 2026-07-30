@@ -56,6 +56,9 @@ describe("LinkRefundSheet", () => {
   it("shows an empty state when there are no candidates", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("[]"));
     renderSheet();
-    await screen.findByText(/No categorized purchases/);
+    expect(await screen.findByText(/No categorized purchases/)).toBeInTheDocument();
+    // The empty-state copy and a candidate list are mutually exclusive states;
+    // guard against both rendering at once.
+    expect(screen.queryByRole("button", { name: /Carrefour/ })).toBeNull();
   });
 });
