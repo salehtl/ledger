@@ -2,11 +2,12 @@ import { LazyMotion, MotionConfig, type LazyFeatureBundle } from "motion/react";
 import type { ReactNode } from "react";
 
 /**
- * `domMax` — not `domAnimation` — because the app needs drag (sheets, the
- * swipe deck, list rows) and layout animations. Imported as a thunk so the
- * feature bundle lands in its own chunk and never blocks first paint.
+ * A thunk over a module that does nothing but re-export the feature bundle, so
+ * it lands in its own chunk and never blocks first paint. The indirection is
+ * load-bearing — importing `motion/react` here directly does not split. See
+ * `motionFeatures.ts` for why.
  */
-const loadDomMax: LazyFeatureBundle = () => import("motion/react").then((m) => m.domMax);
+const loadDomMax: LazyFeatureBundle = () => import("./motionFeatures").then((mod) => mod.default);
 
 /**
  * The app's one motion root.

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   EASE_OUT, EASE_DRAWER, DUR,
   SHEET_ENTER, SHEET_EXIT, PRESS_TRANSITION, FADE,
-  SPRING_SNAP, SPRING_SHEET, SPRING_ROW,
+  SPRING_SNAP, INERTIA_ROW,
 } from "./motion";
 
 describe("easing tokens", () => {
@@ -33,9 +33,18 @@ describe("transition tokens", () => {
     expect(SHEET_EXIT.ease).toEqual(EASE_DRAWER);
   });
   it("exports springs, not durations, for gesture-driven motion", () => {
-    for (const s of [SPRING_SNAP, SPRING_SHEET, SPRING_ROW]) {
+    for (const s of [SPRING_SNAP]) {
       expect(s.type).toBe("spring");
       expect(s.duration).toBeUndefined();
     }
+  });
+
+  // A `dragTransition` token must not carry spring fields. Framer spreads it
+  // into a default `{ type: "inertia", … }`, so a stray `type: "spring"` (or
+  // `stiffness`, which the bounce ignores) swaps the animator out from under
+  // the call site without any type error. Keeping the bounce token to
+  // bounce-only keys is what makes the two models distinguishable at a glance.
+  it("keeps the drag bounce token to inertia keys only", () => {
+    expect(Object.keys(INERTIA_ROW).sort()).toEqual(["bounceDamping", "bounceStiffness"]);
   });
 });

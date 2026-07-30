@@ -81,7 +81,22 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       style={{ x }}
       drag="x"
       dragSnapToOrigin
-      dragElastic={0.6}
+      // No `dragConstraints`, and therefore deliberately no `dragElastic`.
+      // Elasticity is only ever applied to the part of a drag that is OUTSIDE
+      // the constraint box: `resolveConstraints()` sets `this.constraints =
+      // false` when the prop is absent, and the elastic branch in
+      // `updateAxis()` is guarded on `this.constraints[axis]`. With no box
+      // there is no outside, so `dragElastic` here was a no-op and was
+      // removed rather than made real.
+      //
+      // Making it real would be wrong anyway. A row rubber-bands to say "this
+      // direction has no action" — but a toast dismisses BOTH ways
+      // (`toastExitX` reads the sign), so there is no dead side to resist,
+      // and 1:1 tracking is what lets a short flick reach the threshold.
+      //
+      // `SPRING_SNAP` is a spring `Transition`, not inertia options: spread
+      // into the drag it overwrites `type: "inertia"`, so an uncommitted
+      // swipe springs home instead of decaying. That one is intentional.
       dragTransition={SPRING_SNAP}
       onDragEnd={(_, info) => {
         const exit = toastExitX(info.offset.x, info.velocity.x);

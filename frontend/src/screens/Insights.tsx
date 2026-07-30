@@ -221,6 +221,7 @@ function ReportTile({ label, stat, meta, pending = false, onOpen }: {
       </span>
       {pending ? (
         <span aria-busy="true" aria-label="Loading" className="mt-1 flex h-6 items-center">
+          {/* Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated. */}
           <span className="block h-4 w-16 animate-pulse rounded-[var(--radius)] bg-surface-2" />
         </span>
       ) : (
