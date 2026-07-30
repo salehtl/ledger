@@ -65,21 +65,15 @@ shadcn registry. **Not an npm dependency** — these files are source we own.
   blurred `plus-lighter` layer 60×/s forever — permanent compositor work and
   battery draw on an always-open mobile PWA. It also now copies the frame it
   belongs to instead of the previous one.
-- **`tooltip.tsx`**: `motion` (framer-motion) replaced with CSS transitions.
-  `motion` was imported by this one file and accounted for 128KB of a 602KB
-  bundle, precached by the service worker. A `present` state, cleared by a
-  `setTimeout(FADE_MS)`, stands in for `<AnimatePresence>`: the card mounts on
-  hover, stays mounted through the exit fade, then unmounts (`return null`)
-  — staying mounted permanently would leave a copy of every hovered label
-  sitting in the DOM. While mounted it fades via `opacity` and glides via
-  `left`/`top` transitions on the app's `--ease-out` token; the position is
-  frozen while hidden (so the exit is a pure fade), and an `armed` flag, set
-  one painted frame after mount via a double `requestAnimationFrame`, gates
-  the transition so the entrance doesn't glide in from wherever the previous
-  hover left the card. Reduced-motion opt-out is the `.dither-tooltip` rule in
-  `src/styles/app.css` — inline styles can't carry a media query. **If this
-  file is ever re-pulled from upstream, `motion` comes back as a
-  dependency.**
+- **`tooltip.tsx`**: still forked, but no longer to remove `motion` —
+  `AnimatePresence` and `m.div` are back, driving the same fade (`opacity`,
+  `DUR.fast`) and glide (`left`/`top`, 0.19s) this file always had. The fork
+  now is that it uses the app's `m` primitives and `lib/motion` tokens
+  (`DUR`, `EASE_OUT`) rather than upstream's bare `motion` import and its own
+  local constants, so it inherits the app-wide `MotionProvider` (`LazyMotion`
+  code-splitting, `MotionConfig reducedMotion="user"`) instead of carrying its
+  own reduced-motion opt-out — the old `.dither-tooltip` CSS rule is gone.
+  If this file is ever re-pulled from upstream, re-apply the `m`/token swap.
 
 Everything else is upstream-verbatim. `package.json` has a `shadcn` script
 (`bun run shadcn ...`) that wraps `bunx --bun shadcn@latest ...` — use it to
