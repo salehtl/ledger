@@ -93,6 +93,20 @@ Findings are geometric facts, not opinions. Judgement calls — hierarchy,
 rhythm, copy, whether a screen looks finished — are for a human or a reviewing
 agent looking at the screenshots.
 
+Precision is the point. A checker that cries wolf gets ignored, so the audit
+knows about four things it would otherwise report forever:
+
+- `.sr-only` text, which is *supposed* to be a clipped 1px box
+- `line-clamp` and the rolling-digit animation, which clip on purpose
+- the overlay stack — screens cover each other, so only the top layer is
+  audited, and the covered one produces a single "not inert" finding rather
+  than one per buried control
+- `data-dense-target`, which `IconButton size="sm"` sets to claim the 36px
+  dense-row allowance `components/README.md` grants it
+
+If you add a deliberate exception to a convention, teach the audit about it in
+the same commit. Otherwise the next person learns to skip the output.
+
 ## Driving it yourself
 
 `nav.mjs` exports the pieces for ad-hoc interaction scripts:
