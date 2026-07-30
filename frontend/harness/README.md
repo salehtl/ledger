@@ -107,6 +107,37 @@ knows about four things it would otherwise report forever:
 If you add a deliberate exception to a convention, teach the audit about it in
 the same commit. Otherwise the next person learns to skip the output.
 
+## Sheets and the hero number — `sheets.mjs`, `hero.mjs`
+
+Two defects the screen recordings caught that every other tool called clean.
+
+```bash
+node harness/sheets.mjs      # sheet action rail vs. safe-area inset, background scroll lock
+node harness/hero.mjs        # hero card consistency across a stale-cache repaint
+```
+
+`sheets.mjs` exists because **`env(safe-area-inset-bottom)` is 0 everywhere we
+test.** A sticky `DialogFooter` was resolving `bottom: 0` against the panel's
+*content* box, so the panel's own bottom padding rode the rail up over the last
+row of content — by `inset - 16px`, which is exactly 0 in Chromium, WebKit
+headless and every desktop browser, and 18px of a 44px button on an iPhone. It
+simulates the inset by overriding `--sheet-inset-bottom` (the one value the
+panel and the rail share) and asserts the rail stays flush and occludes nothing
+at 0/16/34/48px. It also asserts the page is frozen behind an open sheet: a
+`position: fixed` overlay's touch-scroll chains to the *root* scroller, not to
+its DOM ancestor, so `<main>`'s `overscroll-contain` never sees the gesture.
+
+`hero.mjs` replays a PWA relaunch: it stages a stale persisted react-query cache
+in localStorage, ages it past `staleTime`, delays `/api/summary`, then samples
+the hero card **on every animation frame** and asserts `budget − spent == left`
+at each one. Sampling `style.transform` would be useless — React writes the
+target there instantly, so a wheel looks settled while it is visibly rolling
+somewhere else. Only the computed matrix says what is on screen. Before the fix
+this reported 13 distinct card states including `24,526.25 of 25,000.00 · 3,581.55
+left`; after it, 2.
+
+Both take `BASE=http://127.0.0.1:8099` to run against `stack.sh prod`.
+
 ## What Chromium cannot tell you — `ios.mjs`
 
 `shoot.mjs` and `probe.mjs` run headless Chromium with an emulated viewport.

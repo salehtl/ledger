@@ -19,6 +19,61 @@ describe("Dialog", () => {
     expect(footer).toHaveClass("sticky", "bottom-0", "z-20", "bg-surface");
   });
 
+  it("lets the footer own the bottom inset instead of the panel", () => {
+    // `sticky bottom: 0` resolves against the scroll container's CONTENT box, so
+    // padding-bottom on the panel rides the stuck footer *up* by that much —
+    // over the last row of content. A negative margin-bottom on the footer does
+    // not push it back down; it shrinks the content box, which is what caused
+    // the overlap in the first place. On a phone with a 34px home-indicator
+    // inset the footer ate 18px of the row above it.
+    const { container } = render(
+      <Dialog title="T" onClose={() => {}}><div>body</div><DialogFooter><button>Save</button></DialogFooter></Dialog>,
+    );
+    const panel = screen.getByRole("dialog");
+    const footer = container.querySelector("[data-dialog-footer]")!;
+    expect(panel).toHaveClass("sheet-panel");            // CSS zeroes its padding when a footer is present
+    expect(panel.style.paddingBottom).toBe("");           // never inline — that would outrank the rule
+    expect(footer.className).not.toMatch(/-mb-/);         // no negative-margin compensation
+    expect(footer.className).toContain("pb-[var(--sheet-inset-bottom)]");
+  });
+
+  it("drops the home-indicator inset while the keyboard is up", () => {
+    render(<Dialog title="T" onClose={() => {}}><DialogFooter><button>Save</button></DialogFooter></Dialog>);
+    // No visualViewport in jsdom → keyboard closed → the shared inset var is
+    // left to the stylesheet rather than pinned inline.
+    expect(screen.getByRole("dialog").style.getPropertyValue("--sheet-inset-bottom")).toBe("");
+  });
+
+  it("freezes scrollable ancestors so the page cannot scroll behind the sheet", () => {
+    // A fixed overlay's touch-scroll chains to the root scroller, not to its DOM
+    // ancestor, so the ancestor's own overscroll-contain never sees the gesture.
+    // The background must be frozen outright.
+    const host = document.createElement("div");
+    host.style.overflowY = "auto";
+    document.body.appendChild(host);
+    const { unmount } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
+    expect(host.style.overflow).toBe("hidden");
+    unmount();
+    expect(host.style.overflow).toBe("");
+    host.remove();
+  });
+
+  it("restores a scroll position it froze", () => {
+    const host = document.createElement("div");
+    host.style.overflowY = "scroll";
+    document.body.appendChild(host);
+    Object.defineProperty(host, "scrollTop", { value: 120, writable: true, configurable: true });
+    const { unmount } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
+    unmount();
+    expect(host.scrollTop).toBe(120);
+    host.remove();
+  });
+
+  it("makes the scrim swallow touch gestures rather than pass them to the page", () => {
+    const { container } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>);
+    expect(container.querySelector('[data-testid="dialog-scrim"]')).toHaveClass("touch-none");
+  });
+
   it("gives the panel a transform transition for the slide", () => {
     render(<Dialog title="T" onClose={vi.fn()}>x</Dialog>);
     expect(screen.getByRole("dialog").style.transition).toContain("transform");

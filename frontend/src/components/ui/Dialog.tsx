@@ -7,16 +7,65 @@ import { useSheetDrag } from "../../hooks/useSheetDrag";
 import { useVisualViewport } from "../../hooks/useVisualViewport";
 import { IconButton } from "./IconButton";
 
-/** Persistent action rail for a scrollable bottom sheet. */
+/**
+ * Persistent action rail for a scrollable bottom sheet.
+ *
+ * The footer owns the sheet's bottom inset (`--sheet-inset-bottom`) and the
+ * panel contributes none — see `.sheet-panel:has()` in app.css. `sticky
+ * bottom: 0` resolves against the scroll container's *content* box, so any
+ * padding-bottom on the panel rides the stuck footer up by exactly that much,
+ * straight over the last row of content. The previous
+ * `-mb-[max(1rem,env(safe-area-inset-bottom))]` was meant to cancel that but
+ * did the opposite: a negative margin shrinks the content box, so it *was* the
+ * lift. `mt-4` masked it wherever `env(safe-area-inset-bottom)` is 0 — which is
+ * every desktop browser and both headless engines — while a phone with a 34px
+ * home-indicator inset lost 18px of the row above and gained a dead 34px strip
+ * below the buttons.
+ */
 export function DialogFooter({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <div
       data-dialog-footer=""
-      className={`sticky bottom-0 z-20 -mx-4 -mb-[max(1rem,env(safe-area-inset-bottom))] mt-4 flex items-center justify-end gap-2 border-t border-border bg-surface px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-10px_24px_-18px_rgba(0,0,0,0.45)] ${className}`}
+      className={`sticky bottom-0 z-20 -mx-4 mt-4 flex items-center justify-end gap-2 border-t border-border bg-surface px-4 pt-3 pb-[var(--sheet-inset-bottom)] shadow-[0_-10px_24px_-18px_rgba(0,0,0,0.45)] ${className}`}
     >
       {children}
     </div>
   );
+}
+
+/**
+ * Freeze every scrollable ancestor for as long as the sheet is up, restoring
+ * the exact inline value and offset afterwards.
+ *
+ * A `position: fixed` overlay is attached to the viewport, so a touch drag on
+ * it chains to the *root* scroller rather than to its DOM ancestor — which is
+ * why `<main>`'s own `overscroll-contain` never saw the gesture and the whole
+ * page (top bar included) rubber-banded behind an open sheet, dragging the
+ * fixed overlay with it and leaving an unscrimmed strip at the top.
+ *
+ * Ancestors, not `document.body`: this app scrolls an inner `<main>`, and a
+ * sheet opened from a drill-in overlay has to freeze that overlay's scroller
+ * too. Restoring the recorded inline value (rather than clearing it) keeps
+ * stacked sheets honest — the inner sheet hands the lock back to the outer one.
+ */
+function useScrollLock(ref: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const start = ref.current;
+    if (!start) return;
+    const frozen: { el: HTMLElement; overflow: string; top: number }[] = [];
+    for (let el = start.parentElement; el; el = el.parentElement) {
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== "auto" && oy !== "scroll") continue;
+      frozen.push({ el, overflow: el.style.overflow, top: el.scrollTop });
+      el.style.overflow = "hidden";
+    }
+    return () => {
+      for (const f of frozen) {
+        f.el.style.overflow = f.overflow;
+        f.el.scrollTop = f.top;
+      }
+    };
+  }, [ref]);
 }
 
 export function Dialog({ title, titleAdornment, titleStyle, onClose, children }: {
@@ -28,6 +77,7 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const reduced = usePrefersReducedMotion();
@@ -35,6 +85,7 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   const closingRef = useRef(false);     // guards against double-close
   const timerRef = useRef<number | null>(null);
   const viewport = useVisualViewport();
+  useScrollLock(rootRef);
 
   // Slide the sheet up and fade the scrim in on mount. Double rAF lets the
   // browser paint the offscreen start state before transitioning to rest.
@@ -111,11 +162,14 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
     // the amount field and the Save button underneath the keyboard, with no
     // overflow to scroll them back into reach.
     <div
+      ref={rootRef}
       className="fixed inset-x-0 z-50 flex items-end sm:items-center justify-center"
       style={{ top: viewport.offsetTop, height: viewport.height || undefined }}
       onClick={requestClose}
     >
-      <div ref={scrimRef} aria-hidden data-testid="dialog-scrim" className="absolute inset-0 bg-black/40" style={{ transition: scrimTransition() }} />
+      {/* touch-none: a drag on the dim area must die here, not travel to the
+          root scroller and rubber-band the page out from under the sheet. */}
+      <div ref={scrimRef} aria-hidden data-testid="dialog-scrim" className="absolute inset-0 touch-none bg-black/40" style={{ transition: scrimTransition() }} />
       <div
         ref={panelRef}
         role="dialog"
@@ -130,9 +184,13 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
           // scrolls instead of extending underneath it; the home-indicator inset
           // is dropped then, because the keyboard already occupies that space.
           maxHeight: viewport.height ? `${Math.round(viewport.height * 0.85)}px` : "85dvh",
-          paddingBottom: viewport.keyboardOpen ? "1rem" : "max(1rem, env(safe-area-inset-bottom))",
+          // The keyboard already occupies the home-indicator strip, so the inset
+          // collapses to a plain gutter. Set as a variable rather than as padding
+          // so a DialogFooter — which may be the thing that actually needs the
+          // clearance — inherits the same number.
+          ...(viewport.keyboardOpen ? { ["--sheet-inset-bottom" as string]: "1rem" } : {}),
         }}
-        className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius)] sm:rounded-[var(--radius)] shadow-1 px-4 pt-3 overflow-y-auto overscroll-contain outline-none"
+        className="sheet-panel relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius)] sm:rounded-[var(--radius)] shadow-1 px-4 pt-3 overflow-y-auto overscroll-contain outline-none"
       >
         <div
           className="touch-none cursor-grab active:cursor-grabbing sm:cursor-default"
