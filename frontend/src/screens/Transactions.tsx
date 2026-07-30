@@ -178,7 +178,10 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   };
 
   return (
-    <div className="space-y-3">
+    // pb-24 clears the Add-transaction FAB. It is an opaque 56px plate pinned
+    // above the nav, so without a terminus the last rows scroll under it and
+    // their amounts — the right-hand column it sits over — are unreadable.
+    <div className="space-y-3 pb-24">
       <SegmentedControl
         fullWidth
         value={filter}

@@ -106,8 +106,19 @@ describe("pace", () => {
   it("classifies pace as under / over / overbudget", () => {
     expect(paceStatus(100, 1000, 800)).toBe("under"); // projected within budget
     expect(paceStatus(100, 1000, 1200)).toBe("over"); // projected to overspend
-    expect(paceStatus(1000, 1000, 1000)).toBe("overbudget"); // already at/over target
+    expect(paceStatus(1001, 1000, 1001)).toBe("overbudget"); // actually past target
     expect(paceStatus(0, 0, 0)).toBe("under"); // no target set
+  });
+
+  // Red is reserved for money that is actually missing — the rule envelope.ts
+  // states and applies (`available < 0` is overbudget, `pct >= 1` is not).
+  // paceStatus used `spent >= target`, so a bucket funded to exactly its plan
+  // rendered a red "Over budget" failure for being precisely on budget.
+  it("does not call spending exactly the target overbudget", () => {
+    expect(paceStatus(1000, 1000, 1000)).toBe("under");
+    expect(paceTone(paceStatus(1000, 1000, 1000))).toBe("good");
+    // One fil past the plan is genuinely over.
+    expect(paceStatus(1001, 1000, 1001)).toBe("overbudget");
   });
 
   it("maps a pace status to a tone", () => {

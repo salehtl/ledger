@@ -28,6 +28,7 @@ export function SearchSheet({ txns, categories, onClose }: {
       <div className="mb-3">
         <Input
           inset
+          autoFocus
           icon={Search}
           type="search"
           enterKeyHint="search"

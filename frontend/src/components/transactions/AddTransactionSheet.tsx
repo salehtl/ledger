@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { Category } from "../../api/types";
 import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
-import { Input, Select } from "../ui/Field";
+import { Input, NumberField, Select } from "../ui/Field";
 import { buildManualTxnPayload, type ManualTxnPayload } from "../../lib/transactions";
 
 function today(): string {
@@ -19,14 +19,20 @@ export function AddTransactionSheet({ categories, onSubmit, onClose, accountId }
   accountId?: number;
 }) {
   const [merchant, setMerchant] = useState("");
-  const [amountAed, setAmountAed] = useState("");
+  const [amountAed, setAmountAed] = useState<number | null>(null);
   const [direction, setDirection] = useState("debit");
   const [date, setDate] = useState(today());
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   const submit = () => {
-    const res = buildManualTxnPayload({ merchant, amountAed, direction, date, categoryId });
+    const res = buildManualTxnPayload({
+      merchant,
+      amountAed: amountAed === null ? "" : String(amountAed),
+      direction,
+      date,
+      categoryId,
+    });
     if (!res.ok) { setError(res.error); return; }
     setError("");
     onSubmit(accountId != null ? { ...res.payload, account_id: accountId } : res.payload);
@@ -39,12 +45,16 @@ export function AddTransactionSheet({ categories, onSubmit, onClose, accountId }
           <Input inset autoCapitalize="words" autoCorrect="off" enterKeyHint="next" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="e.g. Carrefour" />
         </label>
         <label className="block text-sm">Amount (AED)
-          <Input inset type="number" inputMode="decimal" min="0" step="0.01" value={amountAed} onChange={(e) => setAmountAed(e.target.value)} />
+          {/* The catalog's numeric control, not a bare type="number": it starts
+              empty rather than at 0 and survives the intermediate "12." state. */}
+          <NumberField inset min={0} decimals={2} allowEmpty value={amountAed} onValueChange={setAmountAed} placeholder="0.00" />
         </label>
-        <label className="block text-sm">Direction
+        <label className="block text-sm">Type
+          {/* Same words as the filter panel on this screen — it said
+              "Spending"/"Income" while this sheet said "Debit"/"Credit". */}
           <Select inset value={direction} onChange={(e) => setDirection(e.target.value)}>
-            <option value="debit">Debit (money out)</option>
-            <option value="credit">Credit (money in)</option>
+            <option value="debit">Spending</option>
+            <option value="credit">Income</option>
           </Select>
         </label>
         <label className="block text-sm">Date
