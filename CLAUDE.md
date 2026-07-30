@@ -67,6 +67,58 @@ Go tests live beside the code (`*_test.go`). Frontend tests are `*.test.ts(x)` n
 
 > Frontend vitest is pinned to a **single, non-parallel fork** (`fileParallelism: false`, `singleFork`) in `vite.config.ts` — the sandbox blocks vitest's default worker spawning, which otherwise silently runs only the first file. Don't "fix" this back to parallel.
 
+### UI testing: use the harness, not just vitest
+
+vitest and Storybook test components in isolation. They cannot see a control
+under the bottom nav, a field that refuses to stay empty, or a sheet hidden
+behind the keyboard. **Any change to a screen, sheet or shared UI primitive
+should be checked with `frontend/harness/`**, which drives the real PWA in a
+real browser against the real Go API on a scratch DB. Full docs:
+`frontend/harness/README.md`.
+
+```bash
+cd frontend
+harness/stack.sh up          # scratch DB + seed + Go API (:8099) + vite (:5199)
+node harness/shoot.mjs       # screenshot + geometry-audit every screen
+node harness/probe.mjs       # open every sheet, type into every input
+node harness/ios.mjs         # WebKit + iPhone keyboard geometry
+harness/stack.sh reset       # restore fixture data between rounds
+```
+
+Never points at production: scratch ports and a scratch DB, never `:8080` or
+`/var/lib/ledger`.
+
+**The method that actually found bugs**, in order of yield:
+
+1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant
+   name wider than the viewport, a 250,000 amount, an unset FX rate, a negative
+   envelope. Bugs hide in the happy path.
+2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page
+   and reports elements past the viewport, controls whose centre point hits a
+   *different* element, sub-44px targets, sub-16px inputs, unreachable
+   `overflow-hidden` content.
+3. **Type into things** — `probe.mjs` clears every input and checks it stays
+   clear. That is how the `Number("") === 0` springback was found.
+4. **Read the screenshots with a critic that has no stake in the code** — the
+   geometry audit cannot judge hierarchy, rhythm or copy.
+
+**Traps that produced false confidence — check these before trusting a green run:**
+
+- **`reducedMotion: "reduce"`** (set by `shoot.mjs` for stable captures) makes
+  `Dialog`/`SettingsPage` skip their slide entirely. A green run says nothing
+  about the animation.
+- **Chromium is not Safari.** `env(safe-area-inset-*)` is 0, there is no
+  software keyboard, and `dvh` never shrinks. iOS-only bugs are invisible —
+  use `ios.mjs`.
+- **Check which tree vite serves** (`ls -l /proc/<vite-pid>/cwd`). `stack.sh`
+  resolves the repo from its own path, so running it from the main checkout
+  while editing a worktree "verifies" a fix against code that lacks it.
+- **Cold-start jank looks like a bug.** Discard the first run before drawing
+  conclusions about timing, and A/B under equally warm conditions.
+- **A checker that cries wolf gets ignored.** When you add a deliberate
+  exception to a convention, teach `audit.mjs` about it in the same commit
+  (see `data-dense-target`).
+
 ## CLI subcommands
 
 `cmd/ledger/main.go` dispatches on `os.Args[1]` before flag parsing:
