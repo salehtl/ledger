@@ -62,8 +62,14 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
           {bill === null ? (
             <span className={`${meta} shrink-0`}>none due in {upcoming.data?.days ?? 14}d</span>
           ) : (
-            <span className={`${meta} !text-fg min-w-0 truncate`} data-missed={bill.missed || undefined}>
-              {nextUpcomingLabel(bill)} · {formatFils(bill.amount_fils)}
+            // Two spans, not one: only the bill's name may be elided. Truncating
+            // the whole string ate the amount and the due date — the only two
+            // facts this row carries — and left the merchant name, which is the
+            // least useful part of it.
+            <span className="flex items-baseline gap-1.5 min-w-0" data-missed={bill.missed || undefined}>
+              <span className={`${meta} !text-fg min-w-0 truncate`}>{nextUpcomingLabel(bill)}</span>
+              <span aria-hidden className={`${meta} shrink-0`}>·</span>
+              <span className={`${meta} !text-fg shrink-0`}>{formatFils(bill.amount_fils)}</span>
             </span>
           )}
         </button>

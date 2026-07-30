@@ -90,7 +90,9 @@ export type PaceStatus = "under" | "over" | "overbudget";
  *  - "under": projected to finish within budget.
  */
 export function paceStatus(spent: number, target: number, projection: number): PaceStatus {
-  if (target > 0 && spent >= target) return "overbudget";
+  // Strictly greater: spending exactly the target is hitting the plan, not
+  // breaking it. `>=` flagged a perfectly-funded envelope as a red failure.
+  if (target > 0 && spent > target) return "overbudget";
   if (target > 0 && projection > target) return "over";
   return "under";
 }

@@ -38,8 +38,11 @@ export function ComparativeSummary({ label, note, net, savings, buckets, overBud
         />
       </div>
 
-      {/* Legend doubles as drill-in: tap a bucket to see its transactions. */}
-      <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
+      {/* Legend doubles as drill-in: tap a bucket to see its transactions.
+          Because it's tappable it needs a real target — the row's own text is
+          only 20px tall, so the buttons carry vertical padding and the gaps
+          shrink to compensate rather than the row growing taller. */}
+      <div className="mt-1.5 flex flex-wrap gap-x-4">
         {buckets.map((b) => {
           const chip = (
             <>
@@ -49,11 +52,17 @@ export function ComparativeSummary({ label, note, net, savings, buckets, overBud
             </>
           );
           return onSelectBucket ? (
-            <button key={b.bucket} aria-label={`See ${BUCKET_LABEL[b.bucket] ?? b.bucket} transactions`} className="flex items-center gap-1.5" onClick={() => onSelectBucket(b.bucket)}>
+            <button
+              key={b.bucket}
+              type="button"
+              aria-label={`See ${BUCKET_LABEL[b.bucket] ?? b.bucket} transactions`}
+              className="flex min-h-11 items-center gap-1.5 press"
+              onClick={() => onSelectBucket(b.bucket)}
+            >
               {chip}
             </button>
           ) : (
-            <span key={b.bucket} className="flex items-center gap-1.5">{chip}</span>
+            <span key={b.bucket} className="flex min-h-11 items-center gap-1.5">{chip}</span>
           );
         })}
       </div>

@@ -68,8 +68,11 @@ export function EnvelopeRow({ envelope, claim, pace, onOpen }: {
     >
       <div className="flex items-baseline justify-between gap-3">
         <p className="min-w-0 truncate text-sm font-medium leading-5 tracking-[-0.01em]">{e.category_name}</p>
+        {/* An envelope spent to exactly its balance has 0.00 available — a
+            real, and rather important, figure. Money renders 0 as "—", which
+            read as "no data" on precisely the rows that most need a number. */}
         <span className="tnum font-medium leading-5 shrink-0">
-          <Money fils={enveloped ? e.available_fils : e.activity_fils} />
+          {enveloped && e.available_fils === 0 ? "0.00" : <Money fils={enveloped ? e.available_fils : e.activity_fils} />}
         </span>
       </div>
       {enveloped && (

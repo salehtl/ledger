@@ -187,12 +187,17 @@ export function SwipeCard({
 
         {/* Amount — the hero, in the rounded display face */}
         <div className="flex flex-col items-center -mt-0.5">
+          {/* Name the currency the figure is actually in. With no FX rate the
+              hero fell back to the native amount while the label still said
+              AED, so a GBP 45.00 charge read as AED 45.00 at 48px. */}
           <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted mb-1">
-            {credit ? 'Received' : 'Spent'} · AED
+            {credit ? 'Received' : 'Spent'} · {aedFils(txn) === null ? txn.Currency : 'AED'}
           </span>
+          {/* clamp, not a hard 3rem: the card is ~261px wide and clips its
+              overflow, so a five-figure amount lost a digit off each end. */}
           <span
-            className="tnum font-bold leading-none"
-            style={{ fontSize: '3rem', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
+            className="tnum font-bold leading-none max-w-full"
+            style={{ fontSize: 'clamp(1.75rem, 9vw, 3rem)', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
           >
             {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}
           </span>
