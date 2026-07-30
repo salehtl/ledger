@@ -215,8 +215,11 @@ Both Go TZ runs were green on the *first* try — no fix needed there. The front
 | `lib/projectMath.ts` | `todayISO()` (line 17) calls the wall clock directly, no override param. `projectPace(p, today: string)` itself is pure/injectable. | `projectMath.test.ts`'s `todayISO` test only regex-matches the format (`toMatch(/^\d{4}-\d{2}-\d{2}$/)`), never a specific value; every `projectPace`/`projectCoversDate`/`orderProjectsForReview` test passes an explicit date string. | **Safe.** |
 | `screens/recurring/RecurringScreen.tsx` | Calls `todayISO()` (real wall clock) to compute `recentlyPaid(all, todayISO())`. | `RecurringScreen.test.tsx`'s "recently paid" test seeds `last_matched_at` with `new Date().toISOString()` — production and test read the same wall clock in the same process; self-consistent. `due_in_days` in every other test is server-shaped fixture data (never computed client-side), so the countdown-copy tests (`dueLabel`) never touch the clock at all. | **Safe.** |
 | `screens/plan/PlanScreen.tsx` | `pace = monthProgress(month)` — called **without** the `today` override, so it silently defaults to the real wall clock; gates the pace marker AND the upcoming-bill claim hints (`claims = pace !== undefined ? claimsByCategory(...) : new Map()`) on `month === real-current-month`. | **HAZARD — demonstrated and fixed, see below.** | **Fixed.** |
+| `screens/plan/TargetSheet.tsx:50-55` | A **second, independent** wall-clock read in the same screen family: `const now = new Date(); const minDueDate = "${now.getFullYear()}-...";` computes today's date directly (line 50-51, deliberately local-time not `toISOString()` per its own comment), then `dateOk = type !== "save_by_date" || (dueDate !== "" && dueDate >= minDueDate)` (line 55) rejects any `save_by_date` due-date earlier than the real "today". | `PlanScreen.test.tsx`'s "target sheet: save-by-date demands a date, then puts the target" fills the date field with the hardcoded fixture `"2026-12-01"` and asserts the PUT fires with that `due_date`. This only stays true while the real wall clock is on or before 2026-12-01 — the same class of hazard as `monthProgress` above, in the same file, missed by the first pass of this audit. | **HAZARD — same file, same clock pin covers it; see Step 3.** |
 
-**Step 3 — demonstrated hazard, red → green:**
+**Step 3 — demonstrated hazards, red → green:**
+
+### Hazard A — `monthProgress` / claim hints
 
 - **Where:** `frontend/src/screens/plan/PlanScreen.test.tsx` (test bug; production code in `frontend/src/screens/plan/PlanScreen.tsx:61-65` is correct/intentional).
 - **What:** Every fixture in `PlanScreen.test.tsx` pins the envelope month to `"2026-07"` (the `JULY` scope constant), but `PlanScreen.tsx:61` calls `monthProgress(month)` with no `today` argument, so it defaults to `new Date()` — the real wall clock. `monthProgress` returns `undefined` whenever `month` isn't the calendar month `today` sits in, and `PlanScreen.tsx:65` gates the entire upcoming-bill "claim hint" feature (`Netflix due in 2d · 39.00 — short 19.00`) on `pace !== undefined`. The suite happened to be authored (and this review run) during July 2026, so it passed by coincidence; the day the real clock crossed into August 2026 the test `"shows target progress and the upcoming-bill claim hint with its shortfall"` would start failing with the claim-hint text simply absent from the DOM — a silent, calendar-triggered regression with no code change.
@@ -231,7 +234,31 @@ Both Go TZ runs were green on the *first* try — no fix needed there. The front
         Tests  1 failed | 12 skipped (13)
   ```
   Confirmed RED exactly as predicted — the claim-hint text is missing from the rendered button because `pace` came back `undefined` once `month="2026-07"` no longer matched the (simulated) real current month.
-- **Fix (committed):** reverted the throwaway single-test patch; instead pinned the whole suite's wall clock once, in `beforeEach`/`afterEach`:
+
+### Hazard B — `TargetSheet`'s `minDueDate` (found on review; missed in the first pass of this audit)
+
+- **Where:** `frontend/src/screens/plan/TargetSheet.tsx:50-55` (test bug; production code is correct/intentional — a save-by-date target should not be allowed to target a date in the past).
+- **What:** `TargetSheet.tsx:50-51` computes `const now = new Date(); const minDueDate = "${now.getFullYear()}-${...}-${...}"` — a second, independent direct wall-clock read in the exact file/screen family as Hazard A. Line 55 then rejects any `save_by_date` due-date earlier than `minDueDate`: `dateOk = type !== "save_by_date" || (dueDate !== "" && dueDate >= minDueDate)`. The test `"target sheet: save-by-date demands a date, then puts the target"` fills the date input with the hardcoded fixture `"2026-12-01"` and asserts the resulting PUT body carries `due_date: "2026-12-01"`. That assertion only holds while the real wall clock is on or before 2026-12-01; past that date `minDueDate > "2026-12-01"`, `dateOk` goes `false`, Save stays disabled, and the PUT never fires — the reviewer caught that the original audit table listed `monthProgress` as the *sole* wall-clock hazard in the plan screens, which was incomplete: this is a distinct read, in a distinct component, gating a distinct assertion.
+- **Red demonstration (self-verified, not just taking the reviewer's word):** temporarily changed the already-committed clock pin in `PlanScreen.test.tsx`'s `beforeEach` from `new Date("2026-07-15T12:00:00Z")` to `new Date("2026-12-15T12:00:00Z")` (i.e., simulating "no pin, real date is mid-December 2026") and ran the full file:
+  ```
+  $ bunx vitest run src/screens/plan/PlanScreen.test.tsx
+   ❯ src/screens/plan/PlanScreen.test.tsx (13 tests | 2 failed) 2134ms
+      × PlanScreen > shows target progress and the upcoming-bill claim hint with its shortfall 59ms
+      × PlanScreen > target sheet: save-by-date demands a date, then puts the target 1143ms
+   FAIL  ... shows target progress and the upcoming-bill claim hint with its shortfall
+   FAIL  ... target sheet: save-by-date demands a date, then puts the target
+        - Expected: { amount_fils: 160000, cadence: "monthly", due_date: "2026-12-01", target_type: "save_by_date" }
+        + Received: undefined
+    Test Files  1 failed (1)
+         Tests  2 failed | 11 passed (13)
+  ```
+  Confirmed: **two** tests fail, not one — exactly Hazard A and Hazard B, both traced to the same file defaulting to the real wall clock. Then restored the pin to `new Date("2026-07-15T12:00:00Z")` and re-ran: all 13 tests pass (`git diff` on the test file was empty afterward, confirming the file was returned to its committed state before this re-verification).
+- **Fix (already committed, no new code change needed):** the existing `beforeEach`/`afterEach` clock pin (see Hazard A's fix below) neutralizes Hazard B as well, because it fixes the *entire test file's* wall clock, not just the one call site it was originally written to protect. No additional test or production code change was required.
+- **Disposition:** FIXED — neutralized by the same `PlanScreen.test.tsx` clock pin (verified: both tests fail without the pin at a simulated 2026-12-15, both pass with it).
+
+### Fix applied (covers both hazards)
+
+- Reverted the throwaway single-test patch; instead pinned the whole suite's wall clock once, in `beforeEach`/`afterEach`:
   ```ts
   beforeEach(() => {
     // ... pins to "2026-07-15T12:00:00Z" — inside the JULY fixture month
@@ -244,8 +271,8 @@ Both Go TZ runs were green on the *first* try — no fix needed there. The front
     vi.useRealTimers();
   });
   ```
-  `shouldAdvanceTime: true` keeps RTL's `findBy*`/`waitFor` setTimeout-based polling working normally under fake timers, so no other test in the file needed to change. Re-ran the full file green (13/13), and re-ran it inside all three TZ configurations (UTC+14, UTC−9, default) as part of Step 4 — all green. The fix makes the suite's outcome independent of the real calendar date, permanently (not just past the specific December date used for the red demonstration).
-- **Disposition:** FIXED. Commit includes the diff to `PlanScreen.test.tsx` only — no production code changed (the production behavior — hiding the pace marker/claim hints on non-current months — is correct and intentional, per the comment at `PlanScreen.tsx:62-64`).
+  `shouldAdvanceTime: true` keeps RTL's `findBy*`/`waitFor` setTimeout-based polling working normally under fake timers, so no other test in the file needed to change. Re-ran the full file green (13/13), and re-ran it inside all three TZ configurations (UTC+14, UTC−9, default) as part of Step 4 — all green. The fix makes the suite's outcome independent of the real calendar date, permanently (not just past the specific December date used for the red demonstrations), and covers both `PlanScreen.tsx:61`'s `monthProgress` call and `TargetSheet.tsx:50-51`'s `minDueDate` computation, since both simply read `new Date()`/`Date.now()` transitively and both are now intercepted by the same fake-timer pin for every test in the file.
+- **Disposition:** FIXED. Commit includes the diff to `PlanScreen.test.tsx` only — no production code changed (the production behavior — hiding the pace marker/claim hints on non-current months, and rejecting past save-by-date targets — is correct and intentional in both cases).
 
 **Step 2/3 — frontend screens double-checked for the same pattern (Home, Insights, ReportsScreen) — no hazard found:**
 
@@ -258,7 +285,8 @@ Both Go TZ runs were green on the *first* try — no fix needed there. The front
 
 | # | Severity | Where | Disposition |
 |---|---|---|---|
-| 1 | HIGH-if-untested, actually LOW (test-only bug, prod correct) | `frontend/src/screens/plan/PlanScreen.test.tsx` (prod: `PlanScreen.tsx:61-65`) | **FIXED** — clock pinned via `vi.useFakeTimers`/`vi.useRealTimers` in `beforeEach`/`afterEach`; red demonstrated and re-verified green under both TZ extremes. |
+| 1a | HIGH-if-untested, actually LOW (test-only bug, prod correct) | `frontend/src/screens/plan/PlanScreen.test.tsx` (prod: `PlanScreen.tsx:61-65`, `monthProgress`/claim hints) | **FIXED** — clock pinned via `vi.useFakeTimers`/`vi.useRealTimers` in `beforeEach`/`afterEach`; red demonstrated and re-verified green under both TZ extremes. |
+| 1b | HIGH-if-untested, actually LOW (test-only bug, prod correct) | `frontend/src/screens/plan/TargetSheet.tsx:50-55` (`minDueDate`), exercised by the same `PlanScreen.test.tsx` | **FIXED** — same clock pin as 1a neutralizes it too (verified independently: reverting the pin to a simulated 2026-12-15 fails both 1a's and 1b's tests; restoring it passes both). Found by reviewer, not the original Step-2 pass; the original audit table incorrectly presented `monthProgress` as the plan screens' sole wall-clock hazard. |
 | 2 | INFO | `internal/server/scheduled.go:317` (`handleGetUpcoming`) reads `time.Now().UTC()` with no `SetNow`-style seam | **DEFERRED: no clock seam** — safe today only because the one test exercising it (`TestUpcomingFeed`) derives its own fixture dates from the same `time.Now()` call; no failure demonstrated, no seam exists to inject a simulated future/past date if one were ever needed. |
 | 3 | INFO | `internal/store/insights.go:95` (`SelectMonthlyTotals`) reads `time.Now().UTC()` with no `SetNow`-style seam (the `Store.now` field exists but isn't wired to this query) | **DEFERRED: no clock seam** — same shape as #2; tests explicitly acknowledge the coupling (`insights_test.go:134`) rather than hiding it, and no failure was demonstrated. |
 
