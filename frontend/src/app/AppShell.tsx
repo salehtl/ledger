@@ -111,7 +111,11 @@ export function AppShell() {
       <IngestHealthBanner onView={openIngestHealth} />
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
-        <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
+        {/* min-h-full + flex-col so a screen that wants the whole viewport can
+            ask for it with flex-1 (the Review deck centres itself in the space
+            rather than stranding it below the card). pb-8 gives scrollable
+            screens a terminus above the nav instead of ending flush. */}
+        <div className="max-w-screen-sm w-full mx-auto px-4 pt-4 pb-8 min-h-full flex flex-col">
           {tab === "home" && (
             <Home
               scope={scope}
