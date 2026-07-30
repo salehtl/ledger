@@ -43,11 +43,12 @@ export function SettingsPage({
     const panel = panelRef.current;
     if (reduced || !panel) return;
     panel.style.transform = "translateX(100%)";
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => { panel.style.transform = "translateX(0)"; });
-    });
-    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
+    // Force a style flush before transitioning — see Dialog.tsx. WebKit does
+    // not commit the start state off a double rAF alone, leaving the panel
+    // parked off-screen and then snapping it in.
+    void panel.offsetHeight;
+    const raf = requestAnimationFrame(() => { panel.style.transform = "translateX(0)"; });
+    return () => cancelAnimationFrame(raf);
   }, [reduced]);
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);

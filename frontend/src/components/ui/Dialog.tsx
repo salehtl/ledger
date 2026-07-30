@@ -4,6 +4,7 @@ import { X } from "./PixelIcon";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { sheetTransition, scrimTransition, SHEET_EXIT_MS } from "../../lib/motion";
 import { useSheetDrag } from "../../hooks/useSheetDrag";
+import { useVisualViewport } from "../../hooks/useVisualViewport";
 import { IconButton } from "./IconButton";
 
 /** Persistent action rail for a scrollable bottom sheet. */
@@ -33,6 +34,7 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   const titleId = useId();
   const closingRef = useRef(false);     // guards against double-close
   const timerRef = useRef<number | null>(null);
+  const viewport = useVisualViewport();
 
   // Slide the sheet up and fade the scrim in on mount. Double rAF lets the
   // browser paint the offscreen start state before transitioning to rest.
@@ -52,14 +54,18 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
       return () => cancelAnimationFrame(r);
     }
     panel.style.transform = "translateY(100%)";
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        panel.style.transform = "translateY(0)";
-        scrim.style.opacity = "1";
-      });
+    // Force a style flush so the start state is committed before we change it.
+    // A double rAF is not enough in WebKit: Safari left the sheet parked at
+    // translateY(100%) — entirely below the viewport — for ~400-800ms and then
+    // snapped it into place with no transition. Since the scrim is already up
+    // and dismisses on tap, tapping where the sheet should be closed it again,
+    // which made every bottom sheet on iOS feel broken.
+    void panel.offsetHeight;
+    const raf = requestAnimationFrame(() => {
+      panel.style.transform = "translateY(0)";
+      scrim.style.opacity = "1";
     });
-    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
+    return () => cancelAnimationFrame(raf);
   }, [reduced]);
 
   // Play the exit, then ask the parent to unmount us. Under reduced motion,
@@ -99,8 +105,14 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   }, []); // mount-only; refs hold the latest callbacks
 
   return (
+    // Sized from the visual viewport, not 100dvh. On iOS the layout viewport
+    // does not shrink for the software keyboard, so a dvh-tall bottom-anchored
+    // container kept the sheet pinned to the bottom of the *display* — putting
+    // the amount field and the Save button underneath the keyboard, with no
+    // overflow to scroll them back into reach.
     <div
-      className="fixed inset-x-0 top-0 h-[100dvh] z-50 flex items-end sm:items-center justify-center"
+      className="fixed inset-x-0 z-50 flex items-end sm:items-center justify-center"
+      style={{ top: viewport.offsetTop, height: viewport.height || undefined }}
       onClick={requestClose}
     >
       <div ref={scrimRef} aria-hidden data-testid="dialog-scrim" className="absolute inset-0 bg-black/40" style={{ transition: scrimTransition() }} />
@@ -111,8 +123,16 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        style={{ transition: sheetTransition(reduced), willChange: reduced ? "auto" : "transform" }}
-        className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius)] sm:rounded-[var(--radius)] shadow-1 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto overscroll-contain outline-none"
+        style={{
+          transition: sheetTransition(reduced),
+          willChange: reduced ? "auto" : "transform",
+          // 85% of the *visible* box. With the keyboard up the sheet shrinks and
+          // scrolls instead of extending underneath it; the home-indicator inset
+          // is dropped then, because the keyboard already occupies that space.
+          maxHeight: viewport.height ? `${Math.round(viewport.height * 0.85)}px` : "85dvh",
+          paddingBottom: viewport.keyboardOpen ? "1rem" : "max(1rem, env(safe-area-inset-bottom))",
+        }}
+        className="relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius)] sm:rounded-[var(--radius)] shadow-1 px-4 pt-3 overflow-y-auto overscroll-contain outline-none"
       >
         <div
           className="touch-none cursor-grab active:cursor-grabbing sm:cursor-default"
