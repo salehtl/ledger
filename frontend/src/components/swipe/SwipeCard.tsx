@@ -14,7 +14,8 @@ import {
   actionColor,
 } from '../../lib/swipe'
 import { useSwipeGesture } from '../../hooks/useSwipeGesture'
-import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion'
+import { useReducedMotion } from "motion/react";
+const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 
 export const SWIPE_ICONS: Record<string, PixelIconType> = { Heart, Home, PiggyBank, ArrowLeftRight }
 

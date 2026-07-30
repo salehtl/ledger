@@ -1,10 +1,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+
+// TEMPORARY: Dialog.tsx's usePrefersReducedMotion shim (Task 1) delegates to
+// Framer Motion's useReducedMotion(), which lazily reads matchMedia ONCE per
+// module lifetime and caches the result (motion-dom's `hasReducedMotionListener`
+// singleton) rather than re-reading it on every mount like the old hook did.
+// That means reassigning window.matchMedia mid-suite — which this file's
+// reduced-motion tests below rely on — no longer reaches it after the first
+// Dialog render in this file. Mock the hook directly instead so those tests
+// can still drive the reduced-motion branch. Task 4 removes this shim along
+// with Dialog.tsx's own.
+const mockReducedMotion = vi.hoisted(() => ({ value: false }));
+vi.mock("motion/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("motion/react")>();
+  return { ...actual, useReducedMotion: () => mockReducedMotion.value };
+});
+
 import { Dialog, DialogFooter } from "./Dialog";
-import { SHEET_EXIT_MS } from "../../lib/motion";
+// TEMPORARY: lib/motion.ts was rewritten (Task 1) and no longer exports this
+// constant; Dialog.tsx now carries its own copy (see the TEMPORARY block
+// there) until Task 4 rewrites both onto AnimatePresence.
+const SHEET_EXIT_MS = 240;
 
 describe("Dialog", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => { vi.useFakeTimers(); mockReducedMotion.value = false; });
   afterEach(() => vi.useRealTimers());
 
   it("renders the title and children", () => {
@@ -98,17 +117,7 @@ describe("Dialog", () => {
   });
 
   it("seeds scrim opacity to 0 even under reduced motion", () => {
-    // Override matchMedia so prefers-reduced-motion: reduce matches true.
-    window.matchMedia = vi.fn().mockImplementation(query => ({
-      matches: query === "(prefers-reduced-motion: reduce)",
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockReducedMotion.value = true;
     const { container } = render(<Dialog title="T" onClose={vi.fn()}>x</Dialog>);
     const scrim = container.querySelector('[data-testid="dialog-scrim"]') as HTMLElement;
     expect(scrim).not.toBeNull();
@@ -133,16 +142,7 @@ describe("Dialog", () => {
   });
 
   it("closes synchronously under reduced motion without advancing timers", () => {
-    window.matchMedia = vi.fn().mockImplementation(query => ({
-      matches: query === "(prefers-reduced-motion: reduce)",
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockReducedMotion.value = true;
     const onClose = vi.fn();
     render(<Dialog title="T" onClose={onClose}>x</Dialog>);
     fireEvent.click(screen.getByLabelText("Close"));

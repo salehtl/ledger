@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { fire } from "../../lib/feedback";
-import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useReducedMotion } from "motion/react";
+const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 import {
   swipeAxis, swipeOffset, swipeCommits, swipeProgress,
   ROW_COMMIT, type RowActions, type RowSwipeAction,
