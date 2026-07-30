@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { RollingNumber } from "../../components/RollingNumber";
 import { Skeleton } from "../../components/Skeleton";
+import { AddTransactionSheet } from "../../components/transactions/AddTransactionSheet";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { SectionLabel } from "../../components/ui/SectionLabel";
@@ -8,6 +9,7 @@ import { Switch } from "../../components/ui/Switch";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "../settings/SettingsPage";
 import { shortDate } from "../../lib/format";
+import type { ManualTxnPayload } from "../../lib/transactions";
 import {
   balanceLabel,
   detailMeta,
@@ -16,7 +18,7 @@ import {
   sparklinePoints,
   type AccountBalanceSummary,
 } from "../../lib/reconcile";
-import { useBalanceHistory, useDeleteAccount, useSetKind } from "./api";
+import { useAddAccountTxn, useBalanceHistory, useCategories, useDeleteAccount, useSetKind } from "../../api/hooks";
 import { BalanceAmount } from "./BalanceAmount";
 import { BalanceSparkline } from "./BalanceSparkline";
 import { CheckinSheet } from "./CheckinSheet";
@@ -40,7 +42,9 @@ export function AccountDetail({ account, onClose }: {
   const history = useBalanceHistory(a.account_id);
   const setKind = useSetKind(a.account_id);
   const removeAccount = useDeleteAccount();
-  const [sheet, setSheet] = useState<null | "balance">(null);
+  const [sheet, setSheet] = useState<null | "balance" | "add-txn">(null);
+  const categories = useCategories(sheet === "add-txn");
+  const addTxn = useAddAccountTxn(a.account_id);
   const [armDelete, setArmDelete] = useState(false);
 
   const points = history.data ? sparklinePoints(history.data) : [];
@@ -49,6 +53,19 @@ export function AccountDetail({ account, onClose }: {
   const flipKind = (toTracking: boolean) => {
     setKind.mutate(toTracking ? "tracking" : "budget", {
       onError: (err) => toast.show({ message: `Couldn't change the account type — ${err.message}`, tone: "error" }),
+    });
+  };
+
+  // The discrepancy card's third route: the user knows what the missing
+  // transaction was, so record it instead of writing a blind adjustment.
+  const submitTxn = (payload: ManualTxnPayload & { account_id?: number }) => {
+    if (addTxn.isPending) return;
+    addTxn.mutate(payload, {
+      onSuccess: () => {
+        setSheet(null);
+        toast.show({ message: "Transaction added" });
+      },
+      onError: (err) => toast.show({ message: `Couldn't add the transaction — ${err.message}`, tone: "error" }),
     });
   };
 
@@ -109,9 +126,13 @@ export function AccountDetail({ account, onClose }: {
             {history.isPending ? (
               <Skeleton rows={2} />
             ) : history.isError ? (
-              <div className="text-sm text-muted">
-                Couldn't load history.{" "}
-                <button type="button" className="underline press" onClick={() => history.refetch()}>
+              <div className="flex items-center gap-1 text-sm text-muted">
+                <p>Couldn't load history.</p>
+                <button
+                  type="button"
+                  className="text-xs font-medium text-muted underline underline-offset-2 press min-h-11 px-2"
+                  onClick={() => history.refetch()}
+                >
                   Try again
                 </button>
               </div>
@@ -196,10 +217,22 @@ export function AccountDetail({ account, onClose }: {
       </div>
 
       {sheet === "balance" && !tracking && (
-        <CheckinSheet account={a} onClose={() => setSheet(null)} />
+        <CheckinSheet
+          account={a}
+          onClose={() => setSheet(null)}
+          onAddTransaction={() => setSheet("add-txn")}
+        />
       )}
       {sheet === "balance" && tracking && (
         <UpdateBalanceSheet account={a} onClose={() => setSheet(null)} />
+      )}
+      {sheet === "add-txn" && (
+        <AddTransactionSheet
+          categories={categories.data ?? []}
+          accountId={a.account_id}
+          onSubmit={submitTxn}
+          onClose={() => setSheet(null)}
+        />
       )}
     </SettingsPage>
   );

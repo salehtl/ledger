@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RecurringScreen } from "./RecurringScreen";
 import { ToastProvider } from "../../components/Toast";
 import * as client from "../../api/client";
-import type { Schedule, UpcomingItem } from "./api";
+import type { Schedule, UpcomingItem } from "../../api/types";
 import type { Category } from "../../api/types";
 
 function wrap(ui: React.ReactNode) {
@@ -72,6 +72,12 @@ function mockGets(data: {
 // window.matchMedia as a mock in its own beforeEach, and restoring would
 // strip it. Each test installs fresh spies instead.
 
+/** Flip document.hidden and fire visibilitychange, as backgrounding does. */
+function setDocumentHidden(hidden: boolean) {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 describe("RecurringScreen", () => {
   it("shows the empty state when nothing is tracked or proposed", async () => {
     mockGets({});
@@ -85,15 +91,40 @@ describe("RecurringScreen", () => {
     expect(await screen.findByText("Couldn't load recurring bills")).toBeInTheDocument();
   });
 
-  it("renders detected proposals with provenance and confirms one", async () => {
-    mockGets({ scheduled: [schedule()] });
-    const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ status: "active" }) as never);
-    wrap(<RecurringScreen />);
-    expect(await screen.findByText(/Detected · 1/)).toBeInTheDocument();
-    expect(screen.getByText(/seen 3× every ~30 days at 56\.00/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Track this bill"));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/api/scheduled/1/confirm", {}));
-    expect(await screen.findByText(/Now tracking netflix\.com/)).toBeInTheDocument();
+  it("confirm hides the card, toasts with undo, and commits only after the window", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGets({ scheduled: [schedule()] });
+      const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ status: "active" }) as never);
+      wrap(<RecurringScreen />);
+      await vi.waitFor(() => expect(screen.getByText(/Detected · 1/)).toBeInTheDocument());
+      expect(screen.getByText(/seen 3× every ~30 days at 56\.00/)).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Track this bill"));
+      expect(screen.queryByText("Track this bill")).toBeNull();
+      expect(screen.getByText(/Now tracking netflix\.com/)).toBeInTheDocument();
+      expect(post).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(5100);
+      await vi.waitFor(() => expect(post).toHaveBeenCalledWith("/api/scheduled/1/confirm", {}));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("confirm undo restores the card without a write", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGets({ scheduled: [schedule()] });
+      const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ status: "active" }) as never);
+      wrap(<RecurringScreen />);
+      await vi.waitFor(() => expect(screen.getByText("Track this bill")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Track this bill"));
+      fireEvent.click(screen.getByText("Undo"));
+      await vi.waitFor(() => expect(screen.getByText("Track this bill")).toBeInTheDocument());
+      vi.advanceTimersByTime(6000);
+      expect(post).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dismiss hides the card immediately and undo restores it without a write", async () => {
@@ -130,6 +161,29 @@ describe("RecurringScreen", () => {
     }
   });
 
+  it("the commit clock pauses while the tab is hidden, in lockstep with the toast", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGets({ scheduled: [schedule()] });
+      const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ status: "dismissed" }) as never);
+      wrap(<RecurringScreen />);
+      await vi.waitFor(() => expect(screen.getByText("Dismiss")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Dismiss"));
+      vi.advanceTimersByTime(2000);
+      setDocumentHidden(true);
+      vi.advanceTimersByTime(60_000); // backgrounded: undo must still be honest
+      expect(post).not.toHaveBeenCalled();
+      setDocumentHidden(false);
+      vi.advanceTimersByTime(2900); // 2000 + 2900 < 5000
+      expect(post).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(200);
+      await vi.waitFor(() => expect(post).toHaveBeenCalledWith("/api/scheduled/1/dismiss", {}));
+    } finally {
+      setDocumentHidden(false);
+      vi.useRealTimers();
+    }
+  });
+
   it("renders the upcoming feed with badges and total", async () => {
     mockGets({
       scheduled: [schedule({ id: 2, status: "active", provenance: undefined })],
@@ -146,15 +200,48 @@ describe("RecurringScreen", () => {
     expect(screen.getByText(/917\.05 expected/)).toBeInTheDocument(); // 489.15 + 427.90
   });
 
+  it("keeps the current rows on screen while a new window loads", async () => {
+    mockGets({
+      scheduled: [schedule({ id: 2, status: "active", provenance: undefined })],
+      upcoming: [upcomingItem({ id: 2, label: "DEWA", merchant: "dewa" })],
+    });
+    wrap(<RecurringScreen />);
+    expect(await screen.findByText("DEWA")).toBeInTheDocument();
+    // The 7-day fetch never resolves; the 14-day rows must stay visible
+    // instead of the whole screen dropping to skeletons.
+    vi.spyOn(client, "getJSON").mockImplementation((url: string) => {
+      if (url.startsWith("/api/upcoming")) return new Promise(() => {}) as never;
+      if (url.startsWith("/api/scheduled")) return Promise.resolve([schedule({ id: 2, status: "active", provenance: undefined })]) as never;
+      if (url.startsWith("/api/categories")) return Promise.resolve(categories) as never;
+      return Promise.resolve([]) as never;
+    });
+    fireEvent.click(screen.getByText("7 days"));
+    expect(screen.getByText("DEWA")).toBeInTheDocument();
+  });
+
   it("opens the edit sheet from a schedule row and pauses it", async () => {
     mockGets({ scheduled: [schedule({ id: 2, status: "active", label: "Netflix", provenance: undefined })] });
     const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ id: 2, status: "paused" }) as never);
     wrap(<RecurringScreen />);
-    fireEvent.click(await screen.findByLabelText("Edit Netflix"));
+    fireEvent.click((await screen.findByText("Netflix")).closest("button")!);
     expect(await screen.findByText("Edit schedule")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Pause tracking"));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/api/scheduled/2/pause", {}));
     expect(await screen.findByText("Paused Netflix")).toBeInTheDocument();
+  });
+
+  it("editing keeps tolerance and account in the PUT body (full-replace API)", async () => {
+    mockGets({ scheduled: [schedule({ id: 2, status: "active", label: "Netflix", provenance: undefined, tolerance_pct: 25, account_id: 3 })] });
+    const post = vi.spyOn(client, "postJSON").mockResolvedValue(schedule({ id: 2, status: "active" }) as never);
+    wrap(<RecurringScreen />);
+    fireEvent.click((await screen.findByText("Netflix")).closest("button")!);
+    expect(await screen.findByText("Edit schedule")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      "/api/scheduled/2",
+      expect.objectContaining({ tolerance_pct: 25, account_id: 3, amount_fils: 5600 }),
+      "PUT",
+    ));
   });
 
   it("marks paused schedules in the inventory", async () => {
@@ -187,7 +274,7 @@ describe("RecurringScreen", () => {
     });
     wrap(<RecurringScreen />);
     expect(await screen.findByText("Recently paid")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Open payment for Salary"));
+    fireEvent.click(screen.getByRole("button", { name: /Salary.*matched transaction/ }));
     // The txn index is empty in this test, so the sheet reports the miss
     // instead of silently rendering nothing.
     expect(await screen.findByText("No matched transactions")).toBeInTheDocument();

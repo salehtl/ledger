@@ -1,11 +1,6 @@
 import { Money } from "../../components/Money";
 import { formatFils } from "../../lib/money";
-import { monthColumn, pctLabel, type YoYRow, type YoYSummary } from "../../lib/reports";
-
-function monthYear(period: string): string {
-  const c = monthColumn(period);
-  return `${c.mon} ${c.yr}`;
-}
+import { monthYear, pctLabel, type YoYRow, type YoYSummary } from "../../lib/reports";
 
 /**
  * Year-over-year spending compare: the trailing 12 months, each paired with

@@ -7,11 +7,21 @@ import * as stories from "./IncomeExpenseMatrix.stories";
 const { ThreeMonths, DeficitMonths, Empty } = composeStories(stories);
 
 describe("IncomeExpenseMatrix stories", () => {
-  it("scrolls inside its own container with months newest-first", () => {
+  it("scrolls inside its own two-axis container with months newest-first", () => {
     const { container } = render(<ThreeMonths />);
-    expect(container.querySelector('[data-testid="matrix-scroll"]')).toHaveClass("overflow-x-auto");
+    expect(container.querySelector('[data-testid="matrix-scroll"]')).toHaveClass("overflow-auto", "max-h-[60vh]");
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toEqual(["Category", "Jul ’26", "Jun ’26", "May ’26", "Avg/mo", "Total"]);
+  });
+
+  it("month headers stay sticky through vertical scroll; the corner cell through both axes", () => {
+    render(<ThreeMonths />);
+    const month = screen.getByRole("columnheader", { name: "Jul ’26" });
+    expect(month.className).toContain("sticky");
+    expect(month.className).toContain("top-0");
+    const corner = screen.getByRole("columnheader", { name: "Category" });
+    expect(corner.className).toContain("top-0");
+    expect(corner.className).toContain("left-0");
   });
 
   it("income block sorts before spending, both labelled", () => {
@@ -26,7 +36,7 @@ describe("IncomeExpenseMatrix stories", () => {
     render(<ThreeMonths onDrillCell={onDrillCell} onDrillMonth={onDrillMonth} />);
     fireEvent.click(screen.getByRole("button", { name: "Groceries, Jul ’26: 1,743.50" }));
     expect(onDrillCell).toHaveBeenCalledWith(expect.objectContaining({ name: "Groceries" }), "2026-07");
-    fireEvent.click(screen.getByRole("button", { name: "Net for Jun ’26 — all transactions: 15,715.00" }));
+    fireEvent.click(screen.getByRole("button", { name: "Net for Jun ’26: 15,715.00" }));
     expect(onDrillMonth).toHaveBeenCalledWith("2026-06");
   });
 

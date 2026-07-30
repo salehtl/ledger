@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
-import { Skeleton } from "../../components/Skeleton";
 import { Card } from "../../components/ui/Card";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { AlertTriangle, PiggyBank } from "../../components/ui/PixelIcon";
-import { currentPeriod, monthLabel } from "../../lib/insights";
+import { currentPeriod } from "../../lib/insights";
 import type { Scope } from "../../lib/scope";
 import {
+  ageMirrorAgrees,
+  categoryTxns,
   cellTxns,
   fifoSpendAges,
   isFlatZero,
-  monthColumn,
   monthTxns,
-  txnMatchesCategory,
+  monthYear,
+  netMonthTxns,
   yoyRows,
   yoySummary,
   type IncomeExpenseRow,
@@ -26,24 +27,21 @@ import {
   useNetWorth,
   useReportsWindowTxns,
   useTrend24,
-} from "./api";
+} from "../../api/hooks";
 import { NetWorthChart } from "./NetWorthChart";
 import { AgeOfMoneyTile } from "./AgeOfMoneyTile";
 import { IncomeExpenseMatrix } from "./IncomeExpenseMatrix";
 import { TrendCompare } from "./TrendCompare";
 import { ReportDrillSheet } from "./ReportDrillSheet";
+import { AgeOfMoneySkeleton, MatrixSkeleton, NetWorthSkeleton, TrendsSkeleton } from "./skeletons";
 
 export type ReportSection = "networth" | "income-expense" | "age" | "trends";
-
-function monthYear(period: string): string {
-  const c = monthColumn(period);
-  return `${c.mon} ${c.yr}`;
-}
 
 /** What a drill-down is pointed at; resolved to transactions at render time
  *  so a still-loading window fills the open sheet in when it lands. */
 type Drill =
   | { kind: "month"; month: string }
+  | { kind: "net-month"; month: string }
   | { kind: "cell"; row: IncomeExpenseRow; month: string }
   | { kind: "category"; row: IncomeExpenseRow; fromMonth: string }
   | { kind: "age" };
@@ -76,15 +74,30 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
     trends: useRef<HTMLElement>(null),
   };
   // Entered from an Insights tile: land on that report. Instant, not smooth —
-  // this is navigation, not motion for its own sake.
+  // this is navigation, not motion for its own sake. Re-anchors as each
+  // section's queries settle: even dimension-reserving skeletons can differ
+  // slightly from loaded content, so the scroll must survive the swaps.
+  const settleKey = [
+    networth.isPending, matrix.isPending, age.isPending, trend.isPending, windowTxns.isPending,
+  ].join();
   useEffect(() => {
     // Optional call: jsdom has no scrollIntoView.
     if (focus) sectionRefs[focus].current?.scrollIntoView?.({ block: "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
+  }, [focus, settleKey]);
 
   const txns: ReportTxn[] = useMemo(() => windowTxns.data ?? [], [windowTxns.data]);
-  const spendAges = useMemo(() => fifoSpendAges(txns), [txns]);
+  const kindById = useMemo(
+    () => new Map((cats.data ?? []).map((c) => [c.ID, c.Kind])),
+    [cats.data],
+  );
+  const mirror = useMemo(() => fifoSpendAges(txns, kindById), [txns, kindById]);
+  // The sparkline/drill render only while the client FIFO mirror agrees with
+  // the server figure; a divergent mirror hides rather than lies (the client
+  // sees a 24-month window, the server all history).
+  const mirrorOk =
+    age.data !== undefined && age.data.sample_size > 0 && ageMirrorAgrees(mirror, age.data.sample_size);
+  const spendAges = mirrorOk ? mirror.ages : [];
   const yoy = useMemo(() => yoyRows(trend.data ?? [], currentPeriod()), [trend.data]);
   const yoySum = useMemo(() => yoySummary(yoy), [yoy]);
 
@@ -93,8 +106,14 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
     switch (drill.kind) {
       case "month":
         return {
-          title: `${monthLabel(drill.month)} ${drill.month.slice(0, 4)}`,
+          title: monthYear(drill.month),
           txns: monthTxns(txns, drill.month),
+        };
+      case "net-month":
+        return {
+          title: `Net · ${monthYear(drill.month)}`,
+          note: "confirmed income and spending only",
+          txns: netMonthTxns(txns, drill.month, kindById),
         };
       case "cell":
         return {
@@ -104,9 +123,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
       case "category":
         return {
           title: `${drill.row.name} · last 12 months`,
-          txns: txns.filter(
-            (t) => t.PostedAt.slice(0, 7) >= drill.fromMonth && txnMatchesCategory(t, drill.row.category_id),
-          ),
+          txns: categoryTxns(txns, drill.row.category_id, drill.fromMonth),
         };
       case "age": {
         const ids = new Set(spendAges.map((a) => a.id));
@@ -117,7 +134,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
         };
       }
     }
-  }, [drill, txns, spendAges]);
+  }, [drill, txns, spendAges, kindById]);
 
   const matrixFrom = matrix.data?.months[0] ?? "";
 
@@ -134,7 +151,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
         </div>
         <Card>
           {networth.isPending ? (
-            <Skeleton rows={4} />
+            <NetWorthSkeleton />
           ) : networth.isError ? (
             <EmptyState icon={AlertTriangle} title="Couldn't load net worth" hint="Check your connection and try again." />
           ) : isFlatZero(networth.data.months) ? (
@@ -155,14 +172,14 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
       <section ref={sectionRefs.age} className="scroll-mt-2 space-y-2">
         <SectionLabel as="h2" className="px-1">Age of money</SectionLabel>
         {age.isPending ? (
-          <Card><Skeleton rows={2} /></Card>
+          <AgeOfMoneySkeleton />
         ) : age.isError ? (
           <Card><EmptyState icon={AlertTriangle} title="Couldn't load age of money" hint="Check your connection and try again." /></Card>
         ) : (
           <AgeOfMoneyTile
             age={age.data}
             ages={spendAges}
-            onDrill={age.data.sample_size > 0 ? () => setDrill({ kind: "age" }) : undefined}
+            onDrill={mirrorOk ? () => setDrill({ kind: "age" }) : undefined}
           />
         )}
       </section>
@@ -174,7 +191,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
         </div>
         <Card className="!p-0">
           {matrix.isPending ? (
-            <div className="p-4"><Skeleton rows={6} /></div>
+            <div className="py-2"><MatrixSkeleton /></div>
           ) : matrix.isError ? (
             <EmptyState icon={AlertTriangle} title="Couldn't load the matrix" hint="Check your connection and try again." />
           ) : (
@@ -183,7 +200,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
                 data={matrix.data}
                 onDrillCell={(row, m) => setDrill({ kind: "cell", row, month: m })}
                 onDrillRow={(row) => setDrill({ kind: "category", row, fromMonth: matrixFrom })}
-                onDrillMonth={(m) => setDrill({ kind: "month", month: m })}
+                onDrillMonth={(m) => setDrill({ kind: "net-month", month: m })}
               />
             </div>
           )}
@@ -197,7 +214,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
         </div>
         <Card>
           {trend.isPending ? (
-            <Skeleton rows={6} />
+            <TrendsSkeleton />
           ) : trend.isError ? (
             <EmptyState icon={AlertTriangle} title="Couldn't load trends" hint="Check your connection and try again." />
           ) : (trend.data?.length ?? 0) === 0 ? (
@@ -218,6 +235,7 @@ export function ReportsScreen({ focus }: { scope?: Scope; focus?: ReportSection 
           note={"note" in drillProps ? drillProps.note : undefined}
           txns={drillProps.txns}
           pending={windowTxns.isPending}
+          error={windowTxns.isError}
           categories={cats.data ?? []}
           onClose={() => setDrill(null)}
         />

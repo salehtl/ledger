@@ -204,4 +204,28 @@ describe("buildSchedulePayload", () => {
     const res = buildSchedulePayload({ ...good, categoryId: null });
     expect(res.ok && res.payload.category_id).toBeNull();
   });
+
+  it("omits tolerance and account on create so the server applies defaults", () => {
+    const res = buildSchedulePayload(good);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect("tolerance_pct" in res.payload).toBe(false);
+      expect("account_id" in res.payload).toBe(false);
+    }
+  });
+
+  it("round-trips tolerance and account on edit (PUT is a full replace)", () => {
+    const res = buildSchedulePayload({ ...good, tolerancePct: 25, accountId: 3 });
+    expect(res.ok && res.payload.tolerance_pct).toBe(25);
+    expect(res.ok && res.payload.account_id).toBe(3);
+  });
+
+  it("preserves a zero tolerance and a null account (both meaningful values)", () => {
+    const res = buildSchedulePayload({ ...good, tolerancePct: 0, accountId: null });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.payload.tolerance_pct).toBe(0);
+      expect(res.payload.account_id).toBeNull();
+    }
+  });
 });

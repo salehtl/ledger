@@ -94,6 +94,14 @@ beforeEach(() => {
     if (url === "/api/accounts" && method === "POST") {
       return new Response(JSON.stringify({ id: 9 }), { status: 201 });
     }
+    // The kind flip for the freshly created account fails — the two-step
+    // useCreateAccount must still resolve with the id.
+    if (url === "/api/accounts/9" && method === "PUT") {
+      return new Response(JSON.stringify({ error: "kind flip failed" }), { status: 500 });
+    }
+    if (url === "/api/transactions" && method === "POST") {
+      return new Response(JSON.stringify({ ok: true, id: 99 }), { status: 201 });
+    }
     return new Response("[]");
   }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -112,7 +120,9 @@ function wrap() {
 }
 
 async function openDetail(name: string) {
-  fireEvent.click(await screen.findByRole("button", { name: `Open ${name}` }));
+  // No aria-label override on rows: the accessible name is the visible
+  // content (name + balance + freshness), so match on the account name.
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(name) }));
   return await screen.findByRole("heading", { name });
 }
 
@@ -153,7 +163,7 @@ describe("AccountsScreen", () => {
     expect(screen.getByText(/across 3 accounts · 1 awaiting first check-in/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Budget accounts" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tracking" })).toBeInTheDocument();
-    const savings = screen.getByRole("button", { name: "Open DIB Savings" });
+    const savings = screen.getByRole("button", { name: /DIB Savings/ });
     expect(within(savings).getByText("no check-in yet")).toBeInTheDocument();
     expect(within(savings).getByText("—")).toBeInTheDocument();
   });
@@ -190,9 +200,15 @@ describe("AccountsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Check in" }));
     const input = await screen.findByLabelText("Balance in your bank app");
     fireEvent.change(input, { target: { value: "74abc" } });
+    // Mid-entry, no error yet — it would flash on "8250." on the way to
+    // "8250.50". The disabled-submit guard is live throughout.
+    expect(screen.queryByText(/Enter an amount like 8,250\.00/)).toBeNull();
+    const sheet = screen.getByRole("dialog", { name: "Balance check-in" });
+    expect(within(sheet).getByRole("button", { name: "Check in" })).toBeDisabled();
+    // On blur the error appears, next to the field, input preserved.
+    fireEvent.blur(input);
     expect(screen.getByText(/Enter an amount like 8,250\.00/)).toBeInTheDocument();
     expect((input as HTMLInputElement).value).toBe("74abc");
-    const sheet = screen.getByRole("dialog", { name: "Balance check-in" });
     expect(within(sheet).getByRole("button", { name: "Check in" })).toBeDisabled();
   });
 
@@ -227,6 +243,9 @@ describe("AccountsScreen", () => {
     await openDetail("Sarwa Portfolio");
     fireEvent.click(screen.getByRole("button", { name: "Update balance" }));
     const input = await screen.findByLabelText("Balance now");
+    // Opens prefilled with the last known balance (signedAmountText) — an
+    // update is usually a small edit of it.
+    expect((input as HTMLInputElement).value).toBe("52500");
     fireEvent.change(input, { target: { value: "53,000" } });
     fireEvent.click(screen.getByRole("button", { name: "Save balance" }));
     await waitFor(() => {
@@ -243,6 +262,61 @@ describe("AccountsScreen", () => {
     await waitFor(() => {
       const put = calls.find((c) => c.url === "/api/accounts/1" && c.method === "PUT");
       expect(put?.body).toEqual({ kind: "tracking" });
+    });
+  });
+
+  it("discrepancy third route: manual entry opens prefilled with the account, POST carries account_id", async () => {
+    wrap();
+    await openDetail("ENBD Current");
+    fireEvent.click(screen.getByRole("button", { name: "Check in" }));
+    const input = await screen.findByLabelText("Balance in your bank app");
+    fireEvent.change(input, { target: { value: "7270" } });
+    const sheet = screen.getByRole("dialog", { name: "Balance check-in" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Check in" }));
+    await screen.findByText("Bank shows 180.00 less");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add the transaction instead" }));
+    // The check-in sheet closes; manual entry opens in its place.
+    expect(screen.queryByRole("dialog", { name: "Balance check-in" })).toBeNull();
+    const entry = await screen.findByRole("dialog", { name: "Add transaction" });
+    fireEvent.change(within(entry).getByLabelText("Merchant"), { target: { value: "Careem" } });
+    fireEvent.change(within(entry).getByLabelText(/Amount/), { target: { value: "180" } });
+    fireEvent.click(within(entry).getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      const post = calls.find((c) => c.url === "/api/transactions" && c.method === "POST");
+      expect(post?.body).toEqual(
+        expect.objectContaining({
+          account_id: 1,
+          merchant_raw: "Careem",
+          amount_fils: 18000,
+          direction: "debit",
+          currency: "AED",
+        }),
+      );
+    });
+    expect(await screen.findByText("Transaction added")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Add transaction" })).toBeNull();
+  });
+
+  it("create account survives a failed kind PUT: says it was added, routes to the fix", async () => {
+    wrap();
+    await screen.findByText("58,720.00");
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add account" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Sarwa Two" } });
+    fireEvent.change(within(dialog).getByLabelText("Last 4 digits"), { target: { value: "1234" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Tracking" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add account" }));
+
+    // POST created id 9; the mock fails PUT /api/accounts/9. The toast must
+    // not claim the account wasn't added, and balances must still refetch.
+    expect(
+      await screen.findByText(/Sarwa Two added, but couldn't mark it tracking — flip it in the account's settings\./),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      const fetches = calls.filter((c) => c.url === "/api/accounts/balances" && c.method === "GET");
+      expect(fetches.length).toBeGreaterThan(1);
     });
   });
 });

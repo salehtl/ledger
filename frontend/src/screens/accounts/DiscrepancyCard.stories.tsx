@@ -28,11 +28,12 @@ const meta = {
           "The check-in mismatch report: the delta between what the bank says and what the ledger " +
           "expected, then candidate causes in concreteness order — retained emails that produced no " +
           "transaction (nothing is ever silently dropped), foreign rows awaiting an FX rate, and the " +
-          "cash/ATM gap. One tap writes the delta off as an adjustment transaction.",
+          "cash/ATM gap. One tap writes the delta off as an adjustment transaction; one opens manual " +
+          "entry attributed to the account when the user knows what the missing transaction was.",
       },
     },
   },
-  args: { onAdjust: () => {}, onKeep: () => {} },
+  args: { onAdjust: () => {}, onAddTransaction: () => {}, onKeep: () => {} },
   decorators: [(S) => <div className="max-w-md"><S /></div>],
 } satisfies Meta<typeof DiscrepancyCard>;
 export default meta;

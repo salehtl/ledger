@@ -18,13 +18,16 @@ import {
  * concreteness order — retained emails that produced no transaction (nothing
  * is ever silently dropped, so a gap can point at its receipts), foreign rows
  * awaiting an FX rate, and the cash/ATM gap. One tap writes the delta off as
- * an adjustment transaction; "Keep for now" leaves it — the stated balance is
- * already the new anchor either way.
+ * an adjustment transaction; one opens manual entry prefilled with the
+ * account when the user knows what the missing transaction was; "Keep for
+ * now" leaves it — the stated balance is already the new anchor either way.
  */
-export function DiscrepancyCard({ result, onAdjust, adjustPending = false, onKeep }: {
+export function DiscrepancyCard({ result, onAdjust, adjustPending = false, onAddTransaction, onKeep }: {
   result: CheckinResult;
   onAdjust: () => void;
   adjustPending?: boolean;
+  /** Third route: open manual entry attributed to this account. */
+  onAddTransaction?: () => void;
   onKeep: () => void;
 }) {
   const causes = discrepancyCauses(result);
@@ -82,12 +85,17 @@ export function DiscrepancyCard({ result, onAdjust, adjustPending = false, onKee
         <Button variant="primary" className="w-full" onClick={onAdjust} disabled={adjustPending}>
           {adjustPending ? "Writing…" : adjustLabel(result.delta_fils)}
         </Button>
+        {onAddTransaction && (
+          <Button variant="ghost" className="w-full" onClick={onAddTransaction}>
+            Add the transaction instead
+          </Button>
+        )}
         <Button variant="ghost" className="w-full" onClick={onKeep}>
           Keep for now
         </Button>
         <p className="text-xs text-muted">
-          Your stated balance is saved either way. The adjustment records the gap as a transaction so
-          reports stay honest; keeping it leaves the gap unexplained.
+          Your stated balance is saved whichever you pick. An adjustment or an added transaction
+          records the gap so reports stay honest; keeping it leaves the gap unexplained.
         </p>
       </div>
     </div>

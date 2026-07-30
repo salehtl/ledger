@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { DetectedCards } from "./DetectedCards";
-import type { Schedule } from "./api";
+import type { Schedule } from "../../api/types";
 import type { Category } from "../../api/types";
 
 const categories: Category[] = [

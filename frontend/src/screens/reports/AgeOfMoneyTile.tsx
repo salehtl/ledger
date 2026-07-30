@@ -7,6 +7,11 @@ import type { AgeOfMoney, SpendAge } from "../../lib/reports";
  * on definition). One number, one plain-words explainer, one bar per sampled
  * spend; the whole tile drills to the spends behind the figure.
  *
+ * The sparkline strip is always reserved (h-8) so the tile never grows when
+ * the slower transactions window lands; `ages` arrives empty both while that
+ * window loads and when the client mirror diverges from the server figure
+ * (ReportsScreen hides a mirror it can't vouch for — see ageMirrorAgrees).
+ *
  * Not computable yet (no income/spend history) renders a quiet "—" with the
  * expectation stated — a first-run dashboard of unexplained zeros is worse
  * than an honest "not yet".
@@ -48,20 +53,18 @@ export function AgeOfMoneyTile({ age, ages, onDrill }: {
         </span>
       </div>
 
-      {ages.length > 0 && (
-        <div className="mt-2 flex h-8 items-end gap-1" aria-hidden data-testid="aom-spark">
-          {ages.map((a, i) => (
-            <div
-              key={a.id}
-              className="dither-mask w-full max-w-4 rounded-[var(--radius)]"
-              style={{
-                height: `${Math.max(Math.round((a.ageDays / maxAge) * 32), 2)}px`,
-                background: i === ages.length - 1 ? "var(--color-fg)" : "var(--color-muted)",
-              }}
-            />
-          ))}
-        </div>
-      )}
+      <div className="mt-2 flex h-8 items-end gap-1" aria-hidden data-testid="aom-spark">
+        {ages.map((a, i) => (
+          <div
+            key={a.id}
+            className="dither-mask w-full max-w-4 rounded-[var(--radius)]"
+            style={{
+              height: `${Math.max(Math.round((a.ageDays / maxAge) * 32), 2)}px`,
+              background: i === ages.length - 1 ? "var(--color-fg)" : "var(--color-muted)",
+            }}
+          />
+        ))}
+      </div>
 
       <p className="mt-2 text-sm text-muted">
         How many days money sits between arriving and being spent — higher means you're living on older money.

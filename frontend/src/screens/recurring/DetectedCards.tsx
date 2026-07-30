@@ -4,7 +4,7 @@ import { Card } from "../../components/ui/Card";
 import { Money } from "../../components/Money";
 import { cadenceLabel, provenanceLine, scheduleName } from "../../lib/recurring";
 import { shortDate } from "../../lib/format";
-import type { Schedule } from "./api";
+import type { Schedule } from "../../api/types";
 
 /**
  * Detector proposals as confirm/dismiss triage cards — the Review deck's
@@ -51,7 +51,7 @@ export function DetectedCards({ proposals, categories, onConfirm, onDismiss, onS
                 onClick={() => onShowMatches(s)}
                 className="press w-full min-h-11 -my-1 flex items-center justify-between gap-2 text-left"
               >
-                <span className="font-mono text-[11px] tracking-[0.04em] text-fg tnum">
+                <span className="font-mono text-[10px] tracking-[0.04em] text-fg tnum">
                   {provenanceLine(s.provenance, s.amount_fils)}
                   {s.provenance.price_stepped ? " · price stepped" : ""}
                 </span>

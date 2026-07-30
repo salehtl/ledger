@@ -3,6 +3,7 @@
 // wire types it needs are declared here so screens/api can share them without
 // the lib importing from a screen dir.
 
+import { dirhamsToFils } from "./format";
 import { formatFils } from "./money";
 
 /** Detector provenance persisted on detected schedules (read-only). */
@@ -14,15 +15,20 @@ export interface ProvenanceInfo {
   price_stepped?: boolean;
 }
 
-/** POST/PUT /api/scheduled body (user-editable fields only). */
+/** POST/PUT /api/scheduled body. PUT is a full replace server-side, so
+ *  fields the form doesn't edit (tolerance_pct, account_id) must still ride
+ *  along on edits or the server resets them to defaults. */
 export interface SchedulePayload {
   merchant: string;
   label?: string;
   amount_fils: number;
+  /** Omitted on create — the server defaults to the detector's ±10%. */
+  tolerance_pct?: number;
   interval_days: number;
   next_due: string; // YYYY-MM-DD
   direction?: string;
   category_id?: number | null;
+  account_id?: number | null;
 }
 
 /** Canonical cadence phrasing for the snap intervals the detector proposes.
@@ -146,6 +152,10 @@ export interface ScheduleFormInput {
   nextDue: string;        // YYYY-MM-DD
   direction: string;
   categoryId: number | null;
+  /** Round-tripped from the schedule being edited (the form never edits
+   *  these, but PUT is a full replace). Leave undefined on create. */
+  tolerancePct?: number;
+  accountId?: number | null;
 }
 
 export type ScheduleBuildResult =
@@ -183,16 +193,16 @@ export function buildSchedulePayload(input: ScheduleFormInput): ScheduleBuildRes
     return { ok: false, error: "Choose debit or credit." };
   }
 
-  return {
-    ok: true,
-    payload: {
-      merchant,
-      label: input.label.trim(),
-      amount_fils: Math.round(aed * 100),
-      interval_days: interval,
-      next_due: input.nextDue,
-      direction: input.direction,
-      category_id: input.categoryId,
-    },
+  const payload: SchedulePayload = {
+    merchant,
+    label: input.label.trim(),
+    amount_fils: dirhamsToFils(aed),
+    interval_days: interval,
+    next_due: input.nextDue,
+    direction: input.direction,
+    category_id: input.categoryId,
   };
+  if (input.tolerancePct !== undefined) payload.tolerance_pct = input.tolerancePct;
+  if (input.accountId !== undefined) payload.account_id = input.accountId;
+  return { ok: true, payload };
 }

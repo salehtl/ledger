@@ -3,7 +3,7 @@ import { Pill } from "../../components/ui/Pill";
 import { Money } from "../../components/Money";
 import { cadenceLabel, scheduleName } from "../../lib/recurring";
 import { shortDate } from "../../lib/format";
-import type { Schedule } from "./api";
+import type { Schedule } from "../../api/types";
 
 /**
  * The full schedule inventory (active + paused), one calm row each: name,
@@ -28,7 +28,6 @@ export function ScheduleList({ schedules, onOpen }: {
               <button
                 type="button"
                 onClick={() => onOpen(s)}
-                aria-label={`Edit ${scheduleName(s)}`}
                 className="press w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
               >
                 <div className="min-w-0 flex-1">

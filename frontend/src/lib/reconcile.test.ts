@@ -228,8 +228,8 @@ describe("discrepancy causes", () => {
   it("hints speak plainly with amounts in words", () => {
     expect(cashHint(result({ delta_fils: -18000 }))).toContain("180.00 may have left as cash");
     expect(cashHint(result({ delta_fils: 4200 }))).toContain("42.00 may be a deposit or refund");
-    expect(fxHint(1)).toContain("1 foreign transaction await");
-    expect(fxHint(3)).toContain("3 foreign transactions");
+    expect(fxHint(1)).toContain("1 foreign transaction awaits an FX rate");
+    expect(fxHint(3)).toContain("3 foreign transactions await an FX rate");
   });
 
   it("adjustLabel prints the absolute delta", () => {

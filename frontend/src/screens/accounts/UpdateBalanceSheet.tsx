@@ -7,16 +7,18 @@ import {
   agoLabel,
   balanceLabel,
   composeStated,
+  signedAmountText,
   type AccountBalanceSummary,
   type Sign,
 } from "../../lib/reconcile";
-import { usePostBalance } from "./api";
+import { usePostBalance } from "../../api/hooks";
 import { BalanceField } from "./BalanceField";
 
 /**
  * Plain balance update for tracking accounts (investments, property): no
  * reconcile math, just a new point on the net-worth line. Budget accounts use
- * the check-in sheet instead.
+ * the check-in sheet instead. Opens prefilled with the last known balance —
+ * an update is usually a small edit of it (P6: edit forms open pre-filled).
  */
 export function UpdateBalanceSheet({ account, onClose }: {
   account: AccountBalanceSummary;
@@ -27,15 +29,21 @@ export function UpdateBalanceSheet({ account, onClose }: {
   const noteId = useId();
   const toast = useToast();
   const post = usePostBalance(a.account_id);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(
+    a.has_checkin && a.anchor_fils != null ? signedAmountText(a.anchor_fils) : "",
+  );
   const [sign, setSign] = useState<Sign>((a.computed_fils ?? 0) < 0 ? "neg" : "pos");
+  const [touched, setTouched] = useState(false);
   const [note, setNote] = useState("");
 
   const balance = composeStated(text, sign);
-  const showParseError = text.trim() !== "" && balance === null;
+  // Only after blur or a submit attempt — never mid-keystroke. The
+  // disabled-submit guard below stays live throughout.
+  const showParseError = touched && text.trim() !== "" && balance === null;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    setTouched(true);
     if (balance === null || post.isPending) return;
     post.mutate(
       { balance_fils: balance, note: note.trim() },
@@ -62,6 +70,7 @@ export function UpdateBalanceSheet({ account, onClose }: {
           sign={sign}
           onSign={setSign}
           autoFocus
+          onBlur={() => setTouched(true)}
           error={showParseError ? "Enter an amount like 50,000.00." : undefined}
           helper={
             a.has_checkin && a.anchor_as_of

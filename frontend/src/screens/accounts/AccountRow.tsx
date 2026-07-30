@@ -21,7 +21,8 @@ export function AccountRow({ account, onOpen, now }: {
     <button
       type="button"
       onClick={() => onOpen(a)}
-      aria-label={`Open ${a.name}`}
+      // No aria-label override: the visible content (name, balance, freshness)
+      // is the accessible name, so assistive tech hears what sighted users see.
       data-kind={a.kind}
       data-checkin={a.has_checkin ? "anchored" : "none"}
       className="w-full text-left px-4 py-3 press"

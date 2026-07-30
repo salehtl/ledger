@@ -7,6 +7,7 @@ import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { Skeleton } from "../../components/Skeleton";
 import { useToast } from "../../components/Toast";
 import { formatFils } from "../../lib/money";
+import { startPausableTimeout, type PausableTimeout } from "../../lib/pausableTimeout";
 import { todayISO } from "../../lib/projectMath";
 import { recentlyPaid, scheduleName, splitUpcoming, upcomingDebitTotal, type SchedulePayload } from "../../lib/recurring";
 import { DetectedCards } from "./DetectedCards";
@@ -17,28 +18,30 @@ import { RecentlyPaidList, UpcomingFeed } from "./UpcomingFeed";
 import {
   useCategories, useCreateSchedule, useDeleteSchedule, useSchedules,
   useScheduleAction, useTxnIndex, useUpcoming, useUpdateSchedule,
-  type Schedule, type UpcomingItem,
-} from "./api";
+} from "../../api/hooks";
+import type { Schedule, UpcomingItem } from "../../api/types";
 
 type WindowDays = "7" | "14" | "30";
 
-/** How long a dismissal stays undoable before the write is sent. Matches the
- *  toast's own 5s auto-dismiss so "Undo" never outlives the ability to undo. */
-const DISMISS_COMMIT_MS = 5000;
+/** How long a confirm/dismiss stays undoable before the write is sent.
+ *  Matches the toast's own 5s auto-dismiss so "Undo" never outlives the
+ *  ability to undo; both clocks pause while the tab is hidden. */
+const PROPOSAL_COMMIT_MS = 5000;
 
 /**
  * Recurring money flow: detected proposals to triage, the upcoming bill feed
  * (missed + price-change aware), recently paid receipts, and the full
- * schedule inventory. Dismissals commit after an undo window — the API has no
- * "back to proposed" transition, so the honest undo is to not send the write
- * until the toast expires.
+ * schedule inventory. Confirms and dismissals commit after an undo window —
+ * the API has no "back to proposed" transition, so the honest undo is to not
+ * send the write until the toast expires (P36).
  */
 export function RecurringScreen() {
   const schedules = useSchedules();
   const [windowDays, setWindowDays] = useState<WindowDays>("14");
   const upcoming = useUpcoming(Number(windowDays));
   const categories = useCategories();
-  const txnIndex = useTxnIndex();
+  const [matches, setMatches] = useState<{ title: string; txnIds: number[] } | null>(null);
+  const txnIndex = useTxnIndex(matches != null);
   const action = useScheduleAction();
   const create = useCreateSchedule();
   const update = useUpdateSchedule();
@@ -47,48 +50,54 @@ export function RecurringScreen() {
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Schedule | null>(null);
-  const [matches, setMatches] = useState<{ title: string; txnIds: number[] } | null>(null);
-  // Dismissals pending their undo window: hidden from the list immediately,
-  // written to the API only when the window closes.
-  const [pendingDismiss, setPendingDismiss] = useState<ReadonlySet<number>>(new Set());
-  const dismissTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  // Proposals pending their undo window (confirm or dismiss): hidden from the
+  // list immediately, written to the API only when the window closes.
+  const [pendingProposals, setPendingProposals] = useState<ReadonlySet<number>>(new Set());
+  const commitTimers = useRef(new Map<number, PausableTimeout>());
 
   const all = schedules.data ?? [];
-  const proposals = all.filter((s) => s.status === "proposed" && !pendingDismiss.has(s.id));
+  const proposals = all.filter((s) => s.status === "proposed" && !pendingProposals.has(s.id));
   const tracked = all.filter((s) => s.status === "active" || s.status === "paused");
   const paid = recentlyPaid(all, todayISO());
-  const upcomingItems = (upcoming.data?.items ?? []).filter((s) => !pendingDismiss.has(s.id));
+  const upcomingItems = (upcoming.data?.items ?? []).filter((s) => !pendingProposals.has(s.id));
   const { overdue, due } = splitUpcoming(upcomingItems);
   const activeCategories = (categories.data ?? []).filter((c) => c.IsActive && c.Kind !== "excluded");
 
-  const confirmProposal = (s: Schedule) => {
-    action.mutate({ id: s.id, action: "confirm" }, {
-      onSuccess: () => show({ message: `Now tracking ${scheduleName(s)}`, tone: "success" }),
-      onError: () => show({ message: "Couldn't confirm the schedule", tone: "error" }),
-    });
-  };
-
-  const dismissProposal = (s: Schedule) => {
-    setPendingDismiss((prev) => new Set(prev).add(s.id));
-    const timer = setTimeout(() => {
-      dismissTimers.current.delete(s.id);
-      action.mutate({ id: s.id, action: "dismiss" }, {
-        onSettled: () => setPendingDismiss((prev) => { const n = new Set(prev); n.delete(s.id); return n; }),
-        onError: () => show({ message: `Couldn't dismiss ${scheduleName(s)}`, tone: "error" }),
+  /** Shared delayed-commit undo path for both proposal verdicts: hide the
+   *  card now, toast with Undo, send the write only when the window closes.
+   *  The timer pauses with the tab so it stays in lockstep with the toast. */
+  const queueProposalAction = (s: Schedule, act: "confirm" | "dismiss", toast: Parameters<typeof show>[0]) => {
+    setPendingProposals((prev) => new Set(prev).add(s.id));
+    const timer = startPausableTimeout(() => {
+      commitTimers.current.delete(s.id);
+      action.mutate({ id: s.id, action: act }, {
+        onSettled: () => setPendingProposals((prev) => { const n = new Set(prev); n.delete(s.id); return n; }),
+        onError: () => show({
+          message: act === "confirm" ? `Couldn't confirm ${scheduleName(s)}` : `Couldn't dismiss ${scheduleName(s)}`,
+          tone: "error",
+        }),
       });
-    }, DISMISS_COMMIT_MS);
-    dismissTimers.current.set(s.id, timer);
+    }, PROPOSAL_COMMIT_MS);
+    commitTimers.current.set(s.id, timer);
     show({
-      message: `Dismissed ${scheduleName(s)} — it won't be proposed again`,
+      ...toast,
       action: {
         label: "Undo",
         onAction: () => {
-          const t = dismissTimers.current.get(s.id);
-          if (t) { clearTimeout(t); dismissTimers.current.delete(s.id); }
-          setPendingDismiss((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+          const t = commitTimers.current.get(s.id);
+          if (t) { t.cancel(); commitTimers.current.delete(s.id); }
+          setPendingProposals((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
         },
       },
     });
+  };
+
+  const confirmProposal = (s: Schedule) => {
+    queueProposalAction(s, "confirm", { message: `Now tracking ${scheduleName(s)}`, tone: "success" });
+  };
+
+  const dismissProposal = (s: Schedule) => {
+    queueProposalAction(s, "dismiss", { message: `Dismissed ${scheduleName(s)} — it won't be proposed again` });
   };
 
   const showProposalMatches = (s: Schedule) => {

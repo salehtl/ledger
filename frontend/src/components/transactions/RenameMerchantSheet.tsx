@@ -6,8 +6,8 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Field";
 import { SectionLabel } from "../ui/SectionLabel";
 import type { TxnDepth } from "../../lib/txSplit";
-import { affectedCount, renameTarget, type DepthRule } from "./merchantRename";
-import { currentDisplayName, useRenameMerchant } from "./api";
+import { affectedCount, currentDisplayName, renameTarget, type DepthRule } from "./merchantRename";
+import { useRenameMerchant } from "../../api/hooks";
 
 /**
  * Rename a merchant once, everywhere: the clean name is written onto the rule
