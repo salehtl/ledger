@@ -132,6 +132,51 @@ Note: `cmd/ledger` (1 src, 0 tests) and `internal/web` (embed shim, 0 tests) are
 - **Disposition:** VERIFIED-STABLE — no action, per the brief's "do NOT rewrite passing tests" rule. Both sleeps are acceptable as-is: #1 is a settle-after-async-kick, not a race guess; #2 is already condition-based (the raw `time.Sleep` line the brief flagged is only the poll-loop's tick, not the wait mechanism itself).
 
 ## Task 4 — Frontend order-independence & mock hygiene
+
+### [SEVERITY: info] Baseline: all three required shuffle seeds already pass pre-fix
+- **Where:** full frontend suite (163 files / 1292 tests, `singleFork`, `unstubGlobals: true` already in place from the prior fetch-stub-leak fix).
+- **What:** Per the brief, ran the three required shuffle seeds *before* touching config, to measure whether the `vi.spyOn`/`vi.useFakeTimers` leak channels the brief calls out actually manifest as failures under these specific orderings.
+- **Evidence:**
+  ```
+  $ bunx vitest run --sequence.shuffle --sequence.seed=1    → 163 passed (163) / 1292 passed (1292), 25.02s
+  $ bunx vitest run --sequence.shuffle --sequence.seed=42   → 163 passed (163) / 1292 passed (1292), 25.43s
+  $ bunx vitest run --sequence.shuffle --sequence.seed=2026 → 163 passed (163) / 1292 passed (1292), 24.43s
+  ```
+  No failing file in any of the three seeds. Unlike the `stubGlobal` leak (which the prior fix's brief said broke 4 ProjectsFlow tests under reordering before `unstubGlobals` was added), the `spyOn`/timer channels didn't happen to collide under seeds 1/42/2026 specifically — that is a property of these three orderings, not proof the channels are safe in general (see next finding).
+- **Disposition:** VERIFIED (measurement only, no code change) — no known-failing seed exists to fix, but per the brief the systemic `restoreMocks` hardening proceeds anyway since the leak channel is real and latent (below), just not triggered by these three seeds.
+
+### [SEVERITY: low] Fake-timer cleanup audited across all 6 flagged files — no offenders found
+- **Where:** `src/components/Toast.test.tsx`, `src/lib/pausableTimeout.test.ts`, `src/hooks/useLiveEvents.test.ts`, `src/components/ui/Dialog.test.tsx`, `src/lib/liveInvalidation.test.ts`, `src/screens/recurring/RecurringScreen.test.tsx`.
+- **What:** Grepped each file for `useFakeTimers`/`useRealTimers` pairing. All 6 already restore real timers: 5 files pair every `beforeEach(() => vi.useFakeTimers())` with an `afterEach(() => vi.useRealTimers())`; `RecurringScreen.test.tsx` calls `vi.useFakeTimers()` inline in 5 separate tests, each wrapped in `try { ... } finally { vi.useRealTimers(); }` (the file's own comment at line 71 explains it deliberately skips `vi.restoreAllMocks()` there because the shared setup installs `window.matchMedia` in `beforeEach` and a blanket restore would strip it — each test installs its own fresh spies instead of relying on restoration between tests in that file).
+- **Evidence:** `grep -n "useFakeTimers\|useRealTimers" <file>` on all 6 files — every `useFakeTimers` call site has a matching `useRealTimers` in an `afterEach` or a `finally` block reachable on both success and failure paths.
+- **Disposition:** VERIFIED — no action. The brief flagged this as a plausible leak channel to check mechanically; audit found the channel already closed in all 6 files, so no `afterEach(() => vi.useRealTimers())` insertion was needed.
+
+### [SEVERITY: medium] Systemic `vi.spyOn` restoration was still only per-file, not config-enforced
+- **Where:** `frontend/vite.config.ts` `test` block (pre-fix); 23 files use `vi.spyOn` across the shared `singleFork` process.
+- **What:** Only `unstubGlobals: true` (stubbed globals, e.g. `fetch`) was enforced at the config level. `vi.spyOn` restoration relied on each file remembering its own `vi.restoreAllMocks()`/`afterEach`, same failure mode as the pre-`unstubGlobals` fetch-stub leak: a spy left mocked in one file (e.g. `vi.spyOn(client, "postJSON").mockResolvedValue(...)`) can silently satisfy or corrupt an assertion in a later file that expects the real implementation or a different mock, and whether that collision fires depends entirely on scheduling order. Independently verified the brief's precondition for the fix's safety: `grep -rl "vi.spyOn" src --include="*.test.ts*"` → 23 files; none of those 23 also contain `beforeAll` (checked individually), so no file relies on a spy installed once for a whole suite that `restoreMocks`'s automatic per-test restore would prematurely tear down.
+- **Evidence:** Applied the fix (below) and re-ran full verification — straight run and all three shuffle seeds green at 163/163 files, 1292/1292 tests, no new failures, no test needed to be changed to accommodate `restoreMocks`.
+- **Disposition:** FIXED in this commit — `frontend/vite.config.ts` `test` block gains:
+  ```typescript
+  unstubGlobals: true,
+  // Same reasoning for spies: 23 files vi.spyOn(api, …) and only some
+  // restore. No file spies in beforeAll (verified), so per-test restoration
+  // is safe. mocks created with vi.fn() in module scope are untouched.
+  restoreMocks: true,
+  ```
+
+### [SEVERITY: info] Post-fix verification: straight + all 3 shuffle seeds green
+- **Where:** full frontend suite, post `restoreMocks: true`.
+- **What:** Re-ran the brief's Step 4 verification matrix.
+- **Evidence:**
+  ```
+  $ bun run test                                            → 163 passed (163) / 1292 passed (1292), 53.91s
+  $ bunx vitest run --sequence.shuffle --sequence.seed=1    → 163 passed (163) / 1292 passed (1292), 43.81s
+  $ bunx vitest run --sequence.shuffle --sequence.seed=42   → 163 passed (163) / 1292 passed (1292), 42.79s
+  $ bunx vitest run --sequence.shuffle --sequence.seed=2026 → 163 passed (163) / 1292 passed (1292), 41.32s
+  ```
+  No seed regressed; no test file needed modification to tolerate `restoreMocks`. (Run times roughly doubled vs. pre-fix — consistent with `restoreMocks` doing real per-test teardown work across 23 spied files rather than a no-op.)
+- **Disposition:** VERIFIED — no known-failing seed remains. `fileParallelism: false` / `singleFork` left untouched per binding constraint.
+
 ## Task 5 — Time & timezone dependence
 ## Task 6 — Assertion quality
 ## Task 7 — Coverage map
