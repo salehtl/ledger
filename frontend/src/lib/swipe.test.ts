@@ -10,6 +10,9 @@ import {
   commitDirection,
   COMMIT_PX,
   COMMIT_VELOCITY,
+  FLICK_MIN_DISTANCE,
+  quantizePreview,
+  PREVIEW_STEPS,
   loadSwipeConfig,
   saveSwipeConfig,
   SWIPE_THRESHOLD,
@@ -151,9 +154,37 @@ describe("commitDirection", () => {
     expect(commitDirection(10, COMMIT_PX + 1, 0, 0)).toBe("down");
   });
 
+  // Travel is expressed against FLICK_MIN_DISTANCE rather than as a literal
+  // 20px, so these state the relationship ("a flick just past the
+  // intentionality floor commits") instead of a number that silently stops
+  // meaning anything if the floor moves.
   it("commits a short flick on velocity alone", () => {
-    expect(commitDirection(20, 0, COMMIT_VELOCITY + 1, 0)).toBe("right");
-    expect(commitDirection(0, -20, 0, -(COMMIT_VELOCITY + 1))).toBe("up");
+    expect(commitDirection(FLICK_MIN_DISTANCE + 1, 0, COMMIT_VELOCITY + 1, 0)).toBe("right");
+    expect(commitDirection(0, -(FLICK_MIN_DISTANCE + 1), 0, -(COMMIT_VELOCITY + 1))).toBe("up");
+  });
+
+  it("ignores a fast twitch that never travelled far enough to be intentional", () => {
+    // Framer's PanSession starts a drag at ~3px and reports info.velocity over
+    // the last ~100ms, so a jittery tap easily clears COMMIT_VELOCITY on a few
+    // pixels of travel — and it cannot fall back to the tap path either,
+    // because onDragStart has already armed SwipeCard's `dragged` guard. Left
+    // ungated, a 5px twitch opened the sort panel on a card the user never
+    // meant to touch.
+    expect(commitDirection(5, 3, 600, 0)).toBeNull();
+    expect(commitDirection(FLICK_MIN_DISTANCE - 1, 0, COMMIT_VELOCITY + 1, 0)).toBeNull();
+    expect(commitDirection(FLICK_MIN_DISTANCE, 0, COMMIT_VELOCITY + 1, 0)).toBe("right");
+  });
+
+  it("measures the floor per axis, so travel on one axis cannot license the other", () => {
+    // 30px down and 5px sideways, thrown sideways fast: the hand went down.
+    expect(commitDirection(5, 30, 600, 0)).toBeNull();
+    expect(commitDirection(30, 5, 0, 600)).toBeNull();
+  });
+
+  it("ignores velocity pointing the opposite way to the travel", () => {
+    // A card flung back toward centre is fast, but it is heading home.
+    expect(commitDirection(-30, 0, 700, 0)).toBeNull();
+    expect(commitDirection(0, 30, 0, -700)).toBeNull();
   });
 
   it("returns null below both thresholds", () => {
@@ -163,5 +194,35 @@ describe("commitDirection", () => {
   it("picks the axis with the larger travel when both clear the threshold", () => {
     expect(commitDirection(COMMIT_PX + 50, COMMIT_PX + 1, 0, 0)).toBe("right");
     expect(commitDirection(COMMIT_PX + 1, COMMIT_PX + 50, 0, 0)).toBe("down");
+  });
+});
+
+describe("quantizePreview", () => {
+  it("keeps the ends exact", () => {
+    expect(quantizePreview(0)).toBe(0);
+    expect(quantizePreview(1)).toBe(1);
+  });
+
+  it("snaps to the nearest step", () => {
+    expect(quantizePreview(0.04)).toBeCloseTo(0);
+    expect(quantizePreview(0.06)).toBeCloseTo(0.1);
+    expect(quantizePreview(0.44)).toBeCloseTo(0.4);
+  });
+
+  it("never moves a value by more than half a step", () => {
+    for (let i = 0; i <= 1000; i++) {
+      const p = i / 1000;
+      expect(Math.abs(quantizePreview(p) - p)).toBeLessThanOrEqual(0.5 / PREVIEW_STEPS + 1e-9);
+    }
+  });
+
+  it("collapses a whole drag into at most PREVIEW_STEPS + 1 distinct values", () => {
+    // This is the point of the function, and the only part a reader could get
+    // wrong: SwipeCard reports preview strength to SwipeDeck, which writes it
+    // into React state, so one value per pointer frame meant ~60 SwipeDeck
+    // renders a second (four EdgeRails, the wash, the progress bar and the
+    // card, none memoized). A 200-frame drag must not produce 200 renders.
+    const perFrame = Array.from({ length: 200 }, (_, i) => quantizePreview(i / 199));
+    expect(new Set(perFrame).size).toBeLessThanOrEqual(PREVIEW_STEPS + 1);
   });
 });
