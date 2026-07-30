@@ -57,20 +57,23 @@ export function largestSplitCategory(splits: TxnSplit[] | undefined): number | n
 export type RenameTarget =
   | { kind: "rule"; rule: DepthRule }
   | { kind: "create"; categoryId: number }
-  | { kind: "blocked" };
+  | { kind: "blocked"; reason: "no-merchant" | "uncategorized" };
 
 /**
  * Where a rename for this transaction's merchant would land: an existing
  * matching rule; a new contains-rule (needs a category — the transaction's
- * own, else its largest split line's); or nowhere yet (uncategorized with no
- * rule — categorize first, the write-back rule will carry the name).
+ * own, else its largest split line's); or nowhere. Blocked splits two ways:
+ * an empty merchant string can never match (or seed) a rule, so renaming is
+ * structurally impossible; an uncategorized one just needs categorizing first
+ * (the write-back rule will carry the name).
  */
 export function renameTarget(rules: DepthRule[], txn: TxnDepth): RenameTarget {
+  if (!txn.MerchantRaw || txn.MerchantRaw.trim() === "") return { kind: "blocked", reason: "no-merchant" };
   const rule = matchingRule(rules, txn.MerchantRaw);
   if (rule) return { kind: "rule", rule };
   const categoryId = txn.CategoryID ?? largestSplitCategory(txn.Splits);
   if (categoryId != null) return { kind: "create", categoryId };
-  return { kind: "blocked" };
+  return { kind: "blocked", reason: "uncategorized" };
 }
 
 /** The display name a merchant currently resolves to from a rule set. */
