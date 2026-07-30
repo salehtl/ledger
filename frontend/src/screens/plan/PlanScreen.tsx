@@ -1,6 +1,150 @@
-import { type Scope } from "../../lib/scope";
+import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
+import { Money } from "../../components/Money";
+import { Skeleton } from "../../components/Skeleton";
+import { Card } from "../../components/ui/Card";
+import { SectionLabel } from "../../components/ui/SectionLabel";
+import { AlertTriangle, Inbox } from "../../components/ui/PixelIcon";
+import { useToast } from "../../components/Toast";
+import { BUCKET_LABEL, bucketColor } from "../../lib/insights";
+import { insightsFocus, type Scope } from "../../lib/scope";
+import {
+  autoAssignMessage,
+  claimsByCategory,
+  groupByBucket,
+  monthProgress,
+  monthTitle,
+  undoAssignments,
+  type Envelope,
+} from "../../lib/envelope";
+import { useAssignEnvelopes, useAutoAssign, useEnvelopes, useUpcoming } from "./api";
+import { ReadyToAssignBanner } from "./ReadyToAssignBanner";
+import { EnvelopeRow } from "./EnvelopeRow";
+import { AssignSheet } from "./AssignSheet";
+import { MoveMoneySheet } from "./MoveMoneySheet";
+import { TargetSheet } from "./TargetSheet";
 
-// v3 scaffold stub — owned and replaced by the plan-envelopes piece.
-export function PlanScreen(_props: { scope: Scope }) {
-  return <div className="text-muted text-sm font-mono">Plan — coming in v3.</div>;
+type SheetState =
+  | { kind: "assign"; categoryId: number }
+  | { kind: "move"; toId: number }
+  | { kind: "target"; categoryId: number }
+  | null;
+
+/**
+ * The Plan screen: the month's envelope decision surface. Ready-to-Assign on
+ * top, then every spending category grouped under its 50/30/20 bucket. Rows
+ * with money or a target get the full envelope treatment; the rest ride the
+ * jar math untouched — depth is opt-in, not a wall.
+ */
+export function PlanScreen({ scope }: { scope: Scope }) {
+  const focus = insightsFocus(scope);
+  const month = focus.period;
+  const envelopes = useEnvelopes(month);
+  const upcoming = useUpcoming();
+  const autoAssign = useAutoAssign(month);
+  const assign = useAssignEnvelopes(month);
+  const toast = useToast();
+  const [sheet, setSheet] = useState<SheetState>(null);
+
+  // isPending, not isLoading: the persisted-cache provider leaves restoring
+  // queries pending-but-not-fetching, where isLoading lies (false, no data).
+  if (envelopes.isPending) return <Skeleton rows={8} />;
+  if (envelopes.isError) {
+    return <EmptyState icon={AlertTriangle} title="Couldn't load your plan" hint="Check your connection and try again." />;
+  }
+
+  const s = envelopes.data;
+  const groups = groupByBucket(s.envelopes);
+  const pace = monthProgress(month);
+  const claims = claimsByCategory(upcoming.data?.items ?? []);
+
+  const byId = (id: number): Envelope | undefined => s.envelopes.find((e) => e.category_id === id);
+  const sheetEnvelope =
+    sheet && sheet.kind !== "move" ? byId(sheet.categoryId) : sheet ? byId(sheet.toId) : undefined;
+
+  const runAutoAssign = () => {
+    autoAssign.mutate(undefined, {
+      onSuccess: (res) => {
+        const undo = undoAssignments(res.allocations, res.summary);
+        toast.show({
+          message: autoAssignMessage(res.allocations),
+          action: undo.length > 0 ? { label: "Undo", onAction: () => assign.mutate(undo) } : undefined,
+        });
+      },
+      onError: (err) => toast.show({ message: `Couldn't auto-assign — ${err.message}`, tone: "error" }),
+    });
+  };
+
+  if (s.envelopes.length === 0) {
+    return (
+      <EmptyState
+        icon={Inbox}
+        title="No envelopes yet"
+        hint="Add spending categories in Settings and they show up here, ready to fund."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <ReadyToAssignBanner summary={s} onAutoAssign={runAutoAssign} autoAssignPending={autoAssign.isPending} />
+
+      {focus.note !== "" && (
+        <p className="px-1 font-mono text-[10px] tracking-[0.04em] text-muted">
+          Showing {monthTitle(month)} — {focus.note}
+        </p>
+      )}
+
+      {groups.map((g) => (
+        <section key={g.bucket} className="space-y-2">
+          <div className="flex items-baseline justify-between px-1">
+            <SectionLabel as="h2" className="flex items-center gap-2">
+              <span aria-hidden className="inline-block w-2.5 h-2.5 rounded-[var(--radius)]" style={{ background: bucketColor(g.bucket) }} />
+              {BUCKET_LABEL[g.bucket] ?? g.bucket}
+            </SectionLabel>
+            <span className="font-mono text-[10px] tracking-[0.04em] text-muted tnum">
+              available <Money fils={g.available_fils} />
+            </span>
+          </div>
+          <Card className="!p-0">
+            <div className="divide-y divide-border">
+              {g.envelopes.map((e) => (
+                <EnvelopeRow
+                  key={e.category_id}
+                  envelope={e}
+                  claim={claims.get(e.category_id)}
+                  pace={pace}
+                  onOpen={(env) => setSheet({ kind: "assign", categoryId: env.category_id })}
+                />
+              ))}
+            </div>
+          </Card>
+        </section>
+      ))}
+
+      {sheet?.kind === "assign" && sheetEnvelope && (
+        <AssignSheet
+          envelope={sheetEnvelope}
+          claim={claims.get(sheetEnvelope.category_id)}
+          month={month}
+          canMoveIn={s.envelopes.some((e) => e.category_id !== sheetEnvelope.category_id && e.available_fils > 0)}
+          onClose={() => setSheet(null)}
+          onMoveMoney={() => setSheet({ kind: "move", toId: sheetEnvelope.category_id })}
+          onEditTarget={() => setSheet({ kind: "target", categoryId: sheetEnvelope.category_id })}
+        />
+      )}
+      {sheet?.kind === "move" && sheetEnvelope && (
+        <MoveMoneySheet
+          envelopes={s.envelopes}
+          toId={sheetEnvelope.category_id}
+          claim={claims.get(sheetEnvelope.category_id)}
+          month={month}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "target" && sheetEnvelope && (
+        <TargetSheet envelope={sheetEnvelope} month={month} onClose={() => setSheet(null)} />
+      )}
+    </div>
+  );
 }
