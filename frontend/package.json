@@ -40,6 +40,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/coverage-v8": "2.1.9",
     "jsdom": "^24.1.0",
     "pixelarticons": "^2.2.0",
     "playwright": "^1.62.0",
