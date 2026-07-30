@@ -22,6 +22,7 @@ import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
 import { ProjectsFlow } from "../screens/projects/ProjectsFlow";
 import { PlanScreen } from "../screens/plan/PlanScreen";
 import { RecurringScreen } from "../screens/recurring/RecurringScreen";
+import { ReportsScreen } from "../screens/reports/ReportsScreen";
 import { AccountsScreen } from "../screens/accounts/AccountsScreen";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 
@@ -38,7 +39,8 @@ const TITLES: Record<TabId, string> = {
 type Overlay =
   | { kind: "settings"; intent?: SettingsIntent }
   | { kind: "accounts" }
-  | { kind: "recurring" };
+  | { kind: "recurring" }
+  | { kind: "reports" };
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
@@ -100,7 +102,16 @@ export function AppShell() {
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
         <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
-          {tab === "home" && <Home scope={scope} onOpenProject={openProject} onOpenProjects={openProjects} />}
+          {tab === "home" && (
+            <Home
+              scope={scope}
+              onOpenProject={openProject}
+              onOpenProjects={openProjects}
+              onOpenPlan={() => setTab("plan")}
+              onOpenRecurring={() => pushOverlay({ kind: "recurring" })}
+              onOpenReports={() => pushOverlay({ kind: "reports" })}
+            />
+          )}
           {tab === "plan" && <PlanScreen scope={scope} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
@@ -122,6 +133,10 @@ export function AppShell() {
         ) : o.kind === "accounts" ? (
           <SettingsPage key={`accounts-${i}`} title="Accounts" onClose={popOverlay}>
             <AccountsScreen />
+          </SettingsPage>
+        ) : o.kind === "reports" ? (
+          <SettingsPage key={`reports-${i}`} title="Reports" onClose={popOverlay}>
+            <ReportsScreen focus="networth" />
           </SettingsPage>
         ) : (
           <SettingsPage key={`recurring-${i}`} title="Recurring" onClose={popOverlay}>
