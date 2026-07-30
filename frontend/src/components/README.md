@@ -209,6 +209,20 @@ living catalog; update the story in the same commit as the component.
 - **Action footer:** wrap bottom actions in `DialogFooter`. It stays `sticky`
   at the sheet bottom with an opaque surface, safe-area padding, and `z-20`, so
   long content scrolls underneath without hiding the primary action.
+- **Bottom inset:** exactly one of the panel and the footer pays for the
+  home-indicator strip, via the shared `--sheet-inset-bottom` variable —
+  `.sheet-panel:has([data-dialog-footer])` zeroes the panel's padding when a
+  footer is present. `sticky bottom: 0` resolves against the scroll container's
+  *content* box, so padding-bottom on the panel lifts the footer up over the
+  last row of content. Don't add padding-bottom to a sheet panel, and don't
+  "compensate" with a negative margin on the footer — that is what caused the
+  overlap (invisible everywhere `env(safe-area-inset-bottom)` is 0, which is
+  every desktop browser and both headless engines).
+- **Background scroll:** Dialog freezes every scrollable ancestor while it is
+  open, and its scrim is `touch-none`. A `position: fixed` overlay is attached
+  to the viewport, so touch-scroll on it chains to the *root* scroller and not
+  to its DOM ancestor — `<main>`'s `overscroll-contain` never sees the gesture.
+  Don't build an overlay outside Dialog; it will let the page slide behind it.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
@@ -376,9 +390,15 @@ living catalog; update the story in the same commit as the component.
 
 ### RollingNumber
 - **Purpose:** odometer display for one hero number — per-digit 0–9 wheels
-  roll on mount (spin-up from zero) and on value change; scales down (never
-  up) instead of overflowing its container. Pass pre-formatted text
+  roll up from zero when the number first appears; scales down (never up)
+  instead of overflowing its container. Pass pre-formatted text
   (`formatFils(...)`); geometry lives in `lib/rollingNumber`.
+- **Revisions snap, they don't roll.** Every figure sharing the card (budget,
+  remaining, projection, the pace badge) is plain text that updates in the same
+  commit, so a 650ms roll left the hero contradicting its own card and walking
+  through amounts that were never real — a cache-restore repaint showed
+  "39,800.31 spent … 6,519.19 left of 52,034.00". Only the spin-up animates,
+  because a wheel climbing from zero has no prior figure to disagree with.
 - **Use when:** a single prominent live number (Home hero).
 - **Don't use when:** lists/rows of amounts (→ `Money` — rolling every row is
   noise), or anything keyboard-driven.

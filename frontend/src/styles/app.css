@@ -169,6 +169,13 @@
 html, body, #root { height: 100%; }
 body { background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans);
        -webkit-text-size-adjust: 100%; }
+/* The document itself never scrolls — the shell is a flex column and <main> is
+   the scroller. Without this, iOS still rubber-bands the root: a drag on any
+   `position: fixed` overlay chains to the *root* scroller rather than to the
+   overlay's DOM ancestor, so <main>'s overscroll-contain never saw the gesture
+   and an open bottom sheet could be dragged around the screen along with the
+   top bar, exposing an unscrimmed strip above it. */
+html, body { overscroll-behavior: none; }
 /* iOS Safari paints a gray flash box on tapped links/buttons; our .press scale
    and haptics are the feedback channel, so kill the default highlight. */
 html { -webkit-tap-highlight-color: transparent; }
@@ -178,6 +185,17 @@ html { -webkit-tap-highlight-color: transparent; }
    text-base explicitly; this element-level rule (which any utility class
    outranks) only catches future controls that forget. */
 input, select, textarea { font-size: max(16px, 1rem); }
+
+/* Bottom inset shared by a sheet and its action rail: the home-indicator strip,
+   floored at a plain gutter. Dialog pins it to `1rem` inline while the software
+   keyboard is up, since the keyboard already covers the indicator. */
+:root { --sheet-inset-bottom: max(1rem, env(safe-area-inset-bottom)); }
+.sheet-panel { padding-bottom: var(--sheet-inset-bottom); }
+/* …but not when the sheet has a sticky action rail. `sticky bottom: 0` resolves
+   against this scroll container's CONTENT box, so padding-bottom here lifts the
+   rail off the sheet's bottom edge and over the last row of content. The rail
+   carries the inset itself instead (see DialogFooter). */
+.sheet-panel:has([data-dialog-footer]) { padding-bottom: 0; }
 
 /* The one shadow in the app. A sheet must read as above the page; nothing else
    is elevated — separation everywhere else is a 1px --color-border hairline. */
