@@ -1,4 +1,6 @@
+import { m, useReducedMotion } from "motion/react";
 import { type PaceStatus, derivePaceStatus } from "../../lib/insights";
+import { DUR, EASE_OUT } from "../../lib/motion";
 
 /**
  * The app's one progress/pace bar: a dotted fill over the grey track, plus an
@@ -43,6 +45,9 @@ export function ProgressBar({ pct, label, pace, status, onAccent = false }: {
   /** Hero-panel variant: single-colour, state carried by texture. */
   onAccent?: boolean;
 }) {
+  // clipPath is not a transform, so Framer's global reducedMotion policy does
+  // not cover it — this one is gated by hand.
+  const reduced = useReducedMotion();
   const clamped = Math.min(100, Math.max(0, pct * 100));
   const state = status ?? derivePaceStatus(pct, pace);
   const solid = onAccent && state === "overbudget";
@@ -57,11 +62,17 @@ export function ProgressBar({ pct, label, pace, status, onAccent = false }: {
       aria-label={label}
       className={`relative h-3 w-full overflow-hidden rounded-[var(--radius)] ${track}`}
     >
-      <div
+      <m.div
         data-fill={solid ? "solid" : "dithered"}
         data-state={state}
-        className={`h-full transition-[width] duration-300 ${onAccent ? "bg-hero-fg" : ""} ${solid ? "" : "dither-mask"}`}
-        style={{ width: `${clamped}%`, ...(onAccent ? {} : { background: PACE_INK[state] }) }}
+        className={`h-full w-full ${onAccent ? "bg-hero-fg" : ""} ${solid ? "" : "dither-mask"}`}
+        // clip-path, not width and not scaleX. width is a layout property;
+        // scaleX would stretch the .dither-mask's 2px dot grid into ellipses.
+        // A clip reveals the texture at its true scale.
+        initial={false}
+        animate={{ clipPath: `inset(0 ${100 - clamped}% 0 0)` }}
+        transition={reduced ? { duration: 0 } : { duration: DUR.sheet, ease: EASE_OUT }}
+        style={onAccent ? undefined : { background: PACE_INK[state] }}
       />
       {pace !== undefined && (
         <div

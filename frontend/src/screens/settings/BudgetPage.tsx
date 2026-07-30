@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { m, useReducedMotion } from "motion/react";
 import { getJSON, postJSON } from "../../api/client";
 import type { BudgetConfig } from "../../api/types";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../../lib/format";
 import { pctsValid, splitSegments } from "../../lib/split";
+import { DUR, EASE_OUT } from "../../lib/motion";
 import { Switch } from "../../components/ui/Switch";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { EmptyState } from "../../components/EmptyState";
@@ -14,21 +16,43 @@ import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 
 /**
+ * One coloured slice of the split bar. All three segments share the same
+ * box (absolutely stacked, not flex-sized) and are revealed with clip-path
+ * insets rather than a `width` that grows/shrinks the box itself — the same
+ * shape ProgressBar uses for its fill, and for the same reason: `width` is a
+ * layout property, and this bar's segments animate on every keystroke.
+ */
+function SegmentFill({ start, width, className }: { start: number; width: number; className: string }) {
+  // clipPath is not a transform, so Framer's global reducedMotion policy does
+  // not cover it — this one is gated by hand.
+  const reduced = useReducedMotion();
+  return (
+    <m.div
+      className={`absolute inset-0 h-full w-full ${className}`}
+      initial={false}
+      animate={{ clipPath: `inset(0 ${100 - start - width}% 0 ${start}%)` }}
+      transition={reduced ? { duration: 0 } : { duration: DUR.sheet, ease: EASE_OUT }}
+    />
+  );
+}
+
+/**
  * The 50/30/20 split, live: segment widths track the inputs, and
  * under-allocated income reads as a literal gap in the bar.
  */
 function SplitBar({ need, want, saving }: { need: number; want: number; saving: number }) {
   const seg = splitSegments(need, want, saving);
-  const bar = "h-full transition-[width] duration-300 motion-reduce:transition-none";
+  const wantStart = seg.needPct;
+  const saveStart = seg.needPct + seg.wantPct;
   return (
     <div
-      className="h-3 flex overflow-hidden rounded-[var(--radius)] bg-surface-2"
+      className="relative h-3 overflow-hidden rounded-[var(--radius)] bg-surface-2"
       role="img"
       aria-label={`Budget split: need ${fractionToPercent(need)}%, want ${fractionToPercent(want)}%, saving ${fractionToPercent(saving)}%`}
     >
-      <div className={`${bar} bg-need`} style={{ width: `${seg.needPct}%` }} />
-      <div className={`${bar} bg-want`} style={{ width: `${seg.wantPct}%` }} />
-      <div className={`${bar} bg-save`} style={{ width: `${seg.savingPct}%` }} />
+      <SegmentFill start={0} width={seg.needPct} className="bg-need" />
+      <SegmentFill start={wantStart} width={seg.wantPct} className="bg-want" />
+      <SegmentFill start={saveStart} width={seg.savingPct} className="bg-save" />
     </div>
   );
 }
