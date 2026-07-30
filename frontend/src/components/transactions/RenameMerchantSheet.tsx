@@ -56,8 +56,9 @@ export function RenameMerchantSheet({ txn, rules, txns, onClose, onSaved }: {
 
       {blocked ? (
         <p className="text-sm text-muted mb-3">
-          No rule carries this merchant yet, and this transaction has no category to seed one.
-          Categorize it first — the rule that creates will hold the name.
+          {target.kind === "blocked" && target.reason === "no-merchant"
+            ? "The bank email carried no merchant text for this transaction, so there's nothing for a rename rule to match."
+            : "No rule carries this merchant yet, and this transaction has no category to seed one. Categorize it first — the rule that creates will hold the name."}
         </p>
       ) : (
         <>

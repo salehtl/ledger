@@ -86,7 +86,12 @@ describe("renameTarget", () => {
   });
 
   it("blocks when there is no rule and no category anywhere", () => {
-    expect(renameTarget([], txn({ CategoryID: null }))).toEqual({ kind: "blocked" });
+    expect(renameTarget([], txn({ CategoryID: null }))).toEqual({ kind: "blocked", reason: "uncategorized" });
+  });
+
+  it("blocks an empty merchant string outright — no rule can match or seed it", () => {
+    expect(renameTarget([], txn({ MerchantRaw: "" }))).toEqual({ kind: "blocked", reason: "no-merchant" });
+    expect(renameTarget([], txn({ MerchantRaw: "   " }))).toEqual({ kind: "blocked", reason: "no-merchant" });
   });
 });
 
