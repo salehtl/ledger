@@ -36,11 +36,15 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
 
   const saveSettings = async (next: AppSettings) => {
     try {
-      // Send only the writable fields — ai_key_present is read-only (env-only).
+      // Send every writable field — ai_key_present and ai_cap_latched are
+      // read-only. The spend cap belongs here too: this endpoint takes the
+      // whole object, so leaving a field out asks the server to preserve it
+      // rather than stating a value.
       await postJSON("/api/settings", {
         auto_categorize: next.auto_categorize, ai_enabled: next.ai_enabled,
         ai_auto_accept: next.ai_auto_accept, ai_threshold: next.ai_threshold,
         ingest_silence_days: next.ingest_silence_days,
+        ai_spend_cap_musd: next.ai_spend_cap_musd ?? 0,
       }, "PUT");
       qc.invalidateQueries({ queryKey: ["settings"] });
       flash();

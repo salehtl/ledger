@@ -30,6 +30,7 @@ export function Settings({
   onOpenProjects,
   onOpenAccounts,
   onOpenRecurring,
+  onSubpageChange,
 }: {
   scope?: Scope;
   intent?: SettingsIntent | null;
@@ -41,6 +42,9 @@ export function Settings({
   /** Accounts / Recurring are AppShell-level drill-ins for the same reason. */
   onOpenAccounts?: () => void;
   onOpenRecurring?: () => void;
+  /** Reports whether a settings sub-page is open, so the hosting panel can
+   *  take its own header out of the tab order while it's covered. */
+  onSubpageChange?: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
   const { show } = useToast();
@@ -73,15 +77,23 @@ export function Settings({
 
   const close = () => setPage(null);
 
+  // Tell the host panel it's covered, so its own back-arrow leaves the tab
+  // order while a sub-page sits on top of it.
+  useEffect(() => { onSubpageChange?.(page !== null); }, [page, onSubpageChange]);
+
   return (
     <>
-      <SettingsHub
-        onOpen={setPage}
-        onClear={() => setClearOpen(true)}
-        onOpenProjects={() => onOpenProjects?.()}
-        onOpenAccounts={onOpenAccounts}
-        onOpenRecurring={onOpenRecurring}
-      />
+      {/* A sub-page covers the hub completely; inert keeps the hub's rows out
+          of the tab order and off the screen-reader cursor while it's hidden. */}
+      <div className="contents" inert={page !== null}>
+        <SettingsHub
+          onOpen={setPage}
+          onClear={() => setClearOpen(true)}
+          onOpenProjects={() => onOpenProjects?.()}
+          onOpenAccounts={onOpenAccounts}
+          onOpenRecurring={onOpenRecurring}
+        />
+      </div>
 
       {page === "budget" && <BudgetPage onClose={close} />}
       {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}

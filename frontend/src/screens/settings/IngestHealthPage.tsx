@@ -35,10 +35,13 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
     if (!s) return;
     try {
       // Send every writable field — a partial PUT would clobber the rest.
+      // ai_spend_cap_musd was missing here, and changing the silence window
+      // used to wipe the user's monthly AI spend cap as a side effect.
       await postJSON("/api/settings", {
         auto_categorize: s.auto_categorize, ai_enabled: s.ai_enabled,
         ai_auto_accept: s.ai_auto_accept, ai_threshold: s.ai_threshold,
         ingest_silence_days: days,
+        ai_spend_cap_musd: s.ai_spend_cap_musd ?? 0,
       }, "PUT");
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["health"] });

@@ -72,7 +72,16 @@ describe("Settings categorization", () => {
     await waitFor(() => {
       const call = calls.find((c) => c.method === "PUT" && c.url === "/api/settings");
       expect(call).toBeDefined();
-      expect(call!.body).toEqual({ auto_categorize: false, ai_enabled: false, ai_auto_accept: false, ai_threshold: 0.85 });
+      // The whole writable object goes every time, spend cap included —
+      // omitting a field here is how the Email-ingest page used to wipe the
+      // user's AI spend cap as a side effect of an unrelated save.
+      expect(call!.body).toEqual({
+        auto_categorize: false,
+        ai_enabled: false,
+        ai_auto_accept: false,
+        ai_threshold: 0.85,
+        ai_spend_cap_musd: 0,
+      });
     });
   });
 
