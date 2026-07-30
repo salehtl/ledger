@@ -8,6 +8,7 @@ import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
 import { Switch } from "../ui/Switch";
 import { SectionLabel } from "../ui/SectionLabel";
+import { Pressable } from "../ui/Pressable";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 import { bucketColor } from "../../lib/insights";
 import { assignTxnProject, getProjects } from "../../api/client";
@@ -121,12 +122,11 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
               {list.map((c) => {
                 const selected = catID === c.ID;
                 return (
-                  <button
+                  <Pressable
                     key={c.ID}
-                    type="button"
                     aria-pressed={selected}
                     onClick={() => setCatID(selected ? null : c.ID)}
-                    className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press transition-colors ${
+                    className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 transition-colors ${
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
                   >
@@ -136,7 +136,7 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
                       style={{ background: selected ? "currentColor" : c.Kind === "income" ? "var(--color-good)" : bucketColor(c.Bucket) }}
                     />
                     {c.Name}
-                  </button>
+                  </Pressable>
                 );
               })}
             </div>

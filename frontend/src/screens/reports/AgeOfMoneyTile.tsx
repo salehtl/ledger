@@ -1,4 +1,5 @@
 import type { AgeOfMoney, SpendAge } from "../../lib/reports";
+import { Pressable } from "../../components/ui/Pressable";
 
 /**
  * Age of money: how many days income sat in the pool before the last funded
@@ -38,11 +39,10 @@ export function AgeOfMoneyTile({ age, ages, onDrill }: {
   const maxAge = Math.max(...ages.map((a) => a.ageDays), 1);
 
   return (
-    <button
-      type="button"
+    <Pressable
       onClick={onDrill}
       disabled={!onDrill}
-      className="w-full rounded-[var(--radius)] border border-border bg-surface p-4 text-left press"
+      className="w-full rounded-[var(--radius)] border border-border bg-surface p-4 text-left"
     >
       <div className="flex items-baseline justify-between gap-3">
         <span className="tnum text-xl font-semibold tracking-[-0.02em]">
@@ -69,6 +69,6 @@ export function AgeOfMoneyTile({ age, ages, onDrill }: {
       <p className="mt-2 text-sm text-muted">
         How many days money sits between arriving and being spent — higher means you're living on older money.
       </p>
-    </button>
+    </Pressable>
   );
 }

@@ -1,5 +1,6 @@
 import type { Project } from "../../api/types";
 import { Card } from "../ui/Card";
+import { Pressable } from "../ui/Pressable";
 import { ColorSwatch } from "../ui/ColorSwatch";
 import { ProgressBar } from "../ui/ProgressBar";
 import { formatFils } from "../../lib/money";
@@ -23,7 +24,7 @@ export function ProjectCard({ project, onOpen }: { project: Project; onOpen: () 
   const pace = projectPace(project, todayISO());
 
   return (
-    <button type="button" onClick={onOpen} className="w-full text-left press">
+    <Pressable onClick={onOpen} className="w-full text-left">
       <Card className={`space-y-2 ${over ? "border border-bad/40" : ""}`}>
         <div className="flex items-center gap-2">
           {color && <ColorSwatch color={color} />}
@@ -48,6 +49,6 @@ export function ProjectCard({ project, onOpen }: { project: Project; onOpen: () 
 
         {pending_fils > 0 && <p className="text-xs text-muted">{formatFils(pending_fils)} pending</p>}
       </Card>
-    </button>
+    </Pressable>
   );
 }

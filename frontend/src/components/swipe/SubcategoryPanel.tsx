@@ -4,6 +4,7 @@ import { type SwipeAction, actionColor } from '../../lib/swipe'
 import { projectColor } from '../../lib/paletteColor'
 import { orderProjectsForReview } from '../../lib/projectMath'
 import { Dialog } from '../ui/Dialog'
+import { Pressable } from '../ui/Pressable'
 
 interface SubcategoryPanelProps {
   action: SwipeAction
@@ -45,13 +46,13 @@ export function SubcategoryPanel({
   const ranked = orderProjectsForReview(projects, txn.PostedAt)
 
   const categoryButton = (cat: Category) => (
-    <button
+    <Pressable
       key={cat.ID}
       onClick={() => onSelect(cat.ID, projectID)}
-      className="min-h-14 py-3 px-4 rounded-[var(--radius)] border border-border text-base font-medium text-fg hover:bg-surface-2 press text-left"
+      className="min-h-14 py-3 px-4 rounded-[var(--radius)] border border-border text-base font-medium text-fg hover:bg-surface-2 text-left"
     >
       {cat.Name}
-    </button>
+    </Pressable>
   )
 
   return (
@@ -74,13 +75,12 @@ export function SubcategoryPanel({
             {ranked.map(p => {
               const selected = projectID === p.id
               return (
-                <button
+                <Pressable
                   key={p.id}
-                  type="button"
                   aria-pressed={selected}
                   data-suggested={p.suggested}
                   onClick={() => setProjectID(selected ? null : p.id)}
-                  className="min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press border transition-colors"
+                  className="min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 border transition-colors"
                   style={selected
                     ? { backgroundColor: projectColor(p.color), borderColor: projectColor(p.color), color: '#fff' }
                     : { borderColor: p.suggested ? projectColor(p.color) : 'var(--color-border)', color: 'var(--color-fg)' }}
@@ -89,7 +89,7 @@ export function SubcategoryPanel({
                     style={{ backgroundColor: selected ? 'currentColor' : projectColor(p.color) }} />
                   {p.name}
                   {p.suggested && !selected && <span className="text-xs text-muted">these dates</span>}
-                </button>
+                </Pressable>
               )
             })}
           </div>

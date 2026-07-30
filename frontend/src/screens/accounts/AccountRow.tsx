@@ -1,5 +1,6 @@
 import { rowMeta, type AccountBalanceSummary } from "../../lib/reconcile";
 import { BalanceAmount } from "./BalanceAmount";
+import { Pressable } from "../../components/ui/Pressable";
 
 const MASK = "••••";
 
@@ -18,14 +19,13 @@ export function AccountRow({ account, onOpen, now }: {
 }) {
   const a = account;
   return (
-    <button
-      type="button"
+    <Pressable
       onClick={() => onOpen(a)}
       // No aria-label override: the visible content (name, balance, freshness)
       // is the accessible name, so assistive tech hears what sighted users see.
       data-kind={a.kind}
       data-checkin={a.has_checkin ? "anchored" : "none"}
-      className="w-full text-left px-4 py-3 press"
+      className="w-full text-left px-4 py-3"
     >
       <div className="flex items-baseline justify-between gap-3">
         <p className="min-w-0 truncate text-sm font-medium leading-5 tracking-[-0.01em]">{a.name}</p>
@@ -39,6 +39,6 @@ export function AccountRow({ account, onOpen, now }: {
         </span>
         <span className="shrink-0 tnum">{rowMeta(a, now)}</span>
       </div>
-    </button>
+    </Pressable>
   );
 }

@@ -72,8 +72,11 @@ living catalog; update the story in the same commit as the component.
   36px (`IconButton size="sm"`) is allowed only inside dense stacked rows.
 - **16px inputs.** Form controls use `Input`/`Select` (text-base). Anything
   smaller makes iOS Safari zoom on focus.
-- **Press feedback.** Every tappable element carries `.press` (scale on
-  `:active`) — hover-only affordances don't exist on touch.
+- **Press feedback.** Every tappable element is a `Pressable` (or a
+  component built on one, like `Button`/`IconButton`) — a subtle `whileTap`
+  scale, not a bare `.press` CSS class. Hover-only affordances don't exist on
+  touch, and `whileTap` is pointer-based so it's correct there in a way
+  `:active`/`:hover` never were. See `ui/Pressable.tsx`.
 - **Haptics.** `Button` and `IconButton` fire `fire("selection")` from
   `lib/feedback` themselves; don't add a second call in onClick handlers.
 - **Money & counts** use `.tnum` (tabular mono figures) via `<Money>` or the
@@ -145,6 +148,24 @@ living catalog; update the story in the same commit as the component.
   chrome sitting next to a sans screen title rather than a standalone label.
 
 ## Primitives — `components/ui/`
+
+### Pressable
+- **Purpose:** the app's one press-feedback primitive — an `m.button` with
+  `whileTap={{ scale: 0.97 }}`, accepting every native `<button>` prop plus
+  `className`. Defaults `type="button"`.
+- **Use when:** building any new tappable element, or converting a raw
+  `<button>` — replace it with `Pressable` rather than reaching for a `.press`
+  class. `Button` and `IconButton` are both built on it.
+- **Don't use when:** the element isn't semantically a button (a link, a
+  toggleable row that's actually a `<div>`) — use `m.a`/`m.div` with the same
+  `whileTap` instead; converting non-buttons to `<button>` changes semantics
+  and accessibility.
+- Replaces the old global `.press` CSS class, which was declared outside every
+  cascade layer in `app.css` and therefore outranked all of Tailwind's
+  `@layer utilities` rules — and because it used the `transition` shorthand,
+  it silently reset `transition-property` to `transform` alone, killing every
+  `transition-colors` in the app. A component owning its own motion can't
+  reach across the codebase like that.
 
 ### Button
 - **Purpose:** any labeled tap action. Variants: `primary` (the screen's one

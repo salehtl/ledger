@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Settings as SettingsIcon } from "./PixelIcon";
 import { type Scope, addMonth, scopeLabel } from "../../lib/scope";
 import { IconButton } from "./IconButton";
+import { Pressable } from "./Pressable";
 import { PeriodSheet } from "./PeriodSheet";
 
 export function TopBar({ title, scope, onScopeChange, showScope, onOpenSettings }: {
@@ -30,14 +31,14 @@ export function TopBar({ title, scope, onScopeChange, showScope, onOpenSettings 
                   <ChevronLeft size={18} />
                 </IconButton>
               )}
-              <button
+              <Pressable
                 onClick={() => setOpen(true)}
                 aria-haspopup="dialog"
                 aria-expanded={open}
-                className="min-h-11 px-3 py-1.5 rounded-[var(--radius)] font-mono text-[10px] font-medium uppercase tracking-[0.12em] bg-surface-2 text-fg truncate press"
+                className="min-h-11 px-3 py-1.5 rounded-[var(--radius)] font-mono text-[10px] font-medium uppercase tracking-[0.12em] bg-surface-2 text-fg truncate"
               >
                 {scopeLabel(scope)}
-              </button>
+              </Pressable>
               {isMonth && (
                 <IconButton
                   label="Next month"

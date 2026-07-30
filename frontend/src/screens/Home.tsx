@@ -7,6 +7,7 @@ import { RollingNumber } from "../components/RollingNumber";
 import { Card } from "../components/ui/Card";
 import { ProgressBar } from "../components/ui/ProgressBar";
 import { SectionLabel } from "../components/ui/SectionLabel";
+import { Pressable } from "../components/ui/Pressable";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TrendBars } from "../components/charts/TrendBars";
@@ -196,13 +197,12 @@ export function Home({
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <SectionLabel as="h2">Projects</SectionLabel>
-            <button
-              type="button"
+            <Pressable
               onClick={onOpenProjects}
-              className="min-h-11 min-w-11 -mr-2 px-3 flex items-center justify-end text-sm font-medium text-fg press"
+              className="min-h-11 min-w-11 -mr-2 px-3 flex items-center justify-end text-sm font-medium text-fg"
             >
               All ›
-            </button>
+            </Pressable>
           </div>
           <div className="space-y-3">
             {projects.data.map((p) => (

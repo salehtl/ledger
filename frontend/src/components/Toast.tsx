@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useReducer, useMemo,
 import { useReducedMotion } from "motion/react";
 const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 import { shouldDismissToast } from "../lib/toastSwipe";
+import { Pressable } from "./ui/Pressable";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -131,14 +132,14 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     >
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
-        <button
-          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline press`}
+        <Pressable
+          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline`}
           onClick={() => { try { toast.action!.onAction(); } finally { beginDismiss(); } }}
         >
           {toast.action.label}
-        </button>
+        </Pressable>
       )}
-      <button aria-label="Dismiss" className={`${isError ? "text-accent-fg/70" : "text-bg/70"} press`} onClick={beginDismiss}>×</button>
+      <Pressable aria-label="Dismiss" className={`${isError ? "text-accent-fg/70" : "text-bg/70"}`} onClick={beginDismiss}>×</Pressable>
     </div>
   );
 }

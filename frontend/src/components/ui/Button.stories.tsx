@@ -10,7 +10,8 @@ const meta = {
       description: {
         component:
           "Any labeled tap action. Primary and danger share the one vermilion plate — " +
-          "red is rationed, so the label tells them apart. 44px min height, 2px radius, .press feedback.",
+          "red is rationed, so the label tells them apart. 44px min height, 2px radius, " +
+          "press feedback from the shared Pressable primitive.",
       },
     },
   },

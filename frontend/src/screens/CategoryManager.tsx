@@ -8,6 +8,7 @@ import { bucketColor } from "../lib/insights";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Input } from "../components/ui/Field";
 import { IconButton } from "../components/ui/IconButton";
+import { Pressable } from "../components/ui/Pressable";
 import { Skeleton } from "../components/Skeleton";
 import { Card } from "../components/ui/Card";
 
@@ -227,35 +228,33 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
           {cat.Kind === "spending" && (
             <div className="flex gap-1 shrink-0" role="group" aria-label={`Move ${cat.Name}`}>
               {(["need", "want", "saving"] as const).map((b) => (
-                <button
+                <Pressable
                   key={b}
-                  type="button"
                   aria-label={`Move to ${BUCKET_LABELS[b]}`}
                   aria-pressed={cat.Bucket === b}
                   // preventDefault keeps focus in the input so the tap doesn't
                   // race the blur-commit; the move PUT carries the draft name.
                   onPointerDown={(e) => e.preventDefault()}
                   onClick={() => void move(b)}
-                  className={`w-9 h-9 rounded-[var(--radius)] inline-flex items-center justify-center press border transition-colors ${
+                  className={`w-9 h-9 rounded-[var(--radius)] inline-flex items-center justify-center border transition-colors ${
                     cat.Bucket === b ? "border-transparent bg-surface-2" : "border-border"
                   }`}
                 >
                   <span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)]" style={{ backgroundColor: bucketColor(b) }} />
-                </button>
+                </Pressable>
               ))}
             </div>
           )}
         </>
       ) : (
         <>
-          <button
-            type="button"
+          <Pressable
             aria-label={`Edit ${cat.Name}`}
             onClick={() => setEditing(true)}
-            className="min-w-0 flex-1 min-h-11 text-left press inline-flex items-center"
+            className="min-w-0 flex-1 min-h-11 text-left inline-flex items-center"
           >
             <span className="truncate font-medium text-fg">{cat.Name}</span>
-          </button>
+          </Pressable>
           <span className="text-[11px] text-muted tnum shrink-0">{meta}</span>
           <IconButton label={inUse ? `${cat.Name} in use, can't delete` : `Delete ${cat.Name}`} size="sm" tone="danger" disabled={inUse} onClick={remove}>
             <Trash2 size={16} />

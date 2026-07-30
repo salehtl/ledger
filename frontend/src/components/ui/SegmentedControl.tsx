@@ -1,4 +1,5 @@
 import { fire } from "../../lib/feedback";
+import { Pressable } from "./Pressable";
 
 export function SegmentedControl<T extends string>({
   value, onChange, options, fullWidth = false,
@@ -21,16 +22,17 @@ export function SegmentedControl<T extends string>({
       }`}
     >
       {options.map((o) => (
-        <button
+        <Pressable
           key={o.value}
           // Explicit: without it these are submit buttons, and a segmented
           // control inside a form would submit it on every segment tap.
-          type="button"
+          // (Pressable already defaults to type="button" — this comment is
+          // kept here because that is the reason the default matters.)
           aria-pressed={value === o.value}
           onClick={() => { fire("selection"); onChange(o.value); }}
           // min-h-11: this is a page-level control, so it takes the standard
           // 44px target. The 36px allowance is only for dense stacked rows.
-          className={`rounded-[var(--radius)] text-sm font-medium transition-colors press inline-flex min-h-11 items-center justify-center gap-1.5 py-2 ${
+          className={`rounded-[var(--radius)] text-sm font-medium transition-colors inline-flex min-h-11 items-center justify-center gap-1.5 py-2 ${
             fullWidth ? "flex-1 min-w-0 px-2" : "px-4"
           } ${value === o.value ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
         >
@@ -42,7 +44,7 @@ export function SegmentedControl<T extends string>({
               {o.badge}
             </span>
           )}
-        </button>
+        </Pressable>
       ))}
     </div>
   );
