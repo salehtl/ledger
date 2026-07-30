@@ -76,6 +76,61 @@ Note: `cmd/ledger` (1 src, 0 tests) and `internal/web` (embed shim, 0 tests) are
 - **Disposition:** DEFERRED (intentional, no action) — both skips are correct as-is; no code change.
 
 ## Task 3 — Go order/race/flake
+
+### [SEVERITY: info] Full suite is race-clean under `-race -count=1`
+- **Where:** all 13 test-bearing packages (`go test ./...`).
+- **What:** Ran the entire Go suite (14 packages, 2 test-free) under the race detector. No `WARNING: DATA RACE` anywhere; no failures.
+- **Evidence:**
+  ```
+  $ go test ./... -race -count=1
+  ?   ledger/cmd/ledger      [no test files]
+  ok  ledger/internal/anthropic   1.026s
+  ok  ledger/internal/budget      1.017s
+  ok  ledger/internal/categorize  1.026s
+  ok  ledger/internal/config      1.020s
+  ok  ledger/internal/importer    2.599s
+  ok  ledger/internal/ingest      3.753s
+  ok  ledger/internal/monitor     1.024s
+  ok  ledger/internal/parse       4.353s
+  ok  ledger/internal/push        1.020s
+  ok  ledger/internal/recur       3.431s
+  ok  ledger/internal/server      23.459s
+  ok  ledger/internal/store       33.869s
+  ?   ledger/internal/web         [no test files]
+  ```
+- **Disposition:** VERIFIED — no action. No race source exists to fix.
+
+### [SEVERITY: info] Order-independence holds under both required shuffle seeds
+- **Where:** all 13 test-bearing packages (`go test ./... -shuffle=on` and `-shuffle=1234`).
+- **What:** `-shuffle=on` (fresh random seed per invocation) and a fixed `-shuffle=1234` both ran every package clean. No package-level var leakage, shared temp dir collision, or seeded-DB-reuse ordering dependency surfaced.
+- **Evidence:**
+  ```
+  $ go test ./... -shuffle=on
+  [... all 13 packages ok ...]
+
+  $ go test ./... -shuffle=1234
+  [... all 13 packages ok, identical ok/[no test files] set as above ...]
+  ```
+  (Full per-package timing in task-3-report.md; both runs: `ok` for anthropic, budget, categorize, config, importer, ingest, monitor, parse, push, recur, server, store; `[no test files]` for cmd/ledger, web.)
+- **Disposition:** VERIFIED — no action. Suite has no discovered order dependency.
+
+### [SEVERITY: info] Both `time.Sleep`-based tests verified stable, 20/20
+- **Where:**
+  1. `internal/ingest/ingest_test.go:228` — `time.Sleep(30 * time.Millisecond)` inside `TestRunIngestsThenKeepsRunningOnError` (the only sleep call in that file/test; it's a settle window after injecting a transient fetch error and a follow-up message, immediately before `cancel()` — not a condition guess, just letting the worker's already-cancel-observing loop tick once more).
+  2. `internal/server/categorize_job_test.go:41` — `time.Sleep(5 * time.Millisecond)` inside the shared helper `waitCategorizeIdle(t, srv)`, which is **already** a condition-based poll loop (`for i := 0; i < 400; i++ { if status == "idle" { return }; time.Sleep(5*ms) }`, 2s deadline via iteration cap) — not a bare fixed sleep. It is called from 7 tests: `TestCategorizeJob_ProcessesAllAndBroadcasts`, `TestCategorizeJob_DedupesByMerchant`, `TestCategorizeJob_RecordsGenuineFailures`, `TestHandleCategorizeStatus_ReportsFailure`, `TestCategorizeJob_StopHalts`, `TestCategorizeJob_RejectsConcurrentRun`, `TestHandleCategorizeRunAndConflict`.
+- **What:** Hammered both per the brief's probe procedure.
+- **Evidence:**
+  ```
+  $ go test ./internal/ingest/ -run '^TestRunIngestsThenKeepsRunningOnError$' -count=20 -v
+  [20/20 --- PASS, ~0.05s each]
+  ok  ledger/internal/ingest  0.965s
+
+  $ go test ./internal/server/ -run '^(TestCategorizeJob_ProcessesAllAndBroadcasts|TestCategorizeJob_DedupesByMerchant|TestCategorizeJob_RecordsGenuineFailures|TestHandleCategorizeStatus_ReportsFailure|TestCategorizeJob_StopHalts|TestCategorizeJob_RejectsConcurrentRun|TestHandleCategorizeRunAndConflict)$' -count=20 -race -v
+  140 --- PASS / 0 --- FAIL  (7 tests x 20 reps, all under -race)
+  ok  ledger/internal/server  25.861s
+  ```
+- **Disposition:** VERIFIED-STABLE — no action, per the brief's "do NOT rewrite passing tests" rule. Both sleeps are acceptable as-is: #1 is a settle-after-async-kick, not a race guess; #2 is already condition-based (the raw `time.Sleep` line the brief flagged is only the poll-loop's tick, not the wait mechanism itself).
+
 ## Task 4 — Frontend order-independence & mock hygiene
 ## Task 5 — Time & timezone dependence
 ## Task 6 — Assertion quality
