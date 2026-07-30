@@ -3,15 +3,9 @@ import { useReducedMotion } from "motion/react";
 import { ArrowLeft } from "../../components/ui/PixelIcon";
 import { IconButton } from "../../components/ui/IconButton";
 import { useEdgeBack } from "../../hooks/useEdgeBack";
+// TEMPORARY: see lib/motionLegacy.ts — removed by Task 4.
+import { SHEET_EXIT_MS, pageTransition } from "../../lib/motionLegacy";
 const usePrefersReducedMotion = () => useReducedMotion() ?? false;
-// TEMPORARY: lib/motion.ts was rewritten (Task 1) onto the new Framer Motion
-// token API and no longer exports these CSS-transition-string helpers.
-// Task 4 rewrites this file onto AnimatePresence/drag and drops this block;
-// the values here are copied verbatim from the deleted exports so behavior
-// is unchanged until then.
-const SHEET_EXIT_MS = 240;
-const pageTransition = (reduced: boolean) =>
-  reduced ? "none" : `transform 300ms var(--ease-drawer)`;
 
 /**
  * Shared full-screen drill-in shell for a Settings subpage. Matches the
