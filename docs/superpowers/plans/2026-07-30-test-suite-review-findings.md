@@ -293,6 +293,86 @@ Both Go TZ runs were green on the *first* try — no fix needed there. The front
 No production-code changes were made — every hazard found had its root cause in a test (or was safe by design). All four Step-1 TZ invocations plus the two default-TZ suites are green after the fix (see Step 1 evidence block, re-run at the top of this section).
 
 ## Task 6 — Assertion quality
+
+**Step 1 — assertion-free frontend tests:**
+
+The brief's `awk` heuristic (context window of 30 lines, splits on grep's `--` separator) produced one hit, `AccountsScreen.test.tsx:79`, which on inspection was a false positive: the matched line is `if (/^\/api\/accounts\/\d+\/balances\?/.test(url) ...)` inside a `beforeEach` fetch-mock stub — `.test(url)` is a regex call, not a vitest `test(`, and the line isn't inside an `it(`/`test(` block at all.
+
+A more precise per-block scan (parse every top-level `it(`/`test(` start line, slice to the next such line or EOF, check for `expect(` anywhere in the slice) across all 165 frontend test files found exactly one genuine hit:
+
+- `frontend/src/components/transactions/LinkRefundSheet.test.tsx:56` — `it("shows an empty state when there are no candidates", ...)` contained no literal `expect(` call, only `await screen.findByText(/No categorized purchases/)`. This is not fully assertion-free in practice — Testing Library's `findBy*` throws (failing the test) if the text never appears — but it's a weak, implicit assertion: it doesn't confirm the *candidate list* is properly absent, only that the empty-state copy is present, and it isn't obvious at a glance that the test can fail.
+- **Strengthened:** added an explicit `expect(...).toBeInTheDocument()` around the `findByText` result, plus `expect(screen.queryByRole("button", { name: /Carrefour/ })).toBeNull()` to guard against the empty-state copy and the candidate list rendering simultaneously (a real bug the original test would have missed). Verified green: `bunx vitest run src/components/transactions/LinkRefundSheet.test.tsx` → 2/2 passed.
+
+`src/test/storybook.test.tsx` (`expect(container.firstChild).not.toBeNull()` per story) was confirmed by reading it: it's the intentional does-it-render regression net described in the brief and CLAUDE.md — not treated as a gap.
+
+**Step 2 — mock-only tests:**
+
+Ranked `toHaveBeenCalled*`-vs-`expect(` ratio across all `*.test.*` files; reviewed every file where mock-asserts made up ≥75% of that file's total `expect(` calls (the "dominate" cases): `pausableTimeout.test.ts` (13/15), `SettingsPage.test.tsx` (4/4), `liveInvalidation.test.ts` (4/5), `useLiveEvents.test.ts` (4/5), `SwipeableRow.test.tsx` (4/5), `Button.test.tsx` (3/4). Also spot-checked `ProjectForm.test.tsx` (8/14) since its ratio was still notable.
+
+Verdict for all seven: **legitimate, not a gap.** In every case the "mock" being asserted on *is* the externally observable behavior under test, not incidental wiring:
+- `pausableTimeout`/`liveInvalidation`: the callback (`fn`/`flush`) passed in is the entire observable output of a pause/debounce timer — there's no other way to observe "did it fire, how many times, with what timing" for a pure scheduling primitive.
+- `SettingsPage`/`SwipeableRow`: `onClose`/`onCommit`/`onTap` are component *props* — a gesture-driven component's contract with its parent is exactly "did it call the callback," so asserting `toHaveBeenCalledWith` on it is asserting the real contract, not the wiring.
+- `useLiveEvents`: spies on `queryClient.invalidateQueries` and asserts specific `queryKey` arguments (not just "was called") — this is the only observable effect of an SSE-driven cache-invalidation hook.
+- `Button`: asserts a haptics `fire("selection")` call alongside the `onClick` prop firing — both are real, distinguishable side effects of a tap.
+- `ProjectForm`: asserts `toHaveBeenCalledWith(expect.objectContaining({ budget_fils: null }))` — checking the actual API payload shape (money field null vs. a value), which is exactly the form's job to get right.
+
+No strengthening applied — flagging any of these as gaps and rewriting them would trade a correct assertion style for a less direct one.
+
+**Step 3 — mutation sampling (17 mutations across 6 modules):**
+
+| # | Module | Mutation | Result | Action |
+|---|---|---|---|---|
+| 1 | `internal/budget` | `thresholds.go`: `activity >= limit` → `activity > limit` (100%-level boundary) | CAUGHT (`TestThresholdLevel/exactly_100`, `TestCurrentThresholdLevels`) | none |
+| 2 | `internal/budget` | `envelope.go` `bucketPcts`: swapped `need`/`want` pct assignment | CAUGHT (6 tests: `TestComputeBucketsAndProjection`, `TestComputeRangeAggregates`, 3× `TestAutoAssign*`, `TestCurrentThresholdLevels`) | none |
+| 3 | `internal/budget` | `budget.go` `MonthProgress`: forced `return 0` | CAUGHT (`TestComputeBucketsAndProjection`) | none |
+| 4 | `internal/categorize` | `categorize.go`: reversed rule-walk iteration order (last-priority-number wins instead of first) | CAUGHT (`TestRulePriorityOrder`) | none |
+| 5 | `internal/categorize` | `matchRule` `"contains"` case: dropped `strings.ToLower(r.Pattern)` (pattern side only — merchant side stays lowercased) | **SURVIVED** | new test `TestRuleMatchContainsCaseInsensitivePattern` (mixed-case rule pattern vs. already-lowercase merchant) — proven to fail against the mutant, pass on real code |
+| 6 | `internal/categorize` | `Categorize`: confidence-threshold check `conf >= c.threshold` replaced with `true` | CAUGHT (`TestAIFallbackBelowThreshold`) | none |
+| 7 | `frontend/src/lib/money.ts` | `formatFils`: dropped `/100` fils→AED conversion | CAUGHT (2 tests) | none |
+| 8 | `frontend/src/lib/money.ts` | `flowAmount`: flipped the `+`/`−` sign glyph mapping | CAUGHT (3 tests) | none |
+| 9 | `frontend/src/lib/money.ts` | `formatFils`: added `useGrouping: false` (breaks thousands separator) | CAUGHT (`groups thousands and shows 2 decimals`) | none |
+| 10 | `frontend/src/lib/scope.ts` | `scopeBounds` range branch: upper bound `-32` → `-31` (inclusive→exclusive, drops the 31st's late timestamps) | CAUGHT (`brackets a range from first day to last-plus-one day`) | none |
+| 11 | `frontend/src/lib/scope.ts` | `scopeBounds` range branch: swapped `from`/`to` (month start/end swap) | CAUGHT (same test) | none |
+| 12 | `frontend/src/lib/scope.ts` | `normalizeRange`: inverted the ternary branches (`a<=b` now returns the *unsorted* pair) | CAUGHT (`orders the two endpoints ascending`) | none |
+| 13 | `frontend/src/lib/envelope.ts` | `movePreview`: flipped `from_after_fils` sign (`-amountFils` → `+amountFils`) | CAUGHT (`preview shifts available on both legs`) | none |
+| 14 | `frontend/src/lib/envelope.ts` | `rtaMessage`: `ready_to_assign_fils < 0` → `<= 0` (a zero/fully-assigned RTA wrongly treated as the over-assigned/blocking case) | CAUGHT (`message per state`) | none |
+| 15 | `frontend/src/lib/envelope.ts` | `allocationsTotal`: reduce `s + a.amount_fils` → `s - a.amount_fils` (breaks the RTA-adjacent allocation sum) | CAUGHT (`totals and message`) | none |
+| 16 | `frontend/src/lib/transactions.ts` | `applyTxnFilters`: inverted the buckets-dimension predicate (`!f.buckets.includes` → `f.buckets.includes`) | CAUGHT (`ANDs across dimensions`) | none |
+| 17 | `frontend/src/lib/transactions.ts` | `txnTotals`: dropped the `t.Direction === "debit"` guard from the spend sum | CAUGHT (2 tests) | none |
+
+**Scoreboard: 17 mutations — 16 caught, 1 survived → 1 new test.** No module survived more than 1 of 3 (the >2-of-3 HIGH-finding trigger did not fire anywhere).
+
+### [SEVERITY: medium] `internal/categorize` — `contains` rule matching never exercised with a mixed-case *pattern*
+
+- **Where:** `internal/categorize/categorize.go:110-111` (`matchRule`, `"contains"` case); test gap in `internal/categorize/categorize_test.go`.
+- **What:** `matchRule`'s `"contains"` branch lowercases both the merchant and the rule pattern before comparing (`strings.Contains(lowerMerchant, strings.ToLower(r.Pattern))`), so a rule authored with a mixed-case pattern (e.g. a category rule typed as `"Carrefour"` rather than `"carrefour"`) still matches. Deleting the pattern-side `strings.ToLower` survived all existing tests unchanged: `TestRuleMatchContainsCaseInsensitivePattern`'s existing sibling (`TestRuleMatchContainsCaseInsensitive`) only varies the *merchant's* case against an already-lowercase pattern, so it can't detect a broken pattern-side lowercase. Since rule patterns are free-text user input (via Settings → Rules), a rule saved with any uppercase letter would silently stop matching new transactions after this kind of regression — a real, plausible failure mode, not a contrived one.
+- **Evidence:**
+  ```
+  # mutation: matchRule "contains" case → strings.Contains(lowerMerchant, r.Pattern)  (dropped ToLower(r.Pattern))
+  $ go test ./internal/categorize/ -v
+  ok   (all pre-existing tests green — mutation SURVIVED)
+
+  # new test added, run against the same live mutant:
+  $ go test ./internal/categorize/ -run TestRuleMatchContainsCaseInsensitivePattern -v
+  --- FAIL: TestRuleMatchContainsCaseInsensitivePattern (0.00s)
+      categorize_test.go:114: expected nil error, got ai categorizer unavailable
+
+  # mutation reverted, same test:
+  $ go test ./internal/categorize/ -run TestRuleMatchContainsCaseInsensitivePattern -v
+  --- PASS: TestRuleMatchContainsCaseInsensitivePattern (0.00s)
+  $ go test ./internal/categorize/
+  ok
+  ```
+- **Disposition:** FIXED — added `TestRuleMatchContainsCaseInsensitivePattern` (mixed-case `Pattern: "Carrefour"` matched against the already-lowercase merchant string `"pos purchase - carrefour market"`), proven to fail against the mutant and pass against real code, mutation reverted, full package green.
+
+### [SEVERITY: low] One implicit-assertion frontend test strengthened; storybook net confirmed intentional
+
+- **Where:** `frontend/src/components/transactions/LinkRefundSheet.test.tsx` ("shows an empty state when there are no candidates").
+- **What:** see Step 1 above — the test could fail (via `findByText` throwing) but asserted nothing explicit and didn't rule out the candidate list rendering alongside the empty-state copy.
+- **Disposition:** FIXED — explicit `expect(...).toBeInTheDocument()` plus a `queryByRole` absence check added; verified 2/2 green.
+
+**Verification:** `go test ./...` → all packages ok (no regressions). `cd frontend && bun run test` → 163 files / 1292 tests passed (same counts as the Task 1 baseline — no tests added or removed at the suite level; `LinkRefundSheet`'s existing test was strengthened in place, `categorize_test.go` gained one new test). `git diff --stat` shows only `internal/categorize/categorize_test.go` and `frontend/src/components/transactions/LinkRefundSheet.test.tsx` changed — zero production source files touched; every mutation was reverted via `git checkout --` immediately after recording its result.
+
 ## Task 7 — Coverage map
 ## Task 8 — Harness & Storybook seams
 ## Task 9 — Synthesis
