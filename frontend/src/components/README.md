@@ -187,8 +187,11 @@ living catalog; update the story in the same commit as the component.
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
 - **Purpose:** full-screen drill-in shell — back arrow, title, optional
-  `headerRight` (autosave flash), scrolling body. CategoryManager and
-  RulesManager use it too.
+  `headerRight` (autosave flash), scrolling body, iOS edge-swipe back.
+  CategoryManager and RulesManager use it too. Since the v3 IA it is also the
+  shell for AppShell-level overlays: Settings itself (TopBar gear), Accounts,
+  Recurring and Reports all mount inside one, stacked in DOM order like
+  ProjectsFlow so backing out reveals the real parent.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
 
 ### Card
@@ -313,9 +316,12 @@ living catalog; update the story in the same commit as the component.
   One per screen, max.
 
 ### TopBar / BottomNav
-- **Purpose:** app chrome. TopBar owns the page title + period scope stepper;
-  BottomNav owns tab navigation (5 tabs, review badge). Screens never render
-  their own h1 outside these.
+- **Purpose:** app chrome. TopBar owns the page title + period scope stepper
+  + the persistent Settings gear (Settings is not a tab); BottomNav owns tab
+  navigation (five tabs: Home / Plan / Transactions / Review / Insights, with
+  the review badge). Reports, Accounts and Recurring are drill-in overlays
+  reached from Insights, Settings and Home — they never hold tab slots.
+  Screens never render their own h1 outside these.
 - **TopBar type:** the title is sans (screen-title row of the scale); the
   period-scope stepper is mono micro-caps (eyebrow-weight, tighter tracking) —
   it's data, not prose.

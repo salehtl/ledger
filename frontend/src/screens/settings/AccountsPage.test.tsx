@@ -43,10 +43,9 @@ function wrap() {
 describe("settings AccountsPage (absorbed by the Accounts tab)", () => {
   it("points at the Accounts tab and reports the registered-account count", async () => {
     wrap();
-    expect(screen.getByRole("heading", { name: "Accounts & transfers" })).toBeInTheDocument();
-    expect(screen.getByText("Accounts moved")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Transfers" })).toBeInTheDocument();
     expect(await screen.findByText(/2 accounts registered/)).toBeInTheDocument();
-    expect(screen.getByText(/now live in the Accounts tab/)).toBeInTheDocument();
+    expect(screen.getByText(/live under Accounts/)).toBeInTheDocument();
     // Account CRUD is gone from Settings — no add form, no delete buttons.
     expect(screen.queryByLabelText("Account name")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Delete/ })).toBeNull();

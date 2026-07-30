@@ -6,8 +6,8 @@ import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 
 /**
- * Settings → Accounts & transfers. Account management itself (registration,
- * balances, check-ins, budget vs tracking) moved to the Accounts tab in v3 —
+ * Settings → Transfers. Account management itself (registration, balances,
+ * check-ins, budget vs tracking) moved to the Accounts drill-in in v3 —
  * this page keeps the transfer-netting tool and points at the new home.
  */
 export function AccountsPage({ onClose }: { onClose: () => void }) {
@@ -40,20 +40,19 @@ export function AccountsPage({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <SettingsPage title="Accounts & transfers" onClose={onClose}>
+    <SettingsPage title="Transfers" onClose={onClose}>
       <div className="space-y-6">
         <div className="space-y-2">
-          <p className="text-sm font-medium">Accounts moved</p>
           <p className="text-xs text-muted">
-            Registration, balances, check-ins and budget-vs-tracking now live in the Accounts tab —
+            Money moved between registered accounts is recognized as a transfer and nets to zero.
+            Account registration, balances and check-ins live under Accounts —
             {accounts.isPending
               ? " loading your registered accounts…"
               : accounts.isError
                 ? " couldn't load your registered accounts right now."
                 : n === 0
-                  ? " no accounts registered yet."
-                  : ` ${n} account${n === 1 ? "" : "s"} registered.`}{" "}
-            Money moved between registered accounts is recognized as a transfer and nets to zero.
+                  ? " none registered yet."
+                  : ` ${n} account${n === 1 ? "" : "s"} registered.`}
           </p>
         </div>
 

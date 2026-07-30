@@ -39,7 +39,7 @@ function renderSettings() {
 }
 
 async function openAccounts() {
-  fireEvent.click(await screen.findByRole("button", { name: /accounts & transfers/i }));
+  fireEvent.click(await screen.findByRole("button", { name: /^transfers/i }));
 }
 
 // Account CRUD moved to the Accounts tab in v3; the Settings page keeps the
@@ -50,7 +50,7 @@ describe("Settings accounts & transfers (absorbed by the Accounts tab)", () => {
     renderSettings();
     await openAccounts();
     expect(await screen.findByText(/1 account registered\./)).toBeInTheDocument();
-    expect(screen.getByText(/now live in the Accounts tab/)).toBeInTheDocument();
+    expect(screen.getByText(/live under Accounts/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/account name/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /^add$/i })).toBeNull();
   });

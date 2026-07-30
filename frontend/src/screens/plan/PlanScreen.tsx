@@ -18,7 +18,7 @@ import {
   type CategoryClaim,
   type Envelope,
 } from "../../lib/envelope";
-import { assignEnvelopesOnce, envelopesKey, useAutoAssign, useEnvelopes, useUpcoming, writeSummary } from "./api";
+import { assignEnvelopesOnce, useAutoAssign, useEnvelopes, useUpcoming, writeSummary } from "./api";
 import { useQueryClient } from "@tanstack/react-query";
 import { ReadyToAssignBanner } from "./ReadyToAssignBanner";
 import { EnvelopeRow } from "./EnvelopeRow";
