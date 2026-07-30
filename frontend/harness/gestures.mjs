@@ -408,6 +408,73 @@ const page = await browser.newPage({ ...VIEWPORTS.phone });
   await page.waitForTimeout(500); // let dragSnapToOrigin settle before the next navigation
 }
 
+{
+  // Review finding 1: dragElastic only ever applies beyond a dragConstraints
+  // boundary. With none set, a lead-only row dragged toward its *missing*
+  // trail action tracked the finger 1:1, unbounded — the deleted
+  // `swipeOffset`'s `resist()` used to prevent exactly this ("only
+  // rubber-bands, never fully opens, toward a missing action").
+  //
+  // Archived rows are lead-only (Transactions.tsx passes `trail: undefined`
+  // for them), so archive the first row of the default list — the same
+  // leftward-swipe-to-commit mechanics the previous check already proved
+  // reach the server — to get one guaranteed lead-only row. Deliberately
+  // *not* scoped to the "hypermarket" search: that fixture only has 3 rows
+  // this month and the earlier check already spends one of them, so reusing
+  // it here would risk leaving none for a rerun.
+  const { center: toArchiveCenter } = await openTransactionsRow(page);
+  await dragSlow(page, toArchiveCenter, { x: -(ROW_COMMIT + 40) });
+  await page.waitForTimeout(900);
+  await page.locator("button").filter({ hasText: /^Archived$/ }).first().click();
+  await page.waitForTimeout(500);
+  const row = page.locator('ul.divide-y li button[aria-label^="Open "]').first();
+  await row.waitFor({ state: "visible", timeout: 8000 });
+  const box = await row.boundingBox();
+  const startX = box.x;
+  const center = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+  // Held mid-drag, same reasoning as the wide-merchant check: dragSnapToOrigin
+  // means the offset only exists while the pointer is down. Empirically:
+  // unconstrained, a raw -300px drag moves the row ~295px (near 1:1);
+  // constrained with dragElastic 0.4 against a left:0 boundary, it moves
+  // ~115px. 200px is a wide, deliberately generous line between the two.
+  await dragHold(page, center, { x: -300 }, 500);
+  const boxDuring = await row.boundingBox();
+  const delta = boxDuring.x - startX;
+  check(
+    "dragging a lead-only (archived) row toward its missing trail action rubber-bands, not 1:1",
+    Math.abs(delta) < 200,
+    `raw -300px drag moved the row ${Math.round(delta)}px`,
+  );
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+}
+
+{
+  // Review finding 2: Framer's onDragStart fires from PanSession as soon as
+  // ANY 2D pointer movement crosses ~3px — before dragDirectionLock has
+  // decided the axis. So a plain vertical scroll that merely started on a
+  // row also sets that row's `moved` ref to true, and nothing was resetting
+  // it afterward (onClickCapture only clears it if a click actually
+  // follows, and a scroll never produces one). Net effect: the *next*
+  // genuine tap on that same row got its click wrongly swallowed. The fix
+  // is an unconditional reset on every new gesture's pointerdown — this
+  // proves a real tap right after a real scroll still opens detail.
+  const { center } = await openTransactionsRow(page);
+  const row = page.locator('ul.divide-y li button[aria-label^="Open "]').first();
+  // Small and vertical: enough to register as a scroll (touchDragScroll is
+  // the real-CDP-touch driver — see its definition above for why page.mouse
+  // could not produce native scroll at all), not so much that the same row
+  // scrolls out of the tappable viewport.
+  await touchDragScroll(page, center, -80);
+  await page.waitForTimeout(500);
+  await row.click();
+  await page.waitForTimeout(700);
+  check(
+    "a tap on a row right after scrolling it still opens detail (no stale click-suppression)",
+    await dialogOpen(page),
+  );
+}
+
 await browser.close();
 const failed = results.filter((r) => !r.ok).length;
 console.log(failed ? `\n${failed} of ${results.length} checks FAILED` : `\nPASS — ${results.length} checks (${ENGINE_NAME})`);
