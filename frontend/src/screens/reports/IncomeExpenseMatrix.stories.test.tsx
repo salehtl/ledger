@@ -7,9 +7,12 @@ import * as stories from "./IncomeExpenseMatrix.stories";
 const { ThreeMonths, DeficitMonths, Empty } = composeStories(stories);
 
 describe("IncomeExpenseMatrix stories", () => {
-  it("scrolls inside its own two-axis container with months newest-first", () => {
+  // Horizontal only: a vertical clamp here nested a second scroller inside the
+  // page's own, hiding the Net row and half the categories behind an inner
+  // scrollbar that touch gives you no way to discover.
+  it("scrolls horizontally only, with months newest-first", () => {
     const { container } = render(<ThreeMonths />);
-    expect(container.querySelector('[data-testid="matrix-scroll"]')).toHaveClass("overflow-auto", "max-h-[60vh]");
+    expect(container.querySelector('[data-testid="matrix-scroll"]')).toHaveClass("overflow-x-auto");
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toEqual(["Category", "Jul ’26", "Jun ’26", "May ’26", "Avg/mo", "Total"]);
   });

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2 } from "../components/ui/PixelIcon";
+import { AlertTriangle, CheckCircle2 } from "../components/ui/PixelIcon";
 import { PixelSpinner } from "../components/ui/PixelSpinner";
+import { EmptyState } from "../components/EmptyState";
 import { getJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
 import { SwipeDeck } from "../components/swipe/SwipeDeck";
@@ -27,16 +28,37 @@ export function Review({ scope }: { scope: Scope }) {
   });
 
   const loading = txns.isPending || cats.isPending;
-  const empty = !loading && (txns.data?.length ?? 0) === 0;
+  // A failed fetch is not an empty queue. Without this, a dropped request
+  // rendered "All caught up" — telling you your review queue was clear when
+  // it had simply failed to load. The deck also needs categories: it can't
+  // triage into a list it doesn't have.
+  const rows = txns.data;
+  const categories = cats.data;
+  const failed = !loading && (txns.isError || cats.isError || !rows || !categories);
+  const empty = !loading && !failed && (rows?.length ?? 0) === 0;
   // Remount the deck when the scope changes: SwipeDeck freezes its transaction
   // list at mount, so a fresh scope needs a fresh mount to re-freeze.
   const deckKey = `${bounds.from ?? "all"}:${bounds.to ?? "all"}`;
 
   return (
-    <div className="flex flex-col min-h-[60vh]">
+    // flex-1, not a min-h-[60vh] floor: AppShell's content wrapper is a
+    // full-height flex column, so the deck takes exactly the space that's
+    // there. The old floor stranded ~125px below the card on a 390x844 phone
+    // and clipped the hero amount at 320px.
+    <div className="flex flex-1 flex-col min-h-0">
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
           <PixelSpinner size={36} role="status" aria-label="Loading transactions" className="text-muted" />
+        </div>
+      )}
+
+      {failed && (
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState
+            icon={AlertTriangle}
+            title="Couldn't load your review queue"
+            hint="Check your connection and pull down to try again."
+          />
         </div>
       )}
 
@@ -50,8 +72,8 @@ export function Review({ scope }: { scope: Scope }) {
         </div>
       )}
 
-      {!loading && !empty && (
-        <SwipeDeck key={deckKey} transactions={txns.data!} categories={cats.data!} config={config} />
+      {!loading && !empty && rows && categories && (
+        <SwipeDeck key={deckKey} transactions={rows} categories={categories} config={config} />
       )}
     </div>
   );

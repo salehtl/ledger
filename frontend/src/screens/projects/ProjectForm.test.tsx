@@ -25,7 +25,7 @@ describe("ProjectForm", () => {
     wrap(<ProjectForm onClose={() => {}} onSaved={() => {}} />);
     expect(screen.getByText(/new project/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^name$/i)).toHaveValue("");
-    expect(screen.getByLabelText(/budget \(aed\)/i)).toHaveValue(null);
+    expect(screen.getByLabelText(/budget \(aed\)/i)).toHaveValue("");
   });
 
   it("submits name, budget_fils, and count_in_monthly on create", async () => {
@@ -75,7 +75,7 @@ describe("ProjectForm", () => {
     };
     wrap(<ProjectForm project={project} onClose={() => {}} onSaved={() => {}} />);
     expect(screen.getByLabelText(/^name$/i)).toHaveValue("Kitchen reno");
-    expect(screen.getByLabelText(/budget \(aed\)/i)).toHaveValue(5000);
+    expect(screen.getByLabelText(/budget \(aed\)/i)).toHaveValue("5000");
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(client.updateProject).toHaveBeenCalled());

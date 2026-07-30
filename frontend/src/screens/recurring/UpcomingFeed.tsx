@@ -1,6 +1,7 @@
 import { Card } from "../../components/ui/Card";
 import { Pill } from "../../components/ui/Pill";
 import { Money } from "../../components/Money";
+import { flowAmount } from "../../lib/money";
 import { EmptyState } from "../../components/EmptyState";
 import { Inbox } from "../../components/ui/PixelIcon";
 import { cadenceLabel, dueLabel, priceChangeLine, scheduleName } from "../../lib/recurring";
@@ -47,7 +48,21 @@ export function UpcomingFeed({ items, onOpen }: {
                     <p className="font-mono text-[10px] tracking-[0.04em] text-muted mt-0.5 tnum">{drift}</p>
                   )}
                 </div>
-                <span className="tnum text-sm font-medium shrink-0"><Money fils={s.amount_fils} /></span>
+                {/* Signed, not bare: the salary credit rendered identically to
+                    a bill, so the biggest number in a list of "what you owe"
+                    was money coming in. */}
+                {(() => {
+                  const amt = flowAmount(s.direction, s.amount_fils);
+                  return (
+                    <span
+                      className="tnum text-sm font-medium shrink-0"
+                      style={amt.flow === "in" ? { color: "var(--color-good)" } : undefined}
+                      title={amt.flow === "in" ? "Money in" : "Money out"}
+                    >
+                      {amt.text}
+                    </span>
+                  );
+                })()}
               </button>
             </li>
           );

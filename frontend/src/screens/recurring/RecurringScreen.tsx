@@ -215,7 +215,9 @@ export function RecurringScreen() {
         </>
       )}
 
-      <Fab icon={Plus} label="Add schedule" onClick={() => setFormOpen(true)} />
+      {/* over="edge": this screen is a full-screen drill-in, so there is no
+          bottom nav under the plate to clear. */}
+      <Fab over="edge" icon={Plus} label="Add schedule" onClick={() => setFormOpen(true)} />
 
       {(formOpen || editing) && (
         <ScheduleForm

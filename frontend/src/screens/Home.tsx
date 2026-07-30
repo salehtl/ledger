@@ -199,7 +199,7 @@ export function Home({
             <button
               type="button"
               onClick={onOpenProjects}
-              className="min-h-11 -mr-2 px-2 flex items-center text-sm font-medium text-fg press"
+              className="min-h-11 min-w-11 -mr-2 px-3 flex items-center justify-end text-sm font-medium text-fg press"
             >
               All ›
             </button>

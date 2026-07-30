@@ -252,7 +252,7 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
             type="button"
             aria-label={`Edit ${cat.Name}`}
             onClick={() => setEditing(true)}
-            className="min-w-0 flex-1 min-h-9 text-left press inline-flex items-center"
+            className="min-w-0 flex-1 min-h-11 text-left press inline-flex items-center"
           >
             <span className="truncate font-medium text-fg">{cat.Name}</span>
           </button>

@@ -24,8 +24,11 @@ function MathRow({ label, fils, strong = false }: { label: string; fils: number;
   return (
     <>
       <span className={strong ? "font-medium text-fg" : "text-muted"}>{label}</span>
+      {/* filsLabel, not formatFils: this is a ledger of amounts, where zero is
+          a real figure. formatFils prints "—" for 0, which turned a fresh
+          envelope's whole math block into a column of em dashes. */}
       <span className={`text-right ${strong ? "font-medium" : ""} ${strong && fils < 0 ? "text-bad" : ""}`}>
-        {formatFils(fils)}
+        {filsLabel(fils)}
       </span>
     </>
   );

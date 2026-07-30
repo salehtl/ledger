@@ -127,12 +127,6 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   const firstReveal = useFirstReveal(rows.length > 0);
   const activeFilters = filtersActive(filters);
 
-  // Attention count for the Review segment — meaningful only when the loaded set
-  // spans all statuses ("all") or already is the review set.
-  const reviewBadge = status === "" || status === "needs_review"
-    ? (q.data ?? []).filter((t) => t.Status === "needs_review").length
-    : undefined;
-
   const createTxn = async (payload: ManualTxnPayload) => {
     try {
       await postJSON("/api/transactions", payload);
@@ -178,12 +172,18 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   };
 
   return (
-    <div className="space-y-3">
+    // pb-24 clears the Add-transaction FAB. It is an opaque 56px plate pinned
+    // above the nav, so without a terminus the last rows scroll under it and
+    // their amounts — the right-hand column it sits over — are unreadable.
+    <div className="space-y-3 pb-24">
       <SegmentedControl
         fullWidth
         value={filter}
         onChange={setFilter}
-        options={FILTERS.map((f) => (f.value === "needs_review" ? { ...f, badge: reviewBadge } : f))}
+        // No count badge here: BottomNav already carries the needs-review
+        // number permanently, and inside an equal-width four-segment control
+        // the badge squeezed this label down to "Revi…".
+        options={FILTERS}
       />
 
       <div className="flex items-center gap-2">

@@ -20,11 +20,14 @@ export function SettingsPage({
   title,
   onClose,
   headerRight,
+  covered = false,
   children,
 }: {
   title: string;
   onClose: () => void;
   headerRight?: ReactNode;
+  /** A deeper panel is open over this one: take its header out of the tab order. */
+  covered?: boolean;
   children: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -81,14 +84,24 @@ export function SettingsPage({
         onPointerUp={drag.onPointerUp}
         onPointerCancel={drag.onPointerCancel}
       />
-      <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
+      {/* `covered` marks only the header inert, never the body: a nested panel
+          renders inside the body, so making that inert would disable the very
+          page sitting on top. Its own content handles its own inertness. */}
+      {/* This panel is `fixed inset-0`, so it covers TopBar and BottomNav and
+          inherits none of their safe-area padding. Without these insets the
+          back arrow sits under the notch and the last row under the home
+          indicator on every drill-in screen. */}
+      <header
+        className="flex items-center gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 border-b border-border"
+        inert={covered}
+      >
         <IconButton label={`Back from ${title}`} className="-ml-2" onClick={requestClose}>
           <ArrowLeft size={20} />
         </IconButton>
         <h1 className="flex-1 text-lg font-semibold text-fg">{title}</h1>
         {headerRight}
       </header>
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6 max-w-screen-sm w-full mx-auto">
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-6 max-w-screen-sm w-full mx-auto">
         {children}
       </div>
     </div>

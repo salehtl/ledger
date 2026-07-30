@@ -50,6 +50,25 @@ export default defineConfig({
     }),
   ],
   build: { outDir: "../internal/web/dist", emptyOutDir: true },
+  // `bun run dev` serves the PWA but the API client uses relative /api URLs,
+  // so point them at a running Go binary. LEDGER_API overrides the target for
+  // the UI test harness, which runs the server on a scratch DB and free port.
+  server: {
+    proxy: {
+      "/api": {
+        target: process.env.LEDGER_API ?? "http://127.0.0.1:8080",
+        changeOrigin: true,
+        // /api/events is SSE: it must stream, never buffer to completion.
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes) => {
+            if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {
+              proxyRes.headers["cache-control"] = "no-cache, no-transform";
+            }
+          });
+        },
+      },
+    },
+  },
   test: {
     globals: true,
     environment: "jsdom",

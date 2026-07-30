@@ -30,6 +30,10 @@ export function IconButton(
     <button
       type="button"
       aria-label={label}
+      // Marks the documented 36px dense-row allowance (see components/README.md)
+      // so the UI harness can tell a sanctioned small target apart from an
+      // accidental one instead of reporting every category row forever.
+      data-dense-target={size === "sm" ? "" : undefined}
       className={`inline-flex items-center justify-center rounded-[var(--radius)] transition-colors press disabled:opacity-30 disabled:cursor-not-allowed ${SIZES[size]} ${TONES[tone]} ${className}`}
       onClick={handleClick}
       {...rest}

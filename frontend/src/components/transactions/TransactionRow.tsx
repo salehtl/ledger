@@ -66,15 +66,23 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             <p className="line-clamp-2 break-words text-sm font-medium leading-5 tracking-[-0.01em]" title={merchant || undefined}>{merchant || "—"}</p>
+            {/* With no FX rate there is no AED figure to show. Printing the
+                native amount here read as AED — a GBP 45.00 charge appeared in
+                the AED column as 45.00, understating it by a factor of five.
+                The native tag and the "no AED rate" pill below carry the truth. */}
             <span
-              className="tnum font-medium leading-5 shrink-0"
-              style={amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
-              title={amount.flow === "in" ? "Money in" : "Money out"}
+              className={`tnum font-medium leading-5 shrink-0 ${noRate ? "text-muted" : ""}`}
+              style={!noRate && amount.flow === "in" ? { color: "var(--color-good)" } : undefined}
+              title={noRate ? "No AED rate for this currency" : amount.flow === "in" ? "Money in" : "Money out"}
             >
-              {amount.text}
+              {noRate ? "—" : amount.text}
             </span>
           </div>
-          <div className="mt-0.5 flex items-center justify-between gap-3">
+          {/* Wraps rather than clips. On a needs-review row at 320px — and on
+              an FX row even at 390px — the pills squeezed this line until the
+              date fell off the end entirely, which is the one thing on it the
+              user can't reconstruct from anywhere else. */}
+          <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <p className="font-mono text-[10px] tracking-[0.04em] text-muted truncate">{meta}</p>
               {project && (
@@ -101,7 +109,7 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
             type="button"
             aria-expanded={expanded}
             onClick={() => setExpanded((e) => !e)}
-            className="min-h-9 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted press rounded-[var(--radius)]"
+            className="min-h-11 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted press rounded-[var(--radius)]"
           >
             {expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
             {expanded

@@ -57,20 +57,30 @@ export function ProjectsFlow({
     );
   const bulkBack = () => setView(view.kind === "bulk" ? { kind: "detail", id: view.id } : { kind: "list" });
 
+  // Each panel is an opaque full-screen SettingsPage laid over the last, so
+  // every one below the top stays in the tab order unless it's marked inert —
+  // the same rule AppShell applies to its own overlay stack.
+  const deeper = view.kind !== "list";
+  const detailCovered = view.kind === "bulk" || view.kind === "form";
+
   return (
     <>
-      <ProjectsScreen
-        onClose={onClose}
-        onNewProject={() => setView({ kind: "form", from: "list" })}
-        onOpenProject={(id) => setView({ kind: "detail", id })}
-      />
-      {detailId !== null && (
-        <ProjectDetail
-          id={detailId}
-          onClose={() => setView({ kind: "list" })}
-          onEdit={(project) => setView({ kind: "form", project, from: "detail" })}
-          onAddTransactions={() => setView({ kind: "bulk", id: detailId })}
+      <div className="contents" inert={deeper}>
+        <ProjectsScreen
+          onClose={onClose}
+          onNewProject={() => setView({ kind: "form", from: "list" })}
+          onOpenProject={(id) => setView({ kind: "detail", id })}
         />
+      </div>
+      {detailId !== null && (
+        <div className="contents" inert={detailCovered}>
+          <ProjectDetail
+            id={detailId}
+            onClose={() => setView({ kind: "list" })}
+            onEdit={(project) => setView({ kind: "form", project, from: "detail" })}
+            onAddTransactions={() => setView({ kind: "bulk", id: detailId })}
+          />
+        </div>
       )}
       {view.kind === "bulk" && <BulkBackfill id={view.id} onClose={bulkBack} onDone={bulkBack} />}
       {view.kind === "form" && <ProjectForm project={view.project} onClose={formBack} onSaved={formBack} />}

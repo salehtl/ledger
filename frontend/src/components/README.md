@@ -172,6 +172,32 @@ living catalog; update the story in the same commit as the component.
   `autoCorrect` where the keyboard matters.
 - With `icon`, `className` lands on the inner input (not the wrapper) — apply margins to a wrapping element, not via `className`.
 
+### NumberField (`Field.tsx`)
+- **Purpose:** every numeric entry — amounts, percentages, counts.
+- **Use it instead of `<Input type="number">` for anything numeric.** The
+  hand-rolled shape (`value={n}` + `onChange={e => set(Number(e.target.value))}`)
+  has a bug users hit in seconds: `Number("")` is `0`, so clearing the field
+  writes a `0` to state and React renders it straight back. You cannot empty
+  the box to type a fresh amount, and autosave persists a zero nobody typed.
+- **How it works:** the typed text and the committed number are separate. While
+  focused the field shows exactly what you typed — including `""` and
+  half-finished states like `12.` — and reports `null` for those rather than
+  inventing a `0`. On blur the draft is dropped, the value is clamped into
+  `min`/`max`, and the field re-renders from what the parent actually holds.
+- **The one decision you make** is what to do with `null`:
+  ```tsx
+  // required — keep the last good number, restored on blur
+  <NumberField value={pct} onValueChange={(n) => n !== null && setPct(n)} min={0} max={100} />
+  // optional — store the null and let the field stay empty
+  <NumberField value={budget} onValueChange={setBudget} allowEmpty />
+  ```
+- **Props:** `min`/`max` (clamped on blur), `decimals` (rounding on blur),
+  `allowDecimal={false}` for integers, `allowNegative`, `allowEmpty`, `inset`.
+- **Don't:** set `type` — it is deliberately `text` + `inputMode`, because a
+  real `type="number"` reports `""` for junk like `"1e"`, making "empty" and
+  "invalid" indistinguishable. Don't clamp in your own `onValueChange`.
+- Parsing rules live in `lib/numericDraft.ts` and are unit-tested there.
+
 ### Dialog
 - **Purpose:** the one modal/bottom-sheet. Scrim, slide-up, focus trap,
   Escape, drag-to-dismiss, safe-area padding, `85dvh` scroll containment.
