@@ -28,3 +28,5 @@ frontend/node_modules
 skills-lock.json
 .claude/skills/shadcn
 .claude/skills/migrate-radix-to-base
+pid
+smoke.pid
