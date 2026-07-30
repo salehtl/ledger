@@ -187,13 +187,32 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     } catch { show({ message: "Couldn't move category", tone: "error" }); setDraft(cat.Name); }
   };
 
+  // Undo re-creates rather than deferring the DELETE: the backend stays the
+  // single source of truth the moment the row disappears, so a reload mid-toast
+  // can never disagree with the screen. Nothing can dangle — delete is guarded
+  // to categories with no transactions, rules or assignments — so a fresh row
+  // with the same name/kind/bucket is a faithful restore.
+  const restore = async () => {
+    try {
+      await postJSON("/api/categories", { name: cat.Name, kind: cat.Kind, bucket: cat.Bucket });
+      onChanged();
+      show({ message: `${cat.Name} restored`, tone: "success" });
+    } catch {
+      show({ message: `Couldn't restore ${cat.Name}`, tone: "error" });
+    }
+  };
+
   const remove = async () => {
     if (inUse) return;
     try {
       await deleteCategory(cat.ID);
       qc.removeQueries({ queryKey: ["category-usage", cat.ID] });
       onChanged();
-      show({ message: `${cat.Name} deleted`, tone: "success" });
+      show({
+        message: `${cat.Name} deleted`,
+        tone: "success",
+        action: { label: "Undo", onAction: () => void restore() },
+      });
     } catch {
       show({ message: "Couldn't delete — category is now in use", tone: "error" });
       usage.refetch();

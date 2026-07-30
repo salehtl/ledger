@@ -129,6 +129,20 @@ describe("CategoryManager", () => {
     });
   });
 
+  it("delete offers Undo, which recreates the category with its kind and bucket", async () => {
+    const fetchMock = mockFetch(USAGE);
+    vi.stubGlobal("fetch", fetchMock);
+    wrap();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Dining" }));
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    fireEvent.click(undo);
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories" && c[1]?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Dining", kind: "spending", bucket: "want" });
+    });
+  });
+
   it("section-header + adds a new category in place with kind and bucket inferred", async () => {
     const fetchMock = mockFetch(USAGE);
     vi.stubGlobal("fetch", fetchMock);
