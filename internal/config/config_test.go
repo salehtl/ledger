@@ -6,7 +6,25 @@ import (
 	"testing"
 )
 
+// clearLedgerEnv neutralizes every env override Load consults, so tests
+// assert on the TOML they wrote rather than on whatever the invoking shell
+// happens to export (the dev sandbox exports LEDGER_AI_API_KEY, which made
+// TestAIConfigEnabledRequiresAPIKey fail on some machines and pass on others).
+// t.Setenv also registers cleanup, restoring the caller's env afterwards.
+func clearLedgerEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		// keep in lockstep with the os.Getenv calls in config.go
+		"LEDGER_LISTEN", "LEDGER_DATA_DIR",
+		"LEDGER_IMAP_HOST", "LEDGER_IMAP_USERNAME", "LEDGER_IMAP_APP_PASSWORD",
+		"LEDGER_AI_API_KEY",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
 func TestLoadDefaultsWhenNoPath(t *testing.T) {
+	clearLedgerEnv(t)
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load(\"\") error: %v", err)
@@ -20,6 +38,7 @@ func TestLoadDefaultsWhenNoPath(t *testing.T) {
 }
 
 func TestLoadFileOverridesDefaults(t *testing.T) {
+	clearLedgerEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	contents := "[server]\nlisten = \"0.0.0.0:9999\"\ndata_dir = \"/tmp/ledger-test\"\n"
@@ -39,6 +58,7 @@ func TestLoadFileOverridesDefaults(t *testing.T) {
 }
 
 func TestEnvOverridesFile(t *testing.T) {
+	clearLedgerEnv(t)
 	t.Setenv("LEDGER_DATA_DIR", "/env/override")
 	cfg, err := Load("")
 	if err != nil {
@@ -50,6 +70,7 @@ func TestEnvOverridesFile(t *testing.T) {
 }
 
 func TestValidateRejectsEmptyListen(t *testing.T) {
+	clearLedgerEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte("[server]\nlisten = \"\"\n"), 0o644); err != nil {
@@ -61,6 +82,7 @@ func TestValidateRejectsEmptyListen(t *testing.T) {
 }
 
 func TestIMAPDisabledByDefault(t *testing.T) {
+	clearLedgerEnv(t)
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
@@ -83,6 +105,7 @@ func TestIMAPDisabledByDefault(t *testing.T) {
 }
 
 func TestIMAPLoadsFromFileAndEnv(t *testing.T) {
+	clearLedgerEnv(t)
 	t.Setenv("LEDGER_IMAP_APP_PASSWORD", "secret-app-pw")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -113,6 +136,7 @@ func TestIMAPLoadsFromFileAndEnv(t *testing.T) {
 }
 
 func TestIMAPRequiresUsernameWhenEnabled(t *testing.T) {
+	clearLedgerEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte("[imap]\nhost = \"imap.gmail.com\"\n"), 0o644); err != nil {
@@ -124,6 +148,7 @@ func TestIMAPRequiresUsernameWhenEnabled(t *testing.T) {
 }
 
 func TestIMAPRequiresAppPasswordWhenEnabled(t *testing.T) {
+	clearLedgerEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	c := "[imap]\nhost = \"imap.gmail.com\"\nusername = \"bankmail@gmail.com\"\n"
@@ -136,6 +161,7 @@ func TestIMAPRequiresAppPasswordWhenEnabled(t *testing.T) {
 }
 
 func TestIMAPRejectsReadOnlyFalse(t *testing.T) {
+	clearLedgerEnv(t)
 	t.Setenv("LEDGER_IMAP_APP_PASSWORD", "x")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -158,6 +184,7 @@ func writeTOML(t *testing.T, content string) string {
 }
 
 func TestAIConfigDefaults(t *testing.T) {
+	clearLedgerEnv(t)
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +207,7 @@ func TestAIConfigDefaults(t *testing.T) {
 }
 
 func TestAIConfigEnvAPIKey(t *testing.T) {
+	clearLedgerEnv(t)
 	t.Setenv("LEDGER_AI_API_KEY", "sk-test-key")
 	cfg, err := Load("")
 	if err != nil {
@@ -191,6 +219,7 @@ func TestAIConfigEnvAPIKey(t *testing.T) {
 }
 
 func TestAIConfigEnabledRequiresAPIKey(t *testing.T) {
+	clearLedgerEnv(t)
 	f := writeTOML(t, `
 [ai]
 enabled = true
