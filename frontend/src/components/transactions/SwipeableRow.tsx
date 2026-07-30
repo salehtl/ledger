@@ -56,8 +56,19 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
     }
   };
 
+  // Reset unconditionally at the start of every gesture — the direct analogue
+  // of the old onPointerDown handler this component used to have. Framer's
+  // onDragStart (below) fires from PanSession as soon as ANY 2D movement
+  // crosses a ~3px threshold, which is *before* dragDirectionLock has decided
+  // the axis — so a plain vertical scroll that merely started on this row
+  // also sets moved=true. Nothing else clears it: onClickCapture only runs
+  // if a click actually follows, and a scroll never produces one. Without
+  // this reset, the next genuine tap on the same row would still see a stale
+  // moved=true from the earlier scroll and have its click wrongly swallowed.
+  const onPointerDownCapture = () => { moved.current = false; };
+
   return (
-    <div className="relative overflow-hidden" onClickCapture={onClickCapture}>
+    <div className="relative overflow-hidden" onClickCapture={onClickCapture} onPointerDownCapture={onPointerDownCapture}>
       {lead && (
         <m.div
           aria-hidden
@@ -87,6 +98,20 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
         // used to, and then locks it for the rest of the gesture.
         dragDirectionLock
         dragSnapToOrigin
+        // dragElastic only ever applies beyond a dragConstraints boundary —
+        // with no dragConstraints it is a silent no-op and the row tracks the
+        // finger 1:1 forever in both directions. `left`/`right` here are not
+        // pixel travel caps; they are which side of rest (x=0) is "inside"
+        // the constraint box. A real action's side gets `-Infinity`/`Infinity`
+        // (never outside, so never elastic — normal 1:1 tracking all the way
+        // to the commit threshold and beyond). A missing action's side gets
+        // `0` (any movement that way is immediately outside), so dragElastic
+        // resists from the very first pixel. That reproduces what the
+        // deleted `swipeOffset`'s `resist()` did — "only rubber-bands, never
+        // fully opens, toward a missing action" — without reintroducing a
+        // second, redundant clamp on the side that already has one (the
+        // commit threshold plus the spring back on release).
+        dragConstraints={{ left: actions.trail ? -Infinity : 0, right: actions.lead ? Infinity : 0 }}
         dragElastic={0.4}
         dragMomentum={false}
         onDragStart={() => { moved.current = true; }}
