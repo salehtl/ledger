@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
-import { useReducedMotion } from "motion/react";
-const usePrefersReducedMotion = () => useReducedMotion() ?? false;
+import { AnimatePresence, m, useMotionValue } from "motion/react";
 import { shouldDismissToast } from "../lib/toastSwipe";
+import { FADE } from "../lib/motion";
 import { Pressable } from "./ui/Pressable";
 
 export interface ToastAction { label: string; onAction: () => void; }
@@ -32,61 +32,24 @@ const ToastContext = createContext<Ctx | null>(null);
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
-  const reduced = usePrefersReducedMotion();
-  const [mounted, setMounted] = useState(false);
-  const [leaving, setLeaving] = useState(false);
 
-  // Slide/fade out, then ask the provider to drop it from state.
-  const beginDismiss = useCallback(() => {
-    if (reduced) { onDismissRef.current(); return; }
-    setLeaving(true);
-    window.setTimeout(() => onDismissRef.current(), 200);
-  }, [reduced]);
+  // The live horizontal offset. A motion value, so dragging never re-renders
+  // React — and, crucially, so the exit animation can read where the finger
+  // actually left the toast. The previous version wrote `transform` directly
+  // to the DOM and React overwrote it on the very next render, discarding the
+  // swipe direction at the moment of commitment.
+  const x = useMotionValue(0);
+  const [exitX, setExitX] = useState(0);
+
+  const beginDismiss = useCallback((direction = 0) => {
+    setExitX(direction);
+    onDismissRef.current();
+  }, []);
   const beginRef = useRef(beginDismiss);
   beginRef.current = beginDismiss;
 
-  const elRef = useRef<HTMLDivElement>(null);
-  const dragX = useRef<{ start: number; t: number; dx: number } | null>(null);
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (reduced) return;
-    // A press starting on the action/dismiss buttons is a tap, not a drag.
-    // Capturing here would retarget the browser's click to the toast body and
-    // silently swallow the button's onClick.
-    if ((e.target as HTMLElement).closest("button")) return;
-    dragX.current = { start: e.clientX, t: Date.now(), dx: 0 };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    if (elRef.current) elRef.current.style.transition = "none";
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragX.current) return;
-    dragX.current.dx = e.clientX - dragX.current.start;
-    if (elRef.current) elRef.current.style.transform = `translateX(${dragX.current.dx}px)`;
-  };
-  const onPointerUp = () => {
-    const d = dragX.current;
-    dragX.current = null;
-    if (!d) return;
-    if (shouldDismissToast(d.dx, Date.now() - d.t)) {
-      if (elRef.current) elRef.current.style.transition = "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)";
-      beginDismiss();
-      return;
-    }
-    if (elRef.current) {                       // snap back
-      elRef.current.style.transition = "transform 200ms var(--ease-out)";
-      elRef.current.style.transform = "translateX(0)";
-    }
-  };
-
-  // Trigger the enter transition one frame after mount.
-  useEffect(() => {
-    const r = requestAnimationFrame(() => setMounted(true));
-    return () => cancelAnimationFrame(r);
-  }, []);
-
   // Auto-dismiss after 5s, pausing while the tab is hidden so a backgrounded
-  // toast still gets its full on-screen time when the user returns. Sticky
-  // toasts skip the timer entirely and persist until dismissed by the user.
+  // toast still gets its full on-screen time. Sticky toasts skip the timer.
   useEffect(() => {
     if (toast.sticky) return;
     let remaining = 5000;
@@ -103,7 +66,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearTimeout(id); document.removeEventListener("visibilitychange", onVis); };
-  }, []); // mount-only; beginRef holds the latest callback
+  }, [toast.sticky]);
 
   // "error" spends the app's one fill register (bg-accent) and so needs the
   // fill's own constant-white text (text-accent-fg) rather than text-bg, which
@@ -111,24 +74,25 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const isError = toast.tone === "error";
   const tone = toast.tone === "success" ? "bg-good" : isError ? "bg-accent" : "bg-fg";
   const fg = isError ? "text-accent-fg" : "text-bg";
-  const hidden = !mounted || leaving;
+
   return (
-    <div
-      ref={elRef}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      style={{
-        transition: reduced
-          ? "opacity 150ms var(--ease-out)"
-          : "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)",
-        transform: reduced ? undefined : hidden ? "translateY(12px)" : "translateY(0)",
-        opacity: hidden ? 0 : 1,
-        willChange: reduced ? "opacity" : "transform, opacity",
-        touchAction: "pan-y",
+    <m.div
+      layout
+      style={{ x }}
+      drag="x"
+      dragSnapToOrigin
+      dragElastic={0.6}
+      onDragEnd={(_, info) => {
+        if (!shouldDismissToast(info.offset.x, info.velocity.x)) return;
+        beginDismiss(info.offset.x > 0 ? 400 : -400);
       }}
-      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      // The toast leaves the way it was sent: swiped toasts continue in the
+      // swipe direction, timed-out toasts just fade.
+      exit={{ opacity: 0, x: exitX, y: exitX === 0 ? 12 : 0 }}
+      transition={FADE}
+      className={`pointer-events-auto flex touch-pan-y items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
     >
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
@@ -139,8 +103,14 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
           {toast.action.label}
         </Pressable>
       )}
-      <Pressable aria-label="Dismiss" className={`${isError ? "text-accent-fg/70" : "text-bg/70"}`} onClick={beginDismiss}>×</Pressable>
-    </div>
+      <Pressable
+        aria-label="Dismiss"
+        className={isError ? "text-accent-fg/70" : "text-bg/70"}
+        onClick={() => beginDismiss()}
+      >
+        ×
+      </Pressable>
+    </m.div>
   );
 }
 
@@ -160,9 +130,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={ctx}>
       {children}
       <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] z-40 flex flex-col items-center gap-2 px-4 pointer-events-none" role="region" aria-label="Notifications">
-        {toasts.map((t) => (
-          <ToastItem key={t.id} toast={t} onDismiss={() => dispatch({ type: "remove", id: t.id })} />
-        ))}
+        <AnimatePresence initial={false}>
+          {toasts.map((t) => (
+            <ToastItem key={t.id} toast={t} onDismiss={() => dispatch({ type: "remove", id: t.id })} />
+          ))}
+        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );
