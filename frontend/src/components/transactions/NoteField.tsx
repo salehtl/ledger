@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { Input } from "../ui/Field";
 import { SectionLabel } from "../ui/SectionLabel";
-import { useSaveNote } from "./api";
+import { useSaveNote } from "../../api/hooks";
 
 /**
  * The user's memo on a transaction — distinct from the parsed description,

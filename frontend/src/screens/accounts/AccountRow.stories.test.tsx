@@ -46,8 +46,17 @@ describe("AccountRow stories", () => {
 
   it("the whole row is one 44px-class tap target with press feedback", () => {
     render(<CheckedIn />);
-    const btn = screen.getByRole("button", { name: "Open ENBD Current" });
+    const btn = screen.getByRole("button", { name: /ENBD Current/ });
     expect(btn.className).toContain("press");
     expect(btn.className).toContain("w-full");
+  });
+
+  it("the accessible name carries balance and freshness, not just the account name", () => {
+    render(<CheckedIn />);
+    const btn = screen.getByRole("button");
+    expect(btn).not.toHaveAttribute("aria-label");
+    expect(btn).toHaveAccessibleName(expect.stringContaining("ENBD Current"));
+    expect(btn).toHaveAccessibleName(expect.stringContaining("7,450.00"));
+    expect(btn).toHaveAccessibleName(expect.stringContaining("checked in 4d ago"));
   });
 });

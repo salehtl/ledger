@@ -33,11 +33,13 @@ const meta = {
     docs: {
       description: {
         component:
-          "Category rows × months on TanStack Table, inside the component's own overflow-x " +
-          "container (the page never pans). Income block first, then spending, a net row at the " +
-          "bottom, average/total at the far end; months print newest-first so the phone viewport " +
-          "opens on the months that matter. Every money cell is a 36px-dense drill target to the " +
-          "exact transactions behind the figure.",
+          "Category rows × months on TanStack Table, inside the component's own two-axis " +
+          "scroll container capped at 60vh (the page never pans). The category column stays " +
+          "sticky through horizontal scroll and the month header row through vertical scroll, " +
+          "so mid-table positions keep both labels and month context. Income block first, then " +
+          "spending, a net row at the bottom, average/total at the far end; months print " +
+          "newest-first so the phone viewport opens on the months that matter. Every money cell " +
+          "is a 36px-dense drill target to the exact transactions behind the figure.",
       },
     },
   },

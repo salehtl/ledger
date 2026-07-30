@@ -31,10 +31,12 @@ describe("UpcomingFeed stories", () => {
     expect(container.querySelector(".bg-accent")).toBeNull();
   });
 
-  it("opens a bill from its row", () => {
+  it("opens a bill from its row, exposing the full row as the name", () => {
     const onOpen = vi.fn();
     render(<Feed onOpen={onOpen} />);
-    fireEvent.click(screen.getByLabelText("Open DEWA"));
+    // No aria-label override: the row's visible text (name, due, amount) is
+    // the accessible name, so screen readers hear the badges and figures too.
+    fireEvent.click(screen.getByRole("button", { name: /DEWA.*Missed.*overdue/ }));
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen.mock.calls[0][0].merchant).toBe("dewa");
   });

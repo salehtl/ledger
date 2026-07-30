@@ -1,3 +1,9 @@
+// Pure display/math types referenced by v3 wire shapes stay in lib/ (the
+// framework-free helper convention); they are imported, not duplicated.
+import type { Allocation, Cadence, EnvelopeSummary, TargetType } from "../lib/envelope";
+import type { ProvenanceInfo } from "../lib/recurring";
+import type { AccountKind } from "../lib/reconcile";
+
 export interface Category { ID: number; Name: string; Kind: string; Bucket: string; IsActive: boolean; }
 export interface Rule { ID: number; MatchType: string; Pattern: string; CategoryID: number; Priority: number; Source: string; IsActive: boolean; }
 export interface AppSettings {
@@ -87,4 +93,77 @@ export interface Account {
 
 export interface SweepResult {
   marked: number;
+}
+
+// ---- envelopes & targets (v3 plan, api-contract §1–3) ----------------------
+
+export interface AssignmentSet {
+  category_id: number;
+  assigned_fils: number;
+}
+
+export interface MoveBody {
+  from_category_id: number;
+  to_category_id: number;
+  amount_fils: number;
+}
+
+export interface AutoAssignResult {
+  allocations: Allocation[];
+  summary: EnvelopeSummary;
+}
+
+export interface TargetBody {
+  target_type: TargetType;
+  amount_fils: number;
+  cadence: Cadence;
+  due_date?: string;
+}
+
+// ---- recurring schedules (v3, api-contract §—recurring) --------------------
+// Note: lib/envelope.ts keeps a deliberate *subset* UpcomingItem for its pure
+// display helpers; this is the full wire shape GET /api/upcoming returns.
+
+/** Wire shape of GET /api/scheduled items (snake_case per the v3 contract). */
+export interface Schedule {
+  id: number;
+  merchant: string;
+  label: string;
+  amount_fils: number;
+  tolerance_pct: number;
+  interval_days: number;
+  next_due: string; // YYYY-MM-DD
+  direction: string;
+  category_id: number | null;
+  account_id: number | null;
+  source: "manual" | "detected";
+  status: "proposed" | "active" | "paused" | "dismissed";
+  last_matched_tx_id: number | null;
+  last_matched_at?: string;
+  last_amount_fils: number | null;
+  missed: boolean;
+  price_change: boolean;
+  provenance?: ProvenanceInfo;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpcomingItem extends Schedule {
+  due_in_days: number;
+}
+
+export interface UpcomingResponse {
+  days: number;
+  items: UpcomingItem[];
+}
+
+export type ScheduleAction = "confirm" | "dismiss" | "pause";
+
+// ---- accounts & reconcile (v3, api-contract §4) ----------------------------
+
+export interface NewAccount {
+  name: string;
+  bank: string;
+  last4: string;
+  kind: AccountKind;
 }

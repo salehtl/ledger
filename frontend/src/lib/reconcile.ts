@@ -253,7 +253,7 @@ export function discrepancyCauses(r: CheckinResult): DiscrepancyCause[] {
 }
 
 export function fxHint(count: number): string {
-  return `${count} foreign transaction${count === 1 ? "" : "s"} await an FX rate — they add nothing to the expected balance until a rate is set in Settings.`;
+  return `${count} foreign transaction${count === 1 ? "" : "s"} ${count === 1 ? "awaits" : "await"} an FX rate — they add nothing to the expected balance until a rate is set in Settings.`;
 }
 
 export function cashHint(r: CheckinResult): string {

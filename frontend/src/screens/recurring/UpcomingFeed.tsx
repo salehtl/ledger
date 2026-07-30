@@ -5,7 +5,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { Inbox } from "../../components/ui/PixelIcon";
 import { cadenceLabel, dueLabel, priceChangeLine, scheduleName } from "../../lib/recurring";
 import { shortDate } from "../../lib/format";
-import type { Schedule, UpcomingItem } from "./api";
+import type { Schedule, UpcomingItem } from "../../api/types";
 
 /**
  * The next-N-days bill feed. Overdue bills lead (they are money already owed),
@@ -32,7 +32,6 @@ export function UpcomingFeed({ items, onOpen }: {
               <button
                 type="button"
                 onClick={() => onOpen(s)}
-                aria-label={`Open ${scheduleName(s)}`}
                 className="press w-full min-h-11 p-4 flex items-start justify-between gap-3 text-left"
               >
                 <div className="min-w-0 flex-1">
@@ -75,7 +74,6 @@ export function RecentlyPaidList({ schedules, onOpenMatch }: {
             <button
               type="button"
               onClick={() => onOpenMatch(s)}
-              aria-label={`Open payment for ${scheduleName(s)}`}
               className="press w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
             >
               <div className="min-w-0 flex-1">

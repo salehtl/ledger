@@ -4,13 +4,14 @@ import { Button } from "../../components/ui/Button";
 import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { Input, Select } from "../../components/ui/Field";
 import { SectionLabel } from "../../components/ui/SectionLabel";
+import { filsToDirhams } from "../../lib/format";
 import {
   INTERVAL_CHOICES,
   buildSchedulePayload,
   intervalChoice,
   type SchedulePayload,
 } from "../../lib/recurring";
-import type { Schedule } from "./api";
+import type { Schedule } from "../../api/types";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -36,7 +37,7 @@ export function ScheduleForm({ initial, categories, busy = false, onSubmit, onCl
 }) {
   const [merchant, setMerchant] = useState(initial?.merchant ?? "");
   const [label, setLabel] = useState(initial?.label ?? "");
-  const [amountAed, setAmountAed] = useState(initial ? (initial.amount_fils / 100).toFixed(2) : "");
+  const [amountAed, setAmountAed] = useState(initial ? filsToDirhams(initial.amount_fils).toFixed(2) : "");
   const [choice, setChoice] = useState(initial ? intervalChoice(initial.interval_days) : "30");
   const [customDays, setCustomDays] = useState(
     initial && intervalChoice(initial.interval_days) === "custom" ? String(initial.interval_days) : "",
@@ -55,6 +56,9 @@ export function ScheduleForm({ initial, categories, busy = false, onSubmit, onCl
       merchant, label, amountAed,
       intervalChoice: choice, customDays,
       nextDue, direction, categoryId,
+      // PUT is a full replace: carry the fields this form doesn't edit.
+      tolerancePct: initial?.tolerance_pct,
+      accountId: initial?.account_id,
     });
     if (!res.ok) { setError(res.error); return; }
     setError("");
@@ -70,8 +74,8 @@ export function ScheduleForm({ initial, categories, busy = false, onSubmit, onCl
             value={merchant} onChange={(e) => setMerchant(e.target.value)}
             placeholder="e.g. Gym Co"
           />
-          <span className="block font-mono text-[10px] tracking-[0.04em] text-muted mt-1">
-            matches arriving bank emails, when the bill emails at all
+          <span className="block text-xs text-muted mt-1">
+            Matches arriving bank emails, when the bill emails at all.
           </span>
         </label>
         <label className="block text-sm">Label (optional)
@@ -126,8 +130,8 @@ export function ScheduleForm({ initial, categories, busy = false, onSubmit, onCl
               </Button>
             )}
             {paused && (
-              <p className="font-mono text-[10px] tracking-[0.04em] text-muted">
-                paused schedules stop matching emails and leave the upcoming feed
+              <p className="text-xs text-muted">
+                Paused schedules stop matching emails and leave the upcoming feed.
               </p>
             )}
             {onDelete && (

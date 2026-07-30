@@ -11,7 +11,9 @@ import {
   type Envelope,
   type TargetType,
 } from "../../lib/envelope";
-import { putTargetOnce, useDeleteTarget, usePutTarget, type TargetBody } from "./api";
+import { putTargetOnce } from "../../api/client";
+import { useDeleteTarget, usePutTarget } from "../../api/hooks";
+import type { TargetBody } from "../../api/types";
 import { useQueryClient } from "@tanstack/react-query";
 
 const EXPLAINER: Record<TargetType, string> = {

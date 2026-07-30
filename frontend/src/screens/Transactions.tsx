@@ -7,7 +7,7 @@ import { categoryInfoById, displayMerchant, splitsToBody, type SplitLineBody, ty
 import { SplitSheet } from "../components/transactions/SplitSheet";
 import { RenameMerchantSheet } from "../components/transactions/RenameMerchantSheet";
 import { EmailPreviewSheet } from "../components/transactions/EmailPreviewSheet";
-import { useRules, useSaveSplits } from "../components/transactions/api";
+import { useRules, useSaveSplits } from "../api/hooks";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Field";

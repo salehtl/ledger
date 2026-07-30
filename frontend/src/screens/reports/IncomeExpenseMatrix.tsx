@@ -11,7 +11,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { Inbox } from "../../components/ui/PixelIcon";
 import { formatFils } from "../../lib/money";
 import {
-  monthColumn,
+  monthYear,
   netTotals,
   type IncomeExpenseResponse,
   type IncomeExpenseRow,
@@ -19,17 +19,14 @@ import {
 
 const col = createColumnHelper<IncomeExpenseRow>();
 
-function monthYear(month: string): string {
-  const c = monthColumn(month);
-  return `${c.mon} ${c.yr}`;
-}
-
 /**
  * The income-v-expense matrix: category rows × months, income block first,
  * then spending, a net row at the bottom, and average/total columns at the
- * far end. Built on TanStack Table, scrolled inside its own `overflow-x-auto`
- * container — the page never scrolls horizontally; the category column stays
- * sticky so a scrolled state never loses its row labels.
+ * far end. Built on TanStack Table, scrolled inside its own two-axis
+ * `overflow-auto` container capped at 60vh — the page never scrolls
+ * horizontally; the category column stays sticky through horizontal scroll
+ * and the month header row stays sticky through vertical scroll, so a
+ * mid-table position never loses its row labels or its month context.
  *
  * Months are displayed newest-first so the mobile viewport opens on the
  * months that matter; the header row names every column, so the order is
@@ -113,7 +110,7 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
   const net = netTotals(data.net_by_month_fils);
 
   return (
-    <div className="overflow-x-auto" data-testid="matrix-scroll">
+    <div className="max-h-[60vh] overflow-auto" data-testid="matrix-scroll">
       <table className="w-max min-w-full border-separate border-spacing-0">
         <thead>
           <tr>
@@ -124,10 +121,10 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
                 <th
                   key={h.id}
                   scope="col"
-                  className={`border-b border-border pb-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted ${
+                  className={`sticky top-0 border-b border-border bg-surface pb-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted ${
                     isName
-                      ? "sticky left-0 z-10 bg-surface px-3 text-left after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-border"
-                      : "px-3 text-right"
+                      ? "left-0 z-30 px-3 text-left after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-border"
+                      : "z-20 px-3 text-right"
                   } ${h.column.id === "avg" ? "border-l border-border" : ""}`}
                 >
                   {isMonth
@@ -185,7 +182,7 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
                 <td key={m} className="p-0">
                   <CellButton
                     fils={data.net_by_month_fils[mi] ?? 0}
-                    label={`Net for ${monthYear(m)} — all transactions`}
+                    label={`Net for ${monthYear(m)}`}
                     onClick={() => onDrillMonth(m)}
                     emphasis
                   />

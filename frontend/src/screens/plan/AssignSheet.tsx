@@ -17,7 +17,7 @@ import {
   type Envelope,
 } from "../../lib/envelope";
 import { formatFils } from "../../lib/money";
-import { useAssignEnvelopes } from "./api";
+import { useAssignEnvelopes } from "../../api/hooks";
 
 /** One mono ledger line inside the sheet's math block. */
 function MathRow({ label, fils, strong = false }: { label: string; fils: number; strong?: boolean }) {

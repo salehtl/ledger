@@ -99,6 +99,26 @@ describe("Insights", () => {
     expect(screen.getByText(/last 10 spends/)).toBeInTheDocument();
   });
 
+  it("a still-loading report tile shows a loading stat, not the empty dash", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/insights/categories")) return new Response(JSON.stringify(cats));
+      if (url.includes("/api/insights/trend")) return new Response(JSON.stringify(trend));
+      if (url.includes("/api/summary")) return new Response(JSON.stringify(summary));
+      if (url.includes("/api/transactions")) return new Response(JSON.stringify(monthTxns));
+      if (url.includes("/api/categories")) return new Response(JSON.stringify([]));
+      if (url.includes("/api/budget")) return new Response(JSON.stringify(budget));
+      if (url.includes("/api/reports/networth")) return new Response(JSON.stringify({ months: [] }));
+      // Age of money never resolves: its tile must read as loading.
+      if (url.includes("/api/reports/age-of-money")) return new Promise<Response>(() => {});
+      return new Response("[]");
+    }));
+    wrap();
+    expect(await screen.findByText("Reports")).toBeInTheDocument();
+    expect(screen.getByText("loading…")).toBeInTheDocument();
+    // The loaded not-computable copy must not appear while the query is open.
+    expect(screen.queryByText("needs more history")).not.toBeInTheDocument();
+  });
+
   it("a tile opens the full-screen reports drill-in", async () => {
     wrap();
     fireEvent.click(await screen.findByRole("button", { name: /Age of money/ }));

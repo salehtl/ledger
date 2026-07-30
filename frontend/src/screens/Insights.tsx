@@ -5,7 +5,7 @@ import type { CategorySpend, MonthlyTotal, Summary, Txn, Category, BudgetConfig 
 import { Money } from "../components/Money";
 import { SettingsPage } from "./settings/SettingsPage";
 import { ReportsScreen, type ReportSection } from "./reports/ReportsScreen";
-import { useAgeOfMoney, useNetWorth, useTrend24 } from "./reports/api";
+import { useAgeOfMoney, useNetWorth, useTrend24 } from "../api/hooks";
 import { deltaSummary, pctLabel, yoyRows, yoySummary } from "../lib/reports";
 import { Card } from "../components/ui/Card";
 import { SectionLabel } from "../components/ui/SectionLabel";
@@ -146,6 +146,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
         <div className="grid grid-cols-2 gap-2">
           <ReportTile
             label="Net worth"
+            pending={networth.isPending}
             stat={<Money fils={nwDelta.latest} />}
             meta={nwDelta.pct === null ? "from balance check-ins" : `${pctLabel(nwDelta.pct)} vs last month`}
             onOpen={() => setReportsFocus("networth")}
@@ -158,12 +159,14 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
           />
           <ReportTile
             label="Age of money"
+            pending={ageOfMoney.isPending}
             stat={aom !== undefined && aom.sample_size > 0 ? `${aom.age_days} days` : "—"}
             meta={aom !== undefined && aom.sample_size > 0 ? `last ${aom.sample_size} spends` : "needs more history"}
             onOpen={() => setReportsFocus("age")}
           />
           <ReportTile
             label="Spending trends"
+            pending={trend24.isPending}
             stat={yoy.comparableMonths > 0 ? pctLabel(yoy.pct) : "—"}
             meta={yoy.comparableMonths > 0 ? "spend vs a year ago" : "builds with history"}
             onOpen={() => setReportsFocus("trends")}
@@ -191,11 +194,15 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
 
 /** One reports entry tile: eyebrow label, a single glanceable figure, and a
  *  one-line qualifier. Navigation with a stat, not a data surface — the full
- *  report (with its own loading/empty/error states) is the tap away. */
-function ReportTile({ label, stat, meta, onOpen }: {
+ *  report (with its own loading/empty/error states) is the tap away. While
+ *  the backing query loads, the stat slot shows a skeleton line, never the
+ *  same "—" the loaded not-computable state uses. */
+function ReportTile({ label, stat, meta, pending = false, onOpen }: {
   label: string;
   stat: ReactNode;
   meta: string;
+  /** True while the query behind the stat is still loading. */
+  pending?: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -207,8 +214,16 @@ function ReportTile({ label, stat, meta, onOpen }: {
       <span className="flex items-center justify-between font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">
         {label} <span aria-hidden>›</span>
       </span>
-      <span className="mt-1 block tnum text-base font-semibold">{stat}</span>
-      <span className="mt-0.5 block font-mono text-[10px] tracking-[0.04em] text-muted">{meta}</span>
+      {pending ? (
+        <span aria-busy="true" aria-label="Loading" className="mt-1 flex h-6 items-center">
+          <span className="block h-4 w-16 animate-pulse rounded-[var(--radius)] bg-surface-2" />
+        </span>
+      ) : (
+        <span className="mt-1 block tnum text-base font-semibold">{stat}</span>
+      )}
+      <span className="mt-0.5 block font-mono text-[10px] tracking-[0.04em] text-muted">
+        {pending ? "loading…" : meta}
+      </span>
     </button>
   );
 }

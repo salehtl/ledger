@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Input } from "../../components/ui/Field";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import type { Sign } from "../../lib/reconcile";
@@ -8,7 +9,7 @@ import type { Sign } from "../../lib/reconcile";
  * credit cards owe), and a 16px decimal input. A sign typed into the text
  * itself wins over the toggle (see `composeStated`).
  */
-export function BalanceField({ id, label, text, onText, sign, onSign, error, helper, autoFocus = false }: {
+export function BalanceField({ id, label, text, onText, sign, onSign, error, helper, autoFocus = false, onBlur }: {
   id: string;
   label: string;
   text: string;
@@ -20,12 +21,20 @@ export function BalanceField({ id, label, text, onText, sign, onSign, error, hel
   /** Mono meta line under the field (expected balance, last update…). */
   helper?: string;
   autoFocus?: boolean;
+  /** Fires when the amount input loses focus after the user edited it —
+   *  callers gate the parse error on it so nothing flashes mid-entry
+   *  ("8250." on the way to "8250.50"). Blurs before any edit are swallowed:
+   *  the Dialog's mount focus steal must not count as a touch. */
+  onBlur?: () => void;
 }) {
+  const dirty = useRef(false);
   return (
     <div>
       <label htmlFor={id} className="block text-sm font-medium mb-1.5">{label}</label>
       <div className="flex items-stretch gap-2">
-        <div role="group" aria-label="Balance sign" className="shrink-0">
+        {/* preventDefault: SegmentedControl buttons carry no type attribute,
+            so inside a form a sign tap would otherwise submit it. */}
+        <div role="group" aria-label="Balance sign" className="shrink-0" onClick={(e) => e.preventDefault()}>
           <SegmentedControl<Sign>
             value={sign}
             onChange={onSign}
@@ -47,7 +56,13 @@ export function BalanceField({ id, label, text, onText, sign, onSign, error, hel
             autoFocus={autoFocus}
             placeholder="0.00"
             value={text}
-            onChange={(e) => onText(e.target.value)}
+            onChange={(e) => {
+              dirty.current = true;
+              onText(e.target.value);
+            }}
+            onBlur={() => {
+              if (dirty.current) onBlur?.();
+            }}
           />
         </div>
       </div>

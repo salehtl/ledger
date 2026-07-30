@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReportsScreen } from "./ReportsScreen";
 import { ToastProvider } from "../../components/Toast";
@@ -36,7 +36,9 @@ function txn(over: Partial<ReportTxn>): ReportTxn {
 }
 
 const categories: Category[] = [
+  { ID: 2, Name: "Salary", Kind: "income", Bucket: "saving", IsActive: true },
   { ID: 5, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
+  { ID: 9, Name: "Transfers", Kind: "transfer", Bucket: "need", IsActive: true },
 ];
 
 function mockGets(over: {
@@ -44,6 +46,7 @@ function mockGets(over: {
   age?: { age_days: number; sample_size: number };
   txns?: ReportTxn[];
   failNetworth?: boolean;
+  failTxns?: boolean;
 } = {}) {
   vi.spyOn(client, "getJSON").mockImplementation(async (url: string) => {
     if (url.startsWith("/api/reports/networth")) {
@@ -69,7 +72,10 @@ function mockGets(over: {
         { period: "2026-07", spent: 17435, income: 2650000 },
       ] as never;
     }
-    if (url.startsWith("/api/transactions")) return (over.txns ?? [txn({})]) as never;
+    if (url.startsWith("/api/transactions")) {
+      if (over.failTxns) throw new Error("boom");
+      return (over.txns ?? [txn({})]) as never;
+    }
     if (url.startsWith("/api/categories")) return categories as never;
     throw new Error(`unexpected GET ${url}`);
   });
@@ -117,5 +123,81 @@ describe("ReportsScreen", () => {
     expect(await screen.findByText("Couldn't load net worth")).toBeInTheDocument();
     expect(await screen.findByText("24 days")).toBeInTheDocument();
     expect(screen.getByText("Salary")).toBeInTheDocument();
+  });
+
+  it("a failed transactions window shows an error in the drill, never a false empty", async () => {
+    mockGets({ failTxns: true });
+    wrap(<ReportsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Groceries, Jul ’26: 174.35" }));
+    expect(await screen.findByText("Couldn't load transactions")).toBeInTheDocument();
+    expect(screen.queryByText("No transactions")).not.toBeInTheDocument();
+  });
+
+  it("an income drill's net reads money-in positive, not accounting-negative", async () => {
+    mockGets({
+      txns: [txn({
+        ID: 7, Direction: "credit", Kind: "income", CategoryID: 2, CategoryName: "Salary",
+        Bucket: "saving", BucketSnapshot: "saving", MerchantRaw: "EMPLOYER",
+        AmountFils: 2650000, AmountAedFils: 2650000,
+      })],
+    });
+    wrap(<ReportsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Salary, Jul ’26: 26,500.00" }));
+    const sheet = await screen.findByRole("dialog");
+    expect(await within(sheet).findByText(/1 transaction/)).toBeInTheDocument();
+    expect(within(sheet).getByText("26,500.00")).toBeInTheDocument();
+    expect(within(sheet).queryByText("(26,500.00)")).not.toBeInTheDocument();
+  });
+
+  it("the net row drill shows only confirmed income and spending", async () => {
+    mockGets({
+      txns: [
+        txn({ ID: 1 }),
+        txn({ ID: 2, MerchantRaw: "PENDING SHOP", Status: "needs_review" }),
+        txn({ ID: 3, MerchantRaw: "TRANSFER OUT", Kind: "transfer", CategoryID: 9, CategoryName: "Transfers" }),
+      ],
+    });
+    wrap(<ReportsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: /Net for Jul ’26/ }));
+    expect(await screen.findByText("Net · Jul ’26")).toBeInTheDocument();
+    expect(screen.getByText("confirmed income and spending only")).toBeInTheDocument();
+    expect(await screen.findByText("CARREFOUR")).toBeInTheDocument();
+    expect(screen.queryByText("PENDING SHOP")).not.toBeInTheDocument();
+    expect(screen.queryByText("TRANSFER OUT")).not.toBeInTheDocument();
+  });
+
+  it("the net-worth month drill titles with the shared short month-year", async () => {
+    mockGets();
+    wrap(<ReportsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: /Transactions in Jul ’26/ }));
+    expect(await screen.findByRole("heading", { name: "Jul ’26" })).toBeInTheDocument();
+  });
+
+  it("hides the age sparkline and drill when the client mirror can't match the server sample", async () => {
+    // Default window: one confirmed spend, no income — the mirror has an
+    // unfunded spend while the server claims a 10-spend sample. Divergent.
+    mockGets();
+    wrap(<ReportsScreen />);
+    const days = await screen.findByText("24 days");
+    expect(screen.getByTestId("aom-spark").childElementCount).toBe(0);
+    expect(days.closest("button")).toBeDisabled();
+  });
+
+  it("shows the sparkline and drill when the mirror agrees with the server", async () => {
+    mockGets({
+      age: { age_days: 3, sample_size: 2 },
+      txns: [
+        txn({ ID: 1, PostedAt: "2026-07-01T08:00:00Z", Direction: "credit", Kind: "income",
+          CategoryID: 2, CategoryName: "Salary", MerchantRaw: "EMPLOYER",
+          AmountFils: 100000, AmountAedFils: 100000 }),
+        txn({ ID: 2, PostedAt: "2026-07-03T08:00:00Z" }),
+        txn({ ID: 3, PostedAt: "2026-07-05T08:00:00Z" }),
+      ],
+    });
+    wrap(<ReportsScreen />);
+    const days = await screen.findByText("3 days");
+    expect(screen.getByTestId("aom-spark").childElementCount).toBe(2);
+    fireEvent.click(days.closest("button")!);
+    expect(await screen.findByText("Behind age of money")).toBeInTheDocument();
   });
 });

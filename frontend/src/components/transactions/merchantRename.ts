@@ -73,6 +73,12 @@ export function renameTarget(rules: DepthRule[], txn: TxnDepth): RenameTarget {
   return { kind: "blocked" };
 }
 
+/** The display name a merchant currently resolves to from a rule set. */
+export function currentDisplayName(rules: DepthRule[], merchant: string): string {
+  const withName = rules.filter((r) => !!r.DisplayName);
+  return matchingRule(withName, merchant)?.DisplayName ?? "";
+}
+
 /**
  * How many loaded transactions the rename will re-label. Against an existing
  * rule, everything that rule matches; on the create path, everything the

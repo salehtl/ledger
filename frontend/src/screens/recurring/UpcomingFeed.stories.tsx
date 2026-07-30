@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { UpcomingFeed, RecentlyPaidList } from "./UpcomingFeed";
-import type { UpcomingItem } from "./api";
+import type { UpcomingItem } from "../../api/types";
 
 function item(overrides: Partial<UpcomingItem> = {}): UpcomingItem {
   return {

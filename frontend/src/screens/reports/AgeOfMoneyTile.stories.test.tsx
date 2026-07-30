@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { composeStories } from "@storybook/react-vite";
 import * as stories from "./AgeOfMoneyTile.stories";
 
-const { Healthy, SingleSpend, NotComputable } = composeStories(stories);
+const { Healthy, SingleSpend, NotComputable, SparklineWithheld } = composeStories(stories);
 
 describe("AgeOfMoneyTile stories", () => {
   it("headline days, sample size, sparkline, and the one-line explainer", () => {
@@ -33,5 +33,14 @@ describe("AgeOfMoneyTile stories", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.getByText(/Not enough history yet/)).toBeInTheDocument();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("withheld sparkline: strip stays reserved but empty, drill disabled", () => {
+    const { container } = render(<SparklineWithheld />);
+    expect(screen.getByText("24 days")).toBeInTheDocument();
+    const strip = container.querySelector('[data-testid="aom-spark"]');
+    expect(strip).not.toBeNull();
+    expect(strip!.childElementCount).toBe(0);
+    expect(screen.getByRole("button")).toBeDisabled();
   });
 });

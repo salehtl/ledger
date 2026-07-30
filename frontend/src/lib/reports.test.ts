@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { MonthlyTotal } from "../api/types";
 import {
-  linePoints, polylinePoints, areaPolygon, nearestIndex, deltaSummary,
-  isFlatZero, axisIndices, matrixBlocks, monthColumn, netTotals,
-  txnMatchesCategory, cellTxns, monthTxns, fifoSpendAges,
+  linePoints, polylinePoints, areaPolygon, nearestIndex, deltaAt, deltaSummary,
+  isFlatZero, axisIndices, matrixBlocks, monthColumn, monthYear, netTotals,
+  txnMatchesCategory, cellTxns, categoryTxns, netMonthTxns, monthTxns,
+  fifoSpendAges, splitLineAedFils, ageMirrorAgrees,
   yoyRows, yoySummary, pctLabel,
   type IncomeExpenseRow, type NetWorthPoint, type ReportTxn,
 } from "./reports";
@@ -73,6 +74,18 @@ describe("deltaSummary", () => {
   });
 });
 
+describe("deltaAt", () => {
+  it("delta vs the previous point at any index", () => {
+    expect(deltaAt([100, 150, 120], 2)).toEqual({ delta: -30, pct: -0.2 });
+    expect(deltaAt([100, 150, 120], 1)).toEqual({ delta: 50, pct: 0.5 });
+  });
+  it("null at the series start, out of range, and pct null off zero", () => {
+    expect(deltaAt([100], 0)).toEqual({ delta: null, pct: null });
+    expect(deltaAt([100, 150], 2)).toEqual({ delta: null, pct: null });
+    expect(deltaAt([0, 80], 1)).toEqual({ delta: 80, pct: null });
+  });
+});
+
 describe("isFlatZero / axisIndices", () => {
   const zero = (month: string): NetWorthPoint => ({ month, budget_fils: 0, tracking_fils: 0, networth_fils: 0 });
   it("flags an all-zero series (no check-ins yet)", () => {
@@ -96,8 +109,9 @@ describe("matrix helpers", () => {
     expect(b.income.map((r) => r.name)).toEqual(["Salary"]);
     expect(b.spending.map((r) => r.name)).toEqual(["A", "B"]);
   });
-  it("monthColumn gives a two-line header", () => {
+  it("monthColumn gives a two-line header; monthYear the shared short form", () => {
     expect(monthColumn("2026-05")).toEqual({ mon: "May", yr: "’26" });
+    expect(monthYear("2026-05")).toBe("May ’26");
   });
   it("netTotals sums and integer-averages", () => {
     expect(netTotals([100, 200, 50])).toEqual({ total: 350, avg: 116 });
@@ -110,23 +124,47 @@ describe("drill filters", () => {
     txn({ ID: 1, PostedAt: "2026-07-02T10:00:00Z", CategoryID: 5 }),
     txn({ ID: 2, PostedAt: "2026-06-02T10:00:00Z", CategoryID: 5 }),
     txn({
-      ID: 3, PostedAt: "2026-07-05T10:00:00Z", CategoryID: null, CategoryName: "",
+      ID: 3, PostedAt: "2026-07-05T10:00:00Z", CategoryID: null, CategoryName: "", Kind: "",
       Splits: [
         { ID: 1, TransactionID: 3, CategoryID: 5, AmountFils: 600 },
         { ID: 2, TransactionID: 3, CategoryID: 7, AmountFils: 400 },
       ],
     }),
     txn({ ID: 4, PostedAt: "2026-07-09T10:00:00Z", CategoryID: 7 }),
+    txn({ ID: 5, PostedAt: "2026-07-03T10:00:00Z", CategoryID: 5, Status: "needs_review" }),
   ];
   it("matches direct category and split lines", () => {
     expect(txnMatchesCategory(rows[0], 5)).toBe(true);
     expect(txnMatchesCategory(rows[2], 5)).toBe(true);
     expect(txnMatchesCategory(rows[2], 9)).toBe(false);
   });
-  it("cellTxns = category × month; monthTxns = whole month", () => {
+  it("cellTxns = confirmed category × month; monthTxns = whole month, any status", () => {
     expect(cellTxns(rows, 5, "2026-07").map((t) => t.ID)).toEqual([1, 3]);
     expect(cellTxns(rows, 5, "2026-06").map((t) => t.ID)).toEqual([2]);
-    expect(monthTxns(rows, "2026-07").map((t) => t.ID)).toEqual([1, 3, 4]);
+    // the unconfirmed row is excluded from the figure-auditing drill…
+    expect(cellTxns(rows, 5, "2026-07").some((t) => t.ID === 5)).toBe(false);
+    // …but the generic month drill stays deliberately broad
+    expect(monthTxns(rows, "2026-07").map((t) => t.ID)).toEqual([1, 3, 4, 5]);
+  });
+  it("categoryTxns: confirmed category rows from the window start", () => {
+    expect(categoryTxns(rows, 5, "2026-07").map((t) => t.ID)).toEqual([1, 3]);
+    expect(categoryTxns(rows, 5, "2026-06").map((t) => t.ID)).toEqual([1, 2, 3]);
+  });
+  it("netMonthTxns keeps confirmed income/spending; split parents count by line kind", () => {
+    const kinds = new Map([[2, "income"], [5, "spending"], [7, "spending"], [9, "transfer"]]);
+    const list: ReportTxn[] = [
+      txn({ ID: 1 }),                                     // confirmed spending — in
+      txn({ ID: 2, Status: "needs_review" }),             // unconfirmed — out
+      txn({ ID: 3, Kind: "transfer", CategoryID: 9 }),    // transfer — out
+      txn({ ID: 4, CategoryID: null, Kind: "", Splits: [
+        { ID: 1, TransactionID: 4, CategoryID: 5, AmountFils: 1000 },
+      ] }),                                               // split → spending line — in
+      txn({ ID: 5, CategoryID: null, Kind: "", Splits: [
+        { ID: 2, TransactionID: 5, CategoryID: 9, AmountFils: 1000 },
+      ] }),                                               // split → transfer line — out
+      txn({ ID: 6, PostedAt: "2026-06-10T10:00:00Z" }),   // other month — out
+    ];
+    expect(netMonthTxns(list, "2026-07", kinds).map((t) => t.ID)).toEqual([1, 4]);
   });
 });
 
@@ -135,45 +173,106 @@ describe("fifoSpendAges", () => {
     txn({ ID: id, PostedAt: date, AmountFils: amt, AmountAedFils: amt, Direction: "credit", Kind: "income", CategoryName: "Salary" });
   const spend = (id: number, date: string, amt: number) =>
     txn({ ID: id, PostedAt: date, AmountFils: amt, AmountAedFils: amt });
+  const noKinds = new Map<number, string>();
 
   it("ages spends from the lot funding their final fil, FIFO", () => {
-    const ages = fifoSpendAges([
+    const r = fifoSpendAges([
       income(1, "2026-07-01T08:00:00Z", 1000),
       income(2, "2026-07-10T08:00:00Z", 1000),
       spend(3, "2026-07-11T08:00:00Z", 800),   // lot 1 → 10 days
       spend(4, "2026-07-15T08:00:00Z", 400),   // 200 from lot 1, 200 from lot 2 → 5 days
-    ]);
-    expect(ages).toEqual([
+    ], noKinds);
+    expect(r.ages).toEqual([
       { id: 3, date: "2026-07-11T08:00:00Z", ageDays: 10 },
       { id: 4, date: "2026-07-15T08:00:00Z", ageDays: 5 },
     ]);
+    expect(r.unfunded).toBe(0);
   });
-  it("skips pool-empty spends, partial funding still ages", () => {
-    const ages = fifoSpendAges([
-      spend(1, "2026-07-01T08:00:00Z", 500),  // nothing to drain — skipped
+  it("counts pool-empty spends as unfunded; partial funding still ages", () => {
+    const r = fifoSpendAges([
+      spend(1, "2026-07-01T08:00:00Z", 500),  // nothing to drain — unfunded
       income(2, "2026-07-02T08:00:00Z", 300),
       spend(3, "2026-07-06T08:00:00Z", 900),  // drains all 300 → funded, 4 days
-    ]);
-    expect(ages).toEqual([{ id: 3, date: "2026-07-06T08:00:00Z", ageDays: 4 }]);
+    ], noKinds);
+    expect(r.ages).toEqual([{ id: 3, date: "2026-07-06T08:00:00Z", ageDays: 4 }]);
+    expect(r.unfunded).toBe(1);
   });
   it("ignores unconverted foreign rows, non-cashflow kinds, and unconfirmed rows", () => {
-    const ages = fifoSpendAges([
+    const r = fifoSpendAges([
       income(1, "2026-07-01T08:00:00Z", 1000),
       txn({ ID: 90, PostedAt: "2026-07-02T08:00:00Z", AmountFils: 100000, AmountAedFils: null, Currency: "USD" }),
       txn({ ID: 91, PostedAt: "2026-07-03T08:00:00Z", Kind: "excluded", Direction: "debit" }),
       txn({ ID: 92, PostedAt: "2026-07-03T09:00:00Z", Status: "needs_review" }),
       spend(2, "2026-07-04T08:00:00Z", 500),
-    ]);
-    expect(ages).toEqual([{ id: 2, date: "2026-07-04T08:00:00Z", ageDays: 3 }]);
+    ], noKinds);
+    expect(r.ages).toEqual([{ id: 2, date: "2026-07-04T08:00:00Z", ageDays: 3 }]);
+    expect(r.unfunded).toBe(0);
   });
   it("keeps only the last 10 funded spends", () => {
     const flows: ReportTxn[] = [income(1, "2026-07-01T08:00:00Z", 100000)];
     for (let i = 0; i < 14; i++) {
       flows.push(spend(10 + i, `2026-07-${String(2 + i).padStart(2, "0")}T08:00:00Z`, 100));
     }
-    const ages = fifoSpendAges(flows);
-    expect(ages).toHaveLength(10);
-    expect(ages[0].id).toBe(14);
+    const r = fifoSpendAges(flows, noKinds);
+    expect(r.ages).toHaveLength(10);
+    expect(r.ages[0].id).toBe(14);
+  });
+  it("counts an uncategorized split debit parent as one whole spend", () => {
+    const kinds = new Map([[5, "spending"], [7, "spending"]]);
+    const r = fifoSpendAges([
+      income(1, "2026-07-01T08:00:00Z", 1000),
+      txn({ ID: 2, PostedAt: "2026-07-04T08:00:00Z", CategoryID: null, CategoryName: "", Kind: "",
+        Splits: [
+          { ID: 1, TransactionID: 2, CategoryID: 5, AmountFils: 600 },
+          { ID: 2, TransactionID: 2, CategoryID: 7, AmountFils: 400 },
+        ] }),
+    ], kinds);
+    expect(r.ages).toEqual([{ id: 2, date: "2026-07-04T08:00:00Z", ageDays: 3 }]);
+  });
+  it("a split credit funds the pool through its income-kind lines only", () => {
+    const kinds = new Map([[2, "income"], [5, "spending"]]);
+    const r = fifoSpendAges([
+      txn({ ID: 1, PostedAt: "2026-07-01T08:00:00Z", Direction: "credit", CategoryID: null, CategoryName: "", Kind: "",
+        AmountFils: 1000, AmountAedFils: 1000,
+        Splits: [
+          { ID: 1, TransactionID: 1, CategoryID: 2, AmountFils: 600 },  // income line → lot
+          { ID: 2, TransactionID: 1, CategoryID: 5, AmountFils: 400 },  // spending line — no lot
+        ] }),
+      spend(2, "2026-07-06T08:00:00Z", 600),  // fully drains the 600 lot → 5 days
+      spend(3, "2026-07-07T08:00:00Z", 100),  // pool empty → unfunded
+    ], kinds);
+    expect(r.ages).toEqual([{ id: 2, date: "2026-07-06T08:00:00Z", ageDays: 5 }]);
+    expect(r.unfunded).toBe(1);
+  });
+});
+
+describe("splitLineAedFils", () => {
+  it("allocates by cumulative floor so lines sum exactly to the parent AED", () => {
+    const t = txn({ AmountFils: 1000, AmountAedFils: 3673, Currency: "USD",
+      Splits: [
+        { ID: 1, TransactionID: 1, CategoryID: 2, AmountFils: 333 },
+        { ID: 2, TransactionID: 1, CategoryID: 2, AmountFils: 333 },
+        { ID: 3, TransactionID: 1, CategoryID: 5, AmountFils: 334 },
+      ] });
+    const per = splitLineAedFils(t);
+    expect(per).toEqual([1223, 1223, 1227]);
+    expect(per.reduce((s, v) => s + v, 0)).toBe(3673);
+  });
+  it("a foreign parent with no rate allocates zeros", () => {
+    const t = txn({ Currency: "USD", AmountAedFils: null,
+      Splits: [{ ID: 1, TransactionID: 1, CategoryID: 2, AmountFils: 1000 }] });
+    expect(splitLineAedFils(t)).toEqual([0]);
+  });
+});
+
+describe("ageMirrorAgrees", () => {
+  const a = { id: 1, date: "2026-07-01T08:00:00Z", ageDays: 3 };
+  const b = { id: 2, date: "2026-07-02T08:00:00Z", ageDays: 4 };
+  it("agrees only when nothing went unfunded and sample sizes match", () => {
+    expect(ageMirrorAgrees({ ages: [a, b], unfunded: 0 }, 2)).toBe(true);
+    expect(ageMirrorAgrees({ ages: [a], unfunded: 0 }, 2)).toBe(false);
+    expect(ageMirrorAgrees({ ages: [a, b], unfunded: 1 }, 2)).toBe(false);
+    expect(ageMirrorAgrees({ ages: [], unfunded: 0 }, 0)).toBe(true);
   });
 });
 

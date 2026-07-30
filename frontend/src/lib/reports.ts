@@ -91,14 +91,21 @@ export function nearestIndex(fracX: number, n: number): number {
 
 export interface DeltaSummary { latest: number; delta: number; pct: number | null; }
 
+/** Change of `values[idx]` vs the point before it. delta null at the series
+ *  start (nothing to compare against); pct null off a zero base, taken over
+ *  |prev| so the sign stays honest on negative bases. */
+export function deltaAt(values: number[], idx: number): { delta: number | null; pct: number | null } {
+  if (idx <= 0 || idx >= values.length) return { delta: null, pct: null };
+  const prev = values[idx - 1];
+  const delta = values[idx] - prev;
+  return { delta, pct: prev !== 0 ? delta / Math.abs(prev) : null };
+}
+
 /** Latest value and its change vs the previous point (pct null off zero). */
 export function deltaSummary(values: number[]): DeltaSummary {
   if (values.length === 0) return { latest: 0, delta: 0, pct: null };
-  const latest = values[values.length - 1];
-  if (values.length === 1) return { latest, delta: 0, pct: null };
-  const prev = values[values.length - 2];
-  const delta = latest - prev;
-  return { latest, delta, pct: prev !== 0 ? delta / Math.abs(prev) : null };
+  const d = deltaAt(values, values.length - 1);
+  return { latest: values[values.length - 1], delta: d.delta ?? 0, pct: d.pct };
 }
 
 /** True when every month of the series carries no balance at all. */
@@ -139,6 +146,12 @@ export function monthColumn(month: string): { mon: string; yr: string } {
   return { mon: monthLabel(month), yr: `’${month.slice(2, 4)}` };
 }
 
+/** "May ’26" — the one short month-year form every report surface shares. */
+export function monthYear(month: string): string {
+  const c = monthColumn(month);
+  return `${c.mon} ${c.yr}`;
+}
+
 /** Total and integer average of the per-month net row. */
 export function netTotals(netByMonth: number[]): { total: number; avg: number } {
   const total = netByMonth.reduce((s, v) => s + v, 0);
@@ -155,25 +168,69 @@ export function txnMatchesCategory(t: ReportTxn, categoryId: number): boolean {
   return (t.Splits ?? []).some((s) => s.CategoryID === categoryId);
 }
 
-/** The transactions behind one matrix cell: category × "YYYY-MM" month. */
+/** The transactions behind one matrix cell: category × "YYYY-MM" month.
+ *  Confirmed only — the matrix counts confirmed transactions, and a drill
+ *  must never contradict the figure it audits. */
 export function cellTxns(txns: ReportTxn[], categoryId: number, month: string): ReportTxn[] {
-  return txns.filter((t) => t.PostedAt.slice(0, 7) === month && txnMatchesCategory(t, categoryId));
+  return txns.filter((t) =>
+    t.Status === "confirmed" && t.PostedAt.slice(0, 7) === month && txnMatchesCategory(t, categoryId));
 }
 
-/** All of a month's transactions (net-worth / trend drill). */
+/** A category's confirmed transactions from `fromMonth` to the window's end
+ *  (the matrix name/total drill). */
+export function categoryTxns(txns: ReportTxn[], categoryId: number, fromMonth: string): ReportTxn[] {
+  return txns.filter((t) =>
+    t.Status === "confirmed" && t.PostedAt.slice(0, 7) >= fromMonth && txnMatchesCategory(t, categoryId));
+}
+
+/** Whether a transaction is part of the matrix's net figure: its category —
+ *  or, when split, any split line's category — is income or spending kind. */
+function inNetKinds(t: ReportTxn, kindById: Map<number, string>): boolean {
+  const splits = t.Splits ?? [];
+  if (splits.length > 0) {
+    return splits.some((s) => {
+      const k = kindById.get(s.CategoryID);
+      return k === "income" || k === "spending";
+    });
+  }
+  return t.Kind === "income" || t.Kind === "spending";
+}
+
+/** The confirmed income/spending transactions behind one net-row month —
+ *  exactly what the server folds into net_by_month_fils. */
+export function netMonthTxns(txns: ReportTxn[], month: string, kindById: Map<number, string>): ReportTxn[] {
+  return txns.filter((t) =>
+    t.Status === "confirmed" && t.PostedAt.slice(0, 7) === month && inNetKinds(t, kindById));
+}
+
+/** All of a month's transactions, every status — the net-worth chart's (and
+ *  trend list's) generic "Transactions in <month>" drill stays deliberately
+ *  broad; the figure-auditing drills above filter to confirmed. */
 export function monthTxns(txns: ReportTxn[], month: string): ReportTxn[] {
   return txns.filter((t) => t.PostedAt.slice(0, 7) === month);
 }
 
 // ---------------------------------------------------------------------------
 // Age of money — client mirror of internal/budget/age.go's FIFO, over the
-// same cashflow definition (confirmed income-kind credits fill a dated pool,
-// confirmed spending debits drain it oldest-first). Powers the tile's
-// sparkline and the "spends behind this" drill; the headline number itself
-// stays the server's.
+// same cashflow definition (store.SelectCashflowForAge): confirmed income
+// credits fill a dated pool — split credits through their income-kind lines,
+// AED-scaled — and confirmed spends (spending-kind debits plus uncategorized
+// split debit parents) drain it oldest-first. Powers the tile's sparkline and
+// the "spends behind this" drill; the headline number itself stays the
+// server's, and the mirror hides itself when it can't honestly agree
+// (ageMirrorAgrees) — the client only sees a 24-month window while the
+// server walks all history.
 // ---------------------------------------------------------------------------
 
 export interface SpendAge { id: number; date: string; ageDays: number; }
+
+export interface FifoAges {
+  /** Last ≤10 funded spends, oldest first. */
+  ages: SpendAge[];
+  /** Windowed spends that hit an empty pool — a sign the funding income
+   *  predates the window, so the mirror can't be trusted. */
+  unfunded: number;
+}
 
 const AGE_SAMPLE = 10;
 
@@ -185,26 +242,72 @@ function wholeDaysBetween(a: string, b: string): number {
 }
 
 /**
- * FIFO ages for the last ≤10 funded spends, oldest first. Mirrors the server:
- * a spend that draws anything from the pool is "funded" and its age is the
- * days from the lot covering its final available fil; spends hitting an empty
- * pool are skipped, not aged at zero. Foreign rows with no AED value are
- * skipped (they contribute nothing server-side either).
+ * AED value of each split line, allocated from the parent by cumulative floor
+ * division — the exact mirror of store.splitAEDFils, so lines always sum to
+ * the parent's AED amount. BigInt keeps every product exact: money stays
+ * integer end to end. A foreign parent with no rate (or a non-positive
+ * amount) allocates zeros, matching the server's 0-fil contribution.
  */
-export function fifoSpendAges(txns: ReportTxn[]): SpendAge[] {
-  const flows = txns
-    .filter((t) => t.Status === "confirmed")
-    .filter((t) =>
-      (t.Kind === "income" && t.Direction === "credit") ||
-      (t.Kind === "spending" && t.Direction === "debit"))
-    .map((t) => ({ t, amt: aedFils(t) }))
-    .filter((f): f is { t: ReportTxn; amt: number } => f.amt !== null && f.amt > 0)
-    .sort((a, b) => a.t.PostedAt.localeCompare(b.t.PostedAt) || a.t.ID - b.t.ID);
+export function splitLineAedFils(t: ReportTxn): number[] {
+  const lines = t.Splits ?? [];
+  const aed = aedFils(t);
+  if (aed === null || aed <= 0 || t.AmountFils <= 0) return lines.map(() => 0);
+  const amount = BigInt(t.AmountFils);
+  const aedB = BigInt(aed);
+  let cum = 0n;
+  let prev = 0n;
+  return lines.map((s) => {
+    cum += BigInt(s.AmountFils);
+    const alloc = (cum * aedB) / amount;
+    const v = Number(alloc - prev);
+    prev = alloc;
+    return v;
+  });
+}
+
+/**
+ * FIFO ages for the last ≤10 funded spends, oldest first, plus the count of
+ * spends that found the pool empty. Mirrors the server cashflow stream:
+ * income-kind credits fund the pool (split credits through their income-kind
+ * lines — one merged lot, FIFO-identical to per-line lots since they share
+ * the parent's date); spending-kind debits and uncategorized split debit
+ * parents drain it (split lines only re-categorize the money — the parent is
+ * the cash movement). A funded spend's age is the days from the lot covering
+ * its final available fil; empty-pool spends are counted, never aged at zero.
+ * Foreign rows with no AED value are skipped (server-side they are 0-fil).
+ * `kindById` maps category id → kind, needed to classify split lines.
+ */
+export function fifoSpendAges(txns: ReportTxn[], kindById: Map<number, string>): FifoAges {
+  interface Flow { t: ReportTxn; amt: number; income: boolean }
+  const flows: Flow[] = [];
+  for (const t of txns) {
+    if (t.Status !== "confirmed") continue;
+    const splits = t.Splits ?? [];
+    if (t.Direction === "credit") {
+      if (splits.length > 0) {
+        const per = splitLineAedFils(t);
+        const amt = splits.reduce(
+          (s, l, i) => (kindById.get(l.CategoryID) === "income" ? s + per[i] : s), 0);
+        if (amt > 0) flows.push({ t, amt, income: true });
+      } else if (t.Kind === "income") {
+        const amt = aedFils(t);
+        if (amt !== null && amt > 0) flows.push({ t, amt, income: true });
+      }
+      continue;
+    }
+    if (t.Direction !== "debit") continue;
+    if (t.Kind === "spending" || (t.CategoryID === null && splits.length > 0)) {
+      const amt = aedFils(t);
+      if (amt !== null && amt > 0) flows.push({ t, amt, income: false });
+    }
+  }
+  flows.sort((a, b) => a.t.PostedAt.localeCompare(b.t.PostedAt) || a.t.ID - b.t.ID);
 
   const pool: { at: string; remaining: number }[] = [];
   const ages: SpendAge[] = [];
-  for (const { t, amt } of flows) {
-    if (t.Kind === "income") {
+  let unfunded = 0;
+  for (const { t, amt, income } of flows) {
+    if (income) {
       pool.push({ at: t.PostedAt, remaining: amt });
       continue;
     }
@@ -220,11 +323,21 @@ export function fifoSpendAges(txns: ReportTxn[]): SpendAge[] {
       lastLotAt = lot.at;
       if (lot.remaining === 0) pool.shift();
     }
-    if (!funded) continue;
+    if (!funded) { unfunded++; continue; }
     ages.push({ id: t.ID, date: t.PostedAt, ageDays: wholeDaysBetween(lastLotAt, t.PostedAt) });
     if (ages.length > AGE_SAMPLE) ages.shift();
   }
-  return ages;
+  return { ages, unfunded };
+}
+
+/**
+ * Whether the client FIFO mirror can honestly stand behind the server's
+ * figure: nothing in the window went unfunded and the sample sizes agree.
+ * When this is false the sparkline and its drill hide — a divergent mirror
+ * shown anyway would contradict the number above it.
+ */
+export function ageMirrorAgrees(mirror: FifoAges, serverSampleSize: number): boolean {
+  return mirror.unfunded === 0 && mirror.ages.length === serverSampleSize;
 }
 
 // ---------------------------------------------------------------------------

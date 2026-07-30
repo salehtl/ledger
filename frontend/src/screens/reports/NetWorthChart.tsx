@@ -6,19 +6,14 @@ import { formatFils } from "../../lib/money";
 import {
   areaPolygon,
   axisIndices,
+  deltaAt,
   linePoints,
-  monthColumn,
+  monthYear,
   nearestIndex,
   pctLabel,
   polylinePoints,
   type NetWorthPoint,
 } from "../../lib/reports";
-
-/** "May ’26" for a "YYYY-MM" month. */
-function monthYear(month: string): string {
-  const c = monthColumn(month);
-  return `${c.mon} ${c.yr}`;
-}
 
 /**
  * The net-worth line: month-end balances across budget + tracking accounts,
@@ -97,12 +92,7 @@ export function NetWorthChart({ points, onDrillMonth }: {
   const pts = linePoints(values);
   const idx = sel === null ? n - 1 : Math.min(sel, n - 1);
   const p = points[idx];
-  const prev = idx > 0 ? points[idx - 1] : null;
-  const delta = prev === null ? null : p.networth_fils - prev.networth_fils;
-  const deltaPct =
-    prev === null || prev.networth_fils === 0
-      ? null
-      : (p.networth_fils - prev.networth_fils) / Math.abs(prev.networth_fils);
+  const { delta, pct: deltaPct } = deltaAt(values, idx);
   const marker = pts[idx];
 
   return (

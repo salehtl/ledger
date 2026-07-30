@@ -7,7 +7,7 @@ import { Card } from "../../components/ui/Card";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { AlertTriangle, FolderKanban } from "../../components/ui/PixelIcon";
 import { balanceLabel, booksTotal, groupAccounts, type AccountBalanceSummary } from "../../lib/reconcile";
-import { useAccountBalances } from "./api";
+import { useAccountBalances } from "../../api/hooks";
 import { AccountRow } from "./AccountRow";
 import { AccountDetail } from "./AccountDetail";
 import { AddAccountSheet } from "./AddAccountSheet";

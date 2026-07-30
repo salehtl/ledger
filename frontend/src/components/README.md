@@ -459,8 +459,25 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   the pure, tested `lib/rowSwipe`. Touch enhancement only — keep every action
   reachable by tapping the row open too.
 - `TransactionDetailSheet` — the tap-opened action hub for one transaction
-  (categorize, transfer, ignore, link/unlink refund, archive/restore), gated by
+  (categorize, transfer, ignore, link/unlink refund, archive/restore, and the
+  v3 depth doors: split, note, rename merchant, source email), gated by
   status. Swipe covers the two commonest moves; everything else lives here.
+  Always renders `NoteField`; split parents close the categorize/transfer/
+  refund doors (the server 409s them) and render their lines as `SplitLines`.
+- `SplitSheet` (`transactions/`) — divide one transaction across eligible
+  categories with a live integer-fils remainder (last line absorbs rounding);
+  bucket-grouped chip picker rebuilt from CategorizeSheet's pattern. An empty
+  set un-splits — the parent returns to the review queue, stated in copy,
+  with a toast Undo that restores the old lines. Math is pure `lib/txSplit`.
+- `SplitLines` (`transactions/`) — the expandable stack a split parent renders
+  in the register and detail sheet; 36px expander sits inside the sanctioned
+  dense-row exception.
+- `NoteField` (`transactions/`) — the user memo, distinct from the parsed
+  description; 16px input, label stays visible, saves via the note endpoint.
+- `RenameMerchantSheet` (`transactions/`) — rename once, everywhere: writes
+  `display_name` onto the matching rule (creating the write-back rule when
+  none matches) so history and future mail print the clean name. States how
+  many transactions the rename touches.
 - `CategorizeSheet` — category picker as tap-target chips grouped by bucket
   (not a radio list), search, a "make a rule" `Switch`, and a project picker
   (assigns immediately, locally-stated so the choice sticks while the sheet is

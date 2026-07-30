@@ -20,13 +20,14 @@ describe("DiscrepancyCard stories", () => {
     expect(kinds).toEqual(["unparsed", "unparsed", "fx", "cash"]);
     expect(screen.getByText("Debit card purchase alert")).toBeInTheDocument();
     expect(screen.getByText(/no amount found/)).toBeInTheDocument();
-    expect(screen.getByText(/1 foreign transaction await/)).toBeInTheDocument();
+    expect(screen.getByText(/1 foreign transaction awaits an FX rate/)).toBeInTheDocument();
     expect(screen.getByText(/180\.00 may have left as cash/)).toBeInTheDocument();
   });
 
-  it("one tap writes the delta off, verbatim in the label", () => {
+  it("all three routes: write the delta off, open manual entry, or keep for now", () => {
     render(<ShortWithReceipts />);
     expect(screen.getByRole("button", { name: "Write 180.00 adjustment" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add the transaction instead" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Keep for now" })).toBeInTheDocument();
   });
 

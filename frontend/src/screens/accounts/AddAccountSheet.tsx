@@ -5,7 +5,7 @@ import { Input } from "../../components/ui/Field";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { useToast } from "../../components/Toast";
 import type { AccountKind } from "../../lib/reconcile";
-import { useCreateAccount } from "./api";
+import { useCreateAccount } from "../../api/hooks";
 
 const KIND_HINT: Record<AccountKind, string> = {
   budget: "Spendable money — feeds check-ins, envelopes and transfer matching.",
@@ -41,13 +41,22 @@ export function AddAccountSheet({ onClose, onCreated }: {
     create.mutate(
       { name: name.trim(), bank: bank.trim(), last4, kind },
       {
-        onSuccess: (id) => {
-          toast.show({
-            message:
-              kind === "tracking"
-                ? `${name.trim()} added — set its first balance.`
-                : `${name.trim()} added — check in to anchor its balance.`,
-          });
+        onSuccess: ({ id, kindApplied }) => {
+          // The account exists even when the kind flip failed — say exactly
+          // what happened and route to the fix, never claim nothing was added.
+          toast.show(
+            kindApplied
+              ? {
+                  message:
+                    kind === "tracking"
+                      ? `${name.trim()} added — set its first balance.`
+                      : `${name.trim()} added — check in to anchor its balance.`,
+                }
+              : {
+                  message: `${name.trim()} added, but couldn't mark it tracking — flip it in the account's settings.`,
+                  tone: "error",
+                },
+          );
           onCreated?.(id);
           onClose();
         },
@@ -105,7 +114,9 @@ export function AddAccountSheet({ onClose, onCreated }: {
             </p>
           )}
         </div>
-        <div>
+        {/* preventDefault: SegmentedControl buttons carry no type attribute,
+            so inside this form a segment tap would otherwise submit it. */}
+        <div onClick={(e) => e.preventDefault()}>
           <span className="block text-sm font-medium mb-1.5">Type</span>
           <SegmentedControl<AccountKind>
             value={kind}

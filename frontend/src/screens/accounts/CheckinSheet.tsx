@@ -14,7 +14,7 @@ import {
   type CheckinResult,
   type Sign,
 } from "../../lib/reconcile";
-import { useAdjust, useCheckin } from "./api";
+import { useAdjust, useCheckin } from "../../api/hooks";
 import { BalanceField } from "./BalanceField";
 import { DiscrepancyCard } from "./DiscrepancyCard";
 
@@ -46,9 +46,11 @@ function Confirmation({ title, meta, hint, testid }: {
  * stated balance is persisted as the new anchor the moment the check-in
  * lands, whatever the delta.
  */
-export function CheckinSheet({ account, onClose }: {
+export function CheckinSheet({ account, onClose, onAddTransaction }: {
   account: AccountBalanceSummary;
   onClose: () => void;
+  /** Discrepancy third route: close this sheet, open manual entry for the account. */
+  onAddTransaction?: () => void;
 }) {
   const a = account;
   const inputId = useId();
@@ -57,14 +59,18 @@ export function CheckinSheet({ account, onClose }: {
   const adjust = useAdjust(a.account_id);
   const [text, setText] = useState("");
   const [sign, setSign] = useState<Sign>((a.computed_fils ?? 0) < 0 ? "neg" : "pos");
+  const [touched, setTouched] = useState(false);
   const [result, setResult] = useState<CheckinResult | null>(null);
   const [adjusted, setAdjusted] = useState(false);
 
   const stated = composeStated(text, sign);
-  const showParseError = text.trim() !== "" && stated === null;
+  // Only after blur or a submit attempt — never mid-keystroke ("8250." on the
+  // way to "8250.50"). The disabled-submit guard below stays live throughout.
+  const showParseError = touched && text.trim() !== "" && stated === null;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    setTouched(true);
     if (stated === null || checkin.isPending) return;
     checkin.mutate({ stated_fils: stated }, { onSuccess: setResult });
   };
@@ -98,6 +104,7 @@ export function CheckinSheet({ account, onClose }: {
             sign={sign}
             onSign={setSign}
             autoFocus
+            onBlur={() => setTouched(true)}
             error={showParseError ? "Enter an amount like 8,250.00." : undefined}
             helper={
               a.has_checkin && a.anchor_as_of
@@ -161,6 +168,7 @@ export function CheckinSheet({ account, onClose }: {
           result={result}
           onAdjust={writeAdjustment}
           adjustPending={adjust.isPending}
+          onAddTransaction={onAddTransaction}
           onKeep={onClose}
         />
       )}

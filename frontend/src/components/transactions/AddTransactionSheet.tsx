@@ -10,10 +10,13 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function AddTransactionSheet({ categories, onSubmit, onClose }: {
+export function AddTransactionSheet({ categories, onSubmit, onClose, accountId }: {
   categories: Category[];
-  onSubmit: (payload: ManualTxnPayload) => void;
+  onSubmit: (payload: ManualTxnPayload & { account_id?: number }) => void;
   onClose: () => void;
+  /** Optional: attribute the entry to a registered account so it joins
+   *  check-in expected-balance math and net worth (api-contract §4). */
+  accountId?: number;
 }) {
   const [merchant, setMerchant] = useState("");
   const [amountAed, setAmountAed] = useState("");
@@ -26,7 +29,7 @@ export function AddTransactionSheet({ categories, onSubmit, onClose }: {
     const res = buildManualTxnPayload({ merchant, amountAed, direction, date, categoryId });
     if (!res.ok) { setError(res.error); return; }
     setError("");
-    onSubmit(res.payload);
+    onSubmit(accountId != null ? { ...res.payload, account_id: accountId } : res.payload);
   };
 
   return (
