@@ -31,7 +31,12 @@ afterEach(() => {
 
 describe("useLiveEvents", () => {
   it("exposes the live-data query keys", () => {
-    expect(LIVE_INVALIDATE_KEYS).toEqual([["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"], ["categorize-status"]]);
+    expect(LIVE_INVALIDATE_KEYS).toEqual([
+      ["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"], ["categorize-status"],
+      ["envelopes"], ["upcoming"], ["scheduled"],
+      ["accounts"], ["accounts-balances"], ["account-balance-history"],
+      ["report-networth"], ["report-income-expense"], ["report-age-of-money"],
+    ]);
   });
 
   it("invalidates the live keys on a default (unnamed) SSE message", () => {

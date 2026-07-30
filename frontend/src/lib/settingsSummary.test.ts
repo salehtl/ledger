@@ -4,6 +4,8 @@ import {
   categorizationSummary,
   currenciesLabel,
   fontScaleLabel,
+  notifySummary,
+  scheduledSummary,
   swipeSummary,
 } from "./settingsSummary";
 import type { AppSettings, BudgetConfig, RatesResponse } from "../api/types";
@@ -85,5 +87,36 @@ describe("fontScaleLabel", () => {
   });
   it("shows reduced scales as percentages", () => {
     expect(fontScaleLabel(90)).toBe("90%");
+  });
+});
+
+describe("scheduledSummary", () => {
+  it("is undefined while loading or when nothing is scheduled", () => {
+    expect(scheduledSummary(undefined)).toBeUndefined();
+    expect(scheduledSummary([{ status: "dismissed" }])).toBeUndefined();
+  });
+  it("counts active and proposed separately", () => {
+    expect(
+      scheduledSummary([
+        { status: "active" },
+        { status: "active" },
+        { status: "proposed" },
+        { status: "paused" },
+      ]),
+    ).toBe("2 active · 1 found");
+  });
+  it("shows proposals alone before anything is confirmed", () => {
+    expect(scheduledSummary([{ status: "proposed" }])).toBe("1 found");
+  });
+});
+
+describe("notifySummary", () => {
+  it("reads Off when both gates are closed", () => {
+    expect(notifySummary({ notify_thresholds: false, notify_upcoming_days: 0 })).toBe("Off");
+  });
+  it("names each open gate", () => {
+    expect(notifySummary({ notify_thresholds: true, notify_upcoming_days: 0 })).toBe("Thresholds");
+    expect(notifySummary({ notify_thresholds: false, notify_upcoming_days: 3 })).toBe("Bills 3d");
+    expect(notifySummary({ notify_thresholds: true, notify_upcoming_days: 7 })).toBe("Thresholds · bills 7d");
   });
 });

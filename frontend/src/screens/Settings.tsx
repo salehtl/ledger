@@ -16,6 +16,7 @@ import { CurrenciesPage } from "./settings/CurrenciesPage";
 import { AccountsPage } from "./settings/AccountsPage";
 import { TextSizePage } from "./settings/TextSizePage";
 import { IngestHealthPage } from "./settings/IngestHealthPage";
+import { NotificationsPage } from "./settings/NotificationsPage";
 
 export { pctsValid } from "../lib/split";
 
@@ -27,6 +28,8 @@ export function Settings({
   scope,
   intent,
   onOpenProjects,
+  onOpenAccounts,
+  onOpenRecurring,
 }: {
   scope?: Scope;
   intent?: SettingsIntent | null;
@@ -35,6 +38,9 @@ export function Settings({
    *  "Projects" row delegates to this instead of the local page dispatch.
    *  Optional so standalone Settings tests don't need to stub it. */
   onOpenProjects?: () => void;
+  /** Accounts / Recurring are AppShell-level drill-ins for the same reason. */
+  onOpenAccounts?: () => void;
+  onOpenRecurring?: () => void;
 }) {
   const qc = useQueryClient();
   const { show } = useToast();
@@ -69,7 +75,13 @@ export function Settings({
 
   return (
     <>
-      <SettingsHub onOpen={setPage} onClear={() => setClearOpen(true)} onOpenProjects={() => onOpenProjects?.()} />
+      <SettingsHub
+        onOpen={setPage}
+        onClear={() => setClearOpen(true)}
+        onOpenProjects={() => onOpenProjects?.()}
+        onOpenAccounts={onOpenAccounts}
+        onOpenRecurring={onOpenRecurring}
+      />
 
       {page === "budget" && <BudgetPage onClose={close} />}
       {page === "categorization" && <CategorizationPage scope={scope} onClose={close} />}
@@ -79,6 +91,7 @@ export function Settings({
       {page === "accounts" && <AccountsPage onClose={close} />}
       {page === "textsize" && <TextSizePage onClose={close} />}
       {page === "ingest" && <IngestHealthPage onClose={close} />}
+      {page === "notifications" && <NotificationsPage onClose={close} />}
       {page === "categories" && <CategoryManager onClose={close} />}
       {page === "rules" && <RulesManager onClose={close} />}
 

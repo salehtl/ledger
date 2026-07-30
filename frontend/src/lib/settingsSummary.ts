@@ -42,3 +42,24 @@ export function fontScaleLabel(scale: number): string {
 export function swipeSummary(cfg: SwipeConfig): string {
   return `← ${cfg.left.label} · → ${cfg.right.label}`;
 }
+
+/** "3 active · 1 found" — confirmed schedules plus detector proposals awaiting triage. */
+export function scheduledSummary(rows?: { status: string }[]): string | undefined {
+  if (!rows) return undefined;
+  const active = rows.filter((r) => r.status === "active").length;
+  const proposed = rows.filter((r) => r.status === "proposed").length;
+  const parts: string[] = [];
+  if (active > 0) parts.push(`${active} active`);
+  if (proposed > 0) parts.push(`${proposed} found`);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** "Off" | "Thresholds" | "Bills 3d" | "Thresholds · bills 3d" — the two push gates. */
+export function notifySummary(n: { notify_thresholds: boolean; notify_upcoming_days: number }): string {
+  const parts: string[] = [];
+  if (n.notify_thresholds) parts.push("Thresholds");
+  if (n.notify_upcoming_days > 0) parts.push(`bills ${n.notify_upcoming_days}d`);
+  if (parts.length === 0) return "Off";
+  const s = parts.join(" · ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}

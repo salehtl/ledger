@@ -1,16 +1,9 @@
-import { Home, ListOrdered, Inbox, PieChart, Settings, PiggyBank, ArrowLeftRight, TrendingUp, FolderKanban, type PixelIconType } from "../components/ui/PixelIcon";
+import { Home, ListOrdered, Inbox, PieChart, PiggyBank, type PixelIconType } from "../components/ui/PixelIcon";
 
-export type TabId =
-  | "home"
-  | "plan"
-  | "transactions"
-  | "review"
-  | "insights"
-  | "settings"
-  // v3 build-phase scaffold tabs; final IA lands with the integration piece.
-  | "recurring"
-  | "reports"
-  | "accounts";
+// The five primary destinations (P5: ≤5, task nouns). Settings lives behind
+// the TopBar gear; Reports / Accounts / Recurring open as full-screen
+// drill-ins from Insights, Settings and Home rather than holding tab slots.
+export type TabId = "home" | "plan" | "transactions" | "review" | "insights";
 
 export const TABS: { id: TabId; label: string; icon: PixelIconType }[] = [
   { id: "home", label: "Home", icon: Home },
@@ -18,8 +11,4 @@ export const TABS: { id: TabId; label: string; icon: PixelIconType }[] = [
   { id: "transactions", label: "Transactions", icon: ListOrdered },
   { id: "review", label: "Review", icon: Inbox },
   { id: "insights", label: "Insights", icon: PieChart },
-  { id: "settings", label: "Settings", icon: Settings },
-  { id: "recurring", label: "Recurring", icon: ArrowLeftRight },
-  { id: "reports", label: "Reports", icon: TrendingUp },
-  { id: "accounts", label: "Accounts", icon: FolderKanban },
 ];
