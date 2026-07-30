@@ -2,7 +2,16 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createInvalidationScheduler } from "../lib/liveInvalidation";
 
-export const LIVE_INVALIDATE_KEYS = [["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"], ["categorize-status"]] as const;
+// Prefix keys: invalidateQueries matches ["envelopes"] against ["envelopes", month].
+// The v3 events (budget_threshold, upcoming_bill, missed_bill, schedule_detected)
+// ride the same default SSE channel as transaction broadcasts, so one key list
+// serves every event; only refetches of *active* queries actually fire.
+export const LIVE_INVALIDATE_KEYS = [
+  ["summary"], ["transactions"], ["review"], ["insights-categories"], ["insights-trend"], ["categorize-status"],
+  ["envelopes"], ["upcoming"], ["scheduled"],
+  ["accounts"], ["accounts-balances"], ["account-balance-history"],
+  ["report-networth"], ["report-income-expense"], ["report-age-of-money"],
+] as const;
 
 export function useLiveEvents() {
   const qc = useQueryClient();

@@ -22,8 +22,8 @@ import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
 import { ProjectsFlow } from "../screens/projects/ProjectsFlow";
 import { PlanScreen } from "../screens/plan/PlanScreen";
 import { RecurringScreen } from "../screens/recurring/RecurringScreen";
-import { ReportsScreen } from "../screens/reports/ReportsScreen";
 import { AccountsScreen } from "../screens/accounts/AccountsScreen";
+import { SettingsPage } from "../screens/settings/SettingsPage";
 
 const TITLES: Record<TabId, string> = {
   home: "Home",
@@ -31,18 +31,27 @@ const TITLES: Record<TabId, string> = {
   transactions: "Transactions",
   review: "Review",
   insights: "Insights",
-  settings: "Settings",
-  recurring: "Recurring",
-  reports: "Reports",
-  accounts: "Accounts",
 };
+
+/** Secondary surfaces hosted above the tabs as full-screen drill-ins.
+ *  Settings keeps its cross-tab deep-link intent (banner → Email ingest). */
+type Overlay =
+  | { kind: "settings"; intent?: SettingsIntent }
+  | { kind: "accounts" }
+  | { kind: "recurring" };
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
-  const [settingsIntent, setSettingsIntent] = useState<SettingsIntent | null>(null);
+  // Drill-in overlays stack like ProjectsFlow's pages: every panel on the
+  // path stays mounted in DOM order, so backing out of Accounts opened from
+  // Settings reveals Settings, while Accounts opened from Home pops to Home.
+  const [overlays, setOverlays] = useState<Overlay[]>([]);
+  const pushOverlay = (o: Overlay) => setOverlays((s) => [...s, o]);
+  const popOverlay = () => setOverlays((s) => s.slice(0, -1));
+  const intentNonce = useRef(0);
   const openIngestHealth = () => {
-    setSettingsIntent((p) => ({ page: "ingest", nonce: (p?.nonce ?? 0) + 1 }));
-    setTab("settings");
+    intentNonce.current += 1;
+    setOverlays([{ kind: "settings", intent: { page: "ingest", nonce: intentNonce.current } }]);
   };
 
   // Projects is a Home-first feature: it opens as a full-screen overlay over
@@ -77,7 +86,13 @@ export function AppShell() {
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">
       <PwaUpdatePrompt />
-      <TopBar title={TITLES[tab]} scope={scope} onScopeChange={setScope} showScope={tab !== "settings"} />
+      <TopBar
+        title={TITLES[tab]}
+        scope={scope}
+        onScopeChange={setScope}
+        showScope
+        onOpenSettings={() => pushOverlay({ kind: "settings" })}
+      />
       {!online && (
         <div role="status" className="shrink-0 bg-warn/15 text-warn text-sm text-center py-1">Offline — showing last loaded data</div>
       )}
@@ -90,17 +105,30 @@ export function AppShell() {
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
           {tab === "review" && <Review scope={scope} />}
           {tab === "insights" && <Insights scope={scope} />}
-          {tab === "settings" && <Settings scope={scope} intent={settingsIntent} onOpenProjects={openProjects} />}
-          {tab === "recurring" && <RecurringScreen />}
-          {tab === "reports" && <ReportsScreen scope={scope} />}
-          {tab === "accounts" && <AccountsScreen />}
         </div>
       </main>
-      <BottomNav
-        active={tab}
-        reviewCount={reviewCount}
-        onNavigate={(t) => { setSettingsIntent(null); setTab(t); }}
-      />
+      <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
+      {overlays.map((o, i) =>
+        o.kind === "settings" ? (
+          <SettingsPage key={`settings-${i}`} title="Settings" onClose={popOverlay}>
+            <Settings
+              scope={scope}
+              intent={o.intent}
+              onOpenProjects={openProjects}
+              onOpenAccounts={() => pushOverlay({ kind: "accounts" })}
+              onOpenRecurring={() => pushOverlay({ kind: "recurring" })}
+            />
+          </SettingsPage>
+        ) : o.kind === "accounts" ? (
+          <SettingsPage key={`accounts-${i}`} title="Accounts" onClose={popOverlay}>
+            <AccountsScreen />
+          </SettingsPage>
+        ) : (
+          <SettingsPage key={`recurring-${i}`} title="Recurring" onClose={popOverlay}>
+            <RecurringScreen />
+          </SettingsPage>
+        ),
+      )}
       {projectsView !== null && (
         <ProjectsFlow initialProjectId={projectsView.projectId} onClose={() => setProjectsView(null)} />
       )}

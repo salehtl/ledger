@@ -82,21 +82,21 @@ describe("AppShell", () => {
     await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));
   });
 
-  it("does not replay a stale settings deep-link after navigating away and back", async () => {
+  it("does not replay a stale settings deep-link after closing and reopening Settings", async () => {
     wrap();
-    // Tap the ingest warning banner: jumps to Settings, straight into the Email ingest drill-in.
+    // Tap the ingest warning banner: opens the Settings overlay straight into the Email ingest drill-in.
     fireEvent.click(await screen.findByRole("button", { name: /ingest details/i }));
     expect(await screen.findByRole("heading", { name: /email ingest/i })).toBeInTheDocument();
 
-    // Navigate to Home, then back to Settings via the bottom nav.
-    fireEvent.click(screen.getByRole("button", { name: /home/i }));
-    await screen.findByRole("heading", { name: /home/i });
-    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    // Back out of the drill-in, then out of Settings entirely.
+    fireEvent.click(screen.getByRole("button", { name: /back from email ingest/i }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /back from settings/i }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /^settings$/i })).toBeNull());
 
-    // The stale intent must not replay: we should land on the hub, not the ingest drill-in.
-    // (The hub's "Email ingest" row is always in the DOM under the drill-in overlay, so the
-    // reliable signal is the drill-in's own heading/back-button being absent.)
-    await screen.findByRole("button", { name: /^settings$/i }); // confirms we're on the Settings tab
+    // Reopen via the TopBar gear: the stale intent must not replay — hub, not the drill-in.
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /back from email ingest/i })).toBeNull();
   });

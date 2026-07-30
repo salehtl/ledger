@@ -6,9 +6,11 @@ import { BottomNav } from "./BottomNav";
 describe("BottomNav", () => {
   it("renders five tabs including Review", () => {
     render(<BottomNav active="home" reviewCount={0} onNavigate={() => {}} />);
-    for (const name of [/home/i, /transactions/i, /review/i, /insights/i, /settings/i]) {
+    for (const name of [/home/i, /plan/i, /transactions/i, /review/i, /insights/i]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+    // Settings left the bar for the TopBar gear in v3.
+    expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
   });
 
   it("shows the count badge on the Review tab, not Transactions", () => {

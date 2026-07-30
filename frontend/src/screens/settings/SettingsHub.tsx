@@ -22,6 +22,8 @@ import {
   categorizationSummary,
   currenciesLabel,
   fontScaleLabel,
+  notifySummary,
+  scheduledSummary,
   swipeSummary,
 } from "../../lib/settingsSummary";
 
@@ -35,7 +37,8 @@ export type SettingsPageId =
   | "categories"
   | "rules"
   | "textsize"
-  | "ingest";
+  | "ingest"
+  | "notifications";
 
 /** A drill-in row: label on the left, current-state preview + chevron on the right. */
 function HubRow({
@@ -97,12 +100,18 @@ export function SettingsHub({
   onOpen,
   onClear,
   onOpenProjects,
+  onOpenAccounts,
+  onOpenRecurring,
 }: {
   onOpen: (page: SettingsPageId) => void;
   onClear: () => void;
   /** Projects lives at the AppShell level (overlay, not a Settings page) so
    *  Task 9's Home project cards can deep-link into a specific project. */
   onOpenProjects: () => void;
+  /** Accounts and Recurring are AppShell-level drill-ins too (also reachable
+   *  from Home); optional so standalone Settings tests don't need stubs. */
+  onOpenAccounts?: () => void;
+  onOpenRecurring?: () => void;
 }) {
   const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
@@ -112,6 +121,14 @@ export function SettingsHub({
   const health = useIngestHealth();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
   const projects = useQuery({ queryKey: ["projects", "all"], queryFn: () => getProjects(true) });
+  const scheduled = useQuery({
+    queryKey: ["scheduled"],
+    queryFn: () => getJSON<{ status: string }[]>("/api/scheduled"),
+  });
+  const notify = useQuery({
+    queryKey: ["settings-notifications"],
+    queryFn: () => getJSON<{ notify_thresholds: boolean; notify_upcoming_days: number }>("/api/settings/notifications"),
+  });
   const swipe = loadSwipeConfig();
   const [haptics, setHaptics] = useState(isHapticsEnabled());
   const [sound, setSound] = useState(isSoundEnabled());
@@ -127,6 +144,20 @@ export function SettingsHub({
           value={budget.data ? budgetSplitLabel(budget.data) : undefined}
           onClick={() => onOpen("budget")}
         />
+        {onOpenRecurring && (
+          <HubRow label="Recurring bills" value={scheduledSummary(scheduled.data)} onClick={onOpenRecurring} />
+        )}
+        {onOpenAccounts && (
+          <HubRow
+            label="Accounts"
+            value={
+              accounts.data && accounts.data.length > 0
+                ? `${accounts.data.length} account${accounts.data.length === 1 ? "" : "s"}`
+                : undefined
+            }
+            onClick={onOpenAccounts}
+          />
+        )}
       </Group>
 
       <Group label="Automation">
@@ -149,6 +180,7 @@ export function SettingsHub({
       </Group>
 
       <Group label="Device">
+        <HubRow label="Notifications" value={notify.data ? notifySummary(notify.data) : undefined} onClick={() => onOpen("notifications")} />
         <HubRow label="Text size" value={fontScaleLabel(loadFontScale())} onClick={() => onOpen("textsize")} />
         <ToggleRow
           label="Haptics"
@@ -183,15 +215,7 @@ export function SettingsHub({
           value={rates.data?.rates ? currenciesLabel(rates.data) : undefined}
           onClick={() => onOpen("currencies")}
         />
-        <HubRow
-          label="Accounts & transfers"
-          value={
-            accounts.data && accounts.data.length > 0
-              ? `${accounts.data.length} account${accounts.data.length === 1 ? "" : "s"}`
-              : undefined
-          }
-          onClick={() => onOpen("accounts")}
-        />
+        <HubRow label="Transfers" value="net matching pairs" onClick={() => onOpen("accounts")} />
       </Group>
 
       <Group label="Danger zone">
