@@ -149,6 +149,74 @@ living catalog; update the story in the same commit as the component.
   (tighter than the standard `0.14em`) at eyebrow weight/size, because it's
   chrome sitting next to a sans screen title rather than a standalone label.
 
+## Motion
+
+All motion in the app is Framer Motion (npm package `motion`, imported from
+`motion/react`). Read this before animating anything.
+
+- **One motion root.** `app/MotionProvider.tsx` mounts `LazyMotion` +
+  `MotionConfig` once, in `main.tsx`. Don't nest another.
+- **`m.*`, never `motion.*`.** `LazyMotion strict` makes a bare `motion.div`
+  throw rather than quietly pulling the whole feature bundle into the entry
+  chunk. `domMax` is loaded as a thunk so it lands in its own chunk; the app
+  needs it for drag and layout animations.
+- **Every duration and curve comes from `lib/motion.ts`.** `DUR` (`press` /
+  `fast` / `base` / `sheet`), `EASE_OUT`, `EASE_DRAWER`, and the transition
+  tokens built from them. No literal seconds in a component. 300ms is the
+  ceiling and `motion.test.ts` enforces it; anything slower needs a written
+  reason. Note `dragTransition` is *not* a `Transition` — see `INERTIA_ROW`
+  in that file for why the drag bounce is a separately-typed token.
+- **Reduced motion is global and must not be re-implemented.**
+  `MotionConfig reducedMotion="user"` disables transform and layout animations
+  for a user who asked the OS to minimise motion, and leaves opacity and colour
+  alone — "gentler, not zero". A per-component `useReducedMotion()` branch is a
+  bug in the making (a hand-rolled version is how the swipe card's 800px
+  fly-out came to ignore the preference entirely). The **one** exception is a
+  non-transform property Framer's policy doesn't cover — `clipPath`, which
+  `ProgressBar` and `BudgetPage` gate by hand with `useReducedMotion()`.
+- **Gesture decisions are pure functions in `lib/`.** `sheetDrag`, `edgeBack`,
+  `rowSwipe`, `swipe`, `toastSwipe` each take `(offset, velocity)` straight
+  from Framer's `onDragEnd` info and return a decision, with co-located tests.
+  Framer's drag cannot be driven meaningfully in jsdom (no layout, no real
+  pointer velocity), so this is where gesture edge cases are actually covered;
+  component tests assert render and lifecycle only, and the gestures themselves
+  are verified in `harness/gestures.mjs`.
+- **`Pressable` is the press primitive.** The global `.press` class no longer
+  exists — see the Pressable entry below for why it was a hazard.
+- **Tests that render an `m.*` must wrap it in `MotionProvider`.** `strict`
+  does *not* throw on an unwrapped `m.*`: it renders with no features loaded,
+  so the animation is silently inert and the test proves nothing.
+
+### The two CSS exemptions
+
+Exactly two animations stay in CSS. Both are indefinite opacity loops, and
+neither is gated behind `prefers-reduced-motion` — that preference asks for
+less *movement*, not less comprehension, and nothing here travels.
+
+1. **The pixel spinner** (`.pixel-spinner-cell`, `styles/app.css`). Framer
+   cannot express it at all: the eight cells phase-shift one shared keyframe
+   with *negative* `animation-delay`, and Framer's `delay` only postpones a
+   start. Reproducing it would mean eight separately-scheduled JS loops held in
+   phase, replacing one declaration.
+2. **The skeleton pulse** (`animate-pulse`, `Skeleton.tsx` and four other
+   sites). An indefinite loop is the one shape a JS scheduler is strictly worse
+   at than a CSS keyframe — handed to the compositor once, it costs the main
+   thread nothing, on the screen where the main thread is already scarce.
+
+Both use `animation`, never `transition`, which is what keeps them clear of the
+harness auditor's stray-CSS-transition check (`harness/audit.mjs`, check 9).
+That check flags a CSS transition on a *moving* property — transform, box
+dimensions — and deliberately ignores `transition-colors`/`transition-opacity`,
+which are not motion-policy violations. `Switch`'s knob is the single marked
+exception (`data-css-transition`), because its travel is driven by
+`peer-checked:` off a native checkbox and there is no React state to give
+Framer.
+
+**Hover is already gated; don't add a utility for it.** Tailwind v4 compiles
+`hover:` to `@media (hover: hover) { &:hover { … } }`, so a tap on iOS (which
+reports `hover: none`) cannot leave a hover state stuck. Verified against the
+shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
+
 ## Primitives — `components/ui/`
 
 ### Pressable
@@ -614,6 +682,14 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `SearchSheet`), kept because a real input would summon the keyboard.
 - `FilterBar` chips and `SwipeableRow` action icons run at 36px inside their
   dense panels/rows — the sanctioned exception to the 44px target, same as
-  `IconButton size="sm"`.
+  `IconButton size="sm"`. Marked `data-dense-target` so `harness/audit.mjs`
+  knows it is a decision, not an oversight.
+- The pixel spinner and the skeleton pulse are the only two animations still in
+  CSS — both indefinite opacity loops, both ungated under reduced motion. See
+  **Motion** above.
+- `Switch`'s knob is the only CSS transition left on a transform, because
+  `peer-checked:` off a native checkbox is the only thing that can see
+  `:checked` without making the component controlled. Marked
+  `data-css-transition`, the motion equivalent of `data-dense-target`.
 - Transactions list is not virtualized; acceptable at current volumes.
   Revisit if months exceed ~500 rows.

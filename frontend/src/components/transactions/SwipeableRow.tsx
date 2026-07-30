@@ -1,7 +1,7 @@
 import { useRef, type ReactNode } from "react";
 import { m, useMotionValue, useTransform } from "motion/react";
 import { fire } from "../../lib/feedback";
-import { SPRING_ROW } from "../../lib/motion";
+import { INERTIA_ROW } from "../../lib/motion";
 import { swipeCommits, ROW_COMMIT, type RowActions, type RowSwipeAction } from "../../lib/rowSwipe";
 
 export interface SwipeActionSpec {
@@ -119,7 +119,9 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
           const committed = swipeCommits(info.offset.x, info.velocity.x, actions);
           if (committed) { fire("selection"); onCommit(committed); }
         }}
-        dragTransition={{ bounceStiffness: SPRING_ROW.stiffness, bounceDamping: SPRING_ROW.damping }}
+        // The bounce that carries the row home, not a mass-spring — see
+        // INERTIA_ROW in lib/motion.ts for why the distinction is typed.
+        dragTransition={INERTIA_ROW}
       >
         {children}
       </m.div>

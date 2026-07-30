@@ -1,5 +1,6 @@
 // frontend/src/screens/Transactions.tsx
 import { useEffect, useMemo, useState } from "react";
+import { m } from "motion/react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
@@ -26,6 +27,7 @@ import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, filtersActive, exportUrl, exportFilename, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
+import { DUR, EASE_OUT } from "../lib/motion";
 import { AlertTriangle, ListOrdered, Search, Plus, Download, SlidersHorizontal, Tag, Archive, ArchiveRestore } from "../components/ui/PixelIcon";
 import { useTxnActions } from "../hooks/useTxnActions";
 import { useFirstReveal } from "../hooks/useFirstReveal";
@@ -241,7 +243,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           </div>
           <Card className="!p-0 overflow-hidden">
             <ul className="divide-y divide-border">
-              {rows.map((t) => {
+              {rows.map((t, i) => {
                 const archived = t.Status === "archived";
                 // Categorizing a split parent is server-refused (409) — the
                 // swipe's lead action edits the split instead.
@@ -264,13 +266,23 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   }
                 };
                 return (
-                  <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}>
+                  <m.li
+                    key={t.ID}
+                    // See Home.tsx's recent list for the full reasoning:
+                    // `initial={false}` on a refetch is what keeps this
+                    // one-shot, and the 0.24s ceiling reproduces the retired
+                    // `.stagger-item:nth-child(n+7)` cap — which matters far
+                    // more here, where the list runs to hundreds of rows.
+                    initial={firstReveal ? { opacity: 0, y: 8 } : false}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: DUR.sheet, ease: EASE_OUT, delay: Math.min(i * 0.04, 0.24) }}
+                  >
                     <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>
                       <div className="px-4">
                         <TransactionRow txn={t} onOpen={setDetail} projectsById={projectsById} splitCategories={splitCats} />
                       </div>
                     </SwipeableRow>
-                  </li>
+                  </m.li>
                 );
               })}
             </ul>

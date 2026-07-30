@@ -4,11 +4,13 @@
 // cubic-bezier control-point tuples rather than `var(--ease-*)` strings,
 // because Framer interpolates in JS and never reads the stylesheet.
 //
-// The CSS custom properties in styles/app.css are retained for the two
-// exempt CSS keyframe animations (the pixel spinner and the skeleton pulse)
-// and must be kept numerically in sync with the tuples here — tokens.test.ts
-// asserts that.
-import type { Transition } from "motion/react";
+// The `--ease-*` custom properties in styles/app.css survive as the published
+// token names, but nothing consumes them any more: the two exempt CSS
+// animations (the pixel spinner, the skeleton pulse) are `steps()` and a
+// Tailwind pulse respectively, and the stagger that did use them has moved
+// here. Keep the two numerically in sync anyway — this file is the one that
+// ships.
+import type { HTMLMotionProps, Transition } from "motion/react";
 
 /** Entering/exiting UI. Strong, front-loaded — built-in easings are too weak. */
 export const EASE_OUT = [0.23, 1, 0.32, 1] as const satisfies readonly [number, number, number, number];
@@ -40,5 +42,36 @@ export const SHEET_EXIT: Transition = { duration: 0.24, ease: EASE_DRAWER };
  * fixed-duration transition cannot express.
  */
 export const SPRING_SNAP: Transition = { type: "spring", stiffness: 550, damping: 32, mass: 0.9 };
-export const SPRING_SHEET: Transition = { type: "spring", stiffness: 420, damping: 40, mass: 1 };
-export const SPRING_ROW: Transition = { type: "spring", stiffness: 600, damping: 38, mass: 0.7 };
+
+/**
+ * `dragTransition` is not a `Transition` — Framer types it `InertiaOptions`.
+ * Whatever you pass is spread into a default `{ type: "inertia", … }` object
+ * (`startAnimation()` in
+ * `framer-motion/dist/es/gestures/drag/VisualElementDragControls.mjs`), so
+ * there are two different animators reachable through the one prop:
+ *
+ *   - Leave `type` alone and you tune the **inertia bounce** — the spring that
+ *     pulls the value back inside `dragConstraints`, or under
+ *     `dragSnapToOrigin` back to 0. It is parameterised by
+ *     `bounceStiffness`/`bounceDamping` and has no `mass` term.
+ *   - Spread a spring `Transition` in and `type: "spring"` overwrites
+ *     `"inertia"`, replacing the whole animator with an ordinary mass-spring.
+ *     `Toast` does exactly that with `SPRING_SNAP`.
+ *
+ * Both are legitimate; they are not interchangeable, and reusing one's numbers
+ * as the other's is a silent reinterpretation. Hence a separately-typed token
+ * for the bounce, so the type system says which animator a token is for.
+ *
+ * Derived rather than imported: Framer does not re-export `InertiaOptions`
+ * from `motion/react`, and going through the prop stays correct if it moves.
+ */
+type DragTransition = NonNullable<HTMLMotionProps<"div">["dragTransition"]>;
+
+/**
+ * `SwipeableRow`'s release. These are the numbers the retired `SPRING_ROW`
+ * spring carried, but say plainly that they now drive a *different model*: an
+ * inertia bounce, not a mass-spring. The spring's `mass: 0.7` is dropped
+ * because the bounce has nowhere to put it — that is not an omission, it is
+ * the reason this is its own token rather than a spread of a spring.
+ */
+export const INERTIA_ROW: DragTransition = { bounceStiffness: 600, bounceDamping: 38 };

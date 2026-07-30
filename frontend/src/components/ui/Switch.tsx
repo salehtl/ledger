@@ -26,8 +26,21 @@ export function Switch({ className = "", ...rest }: InputHTMLAttributes<HTMLInpu
       />
       {/* bg-muted when off: painting the knob bg-surface made it the same
           colour as the page behind it, so "off" read as an empty slot. */}
+      {/* data-css-transition: the app's only sanctioned CSS transition on a
+          transform, and the harness auditor's check 9 skips it on the strength
+          of this marker. The knob's travel is driven by `peer-checked:`, i.e.
+          by the native checkbox's own `:checked` state — there is no React
+          state here to hand Framer. Creating some would mean making this a
+          controlled component, and the whole point of the design (see the
+          docblock) is that it stays an uncontrolled `<input type="checkbox">`
+          so forms, labels and tests keep native semantics. A sibling selector
+          is the only thing that can observe `:checked`, and only CSS has
+          sibling selectors. `motion-reduce:transition-none` is therefore also
+          hand-written rather than inherited from MotionConfig — this one
+          element genuinely is outside the global policy's reach. */}
       <span
         aria-hidden
+        data-css-transition="peer-checked drives the knob; see comment above"
         className="absolute left-1 top-3 h-5 w-5 rounded-[var(--radius)] bg-muted transition-[transform,background-color] duration-200 motion-reduce:transition-none peer-checked:translate-x-5 peer-checked:bg-surface peer-disabled:opacity-60"
       />
     </span>

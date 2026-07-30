@@ -1,10 +1,12 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
+import { m } from "motion/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Trash2 } from "../components/ui/PixelIcon";
 import { getJSON, postJSON, getCategoryUsage, deleteCategory } from "../api/client";
 import type { Category } from "../api/types";
 import { useToast } from "../components/Toast";
 import { bucketColor } from "../lib/insights";
+import { DUR, EASE_OUT } from "../lib/motion";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Input } from "../components/ui/Field";
 import { IconButton } from "../components/ui/IconButton";
@@ -124,7 +126,17 @@ function NewCategoryRow({ section, onCreate, onCancel }: { section: SectionDef; 
   };
 
   return (
-    <div className="row-in px-3 py-2 flex items-center gap-2.5">
+    // Born in place, so it always plays: unlike the list stagger there is no
+    // refetch case to guard against — this element only exists because the
+    // user just asked for it. DUR.fast stands in for the retired `.row-in`'s
+    // 150ms; every duration comes from lib/motion.ts, and 10ms is not worth a
+    // token of its own.
+    <m.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: DUR.fast, ease: EASE_OUT }}
+      className="px-3 py-2 flex items-center gap-2.5"
+    >
       {section.kind === "spending" && (
         <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: bucketColor(section.bucket) }} />
       )}
@@ -140,7 +152,7 @@ function NewCategoryRow({ section, onCreate, onCancel }: { section: SectionDef; 
         onKeyDown={onKeyDown}
         onBlur={commit}
       />
-    </div>
+    </m.div>
   );
 }
 

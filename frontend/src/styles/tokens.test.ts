@@ -70,6 +70,25 @@ describe("built output", () => {
     return dir.map((f) => readFileSync(resolve(distDir, f), "utf8")).join("\n");
   };
 
+  // The Framer migration's bundle budget, and a trap that already sprang once.
+  // `MotionProvider` loads `domMax` through a thunk, which *looks* like it
+  // code-splits; it only actually splits because the thunk points at
+  // `app/motionFeatures.ts` rather than at `motion/react` directly (that file
+  // explains why). Point it back at the barrel and the entry chunk silently
+  // gains ~110KB — no error, no failing test, nothing visible until someone
+  // loads the app on mobile data. Assert the shape of the output instead.
+  it("keeps the entry chunk inside the motion budget, with the feature bundle split out", () => {
+    const js = readdirSync(distDir).filter((f) => f.endsWith(".js"));
+    const entry = js.find((f) => f.startsWith("index-"));
+    expect(entry, "no index-*.js in the built assets — is the dist stale?").toBeDefined();
+    const bytes = readFileSync(resolve(distDir, entry!)).byteLength;
+    expect(bytes, `entry chunk is ${bytes} bytes`).toBeLessThanOrEqual(760_000);
+    expect(
+      js.some((f) => f.startsWith("motionFeatures-")),
+      "domMax is not in its own chunk — the LazyMotion thunk has been inlined back into the entry",
+    ).toBe(true);
+  });
+
   it("ships every palette token, in both themes", () => {
     const css = builtCss();
     for (const name of PALETTE_NAMES) {
@@ -77,6 +96,39 @@ describe("built output", () => {
       const hits = css.match(new RegExp(`--color-${name}\\s*:`, "g")) ?? [];
       expect(hits.length, `--color-${name} in built CSS`).toBeGreaterThanOrEqual(2);
     }
+  });
+
+  // A convention with no checker rots. The Framer migration decided against
+  // adding an app-level "gate hover behind a real pointer" utility on the
+  // grounds that Tailwind v4 already compiles `hover:` to
+  // `@media (hover: hover) { &:hover { … } }`, so a tap on iOS (which reports
+  // `hover: none`) can never leave a hover state stuck. That reasoning is only
+  // as good as the build actually behaving that way — a Tailwind downgrade, a
+  // config change, or a hand-written `:hover` in app.css would silently
+  // reintroduce sticky hover on touch, and no unit test rendering a component
+  // in jsdom would ever see it. Assert it against the shipped stylesheet.
+  it("gates every hover style behind a real pointer", () => {
+    const css = builtCss();
+    const outside: string[] = [];
+    // Walk the block structure, tracking whether the current nesting is inside
+    // a hover media query. `@media …{` consumes its own brace so the stack
+    // stays aligned with plain `{`/`}`.
+    const stack: boolean[] = [];
+    for (const m of css.matchAll(/@media[^{]*\{|\{|\}|:hover/g)) {
+      if (m[0] === ":hover") {
+        if (!stack.some(Boolean)) outside.push(css.slice(Math.max(0, m.index - 60), m.index + 6));
+      } else if (m[0] === "}") stack.pop();
+      else stack.push(/\(\s*hover\s*:\s*hover\s*\)/.test(m[0]));
+    }
+    expect(outside, "these :hover rules are not inside an @media (hover: hover)").toEqual([]);
+  });
+
+  it("has no hand-written :hover in app.css source", () => {
+    // Tailwind's variant is generated at build time; anything literal in the
+    // source bypasses the gating the test above relies on.
+    const src = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, ""); // comments discuss :hover on purpose
+    expect(code).not.toMatch(/:hover/);
   });
 
   it("keeps the palette out of @theme so it cannot be tree-shaken", () => {
