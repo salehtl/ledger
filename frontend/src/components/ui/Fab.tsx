@@ -7,13 +7,30 @@ import { fire } from "../../lib/feedback";
  * this design floats. If it needs separating from content beneath it, that is a
  * layout problem, not an elevation problem.
  */
-export function Fab({ icon: Icon, label, onClick }: { icon: PixelIconType; label: string; onClick: () => void }) {
+export function Fab({
+  icon: Icon,
+  label,
+  onClick,
+  over = "nav",
+}: {
+  icon: PixelIconType;
+  label: string;
+  onClick: () => void;
+  /** What sits beneath this Fab. Full-screen drill-in panels (Recurring, and
+   *  anything else hosted in a SettingsPage) cover the bottom nav, so reserving
+   *  its height there leaves the plate hovering in mid-air over a row's amount. */
+  over?: "nav" | "edge";
+}) {
   return (
     <button
       type="button"
       aria-label={label}
       onClick={() => { fire("selection"); onClick(); }}
-      className="press fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-accent text-accent-fg hover:opacity-90 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)]"
+      className={`press fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-accent text-accent-fg hover:opacity-90 ${
+        over === "nav"
+          ? "bottom-[calc(env(safe-area-inset-bottom)+4.5rem)]"
+          : "bottom-[max(1rem,env(safe-area-inset-bottom))]"
+      }`}
     >
       <Icon size={24} aria-hidden />
     </button>

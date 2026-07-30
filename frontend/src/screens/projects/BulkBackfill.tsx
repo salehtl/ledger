@@ -58,6 +58,11 @@ export function BulkBackfill({ id, onClose, onDone }: { id: number; onClose: () 
   }, [txns.data, merchant, categoryId, id]);
 
   const projectName = project.data?.name ?? "project";
+  // With no filter set, "matching" is every unassigned transaction in the
+  // account, and the primary button opened already armed to sweep the lot into
+  // the project in one tap. Backfilling is a bulk write with no undo, so it
+  // waits until the user has actually narrowed something.
+  const narrowed = Boolean(from || to || merchant || categoryId);
 
   const assign = async () => {
     if (matching.length === 0) return;
@@ -124,8 +129,17 @@ export function BulkBackfill({ id, onClose, onDone }: { id: number; onClose: () 
           </div>
         )}
 
-        <Button variant="primary" className="w-full" disabled={matching.length === 0 || assigning} onClick={assign}>
-          {assigning ? "Assigning…" : `Assign ${matching.length} to ${projectName}`}
+        <Button
+          variant="primary"
+          className="w-full"
+          disabled={!narrowed || matching.length === 0 || assigning}
+          onClick={assign}
+        >
+          {assigning
+            ? "Assigning…"
+            : narrowed
+              ? `Assign ${matching.length} to ${projectName}`
+              : "Narrow by date, merchant or category first"}
         </Button>
       </div>
 

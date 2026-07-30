@@ -86,9 +86,24 @@ describe("BulkBackfill", () => {
     const onDone = vi.fn();
     wrap(<BulkBackfill id={1} onClose={() => {}} onDone={onDone} />);
     await screen.findByText("Ikea");
-    fireEvent.click(screen.getByRole("button", { name: /assign 2/i }));
+    // A date bound is enough to count as narrowed; without any filter the
+    // action stays disabled (see the guard test below).
+    fireEvent.change(screen.getByLabelText(/^from$/i), { target: { value: "2026-01-01" } });
+    fireEvent.click(await screen.findByRole("button", { name: /assign 2/i }));
     await waitFor(() => expect(client.bulkAssignProject).toHaveBeenCalledWith(1, [1, 2]));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+  });
+
+  // Backfilling is a bulk write with no undo. Opened unfiltered, "matching" is
+  // every unassigned transaction in the account, and the button used to be
+  // armed to sweep the lot into the project on the first tap.
+  it("will not assign until the list has been narrowed", async () => {
+    wrap(<BulkBackfill id={1} onClose={() => {}} onDone={() => {}} />);
+    await screen.findByText("Ikea");
+    const action = screen.getByRole("button", { name: /narrow by date, merchant or category/i });
+    expect(action).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/merchant contains/i), { target: { value: "ikea" } });
+    expect(await screen.findByRole("button", { name: /assign 1/i })).toBeEnabled();
   });
 
   it("opens the CategorizeSheet when a candidate row is tapped", async () => {
