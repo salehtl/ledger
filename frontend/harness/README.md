@@ -107,6 +107,43 @@ knows about four things it would otherwise report forever:
 If you add a deliberate exception to a convention, teach the audit about it in
 the same commit. Otherwise the next person learns to skip the output.
 
+## What Chromium cannot tell you — `ios.mjs`
+
+`shoot.mjs` and `probe.mjs` run headless Chromium with an emulated viewport.
+Three things are simply absent there, and every one of them is load-bearing on
+a real iPhone in standalone PWA mode:
+
+1. **`env(safe-area-inset-*)` is 0.** Notch and home-indicator padding is
+   present in the CSS but its effect is never exercised.
+2. **There is no software keyboard**, so nothing is ever occluded by one.
+3. **`dvh` tracks browser UI, not the keyboard.** On iOS the layout viewport
+   does *not* shrink when the keyboard opens, so a `100dvh` bottom-anchored
+   sheet stays pinned to the bottom of the display — underneath the keyboard.
+
+That third one shipped a genuinely unusable Plan sheet: tapping the amount
+field raised a keyboard over both the field and the Save button, with no
+overflow to scroll them back into reach. The Chromium audit reported the screen
+clean, because in Chromium the keyboard does not exist.
+
+```bash
+node harness/ios.mjs                 # WebKit, iPhone 14 Pro, keyboard geometry
+node harness/ios.mjs --screens plan
+```
+
+It runs **WebKit** (the engine Safari uses), opens each sheet, focuses its first
+input, and asserts that the focused field and the primary action are inside the
+region a 336px keyboard leaves visible.
+
+Two traps worth knowing when you extend this:
+
+- **Do not set `reducedMotion: "reduce"` when testing animation.** The
+  screenshot tools set it for stable captures, and it makes `Dialog` skip its
+  slide entirely — which hides any bug in the slide itself.
+- **Check which tree vite is serving** (`ls -l /proc/<vite-pid>/cwd`).
+  `stack.sh` resolves the repo from its own location, so running it from the
+  main checkout serves the main checkout — it is easy to "verify a fix" against
+  a tree that does not contain it.
+
 ## Driving it yourself
 
 `nav.mjs` exports the pieces for ad-hoc interaction scripts:
