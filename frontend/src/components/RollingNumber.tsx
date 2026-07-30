@@ -1,14 +1,23 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { m } from "motion/react";
 import { numberCells, wheelOffsetPct, fitScale } from "../lib/rollingNumber";
+import { EASE_OUT, DUR } from "../lib/motion";
 
 const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+/** Roll duration, seconds. Inside the 300ms budget once you discount the
+ *  cascade; the previous 650ms was more than twice it. */
+export const ROLL_MS = 0.45;
+/** Per-wheel delay, seconds. Right-to-left, so the units settle first and
+ *  the figure resolves the way an odometer physically would. */
+export const ROLL_STAGGER_MS = 0.03;
 
 /**
  * Odometer-style number: each digit is a 0–9 wheel that rolls up from zero when
  * the number first appears. Static chars (separators, the "—" zero placeholder)
  * render inline. When the value is too wide for its container the whole row
  * scales down instead of overflowing. Wheels are transform-only and
- * interruptible; reduced motion snaps (app.css).
+ * interruptible; reduced motion is handled globally (MotionProvider).
  *
  * A *revision* of the value snaps instead of rolling. Every figure sharing a
  * card with a rolling number — budget, remaining, projection, the pace badge —
@@ -22,18 +31,13 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
   const outerRef = useRef<HTMLSpanElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
   const [scale, setScale] = useState(1);
-  // First paint renders every wheel at 0; flipping this after mount rolls each
-  // wheel up to its digit (useEffect, not useLayoutEffect — the browser must
-  // paint the zero state or there is nothing to transition from).
-  const [live, setLive] = useState(false);
-  useEffect(() => setLive(true), []);
   // The value this instance mounted with. Once it changes we are past the
-  // spin-up for good, so every wheel from then on moves with the transition
+  // spin-up for good, so every wheel from then on moves with the roll
   // suppressed. Deliberately a ref-free comparison: no timers to keep in sync
-  // with the CSS duration, and a revision landing mid-spin-up snaps to the
+  // with the animation duration, and a revision landing mid-spin-up snaps to the
   // truth rather than finishing a roll toward a stale figure.
   const mountValue = useRef(value);
-  const rolling = live && value === mountValue.current;
+  const rolling = value === mountValue.current;
 
   useLayoutEffect(() => {
     const outer = outerRef.current;
@@ -51,32 +55,34 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
   return (
     <span ref={outerRef} className={`rolling-number ${className}`}>
       <span className="sr-only">{value}</span>
-      <span
+      <m.span
         ref={innerRef}
         aria-hidden
         className="rolling-row"
-        style={scale < 1 ? { transform: `scale(${scale})` } : undefined}
+        animate={{ scale }}
+        transition={{ duration: DUR.base, ease: EASE_OUT }}
       >
-        {numberCells(value).map((c) =>
+        {numberCells(value).map((c, i, all) =>
           c.digit === null ? (
             <span key={c.key} className="rolling-cell">{c.char}</span>
           ) : (
             <span key={c.key} className="rolling-cell rolling-wheel">
-              <span
+              <m.span
                 className="rolling-wheel-track"
-                style={{
-                  transform: `translateY(${wheelOffsetPct(live ? c.digit : 0)}%)`,
-                  // Left to the stylesheet during the spin-up so reduced motion
-                  // (which kills the transition there) still wins.
-                  transition: rolling ? undefined : "none",
-                }}
+                initial={{ y: `${wheelOffsetPct(0)}%` }}
+                animate={{ y: `${wheelOffsetPct(c.digit)}%` }}
+                transition={
+                  rolling
+                    ? { duration: ROLL_MS, ease: EASE_OUT, delay: (all.length - 1 - i) * ROLL_STAGGER_MS }
+                    : { duration: 0 }
+                }
               >
                 {DIGITS.map((d) => <span key={d} className="rolling-wheel-digit">{d}</span>)}
-              </span>
+              </m.span>
             </span>
           ),
         )}
-      </span>
+      </m.span>
     </span>
   );
 }
