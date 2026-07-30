@@ -1,8 +1,13 @@
 // frontend/src/screens/Transactions.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
+import { categoryInfoById, displayMerchant, splitsToBody, type SplitLineBody, type TxnDepth } from "../lib/txSplit";
+import { SplitSheet } from "../components/transactions/SplitSheet";
+import { RenameMerchantSheet } from "../components/transactions/RenameMerchantSheet";
+import { EmailPreviewSheet } from "../components/transactions/EmailPreviewSheet";
+import { useRules, useSaveSplits } from "../components/transactions/api";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Field";
@@ -44,6 +49,9 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
   const [categorizeTxn, setCategorizeTxn] = useState<Txn | null>(null);
   const [categorizeAsTransfer, setCategorizeAsTransfer] = useState(false);
   const [linkTxn, setLinkTxn] = useState<Txn | null>(null);
+  const [splitTxn, setSplitTxn] = useState<TxnDepth | null>(null);
+  const [renameTxn, setRenameTxn] = useState<TxnDepth | null>(null);
+  const [emailTxn, setEmailTxn] = useState<Txn | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -65,6 +73,51 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
     () => Object.fromEntries((projects.data ?? []).map((p) => [p.id, { name: p.name, color: p.color }])),
     [projects.data],
   );
+  const splitCats = useMemo(() => categoryInfoById(cats.data ?? []), [cats.data]);
+
+  // Rules load lazily, only once a rename sheet is requested.
+  const rules = useRules(!!renameTxn);
+  useEffect(() => {
+    if (renameTxn && rules.isError) {
+      setRenameTxn(null);
+      show({ message: "Couldn't load merchant rules", tone: "error" });
+    }
+  }, [renameTxn, rules.isError, show]);
+
+  const splitsMutation = useSaveSplits();
+  // Saving a split set. Un-splitting is the one destructive direction (line
+  // amounts and notes are gone), so it gets an undo that also restores a
+  // confirmed parent's status (un-split parks it in review by contract).
+  const saveSplits = async (t: TxnDepth, body: SplitLineBody[]) => {
+    const prev = t.Splits ?? [];
+    const name = displayMerchant(t) || "transaction";
+    try {
+      await splitsMutation.mutateAsync({ txnId: t.ID, splits: body });
+      setSplitTxn(null);
+      if (body.length === 0) {
+        show({
+          message: `Removed split — ${name} is back in review`,
+          action: {
+            label: "Undo",
+            onAction: () => {
+              void splitsMutation.mutateAsync({ txnId: t.ID, splits: splitsToBody(prev) })
+                .then(async () => {
+                  if (t.Status === "confirmed") {
+                    await postJSON(`/api/transactions/${t.ID}/status`, { status: "confirmed" });
+                  }
+                  invalidate();
+                })
+                .catch(() => show({ message: "Couldn't undo", tone: "error" }));
+            },
+          },
+        });
+      } else {
+        show({ message: `Split ${name} across ${body.length} categor${body.length === 1 ? "y" : "ies"}`, tone: "success" });
+      }
+    } catch (e) {
+      show({ message: `Couldn't save the split — ${(e as Error).message}`, tone: "error" });
+    }
+  };
 
   const rows = useMemo(() => {
     const filtered = applyTxnFilters(q.data ?? [], filters);
@@ -191,9 +244,12 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
             <ul className="divide-y divide-border">
               {rows.map((t) => {
                 const archived = t.Status === "archived";
+                // Categorizing a split parent is server-refused (409) — the
+                // swipe's lead action edits the split instead.
+                const split = ((t as TxnDepth).Splits?.length ?? 0) > 0;
                 const lead: SwipeActionSpec = archived
                   ? { label: "Restore", icon: <ArchiveRestore size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" }
-                  : { label: "Categorize", icon: <Tag size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" };
+                  : { label: split ? "Edit split" : "Categorize", icon: <Tag size={18} aria-hidden />, color: "var(--color-accent)", fg: "var(--color-accent-fg)" };
                 const trail: SwipeActionSpec | undefined = archived
                   ? undefined
                   // #5e5e63 mirrors --color-muted: SwipeableRow's inline style needs a
@@ -202,6 +258,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                 const onCommit = (action: "lead" | "trail") => {
                   if (action === "lead") {
                     if (archived) void restoreTxn(t);
+                    else if (split) setSplitTxn(t as TxnDepth);
                     else setCategorizeTxn(t);
                   } else {
                     void archiveTxn(t);
@@ -211,7 +268,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}>
                     <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>
                       <div className="px-4">
-                        <TransactionRow txn={t} onOpen={setDetail} projectsById={projectsById} />
+                        <TransactionRow txn={t} onOpen={setDetail} projectsById={projectsById} splitCategories={splitCats} />
                       </div>
                     </SwipeableRow>
                   </li>
@@ -233,8 +290,35 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           onRestore={() => { const t = detail; setDetail(null); void restoreTxn(t); }}
           onLinkRefund={() => { setLinkTxn(detail); setDetail(null); }}
           onUnlinkRefund={() => { const t = detail; setDetail(null); void unlinkRefund(t); }}
+          onSplit={() => { const t = detail as TxnDepth; setDetail(null); setSplitTxn(t); }}
+          onRename={() => { const t = detail as TxnDepth; setDetail(null); setRenameTxn(t); }}
+          onViewEmail={() => { const t = detail; setDetail(null); setEmailTxn(t); }}
         />
       )}
+
+      {splitTxn && cats.data && (
+        <SplitSheet
+          txn={splitTxn}
+          categories={cats.data}
+          onSubmit={(body) => saveSplits(splitTxn, body)}
+          onClose={() => setSplitTxn(null)}
+        />
+      )}
+
+      {renameTxn && rules.data && (
+        <RenameMerchantSheet
+          txn={renameTxn}
+          rules={rules.data}
+          txns={q.data ?? []}
+          onClose={() => setRenameTxn(null)}
+          onSaved={(name) => {
+            setRenameTxn(null);
+            show({ message: name ? `Shown as “${name}” from now on` : "Merchant name cleared", tone: "success" });
+          }}
+        />
+      )}
+
+      {emailTxn && <EmailPreviewSheet txn={emailTxn} onClose={() => setEmailTxn(null)} />}
 
       {categorizeTxn && cats.data && (
         <CategorizeSheet

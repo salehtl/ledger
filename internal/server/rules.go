@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"ledger/internal/store"
 )
@@ -15,6 +16,40 @@ type RuleActiveStore interface {
 
 // SetRuleActiveStore wires the rule-active store. Required for PUT /api/rules/{id}/active.
 func (s *Server) SetRuleActiveStore(r RuleActiveStore) { s.ruleActiveStore = r }
+
+// RuleDisplayStore sets (or clears, when the name is empty) the merchant
+// clean-name a rule carries.
+type RuleDisplayStore interface {
+	SetRuleDisplayName(id int64, name string) error
+}
+
+// SetRuleDisplayStore wires the rule display-name store. Required for
+// PUT /api/rules/{id}/display-name (the merchant-rename write path).
+func (s *Server) SetRuleDisplayStore(r RuleDisplayStore) { s.ruleDisplayStore = r }
+
+func (s *Server) handleSetRuleDisplayName(w http.ResponseWriter, r *http.Request) {
+	if s.ruleDisplayStore == nil {
+		http.Error(w, `{"error":"rules unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"bad id"}`, http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.ruleDisplayStore.SetRuleDisplayName(id, strings.TrimSpace(body.DisplayName)); err != nil {
+		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
 
 func (s *Server) handleSetRuleActive(w http.ResponseWriter, r *http.Request) {
 	if s.ruleActiveStore == nil {

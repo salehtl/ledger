@@ -80,30 +80,31 @@ type PushSender interface {
 
 // Server holds the router and its dependencies.
 type Server struct {
-	mux             *http.ServeMux
-	handler         http.Handler // mux wrapped in middleware (gzip)
-	store           HealthChecker
-	ingest          IngestStatus
-	imapConfigured  bool
-	reprocessor     Reprocessor
-	catStore        CategoryStore
-	recatFn         CategorizeFunc
-	catJob          categorizeJob
-	budgetStore     BudgetStore
-	insightsStore   InsightsStore
-	hub             *Hub                // SSE fan-out hub
-	driftMon        DriftStatusProvider // optional drift monitor for /api/health
-	ingestHealthFn  IngestHealthFunc    // optional worker poll-health for /api/health
-	pushStore       PushStore
-	pushSender      PushSender
-	settingsStore   SettingsStore
-	aiUsageStore    AIUsageStore
-	ruleActiveStore RuleActiveStore
-	ratesStore      RatesStore
-	accountsStore   AccountsStore
-	transfersStore  TransfersStore
-	projectStore    ProjectStore
-	aiKeyPresent    bool
+	mux              *http.ServeMux
+	handler          http.Handler // mux wrapped in middleware (gzip)
+	store            HealthChecker
+	ingest           IngestStatus
+	imapConfigured   bool
+	reprocessor      Reprocessor
+	catStore         CategoryStore
+	recatFn          CategorizeFunc
+	catJob           categorizeJob
+	budgetStore      BudgetStore
+	insightsStore    InsightsStore
+	hub              *Hub                // SSE fan-out hub
+	driftMon         DriftStatusProvider // optional drift monitor for /api/health
+	ingestHealthFn   IngestHealthFunc    // optional worker poll-health for /api/health
+	pushStore        PushStore
+	pushSender       PushSender
+	settingsStore    SettingsStore
+	aiUsageStore     AIUsageStore
+	ruleActiveStore  RuleActiveStore
+	ruleDisplayStore RuleDisplayStore
+	ratesStore       RatesStore
+	accountsStore    AccountsStore
+	transfersStore   TransfersStore
+	projectStore     ProjectStore
+	aiKeyPresent     bool
 
 	// v3 stores (targets/envelopes/scheduled/balances/reports/splits) and the
 	// in-memory notification state the emitters in notify.go share.
@@ -228,6 +229,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/rules", s.handlePostRule)
 	s.mux.HandleFunc("DELETE /api/rules/{id}", s.handleDeleteRule)
 	s.mux.HandleFunc("PUT /api/rules/{id}/active", s.handleSetRuleActive)
+	s.mux.HandleFunc("PUT /api/rules/{id}/display-name", s.handleSetRuleDisplayName)
 	s.mux.HandleFunc("GET /api/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/budget", s.handlePutBudget)

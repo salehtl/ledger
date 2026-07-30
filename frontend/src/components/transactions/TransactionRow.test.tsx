@@ -2,8 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { TransactionRow } from "./TransactionRow";
 import type { Txn } from "../../api/types";
+import type { TxnDepth } from "../../lib/txSplit";
 
-const mk = (over: Partial<Txn>): Txn => ({
+const mk = (over: Partial<TxnDepth>): Txn => ({
   ID: 1, PostedAt: "2026-06-10", AmountFils: 5000, AmountAedFils: 5000, Currency: "AED", Direction: "debit",
   MerchantRaw: "SPINNEYS", Status: "confirmed", Confidence: 0, Source: "email",
   CategoryID: null, CategoryName: "", Bucket: "", Kind: "", BucketSnapshot: "", ...over,
@@ -72,6 +73,56 @@ describe("TransactionRow", () => {
       render(<TransactionRow txn={mk({ ProjectID: null })} projectsById={projectsById} onOpen={() => {}} />);
       expect(screen.queryByText("Kitchen reno")).not.toBeInTheDocument();
     });
+  });
+
+  describe("split parents", () => {
+    const splitCategories = {
+      1: { name: "Groceries", bucket: "need", kind: "spending" },
+      2: { name: "Dining", bucket: "want", kind: "spending" },
+    };
+    const splitTxn = () => mk({
+      CategoryID: null, CategoryName: "",
+      Splits: [
+        { ID: 1, TransactionID: 1, CategoryID: 1, AmountFils: 3000, Note: "mine" },
+        { ID: 2, TransactionID: 1, CategoryID: 2, AmountFils: 2000 },
+      ],
+    });
+
+    it("shows the lines' categories in the meta and expands the stack on demand", () => {
+      render(<TransactionRow txn={splitTxn()} onOpen={() => {}} splitCategories={splitCategories} />);
+      expect(screen.getByText(/Split · Groceries \+ Dining · Jun 10/)).toBeInTheDocument();
+      expect(screen.queryByText("30.00")).not.toBeInTheDocument();
+      const expander = screen.getByRole("button", { name: /show 2 parts/i });
+      expect(expander).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(expander);
+      expect(screen.getByText("30.00")).toBeInTheDocument();
+      expect(screen.getByText("20.00")).toBeInTheDocument();
+      expect(screen.getByText("Groceries")).toBeInTheDocument();
+      expect(screen.getByText("mine")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /hide parts/i }));
+      expect(screen.queryByText("30.00")).not.toBeInTheDocument();
+    });
+
+    it("degrades to a part count without the category lookup", () => {
+      render(<TransactionRow txn={splitTxn()} onOpen={() => {}} />);
+      expect(screen.getByText(/Split · 2 parts · Jun 10/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /show 2 parts/i })).toBeInTheDocument();
+    });
+
+    it("keeps the row tap opening the detail sheet, separate from the expander", () => {
+      const onOpen = vi.fn();
+      render(<TransactionRow txn={splitTxn()} onOpen={onOpen} splitCategories={splitCategories} />);
+      fireEvent.click(screen.getByRole("button", { name: /show 2 parts/i }));
+      expect(onOpen).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: /open spinneys/i }));
+      expect(onOpen).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("prints the merchant clean name when the payload resolves one", () => {
+    render(<TransactionRow txn={mk({ DisplayName: "Spinneys" })} onOpen={() => {}} />);
+    expect(screen.getByText("Spinneys")).toBeInTheDocument();
+    expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
   });
 
   it("shows a status pill only when a row needs attention or is archived", () => {
