@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { RollingNumber } from "./RollingNumber";
 
+function tracks(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(".rolling-wheel-track"));
+}
+
 function wheelTransforms(container: HTMLElement): string[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".rolling-wheel-track")).map(
-    (el) => el.style.transform,
-  );
+  return tracks(container).map((el) => el.style.transform);
 }
 
 describe("RollingNumber", () => {
@@ -31,6 +33,29 @@ describe("RollingNumber", () => {
     const { container, rerender } = render(<RollingNumber value="93" />);
     act(() => rerender(<RollingNumber value="41" />));
     expect(wheelTransforms(container)).toEqual(["translateY(-40%)", "translateY(-10%)"]);
+  });
+
+  it("leaves the mount spin-up to the CSS transition", () => {
+    const { container } = render(<RollingNumber value="93" />);
+    for (const t of tracks(container)) expect(t.style.transition).toBe("");
+  });
+
+  it("snaps — never rolls — when the value is revised", () => {
+    // The figures around a rolling hero (budget, remaining, projection) are
+    // plain text and update in the same commit. A 650ms roll therefore leaves
+    // the hero contradicting its own card, and rolls each wheel independently
+    // through amounts that were never real. So a revision snaps.
+    const { container, rerender } = render(<RollingNumber value="93" />);
+    act(() => rerender(<RollingNumber value="41" />));
+    for (const t of tracks(container)) expect(t.style.transition).toBe("none");
+  });
+
+  it("keeps snapping on every later revision", () => {
+    const { container, rerender } = render(<RollingNumber value="93" />);
+    act(() => rerender(<RollingNumber value="41" />));
+    act(() => rerender(<RollingNumber value="77" />));
+    expect(wheelTransforms(container)).toEqual(["translateY(-70%)", "translateY(-70%)"]);
+    for (const t of tracks(container)) expect(t.style.transition).toBe("none");
   });
 
   it("renders the zero placeholder without any wheels", () => {
