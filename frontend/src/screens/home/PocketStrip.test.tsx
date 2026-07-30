@@ -38,7 +38,7 @@ describe("PocketStrip", () => {
   it("shows RTA, the soonest bill, and the net-worth delta", async () => {
     wrap();
     expect(await screen.findByText("1,200.00")).toBeInTheDocument(); // RTA
-    expect(screen.getByText(/Netflix due in 2d · 39\.00/)).toBeInTheDocument(); // soonest of the two
+    expect(screen.getByText("Netflix due in 2d")).toBeInTheDocument(); // soonest of the two
     expect(screen.getByText("6,500.00")).toBeInTheDocument(); // latest net worth
     expect(screen.getByText(/\+500\.00 this month/)).toBeInTheDocument();
   });
@@ -71,6 +71,9 @@ describe("PocketStrip", () => {
       { id: 2, merchant: "DEWA", amount_fils: 40000, next_due: "2026-07-27", direction: "debit", category_id: null, due_in_days: -3, missed: true },
     ] };
     wrap();
-    expect(await screen.findByText(/DEWA 3d overdue · 400\.00/)).toBeInTheDocument();
+    // Name and amount are separate spans so only the name may be elided —
+    // truncating them together used to eat the amount, the fact that matters.
+    expect(await screen.findByText("DEWA 3d overdue")).toBeInTheDocument();
+    expect(screen.getByText("400.00")).toBeInTheDocument();
   });
 });

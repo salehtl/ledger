@@ -29,10 +29,13 @@ export function UpdateBalanceSheet({ account, onClose }: {
   const noteId = useId();
   const toast = useToast();
   const post = usePostBalance(a.account_id);
-  const [text, setText] = useState(
-    a.has_checkin && a.anchor_fils != null ? signedAmountText(a.anchor_fils) : "",
-  );
-  const [sign, setSign] = useState<Sign>((a.computed_fils ?? 0) < 0 ? "neg" : "pos");
+  // Prefill the magnitude only and let the toggle carry the sign. Seeding the
+  // text with "-1247.80" made composeStated treat the sign as explicit, so the
+  // +/− control silently did nothing on exactly the accounts that need it —
+  // every credit card, which is where a prefilled negative comes from.
+  const prefilled = a.has_checkin && a.anchor_fils != null ? a.anchor_fils : null;
+  const [text, setText] = useState(prefilled != null ? signedAmountText(Math.abs(prefilled)) : "");
+  const [sign, setSign] = useState<Sign>((prefilled ?? a.computed_fils ?? 0) < 0 ? "neg" : "pos");
   const [touched, setTouched] = useState(false);
   const [note, setNote] = useState("");
 

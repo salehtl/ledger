@@ -51,14 +51,33 @@ const WASH: Record<SwipeDirection, (c: string) => string> = {
   down:  c => `linear-gradient(0deg, ${c}59 0%, ${c}00 55%)`,
 }
 
-function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeAction; active: boolean }) {
+/** The four bucket rails around the card.
+ *
+ *  These are real buttons, not decoration. They render as filled, labelled
+ *  pills that look exactly like controls, and while they were
+ *  `pointer-events-none` tapping one did nothing — leaving swipe as the only
+ *  way to categorize anything, which is unusable with a keyboard, a switch
+ *  control, or a screen reader, and merely baffling with a thumb. */
+function EdgeRail({
+  dir, action, active, onCommit, disabled,
+}: {
+  dir: SwipeDirection
+  action: SwipeAction
+  active: boolean
+  onCommit: (dir: SwipeDirection) => void
+  disabled?: boolean
+}) {
   const color = actionColor(action)
   const Icon: PixelIconType = SWIPE_ICONS[action.icon] ?? Heart
   const { style, vertical } = RAIL_POS[dir]
   return (
-    <div className="absolute z-10 pointer-events-none" style={style}>
-      <div
-        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 ${vertical ? 'flex-col px-2 py-3 w-12' : 'px-4 py-2'}`}
+    <div className="absolute z-10" style={style}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onCommit(dir)}
+        aria-label={`${action.label} — sort this transaction`}
+        className={`press flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           // Ink or paper, whichever reads on this fill — white was fine on the
@@ -68,9 +87,9 @@ function EdgeRail({ dir, action, active }: { dir: SwipeDirection; action: SwipeA
           boxShadow: active ? `0 10px 24px -8px ${color}` : 'none',
         }}
       >
-        <Icon size={16} className="shrink-0" />
+        <Icon size={16} className="shrink-0" aria-hidden />
         <span className="text-[11px] tracking-wide leading-none">{action.label}</span>
-      </div>
+      </button>
     </div>
   )
 }
@@ -308,9 +327,17 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           />
         )}
 
-        {/* Four bucket rails */}
+        {/* Four bucket rails — tappable, so the deck can be worked without a
+            swipe gesture at all. */}
         {(['up', 'down', 'left', 'right'] as const).map(dir => (
-          <EdgeRail key={dir} dir={dir} action={config[dir]} active={activeDir === dir} />
+          <EdgeRail
+            key={dir}
+            dir={dir}
+            action={config[dir]}
+            active={activeDir === dir}
+            disabled={!current}
+            onCommit={handleDirectionCommit}
+          />
         ))}
 
         {/* Sizing box keeps the ghost the same size as the front card. The
@@ -318,7 +345,11 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
             top and bottom edges, and the card is tall enough to reach both, so
             without it Transfer and Save render on top of the card. It only
             became visible when the rails stopped being a 12%-ink wash. */}
-        <div className="relative w-[80%] max-w-[320px] my-11">
+        {/* The horizontal inset is the left/right rails' band, exactly as the
+            vertical margin is the up/down band. The rails are 48px wide and
+            sit at the arena's edges, so an 80% card left only ~36px of gutter
+            and Want/Need rendered on top of the card's own edges. */}
+        <div className="relative w-[calc(100%-7rem)] max-w-[320px] my-11">
           {/* Ghost card behind gives depth */}
           {next && (
             <div

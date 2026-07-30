@@ -85,9 +85,19 @@ export function AppShell() {
   });
   const reviewCount = review.data?.length ?? 0;
 
+  // Drill-ins are opaque full-screen panels laid over the tabs, so everything
+  // underneath is covered but still in the tab order and the screen-reader
+  // cursor — Tab from the Settings back-arrow used to land on the Home rings
+  // behind it. `inert` takes the covered layer out of both.
+  const covered = overlays.length > 0 || projectsView !== null;
+  // Settings owns its own sub-page stack, so it has to tell us when one is
+  // open — otherwise the Settings panel's back arrow stays tabbable behind it.
+  const [settingsSubpage, setSettingsSubpage] = useState(false);
+
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">
       <PwaUpdatePrompt />
+      <div className="contents" inert={covered}>
       <TopBar
         title={TITLES[tab]}
         scope={scope}
@@ -101,7 +111,11 @@ export function AppShell() {
       <IngestHealthBanner onView={openIngestHealth} />
       <main ref={mainRef} className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />
-        <div className="max-w-screen-sm w-full mx-auto px-4 py-4">
+        {/* min-h-full + flex-col so a screen that wants the whole viewport can
+            ask for it with flex-1 (the Review deck centres itself in the space
+            rather than stranding it below the card). pb-8 gives scrollable
+            screens a terminus above the nav instead of ending flush. */}
+        <div className="max-w-screen-sm w-full mx-auto px-4 pt-4 pb-8 min-h-full flex flex-col">
           {tab === "home" && (
             <Home
               scope={scope}
@@ -119,31 +133,40 @@ export function AppShell() {
         </div>
       </main>
       <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
-      {overlays.map((o, i) =>
-        o.kind === "settings" ? (
-          <SettingsPage key={`settings-${i}`} title="Settings" onClose={popOverlay}>
-            <Settings
-              scope={scope}
-              intent={o.intent}
-              onOpenProjects={openProjects}
-              onOpenAccounts={() => pushOverlay({ kind: "accounts" })}
-              onOpenRecurring={() => pushOverlay({ kind: "recurring" })}
-            />
-          </SettingsPage>
-        ) : o.kind === "accounts" ? (
-          <SettingsPage key={`accounts-${i}`} title="Accounts" onClose={popOverlay}>
-            <AccountsScreen />
-          </SettingsPage>
-        ) : o.kind === "reports" ? (
-          <SettingsPage key={`reports-${i}`} title="Reports" onClose={popOverlay}>
-            <ReportsScreen focus="networth" />
-          </SettingsPage>
-        ) : (
-          <SettingsPage key={`recurring-${i}`} title="Recurring" onClose={popOverlay}>
-            <RecurringScreen />
-          </SettingsPage>
-        ),
-      )}
+      </div>
+      {overlays.map((o, i) => {
+        // Panels stack — Accounts opened from Settings leaves Settings mounted
+        // beneath it — so every panel except the top one is covered too.
+        const buried = i < overlays.length - 1 || projectsView !== null;
+        return (
+          <div key={`${o.kind}-${i}`} className="contents" inert={buried}>
+            {o.kind === "settings" ? (
+              <SettingsPage title="Settings" onClose={popOverlay} covered={settingsSubpage}>
+                <Settings
+                  scope={scope}
+                  intent={o.intent}
+                  onSubpageChange={setSettingsSubpage}
+                  onOpenProjects={openProjects}
+                  onOpenAccounts={() => pushOverlay({ kind: "accounts" })}
+                  onOpenRecurring={() => pushOverlay({ kind: "recurring" })}
+                />
+              </SettingsPage>
+            ) : o.kind === "accounts" ? (
+              <SettingsPage title="Accounts" onClose={popOverlay}>
+                <AccountsScreen />
+              </SettingsPage>
+            ) : o.kind === "reports" ? (
+              <SettingsPage title="Reports" onClose={popOverlay}>
+                <ReportsScreen focus="networth" />
+              </SettingsPage>
+            ) : (
+              <SettingsPage title="Recurring" onClose={popOverlay}>
+                <RecurringScreen />
+              </SettingsPage>
+            )}
+          </div>
+        );
+      })}
       {projectsView !== null && (
         <ProjectsFlow initialProjectId={projectsView.projectId} onClose={() => setProjectsView(null)} />
       )}

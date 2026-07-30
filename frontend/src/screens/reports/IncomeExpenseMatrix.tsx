@@ -22,11 +22,15 @@ const col = createColumnHelper<IncomeExpenseRow>();
 /**
  * The income-v-expense matrix: category rows × months, income block first,
  * then spending, a net row at the bottom, and average/total columns at the
- * far end. Built on TanStack Table, scrolled inside its own two-axis
- * `overflow-auto` container capped at 60vh — the page never scrolls
- * horizontally; the category column stays sticky through horizontal scroll
- * and the month header row stays sticky through vertical scroll, so a
- * mid-table position never loses its row labels or its month context.
+ * far end. Built on TanStack Table and scrolled horizontally inside its own
+ * container, so the page never scrolls sideways while the table grows to its
+ * natural height and scrolls vertically with the page. The category column
+ * stays sticky through horizontal scroll and the header row through vertical,
+ * so a mid-table position never loses its row labels or its month context.
+ *
+ * It deliberately does not clamp its own height: a nested vertical scroller
+ * hid the Net row and half the categories behind an inner scrollbar that
+ * touch gives you no way to discover.
  *
  * Months are displayed newest-first so the mobile viewport opens on the
  * months that matter; the header row names every column, so the order is
@@ -52,7 +56,7 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
           type="button"
           onClick={() => onDrillRow(row.original)}
           aria-label={`All ${row.original.name} transactions in this window`}
-          className="flex min-h-9 w-full items-center px-3 text-left font-mono text-xs tracking-[0.02em] press"
+          className="flex min-h-11 w-full items-center px-3 text-left font-mono text-xs tracking-[0.02em] press"
         >
           <span className="truncate">{row.original.name}</span>
         </button>
@@ -76,7 +80,7 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
       id: "avg",
       header: "Avg/mo",
       cell: ({ row }) => (
-        <span className="flex min-h-9 items-center justify-end px-3 tnum text-xs text-muted">
+        <span className="flex min-h-11 items-center justify-end px-3 tnum text-xs text-muted">
           {formatFils(row.original.avg_fils)}
         </span>
       ),
@@ -110,7 +114,11 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
   const net = netTotals(data.net_by_month_fils);
 
   return (
-    <div className="max-h-[60vh] overflow-auto" data-testid="matrix-scroll">
+    // Horizontal only. A 60vh vertical clamp made this a second scroller
+    // nested inside the page's own, so the Net row and five of eleven
+    // categories were hidden behind an inner scrollbar with no affordance —
+    // on touch there is nothing to tell you the table continues.
+    <div className="overflow-x-auto" data-testid="matrix-scroll">
       <table className="w-max min-w-full border-separate border-spacing-0">
         <thead>
           <tr>
@@ -190,10 +198,10 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
               );
             })}
             <td className="border-l border-border px-3 text-right">
-              <span className="flex min-h-9 items-center justify-end tnum text-xs text-muted">{formatFils(net.avg)}</span>
+              <span className="flex min-h-11 items-center justify-end tnum text-xs text-muted">{formatFils(net.avg)}</span>
             </td>
             <td className="p-0">
-              <span className={`flex min-h-9 items-center justify-end px-3 tnum text-xs font-medium ${net.total < 0 ? "text-bad" : ""}`}>
+              <span className={`flex min-h-11 items-center justify-end px-3 tnum text-xs font-medium ${net.total < 0 ? "text-bad" : ""}`}>
                 {formatFils(net.total)}
               </span>
             </td>
@@ -216,7 +224,7 @@ function CellButton({ fils, label, onClick, emphasis = false }: {
       type="button"
       onClick={onClick}
       aria-label={`${label}: ${formatFils(fils)}`}
-      className={`flex min-h-9 w-full items-center justify-end px-3 text-right press ${emphasis ? "font-medium" : ""}`}
+      className={`flex min-h-11 w-full items-center justify-end px-3 text-right press ${emphasis ? "font-medium" : ""}`}
     >
       <span className="tnum text-xs">
         <Money fils={fils} />

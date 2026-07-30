@@ -65,3 +65,43 @@ describe("Review screen", () => {
     expect(screen.queryByText("JUNE SHOP")).not.toBeInTheDocument();
   });
 });
+
+describe("Review screen failure states", () => {
+  const scope: Scope = { kind: "month", period: "2026-06" };
+
+  it("says the queue failed to load instead of claiming you are all caught up", async () => {
+    // A dropped request used to render the success state, so a network blip
+    // looked identical to an empty queue.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("/api/categories")
+          ? new Response(JSON.stringify([{ ID: 1, Name: "Groceries", Kind: "expense", Bucket: "need", IsActive: true }]))
+          : new Response("boom", { status: 500 }),
+      ),
+    );
+    wrap(scope);
+    await waitFor(() => expect(screen.getByText(/couldn't load your review queue/i)).toBeInTheDocument());
+    expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
+  });
+
+  it("does not hand the deck an undefined category list when categories fail", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/api/categories")) return new Response("boom", { status: 500 });
+        return new Response(
+          JSON.stringify([
+            {
+              ID: 1, PostedAt: "2026-06-10T00:00:00Z", AmountFils: 1000, Currency: "AED",
+              Direction: "debit", MerchantRaw: "JUNE SHOP", Status: "needs_review", Confidence: 0,
+              Source: "", CategoryID: null, CategoryName: "", Bucket: "",
+            },
+          ]),
+        );
+      }),
+    );
+    wrap(scope);
+    await waitFor(() => expect(screen.getByText(/couldn't load your review queue/i)).toBeInTheDocument());
+  });
+});

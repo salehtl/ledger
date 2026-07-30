@@ -9,6 +9,9 @@ import { Switch } from "../../components/ui/Switch";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Card } from "../../components/ui/Card";
 import { useToast } from "../../components/Toast";
+import { Skeleton } from "../../components/Skeleton";
+import { EmptyState } from "../../components/EmptyState";
+import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 
@@ -36,11 +39,15 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
 
   const saveSettings = async (next: AppSettings) => {
     try {
-      // Send only the writable fields — ai_key_present is read-only (env-only).
+      // Send every writable field — ai_key_present and ai_cap_latched are
+      // read-only. The spend cap belongs here too: this endpoint takes the
+      // whole object, so leaving a field out asks the server to preserve it
+      // rather than stating a value.
       await postJSON("/api/settings", {
         auto_categorize: next.auto_categorize, ai_enabled: next.ai_enabled,
         ai_auto_accept: next.ai_auto_accept, ai_threshold: next.ai_threshold,
         ingest_silence_days: next.ingest_silence_days,
+        ai_spend_cap_musd: next.ai_spend_cap_musd ?? 0,
       }, "PUT");
       qc.invalidateQueries({ queryKey: ["settings"] });
       flash();
@@ -80,7 +87,13 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
 
   return (
     <SettingsPage title="Categorization" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
-      {s && (
+      {settings.isPending ? (
+        <Skeleton rows={3} />
+      ) : settings.isError || !s ? (
+        // A bare `{s && …}` guard renders the page as an empty body under the
+        // header — indistinguishable from a screen with nothing on it.
+        <EmptyState icon={AlertTriangle} title="Couldn't load categorization settings" hint="Check your connection and try again." />
+      ) : (
         <>
           <section className="space-y-1">
             <ToggleRow title="Auto-categorize new transactions" hint="Off = everything waits in Needs review for you to categorize.">

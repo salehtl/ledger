@@ -42,6 +42,7 @@
     "@vitejs/plugin-react": "^4.3.1",
     "jsdom": "^24.1.0",
     "pixelarticons": "^2.2.0",
+    "playwright": "^1.62.0",
     "remark-gfm": "^4.0.1",
     "storybook": "^9",
     "typescript": "^5.5.3",

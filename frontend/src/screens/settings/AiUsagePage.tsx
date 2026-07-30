@@ -8,6 +8,9 @@ import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Field";
 import { useToast } from "../../components/Toast";
+import { Skeleton } from "../../components/Skeleton";
+import { EmptyState } from "../../components/EmptyState";
+import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import { formatMuUSD, dollarsToMuUSD, muUSDToDollars } from "../../lib/aiCost";
@@ -39,15 +42,29 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
 
   return (
     <SettingsPage title="AI & API usage" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
-      {s && (
+      {settings.isPending ? (
+        <Skeleton rows={3} />
+      ) : settings.isError || !s ? (
+        // A bare `{s && …}` guard renders the page as an empty body under the
+        // header — indistinguishable from a screen with nothing on it.
+        <EmptyState icon={AlertTriangle} title="Couldn't load AI settings" hint="Check your connection and try again." />
+      ) : (
         <>
           <section className="space-y-1">
             <label className="flex items-center justify-between gap-3 text-sm py-2">
               <span>
                 AI features
-                <span className="block text-xs text-muted">When off, the app makes zero calls to Anthropic.</span>
+                <span className="block text-xs text-muted">
+                  {s.ai_key_present
+                    ? "When off, the app makes zero calls to Anthropic."
+                    : "Add an Anthropic API key to the env file and restart to turn this on."}
+                </span>
               </span>
+              {/* Without a key this switch turns on, saves, and changes
+                  nothing — every AI call is refused at the gate. Disable it and
+                  say why rather than offering a control that does nothing. */}
               <Switch aria-label="AI features"
+                disabled={!s.ai_key_present}
                 checked={s.ai_enabled}
                 onChange={(e) => save({ ...s, ai_enabled: e.target.checked })} />
             </label>

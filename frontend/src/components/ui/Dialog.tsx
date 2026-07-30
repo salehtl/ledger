@@ -39,7 +39,12 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   // Under reduced motion, skip the slide but still seed + fade the scrim.
   useEffect(() => {
     const panel = panelRef.current, scrim = scrimRef.current;
-    panel?.focus();
+    // A sheet that opens onto a field should land the caret in it. Focusing
+    // the panel unconditionally stole that focus back, so search took two
+    // taps: one to open the sheet, another to actually get into the input.
+    const autofocus = panel?.querySelector<HTMLElement>("[autofocus]");
+    if (autofocus) autofocus.focus();
+    else panel?.focus();
     if (!scrim) return;
     scrim.style.opacity = "0";
     if (reduced || !panel) {
