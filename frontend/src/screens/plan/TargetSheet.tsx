@@ -11,7 +11,8 @@ import {
   type Envelope,
   type TargetType,
 } from "../../lib/envelope";
-import { useDeleteTarget, usePutTarget, type TargetBody } from "./api";
+import { putTargetOnce, useDeleteTarget, usePutTarget, type TargetBody } from "./api";
+import { useQueryClient } from "@tanstack/react-query";
 
 const EXPLAINER: Record<TargetType, string> = {
   set_aside: "Add this amount to the envelope each period, whatever is left.",
@@ -40,11 +41,16 @@ export function TargetSheet({ envelope, month, onClose }: {
 
   const put = usePutTarget(month);
   const remove = useDeleteTarget(month);
+  const qc = useQueryClient();
   const toast = useToast();
+
+  // Local date, not toISOString (UTC would lag a UAE evening by a day).
+  const now = new Date();
+  const minDueDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
   const parsed = parseAmountFils(amountText);
   const amountOk = parsed !== null && parsed > 0;
-  const dateOk = type !== "save_by_date" || dueDate !== "";
+  const dateOk = type !== "save_by_date" || (dueDate !== "" && dueDate >= minDueDate);
   const busy = put.isPending || remove.isPending;
 
   const save = () => {
@@ -63,10 +69,15 @@ export function TargetSheet({ envelope, month, onClose }: {
           action: old
             ? {
                 label: "Undo",
+                // Plain call, not put.mutate: this closure outlives the sheet,
+                // and an unmounted mutation hook drops its callbacks — the
+                // restore would neither refresh caches nor report failure.
                 onAction: () => {
                   const body: TargetBody = { target_type: old.type, amount_fils: old.amount_fils, cadence: old.cadence };
                   if (old.type === "save_by_date") body.due_date = old.due_date;
-                  put.mutate({ categoryId: envelope.category_id, body });
+                  putTargetOnce(envelope.category_id, body)
+                    .then(() => qc.invalidateQueries({ queryKey: ["envelopes"] }))
+                    .catch(() => toast.show({ message: "Couldn't undo", tone: "error" }));
                 },
               }
             : undefined,
@@ -118,8 +129,12 @@ export function TargetSheet({ envelope, month, onClose }: {
       ) : (
         <div className="mt-3">
           <label htmlFor={dateId} className="block text-sm font-medium mb-1">By</label>
-          <Input id={dateId} inset type="date" value={dueDate} onChange={(ev) => setDueDate(ev.target.value)} />
-          {!dateOk && <p className="mt-1 text-xs text-muted">Pick the date to save toward.</p>}
+          <Input id={dateId} inset type="date" min={minDueDate} value={dueDate} onChange={(ev) => setDueDate(ev.target.value)} />
+          {!dateOk && (
+            <p className="mt-1 text-xs text-muted">
+              {dueDate === "" ? "Pick the date to save toward." : "Pick a date in the future."}
+            </p>
+          )}
         </div>
       )}
 

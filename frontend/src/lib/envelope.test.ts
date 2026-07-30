@@ -19,6 +19,8 @@ import {
   moveSources,
   moveSuggestionFils,
   neededLabel,
+  nextUpcoming,
+  nextUpcomingLabel,
   parseAmountFils,
   rtaDisplay,
   rtaMessage,
@@ -272,8 +274,8 @@ describe("auto-assign", () => {
 
   it("totals and message", () => {
     expect(allocationsTotal(allocs)).toBe(75000);
-    expect(autoAssignMessage(allocs)).toBe("Assigned 750.00 across 2 envelopes");
-    expect(autoAssignMessage([{ category_id: 1, amount_fils: 100 }])).toBe("Assigned 1.00 across 1 envelope");
+    expect(autoAssignMessage(allocs)).toBe("Assigned 2 envelopes");
+    expect(autoAssignMessage([{ category_id: 1, amount_fils: 100 }])).toBe("Assigned 1 envelope");
     expect(autoAssignMessage([])).toBe("Nothing to assign");
   });
 
@@ -334,5 +336,28 @@ describe("amount input", () => {
     expect(filsToAmountText(3955)).toBe("39.55");
     expect(filsToAmountText(305)).toBe("3.05");
     expect(filsToAmountText(-100)).toBe("0");
+  });
+});
+
+describe("nextUpcoming", () => {
+  const item = (over: Partial<UpcomingItem>): UpcomingItem => ({
+    id: 1, merchant: "NETFLIX", amount_fils: 3900, next_due: "2026-08-01",
+    direction: "debit", category_id: null, due_in_days: 2, ...over,
+  });
+
+  it("is null with nothing upcoming", () => {
+    expect(nextUpcoming([])).toBeNull();
+  });
+  it("prefers the soonest due", () => {
+    expect(nextUpcoming([item({ id: 1, due_in_days: 5 }), item({ id: 2, due_in_days: 1 })])?.id).toBe(2);
+  });
+  it("puts a missed bill ahead of a sooner-due one", () => {
+    expect(
+      nextUpcoming([item({ id: 1, due_in_days: 0 }), item({ id: 2, missed: true, due_in_days: -3 })])?.id,
+    ).toBe(2);
+  });
+  it("labels missed and future bills through dueLabel", () => {
+    expect(nextUpcomingLabel(item({ due_in_days: -3 }))).toBe("NETFLIX 3d overdue");
+    expect(nextUpcomingLabel(item({ label: "Netflix", due_in_days: 2 }))).toBe("Netflix due in 2d");
   });
 });

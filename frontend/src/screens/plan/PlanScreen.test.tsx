@@ -189,7 +189,7 @@ describe("PlanScreen", () => {
   it("auto-assign posts once and reports the result in a toast with undo", async () => {
     wrap();
     fireEvent.click(await screen.findByRole("button", { name: "Auto-assign" }));
-    expect(await screen.findByText("Assigned 2,500.00 across 1 envelope")).toBeInTheDocument();
+    expect(await screen.findByText("Assigned 1 envelope")).toBeInTheDocument();
     const post = calls.find((c) => c.url === "/api/envelopes/auto-assign");
     expect(post?.method).toBe("POST");
     expect(post?.body).toEqual({ month: "2026-07" });
@@ -239,7 +239,7 @@ describe("PlanScreen", () => {
       const post = calls.find((c) => c.url === "/api/envelopes/move");
       expect(post?.body).toEqual({ month: "2026-07", from_category_id: 9, to_category_id: 7, amount_fils: 24200 });
     });
-    expect(await screen.findByText("Moved 242.00 from Japan trip")).toBeInTheDocument();
+    expect(await screen.findByText("Moved money from Japan trip")).toBeInTheDocument();
   });
 
   it("target sheet: save-by-date demands a date, then puts the target", async () => {

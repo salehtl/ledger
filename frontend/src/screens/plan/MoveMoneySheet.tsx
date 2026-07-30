@@ -16,7 +16,8 @@ import {
   type Envelope,
 } from "../../lib/envelope";
 import { formatFils } from "../../lib/money";
-import { useMoveMoney } from "./api";
+import { moveMoneyOnce, useMoveMoney, writeSummary } from "./api";
+import { useQueryClient } from "@tanstack/react-query";
 
 /**
  * Two-tap move money: pick the source envelope (step 1), confirm the amount
@@ -39,6 +40,7 @@ export function MoveMoneySheet({ envelopes, toId, claim, month, onClose }: {
   const from = fromId === null ? undefined : envelopes.find((e) => e.category_id === fromId);
   const [text, setText] = useState("");
   const move = useMoveMoney(month);
+  const qc = useQueryClient();
   const toast = useToast();
 
   if (!to) return null;
@@ -59,15 +61,22 @@ export function MoveMoneySheet({ envelopes, toId, claim, month, onClose }: {
     move.mutate(body, {
       onSuccess: (_, vars) => {
         toast.show({
-          message: `Moved ${formatFils(vars.amount_fils)} from ${from.category_name}`,
+          // Figure-free on purpose: Toast sets its body in Sans, and §1.3
+          // keeps money out of Sans; the moved numbers are already on screen.
+          message: `Moved money from ${from.category_name}`,
           action: {
             label: "Undo",
+            // Plain call, not move.mutate: this closure outlives the sheet,
+            // and an unmounted mutation hook drops its callbacks — the undo
+            // would neither write the cache nor surface a failure.
             onAction: () =>
-              move.mutate({
+              moveMoneyOnce(month, {
                 from_category_id: vars.to_category_id,
                 to_category_id: vars.from_category_id,
                 amount_fils: vars.amount_fils,
-              }),
+              })
+                .then((summary) => writeSummary(qc, summary))
+                .catch(() => toast.show({ message: "Couldn't undo", tone: "error" })),
           },
         });
         onClose();
