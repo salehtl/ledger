@@ -85,5 +85,9 @@ export default defineConfig({
     // make an unrelated screen's tests time out against a stale mock. Restore
     // stubbed globals after each test so file order can't decide correctness.
     unstubGlobals: true,
+    // Same reasoning for spies: 23 files vi.spyOn(api, …) and only some
+    // restore. No file spies in beforeAll (verified), so per-test restoration
+    // is safe. mocks created with vi.fn() in module scope are untouched.
+    restoreMocks: true,
   },
 });
