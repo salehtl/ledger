@@ -9,6 +9,9 @@ import { Switch } from "../../components/ui/Switch";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Card } from "../../components/ui/Card";
 import { useToast } from "../../components/Toast";
+import { Skeleton } from "../../components/Skeleton";
+import { EmptyState } from "../../components/EmptyState";
+import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 
@@ -84,7 +87,13 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
 
   return (
     <SettingsPage title="Categorization" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
-      {s && (
+      {settings.isPending ? (
+        <Skeleton rows={3} />
+      ) : settings.isError || !s ? (
+        // A bare `{s && …}` guard renders the page as an empty body under the
+        // header — indistinguishable from a screen with nothing on it.
+        <EmptyState icon={AlertTriangle} title="Couldn't load categorization settings" hint="Check your connection and try again." />
+      ) : (
         <>
           <section className="space-y-1">
             <ToggleRow title="Auto-categorize new transactions" hint="Off = everything waits in Needs review for you to categorize.">

@@ -31,13 +31,15 @@ export function TextSizePage({ onClose }: { onClose: () => void }) {
         <p className="text-xs text-muted mb-3">
           Scales all text in the app on this device. Applies immediately.
         </p>
-        <div className="overflow-x-auto -mx-1 px-1">
-          <SegmentedControl
-            value={String(scale)}
-            onChange={(v) => commit(Number(v) as FontScale)}
-            options={OPTIONS}
-          />
-        </div>
+        {/* fullWidth, not a horizontal scroller: at 320px the scroller clipped
+            the control at the viewport edge, and the clipped segment was the
+            selected one. */}
+        <SegmentedControl
+          fullWidth
+          value={String(scale)}
+          onChange={(v) => commit(Number(v) as FontScale)}
+          options={OPTIONS}
+        />
         {scale !== DEFAULT_FONT_SCALE && (
           <Button variant="ghost" className="mt-3 text-sm" onClick={() => commit(DEFAULT_FONT_SCALE)}>
             Reset to default

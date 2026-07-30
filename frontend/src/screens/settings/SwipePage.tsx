@@ -29,14 +29,27 @@ export function SwipePage({ onClose }: { onClose: () => void }) {
     flash();
   };
 
+  /** The action a direction currently carries, as the option value shown in the UI. */
+  const actionValue = (a: SwipeConfig[SwipeDirection]) => (a.bucket ? a.bucket : "transfer");
+
   const setSwipeDir = (dir: SwipeDirection, value: string) => {
+    const template =
+      value === "transfer"
+        ? DEFAULT_SWIPE_CONFIG.up
+        : Object.values(DEFAULT_SWIPE_CONFIG).find((a) => a.bucket === value);
+    if (!template) return;
+
+    // Swap, don't overwrite. The four directions are a mapping onto four
+    // actions; assigning one direction an action another already held used to
+    // leave two directions doing the same thing and one bucket unreachable in
+    // Review — with no way to notice except that a bucket had quietly vanished.
     const next: SwipeConfig = { ...swipeCfg };
-    if (value === "transfer") {
-      next[dir] = { ...DEFAULT_SWIPE_CONFIG.up };
-    } else {
-      const template = Object.values(DEFAULT_SWIPE_CONFIG).find((a) => a.bucket === value);
-      if (template) next[dir] = { ...template };
-    }
+    const displaced = next[dir];
+    const other = (Object.keys(next) as SwipeDirection[]).find(
+      (d) => d !== dir && actionValue(next[d]) === value,
+    );
+    next[dir] = { ...template };
+    if (other) next[other] = { ...displaced };
     commit(next);
   };
 

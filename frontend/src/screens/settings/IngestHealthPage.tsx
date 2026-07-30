@@ -4,6 +4,9 @@ import type { AppSettings } from "../../api/types";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { Card } from "../../components/ui/Card";
 import { useToast } from "../../components/Toast";
+import { Skeleton } from "../../components/Skeleton";
+import { EmptyState } from "../../components/EmptyState";
+import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import { useIngestHealth } from "../../hooks/useIngestHealth";
@@ -51,7 +54,17 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
 
   return (
     <SettingsPage title="Email ingest" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
-      {ih && (
+      {health.isPending ? (
+        <Skeleton rows={3} />
+      ) : health.isError || !ih ? (
+        // A bare `{ih && …}` guard rendered an empty body under the header,
+        // which reads as "ingest is fine" rather than "this failed to load".
+        <EmptyState
+          icon={AlertTriangle}
+          title="Couldn't load ingest health"
+          hint="Check your connection and try again."
+        />
+      ) : (
         <>
           <Card className="space-y-1">
             <p className="text-sm font-semibold">{ingestStatusLabel(ih.status)}</p>
@@ -86,13 +99,15 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
             <p className="text-xs text-muted mb-3">
               Catches a broken auto-forward rule even when mailbox checks succeed.
             </p>
-            <div className="overflow-x-auto -mx-1 px-1">
-              <SegmentedControl
-                value={String(s?.ingest_silence_days ?? ih.silence_days)}
-                onChange={(v) => saveDays(Number(v))}
-                options={DAY_OPTIONS}
-              />
-            </div>
+            {/* fullWidth, not a horizontal scroller: at 320px the scroller clipped
+                the control at the viewport edge, and the clipped segment was the
+                selected one. */}
+            <SegmentedControl
+              fullWidth
+              value={String(s?.ingest_silence_days ?? ih.silence_days)}
+              onChange={(v) => saveDays(Number(v))}
+              options={DAY_OPTIONS}
+            />
           </section>
         </>
       )}
