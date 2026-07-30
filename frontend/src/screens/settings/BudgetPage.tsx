@@ -5,6 +5,9 @@ import type { BudgetConfig } from "../../api/types";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../../lib/format";
 import { pctsValid, splitSegments } from "../../lib/split";
 import { Switch } from "../../components/ui/Switch";
+import { PixelSpinner } from "../../components/ui/PixelSpinner";
+import { EmptyState } from "../../components/EmptyState";
+import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { NumberField } from "../../components/ui/Field";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
@@ -73,6 +76,21 @@ export function BudgetPage({ onClose }: { onClose: () => void }) {
 
   return (
     <SettingsPage title="Budget & income" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
+      {/* isPending, not isLoading: the persisted-cache restore window leaves
+          queries pending-but-not-fetching, where isLoading reports false with
+          no data — which rendered this page completely blank. */}
+      {budget.isPending && (
+        <div className="flex justify-center py-12">
+          <PixelSpinner size={32} role="status" aria-label="Loading budget" className="text-muted" />
+        </div>
+      )}
+      {!budget.isPending && !cfg && (
+        <EmptyState
+          icon={AlertTriangle}
+          title="Couldn't load your budget"
+          hint="Check your connection and try again."
+        />
+      )}
       {cfg && split && (
         <div className="space-y-4">
           <label className="block text-sm">
