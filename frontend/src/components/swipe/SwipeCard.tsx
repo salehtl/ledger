@@ -12,6 +12,7 @@ import {
   type SwipeDirection,
   DEFAULT_SWIPE_CONFIG,
   commitDirection,
+  quantizePreview,
   overlayProgress,
   previewDirection,
   actionColor,
@@ -99,8 +100,14 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
   // useSwipeGesture state did.
   const [dir, setDir] = useState<SwipeDirection | null>(null)
 
-  // Strength of the lean, 0..1, as a motion value — this one does change every
-  // frame, so it must never touch React. The badge reads it directly.
+  // Strength of the lean, 0..1, as a motion value. It changes every frame, so
+  // the badge — the thing that has to track the hand exactly — reads it
+  // straight off the value and re-renders nothing.
+  //
+  // The deck needs the same number for its edge wash, and that path does go
+  // through React state (SwipeDeck's `previewProgress`). It cannot read a
+  // motion value without one, so instead the number crossing that boundary is
+  // quantised: see `reportPreview`.
   const progress = useMotionValue(0)
 
   const reportPreview = useCallback(() => {
@@ -112,9 +119,13 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
     const d = previewDirection(dx, dy)
     const p = overlayProgress(dx, dy)
     rotate.set(dx * 0.04)
-    progress.set(p)
+    progress.set(p)                           // exact — the badge reads this
     setDir(prev => (prev === d ? prev : d))   // bail out when unchanged
-    onPreview?.(d, p)
+    // Quantised on the way out: the deck writes this into React state, so an
+    // exact float re-rendered the whole deck once per pointer frame. See
+    // quantizePreview — the reasoning and the render-collapsing property both
+    // live there, with the test.
+    onPreview?.(d, quantizePreview(p))
   }, [x, y, rotate, progress, flying, onPreview])
 
   useMotionValueEvent(x, 'change', reportPreview)
@@ -136,12 +147,23 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
   // or not a drag happened, so a swipe that ends over the card would otherwise
   // count as a tap; `dragged` gates that out. (onDragStart fires from
   // PanSession once movement crosses ~3px, so a genuine tap never sets it.)
+  //
+  // The flag is cleared at the START of the next gesture, not at the end of
+  // this one. Clearing it in `onDragEnd` looks equivalent and is not: drag and
+  // press each register their window `pointerup` listener from their own
+  // pointerdown handler, so which one runs first is decided by Framer's
+  // feature mount order, and drag mounts before press — `onDragEnd` clears the
+  // flag before `onTap` ever reads it, and every drag banks a tap. Resetting
+  // on pointerdown is ordering-independent and also clears the stale flag left
+  // by a drag that ended in `onTapCancel` (pointercancel, or a release off the
+  // element), which used to eat the next genuine tap. Capture phase, because
+  // the "View source email" button inside the card stops pointerdown.
   const dragged = useRef(false)
   const taps = useRef(0)
   const tapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(tapTimer.current), [])
   const handleTap = useCallback(() => {
-    if (dragged.current) { dragged.current = false; return }
+    if (dragged.current) return
     clearTimeout(tapTimer.current)
     taps.current += 1
     tapTimer.current = setTimeout(() => { taps.current = 0 }, TAP_WINDOW_MS)
@@ -179,16 +201,25 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
       // an elasticity claim true would add resistance the deck never wanted.
       dragMomentum={false}
       // dragSnapToOrigin routes the release through the same inertia animation
-      // with `{min: 0, max: 0}`, so these bounce values ARE the snap-back
-      // spring — without them Framer defaults to a 1e6-stiffness overdamped
-      // teleport, since we set no dragElastic.
+      // with `{min: 0, max: 0}` spread AFTER `...dragTransition`, so these
+      // bounce values really are the snap-back spring rather than dead props.
+      // (Without them the fallback is Framer's own 200/40 spring — `getProps()`
+      // defaults dragElastic to 0.35, which is truthy, so the overdamped
+      // 1e6-stiffness branch never applies here. These give the snap the same
+      // hand as every other spring in the app.)
       dragTransition={{ bounceStiffness: SPRING_SNAP.stiffness, bounceDamping: SPRING_SNAP.damping }}
+      onPointerDownCapture={() => { dragged.current = false }}
       onDragStart={() => { dragged.current = true }}
       onDragEnd={(_, info) => {
         const d = commitDirection(info.offset.x, info.offset.y, info.velocity.x, info.velocity.y)
         if (d) onDirectionCommit(d)
       }}
       onTap={handleTap}
+      // `onTap` makes Framer set tabIndex=0 (use-props.mjs) when tabIndex is
+      // undefined, which would turn the card into a keyboard stop with no
+      // role, no accessible name and no keyboard activation — a dead stop
+      // ahead of the four rails, which are the real keyboard path.
+      tabIndex={-1}
       // The deck overlaps cards, so entry and exit are AnimatePresence's job.
       // Under the app's global reducedMotion policy Framer hands every
       // positional key (x, y, rotate, scale) a `{type: false}` transition —

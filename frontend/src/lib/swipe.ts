@@ -31,6 +31,8 @@ export const SWIPE_THRESHOLD = 80
 export const COMMIT_PX = 100
 /** px/s past which a release commits regardless of distance. */
 export const COMMIT_VELOCITY = 520
+/** A flick still needs enough travel on its axis to read as intentional. */
+export const FLICK_MIN_DISTANCE = 24
 
 export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
   left:  { bucket: 'want',   label: 'Want',     colorClass: 'bg-purple-500', textClass: 'text-purple-700', icon: 'Heart' },
@@ -152,6 +154,30 @@ export function previewDirection(dx: number, dy: number): SwipeDirection | null 
   return detectDirection(dx, dy, 20)
 }
 
+/** How many discrete levels a preview strength is reported to the deck in. */
+export const PREVIEW_STEPS = 10
+
+/**
+ * Round a 0..1 preview strength to PREVIEW_STEPS levels before it crosses out
+ * of the card.
+ *
+ * The card tracks its own lean at full per-frame resolution — the badge reads
+ * the motion value directly and renders nothing. But the deck needs the same
+ * number for its edge wash, and the only way into a React tree is React state,
+ * so the exact float re-rendered SwipeDeck (four EdgeRails, the wash, the
+ * progress bar and the card, none of them memoized) once per pointer frame:
+ * ~60 renders a second for the length of every drag.
+ *
+ * Ten steps is the resolution the wash can actually express — it is a
+ * translucent gradient nobody reads to better than a tenth — so this costs
+ * nothing visible and turns those ~60 renders/s into at most eleven over the
+ * whole drag, because SwipeDeck's handlePreview already bails when the value
+ * it is handed has not changed.
+ */
+export function quantizePreview(p: number): number {
+  return Math.round(p * PREVIEW_STEPS) / PREVIEW_STEPS
+}
+
 /**
  * Which bucket, if any, a released card swipe commits to.
  *
@@ -160,9 +186,22 @@ export function previewDirection(dx: number, dy: number): SwipeDirection | null 
  * previously spread across useSwipeGesture's pointer handlers with a
  * time-based speed estimate; Framer reports real px/s.
  *
- * The velocity clause requires the sign to match the offset so a card flung
- * back toward centre (fast, but heading home) never commits to the edge it is
- * leaving.
+ * The velocity clause has two guards, and both earn their keep:
+ *
+ * - the sign must match the offset, so a card flung back toward centre (fast,
+ *   but heading home) never commits to the edge it is leaving;
+ * - the axis must also have travelled FLICK_MIN_DISTANCE. Framer's PanSession
+ *   starts a drag at ~3px and reports `info.velocity` over the last ~100ms, so
+ *   a jittery tap reaches 600px/s on five pixels of travel — past
+ *   COMMIT_VELOCITY — and it cannot fall back to being a tap either, because
+ *   `onDragStart` has already armed SwipeCard's `dragged` guard. Without the
+ *   floor a twitch sorted a card the user never meant to touch, on the
+ *   highest-frequency surface in the app, costing an undo each time. This is
+ *   the guard the deleted `flickDirection` carried and that `commitDirection`
+ *   initially dropped.
+ *
+ * The floor is measured per axis rather than on the overall travel, so 30px of
+ * downward drag cannot license a sideways velocity commit.
  */
 export function commitDirection(
   offsetX: number,
@@ -170,12 +209,12 @@ export function commitDirection(
   velocityX: number,
   velocityY: number,
 ): SwipeDirection | null {
-  const horizontal =
-    Math.abs(offsetX) >= COMMIT_PX ||
-    (Math.sign(velocityX) === Math.sign(offsetX) && Math.abs(velocityX) >= COMMIT_VELOCITY)
-  const vertical =
-    Math.abs(offsetY) >= COMMIT_PX ||
-    (Math.sign(velocityY) === Math.sign(offsetY) && Math.abs(velocityY) >= COMMIT_VELOCITY)
+  const flicked = (offset: number, velocity: number) =>
+    Math.abs(offset) >= FLICK_MIN_DISTANCE &&
+    Math.sign(velocity) === Math.sign(offset) &&
+    Math.abs(velocity) >= COMMIT_VELOCITY
+  const horizontal = Math.abs(offsetX) >= COMMIT_PX || flicked(offsetX, velocityX)
+  const vertical = Math.abs(offsetY) >= COMMIT_PX || flicked(offsetY, velocityY)
   if (!horizontal && !vertical) return null
   const preferHorizontal = horizontal && (!vertical || Math.abs(offsetX) >= Math.abs(offsetY))
   if (preferHorizontal) return offsetX > 0 ? 'right' : 'left'
