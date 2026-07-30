@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { MotionProvider } from '../../app/MotionProvider'
 import { SubcategoryPanel } from './SubcategoryPanel'
 import { DEFAULT_SWIPE_CONFIG } from '../../lib/swipe'
 import type { Category, Project, Txn } from '../../api/types'
@@ -43,17 +44,22 @@ function renderPanel(over: {
   onCancel?: () => void
   makeRule?: boolean
 } = {}) {
+  // MotionProvider, because the panel is a Dialog: without a LazyMotion
+  // ancestor its exit never runs and the backdrop-cancel test below would
+  // pass against a sheet that closes instantly instead of animating out.
   render(
-    <SubcategoryPanel
-      action={DEFAULT_SWIPE_CONFIG.left}
-      txn={txn(over.txnOverrides)}
-      categories={CATS}
-      projects={over.projects ?? []}
-      makeRule={over.makeRule ?? false}
-      onMakeRuleChange={over.onMakeRuleChange ?? vi.fn()}
-      onSelect={over.onSelect ?? vi.fn()}
-      onCancel={over.onCancel ?? vi.fn()}
-    />,
+    <MotionProvider>
+      <SubcategoryPanel
+        action={DEFAULT_SWIPE_CONFIG.left}
+        txn={txn(over.txnOverrides)}
+        categories={CATS}
+        projects={over.projects ?? []}
+        makeRule={over.makeRule ?? false}
+        onMakeRuleChange={over.onMakeRuleChange ?? vi.fn()}
+        onSelect={over.onSelect ?? vi.fn()}
+        onCancel={over.onCancel ?? vi.fn()}
+      />
+    </MotionProvider>,
   )
 }
 

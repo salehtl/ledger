@@ -1,13 +1,14 @@
-// Pure edge-swipe-back geometry for full-screen drill-in pages. Framework-free
+// Pure edge-swipe-back decisions for full-screen drill-in pages. Framework-free
 // so the activation zone and the commit rule are unit-tested without rendering.
 // Horizontal sibling of lib/sheetDrag.ts.
+//
+// `edgeBackOffset` (the leftward clamp) is gone with the hand-rolled hook:
+// Framer's asymmetric `dragElastic` clamps that side now.
 
 /** A back drag must START within this many px of the left screen edge. */
 export const EDGE_ZONE_PX = 24;
-/** Fraction of the viewport width that commits the back navigation. */
-export const BACK_COMMIT_FRACTION = 1 / 3;
-/** Flick velocity (px/ms) that commits regardless of distance. */
-export const BACK_COMMIT_VELOCITY = 0.11;
+/** px/s past which a rightward release pops the page regardless of distance. */
+export const EDGE_FLICK_VELOCITY = 550;
 
 /** Did the drag start close enough to the left edge to be a back gesture? */
 export function inEdgeZone(startX: number): boolean {
@@ -15,17 +16,12 @@ export function inEdgeZone(startX: number): boolean {
 }
 
 /**
- * Resolve raw horizontal drag into the page's visible offset. Rightward
- * (dx > 0) moves 1:1; leftward is clamped to rest — there is nothing to
- * the left to reveal.
+ * Should a released edge-swipe pop the page? Rightward only — the same
+ * direction rule as the sheet, for the same reason. A third of the screen is
+ * the commit distance, the same fraction iOS uses.
  */
-export function edgeBackOffset(dx: number): number {
-  return Math.max(0, dx);
-}
-
-/** Should the page pop on release? A long drag right OR a quick flick right. */
-export function shouldGoBack(dx: number, elapsedMs: number, viewportWidth: number): boolean {
-  if (dx <= 0) return false;
-  const velocity = dx / Math.max(1, elapsedMs);
-  return dx >= viewportWidth * BACK_COMMIT_FRACTION || velocity >= BACK_COMMIT_VELOCITY;
+export function shouldGoBack(offsetX: number, velocityX: number, width: number): boolean {
+  if (offsetX <= 0) return false;
+  if (offsetX >= width / 3) return true;
+  return velocityX >= EDGE_FLICK_VELOCITY;
 }

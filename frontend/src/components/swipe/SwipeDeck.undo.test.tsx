@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Category, Txn } from "../../api/types";
 import { SwipeDeck } from "./SwipeDeck";
 import { ToastProvider } from "../Toast";
+import { MotionProvider } from "../../app/MotionProvider";
 
 function txn(p: Partial<Txn>): Txn {
   return {
@@ -40,12 +41,17 @@ function mockFetch(respond: (url: string, method: string) => unknown = () => ({ 
 
 function renderDeck(transactions: Txn[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // MotionProvider, because the categorize panel is a Dialog: with no
+  // LazyMotion ancestor its exit is inert, and "canceling springs the card
+  // back" would be asserting against a sheet that never animated out.
   render(
-    <QueryClientProvider client={qc}>
-      <ToastProvider>
-        <SwipeDeck transactions={transactions} categories={CATS} />
-      </ToastProvider>
-    </QueryClientProvider>,
+    <MotionProvider>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <SwipeDeck transactions={transactions} categories={CATS} />
+        </ToastProvider>
+      </QueryClientProvider>
+    </MotionProvider>,
   );
 }
 

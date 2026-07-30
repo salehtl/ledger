@@ -1,37 +1,46 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-
-// TEMPORARY: Dialog.tsx's usePrefersReducedMotion shim (Task 1) delegates to
-// Framer Motion's useReducedMotion(), which lazily reads matchMedia ONCE per
-// module lifetime and caches the result (motion-dom's `hasReducedMotionListener`
-// singleton) rather than re-reading it on every mount like the old hook did.
-// That means reassigning window.matchMedia mid-suite — which this file's
-// reduced-motion tests below rely on — no longer reaches it after the first
-// Dialog render in this file. Mock the hook directly instead so those tests
-// can still drive the reduced-motion branch. Task 4 removes this shim along
-// with Dialog.tsx's own.
-const mockReducedMotion = vi.hoisted(() => ({ value: false }));
-vi.mock("motion/react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("motion/react")>();
-  return { ...actual, useReducedMotion: () => mockReducedMotion.value };
-});
-
+import { describe, it, expect, vi } from "vitest";
+// jsdom has no layout, so Framer's spring/tween scheduler needs real timers
+// to settle. These tests assert lifecycle (did onClose fire), never geometry.
+import { render, screen, fireEvent, waitFor, type RenderOptions } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { MotionProvider } from "../../app/MotionProvider";
 import { Dialog, DialogFooter } from "./Dialog";
-// TEMPORARY: see lib/motionLegacy.ts — removed by Task 4.
-import { SHEET_EXIT_MS } from "../../lib/motionLegacy";
+
+// Every m.* needs a LazyMotion ancestor. Without one `strict` does not throw —
+// the component just renders with no features loaded, so `exit` and `drag` are
+// silently inert and a test would pass while covering none of the behaviour it
+// looks like it covers.
+function renderInMotion(ui: ReactNode, options?: RenderOptions) {
+  return render(<MotionProvider>{ui}</MotionProvider>, options);
+}
+
+/**
+ * Resolve once LazyMotion's feature bundle is actually live: the panel has
+ * moved off the seeded `translateY(100%)` start, so the enter animation is
+ * running for real. Gating on this is what stops the lifecycle tests below
+ * from being vacuous — with no features loaded the sheet still renders, but
+ * `exit` never runs and onClose fires synchronously on click.
+ */
+async function motionReady() {
+  const panel = screen.getByRole("dialog");
+  await waitFor(() => expect(panel.style.transform).not.toBe("translateY(100%)"));
+}
 
 describe("Dialog", () => {
-  beforeEach(() => { vi.useFakeTimers(); mockReducedMotion.value = false; });
-  afterEach(() => vi.useRealTimers());
-
   it("renders the title and children", () => {
-    render(<Dialog title="Choose period" onClose={vi.fn()}>body</Dialog>);
+    renderInMotion(<Dialog title="Choose period" onClose={vi.fn()}>body</Dialog>);
     expect(screen.getByRole("dialog", { name: "Choose period" })).toBeInTheDocument();
     expect(screen.getByText("body")).toBeInTheDocument();
   });
 
+  it("renders the panel and scrim", () => {
+    renderInMotion(<Dialog title="T" onClose={vi.fn()}>x</Dialog>);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("dialog-scrim")).toBeInTheDocument();
+  });
+
   it("keeps footer actions sticky above scrolling content", () => {
-    const { container } = render(<Dialog title="T" onClose={() => {}}><div>body</div><DialogFooter><button>Save</button></DialogFooter></Dialog>);
+    const { container } = renderInMotion(<Dialog title="T" onClose={() => {}}><div>body</div><DialogFooter><button>Save</button></DialogFooter></Dialog>);
     const footer = container.querySelector("[data-dialog-footer]");
     expect(footer).toHaveClass("sticky", "bottom-0", "z-20", "bg-surface");
   });
@@ -43,7 +52,7 @@ describe("Dialog", () => {
     // not push it back down; it shrinks the content box, which is what caused
     // the overlap in the first place. On a phone with a 34px home-indicator
     // inset the footer ate 18px of the row above it.
-    const { container } = render(
+    const { container } = renderInMotion(
       <Dialog title="T" onClose={() => {}}><div>body</div><DialogFooter><button>Save</button></DialogFooter></Dialog>,
     );
     const panel = screen.getByRole("dialog");
@@ -55,7 +64,7 @@ describe("Dialog", () => {
   });
 
   it("drops the home-indicator inset while the keyboard is up", () => {
-    render(<Dialog title="T" onClose={() => {}}><DialogFooter><button>Save</button></DialogFooter></Dialog>);
+    renderInMotion(<Dialog title="T" onClose={() => {}}><DialogFooter><button>Save</button></DialogFooter></Dialog>);
     // No visualViewport in jsdom → keyboard closed → the shared inset var is
     // left to the stylesheet rather than pinned inline.
     expect(screen.getByRole("dialog").style.getPropertyValue("--sheet-inset-bottom")).toBe("");
@@ -68,7 +77,7 @@ describe("Dialog", () => {
     const host = document.createElement("div");
     host.style.overflowY = "auto";
     document.body.appendChild(host);
-    const { unmount } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
+    const { unmount } = renderInMotion(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
     expect(host.style.overflow).toBe("hidden");
     unmount();
     expect(host.style.overflow).toBe("");
@@ -80,76 +89,51 @@ describe("Dialog", () => {
     host.style.overflowY = "scroll";
     document.body.appendChild(host);
     Object.defineProperty(host, "scrollTop", { value: 120, writable: true, configurable: true });
-    const { unmount } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
+    const { unmount } = renderInMotion(<Dialog title="T" onClose={() => {}}>x</Dialog>, { container: host });
     unmount();
     expect(host.scrollTop).toBe(120);
     host.remove();
   });
 
   it("makes the scrim swallow touch gestures rather than pass them to the page", () => {
-    const { container } = render(<Dialog title="T" onClose={() => {}}>x</Dialog>);
-    expect(container.querySelector('[data-testid="dialog-scrim"]')).toHaveClass("touch-none");
+    renderInMotion(<Dialog title="T" onClose={() => {}}>x</Dialog>);
+    expect(screen.getByTestId("dialog-scrim")).toHaveClass("touch-none");
   });
 
-  it("gives the panel a transform transition for the slide", () => {
-    render(<Dialog title="T" onClose={vi.fn()}>x</Dialog>);
-    expect(screen.getByRole("dialog").style.transition).toContain("transform");
-  });
-
-  it("plays the exit before calling onClose", () => {
+  it("calls onClose after the exit animation completes", async () => {
     const onClose = vi.fn();
-    render(<Dialog title="T" onClose={onClose}>x</Dialog>);
-    fireEvent.click(screen.getByLabelText("Close"));
-    expect(onClose).not.toHaveBeenCalled();          // exit in flight
-    vi.advanceTimersByTime(SHEET_EXIT_MS);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    renderInMotion(<Dialog title="T" onClose={onClose}>x</Dialog>);
+    await motionReady();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).not.toHaveBeenCalled();          // exit in flight, parent still mounted
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
-  it("does not double-fire onClose when closed twice quickly", () => {
+  it("calls onClose when the scrim is tapped", async () => {
     const onClose = vi.fn();
-    render(<Dialog title="T" onClose={onClose}>x</Dialog>);
-    fireEvent.click(screen.getByLabelText("Close"));
+    renderInMotion(<Dialog title="T" onClose={onClose}>x</Dialog>);
+    await motionReady();
+    fireEvent.click(screen.getByTestId("dialog-scrim"));
+    expect(onClose).not.toHaveBeenCalled();
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("does not double-fire onClose when closed twice quickly", async () => {
+    // There is no double-close guard any more: closing is `setOpen(false)`,
+    // which is idempotent, and AnimatePresence fires onExitComplete once per
+    // exit. This test is what makes dropping the guard safe.
+    const onClose = vi.fn();
+    renderInMotion(<Dialog title="T" onClose={onClose}>x</Dialog>);
+    await motionReady();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.keyDown(document, { key: "Escape" });
-    vi.advanceTimersByTime(SHEET_EXIT_MS);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("seeds scrim opacity to 0 even under reduced motion", () => {
-    mockReducedMotion.value = true;
-    const { container } = render(<Dialog title="T" onClose={vi.fn()}>x</Dialog>);
-    const scrim = container.querySelector('[data-testid="dialog-scrim"]') as HTMLElement;
-    expect(scrim).not.toBeNull();
-    // The mount effect must seed opacity="0" before the rAF fires (rAF doesn't
-    // run in jsdom under fake timers), proving the scrim fade path was entered.
-    expect(scrim.style.opacity).toBe("0");
-  });
-
-  it("dismisses when the handle is flicked down", () => {
-    const onClose = vi.fn();
-    render(<Dialog title="T" onClose={onClose}>x</Dialog>);
-    const handle = screen.getByText("T").closest("div")!; // the drag region wrapping the header
-    fireEvent.pointerDown(handle, { clientY: 0, pointerId: 1 });
-    fireEvent.pointerMove(handle, { clientY: 60, pointerId: 1 });
-    fireEvent.pointerUp(handle, { clientY: 60, pointerId: 1 });
-    // Transition must be restored before dismiss so the slide-out animates (not jumps)
-    const panel = screen.getByRole("dialog");
-    expect(panel.style.transition).not.toBe("none");
-    expect(panel.style.transition).toContain("transform");
-    vi.advanceTimersByTime(SHEET_EXIT_MS);
-    expect(onClose).toHaveBeenCalled();
-  });
-
-  it("closes synchronously under reduced motion without advancing timers", () => {
-    mockReducedMotion.value = true;
-    const onClose = vi.fn();
-    render(<Dialog title="T" onClose={onClose}>x</Dialog>);
-    fireEvent.click(screen.getByLabelText("Close"));
-    // No timer advancement — reduced motion must fire onClose immediately.
-    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    await new Promise((r) => setTimeout(r, 50));   // nothing arrives late either
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("renders a title adornment and applies titleStyle to the heading", () => {
-    render(
+    renderInMotion(
       <Dialog
         title="Wants"
         titleAdornment={<span data-testid="dot" />}
