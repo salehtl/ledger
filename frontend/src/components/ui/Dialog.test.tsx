@@ -17,10 +17,8 @@ vi.mock("motion/react", async (importOriginal) => {
 });
 
 import { Dialog, DialogFooter } from "./Dialog";
-// TEMPORARY: lib/motion.ts was rewritten (Task 1) and no longer exports this
-// constant; Dialog.tsx now carries its own copy (see the TEMPORARY block
-// there) until Task 4 rewrites both onto AnimatePresence.
-const SHEET_EXIT_MS = 240;
+// TEMPORARY: see lib/motionLegacy.ts — removed by Task 4.
+import { SHEET_EXIT_MS } from "../../lib/motionLegacy";
 
 describe("Dialog", () => {
   beforeEach(() => { vi.useFakeTimers(); mockReducedMotion.value = false; });
