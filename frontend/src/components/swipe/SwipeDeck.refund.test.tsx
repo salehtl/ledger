@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Txn } from "../../api/types";
 import { SwipeDeck } from "./SwipeDeck";
 import { ToastProvider } from "../Toast";
+import { MotionProvider } from "../../app/MotionProvider";
 
 function txn(p: Partial<Txn>): Txn {
   return {
@@ -16,12 +17,17 @@ function txn(p: Partial<Txn>): Txn {
 
 function renderDeck(transactions: Txn[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // MotionProvider: `strict` does not throw on an unwrapped `m.*`, it renders
+  // with no features loaded — the card's drag and exit would be silently inert
+  // and the deck would only look covered.
   render(
-    <QueryClientProvider client={qc}>
-      <ToastProvider>
-        <SwipeDeck transactions={transactions} categories={[]} />
-      </ToastProvider>
-    </QueryClientProvider>,
+    <MotionProvider>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <SwipeDeck transactions={transactions} categories={[]} />
+        </ToastProvider>
+      </QueryClientProvider>
+    </MotionProvider>,
   );
 }
 

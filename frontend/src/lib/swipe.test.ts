@@ -5,9 +5,11 @@ import {
   onActionColor,
   DEFAULT_SWIPE_CONFIG,
   detectDirection,
-  flickDirection,
   overlayProgress,
   previewDirection,
+  commitDirection,
+  COMMIT_PX,
+  COMMIT_VELOCITY,
   loadSwipeConfig,
   saveSwipeConfig,
   SWIPE_THRESHOLD,
@@ -34,27 +36,6 @@ describe('detectDirection', () => {
   })
   it('returns null when exactly at threshold on one axis only', () => {
     expect(detectDirection(-79, 0, SWIPE_THRESHOLD)).toBeNull()
-  })
-})
-
-describe('flickDirection', () => {
-  it('commits a fast short drag that never reached the distance threshold', () => {
-    // 60px in 150ms = 0.4 px/ms — a clear flick
-    expect(flickDirection(-60, 0, 150)).toBe('left')
-    expect(flickDirection(0, 60, 150)).toBe('down')
-  })
-
-  it('ignores a slow drag of the same distance', () => {
-    // 60px in 1200ms = 0.05 px/ms — a hesitating drag, not a flick
-    expect(flickDirection(-60, 0, 1200)).toBeNull()
-  })
-
-  it('ignores tiny movements even when instantaneous', () => {
-    expect(flickDirection(-10, 0, 20)).toBeNull()
-  })
-
-  it('survives a zero elapsed time without dividing by zero', () => {
-    expect(flickDirection(-60, 0, 0)).toBe('left')
   })
 })
 
@@ -159,5 +140,28 @@ describe("bucket colours", () => {
         expect(contrast(onActionColor(fill), fill)).toBeGreaterThanOrEqual(4.5);
       }
     }
+  });
+});
+
+describe("commitDirection", () => {
+  it("commits along the dominant axis once past the distance threshold", () => {
+    expect(commitDirection(COMMIT_PX + 1, 10, 0, 0)).toBe("right");
+    expect(commitDirection(-(COMMIT_PX + 1), 10, 0, 0)).toBe("left");
+    expect(commitDirection(10, -(COMMIT_PX + 1), 0, 0)).toBe("up");
+    expect(commitDirection(10, COMMIT_PX + 1, 0, 0)).toBe("down");
+  });
+
+  it("commits a short flick on velocity alone", () => {
+    expect(commitDirection(20, 0, COMMIT_VELOCITY + 1, 0)).toBe("right");
+    expect(commitDirection(0, -20, 0, -(COMMIT_VELOCITY + 1))).toBe("up");
+  });
+
+  it("returns null below both thresholds", () => {
+    expect(commitDirection(10, 10, 0, 0)).toBeNull();
+  });
+
+  it("picks the axis with the larger travel when both clear the threshold", () => {
+    expect(commitDirection(COMMIT_PX + 50, COMMIT_PX + 1, 0, 0)).toBe("right");
+    expect(commitDirection(COMMIT_PX + 1, COMMIT_PX + 50, 0, 0)).toBe("down");
   });
 });

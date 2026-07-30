@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { Txn } from "../../api/types";
 import { SwipeCard } from "./SwipeCard";
+import { MotionProvider } from "../../app/MotionProvider";
 
 function txn(p: Partial<Txn>): Txn {
   return {
@@ -12,14 +13,14 @@ function txn(p: Partial<Txn>): Txn {
   };
 }
 
+// MotionProvider, not a bare render: `strict` does not throw on an unwrapped
+// `m.*`, it renders with no features loaded — so `drag` and `exit` would be
+// silently inert and the card would only *look* covered.
 function renderCard(t: Txn) {
   render(
-    <SwipeCard
-      txn={t}
-      onDirectionCommit={() => {}}
-      onTripleTap={() => {}}
-      onExitComplete={() => {}}
-    />,
+    <MotionProvider>
+      <SwipeCard txn={t} onDirectionCommit={() => {}} onTripleTap={() => {}} />
+    </MotionProvider>,
   );
 }
 

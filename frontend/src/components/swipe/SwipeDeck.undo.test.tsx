@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Category, Txn } from "../../api/types";
+import { DEFAULT_SWIPE_CONFIG, type SwipeDirection } from "../../lib/swipe";
 import { SwipeDeck } from "./SwipeDeck";
 import { ToastProvider } from "../Toast";
 import { MotionProvider } from "../../app/MotionProvider";
@@ -55,22 +56,28 @@ function renderDeck(transactions: Txn[]) {
   );
 }
 
-function swipe(card: Element, dx: number, dy: number) {
-  fireEvent.pointerDown(card, { pointerId: 1, clientX: 200, clientY: 300 });
-  fireEvent.pointerMove(card, { pointerId: 1, clientX: 200 + dx, clientY: 300 + dy });
-  fireEvent.pointerUp(card, { pointerId: 1, clientX: 200 + dx, clientY: 300 + dy });
+/**
+ * Start a sort in `dir` by tapping that bucket's rail.
+ *
+ * Not a pointer-event swipe any more: the card is dragged by Framer now, and
+ * jsdom cannot drive a Framer drag at all (no layout to measure, no frame
+ * clock behind the pointer stream) — a fireEvent pointer stream would just
+ * quietly do nothing and every assertion below would be testing an untouched
+ * deck. The rail and the swipe funnel into the same `handleDirectionCommit`,
+ * so the commit path these tests are about is identical; that the *gesture*
+ * still reaches it is covered in harness/gestures.mjs, in a real engine.
+ */
+function commit(dir: SwipeDirection) {
+  fireEvent.click(
+    screen.getByRole("button", { name: new RegExp(`^${DEFAULT_SWIPE_CONFIG[dir].label} —`, "i") }),
+  );
 }
 
-function card(): Element {
-  return screen.getByTestId("swipe-card");
-}
-
-/** Finish the fly-out so the deck advances (jsdom fires no transition events,
- *  and its generic Event lacks propertyName — define it by hand). */
-function completeExit(el: Element) {
-  const ev = new Event("transitionend", { bubbles: true });
-  Object.defineProperty(ev, "propertyName", { value: "opacity" });
-  fireEvent(el, ev);
+/** The card currently showing `merchant`, exiting or not. */
+function cardFor(merchant: string): HTMLElement {
+  const el = screen.getAllByTestId("swipe-card").find((c) => c.textContent?.includes(merchant));
+  if (!el) throw new Error(`no swipe-card showing "${merchant}"`);
+  return el as HTMLElement;
 }
 
 beforeEach(() => {
@@ -88,10 +95,8 @@ describe("SwipeDeck undo", () => {
     const calls = mockFetch();
     renderDeck([txn({ ID: 7, MerchantRaw: "Own account top-up" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
 
-    const el = card();
-    swipe(el, 0, -120); // up = transfer
+    commit("up"); // up = transfer
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
-    completeExit(el);
 
     expect(await screen.findByText(/excluded as transfers/i)).toBeInTheDocument();
     const statusCall = calls.find((c) => c.url === "/api/transactions/7/status");
@@ -112,11 +117,9 @@ describe("SwipeDeck undo", () => {
     const calls = mockFetch();
     renderDeck([txn({ ID: 7, Direction: "credit", MerchantRaw: "ACME payroll" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
 
-    const el = card();
-    swipe(el, 0, -120); // up = transfer edge
+    commit("up"); // up = transfer edge
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Salary" }));
-    completeExit(el);
 
     expect(await screen.findByText(/sorted into salary/i)).toBeInTheDocument();
     const cat = calls.find((c) => c.url === "/api/transactions/7/categorize");
@@ -138,13 +141,11 @@ describe("SwipeDeck undo", () => {
     );
     renderDeck([txn({ ID: 7, MerchantRaw: "Nando's" })]);
 
-    const el = card();
-    swipe(el, -120, 0); // left = want
+    commit("left"); // left = want
 
     // Panel opens; pick Dining
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Dining" }));
-    completeExit(el);
 
     expect(await screen.findByText(/sorted into dining/i)).toBeInTheDocument();
 
@@ -169,12 +170,10 @@ describe("SwipeDeck undo", () => {
     });
     renderDeck([txn({ ID: 7, MerchantRaw: "Wine bar Tbilisi" })]);
 
-    const el = card();
-    swipe(el, -120, 0);
+    commit("left");
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(await within(dialog).findByRole("button", { name: /georgia trip/i }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Dining" }));
-    completeExit(el);
 
     await screen.findByText(/sorted into dining/i);
     const assign = calls.find((c) => c.url === "/api/transactions/7/project");
@@ -194,10 +193,8 @@ describe("SwipeDeck undo", () => {
     });
     renderDeck([txn({ ID: 7, MerchantRaw: "Flaky Cafe" })]);
 
-    const el = card();
-    swipe(el, 0, -120);
+    commit("up");
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
-    completeExit(el);
 
     expect(await screen.findByText(/couldn't save/i)).toBeInTheDocument();
     expect(screen.getByText("Flaky Cafe")).toBeInTheDocument();
@@ -213,36 +210,34 @@ describe("SwipeDeck undo", () => {
     expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
   });
 
-  it("canceling the panel springs the card back to center", async () => {
+  it("canceling the panel leaves the same card at the front of the deck", async () => {
     mockFetch((url) => (url.startsWith("/api/projects") ? [] : { ok: true }));
-    renderDeck([txn({ ID: 7, MerchantRaw: "Hesitant purchase" })]);
+    renderDeck([txn({ ID: 7, MerchantRaw: "Hesitant purchase" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
 
-    const el = card();
-    swipe(el, -120, 0);
+    commit("left");
     await screen.findByRole("dialog");
-    expect((el as HTMLElement).style.transform).toContain("translateX(-120px)");
 
     fireEvent.click(screen.getByTestId("dialog-scrim"));
-    await waitFor(() =>
-      expect((el as HTMLElement).style.transform).toContain("translateX(0px)"),
-    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // Nothing was committed, so the deck must not have moved on. (There is no
+    // snap-back to assert any more: `dragSnapToOrigin` returns the card to
+    // centre when the pointer lifts, which is why `resetToken` is gone.)
+    expect(screen.getByText("Hesitant purchase")).toBeInTheDocument();
+    expect(screen.queryByText("Next card")).not.toBeInTheDocument();
   });
 
   it("undo after a newer commit does not clobber the deck", async () => {
     const calls = mockFetch();
     renderDeck([txn({ ID: 7, MerchantRaw: "First" }), txn({ ID: 8, MerchantRaw: "Second" })]);
 
-    let el = card();
-    swipe(el, 0, -120);
+    commit("up");
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
-    completeExit(el);
     await screen.findByText(/excluded as transfers/i);
 
     // Commit the second card too, then press the FIRST toast's undo
-    el = card();
-    swipe(el, 0, -120);
+    commit("up");
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
-    completeExit(el);
 
     const undoButtons = await screen.findAllByRole("button", { name: /undo/i });
     fireEvent.click(undoButtons[0]);
@@ -254,5 +249,39 @@ describe("SwipeDeck undo", () => {
         && (c.body as { status: string }).status === "needs_review",
     );
     expect(reverts).toHaveLength(0);
+  });
+  // ---- the overlap, and the two-render ordering that makes it directional ----
+
+  it("puts the next card in place before the committed one has finished leaving", async () => {
+    mockFetch();
+    renderDeck([txn({ ID: 7, MerchantRaw: "Own account top-up" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
+
+    commit("up");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
+
+    // No transitionend was fired and none is waited for: the deck used to
+    // advance only in handleExitComplete, which cost 300ms exit + 320ms enter
+    // serially. Both cards are on screen at once now.
+    expect(screen.getAllByTestId("swipe-card")).toHaveLength(2);
+    expect(screen.getByText("Next card")).toBeInTheDocument();
+  });
+
+  it("the leaving card still knows which bucket it committed to", async () => {
+    mockFetch();
+    renderDeck([txn({ ID: 7, MerchantRaw: "Own account top-up" }), txn({ ID: 8, MerchantRaw: "Next card" })]);
+
+    commit("up");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Transfers" }));
+
+    // AnimatePresence animates a child out as it was LAST RENDERED. If
+    // `flyDirection` and `index` were set in one batched setState, the
+    // outgoing card's final render would be the one where `flying` was still
+    // null — it would fade straight down instead of flying toward its bucket,
+    // and the directional exit the deck is built around would be dead code
+    // that still looked plausible. The confirming badge is only rendered on a
+    // card that knew its direction, so its presence inside the *leaving* card
+    // is the observable proof that the snapshot carried it.
+    const leaving = cardFor("Own account top-up");
+    expect(within(leaving).getByText(DEFAULT_SWIPE_CONFIG.up.label)).toBeInTheDocument();
   });
 });

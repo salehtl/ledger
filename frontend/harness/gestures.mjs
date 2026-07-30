@@ -49,6 +49,7 @@ const SHEET_DISMISS_PX = 110;
 const FLICK_VELOCITY = 550;   // px/s
 const EDGE_ZONE_PX = 24;
 const ROW_COMMIT = 88;        // mirrored from lib/rowSwipe.ts
+const CARD_COMMIT = 100;      // mirrored from lib/swipe.ts's COMMIT_PX
 
 // ---------------------------------------------------------------- input drivers
 //
@@ -228,6 +229,127 @@ async function openTransactionsRow(page, { search } = {}) {
 const dialogOpen = async (page) => (await page.locator('[role="dialog"]').count()) > 0;
 
 const mainScrollTop = (page) => page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0);
+
+// ------------------------------------------------------ swipe deck fixtures
+
+/** Open the Review tab's sorting deck and wait for the front card. */
+async function openReviewDeck(page) {
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await settle(page, 1200);
+  await tap(page, 'nav button[aria-label^="Review"]');
+  await page.waitForSelector("[data-testid=swipe-card]", { timeout: 8000 });
+  await settle(page, 700);
+}
+
+/** Merchant name on the card currently at the front of the deck. */
+const frontMerchant = (page) =>
+  page.evaluate(() => document.querySelector("[data-testid=swipe-card] h2")?.textContent?.trim() ?? "");
+
+/** Centre point of the front card. */
+async function cardCentre(page) {
+  const box = await page.locator("[data-testid=swipe-card]").first().boundingBox();
+  if (!box) throw new Error("no swipe-card in the deck");
+  return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+}
+
+/**
+ * Swipe the front card past the commit distance and wait for the sort panel.
+ * Returns false rather than throwing when the panel never opens, so "the
+ * card's drag gesture is gone" reports as a FAIL line instead of a stack trace.
+ */
+async function swipeToPanel(page, dx) {
+  await dragSlow(page, await cardCentre(page), { x: dx });
+  const opened = await page.waitForSelector('[role="dialog"]', { timeout: 5000 }).then(() => true, () => false);
+  if (opened) await page.waitForTimeout(400);
+  return opened;
+}
+
+/** How many cards are left in the deck (the header's "Remaining" figure). */
+const deckRemaining = (page) =>
+  page.evaluate(() => Number(document.querySelector("main p.tnum.leading-none")?.firstChild?.textContent?.trim() ?? 0));
+
+/** Title of the open subcategory panel — the bucket a commit landed in. */
+const panelBucket = (page) => page.locator('[role="dialog"] h2').first().textContent();
+
+/**
+ * Finish a started sort (the panel is open) and watch the swap frame by frame.
+ *
+ * Everything after the click has to happen inside the page: the whole point of
+ * the change is that the overlap lasts ~200ms, and a Playwright round-trip per
+ * sample would be most of that. Returns:
+ *
+ *  - `present`  ms until the NEXT card exists in the DOM (it is only actionable
+ *               once it does — the old deck did not mount it until the fly-out's
+ *               transitionend, ~330ms)
+ *  - `overlap`  the most cards on screen at once; 2 means they really do overlap
+ *  - `flight`   the leaving card's translateX per frame
+ *  - `moved`    px the incoming card moved under a drag dispatched DURING the
+ *               overlap — the actual claim, that the next card is usable before
+ *               the previous one has finished leaving
+ *  - `overlapAtDrag` how many cards were on screen at the instant that drag
+ *               started, so "it was draggable" and "the old one was still
+ *               there" are asserted about the same moment rather than two
+ *               different ones
+ */
+async function commitAndWatch(page, outgoing, { drag = false } = {}) {
+  return page.evaluate(
+    async ({ outgoing, drag }) => {
+      const cards = () => [...document.querySelectorAll("[data-testid=swipe-card]")];
+      const merchant = (c) => c.querySelector("h2")?.textContent?.trim() ?? "";
+      const frame = () => new Promise((r) => requestAnimationFrame(r));
+      const tx = (el) => new DOMMatrixReadOnly(getComputedStyle(el).transform).e;
+
+      document.querySelector('[role="dialog"] .grid button').click();
+      const t0 = performance.now();
+      let present = null, overlap = 0, moved = 0, overlapAtDrag = 0;
+      const flight = [];
+      while (performance.now() - t0 < 700) {
+        await frame();
+        const cs = cards();
+        overlap = Math.max(overlap, cs.length);
+        const leaving = cs.find((c) => merchant(c) === outgoing);
+        if (leaving) flight.push(Math.round(tx(leaving)));
+        const incoming = cs.find((c) => merchant(c) !== outgoing);
+        if (incoming && present === null) {
+          present = performance.now() - t0;
+          if (drag) {
+            // Three frames of grace: Framer mounts a freshly-committed
+            // element's drag feature an effect-flush after React inserts it,
+            // so a pointerdown on the literal first frame of its existence
+            // finds no listener. Measured here: dead on the insertion frame,
+            // live by ~50ms — still comfortably inside the ~200ms overlap,
+            // and six times sooner than the old deck even MOUNTED the card.
+            await frame(); await frame(); await frame();
+            overlapAtDrag = cards().length;
+            // Dispatched on the element rather than through the OS input layer:
+            // the leaving card is position:absolute over the same spot under
+            // popLayout, so real coordinates would hit-test onto whichever is
+            // on top. Framer listens on the element and does not care whether
+            // the event is trusted.
+            const r = incoming.getBoundingClientRect();
+            const x0 = Math.round(r.x + r.width / 2), y0 = Math.round(r.y + r.height / 2);
+            const ev = (type, cx, buttons) =>
+              new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: cx, clientY: y0, buttons });
+            incoming.dispatchEvent(ev("pointerdown", x0, 1));
+            for (let i = 1; i <= 4; i++) {
+              await frame();
+              window.dispatchEvent(ev("pointermove", x0 + i * 20, 1));
+            }
+            // PanSession reports through frame.update, so the transform lands
+            // on the frame AFTER the last pointermove — read it too early and
+            // a working drag measures as zero.
+            await frame();
+            await frame();
+            moved = Math.round(Math.abs(tx(incoming)));
+            window.dispatchEvent(ev("pointerup", x0 + 80, 0));
+          }
+        }
+      }
+      return { present, overlap, moved, overlapAtDrag, flight };
+    },
+    { outgoing, drag },
+  );
+}
 
 // ---------------------------------------------------------------------- checks
 
@@ -474,6 +596,167 @@ const page = await browser.newPage({ ...VIEWPORTS.phone });
     await dialogOpen(page),
   );
 }
+
+// ------------------------------------------------------- SwipeDeck (Task 6)
+//
+// `lib/swipe.test.ts` covers `commitDirection` as a pure predicate and
+// SwipeDeck.undo.test.tsx covers the commit path through the rails, but jsdom
+// cannot run a Framer drag at all — so `drag`, `onDragEnd` and the whole
+// gesture wiring on the card could be deleted and every unit test would still
+// pass. And the point of the change is a *timing* one that only exists in a
+// laid-out browser: the deck used to mount the next card only on the fly-out's
+// transitionend (~330ms measured here), then play a 320ms CSS entrance on top,
+// so the next card was untouchable for over half a second in the app's
+// highest-frequency flow.
+
+// Each check below sorts a card for real, and a sorted card leaves the queue.
+// Run `harness/stack.sh reset` before this file if the deck has been worked.
+await openReviewDeck(page);
+const deckReady = (await deckRemaining(page)) >= 6;
+
+if (!deckReady) {
+  skip("swipe deck checks", `only ${await deckRemaining(page)} cards left in the review queue — run harness/stack.sh reset`);
+} else {
+
+{
+  const name = "a card swiped past the commit distance sorts and the deck advances";
+  await openReviewDeck(page);
+  const outgoing = await frontMerchant(page);
+  if (!(await swipeToPanel(page, CARD_COMMIT + 40))) {
+    check(name, false, "the swipe never opened the sort panel — the card's drag is not wired to commitDirection");
+  } else {
+    await commitAndWatch(page, outgoing);
+    await page.waitForTimeout(400);
+    check(name, (await frontMerchant(page)) !== outgoing,
+      `"${outgoing.slice(0, 24)}" -> "${(await frontMerchant(page)).slice(0, 24)}"`);
+  }
+}
+
+{
+  // THE point of the task. Not "does it eventually advance" — "is the next
+  // card usable while the previous one is still leaving".
+  const name = "the next card is mounted and draggable while the committed one is still leaving";
+  await openReviewDeck(page);
+  const outgoing = await frontMerchant(page);
+  if (!(await swipeToPanel(page, -(CARD_COMMIT + 40)))) {
+    check(name, false, "the swipe never opened the sort panel — the card's drag is not wired to commitDirection");
+  } else {
+    const r = await commitAndWatch(page, outgoing, { drag: true });
+    check(name,
+      r.overlapAtDrag === 2 && r.present !== null && r.present < 120 && r.moved > 40,
+      `next card at ${Math.round(r.present)}ms, ${r.overlapAtDrag} cards on screen when the drag started, which moved it ${r.moved}px`);
+  }
+  await page.waitForTimeout(500);
+}
+
+{
+  // The exit has to carry the direction it committed to. That needs the deck's
+  // index to advance one render AFTER the card is marked flying:
+  // AnimatePresence animates a child out as it was LAST rendered, so batching
+  // the two into one setState leaves the outgoing card's final snapshot with
+  // `flying === null` — it fades straight down and the directional exit
+  // becomes dead code that still looks plausible.
+  const name = "a card committed left actually flies left, rather than fading in place";
+  await openReviewDeck(page);
+  const outgoing = await frontMerchant(page);
+  if (!(await swipeToPanel(page, -(CARD_COMMIT + 40)))) {
+    check(name, false, "the swipe never opened the sort panel — the card's drag is not wired to commitDirection");
+  } else {
+    const { flight } = await commitAndWatch(page, outgoing);
+    const end = flight.length ? flight[flight.length - 1] : 0;
+    check(name, end < -400, `leaving card ended at translateX ${end}px (fade-in-place would be ~0)`);
+  }
+  await page.waitForTimeout(500);
+}
+
+{
+  // The rails exist so the deck is workable without a gesture at all. They
+  // must mean the same thing the swipe does, not merely "do something".
+  await openReviewDeck(page);
+  const swiped = await swipeToPanel(page, -(CARD_COMMIT + 40));
+  const bySwipe = swiped ? (await panelBucket(page))?.trim() : null;
+  if (swiped) { await page.keyboard.press("Escape"); await page.waitForTimeout(600); }
+
+  await page.locator('button[aria-label$="sort this transaction"]').filter({ hasText: /Want/ }).first().click();
+  await page.waitForSelector('[role="dialog"]', { timeout: 8000 });
+  const byRail = (await panelBucket(page))?.trim();
+  check(
+    "tapping a bucket rail commits to the same bucket the equivalent swipe does",
+    bySwipe === byRail && !!bySwipe,
+    `leftward swipe -> "${bySwipe}", Want rail -> "${byRail}"`,
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+}
+
+{
+  // Triple-tap-to-skip had to be rebuilt on Framer's tap gesture when the
+  // hand-rolled pointer handlers went. Framer fires `onTap` on release whether
+  // or not a drag happened, so without the `dragged` guard in SwipeCard every
+  // swipe would also bank a tap and three short indecisive drags would silently
+  // skip the card. Both halves are asserted here because either alone passes on
+  // a broken implementation: never-skips passes if taps are ignored entirely,
+  // and skips-on-three passes if drags are counted as taps too.
+  const name = "three short drags never skip, three taps do";
+  await openReviewDeck(page);
+  const start = await frontMerchant(page);
+  const c = await cardCentre(page);
+  for (let i = 0; i < 3; i++) await dragSlow(page, c, { x: 30 }, 200);
+  await page.waitForTimeout(600);
+  const afterDrags = await frontMerchant(page);
+  // Below the card body, clear of the "View source email" link.
+  const tapAt = { x: c.x, y: c.y + 120 };
+  for (let i = 0; i < 3; i++) { await page.mouse.click(tapAt.x, tapAt.y); await page.waitForTimeout(90); }
+  await page.waitForTimeout(600);
+  const afterTaps = await frontMerchant(page);
+  check(name, afterDrags === start && afterTaps !== start,
+    `after 3 short drags "${afterDrags.slice(0, 20)}", after 3 taps "${afterTaps.slice(0, 20)}" (started on "${start.slice(0, 20)}")`);
+}
+
+{
+  // Reduced motion. The old card ignored the preference entirely: the `flying`
+  // branch of its transition ternary short-circuited before reduceMotion was
+  // consulted, so the largest movement in the app — a 600-800px translate with
+  // a 20-degree rotation — played in full for a user who had asked for less.
+  // Under MotionConfig reducedMotion="user" Framer gives positional keys
+  // `{type: false}`, i.e. no animation at all, so the card must never be caught
+  // mid-flight. Committed from the rail so it starts at rest and any
+  // mid-flight sample is unambiguous.
+  //
+  // The same measurement is run on the normal-motion page below; that pairing
+  // is what stops this from being a check that passes because the sampler is
+  // broken.
+  const midFlight = (flight) => flight.filter((v) => Math.abs(v) > 30 && Math.abs(v) < 500).length;
+
+  const reduced = await browser.newPage({ ...VIEWPORTS.phone, reducedMotion: "reduce" });
+  await openReviewDeck(reduced);
+  const outR = await frontMerchant(reduced);
+  await reduced.locator('button[aria-label$="sort this transaction"]').filter({ hasText: /Want/ }).first().click();
+  await reduced.waitForSelector('[role="dialog"]', { timeout: 8000 });
+  await reduced.waitForTimeout(400);
+  const rr = await commitAndWatch(reduced, outR);
+  await reduced.close();
+
+  await openReviewDeck(page);
+  const outN = await frontMerchant(page);
+  await page.locator('button[aria-label$="sort this transaction"]').filter({ hasText: /Want/ }).first().click();
+  await page.waitForSelector('[role="dialog"]', { timeout: 8000 });
+  await page.waitForTimeout(400);
+  const rn = await commitAndWatch(page, outN);
+
+  check(
+    "the same commit IS caught mid-flight without the preference (the sampler works)",
+    midFlight(rn.flight) >= 2,
+    `${midFlight(rn.flight)} mid-flight frames, flight [${rn.flight.slice(0, 8).join(",")}]`,
+  );
+  check(
+    "under prefers-reduced-motion the committed card is never caught mid-flight",
+    midFlight(rr.flight) === 0,
+    `${midFlight(rr.flight)} mid-flight frames, flight [${rr.flight.slice(0, 8).join(",")}]`,
+  );
+}
+
+} // deckReady
 
 await browser.close();
 const failed = results.filter((r) => !r.ok).length;
