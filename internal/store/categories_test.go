@@ -876,3 +876,36 @@ func TestClearAllCategorizationDeletesSplitLines(t *testing.T) {
 		t.Fatalf("re-categorize after reset: %v", err)
 	}
 }
+
+// TestDeletedSeedCategoryStaysDeletedAcrossRestart: Open seeds the default
+// category set on every start, so a deleted default (Rent) used to reappear on
+// the next boot — the delete looked like it never reached the backend.
+func TestDeletedSeedCategoryStaysDeletedAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var rentID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Rent'`).Scan(&rentID); err != nil {
+		t.Fatalf("seeded Rent not found: %v", err)
+	}
+	if err := st.DeleteCategory(rentID); err != nil {
+		t.Fatalf("DeleteCategory: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { st2.Close() })
+
+	var count int
+	if err := st2.DB.QueryRow(`SELECT count(*) FROM categories WHERE name='Rent'`).Scan(&count); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("Rent reappeared after restart: %d rows, want 0", count)
+	}
+}

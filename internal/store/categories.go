@@ -110,9 +110,19 @@ var seedCategories = []CategoryRow{
 	{Name: "Reimbursements", Kind: "excluded"},
 }
 
-// SeedDefaultCategories writes the standard 50/30/20 category set idempotently
-// (INSERT OR IGNORE on name).
+// SeedDefaultCategories bootstraps the standard 50/30/20 category set into a
+// fresh database. It is a first-run bootstrap, not an invariant: once the table
+// holds any category the seed never runs again, because Open calls this on
+// every start and INSERT OR IGNORE would otherwise resurrect a default the user
+// deliberately deleted (delete succeeds, category is back after a restart).
 func (s *Store) SeedDefaultCategories() error {
+	var existing int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM categories`).Scan(&existing); err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
 	for _, c := range seedCategories {
 		_, err := s.DB.Exec(
 			`INSERT OR IGNORE INTO categories (name, kind, bucket, is_active) VALUES (?, ?, ?, 1)`,
