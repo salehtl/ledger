@@ -91,6 +91,7 @@ export function CurrenciesPage({ onClose }: { onClose: () => void }) {
                   step="0.0001"
                   min="0"
                   className="flex-1"
+                  aria-label={`Rate for ${r.currency}`}
                   value={rateDraftFor(r.currency, String(r.rate))}
                   onChange={(e) => setRateDrafts((prev) => ({ ...prev, [r.currency]: e.target.value }))}
                   onBlur={(e) => saveRate(r.currency, e.target.value, String(r.rate))}

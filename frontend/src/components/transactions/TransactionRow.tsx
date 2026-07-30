@@ -109,7 +109,7 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
             type="button"
             aria-expanded={expanded}
             onClick={() => setExpanded((e) => !e)}
-            className="min-h-9 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted press rounded-[var(--radius)]"
+            className="min-h-11 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted press rounded-[var(--radius)]"
           >
             {expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
             {expanded
