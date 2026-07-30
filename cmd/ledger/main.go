@@ -136,6 +136,7 @@ func main() {
 	srv.SetTransfersStore(st)
 	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
 	srv.SetRuleActiveStore(st)
+	srv.SetRuleDisplayStore(st)
 	srv.SetBudgetStore(st)
 	srv.SetInsightsStore(st)
 	srv.SetProjectStore(st)

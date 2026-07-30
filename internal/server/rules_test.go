@@ -99,3 +99,54 @@ func TestSetRuleActiveBadID(t *testing.T) {
 		t.Fatalf("code=%d want 400", rec.Code)
 	}
 }
+
+type stubRuleDisplay struct {
+	id     int64
+	name   string
+	called bool
+}
+
+func (s *stubRuleDisplay) SetRuleDisplayName(id int64, name string) error {
+	s.id, s.name, s.called = id, name, true
+	return nil
+}
+
+func TestSetRuleDisplayName(t *testing.T) {
+	stub := &stubRuleDisplay{}
+	srv := New(nil, fstest())
+	srv.SetRuleDisplayStore(stub)
+	req := httptest.NewRequest("PUT", "/api/rules/7/display-name", strings.NewReader(`{"display_name":"  Netflix  "}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !stub.called || stub.id != 7 || stub.name != "Netflix" {
+		t.Fatalf("stub got id=%d name=%q called=%v", stub.id, stub.name, stub.called)
+	}
+}
+
+func TestSetRuleDisplayNameClears(t *testing.T) {
+	stub := &stubRuleDisplay{}
+	srv := New(nil, fstest())
+	srv.SetRuleDisplayStore(stub)
+	req := httptest.NewRequest("PUT", "/api/rules/7/display-name", strings.NewReader(`{"display_name":""}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if !stub.called || stub.name != "" {
+		t.Fatalf("stub got name=%q called=%v", stub.name, stub.called)
+	}
+}
+
+func TestSetRuleDisplayNameUnset503(t *testing.T) {
+	srv := New(nil, fstest())
+	req := httptest.NewRequest("PUT", "/api/rules/7/display-name", strings.NewReader(`{"display_name":"x"}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code=%d want 503", rec.Code)
+	}
+}

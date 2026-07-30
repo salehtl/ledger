@@ -1,5 +1,7 @@
 // frontend/src/components/transactions/TransactionDetailSheet.tsx
-import type { Txn } from "../../api/types";
+import { useQuery } from "@tanstack/react-query";
+import { getJSON } from "../../api/client";
+import type { Category, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Pill } from "../ui/Pill";
@@ -7,14 +9,21 @@ import { flowAmount, aedFils, nativeAmountTag } from "../../lib/money";
 import { statusLabel, statusTone, shortDate } from "../../lib/format";
 import { sourceLabel } from "../../lib/transactions";
 import { bucketColor } from "../../lib/insights";
+import { categoryInfoById, displayMerchant, isSplitTxn, type TxnDepth } from "../../lib/txSplit";
+import { SplitLines } from "./SplitLines";
+import { NoteField } from "./NoteField";
 import { Tag, ArrowLeftRight, EyeOff, Archive, ArchiveRestore, Link2, Link2Off } from "../ui/PixelIcon";
 
 /**
  * The one place a transaction's actions live. Tapping a row opens this; swipe
  * only covers the two commonest moves, everything else is here. Actions are
  * gated by status so a row never shows a move that doesn't apply to it.
+ * Split parents keep their whole provenance chain visible — raw merchant,
+ * source email, refund/project links — while the split lines carry the
+ * categories (categorize/transfer/refund-link are server-refused while split,
+ * so those doors close and "Edit split" opens instead).
  */
-export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer, onStatus, onArchive, onRestore, onLinkRefund, onUnlinkRefund }: {
+export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer, onStatus, onArchive, onRestore, onLinkRefund, onUnlinkRefund, onSplit, onRename, onViewEmail }: {
   txn: Txn;
   onClose: () => void;
   onCategorize: () => void;
@@ -24,16 +33,38 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer,
   onRestore: () => void;
   onLinkRefund: () => void;
   onUnlinkRefund: () => void;
+  /** Open the split sheet (create or edit). Absent → no split entry point. */
+  onSplit?: () => void;
+  /** Open the rename-merchant sheet. Absent → no rename entry point. */
+  onRename?: () => void;
+  /** Open the source-email preview. Absent → no email entry point. */
+  onViewEmail?: () => void;
 }) {
+  const depth = txn as TxnDepth;
+  const split = isSplitTxn(depth);
   const aed = aedFils(txn);
   const native = nativeAmountTag(txn);
   const amount = flowAmount(txn.Direction, aed ?? txn.AmountFils);
   const needsReview = txn.Status === "needs_review";
   const archived = txn.Status === "archived";
   const categorized = txn.CategoryID != null;
+  const renamed = !!depth.DisplayName && depth.DisplayName !== txn.MerchantRaw;
+
+  // Split lines carry only category ids; resolve names/buckets when needed.
+  const cats = useQuery({
+    queryKey: ["categories"],
+    queryFn: () => getJSON<Category[]>("/api/categories"),
+    enabled: split,
+  });
 
   return (
-    <Dialog title={txn.MerchantRaw || "Transaction"} onClose={onClose}>
+    <Dialog title={displayMerchant(depth) || "Transaction"} onClose={onClose}>
+      {renamed && (
+        <p className="font-mono text-[10px] tracking-[0.04em] text-muted break-words -mt-2 mb-2">
+          {txn.MerchantRaw}
+        </p>
+      )}
+
       <div className="flex items-center justify-between gap-3 mb-1">
         <span
           className="text-2xl font-semibold tnum"
@@ -44,10 +75,12 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer,
         <Pill tone={statusTone(txn.Status)}>{statusLabel(txn.Status)}</Pill>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted mb-4">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted mb-3">
         <span className="inline-flex items-center gap-1.5">
           <span aria-hidden className="w-2 h-2 rounded-[var(--radius)]" style={{ background: txn.Bucket ? bucketColor(txn.Bucket) : "var(--color-border)" }} />
-          {txn.CategoryName || "Uncategorized"}
+          {split
+            ? `Split across ${depth.Splits!.length} ${depth.Splits!.length === 1 ? "category" : "categories"}`
+            : txn.CategoryName || "Uncategorized"}
         </span>
         <span aria-hidden>·</span>
         <span>{shortDate(txn.PostedAt)}</span>
@@ -58,13 +91,34 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer,
         {txn.RefundOfID != null && <Pill tone="muted">refund</Pill>}
       </div>
 
-      <div className="space-y-2">
-        <Button variant="primary" className="w-full" onClick={onCategorize}>
-          <Tag size={16} aria-hidden />
-          {categorized ? "Recategorize" : "Categorize"}
-        </Button>
+      {split && (
+        <SplitLines
+          className="mb-3"
+          splits={depth.Splits!}
+          currency={txn.Currency}
+          categories={cats.data ? categoryInfoById(cats.data) : undefined}
+        />
+      )}
 
-        {needsReview && (
+      <div className="mb-4">
+        <NoteField txnId={txn.ID} initial={depth.Note ?? ""} />
+      </div>
+
+      <div className="space-y-2">
+        {split ? (
+          onSplit && (
+            <Button variant="primary" className="w-full" onClick={onSplit}>
+              <Tag size={16} aria-hidden /> Edit split
+            </Button>
+          )
+        ) : (
+          <Button variant="primary" className="w-full" onClick={onCategorize}>
+            <Tag size={16} aria-hidden />
+            {categorized ? "Recategorize" : "Categorize"}
+          </Button>
+        )}
+
+        {needsReview && !split && (
           <div className="grid grid-cols-2 gap-2">
             <Button variant="secondary" onClick={onTransfer}>
               <ArrowLeftRight size={16} aria-hidden /> Transfer
@@ -75,7 +129,28 @@ export function TransactionDetailSheet({ txn, onClose, onCategorize, onTransfer,
           </div>
         )}
 
-        {txn.Direction === "credit" && txn.RefundOfID == null && (
+        {onSplit && !split && txn.Status === "confirmed" && (
+          <Button variant="secondary" className="w-full" onClick={onSplit}>
+            Split across categories
+          </Button>
+        )}
+
+        {(onRename || (onViewEmail && txn.Source === "email")) && (
+          <div className="grid grid-cols-2 gap-2">
+            {onRename && (
+              <Button variant="secondary" className={onViewEmail && txn.Source === "email" ? "" : "col-span-2"} onClick={onRename}>
+                Rename merchant
+              </Button>
+            )}
+            {onViewEmail && txn.Source === "email" && (
+              <Button variant="secondary" className={onRename ? "" : "col-span-2"} onClick={onViewEmail}>
+                Source email
+              </Button>
+            )}
+          </div>
+        )}
+
+        {txn.Direction === "credit" && txn.RefundOfID == null && !split && (
           <Button variant="secondary" className="w-full" onClick={onLinkRefund}>
             <Link2 size={16} aria-hidden /> Link the purchase this refunds
           </Button>
