@@ -153,9 +153,12 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   const rules = usage.data?.rules ?? 0;
   const assignments = usage.data?.assignments ?? 0;
   const targets = usage.data?.targets ?? 0;
-  // Mirrors the server's delete guard exactly (store.CategoryUsage.InUse).
-  // Assignments and targets both cascade, so the server 409s on them; if the
-  // button disagreed, the only way to discover that would be a failed tap.
+  // Mirrors the server's delete guard exactly (store.CategoryUsage.InUse) —
+  // but only when the usage fetch actually succeeds: the `?? 0` fallbacks
+  // above mean a failed/pending fetch reads as "nothing in use" and the
+  // button enables optimistically. If that's wrong, the server 409s, `remove`
+  // catches it, and `usage.refetch()` re-disables the button — the 409 is the
+  // real backstop, this check is just the fast path that avoids the round trip.
   const inUse = transactions > 0 || rules > 0 || assignments > 0 || targets > 0;
 
   const put = async (body: { name: string; bucket: string }) =>
@@ -195,8 +198,8 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   // Undo re-creates rather than deferring the DELETE: the backend stays the
   // single source of truth the moment the row disappears, so a reload mid-toast
   // can never disagree with the screen. Nothing can dangle — delete is guarded
-  // to categories with no transactions, rules or assignments — so a fresh row
-  // with the same name/kind/bucket is a faithful restore.
+  // to categories with no transactions, rules, assignments or targets — so a
+  // fresh row with the same name/kind/bucket is a faithful restore.
   const restore = async () => {
     try {
       await postJSON("/api/categories", { name: cat.Name, kind: cat.Kind, bucket: cat.Bucket });
