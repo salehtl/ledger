@@ -28,7 +28,8 @@ const wanted = only ? only.split(",").map((s) => s.trim()) : SCREEN_IDS;
 const MAX_OPENERS = Number(arg("openers", "14"));
 
 // Never click these: the fixture data has to survive the crawl.
-const DESTRUCTIVE = /delete|remove|clear|reset|archive|dismiss|unlink|disconnect|revoke|wipe|erase|sweep|confirm|log ?out|sign ?out/i;
+const DESTRUCTIVE =
+  /delete|remove|clear|reset|archive|dismiss|unlink|disconnect|revoke|wipe|erase|sweep|confirm|log ?out|sign ?out|mark complete|reopen|assign \d/i;
 
 /**
  * Inputs worth typing into. Pickers (date, time, colour, file, range) own their

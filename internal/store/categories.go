@@ -115,6 +115,13 @@ var seedCategories = []CategoryRow{
 // holds any category the seed never runs again, because Open calls this on
 // every start and INSERT OR IGNORE would otherwise resurrect a default the user
 // deliberately deleted (delete succeeds, category is back after a restart).
+//
+// Two boundary consequences follow from the existing-count gate: (a) if the
+// user deletes every category, the table is empty again, so the next restart
+// treats it as a fresh database and re-seeds the full default set; (b) if a
+// future release adds new entries to seedCategories, an existing DB (which
+// already has existing > 0) never receives them — only genuinely new
+// databases see the expanded set.
 func (s *Store) SeedDefaultCategories() error {
 	var existing int
 	if err := s.DB.QueryRow(`SELECT count(*) FROM categories`).Scan(&existing); err != nil {

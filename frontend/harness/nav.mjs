@@ -215,6 +215,8 @@ export const SCREENS = [
   // geometry audit to reach them at all. Reachable deterministically off the
   // seeded "Japan Trip" project (harness/seed.mjs), not a special-data state.
   {
+    // "Mark complete"/"Reopen" fire a real PUT with no confirming Dialog —
+    // probe.mjs never clicks them because they match its DESTRUCTIVE regex.
     id: "project-detail",
     title: "Projects › project detail",
     goto: async (page) => {
@@ -239,6 +241,9 @@ export const SCREENS = [
     notes: "Name, budget, color, date-range fields for a new project (no data dependency, always reachable).",
   },
   {
+    // "Assign N to <project>" fires a real bulk-assign PUT with no confirming
+    // Dialog — probe.mjs never clicks it because it matches the DESTRUCTIVE
+    // regex's `assign \d` clause.
     id: "project-bulk-backfill",
     title: "Projects › bulk backfill",
     goto: async (page) => {
