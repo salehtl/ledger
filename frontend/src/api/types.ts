@@ -58,7 +58,7 @@ export interface Summary {
 }
 export interface CategorySpend { category_id: number; name: string; bucket: string; spent: number; }
 export interface MonthlyTotal { period: string; spent: number; income: number; }
-export interface CategoryUsage { transactions: number; rules: number; }
+export interface CategoryUsage { transactions: number; rules: number; assignments: number; targets: number; }
 export interface CategorizeStatus { status: "idle" | "running"; processed: number; total: number; failed: number; error: string; }
 export interface IngestHealth {
   configured: boolean;

@@ -397,34 +397,56 @@ func (s *Store) DeleteCategory(id int64) error {
 	return err
 }
 
-// CategoryUsage returns how many transactions, rules and non-zero envelope
-// assignments reference a category. Split lines count into txns:
-// transaction_splits has a plain FK to categories (no cascade), so a category
-// referenced by a split must block deletion the same way a directly
-// categorized transaction does. Envelope assignments count because they are
-// ON DELETE CASCADE — deleting a category with assigned months would silently
-// rewrite historical budget state (past assigned totals and RTA); zero-amount
-// assignment rows carry no money and don't block. category_targets and
-// scheduled_transactions references deliberately do NOT block: a target is
-// per-category config that naturally dies with its category (CASCADE), and
-// schedules detach cleanly (SET NULL).
-// Used to enforce block-if-in-use deletes.
-func (s *Store) CategoryUsage(id int64) (txns, rules, assignments int, err error) {
-	if err = s.DB.QueryRow(
+// CategoryUsage counts everything a delete would take with the category. Used
+// to enforce block-if-in-use deletes.
+type CategoryUsage struct {
+	Transactions int
+	Rules        int
+	Assignments  int
+	Targets      int
+}
+
+// InUse reports whether anything references the category, i.e. whether the
+// delete guard must refuse. One place decides, so the DELETE handler, the
+// usage endpoint and the UI can never drift into disagreeing about it.
+func (u CategoryUsage) InUse() bool {
+	return u.Transactions > 0 || u.Rules > 0 || u.Assignments > 0 || u.Targets > 0
+}
+
+// CategoryUsage returns what references a category. Split lines count into
+// Transactions: transaction_splits has a plain FK to categories (no cascade),
+// so a category referenced by a split must block deletion the same way a
+// directly categorized transaction does. Envelope assignments count because
+// they are ON DELETE CASCADE — deleting a category with assigned months would
+// silently rewrite historical budget state (past assigned totals and RTA);
+// zero-amount assignment rows carry no money and don't block.
+//
+// Targets count for the same cascade reason. A target is budgeting intent the
+// user typed (an envelope depth, a save-by-date goal), and ON DELETE CASCADE
+// discards it with no warning and no way back — the delete toast's Undo
+// re-creates the category, not the state that cascaded out from under it.
+// Only scheduled_transactions stays silent: it detaches cleanly (SET NULL).
+func (s *Store) CategoryUsage(id int64) (CategoryUsage, error) {
+	var u CategoryUsage
+	if err := s.DB.QueryRow(
 		`SELECT (SELECT count(*) FROM transactions WHERE category_id=?)
 		      + (SELECT count(*) FROM transaction_splits WHERE category_id=?)`,
-		id, id).Scan(&txns); err != nil {
-		return 0, 0, 0, err
+		id, id).Scan(&u.Transactions); err != nil {
+		return CategoryUsage{}, err
 	}
-	if err = s.DB.QueryRow(`SELECT count(*) FROM rules WHERE category_id=?`, id).Scan(&rules); err != nil {
-		return 0, 0, 0, err
+	if err := s.DB.QueryRow(`SELECT count(*) FROM rules WHERE category_id=?`, id).Scan(&u.Rules); err != nil {
+		return CategoryUsage{}, err
 	}
-	if err = s.DB.QueryRow(
+	if err := s.DB.QueryRow(
 		`SELECT count(*) FROM envelope_assignments WHERE category_id=? AND assigned_fils != 0`,
-		id).Scan(&assignments); err != nil {
-		return 0, 0, 0, err
+		id).Scan(&u.Assignments); err != nil {
+		return CategoryUsage{}, err
 	}
-	return txns, rules, assignments, nil
+	if err := s.DB.QueryRow(
+		`SELECT count(*) FROM category_targets WHERE category_id=?`, id).Scan(&u.Targets); err != nil {
+		return CategoryUsage{}, err
+	}
+	return u, nil
 }
 
 // UpdateCategory overwrites name/kind/bucket for one category.

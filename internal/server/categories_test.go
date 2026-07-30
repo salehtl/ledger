@@ -238,6 +238,42 @@ func TestDeleteCategoryBlockedByEnvelopeAssignments(t *testing.T) {
 	}
 }
 
+// TestDeleteCategoryBlockedByTarget: category_targets is ON DELETE CASCADE, so
+// without this guard deleting a category carrying a target (but no
+// transactions/rules/assignments) would silently discard budgeting intent the
+// user typed — and the delete toast's Undo re-creates the category, not the
+// target that cascaded out from under it.
+func TestDeleteCategoryBlockedByTarget(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+
+	id, err := st.InsertCategory(store.CategoryRow{Name: "Car Insurance", Kind: "spending", Bucket: "need", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	if err := st.UpsertCategoryTarget(store.CategoryTargetRow{
+		CategoryID: id, TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
+	}); err != nil {
+		t.Fatalf("UpsertCategoryTarget: %v", err)
+	}
+
+	r := httptest.NewRequest("DELETE", "/api/categories/"+strconv.FormatInt(id, 10), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["error"] != "in use" || resp["targets"] != float64(1) {
+		t.Fatalf("unexpected 409 body: %+v", resp)
+	}
+	// The target survived intact.
+	if _, ok, err := st.SelectCategoryTarget(id); err != nil || !ok {
+		t.Fatalf("target after blocked delete: ok=%v err=%v, want it intact", ok, err)
+	}
+}
+
 func TestGetCategoryUsage(t *testing.T) {
 	st := newTestServerStore(t)
 	srv := newTestServerWithStore(t, st)

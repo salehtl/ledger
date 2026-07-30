@@ -151,7 +151,12 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   const usage = useQuery({ queryKey: ["category-usage", cat.ID], queryFn: () => getCategoryUsage(cat.ID) });
   const transactions = usage.data?.transactions ?? 0;
   const rules = usage.data?.rules ?? 0;
-  const inUse = transactions > 0 || rules > 0;
+  const assignments = usage.data?.assignments ?? 0;
+  const targets = usage.data?.targets ?? 0;
+  // Mirrors the server's delete guard exactly (store.CategoryUsage.InUse).
+  // Assignments and targets both cascade, so the server 409s on them; if the
+  // button disagreed, the only way to discover that would be a failed tap.
+  const inUse = transactions > 0 || rules > 0 || assignments > 0 || targets > 0;
 
   const put = async (body: { name: string; bucket: string }) =>
     postJSON(`/api/categories/${cat.ID}`, { ...body, kind: cat.Kind }, "PUT");
@@ -220,10 +225,21 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   };
 
   // Collapsed rows only speak when there's something to say — a column of
-  // "unused" labels is noise; the delete guard carries the explanation.
-  const meta = !usage.isPending && inUse
-    ? `${transactions} txn${transactions === 1 ? "" : "s"}${rules > 0 ? ` · ${rules} rule${rules === 1 ? "" : "s"}` : ""}`
-    : "";
+  // "unused" labels is noise; the delete guard carries the explanation. Every
+  // blocking reason has to be able to name itself, or a row guarded solely by a
+  // target shows a dead button with nothing explaining why. But the label shares
+  // its row with the category name, and listing all four reasons at once
+  // truncated "Groceries" to "G" — so the quiet cascade-only reasons speak only
+  // when the loud ones aren't already explaining the same disabled button.
+  const loud = [
+    transactions > 0 && `${transactions} txn${transactions === 1 ? "" : "s"}`,
+    rules > 0 && `${rules} rule${rules === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  const quiet = [
+    assignments > 0 && `${assignments} assigned`,
+    targets > 0 && "target",   // at most one per category
+  ].filter(Boolean);
+  const meta = !usage.isPending && inUse ? (loud.length ? loud : quiet).join(" · ") : "";
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") void commitRename();

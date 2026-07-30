@@ -54,7 +54,7 @@ type CategoryStore interface {
 	UpdateTransactionStatus(txID int64, status string) error
 	UpdateCategory(store.CategoryRow) error
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
-	CategoryUsage(id int64) (txns, rules, assignments int, err error)
+	CategoryUsage(id int64) (store.CategoryUsage, error)
 	DeleteCategory(id int64) error
 	ClearAllCategorization() (int64, error)
 	ArchiveTransaction(txID int64) error

@@ -81,6 +81,17 @@ type updateCategoryReq struct {
 	ApplyToPast bool   `json:"apply_to_past"`
 }
 
+// usageBody merges the usage counts into a response body. The DELETE conflict
+// and the usage endpoint share it so the counts the UI disables its delete
+// button on are literally the counts the guard refused on.
+func usageBody(u store.CategoryUsage, into map[string]any) map[string]any {
+	into["transactions"] = u.Transactions
+	into["rules"] = u.Rules
+	into["assignments"] = u.Assignments
+	into["targets"] = u.Targets
+	return into
+}
+
 func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 	if s.catStore == nil {
 		http.Error(w, `{"error":"categories unavailable"}`, http.StatusServiceUnavailable)
@@ -91,18 +102,18 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 		return
 	}
-	txns, rules, assignments, err := s.catStore.CategoryUsage(id)
+	u, err := s.catStore.CategoryUsage(id)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	// Assigned envelope months block too: envelope_assignments is ON DELETE
-	// CASCADE, so deleting past this guard would silently rewrite historical
-	// budget state (assigned totals, RTA) with no warning.
-	if txns > 0 || rules > 0 || assignments > 0 {
+	// Assigned envelope months and targets block too: both are ON DELETE
+	// CASCADE, so deleting past this guard would silently discard budget state
+	// (assigned totals and RTA, or a target the user typed) with no warning.
+	if u.InUse() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]any{"error": "in use", "transactions": txns, "rules": rules, "assignments": assignments})
+		json.NewEncoder(w).Encode(usageBody(u, map[string]any{"error": "in use"}))
 		return
 	}
 	if err := s.catStore.DeleteCategory(id); err != nil {
@@ -123,13 +134,13 @@ func (s *Server) handleGetCategoryUsage(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 		return
 	}
-	txns, rules, assignments, err := s.catStore.CategoryUsage(id)
+	u, err := s.catStore.CategoryUsage(id)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"transactions": txns, "rules": rules, "assignments": assignments})
+	json.NewEncoder(w).Encode(usageBody(u, map[string]any{}))
 }
 
 func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
@@ -161,15 +172,18 @@ func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 	// RTA would overstate — the exact rewrite of historical budget state the
 	// DELETE guard 409s against. Same guard, same shape.
 	if req.Kind != "spending" {
-		_, _, assignments, err := s.catStore.CategoryUsage(id)
+		u, err := s.catStore.CategoryUsage(id)
 		if err != nil {
 			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 			return
 		}
-		if assignments > 0 {
+		// Only assignments block here, not targets: a kind change doesn't
+		// cascade, so a target merely goes dormant while the category is
+		// non-spending and comes back intact if the kind is changed back.
+		if u.Assignments > 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]any{"error": "in use", "assignments": assignments})
+			json.NewEncoder(w).Encode(map[string]any{"error": "in use", "assignments": u.Assignments})
 			return
 		}
 	}
