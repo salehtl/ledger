@@ -461,4 +461,241 @@ Deliberately excluded from the list as noise or false positives: `DIBParser.Bank
 `frontend/package.json` (+ `@vitest/coverage-v8@2.1.9` dev dep), `frontend/bun.lock`, and this findings section committed together.
 
 ## Task 8 — Harness & Storybook seams
+
+**Environment note:** while running this task's verification, the shared scratch
+stack (`/tmp/ledger-ui-harness`, ports 8099/5199) was already in use by another
+concurrent worktree session (`framer-motion-migration`, vite process cwd
+confirmed pointing there). Rather than run `stack.sh up` (which kills whatever
+holds those ports and would have hijacked that session), verification for this
+task ran an independent instance via `LEDGER_HARNESS_DIR=/tmp/ledger-ui-harness-cdp
+LEDGER_HARNESS_API_PORT=8199 LEDGER_HARNESS_UI_PORT=5299 harness/stack.sh up`,
+confirmed against this worktree (`ls -l /proc/<vite-pid>/cwd` → this checkout's
+`frontend`), then torn down with the same env vars at the end — production
+`:8080` and the other session's `:8099`/`:5199` were never touched.
+
+### Step 1 — destination → harness map
+
+`frontend/harness/nav.mjs` (pre-change) declared 21 screens. Cross-referencing
+`AppShell.tsx`'s tab/overlay set, `ProjectsFlow.tsx`, and every
+`screens/settings/*` page against the nav map:
+
+| Destination | Harness id | How reached |
+|---|---|---|
+| Home | `home` | bottom nav tab |
+| Plan (envelopes) | `plan` | bottom nav tab |
+| Transactions | `transactions` | bottom nav tab |
+| Review (swipe deck) | `review` | bottom nav tab |
+| Insights | `insights` | bottom nav tab |
+| Reports | `reports` | Home → "Open Reports" (AppShell overlay) |
+| Recurring bills | `recurring` | Home → "Open Recurring" (AppShell overlay) |
+| Accounts (list) | `accounts` | Settings → "Accounts" row (AppShell overlay) |
+| **Accounts › account detail** | **`account-detail`** (NEW) | Accounts → tap an account row (full-screen `SettingsPage`, not a sheet — `AccountDetail.tsx`) |
+| Settings hub | `settings` | TopBar gear (every tab) |
+| Settings › Budget & income | `settings-budget` | hub row |
+| Settings › Categorization | `settings-categorization` | hub row |
+| Settings › Swipe actions | `settings-swipe` | hub row |
+| Settings › Email ingest | `settings-ingest` | hub row |
+| Settings › AI & API usage | `settings-ai` | hub row |
+| Settings › Notifications | `settings-notifications` | hub row |
+| Settings › Text size | `settings-textsize` | hub row |
+| Settings › Categories (`CategoryManager`) | `settings-categories` | hub row |
+| Settings › Rules (`RulesManager`) | `settings-rules` | hub row |
+| Settings › Currencies | `settings-currencies` | hub row |
+| Settings › Transfers (`AccountsPage.tsx`, titled "Transfers" — a distinct, narrower component from the Accounts overlay above; hub row's `onClick` is `onOpen("accounts")`, a *Settings-internal* page id, not the AppShell-level Accounts overlay) | `settings-transfers` | hub row |
+| Haptics / Sound toggles | — (inline switches on `settings`, no drill-in) | not a destination |
+| "Clear all categorization" confirm dialog | — | hub row opens a `Dialog`; deliberately never auto-opened by `probe.mjs` (its `DESTRUCTIVE` regex matches "clear") — see finding below |
+| Projects (list) | `projects` | Settings → "Projects" row (AppShell-level overlay, `ProjectsFlow`) |
+| **Projects › project detail** | **`project-detail`** (NEW) | Projects list → tap "Japan Trip" card (full-screen `SettingsPage`, `ProjectDetail.tsx`; its own header comment literally says "(Task 8b)") |
+| **Projects › new project form** | **`project-form`** (NEW) | Projects list → "+ New project" (full-screen `SettingsPage`, `ProjectForm.tsx`; no data dependency) |
+| **Projects › bulk backfill** | **`project-bulk-backfill`** (NEW) | Project detail → "Add transactions" (full-screen `SettingsPage`, `BulkBackfill.tsx`) |
+
+3 destinations were reachable by deterministic taps against the seeded fixture
+data but absent from `nav.mjs`: **`account-detail`**, **`project-detail`**,
+**`project-form`**, **`project-bulk-backfill`** (4 ids — `project-detail` and
+`project-bulk-backfill` share the same seeded project). All four are
+full-screen `SettingsPage` drill-ins (the app's "not a sheet, a page"
+convention — see `components/README.md`'s SettingsPage entry), which is why
+they need their own screen ids: `shoot.mjs`'s per-screen geometry audit can
+only reach what `nav.mjs` names.
+
+**Not added (special-data states, recorded as findings instead, per the
+brief's instruction not to invent nav entries for these):**
+
+- **`DetectedCards`** (`screens/recurring/DetectedCards.tsx`) — the "detected
+  proposal" triage cards on the Recurring screen only render for schedules
+  with `status === "proposed"`, which `internal/store/scheduled.go`'s
+  `validateSchedule` only defaults to when `Source == "detected"` (i.e.
+  produced by the recurring-detection sweep over real ingested mail).
+  `harness/seed.mjs` creates its 5 scheduled rows via a plain
+  `POST /api/scheduled` with no `source` field, so they default to
+  `source: "manual"` → `status: "active"`, and land in the schedule list, never
+  the proposals section. Reaching `DetectedCards` needs either a live
+  detection run or a seed change to POST with `source: "detected"` (and no
+  `status`) — out of scope for a nav-map fix. **DEFERRED.**
+- **"Clear all categorization" confirm dialog** (`Settings.tsx`) — reachable
+  from the `settings` hub row, but `probe.mjs`'s `DESTRUCTIVE` regex
+  (`/delete|remove|clear|reset|.../i`) deliberately never opens it, so its
+  geometry has no automated coverage at all (by design — protecting fixture
+  data during a probe run is more valuable than auditing this one dialog).
+  **DEFERRED.**
+
+### Step 2 — nav.mjs changes and a real bug they surfaced
+
+Adding `account-detail`/`project-detail`/`project-form`/`project-bulk-backfill`
+exposed a genuine harness bug, not just a documentation gap: tapping the
+seeded "Japan Trip" project card via the existing `tap()` helper
+(`page.locator(selector).first()`) hung for the full 8s timeout and failed.
+Root cause: `AppShell` keeps every panel on a drill-in path mounted (just
+`inert`), so Home's own "Projects glance" section still renders a
+"Japan Trip" `ProjectCard` — with identical text — three panels *underneath*
+the Settings → Projects → (list) stack that's actually on screen. `.first()`
+resolves to the covered, non-interactive Home copy (DOM-earlier), and
+Playwright's actionability wait never resolves against an element another
+layer is covering. Fixed by adding `tapLast(page, selector)` to `nav.mjs`
+(same shape as `tap`, but `.last()` — the foreground overlay is always
+mounted after its covered ancestors in JSX order) and using it for the two
+"Japan Trip" taps. `account-detail`'s "Emirates NBD Current" tap didn't hit
+this — Home's pocket strip doesn't repeat individual account names as
+button text — so plain `tap()` was left alone there and everywhere else.
+This is exactly the class of bug the harness is supposed to catch (a
+selector idiom that silently breaks against the app's own "keep it mounted,
+mark it inert" navigation model), just tripped by the audit's own new nav
+entries rather than the app.
+
+### Step 3 — live verification (`shoot.mjs`, all 25 screens, phone viewport)
+
+Full run against the isolated scratch instance described above, fixture data
+reset immediately before:
+
+```
+ok  home                         3 shot(s)  0 audit issue(s)
+ok  plan                         3 shot(s)  0 audit issue(s)
+ok  transactions                 6 shot(s)  0 audit issue(s)
+ok  review                       1 shot(s)  0 audit issue(s)
+ok  insights                     3 shot(s)  0 audit issue(s)
+ok  reports                      3 shot(s)  0 audit issue(s)
+ok  recurring                    3 shot(s)  0 audit issue(s)
+ok  accounts                     3 shot(s)  0 audit issue(s)
+ok  account-detail               3 shot(s)  1 audit issue(s)
+ok  projects                     3 shot(s)  0 audit issue(s)
+ok  project-detail               3 shot(s)  0 audit issue(s)
+ok  project-form                 3 shot(s)  12 audit issue(s)
+ok  project-bulk-backfill        6 shot(s)  0 audit issue(s)
+ok  settings                     3 shot(s)  0 audit issue(s)
+ok  settings-budget .. settings-transfers   (10 sub-pages)   0 audit issue(s) each
+```
+
+All 25 screens reach and shoot cleanly (no `error`, no console errors). Two of
+the four new screens surfaced real, previously-unaudited layout findings —
+exactly what this harness exists to find:
+
+#### [SEVERITY: medium] `AccountDetail` doesn't mark its parent screen inert while open
+
+- **Where:** `frontend/src/screens/accounts/AccountsScreen.tsx:113` (`{detail && <AccountDetail .../>}`, no `inert` wrapper on the rest of the screen).
+- **What:** `audit.mjs`'s `background-layer-not-inert` check found 6 controls on the underlying `AccountsScreen` still focusable/tabbable while `AccountDetail`'s full-screen overlay sits on top — including the Accounts screen's own "Back from Accounts" button. Contrast with `ProjectsFlow.tsx`, which wraps every covered layer in `<div className="contents" inert={...}>` (0 audit issues on `project-detail`) — `AccountsScreen` is the one full-screen-drill-in host in the app that skips this pattern. Concretely: Tab from inside the open `AccountDetail` panel can currently reach the covered Accounts list's controls, and a screen-reader's cursor can wander onto them too.
+- **Evidence:** `harness/shoot.mjs --screens account-detail` → `background-layer-not-inert`, count 1, detail: *"6 control(s) on the screen underneath this overlay are still focusable... (e.g. button...[aria-label="Back from Accounts"])"*.
+- **Disposition:** DEFERRED (finding only — Task 8 is a harness/seam audit, not a UI-bugfix pass). Fix shape: wrap `AccountsScreen`'s own content in `inert={detailId !== null || addOpen}`, matching the existing `ProjectsFlow`/`AppShell` convention.
+
+#### [SEVERITY: medium] `ProjectForm`'s color swatches are 32×32px, under the 44px tap-target minimum
+
+- **Where:** `frontend/src/screens/projects/ProjectForm.tsx:117` (`className="w-8 h-8 rounded-[var(--radius)] press"`, no `data-dense-target`).
+- **What:** `audit.mjs`'s `tap-target-too-small` check flagged all 12 palette buttons (`aria-label="azure"`, `"amber"`, `"lilac"`, ... `"slate-deep"`) at 32×32px — below both the documented 44px minimum and the 36px `data-dense-target` escape hatch (`components/README.md`: "Touch targets... 36px (`IconButton size="sm"`) is allowed only inside dense stacked rows"). This is the first time this screen has been reached by the geometry auditor (it had no nav entry before this task), so the gap was previously invisible to the harness.
+- **Evidence:** `harness/shoot.mjs --screens project-form` → `tap-target-too-small`, count 12, each `32x32px, minimum is 44x44`. Screenshot confirms visually: the color row has no padding/gap large enough to compensate for the small hit box.
+- **Disposition:** DEFERRED (finding only, same reasoning as above). Fix shape: either grow the buttons to 44×44 (adjusting the grid's `gap-2` accordingly) or add `data-dense-target` and grow to at least 36×36 if the 9-color-plus-4-"deep"-variant grid must stay compact.
+
+### Step 4 — sheet/dialog coverage (`Dialog`-rendering components vs. what the harness opens)
+
+`grep -rln "Dialog" src/screens src/components --include="*.tsx" | grep -v test | grep -v stories` returned 27 files; 3 were false positives on a comment mentioning "Dialog" with no actual `<Dialog` JSX (`components/ui/Field.tsx`, `screens/accounts/BalanceField.tsx`, `screens/settings/SettingsPage.tsx` — the last is the *shell* component named "SettingsPage", unrelated to the `Dialog` primitive). The 24 real ones:
+
+| Component | Host screen | Reached by `probe.mjs`'s generic per-screen opener-crawl? |
+|---|---|---|
+| `AssignSheet`, `MoveMoneySheet`, `TargetSheet` | `plan` | Yes — plain button openers on the screen `probe.mjs`/`sheets.mjs` already drive (`sheets.mjs` specifically exercises the Assign→Move sheet-swap case) |
+| `CategorizeSheet`, `TransactionDetailSheet` | `transactions` | Yes — row tap opens the detail sheet; category chips are inside it |
+| `SplitSheet`, `RenameMerchantSheet`, `LinkRefundSheet` | `transactions`, nested *inside* `TransactionDetailSheet` | **No** — `probe.mjs` computes its opener list once from the screen's top-level DOM before its crawl loop, and only re-probes inputs after opening one overlay; it never re-crawls for openers *inside* an already-open sheet, so a sheet-behind-a-sheet is structurally invisible to the generic crawl. All three do have colocated `*.stories.tsx` + `*.stories.test.tsx` (portable-story render smoke), so they aren't wholly untested, just not harness-geometry-audited in their opened state. |
+| `DrillDownSheet`, `SearchSheet` | `insights` | Yes |
+| `EmailPreviewSheet` | `transactions` (nested inside `TransactionDetailSheet`) | **No** — same nested-sheet gap as above; no story either |
+| `FilterChips` | `insights` (`SearchSheet`'s dimension picker) | Nested the same way — **No** |
+| `PeriodSheet` | `home`/any TopBar stepper | Yes — has its own story too |
+| `AddAccountSheet`, `CheckinSheet`, `UpdateBalanceSheet` | `accounts` | Yes |
+| `AddTransactionSheet` | `account-detail` (new) | Yes, now that the screen id exists — not run in this task's verification pass, see the probe-mutation-risk finding below |
+| `ProjectDetail`'s delete-confirm `Dialog` | `project-detail` (new) | Not run this pass, see below |
+| `MatchedTxnsSheet`, `ScheduleForm` | `recurring` | Yes |
+| `ReportDrillSheet` | `reports` | Yes |
+| `RulesManager`'s delete-confirm `Dialog` | `settings-rules` | Yes |
+| `Settings.tsx`'s clear-all-categorization `Dialog` | `settings` | **No** — deliberately skipped, see Step 1 |
+
+**Finding: nested sheets (a sheet opened from inside another already-open sheet) are structurally invisible to `probe.mjs`'s generic crawl.** `SplitSheet`, `RenameMerchantSheet`, `LinkRefundSheet` (all nested inside `TransactionDetailSheet`) and `EmailPreviewSheet`/`FilterChips` (nested inside `SearchSheet`) fall in this gap. They're not uncovered entirely — all but `EmailPreviewSheet` have portable-story render tests — but their *in-app* geometry (does the nested sheet fit, is its footer reachable, does closing it correctly restore the parent sheet's scroll lock) has never been driven by `probe.mjs` or `sheets.mjs`. **DEFERRED** — fixing the crawl to re-enter nested overlays is a `probe.mjs` design change, out of scope for a seam-mapping task.
+
+**Finding: `probe.mjs` run against `project-detail`/`project-form`/`project-bulk-backfill` would silently corrupt the scratch fixture, with no undo — not executed, for that reason.** Traced from code, not observed by running it (the risk was judged too real to demonstrate against even a scratch DB casually):
+- `project-detail`'s "Mark complete"/"Reopen" button (`ProjectDetail.tsx:163-165`, `toggleStatus`) fires a real `PUT` immediately on click — no dialog opens, so `probe.mjs`'s "not a sheet-opener, treat as toggled, move on" branch (`probe.mjs:329-333`) never undoes it, unlike an opened-then-closed `Dialog`. Neither "mark" nor "complete" nor "reopen" matches the `DESTRUCTIVE` regex, so `probe.mjs` would click it and permanently flip the seeded "Japan Trip" project's status.
+- `project-bulk-backfill`'s "Assign N" bulk-commit button (`BulkBackfill.tsx`) is a plain button on a `SettingsPage` (not a `Dialog`), so the same "not a sheet, continue" logic applies — a probe run risks bulk-reassigning real seeded transactions with no rollback, since "assign" isn't in the `DESTRUCTIVE` regex either.
+- `project-detail`'s "Edit" button navigates to the full-screen `ProjectForm`, which isn't a `Dialog` either (`inspectOverlay` finds no `[role="dialog"]`) — `probe.mjs`'s `closeOverlay` (`Escape`, then a `Dialog`-scoped Cancel/Close button) has no effect on a `SettingsPage`, so the crawl silently continues probing the wrong screen instead of returning to `project-detail`.
+This is a real, pre-existing gap in `probe.mjs`'s "did a dialog open" heuristic (it doesn't distinguish "opened a sheet" from "fired a mutation"), surfaced only because this task added full-screen destinations with plain mutating buttons on them; it was already latent for e.g. `RulesManager`'s pause/resume-style toggles if any exist outside a dialog. **DEFERRED** — a `probe.mjs` fix (e.g. an explicit per-screen opener allowlist/blocklist, or detecting a same-origin `PUT`/`PATCH` fetch as a mutation signal) is out of scope here.
+
+### Step 5 — stories ↔ stories-test net
+
+```
+$ cd frontend/src && for s in $(find . -name "*.stories.tsx"); do t="${s%.stories.tsx}.stories.test.tsx"; [ -f "$t" ] || echo "MISSING: $t"; done
+(no output)
+```
+
+The net was already 1:1 — 38 `*.stories.tsx` files, 38 colocated
+`*.stories.test.tsx` files, zero gaps. No new stories-test files were needed.
+
+### Step 6 — catalog components with zero stories at all
+
+Diffing every component named in `components/README.md` (primitives +
+"Feature components" section) against the actual 38 `*.stories.tsx` files
+(by basename) surfaces 23 catalog entries with no story at all — not a
+1:1-net gap (nothing here is an orphaned `.stories.tsx`), but a real
+coverage hole in the "Storybook is the living catalog" claim the README
+opens with:
+
+`SettingsPage`, `PeriodSheet`, `RollingNumber`, `PullToRefreshIndicator`,
+`IngestHealthBanner`, `ActiveBandHighlight`, `CategoryManager`,
+`RulesManager`, `TransactionRow`, `SwipeableRow`, `TransactionDetailSheet`,
+`NoteField`, `CategorizeSheet`, `FilterBar`, `FilterChips`,
+`SubcategoryPanel`, `SwipeDeck`, `SwipeCard`, `AddTransactionSheet`,
+`LinkRefundSheet`, `TrendBars`, `FlowBars`, `LensBreakdown`,
+`ComparativeSummary`.
+
+(`PeriodSheet` above is a false alarm in one sense — `components/ui/PeriodSheet.tsx`
+has no story, but the Step-4 table already lists it as harness-reachable via
+the TopBar stepper across nearly every screen, so it isn't *un-audited*,
+just not in Storybook.)
+
+Per the brief, these are **DEFERRED: needs design work** — not scaffolded
+blindly. Most need either live query data (`TransactionRow`, `CategoryManager`,
+`RulesManager` all fetch), gesture/gesture-adjacent gluing (`SwipeableRow`,
+`SwipeDeck`/`SwipeCard`, `SubcategoryPanel`), gnarly mock setups
+(`TransactionDetailSheet`, `CategorizeSheet`, `AddTransactionSheet`,
+`LinkRefundSheet` all pull in `useTxnActions`/react-query), or are
+chart-library wrappers with imperative canvas lifecycles (`TrendBars`,
+`FlowBars`, `ActiveBandHighlight`) — none of these are a `render()`-and-done
+story the way `Button`/`Pill`/`Card` are, which is likely *why* they don't
+have one yet, not an oversight to blindly fix by adding a thin wrapper story.
+
+### Step 7 — other findings
+
+- **`nav.mjs`'s `interactions` field and the `--state` flag it documents are
+  dead.** The file-header comment says "the capture tool can drive them via
+  `--state`" and two `SCREENS` entries (`plan.interactions.assign`,
+  `transactions.interactions.search`/`.detail`) define handlers, but
+  `grep -rn "interactions\|--state" harness/*.mjs` shows no script (`shoot.mjs`,
+  `probe.mjs`, `sheets.mjs`) ever reads `screen.interactions` or accepts a
+  `--state` flag. These extra states (Plan's Assign sheet, Transactions'
+  search-filled state, Transactions' detail sheet) are currently audited only
+  incidentally, via `probe.mjs`'s generic opener-crawl on those screens — never
+  intentionally via the mechanism the comment describes. **DEFERRED** — wiring
+  `--state` into `shoot.mjs` (or removing the dead comment/fields if the
+  intended mechanism was abandoned) is a harness-infra change, out of scope here.
+
+### Commit
+
+`frontend/harness/nav.mjs` (4 new screen ids + `tapLast` helper),
+`docs/superpowers/plans/2026-07-30-test-suite-review-findings.md` (this
+section). No new `*.stories.test.tsx` files were needed (Step 5 above); no
+production source changed (all findings are DEFERRED, per Task 8's scope as a
+seam-mapping audit, not a bugfix pass).
+
 ## Task 9 — Synthesis

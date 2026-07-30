@@ -36,6 +36,31 @@ export async function tap(page, selector, { timeout = 8000 } = {}) {
   await page.waitForTimeout(420); // slide/page transitions
 }
 
+/**
+ * Tap a control by selector, preferring the LAST match rather than the first.
+ *
+ * AppShell keeps every panel on the current drill-in path mounted (just
+ * `inert`), so a card also shown on Home (e.g. a project's ProjectCard, via
+ * its "glance" section) still matches a text selector while its *foreground*
+ * duplicate is open three panels deep in Settings. `.first()` then resolves
+ * to the covered, non-interactive copy and the click hangs for the full
+ * timeout waiting on an element that can never become actionable. The
+ * foreground overlay is mounted after its covered ancestors in JSX order, so
+ * `.last()` reliably lands on the interactive one. Use this instead of `tap`
+ * whenever the same label/text can legitimately appear on more than one
+ * mounted-but-covered layer (found via the project-detail nav entry).
+ */
+export async function tapLast(page, selector, { timeout = 8000 } = {}) {
+  const el = page.locator(selector).last();
+  try {
+    await el.waitFor({ state: "visible", timeout });
+  } catch {
+    throw new Error(`tapLast: no visible element for ${selector}`);
+  }
+  await el.click({ timeout });
+  await page.waitForTimeout(420); // slide/page transitions
+}
+
 /** Tap a settings hub row by its visible label. */
 export async function tapRow(page, label) {
   const el = page.locator(`button:has-text("${label}")`).first();
@@ -158,6 +183,22 @@ export const SCREENS = [
     },
     notes: "Account rows, balances, discrepancy card, add/update/check-in sheets.",
   },
+  // account detail is a full-screen SettingsPage of its own (balance history,
+  // check-in/update, kind toggle, delete) — reachable off the seeded
+  // "Emirates NBD Current" budget account (harness/seed.mjs), not a
+  // special-data state, so it gets its own id for the geometry audit.
+  {
+    id: "account-detail",
+    title: "Accounts › account detail",
+    goto: async (page) => {
+      await openSettings(page);
+      await tapRow(page, "Accounts");
+      await settle(page, 400);
+      await tap(page, 'button:has-text("Emirates NBD Current")');
+      await settle(page, 400);
+    },
+    notes: "Balance history sparkline, check-in/update balance, kind toggle, delete.",
+  },
   {
     id: "projects",
     title: "Projects",
@@ -167,6 +208,49 @@ export const SCREENS = [
       await settle(page, 400);
     },
     notes: "Project list, detail, form, bulk backfill.",
+  },
+  // ---- projects drill-ins -------------------------------------------------
+  // list -> detail -> form/bulk-backfill are each a full-screen SettingsPage
+  // (not a Dialog), so they need their own screen ids for shoot.mjs's
+  // geometry audit to reach them at all. Reachable deterministically off the
+  // seeded "Japan Trip" project (harness/seed.mjs), not a special-data state.
+  {
+    id: "project-detail",
+    title: "Projects › project detail",
+    goto: async (page) => {
+      await openSettings(page);
+      await tapRow(page, "Projects");
+      await settle(page, 400);
+      await tapLast(page, 'button:has-text("Japan Trip")');
+      await settle(page, 400);
+    },
+    notes: "Budget state, count-in-monthly toggle, category breakdown, assigned transactions, edit/complete/delete.",
+  },
+  {
+    id: "project-form",
+    title: "Projects › new project form",
+    goto: async (page) => {
+      await openSettings(page);
+      await tapRow(page, "Projects");
+      await settle(page, 400);
+      await tap(page, 'button:has-text("+ New project")');
+      await settle(page, 400);
+    },
+    notes: "Name, budget, color, date-range fields for a new project (no data dependency, always reachable).",
+  },
+  {
+    id: "project-bulk-backfill",
+    title: "Projects › bulk backfill",
+    goto: async (page) => {
+      await openSettings(page);
+      await tapRow(page, "Projects");
+      await settle(page, 400);
+      await tapLast(page, 'button:has-text("Japan Trip")');
+      await settle(page, 400);
+      await tap(page, 'button:has-text("Add transactions")');
+      await settle(page, 400);
+    },
+    notes: "Inline date/merchant/category filters over the full transaction list, bulk-assign into the project.",
   },
   {
     id: "settings",
