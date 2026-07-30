@@ -41,10 +41,11 @@ export function Review({ scope }: { scope: Scope }) {
   const deckKey = `${bounds.from ?? "all"}:${bounds.to ?? "all"}`;
 
   return (
-    // h-full, not min-h-[60vh]: AppShell's <main> already supplies the height,
-    // and a 60vh floor left ~125px of dead space under the deck on a 390x844
-    // phone while clipping the card's hero amount at 320px.
-    <div className="flex flex-col h-full min-h-0">
+    // flex-1, not a min-h-[60vh] floor: AppShell's content wrapper is a
+    // full-height flex column, so the deck takes exactly the space that's
+    // there. The old floor stranded ~125px below the card on a 390x844 phone
+    // and clipped the hero amount at 320px.
+    <div className="flex flex-1 flex-col min-h-0">
       {loading && (
         <div className="flex-1 flex items-center justify-center py-16">
           <PixelSpinner size={36} role="status" aria-label="Loading transactions" className="text-muted" />

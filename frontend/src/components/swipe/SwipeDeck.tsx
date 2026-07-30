@@ -345,7 +345,11 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
             top and bottom edges, and the card is tall enough to reach both, so
             without it Transfer and Save render on top of the card. It only
             became visible when the rails stopped being a 12%-ink wash. */}
-        <div className="relative w-[80%] max-w-[320px] my-11">
+        {/* The horizontal inset is the left/right rails' band, exactly as the
+            vertical margin is the up/down band. The rails are 48px wide and
+            sit at the arena's edges, so an 80% card left only ~36px of gutter
+            and Want/Need rendered on top of the card's own edges. */}
+        <div className="relative w-[calc(100%-7rem)] max-w-[320px] my-11">
           {/* Ghost card behind gives depth */}
           {next && (
             <div

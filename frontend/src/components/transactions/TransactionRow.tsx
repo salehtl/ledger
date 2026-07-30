@@ -78,7 +78,11 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
               {noRate ? "—" : amount.text}
             </span>
           </div>
-          <div className="mt-0.5 flex items-center justify-between gap-3">
+          {/* Wraps rather than clips. On a needs-review row at 320px — and on
+              an FX row even at 390px — the pills squeezed this line until the
+              date fell off the end entirely, which is the one thing on it the
+              user can't reconstruct from anywhere else. */}
+          <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <p className="font-mono text-[10px] tracking-[0.04em] text-muted truncate">{meta}</p>
               {project && (
