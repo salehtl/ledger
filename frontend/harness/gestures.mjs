@@ -48,6 +48,7 @@ const skip = (name, why) => console.log(`skip  ${name}  ${why}`);
 const SHEET_DISMISS_PX = 110;
 const FLICK_VELOCITY = 550;   // px/s
 const EDGE_ZONE_PX = 24;
+const ROW_COMMIT = 88;        // mirrored from lib/rowSwipe.ts
 
 // ---------------------------------------------------------------- input drivers
 //
@@ -83,6 +84,54 @@ async function dragSlow(page, from, delta, ms = 600) {
     await page.waitForTimeout(ms / steps);
   }
   await page.mouse.up();
+}
+
+/**
+ * Like `dragSlow` but stops mid-gesture, pointer still down, so the caller
+ * can inspect the transient revealed state (SwipeableRow's clip-path panel)
+ * before releasing. `dragSnapToOrigin` means that state only exists while
+ * the pointer is held — once released the row always springs back to 0
+ * regardless of whether the release commits an action, so there is no
+ * "settled open" state a post-release screenshot could catch instead.
+ */
+async function dragHold(page, from, delta, ms = 400) {
+  const steps = 10;
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(from.x + ((delta.x || 0) * i) / steps, from.y + ((delta.y || 0) * i) / steps);
+    await page.waitForTimeout(ms / steps);
+  }
+}
+
+/**
+ * Real CDP touch input, for the one case none of the drivers above cover:
+ * verifying that a vertical drag on a SwipeableRow falls through to native
+ * list scrolling rather than being eaten by the row's own `drag="x"`.
+ *
+ * That turned out to need a third input path. Neither `dragSlow`
+ * (`page.mouse`, even under `isMobile`/`hasTouch` emulation) nor
+ * `page.mouse.wheel` produced any scroll at all here — confirmed by
+ * dragging/wheeling on a plain, non-draggable point inside `<main>` and
+ * watching `scrollTop` stay exactly 0 while `main.scrollHeight` was
+ * genuinely ~4400px and directly settable. So this was a test-input gap, not
+ * a product one. Chromium's DevTools protocol `Input.dispatchTouchEvent`
+ * reaches the compositor's native scroll path the way a finger does — it
+ * moved `scrollTop` on the same neutral point, and did so identically when
+ * started directly on a SwipeableRow.
+ */
+async function touchDragScroll(page, from, dy, steps = 12, stepMs = 30) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+  for (let i = 1; i <= steps; i++) {
+    await page.waitForTimeout(stepMs);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: from.x, y: from.y + (dy * i) / steps }],
+    });
+  }
+  await page.waitForTimeout(stepMs);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
 /** Frame-paced pointer stream on `selector`. Returns the px/s it achieved. */
@@ -145,6 +194,40 @@ async function openDrillIn(page) {
 const drillInOpen = async (page) =>
   (await page.evaluate(() => [...document.querySelectorAll("h1")].map((h) => h.textContent.trim())))
     .some((t) => /budget & income/i.test(t));
+
+/**
+ * Go to Transactions and return the first visible row's Pressable (the
+ * `aria-label="Open <merchant>"` button TransactionRow renders), plus a
+ * centre point to drive pointer events on. Framer's drag listener sits on
+ * the SwipeableRow ancestor of this button, not the button itself, but a
+ * pointerdown/pointermove stream dispatched at the button's coordinates
+ * reaches it the same way a finger landing anywhere in the row would.
+ *
+ * `search` narrows to a specific merchant (used for the viewport-wide-name
+ * fixture row) via the same search box `nav.mjs`'s `interactions.search` uses.
+ */
+async function openTransactionsRow(page, { search } = {}) {
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await settle(page, 1200);
+  await tap(page, 'nav button[aria-label="Transactions"]');
+  await settle(page, 500);
+  if (search) {
+    const s = page.locator('input[type="search"], input[placeholder*="earch"]').first();
+    await s.click();
+    await s.fill(search);
+    await page.waitForTimeout(600);
+  }
+  const btn = page.locator('ul.divide-y li button[aria-label^="Open "]').first();
+  await btn.waitFor({ state: "visible", timeout: 8000 });
+  const box = await btn.boundingBox();
+  if (!box) throw new Error("openTransactionsRow: matched button has no layout box");
+  const aria = await btn.getAttribute("aria-label");
+  return { aria, center: { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) } };
+}
+
+const dialogOpen = async (page) => (await page.locator('[role="dialog"]').count()) > 0;
+
+const mainScrollTop = (page) => page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0);
 
 // ---------------------------------------------------------------------- checks
 
@@ -230,6 +313,99 @@ const page = await browser.newPage({ ...VIEWPORTS.phone });
   await dragSlow(page, { x: 10, y: 500 }, { x: -200 });
   await page.waitForTimeout(900);
   check("leftward edge drag never pops (nothing to the left to reveal)", await drillInOpen(page));
+}
+
+// ---------------------------------------------------- SwipeableRow (Task 5)
+//
+// `lib/rowSwipe.test.ts` covers `swipeCommits` as a pure predicate, so the
+// distance/velocity math is unit-tested. What that cannot cover is whether
+// the predicate is still wired to a real gesture: `drag="x"`, `dragElastic`,
+// `dragDirectionLock` and `onDragEnd` could be deleted from SwipeableRow and
+// every jsdom test would still pass (jsdom cannot run a Framer drag at all).
+// It also cannot cover the one behaviour that matters most for a row living
+// inside a scrolling list: that a vertical drag falls through to the
+// scroller instead of being eaten by the row's horizontal drag listener.
+
+{
+  const { center } = await openTransactionsRow(page);
+  await dragSlow(page, center, { x: ROW_COMMIT + 40 });
+  await page.waitForTimeout(700); // dragSnapToOrigin spring + sheet enter
+  check("long rightward swipe commits the lead action (opens its sheet)", await dialogOpen(page));
+}
+
+{
+  const { center } = await openTransactionsRow(page);
+  await dragSlow(page, center, { x: 30 }); // well under both ROW_COMMIT and the flick bar
+  await page.waitForTimeout(700);
+  check("short swipe springs back without committing", !(await dialogOpen(page)));
+}
+
+{
+  const { center } = await openTransactionsRow(page);
+  const before = await mainScrollTop(page);
+  // Dragging the pointer UP is what scrolls page content DOWN (scrollTop
+  // increases) on a touch device — the list starts pinned at scrollTop 0, so
+  // a downward drag has nowhere to go and would give a false pass either way.
+  await touchDragScroll(page, center, -300);
+  await page.waitForTimeout(500);
+  const after = await mainScrollTop(page);
+  check(
+    "a vertical drag starting on a row scrolls the list, not the row",
+    after > before && !(await dialogOpen(page)),
+    `scrollTop ${before} -> ${after}`,
+  );
+}
+
+{
+  // The seed repeats merchant names across days (multiple "NOON.COM" rows,
+  // for instance), so re-matching the swiped row afterward by its aria-label
+  // is not reliable — a *different* transaction with the same merchant can
+  // slide into the same list position once the archived one drops out of the
+  // default "All" view (the API excludes archived rows unless asked for) and
+  // satisfy a same-text match despite being untouched. Scoping to a search
+  // term first, then checking the row surfaces under the Archived tab under
+  // that same search, verifies the specific swiped transaction rather than
+  // whatever merchant name happens to still be first.
+  const { center } = await openTransactionsRow(page, { search: "hypermarket" });
+  await dragSlow(page, center, { x: -(ROW_COMMIT + 40) });
+  await page.waitForTimeout(900);
+  await page.locator("button").filter({ hasText: /^Archived$/ }).first().click();
+  await page.waitForTimeout(500);
+  const archivedRows = await page.locator('ul.divide-y li button[aria-label^="Open "]').count();
+  check(
+    "long leftward swipe commits the trail action (archives the row)",
+    archivedRows > 0,
+    `${archivedRows} row(s) under Archived + search "hypermarket"`,
+  );
+}
+
+{
+  // The hostile fixture: a merchant name wider than the viewport at any font
+  // size. A width-driven reveal panel could in principle grow the page; the
+  // clip-path panel is sized to the row's own box and can't. Held mid-drag
+  // (not released) because `dragSnapToOrigin` means the revealed state only
+  // exists while the pointer is down.
+  const { center, aria } = await openTransactionsRow(page, { search: "hypermarket" });
+  await dragHold(page, center, { x: 70 });
+  // Measured against <main>, not document.scrollingElement: <main> sets
+  // overflow-y: auto, and per the CSS Overflow spec a non-"visible" value on
+  // one axis forces the other axis's "visible" to compute as "auto" too — so
+  // <main> is ALSO a horizontal scroll container (mutation-tested: with
+  // SwipeableRow's overflow-hidden pulled, a dragged row pokes out of the row
+  // box exactly as expected, but <main> silently absorbs it as its own
+  // scrollable overflow rather than ever reaching document.scrollWidth,
+  // which would make this check pass even on that regression).
+  const overflow = await page.evaluate(() => {
+    const m = document.querySelector("main");
+    return m.scrollWidth - m.clientWidth;
+  });
+  check(
+    "revealing the lead panel on the viewport-wide merchant row does not widen the row's scroller",
+    overflow <= 1,
+    `<main> scrollWidth exceeds clientWidth by ${overflow}px on "${aria.slice(0, 50)}…"`,
+  );
+  await page.mouse.up();
+  await page.waitForTimeout(500); // let dragSnapToOrigin settle before the next navigation
 }
 
 await browser.close();
