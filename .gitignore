@@ -30,3 +30,4 @@ skills-lock.json
 .claude/skills/migrate-radix-to-base
 pid
 smoke.pid
+node_modules/
