@@ -5,12 +5,21 @@ import { EASE_OUT, DUR } from "../lib/motion";
 
 const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-/** Roll duration, seconds. Inside the 300ms budget once you discount the
- *  cascade; the previous 650ms was more than twice it. */
+/** Roll duration, seconds. A deliberate exception to the 300ms UI ceiling:
+ *  a once-per-mount decorative entrance, not a repeated interaction — the
+ *  previous 650ms was still more than twice this. */
 export const ROLL_MS = 0.45;
-/** Per-wheel delay, seconds. Right-to-left, so the units settle first and
- *  the figure resolves the way an odometer physically would. */
+/** Per-wheel delay step, seconds. Right-to-left, so the units settle first
+ *  and the figure resolves the way an odometer physically would. Indexed
+ *  over digit wheels only — a comma or decimal point has nothing to roll,
+ *  so a separator doesn't consume a stagger step. */
 export const ROLL_STAGGER_MS = 0.03;
+/** Ceiling on the per-wheel delay, seconds. Without it a wide enough figure's
+ *  cascade alone could blow the 0.6s worst-case budget on its own. The CSS
+ *  version this replaced capped its cascade the same way (`nth-child(n+7)`
+ *  pinned every later wheel to a fixed delay); this is that cap's Framer
+ *  equivalent. */
+export const ROLL_STAGGER_MAX = 0.12;
 
 /**
  * Odometer-style number: each digit is a 0–9 wheel that rolls up from zero when
@@ -52,6 +61,22 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
     return () => ro.disconnect();
   }, [value]);
 
+  const cells = numberCells(value);
+  // Stagger delay per cell, indexed over digit wheels only (right to left) —
+  // a separator has nothing to roll, so it doesn't consume a step — and
+  // capped at ROLL_STAGGER_MAX so a wide figure's cascade alone can't blow
+  // the settle-time budget. Computed once here rather than during the JSX
+  // map so the "how many digit wheels came after this one" count doesn't
+  // need recomputing per cell.
+  const digitTotal = cells.reduce((n, c) => n + (c.digit === null ? 0 : 1), 0);
+  let digitsSeen = 0;
+  const delays = cells.map((c) => {
+    if (c.digit === null) return 0;
+    const stepsAfter = digitTotal - 1 - digitsSeen;
+    digitsSeen += 1;
+    return Math.min(stepsAfter * ROLL_STAGGER_MS, ROLL_STAGGER_MAX);
+  });
+
   return (
     <span ref={outerRef} className={`rolling-number ${className}`}>
       <span className="sr-only">{value}</span>
@@ -62,7 +87,7 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
         animate={{ scale }}
         transition={{ duration: DUR.base, ease: EASE_OUT }}
       >
-        {numberCells(value).map((c, i, all) =>
+        {cells.map((c, i) =>
           c.digit === null ? (
             <span key={c.key} className="rolling-cell">{c.char}</span>
           ) : (
@@ -73,7 +98,7 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
                 animate={{ y: `${wheelOffsetPct(c.digit)}%` }}
                 transition={
                   rolling
-                    ? { duration: ROLL_MS, ease: EASE_OUT, delay: (all.length - 1 - i) * ROLL_STAGGER_MS }
+                    ? { duration: ROLL_MS, ease: EASE_OUT, delay: delays[i] }
                     : { duration: 0 }
                 }
               >
