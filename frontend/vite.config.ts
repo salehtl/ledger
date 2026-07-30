@@ -79,5 +79,11 @@ export default defineConfig({
     fileParallelism: false,
     pool: "forks",
     poolOptions: { forks: { singleFork: true } },
+    // Every file shares one process (see singleFork above), so a `vi.stubGlobal`
+    // that is never undone leaks into whatever file vitest happens to schedule
+    // next: ~20 files stub `fetch`, and a suite-order change alone was enough to
+    // make an unrelated screen's tests time out against a stale mock. Restore
+    // stubbed globals after each test so file order can't decide correctness.
+    unstubGlobals: true,
   },
 });
