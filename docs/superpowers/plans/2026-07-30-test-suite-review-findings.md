@@ -5,6 +5,99 @@ Baseline at bfa6fc204918fc5bfe186de379cabf3ce201e3c9:
 - Frontend: 163 test files / 1292 tests, all green
 - Inventory: Go test files per package recorded below; frontend 163 test files (38 storybook portable-story files); harness drives 21 screens.
 
+## Executive summary
+
+Eight review tasks (hermeticity, order/race/flake, frontend mock hygiene,
+time/timezone, assertion quality, coverage mapping, harness/Storybook seams)
+plus this synthesis. **8 findings fixed, 1 harness-code fix, 10 findings
+recorded as deferred (tracked, no action this review), ~9 verification-only
+entries closed with no defect found.** No production (non-test,
+non-harness-tooling) source file changed anywhere in the review range —
+confirmed below; the embedded frontend dist does not need rebuilding.
+
+| # | Finding | Severity | Disposition | Commit |
+|---|---|---|---|---|
+| 1 | `internal/config` tests leaked the invoking shell's `LEDGER_*` env into `Load` assertions | high | FIXED — `clearLedgerEnv(t)` helper, called first in every test reaching `Load` | `9ddd40d` |
+| 2 | `TestSelectMonthlyTotals` silently `t.Skip`'d instead of failing if seed data's `Salary` category ever disappeared | medium | FIXED — `t.Skip` → `t.Fatal` | `9ddd40d` |
+| 3 | Remaining `t.Skip` audit: `imap_integration_test.go` (opt-in live IMAP), `recur_test.go` `TestScheduledProvenanceMigration` (driver-capability gate) | low | VERIFIED — both correct as-is, no action | `9ddd40d` |
+| 4 | Full Go suite under `-race -count=1` | info | VERIFIED — race-clean, no action | `ab1e5ef` |
+| 5 | Full Go suite under `-shuffle=on` and `-shuffle=1234` | info | VERIFIED — no order dependency | `ab1e5ef` |
+| 6 | Both `time.Sleep`-based Go tests, 20 reps each incl. `-race` | info | VERIFIED-STABLE — no action (one is a settle-after-async-kick, one already condition-polls) | `ab1e5ef` |
+| 7 | Frontend suite under 3 shuffle seeds, pre-fix | info | VERIFIED (measurement only) — no failing seed found, but latent `spyOn` leak channel judged real | `143b572` |
+| 8 | Fake-timer cleanup across 6 flagged files | low | VERIFIED — all 6 already pair `useFakeTimers`/`useRealTimers` correctly | `143b572` |
+| 9 | `vi.spyOn` restoration was only per-file, not config-enforced (23 files use `vi.spyOn`, only some restore) | medium | FIXED — `restoreMocks: true` added to `vite.config.ts`; verified no `beforeAll`-scoped spy relies on suite-lifetime mocking | `143b572` |
+| 10 | Post-`restoreMocks` full verification: straight + 3 shuffle seeds | info | VERIFIED green, no test needed changing | `143b572` |
+| 11 | `PlanScreen.test.tsx`: `monthProgress(month)` called with no `today` override defaults to the real wall clock, silently drops the claim-hint assertion once the real date leaves July 2026 (Hazard A) | low (test-only bug; prod correct) | FIXED — whole-file clock pin (`vi.useFakeTimers({ now: "2026-07-15T12:00:00Z" })` in `beforeEach`/`afterEach`) | `efc8c94` |
+| 12 | `TargetSheet.tsx`'s `minDueDate` — a second, independent wall-clock read in the same screen family, missed by the first audit pass, would silently disable the Save button past 2026-12-01 (Hazard B) | low (test-only bug; prod correct) | FIXED — same clock pin from #11 neutralizes it; independently re-verified red→green | `c36bc93` |
+| 13 | `internal/server/scheduled.go` `handleGetUpcoming` reads `time.Now()` with no injectable seam | info | DEFERRED: no clock seam — safe today only because the one test derives fixtures from the same clock; no failure demonstrated | `efc8c94` |
+| 14 | `internal/store/insights.go` `SelectMonthlyTotals` reads `time.Now()` with no injectable seam (`Store.now` field exists but isn't wired here) | info | DEFERRED: no clock seam — same shape as #13 | `efc8c94` |
+| 15 | `internal/categorize` `matchRule` `"contains"`: mixed-case rule *pattern* (as opposed to mixed-case merchant) was never exercised — a mutation dropping the pattern-side `ToLower` survived all existing tests | medium | FIXED — new test `TestRuleMatchContainsCaseInsensitivePattern`, proven to kill the mutant | `bad8130` |
+| 16 | `LinkRefundSheet.test.tsx` empty-state test had no explicit `expect(...)`, relying only on `findByText` throwing | low | FIXED — explicit presence + candidate-list-absence assertions added | `bad8130` |
+| 17 | Coverage map: Go 78.4% combined, frontend 78.25% stmts; top risk `frontend/src/hooks/useTxnActions.ts` (44.64% stmts, no dedicated test file) — the shared mutation hook behind categorize/archive/restore/unlink-refund and every toast-undo closure | info | RECORDED — no fix (quantity-gap mapping only); `@vitest/coverage-v8` dev dep added so this map can be re-run | `59f9d64` |
+| 18 | Harness `nav.mjs` was missing 4 reachable full-screen destinations (`account-detail`, `project-detail`, `project-form`, `project-bulk-backfill`) | info | FIXED (harness code, not app code) — 4 screen ids + `tapLast()` helper added (a covered-DOM `.first()` selector bug the new ids exposed) | `c6b4d0a` |
+| 19 | `AccountDetail` overlay doesn't mark `AccountsScreen`'s own content `inert` while open — 6 background controls stay focusable/tabbable | medium | DEFERRED (real UI bug, out of scope for a seam-mapping task) — fix shape: `inert={detailId !== null \|\| addOpen}`, matching `ProjectsFlow`'s convention | `c6b4d0a` |
+| 20 | `ProjectForm`'s 12 color-swatch buttons are 32×32px — under both the 44px minimum and the 36px `data-dense-target` escape hatch | medium | DEFERRED (real UI bug, out of scope) — fix shape: grow to 44×44, or add `data-dense-target` and grow to ≥36×36 | `c6b4d0a` |
+| 21 | Nested sheets (`SplitSheet`, `RenameMerchantSheet`, `LinkRefundSheet`, `EmailPreviewSheet`, `FilterChips`) opened from inside an already-open sheet are structurally invisible to `probe.mjs`'s generic crawl | info | DEFERRED — `probe.mjs` design change, out of scope | `c6b4d0a` |
+| 22 | `probe.mjs` can't distinguish "opened a sheet" from "fired a mutation"; the new full-screen destinations (`project-detail`'s status toggle, `project-bulk-backfill`'s commit button) would corrupt scratch fixture data with no undo if probed | info | DEFERRED — not executed for that reason; `probe.mjs` heuristic fix out of scope | `c6b4d0a` |
+| 23 | `nav.mjs`'s `interactions` field / `--state` flag are dead — no harness script reads them | info | DEFERRED — wire it up or remove the dead comment, out of scope | `c6b4d0a` |
+| 24 | 23 catalog components documented in `components/README.md` have no `*.stories.tsx` at all (`TransactionRow`, `SwipeDeck`, `CategorizeSheet`, etc.) | info | DEFERRED: needs design work — most need live query data, gesture glue, or mock-heavy setups; not a blind scaffold-a-story fix | `c6b4d0a` |
+
+**Counts:** 8 FIXED (2 Go hermeticity, 1 frontend config hardening, 2 frontend
+time hazards, 1 Go assertion-strength, 1 frontend assertion-strength, 1
+harness-code fix) · 10 DEFERRED (tracked, no code change this review) · 9
+VERIFIED/RECORDED (ran the check, found no defect, or mapped a metric with no
+fix implied) · 1 fix (#18, `nav.mjs`) is harness tooling, not application code.
+
+**What this review means:** the suite was already in good shape — no flake, no
+order dependency, no data race, and only one demonstrated timezone-class bug
+(concentrated in one screen file, both hazards sharing one fix). The value
+this review actually added was narrower and more surgical than "everything
+was broken": closing a real env-hermeticity hole that was already failing one
+test nondeterministically depending on the invoking shell, hardening a latent
+(not-yet-triggered) mock-leak channel before it could cause a flake, and —
+via mutation testing and harness expansion — surfacing a handful of concrete,
+previously invisible defects (one categorization matching bug, two real UI
+bugs, several structural harness blind spots) that no amount of running the
+existing suite harder would have found.
+
+Three biggest residual risks, in order:
+
+1. **`frontend/src/hooks/useTxnActions.ts` has no dedicated test file** (Task
+   7, finding #17) — the shared mutation hook behind every categorize/
+   archive/restore/unlink-refund action and every toast "Undo" closure across
+   Transactions and Insights drill-down, at 44.64% statement / 37.5% function
+   coverage. It carries the highest change-frequency × money/state-correctness
+   blast radius of anything this review found, and unlike the categorize
+   mutation caught in Task 6, no mutation-testing pass was run against it —
+   only indirect coverage via the screens that consume it.
+2. **Two Go query paths read `time.Now()` with no injectable clock seam**
+   (`scheduled.go handleGetUpcoming`, `store/insights.go SelectMonthlyTotals`
+   — findings #13/#14). Both are safe today only because their one test each
+   derives its fixture from the same real clock. Task 5 proved this exact
+   pattern — a hardcoded date implicitly compared against the real clock —
+   is a genuine, demonstrable bug class on the frontend (Hazards A and B);
+   these two Go call sites are structurally the same shape, just not
+   currently paired with a hardcoded-date test that would expose it.
+3. **The harness has real, load-bearing blind spots, and two of the bugs it
+   already found (findings #19/#20) are unfixed.** `probe.mjs`'s crawl can't
+   see into nested sheets, can't see gesture-triggered sheets, and can't tell
+   a mutating button from a sheet-opener — meaning newly added full-screen
+   destinations are geometry-audited by `shoot.mjs` but not exercised by
+   `probe.mjs` until that heuristic is fixed. Meanwhile `AccountDetail`'s
+   inert leak (a real focus/screen-reader escape) and `ProjectForm`'s
+   sub-44px swatches (a real tap-target defect) sit recorded but unfixed.
+
+Recommended next investments, in the same order: (1) a direct
+`useTxnActions.ts` test file covering the undo-closure re-POST and its error
+branches, ideally with a small mutation-testing pass matching Task 6's
+methodology; (2) either wire a `SetNow`-style seam into the two Go call sites
+above or explicitly accept the risk in writing (no seam should be added
+speculatively without a demonstrated failure, per this review's own
+discipline); (3) a `probe.mjs` fix for the mutate-vs-open-sheet heuristic and
+nested-sheet re-entry, paired with fixing the two already-identified UI bugs
+(#19 `AccountDetail` inert, #20 `ProjectForm` swatches) since the harness
+work to find them is already sunk.
+
 ## Go test inventory
 
 | Package | Source files | Test files |
@@ -699,4 +792,92 @@ section). No new `*.stories.test.tsx` files were needed (Step 5 above); no
 production source changed (all findings are DEFERRED, per Task 8's scope as a
 seam-mapping audit, not a bugfix pass).
 
-## Task 9 — Synthesis
+## Task 9 — Synthesis and final verification
+
+Executive summary written above, after the baseline block (Step 1).
+
+### Step 2 — Final verification battery (all commands run from
+`/root/Coding/ledger/.claude/worktrees/category-delete-persistence` on branch
+`worktree-category-delete-persistence`, sequentially, per the brief):
+
+```
+$ go test ./... -race -shuffle=on
+?   ledger/cmd/ledger          [no test files]
+ok  ledger/internal/anthropic  1.024s
+ok  ledger/internal/budget     1.019s
+ok  ledger/internal/categorize 1.026s
+ok  ledger/internal/config     1.027s
+ok  ledger/internal/importer   2.390s
+ok  ledger/internal/ingest     3.827s
+ok  ledger/internal/monitor    1.023s
+ok  ledger/internal/parse      4.024s
+ok  ledger/internal/push       1.016s
+ok  ledger/internal/recur      3.469s
+ok  ledger/internal/server     23.525s
+ok  ledger/internal/store      34.504s
+?   ledger/internal/web        [no test files]
+
+$ TZ=Pacific/Kiritimati go test ./... | grep -cv "^ok"
+2   # the two "?  ... [no test files]" lines (cmd/ledger, internal/web) — same
+    # as every other run in this review; zero actual failures
+
+$ cd frontend
+$ bun run test
+ Test Files  163 passed (163)
+      Tests  1292 passed (1292)
+   Duration  51.61s
+
+$ bunx vitest run --sequence.shuffle --sequence.seed=7
+ Test Files  163 passed (163)
+      Tests  1292 passed (1292)
+   Duration  42.38s
+
+$ TZ=Pacific/Kiritimati bun run test
+ Test Files  163 passed (163)
+      Tests  1292 passed (1292)
+   Duration  60.27s
+
+$ bunx tsc --noEmit && echo "tsc clean"
+tsc clean
+
+$ cd .. && gofmt -l internal/ cmd/ | grep -v "ingest.go\|rates_test.go"; echo "gofmt checked"
+gofmt checked   # (no other output — nothing to report)
+
+$ gofmt -l internal/ cmd/     # unfiltered, for the record
+internal/ingest/ingest.go
+internal/server/rates_test.go
+```
+
+Every line green. The two `gofmt -l` hits are exactly the two files the brief
+names as pre-existing drift not owned by this review (`internal/ingest/ingest.go`,
+`internal/server/rates_test.go`) — recorded here, not reformatted, per the
+binding constraint.
+
+**No red anywhere in the battery** — nothing needed investigating or
+deferring as a result of this step.
+
+### Step 3 — Dist check
+
+```
+$ git log --oneline --name-only bfa6fc2..HEAD | grep "^frontend/src" | grep -v test | grep -v stories
+(no output)
+```
+
+Zero non-test frontend source files changed anywhere in the review range
+(`bfa6fc2..HEAD`, 10 commits). The only `frontend/` files touched across the
+whole review were: `frontend/bun.lock`, `frontend/harness/nav.mjs`,
+`frontend/package.json`, `frontend/src/components/transactions/LinkRefundSheet.test.tsx`,
+`frontend/src/screens/plan/PlanScreen.test.tsx`, `frontend/vite.config.ts` —
+two `*.test.tsx` files, one harness driver script, one build-config file, and
+dependency manifests. Per CLAUDE.md, `vite.config.ts` is build config (not
+shipped source) and `package.json`/`bun.lock` are dependency manifests, not
+application code — none of the six is a shipped frontend source change.
+
+**Conclusion: the embedded dist does not need rebuilding.** Skipped per the
+brief's "only test files changed" branch — `internal/web/dist/` still matches
+the frontend source that produced it before this review began.
+
+### Step 4 — Report and commit
+
+This section plus the executive summary constitute the finished report,
+committed together with this file.
