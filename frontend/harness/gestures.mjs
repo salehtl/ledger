@@ -50,6 +50,7 @@ const FLICK_VELOCITY = 550;   // px/s
 const EDGE_ZONE_PX = 24;
 const ROW_COMMIT = 88;        // mirrored from lib/rowSwipe.ts
 const CARD_COMMIT = 100;      // mirrored from lib/swipe.ts's COMMIT_PX
+const PULL_THRESHOLD_PX = 64; // mirrored from lib/pullToRefresh.ts's PULL_THRESHOLD
 
 // ---------------------------------------------------------------- input drivers
 //
@@ -757,6 +758,103 @@ if (!deckReady) {
 }
 
 } // deckReady
+
+// ------------------------------------------------------- Pull-to-refresh (Task 7)
+//
+// usePullToRefresh listens for raw touchstart/touchmove/touchend on <main>,
+// so — like SwipeableRow's drag — none of this is drivable from jsdom; it
+// needs a real touch stream (the same CDP `Input.dispatchTouchEvent` path
+// `touchDragScroll` uses above, since `page.mouse` never produced native
+// touch behaviour here either).
+//
+// Two things are checked: that a real pull-and-release still reaches
+// `qc.invalidateQueries()` in AppShell (the release wiring didn't come loose
+// in the rewrite), and that PullToRefreshIndicator's now-fixed-height
+// clipper genuinely never resizes — the whole point of Task 7 was moving it
+// off a `height` transition that ran a layout animation while the page was
+// also refetching.
+
+/** Navigate to Home and return a touch point safely inside <main>, at rest (scrollTop 0). */
+async function openHomeForPull(page) {
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await settle(page, 1200);
+  await tap(page, 'nav button[aria-label="Home"]');
+  await settle(page, 500);
+  await page.evaluate(() => { document.querySelector("main").scrollTop = 0; });
+  const box = await page.locator("main").boundingBox();
+  return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + 80) };
+}
+
+/** The indicator's own box height and the document's scroll height, in one round trip. */
+const geometry = (page) =>
+  page.evaluate(() => {
+    const el = document.querySelector('[data-testid="ptr-indicator"]');
+    return {
+      indicatorHeight: el ? Math.round(el.getBoundingClientRect().height) : null,
+      docHeight: document.documentElement.scrollHeight,
+    };
+  });
+
+/** Poll (real round trips — this is Node-side, no in-page frame loop available for CDP input) for a predicate. */
+async function pollFor(page, evalFn, { timeout = 2000, interval = 15 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (await page.evaluate(evalFn)) return true;
+    await page.waitForTimeout(interval);
+  }
+  return false;
+}
+
+const refreshingVisible = () => !!document.querySelector('[role="status"][aria-label="Refreshing"]');
+
+{
+  const from = await openHomeForPull(page);
+  const geoms = [await geometry(page)];
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+  const steps = 14;
+  // 180px raw finger travel -> resist(180) = min(MAX_PULL 96, 180*0.5) = 90px,
+  // comfortably past the 64px PULL_THRESHOLD.
+  for (let i = 1; i <= steps; i++) {
+    await page.waitForTimeout(25);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x, y: from.y + (180 * i) / steps }] });
+    geoms.push(await geometry(page));
+  }
+  await page.waitForTimeout(50);
+  geoms.push(await geometry(page));
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+  // Sample tightly right after release: refreshing is set synchronously in
+  // onEnd, so a slow poll here could step right over the window before
+  // qc.invalidateQueries()'s refetches settle it back to false.
+  const becameRefreshing = await pollFor(page, refreshingVisible, { timeout: 1500, interval: 10 });
+  geoms.push(await geometry(page));
+  const settledAfter = becameRefreshing
+    ? await pollFor(page, () => !document.querySelector('[role="status"][aria-label="Refreshing"]'), { timeout: 4000, interval: 20 })
+    : false;
+  geoms.push(await geometry(page));
+
+  check(
+    "pulling past the threshold and releasing triggers a refresh (the Refreshing indicator appears, then clears once invalidateQueries settles)",
+    becameRefreshing && settledAfter,
+    `appeared=${becameRefreshing} settled=${settledAfter}`,
+  );
+
+  const heights = geoms.map((g) => g.indicatorHeight).filter((h) => h !== null);
+  check(
+    "the indicator's container never changes height across the pull, release and refresh",
+    heights.length > 0 && heights.every((h) => h === PULL_THRESHOLD_PX),
+    `heights observed: [${heights.join(",")}]`,
+  );
+
+  const docHeights = new Set(geoms.map((g) => g.docHeight));
+  check(
+    "the pull never changes the page's own layout height (the clipper contributes no layout)",
+    docHeights.size === 1,
+    `doc scrollHeight values: [${[...docHeights].join(",")}]`,
+  );
+}
 
 await browser.close();
 const failed = results.filter((r) => !r.ok).length;

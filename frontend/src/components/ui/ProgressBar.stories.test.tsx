@@ -21,11 +21,11 @@ describe("ProgressBar stories", () => {
     expect(fill.getAttribute("data-state")).toBe("over");
     expect(fill.style.background).toContain("--color-pace-over");
   });
-  it("over budget: the exceeded stop, width clamped to 100", () => {
+  it("over budget: the exceeded stop, clipped to reveal the full bar", () => {
     const { container } = render(<OverBudget />);
     const fill = container.querySelector("[data-state]") as HTMLElement;
     expect(fill.getAttribute("data-state")).toBe("overbudget");
-    expect(fill.style.width).toBe("100%");
+    expect(fill.style.clipPath).toBe("inset(0 0% 0 0)");
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("100");
   });
   it("hero onAccent over budget: state carried by texture — solid, single colour", () => {
