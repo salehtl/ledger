@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, m, useMotionValue } from "motion/react";
-import { shouldDismissToast } from "../lib/toastSwipe";
-import { FADE } from "../lib/motion";
+import { toastExitX } from "../lib/toastSwipe";
+import { FADE, SPRING_SNAP } from "../lib/motion";
 import { Pressable } from "./ui/Pressable";
 
 export interface ToastAction { label: string; onAction: () => void; }
@@ -82,9 +82,10 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       drag="x"
       dragSnapToOrigin
       dragElastic={0.6}
+      dragTransition={SPRING_SNAP}
       onDragEnd={(_, info) => {
-        if (!shouldDismissToast(info.offset.x, info.velocity.x)) return;
-        beginDismiss(info.offset.x > 0 ? 400 : -400);
+        const exit = toastExitX(info.offset.x, info.velocity.x);
+        if (exit !== 0) beginDismiss(exit);
       }}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}

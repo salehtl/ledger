@@ -17,3 +17,18 @@ export function shouldDismissToast(offsetX: number, velocityX: number): boolean 
   const sameDirection = offsetX === 0 || Math.sign(velocityX) === Math.sign(offsetX);
   return sameDirection && Math.abs(velocityX) >= TOAST_FLICK_VELOCITY;
 }
+
+/** Horizontal distance a dismissed toast flies before it is gone. */
+export const TOAST_EXIT_PX = 400;
+
+/**
+ * Where a released toast should exit to: 0 for a toast that was not swiped
+ * away (it fades and drops in place), otherwise the full fly-out distance in
+ * the direction the hand was travelling. Split out of the component so the
+ * direction rule — the whole point of the fix — has a regressable test; a
+ * Framer drag cannot be driven meaningfully in jsdom.
+ */
+export function toastExitX(offsetX: number, velocityX: number): number {
+  if (!shouldDismissToast(offsetX, velocityX)) return 0;
+  return (offsetX || velocityX) > 0 ? TOAST_EXIT_PX : -TOAST_EXIT_PX;
+}
