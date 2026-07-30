@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { Project } from "../../api/types";
 import { createProject, updateProject } from "../../api/client";
 import { dirhamsToFils, filsToDirhams } from "../../lib/format";
-import { Input } from "../../components/ui/Field";
+import { Input, NumberField } from "../../components/ui/Field";
 import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
 import { useToast } from "../../components/Toast";
@@ -34,8 +34,8 @@ export function ProjectForm({
   const qc = useQueryClient();
   const { show } = useToast();
   const [name, setName] = useState(project?.name ?? "");
-  const [budgetAed, setBudgetAed] = useState(
-    project?.budget_fils != null ? String(filsToDirhams(project.budget_fils)) : "",
+  const [budgetAed, setBudgetAed] = useState<number | null>(
+    project?.budget_fils != null ? filsToDirhams(project.budget_fils) : null,
   );
   const [color, setColor] = useState(project?.color || COLOR_PRESETS[0]);
   const [startsOn, setStartsOn] = useState(project?.starts_on ?? "");
@@ -53,7 +53,7 @@ export function ProjectForm({
     setSaving(true);
     const body: Partial<Project> = {
       name: name.trim(),
-      budget_fils: budgetAed.trim() === "" ? null : dirhamsToFils(Number(budgetAed)),
+      budget_fils: budgetAed === null ? null : dirhamsToFils(budgetAed),
       color,
       starts_on: startsOn,
       ends_on: endsOn,
@@ -91,14 +91,15 @@ export function ProjectForm({
 
         <label className="block text-sm">
           Budget (AED)
-          <Input
-            type="number"
-            inputMode="decimal"
-            min="0"
-            step="0.01"
+          {/* allowEmpty: a project genuinely may have no budget, and that is
+              null — distinct from a budget of zero. */}
+          <NumberField
             className="mt-1"
+            min={0}
+            decimals={2}
+            allowEmpty
             value={budgetAed}
-            onChange={(e) => setBudgetAed(e.target.value)}
+            onValueChange={setBudgetAed}
             placeholder="No budget"
           />
         </label>
