@@ -115,6 +115,10 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
 
   return (
     <div className="space-y-4">
+      {/* Reports is hosted here rather than in AppShell's overlay stack, so it
+          has to take the screen underneath out of the tab order itself —
+          otherwise Tab from its back arrow walks back into Insights. */}
+      <div className="contents" inert={reportsFocus !== null}>
       <button
         className="w-full min-h-11 flex items-center gap-2 px-3 rounded-[var(--radius)] border border-border bg-surface text-base text-muted press"
         onClick={() => setSearchOpen(true)}
@@ -183,6 +187,7 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
       {searchOpen && (
         <SearchSheet txns={txns} categories={cats.data ?? []} onClose={() => setSearchOpen(false)} />
       )}
+      </div>
       {reportsFocus !== null && (
         <SettingsPage title="Reports" onClose={() => setReportsFocus(null)}>
           <ReportsScreen focus={reportsFocus} />

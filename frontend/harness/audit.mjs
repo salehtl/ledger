@@ -200,7 +200,11 @@ export async function audit(page) {
         }
         return false;
       })();
-      if (!insideBigTarget && !srOnly(el) && (r.height < 44 || r.width < 44)) {
+      // components/README.md sanctions 36px for `IconButton size="sm"` inside
+      // dense stacked rows, and that component marks itself. Anything smaller
+      // than 36 is still a finding, even when marked.
+      const denseAllowed = el.hasAttribute("data-dense-target") && r.height >= 36 && r.width >= 36;
+      if (!insideBigTarget && !denseAllowed && !srOnly(el) && (r.height < 44 || r.width < 44)) {
         issues.push({
           kind: "tap-target-too-small",
           severity: r.height < 32 || r.width < 32 ? "high" : "medium",
