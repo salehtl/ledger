@@ -405,12 +405,12 @@ func TestCategoryUsage(t *testing.T) {
 	}
 
 	// Initially unused.
-	txns, rules, assignments, err := st.CategoryUsage(groceriesID)
+	u, err := st.CategoryUsage(groceriesID)
 	if err != nil {
 		t.Fatalf("CategoryUsage: %v", err)
 	}
-	if txns != 0 || rules != 0 || assignments != 0 {
-		t.Fatalf("fresh category usage = (%d,%d,%d), want (0,0,0)", txns, rules, assignments)
+	if u.InUse() {
+		t.Fatalf("fresh category usage = %+v, want all zero", u)
 	}
 
 	// Assign one transaction and one rule.
@@ -427,12 +427,12 @@ func TestCategoryUsage(t *testing.T) {
 		t.Fatalf("InsertRule: %v", err)
 	}
 
-	txns, rules, assignments, err = st.CategoryUsage(groceriesID)
+	u, err = st.CategoryUsage(groceriesID)
 	if err != nil {
 		t.Fatalf("CategoryUsage: %v", err)
 	}
-	if txns != 1 || rules != 1 || assignments != 0 {
-		t.Fatalf("usage = (%d,%d,%d), want (1,1,0)", txns, rules, assignments)
+	if u.Transactions != 1 || u.Rules != 1 || u.Assignments != 0 {
+		t.Fatalf("usage = %+v, want 1 txn, 1 rule, 0 assignments", u)
 	}
 
 	// Envelope assignments count too (they are ON DELETE CASCADE — deleting
@@ -441,14 +441,14 @@ func TestCategoryUsage(t *testing.T) {
 	if err := st.UpsertEnvelopeAssignment("2026-07", groceriesID, 100_000); err != nil {
 		t.Fatalf("UpsertEnvelopeAssignment: %v", err)
 	}
-	if _, _, assignments, err = st.CategoryUsage(groceriesID); err != nil || assignments != 1 {
-		t.Fatalf("usage after assignment = %d err=%v, want 1", assignments, err)
+	if u, err = st.CategoryUsage(groceriesID); err != nil || u.Assignments != 1 {
+		t.Fatalf("usage after assignment = %d err=%v, want 1", u.Assignments, err)
 	}
 	if err := st.UpsertEnvelopeAssignment("2026-07", groceriesID, 0); err != nil {
 		t.Fatalf("zero assignment: %v", err)
 	}
-	if _, _, assignments, err = st.CategoryUsage(groceriesID); err != nil || assignments != 0 {
-		t.Fatalf("usage after zeroing = %d err=%v, want 0 (zero rows don't block)", assignments, err)
+	if u, err = st.CategoryUsage(groceriesID); err != nil || u.Assignments != 0 {
+		t.Fatalf("usage after zeroing = %d err=%v, want 0 (zero rows don't block)", u.Assignments, err)
 	}
 }
 
@@ -907,5 +907,41 @@ func TestDeletedSeedCategoryStaysDeletedAcrossRestart(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("Rent reappeared after restart: %d rows, want 0", count)
+	}
+}
+
+// TestCategoryUsageCountsTargets: category_targets is ON DELETE CASCADE, so a
+// target is budget state a delete would silently discard — it has to show up in
+// the usage counts the delete guard reads.
+func TestCategoryUsageCountsTargets(t *testing.T) {
+	st := newTestStore(t)
+	id, err := st.InsertCategory(CategoryRow{Name: "Car Insurance", Kind: "spending", Bucket: "need", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+
+	u, err := st.CategoryUsage(id)
+	if err != nil {
+		t.Fatalf("CategoryUsage: %v", err)
+	}
+	if u.Targets != 0 {
+		t.Fatalf("fresh category targets = %d, want 0", u.Targets)
+	}
+
+	if err := st.UpsertCategoryTarget(CategoryTargetRow{
+		CategoryID: id, TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
+	}); err != nil {
+		t.Fatalf("UpsertCategoryTarget: %v", err)
+	}
+
+	u, err = st.CategoryUsage(id)
+	if err != nil {
+		t.Fatalf("CategoryUsage: %v", err)
+	}
+	if u.Targets != 1 {
+		t.Fatalf("targets after upsert = %d, want 1", u.Targets)
+	}
+	if u.Transactions != 0 || u.Rules != 0 || u.Assignments != 0 {
+		t.Fatalf("unexpected other usage: %+v", u)
 	}
 }

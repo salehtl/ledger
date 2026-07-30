@@ -10,7 +10,9 @@ const CATS = [
   { ID: 3, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
 ];
 
-function mockFetch(usage: Record<number, { transactions: number; rules: number }>, overrides?: (url: string, init?: RequestInit) => Response | null) {
+type Usage = { transactions: number; rules: number; assignments?: number; targets?: number };
+
+function mockFetch(usage: Record<number, Usage>, overrides?: (url: string, init?: RequestInit) => Response | null) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     const u = String(url);
 
@@ -23,7 +25,9 @@ function mockFetch(usage: Record<number, { transactions: number; rules: number }
     const usageMatch = u.match(/\/api\/categories\/(\d+)\/usage$/);
     if (usageMatch) {
       const id = Number(usageMatch[1]);
-      return new Response(JSON.stringify(usage[id] ?? { transactions: 0, rules: 0 }));
+      // Mirrors the server: every count is always present in the payload.
+      const u = usage[id] ?? { transactions: 0, rules: 0 };
+      return new Response(JSON.stringify({ assignments: 0, targets: 0, ...u }));
     }
     if (u === "/api/categories" && (!init || init.method === undefined || init.method === "GET")) {
       return new Response(JSON.stringify(CATS));
@@ -127,6 +131,41 @@ describe("CategoryManager", () => {
     await waitFor(() => {
       expect(fetchMock.mock.calls.some((c) => c[0] === "/api/categories/2" && c[1]?.method === "DELETE")).toBe(true);
     });
+  });
+
+  it("a category held only by a target or an assignment is guarded, and says which", async () => {
+    // Both cascade on delete, so the server 409s on them; the button has to
+    // agree, or the only way to find out is a failed tap.
+    vi.stubGlobal("fetch", mockFetch({
+      1: { transactions: 0, rules: 0, assignments: 0, targets: 1 },
+      2: { transactions: 0, rules: 0, assignments: 2, targets: 0 },
+      3: { transactions: 0, rules: 0, assignments: 0, targets: 0 },
+    }));
+    wrap();
+    expect(await screen.findByRole("button", { name: /groceries in use/i })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /salary in use/i })).toBeDisabled();
+    expect(screen.getByText("target")).toBeInTheDocument();
+    expect(screen.getByText("2 assigned")).toBeInTheDocument();
+    // The genuinely unused one stays live.
+    expect(await screen.findByRole("button", { name: "Delete Dining" })).not.toBeDisabled();
+  });
+
+  it("names only the reasons it has to — a row with transactions doesn't list its target too", async () => {
+    // The meta label shares one row with the category name. Spelling out every
+    // reason made "48 txns · 1 rule · 1 assigned · target" and truncated
+    // Groceries down to "G", so it stops once the block is already explained.
+    vi.stubGlobal("fetch", mockFetch({
+      1: { transactions: 48, rules: 1, assignments: 1, targets: 1 },
+      2: { transactions: 0, rules: 0, assignments: 1, targets: 1 },
+      3: { transactions: 0, rules: 0, assignments: 0, targets: 0 },
+    }));
+    wrap();
+    expect(await screen.findByText("48 txns · 1 rule")).toBeInTheDocument();
+    expect(screen.queryByText(/48 txns · 1 rule · /)).not.toBeInTheDocument();
+    // With nothing louder to say, the cascade-only reasons still speak.
+    expect(screen.getByText("1 assigned · target")).toBeInTheDocument();
+    // The genuinely unused one stays live.
+    expect(await screen.findByRole("button", { name: "Delete Dining" })).not.toBeDisabled();
   });
 
   it("delete offers Undo, which recreates the category with its kind and bucket", async () => {
