@@ -47,10 +47,11 @@ export function SettingsPage({
       {open && (
         <m.div
           ref={panelRef}
-          // Framer seeds the offscreen start state and forces the style flush
-          // itself. That matters most in WebKit, which does not commit the start
-          // state off a double rAF alone — the hand-rolled version left the panel
-          // parked off-screen and then snapped it in.
+          // `initial` is committed as the first render's inline style, so the
+          // offscreen start state is there before the first paint and needs no
+          // flush. That is what the hand-rolled version used `void offsetHeight`
+          // for and still got wrong in WebKit, which left the panel parked
+          // off-screen and then snapped it in (see Dialog).
           initial={{ x: "100%" }}
           animate={{ x: 0 }}
           // Exit transition on the exit target: Framer has no `transition.exit`

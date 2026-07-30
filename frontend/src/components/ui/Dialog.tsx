@@ -167,9 +167,11 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
             aria-labelledby={titleId}
             tabIndex={-1}
             onClick={(e) => e.stopPropagation()}
-            // Framer seeds the offscreen start state, forces the style flush and
-            // schedules the frame itself — including in WebKit, where a double
-            // rAF alone was not enough: Safari left the sheet parked at
+            // `initial` is committed as the first render's inline style, so the
+            // offscreen start state exists before the browser has ever painted
+            // this element — there is no start state to flush, which is what the
+            // hand-rolled version needed `void panel.offsetHeight` for and still
+            // got wrong in WebKit: Safari left the sheet parked at
             // translateY(100%), entirely below the viewport, for ~400-800ms and
             // then snapped it into place with no transition. Since the scrim is
             // already up and dismisses on tap, tapping where the sheet should be
@@ -186,7 +188,8 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
             dragControls={dragControls}
             dragListener={false}
             dragConstraints={{ top: 0, bottom: 0 }}
-            // Downward only: an upward pull rubber-bands and springs back.
+            // Downward only: an upward pull is clamped rather than tracked, so
+            // the panel does not move at all above rest.
             dragElastic={{ top: 0, bottom: 0.9 }}
             dragMomentum={false}
             onDragStart={() => { draggedRef.current = true; }}
@@ -206,7 +209,11 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
             }}
             className="sheet-panel relative w-full sm:max-w-md bg-surface rounded-t-[var(--radius)] sm:rounded-[var(--radius)] shadow-1 px-4 pt-3 overflow-y-auto overscroll-contain outline-none"
           >
+            {/* data-sheet-handle, like data-dialog-footer above: the drag
+                region is a styling-classes-only div, and harness/gestures.mjs
+                has to grab it by something that is not a Tailwind class. */}
             <div
+              data-sheet-handle=""
               className="touch-none cursor-grab active:cursor-grabbing sm:cursor-default"
               onPointerDown={(e) => dragControls.start(e)}
             >
