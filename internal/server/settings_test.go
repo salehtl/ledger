@@ -167,6 +167,48 @@ func TestSettingsSpendCapRoundTrip(t *testing.T) {
 	}
 }
 
+// The settings endpoint takes the whole object, so a client that writes one
+// field has to resend the rest. The Email-ingest page did exactly that and
+// left ai_spend_cap_musd out, which used to decode as 0 and silently wipe the
+// user's monthly AI spend cap. Omitted must mean "leave it alone".
+func TestSettingsPutWithoutSpendCapKeepsStoredCap(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, SpendCapMuUSD: 50000, IngestSilenceDays: 3}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ingest_silence_days":7}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.SpendCapMuUSD != 50000 {
+		t.Fatalf("SpendCapMuUSD=%d, want the stored 50000 preserved", stub.s.SpendCapMuUSD)
+	}
+	if stub.s.IngestSilenceDays != 7 {
+		t.Fatalf("IngestSilenceDays=%d, want 7 (the field actually being written)", stub.s.IngestSilenceDays)
+	}
+}
+
+// An explicit 0 is a real value — "no cap" — and must still clear the cap.
+func TestSettingsPutExplicitZeroClearsSpendCap(t *testing.T) {
+	stub := &stubSettings{s: store.AppSettings{AIThreshold: 0.85, SpendCapMuUSD: 50000}}
+	srv := New(nil, fstest())
+	srv.SetSettingsStore(stub)
+
+	body := `{"auto_categorize":true,"ai_enabled":false,"ai_auto_accept":false,"ai_threshold":0.85,"ai_spend_cap_musd":0}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.s.SpendCapMuUSD != 0 {
+		t.Fatalf("SpendCapMuUSD=%d, want 0 (explicitly cleared)", stub.s.SpendCapMuUSD)
+	}
+}
+
 // ai_cap_latched is read-only output: GET reports whatever the store holds,
 // but the PUT handler never forwards a client-sent value for it — the store
 // is the sole authority (it sets the latch itself when the spend cap trips,

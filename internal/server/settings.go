@@ -26,7 +26,11 @@ type settingsDTO struct {
 	// (env-only). It is ignored on PUT.
 	AIKeyPresent bool `json:"ai_key_present"`
 	// AISpendCapMuUSD is the monthly AI spend cap in micro-USD (0 = no cap).
-	AISpendCapMuUSD int64 `json:"ai_spend_cap_musd"`
+	// A pointer so PUT can tell "omitted" from an explicit 0: this endpoint
+	// takes the whole settings object, so any client that forgot this field
+	// silently erased the user's spend cap. Omitted now carries forward, the
+	// same as IngestSilenceDays and CapLatched.
+	AISpendCapMuUSD *int64 `json:"ai_spend_cap_musd"`
 	// AICapLatched is read-only output: whether the spend cap has tripped and
 	// AI calls are currently blocked. The store clears the latch when
 	// AIEnabled is set true; the client cannot set this field directly.
@@ -49,7 +53,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		AIAutoAccept: a.AIAutoAccept, AIThreshold: a.AIThreshold,
 		IngestSilenceDays: a.IngestSilenceDays,
 		AIKeyPresent:      s.aiKeyPresent,
-		AISpendCapMuUSD:   a.SpendCapMuUSD,
+		AISpendCapMuUSD:   &a.SpendCapMuUSD,
 		AICapLatched:      a.CapLatched,
 	})
 }
@@ -88,11 +92,20 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if curErr == nil {
 		capLatched = cur.CapLatched
 	}
+	// Omitted spend cap: keep what's stored. Only an explicit value (including
+	// an explicit 0, meaning "no cap") changes it.
+	spendCap := int64(0)
+	if curErr == nil {
+		spendCap = cur.SpendCapMuUSD
+	}
+	if dto.AISpendCapMuUSD != nil {
+		spendCap = *dto.AISpendCapMuUSD
+	}
 	if err := s.settingsStore.UpdateAppSettings(store.AppSettings{
 		AutoCategorize: dto.AutoCategorize, AIEnabled: dto.AIEnabled,
 		AIAutoAccept: dto.AIAutoAccept, AIThreshold: dto.AIThreshold,
 		IngestSilenceDays: dto.IngestSilenceDays,
-		SpendCapMuUSD:     dto.AISpendCapMuUSD,
+		SpendCapMuUSD:     spendCap,
 		CapLatched:        capLatched,
 	}); err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)

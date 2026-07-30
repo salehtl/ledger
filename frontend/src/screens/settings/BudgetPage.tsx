@@ -5,7 +5,7 @@ import type { BudgetConfig } from "../../api/types";
 import { dirhamsToFils, filsToDirhams, fractionToPercent, percentToFraction } from "../../lib/format";
 import { pctsValid, splitSegments } from "../../lib/split";
 import { Switch } from "../../components/ui/Switch";
-import { Input } from "../../components/ui/Field";
+import { NumberField } from "../../components/ui/Field";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
@@ -77,14 +77,14 @@ export function BudgetPage({ onClose }: { onClose: () => void }) {
         <div className="space-y-4">
           <label className="block text-sm">
             Monthly income (AED)
-            <Input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
+            {/* Ignoring a null keeps the last saved income while the field is
+                empty mid-edit, so clearing it can't autosave a zero budget. */}
+            <NumberField
               className="mt-1"
+              min={0}
+              decimals={2}
               value={filsToDirhams(cfg.monthly_income)}
-              onChange={(e) => patch({ monthly_income: dirhamsToFils(Number(e.target.value)) })}
+              onValueChange={(n) => n !== null && patch({ monthly_income: dirhamsToFils(n) })}
             />
           </label>
 
@@ -99,21 +99,21 @@ export function BudgetPage({ onClose }: { onClose: () => void }) {
             <div className="grid grid-cols-3 gap-2 mt-2.5">
               <label className="text-sm">
                 Need %
-                <Input type="number" inputMode="numeric" min="0" max="100" className="mt-1"
+                <NumberField className="mt-1" min={0} max={100} allowDecimal={false}
                   value={fractionToPercent(cfg.need_pct)}
-                  onChange={(e) => patch({ need_pct: percentToFraction(Number(e.target.value)) })} />
+                  onValueChange={(n) => n !== null && patch({ need_pct: percentToFraction(n) })} />
               </label>
               <label className="text-sm">
                 Want %
-                <Input type="number" inputMode="numeric" min="0" max="100" className="mt-1"
+                <NumberField className="mt-1" min={0} max={100} allowDecimal={false}
                   value={fractionToPercent(cfg.want_pct)}
-                  onChange={(e) => patch({ want_pct: percentToFraction(Number(e.target.value)) })} />
+                  onValueChange={(n) => n !== null && patch({ want_pct: percentToFraction(n) })} />
               </label>
               <label className="text-sm">
                 Saving %
-                <Input type="number" inputMode="numeric" min="0" max="100" className="mt-1"
+                <NumberField className="mt-1" min={0} max={100} allowDecimal={false}
                   value={fractionToPercent(cfg.saving_pct)}
-                  onChange={(e) => patch({ saving_pct: percentToFraction(Number(e.target.value)) })} />
+                  onValueChange={(n) => n !== null && patch({ saving_pct: percentToFraction(n) })} />
               </label>
             </div>
             {error && <p role="alert" className="text-bad text-sm mt-2">{error}</p>}
