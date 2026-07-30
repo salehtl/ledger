@@ -11,7 +11,15 @@ export function SegmentedControl<T extends string>({
   fullWidth?: boolean;
 }) {
   return (
-    <div className={`p-1 bg-surface-2 rounded-[var(--radius)] gap-1 ${fullWidth ? "flex w-full" : "inline-flex"}`}>
+    // Tighter chrome when full-width: with six equal segments at 320px the
+    // 4px padding and gaps ate enough room to leave each one 43px, a pixel
+    // under the minimum. The segments are contiguous and the active fill
+    // already separates them, so the gap was doing little work.
+    <div
+      className={`bg-surface-2 rounded-[var(--radius)] ${
+        fullWidth ? "flex w-full gap-0.5 p-0.5" : "inline-flex gap-1 p-1"
+      }`}
+    >
       {options.map((o) => (
         <button
           key={o.value}
