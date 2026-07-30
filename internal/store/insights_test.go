@@ -63,7 +63,7 @@ func TestSelectMonthlyTotals(t *testing.T) {
 		}
 	}
 	if sid == 0 {
-		t.Skip("no Salary income category in seed; adjust to an income category name present in seedCategories")
+		t.Fatal("seed no longer contains a Salary income category — update this test's fixture lookup")
 	}
 	spend := func(ts string, fils int64) {
 		tid, _, _ := st.InsertTransaction(TransactionRow{
