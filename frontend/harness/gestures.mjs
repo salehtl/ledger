@@ -51,6 +51,7 @@ const EDGE_ZONE_PX = 24;
 const ROW_COMMIT = 88;        // mirrored from lib/rowSwipe.ts
 const CARD_COMMIT = 100;      // mirrored from lib/swipe.ts's COMMIT_PX
 const PULL_THRESHOLD_PX = 64; // mirrored from lib/pullToRefresh.ts's PULL_THRESHOLD
+const PULL_RESISTANCE = 0.5;  // mirrored from lib/pullToRefresh.ts's RESISTANCE (resist())
 
 // ---------------------------------------------------------------- input drivers
 //
@@ -767,12 +768,18 @@ if (!deckReady) {
 // `touchDragScroll` uses above, since `page.mouse` never produced native
 // touch behaviour here either).
 //
-// Two things are checked: that a real pull-and-release still reaches
+// Three things are checked: that a real pull-and-release still reaches
 // `qc.invalidateQueries()` in AppShell (the release wiring didn't come loose
-// in the rewrite), and that PullToRefreshIndicator's now-fixed-height
-// clipper genuinely never resizes — the whole point of Task 7 was moving it
-// off a `height` transition that ran a layout animation while the page was
-// also refetching.
+// in the rewrite); that PullToRefreshIndicator's now-fixed-height clipper
+// genuinely never resizes — the whole point of Task 7 was moving it off a
+// `height` transition that ran a layout animation while the page was also
+// refetching; and that the gauge *inside* that clipper stays visible once
+// the pull passes the threshold. That third one is here because a first
+// version of this file only sampled the container's height (unaffected by
+// review finding #1 — an unclamped `pullDistance` translates the gauge clean
+// out of the clip window on an ordinary firm pull) and so passed against a
+// broken build. A geometry check that samples the wrong element is worse
+// than no check: it spends a green line on confidence the bug disproves.
 
 /** Navigate to Home and return a touch point safely inside <main>, at rest (scrollTop 0). */
 async function openHomeForPull(page) {
@@ -785,13 +792,29 @@ async function openHomeForPull(page) {
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + 80) };
 }
 
-/** The indicator's own box height and the document's scroll height, in one round trip. */
+/**
+ * The indicator's own box height, the document's scroll height, and whether
+ * the gauge (the PixelSpinner <svg>, either the determinate pull ring or the
+ * indeterminate refresh spinner) is fully inside the clipper's own box — the
+ * thing that actually determines whether it's visible, independent of the
+ * container's own (always-fixed) height. `getBoundingClientRect` reports an
+ * element's box regardless of an ancestor's `overflow: hidden`, so comparing
+ * the two rects here reproduces what `overflow: hidden` does to what's
+ * actually paintable, from outside the page.
+ */
 const geometry = (page) =>
   page.evaluate(() => {
     const el = document.querySelector('[data-testid="ptr-indicator"]');
+    const svg = el ? el.querySelector("svg") : null;
+    const elRect = el ? el.getBoundingClientRect() : null;
+    const svgRect = svg ? svg.getBoundingClientRect() : null;
     return {
-      indicatorHeight: el ? Math.round(el.getBoundingClientRect().height) : null,
+      indicatorHeight: elRect ? Math.round(elRect.height) : null,
       docHeight: document.documentElement.scrollHeight,
+      gaugeFullyVisible:
+        elRect && svgRect
+          ? svgRect.top >= elRect.top - 0.5 && svgRect.bottom <= elRect.bottom + 0.5
+          : null,
     };
   });
 
@@ -810,19 +833,34 @@ const refreshingVisible = () => !!document.querySelector('[role="status"][aria-l
 {
   const from = await openHomeForPull(page);
   const geoms = [await geometry(page)];
+  // Samples taken once the resisted pull distance has crossed PULL_THRESHOLD
+  // — the exact regime review finding #1 broke (an unclamped pullDistance
+  // translates the gauge below the clip window once it exceeds the
+  // threshold). Height checks alone are blind to this: the container's
+  // height is fixed by construction and unaffected by the bug.
+  const pastThresholdGeoms = [];
 
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
   const steps = 14;
+  const totalRaw = 180;
   // 180px raw finger travel -> resist(180) = min(MAX_PULL 96, 180*0.5) = 90px,
-  // comfortably past the 64px PULL_THRESHOLD.
+  // comfortably past the 64px PULL_THRESHOLD — an entirely ordinary firm
+  // pull, not an edge case.
   for (let i = 1; i <= steps; i++) {
     await page.waitForTimeout(25);
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x, y: from.y + (180 * i) / steps }] });
-    geoms.push(await geometry(page));
+    const raw = (totalRaw * i) / steps;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x, y: from.y + raw }] });
+    const g = await geometry(page);
+    geoms.push(g);
+    if (raw * PULL_RESISTANCE >= PULL_THRESHOLD_PX) pastThresholdGeoms.push(g);
   }
   await page.waitForTimeout(50);
-  geoms.push(await geometry(page));
+  {
+    const g = await geometry(page);
+    geoms.push(g);
+    pastThresholdGeoms.push(g); // held at the full 180px raw travel
+  }
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
   // Sample tightly right after release: refreshing is set synchronously in
@@ -846,6 +884,13 @@ const refreshingVisible = () => !!document.querySelector('[role="status"][aria-l
     "the indicator's container never changes height across the pull, release and refresh",
     heights.length > 0 && heights.every((h) => h === PULL_THRESHOLD_PX),
     `heights observed: [${heights.join(",")}]`,
+  );
+
+  const pastThresholdVisibility = pastThresholdGeoms.map((g) => g.gaugeFullyVisible);
+  check(
+    "the gauge stays fully inside the clipper once the pull passes the threshold (review finding #1 — an unclamped pullDistance pushed it below the clip window)",
+    pastThresholdVisibility.length > 0 && pastThresholdVisibility.every((v) => v === true),
+    `gaugeFullyVisible past threshold: [${pastThresholdVisibility.join(",")}]`,
   );
 
   const docHeights = new Set(geoms.map((g) => g.docHeight));
