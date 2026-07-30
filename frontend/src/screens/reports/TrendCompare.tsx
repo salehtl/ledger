@@ -1,6 +1,7 @@
 import { Money } from "../../components/Money";
 import { formatFils } from "../../lib/money";
 import { monthYear, pctLabel, type YoYRow, type YoYSummary } from "../../lib/reports";
+import { Pressable } from "../../components/ui/Pressable";
 
 /**
  * Year-over-year spending compare: the trailing 12 months, each paired with
@@ -51,11 +52,10 @@ export function TrendCompare({ rows, summary, onDrillMonth }: {
       <ul className="mt-2 divide-y divide-border">
         {rows.map((r) => (
           <li key={r.period}>
-            <button
-              type="button"
+            <Pressable
               onClick={() => onDrillMonth(r.period)}
               aria-label={`${monthYear(r.period)}: spent ${formatFils(r.cur)}, year before ${r.prev === null ? "no record" : formatFils(r.prev)}`}
-              className="flex min-h-11 w-full items-center gap-3 py-1.5 press"
+              className="flex min-h-11 w-full items-center gap-3 py-1.5"
             >
               <span className="w-14 shrink-0 text-left font-mono text-[10px] tracking-[0.04em] text-muted tnum">
                 {monthYear(r.period)}
@@ -78,7 +78,7 @@ export function TrendCompare({ rows, summary, onDrillMonth }: {
                   {r.prev === null ? "no record" : pctLabel(r.pct)}
                 </span>
               </span>
-            </button>
+            </Pressable>
           </li>
         ))}
       </ul>

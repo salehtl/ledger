@@ -112,16 +112,6 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* entering/exiting UI */
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement   */
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);   /* iOS-like sheet curve  */
-  --dur-press: 140ms;                               /* button press feedback */
-}
-
-/* Press feedback — subtle scale confirms the UI heard the tap. Applies to any
-   pressable element. Disabled under reduced motion (movement removed, not the
-   element). Scale on :active is correct on touch too (unlike hover). */
-.press { transition: transform var(--dur-press) var(--ease-out); }
-.press:active { transform: scale(0.97); }
-@media (prefers-reduced-motion: reduce) {
-  .press:active { transform: none; }
 }
 
 /* First-paint list stagger — a one-shot cascade (decorative). Apply only on a
@@ -176,8 +166,9 @@ body { background: var(--color-bg); color: var(--color-fg); font-family: var(--f
    and an open bottom sheet could be dragged around the screen along with the
    top bar, exposing an unscrimmed strip above it. */
 html, body { overscroll-behavior: none; }
-/* iOS Safari paints a gray flash box on tapped links/buttons; our .press scale
-   and haptics are the feedback channel, so kill the default highlight. */
+/* iOS Safari paints a gray flash box on tapped links/buttons; the Pressable
+   primitive's whileTap scale and haptics are the feedback channel, so kill
+   the default highlight. */
 html { -webkit-tap-highlight-color: transparent; }
 
 /* Backstop against iOS zoom-on-focus: Safari zooms the viewport onto any

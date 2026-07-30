@@ -14,6 +14,7 @@ import {
   actionColor,
 } from '../../lib/swipe'
 import { useSwipeGesture } from '../../hooks/useSwipeGesture'
+import { Pressable } from '../ui/Pressable'
 import { useReducedMotion } from "motion/react";
 const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 
@@ -175,14 +176,13 @@ export function SwipeCard({
             <span>{reviewReason(txn)}</span>
           </div>
           {txn.Source === 'email' && onOpenEmail && (
-            <button
-              type="button"
-              className="mt-2 min-h-11 px-3 text-xs font-medium text-fg underline underline-offset-2 press"
+            <Pressable
+              className="mt-2 min-h-11 px-3 text-xs font-medium text-fg underline underline-offset-2"
               onPointerDown={e => e.stopPropagation()}
               onClick={e => { e.stopPropagation(); onOpenEmail() }}
             >
               View source email
-            </button>
+            </Pressable>
           )}
         </div>
 

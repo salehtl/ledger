@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, type CSSProperties } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type PixelIconType } from '../ui/PixelIcon'
+import { Pressable } from '../ui/Pressable'
 import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
 import { useToast } from '../Toast'
@@ -72,12 +73,11 @@ function EdgeRail({
   const { style, vertical } = RAIL_POS[dir]
   return (
     <div className="absolute z-10" style={style}>
-      <button
-        type="button"
+      <Pressable
         disabled={disabled}
         onClick={() => onCommit(dir)}
         aria-label={`${action.label} — sort this transaction`}
-        className={`press flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
+        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           // Ink or paper, whichever reads on this fill — white was fine on the
@@ -89,7 +89,7 @@ function EdgeRail({
       >
         <Icon size={16} className="shrink-0" aria-hidden />
         <span className="text-[11px] tracking-wide leading-none">{action.label}</span>
-      </button>
+      </Pressable>
     </div>
   )
 }
@@ -378,12 +378,12 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
       <div className="flex items-center justify-center gap-1 mt-3">
         <p className="text-xs text-muted">Swipe a card to sort ·</p>
-        <button
-          className="text-xs font-medium text-muted underline underline-offset-2 press min-h-11 px-2"
+        <Pressable
+          className="text-xs font-medium text-muted underline underline-offset-2 min-h-11 px-2"
           onClick={handleTripleTap}
         >
           Skip for now
-        </button>
+        </Pressable>
       </div>
 
       {current && current.Direction === 'credit' && (

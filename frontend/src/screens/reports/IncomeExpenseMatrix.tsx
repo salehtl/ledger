@@ -9,6 +9,7 @@ import {
 import { Money } from "../../components/Money";
 import { EmptyState } from "../../components/EmptyState";
 import { Inbox } from "../../components/ui/PixelIcon";
+import { Pressable } from "../../components/ui/Pressable";
 import { formatFils } from "../../lib/money";
 import {
   monthYear,
@@ -52,14 +53,13 @@ export function IncomeExpenseMatrix({ data, onDrillCell, onDrillRow, onDrillMont
       id: "name",
       header: "Category",
       cell: ({ row }) => (
-        <button
-          type="button"
+        <Pressable
           onClick={() => onDrillRow(row.original)}
           aria-label={`All ${row.original.name} transactions in this window`}
-          className="flex min-h-11 w-full items-center px-3 text-left font-mono text-xs tracking-[0.02em] press"
+          className="flex min-h-11 w-full items-center px-3 text-left font-mono text-xs tracking-[0.02em]"
         >
           <span className="truncate">{row.original.name}</span>
-        </button>
+        </Pressable>
       ),
     }),
     ...monthsDesc.map((m) => {
@@ -220,15 +220,14 @@ function CellButton({ fils, label, onClick, emphasis = false }: {
   emphasis?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <Pressable
       onClick={onClick}
       aria-label={`${label}: ${formatFils(fils)}`}
-      className={`flex min-h-11 w-full items-center justify-end px-3 text-right press ${emphasis ? "font-medium" : ""}`}
+      className={`flex min-h-11 w-full items-center justify-end px-3 text-right ${emphasis ? "font-medium" : ""}`}
     >
       <span className="tnum text-xs">
         <Money fils={fils} />
       </span>
-    </button>
+    </Pressable>
   );
 }

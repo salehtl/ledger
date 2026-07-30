@@ -1,5 +1,6 @@
-import type { ButtonHTMLAttributes, MouseEvent, ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { fire } from "../../lib/feedback";
+import { Pressable, type PressableProps } from "./Pressable";
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-accent text-accent-fg hover:opacity-90",
@@ -9,20 +10,23 @@ const VARIANTS: Record<Variant, string> = {
 };
 export function Button(
   { variant = "secondary", className = "", children, onClick, ...rest }:
-  { variant?: Variant; children: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement>,
+  // PressableProps, not ButtonHTMLAttributes: motion's HTMLMotionProps
+  // narrows a few DOM event handlers (onAnimationStart et al.) to its own
+  // animation-aware signatures, and the native React type is not assignable
+  // to those — this is the type Pressable itself actually accepts.
+  { variant?: Variant; children: ReactNode } & PressableProps,
 ) {
   const handleClick = (e: MouseEvent<HTMLButtonElement>) => {
     fire("selection");
     onClick?.(e);
   };
   return (
-    <button
-      type="button"
-      className={`min-h-11 px-5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors press disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
+    <Pressable
+      className={`min-h-11 px-5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
       onClick={handleClick}
       {...rest}
     >
       {children}
-    </button>
+    </Pressable>
   );
 }

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, X } from "../ui/PixelIcon";
 import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { Pressable } from "../ui/Pressable";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import type { Category, Txn } from "../../api/types";
 
@@ -79,27 +80,27 @@ export function FilterChips({ filters, categories, txns, onChange }: {
       {dims.map((d) => {
         const count = d.selected.length;
         return (
-          <button
+          <Pressable
             key={d.key}
             onClick={() => setOpen(d.key)}
             aria-expanded={open === d.key}
-            className={`flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap transition-colors press ${
+            className={`flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap transition-colors ${
               count > 0 ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted"
             }`}
           >
             {d.label}{count > 0 ? ` · ${count}` : ""}
             <ChevronDown size={14} aria-hidden />
-          </button>
+          </Pressable>
         );
       })}
 
       {active > 0 && (
-        <button
+        <Pressable
           onClick={() => onChange(EMPTY_FILTERS)}
-          className="flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium text-muted whitespace-nowrap press hover:text-fg"
+          className="flex items-center gap-1 px-3.5 py-2 rounded-[var(--radius)] text-sm font-medium text-muted whitespace-nowrap hover:text-fg"
         >
           <X size={14} aria-hidden /> Clear
-        </button>
+        </Pressable>
       )}
 
       {current && (

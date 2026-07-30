@@ -20,6 +20,7 @@ import { TransactionDetailSheet } from "../components/transactions/TransactionDe
 import { LinkRefundSheet } from "../components/transactions/LinkRefundSheet";
 import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
 import { Fab } from "../components/ui/Fab";
+import { Pressable } from "../components/ui/Pressable";
 import { FilterBar } from "../components/transactions/FilterBar";
 import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, filtersActive, exportUrl, exportFilename, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
@@ -198,28 +199,26 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <button
-          type="button"
+        <Pressable
           onClick={() => { fire("selection"); setFilterOpen((o) => !o); }}
           aria-expanded={filterOpen}
           aria-label="Filters"
-          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] border press ${
+          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] border ${
             activeFilters > 0 ? "border-accent/30 bg-accent/10 text-fg" : "border-border bg-surface text-muted"
           }`}
         >
           <SlidersHorizontal size={16} aria-hidden />
           {activeFilters > 0 && <span className="tnum text-xs font-semibold">{activeFilters}</span>}
-        </button>
-        <button
-          type="button"
+        </Pressable>
+        <Pressable
           onClick={() => { fire("selection"); void exportCsv(); }}
           disabled={exporting}
           aria-label="Export CSV"
           title="Export CSV — current status, period and search"
-          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-[var(--radius)] border border-border bg-surface text-muted press disabled:opacity-50"
+          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-[var(--radius)] border border-border bg-surface text-muted disabled:opacity-50"
         >
           <Download size={16} aria-hidden />
-        </button>
+        </Pressable>
       </div>
 
       {(activeFilters > 0 || filterOpen) && (

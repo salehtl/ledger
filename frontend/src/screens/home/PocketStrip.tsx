@@ -1,5 +1,6 @@
 import { Money } from "../../components/Money";
 import { Card } from "../../components/ui/Card";
+import { Pressable } from "../../components/ui/Pressable";
 import { Skeleton } from "../../components/Skeleton";
 import { nextUpcoming, nextUpcomingLabel } from "../../lib/envelope";
 import { deltaSummary, isFlatZero } from "../../lib/reports";
@@ -37,7 +38,7 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
   const series = networth.data?.months ?? [];
   const worth = isFlatZero(series) ? null : deltaSummary(series.map((m) => m.networth_fils));
 
-  const row = "w-full min-h-11 py-2 flex items-center justify-between gap-3 text-left press";
+  const row = "w-full min-h-11 py-2 flex items-center justify-between gap-3 text-left";
   const label = "text-sm font-medium shrink-0";
   // No `shrink-0` here: the bill row puts a merchant label through this style,
   // and a real one ("DEWA utility bill — Dubai Electricity & Water Authority")
@@ -49,15 +50,15 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
   return (
     <Card className="!p-0 px-4">
       <div className="divide-y divide-border">
-        <button type="button" className={row} onClick={onOpenPlan} aria-label="Open Plan">
+        <Pressable className={row} onClick={onOpenPlan} aria-label="Open Plan">
           <span className={label}>Ready to assign</span>
           {rta === undefined ? (
             <span className={`${meta} shrink-0`}>unavailable</span>
           ) : (
             <span className="tnum font-medium shrink-0"><Money fils={rta} /></span>
           )}
-        </button>
-        <button type="button" className={row} onClick={onOpenRecurring} aria-label="Open Recurring">
+        </Pressable>
+        <Pressable className={row} onClick={onOpenRecurring} aria-label="Open Recurring">
           <span className={label}>Next bill</span>
           {bill === null ? (
             <span className={`${meta} shrink-0`}>none due in {upcoming.data?.days ?? 14}d</span>
@@ -72,8 +73,8 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
               <span className={`${meta} !text-fg shrink-0`}>{formatFils(bill.amount_fils)}</span>
             </span>
           )}
-        </button>
-        <button type="button" className={row} onClick={onOpenReports} aria-label="Open Reports">
+        </Pressable>
+        <Pressable className={row} onClick={onOpenReports} aria-label="Open Reports">
           <span className={label}>Net worth</span>
           {worth === null ? (
             <span className={`${meta} shrink-0`}>check in to track</span>
@@ -85,7 +86,7 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
               <span className="tnum font-medium shrink-0"><Money fils={worth.latest} /></span>
             </span>
           )}
-        </button>
+        </Pressable>
       </div>
     </Card>
   );

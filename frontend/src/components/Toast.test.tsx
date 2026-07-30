@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import { MotionProvider } from "../app/MotionProvider";
 import { toastReducer, ToastProvider, useToast } from "./Toast";
+
+const wrap = (ui: React.ReactNode) => render(<MotionProvider>{ui}</MotionProvider>);
 
 describe("toastReducer", () => {
   it("adds and removes by id", () => {
@@ -28,7 +31,7 @@ describe("ToastProvider", () => {
   afterEach(() => vi.useRealTimers());
 
   it("shows a toast and fires its action", () => {
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     expect(screen.getByText("Ignored Spinneys")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /undo/i }));
@@ -45,7 +48,7 @@ describe("toast enter/exit motion", () => {
   });
 
   it("keeps the toast mounted briefly after × is clicked (exit animation)", () => {
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     const toast = screen.getByText("Ignored Spinneys");
     expect(toast).toBeInTheDocument();
@@ -57,7 +60,7 @@ describe("toast enter/exit motion", () => {
   });
 
   it("gives the toast a transform+opacity transition", () => {
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     const el = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
     expect(el.style.transition).toContain("opacity");
@@ -67,7 +70,7 @@ describe("toast enter/exit motion", () => {
     // Real browsers retarget the click to the capture element, which would
     // swallow the action button's onClick — so a press on a button must never
     // begin the swipe-to-dismiss gesture.
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     const capture = vi.fn();
     const toast = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
@@ -80,7 +83,7 @@ describe("toast enter/exit motion", () => {
   });
 
   it("snaps back (does not dismiss) when the pointer is cancelled mid-drag", () => {
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     const toast = screen.getByText("Ignored Spinneys").closest("[style]") as HTMLElement;
     fireEvent.pointerDown(toast, { clientX: 0, pointerId: 1 });
@@ -90,7 +93,7 @@ describe("toast enter/exit motion", () => {
   });
 
   it("pauses the auto-dismiss timer while the tab is hidden", () => {
-    render(<ToastProvider><Trigger /></ToastProvider>);
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     act(() => { vi.advanceTimersByTime(3000); });           // 3s in — still present
     expect(screen.queryByText("Ignored Spinneys")).toBeInTheDocument();
@@ -119,7 +122,7 @@ describe("sticky toast", () => {
   afterEach(() => vi.useRealTimers());
 
   it("does not auto-dismiss after the normal 5s window", () => {
-    render(<ToastProvider><StickyTrigger /></ToastProvider>);
+    wrap(<ToastProvider><StickyTrigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     expect(screen.getByText("A new version is available.")).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(10000); });   // well past 5s
@@ -127,7 +130,7 @@ describe("sticky toast", () => {
   });
 
   it("can still be dismissed manually with ×", () => {
-    render(<ToastProvider><StickyTrigger /></ToastProvider>);
+    wrap(<ToastProvider><StickyTrigger /></ToastProvider>);
     fireEvent.click(screen.getByText("go"));
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     act(() => { vi.advanceTimersByTime(200); });      // exit animation
