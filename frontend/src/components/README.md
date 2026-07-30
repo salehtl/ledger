@@ -63,7 +63,9 @@ living catalog; update the story in the same commit as the component.
   else should reach for that class. In practice, though, four other surfaces
   carry a Tailwind default shadow utility (not the token): `Toast.tsx`
   (`shadow-lg`), `swipe/SwipeDeck.tsx` (`shadow-lg`, the resting-stack card),
-  `swipe/SwipeCard.tsx` (`shadow-lg`, the commit-direction chip), and
+  `swipe/SwipeCard.tsx` (two inline `boxShadow`s — the card's own resting
+  elevation, and the commit chip's action-coloured glow, which is inline
+  because it is tinted per bucket), and
   `dither-kit/tooltip.tsx` (`shadow-sm`, vendored chrome). Everywhere else,
   separation is a `border border-border` hairline, never a shadow. Reconciling
   those four (token vs. ad hoc utility, and whether they should be elevated at
@@ -577,8 +579,16 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   category selection, including Transfer (which offers excluded categories),
   and email-backed cards expose a read-only source-message preview. Credits use
   the semantic positive ink and the category picker surfaces Income first.
-  distance or on flick velocity (`lib/swipe.flickDirection`); skipping is the
-  visible "Skip for now" button or a triple tap.
+  The card is a Framer `drag` element; a release commits on distance or on
+  flick velocity via `lib/swipe.commitDirection`, and skipping is the visible
+  "Skip for now" button or a triple tap. Cards enter and leave through the
+  deck's `AnimatePresence mode="popLayout"`, which overlaps them — the next
+  card is mounted and draggable ~20ms after a commit rather than waiting out
+  the previous card's exit. That needs two things kept true: `SwipeCard` must
+  forward its ref (popLayout cannot take an exiting child out of layout flow
+  without the DOM node, and falls back to `sync` with a warning), and the
+  deck's `index` must advance one render *after* `flyDirection` is set, since
+  AnimatePresence animates a child out as it was last rendered.
 - `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition
   examples.
 - `TrendBars` / `FlowBars` (`charts/`) — monthly spending / money-in-vs-out

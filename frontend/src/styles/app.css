@@ -227,18 +227,6 @@ input, select, textarea { font-size: max(16px, 1rem); }
   mask-size: 2px 2px;
 }
 
-/* ---- Swipe Mode (edge-targeting deck) ---- */
-/* New card rises as the one above it flies off. */
-@keyframes swipe-card-in {
-  from { transform: scale(0.92) translateY(16px); opacity: 0; }
-  to   { transform: scale(1) translateY(0); opacity: 1; }
-}
-.swipe-card-in { animation: swipe-card-in 0.32s var(--ease-drawer) both; }
-
-@media (prefers-reduced-motion: reduce) {
-  .swipe-card-in { animation: none; }
-}
-
 /* dither-kit's chart tooltip fades and glides via inline transitions (it
    replaced framer-motion — see components/dither-kit/tooltip.tsx). Inline
    styles can't carry a media query, so the reduced-motion opt-out lives here;

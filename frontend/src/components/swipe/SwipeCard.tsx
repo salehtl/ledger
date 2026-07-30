@@ -1,102 +1,157 @@
 // frontend/src/components/swipe/SwipeCard.tsx
-import { useEffect, useRef, type CSSProperties } from 'react'
+import { forwardRef, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { m, useMotionValue, useMotionValueEvent, useTransform } from 'motion/react'
 import { Heart, Home, PiggyBank, ArrowLeftRight, type PixelIconType } from '../ui/PixelIcon'
 import { formatFils, aedFils, nativeAmountTag } from '../../lib/money'
 import { accountLabel, reviewReason } from '../../lib/reviewMeta'
+import { FADE, SPRING_SNAP } from '../../lib/motion'
 import type { Txn } from '../../api/types'
 import {
   onActionColor,
   type SwipeConfig,
   type SwipeDirection,
   DEFAULT_SWIPE_CONFIG,
+  commitDirection,
   overlayProgress,
   previewDirection,
   actionColor,
 } from '../../lib/swipe'
-import { useSwipeGesture } from '../../hooks/useSwipeGesture'
 import { Pressable } from '../ui/Pressable'
-import { useReducedMotion } from "motion/react";
-const usePrefersReducedMotion = () => useReducedMotion() ?? false;
 
 export const SWIPE_ICONS: Record<string, PixelIconType> = { Heart, Home, PiggyBank, ArrowLeftRight }
 
-// Pixel values the card animates to on exit
-const EXIT: Record<SwipeDirection, { x: number; y: number; rot: number }> = {
-  left:  { x: -600, y: 0,    rot: -20 },
-  right: { x:  600, y: 0,    rot:  20 },
-  up:    { x: 0,    y: -800, rot:   0 },
-  down:  { x: 0,    y:  800, rot:   0 },
+// Where a committed card leaves toward. `rotate` only on the horizontal
+// exits: an up/down card that also spun would read as a discard, and up/down
+// are Save and Transfer.
+const EXIT: Record<SwipeDirection, { x: number; y: number; rotate: number }> = {
+  left:  { x: -600, y: 0,    rotate: -20 },
+  right: { x:  600, y: 0,    rotate:  20 },
+  up:    { x: 0,    y: -800, rotate:   0 },
+  down:  { x: 0,    y:  800, rotate:   0 },
 }
 
-// Where the confirming badge sits, per direction (position + centering base).
-const BADGE_POS: Record<SwipeDirection, { style: CSSProperties; center: string }> = {
-  left:  { style: { left: 16, top: '50%' },    center: 'translateY(-50%)' },
-  right: { style: { right: 16, top: '50%' },   center: 'translateY(-50%)' },
-  up:    { style: { top: 16, left: '50%' },    center: 'translateX(-50%)' },
-  down:  { style: { bottom: 16, left: '50%' }, center: 'translateX(-50%)' },
+// Where the confirming badge sits, per direction. `center` is the half-size
+// nudge that centres it on its edge — expressed as Framer `x`/`y` percentages,
+// NOT a hand-written `transform`. Once this element became an `m.div` with an
+// animated `scale`, Framer owns its transform string and rebuilds it every
+// frame from its tracked values; a manual `transform` in `style` would be
+// overwritten on the next frame and the badge would jump half its size off the
+// edge. (Same failure mode Task 2 hit on EdgeRail's armed scale.)
+const BADGE_POS: Record<SwipeDirection, { style: CSSProperties; center: { x?: string; y?: string } }> = {
+  left:  { style: { left: 16, top: '50%' },    center: { y: '-50%' } },
+  right: { style: { right: 16, top: '50%' },   center: { y: '-50%' } },
+  up:    { style: { top: 16, left: '50%' },    center: { x: '-50%' } },
+  down:  { style: { bottom: 16, left: '50%' }, center: { x: '-50%' } },
 }
+
+/** Resting elevation. Constant, so it is never recomputed mid-drag. */
+const CARD_SHADOW = '0 18px 40px -16px rgba(20,23,31,0.35)'
+
+/** Taps this close together (ms) count as part of one multi-tap. */
+const TAP_WINDOW_MS = 500
 
 interface SwipeCardProps {
   txn: Txn
   config?: SwipeConfig
-  /**
-   * When set, card plays fly-out animation toward this direction.
-   * Call onExitComplete after animating.
-   */
+  /** When set, the card exits toward this bucket. AnimatePresence plays it. */
   flying?: SwipeDirection | null
-  /** Bump to snap the card back to center (e.g. the category panel was
-   *  cancelled after a commit left the card at its dragged offset). */
-  resetToken?: number
   onDirectionCommit: (dir: SwipeDirection) => void
   onTripleTap: () => void
-  onExitComplete: () => void
   /** Live drag feedback so the deck can light the matching edge. */
   onPreview?: (dir: SwipeDirection | null, progress: number) => void
   onOpenEmail?: () => void
 }
 
-export function SwipeCard({
+/**
+ * The card at the front of the deck: drag it toward a bucket to sort it.
+ *
+ * Forwards its ref because the deck wraps it in `AnimatePresence mode="popLayout"`,
+ * which takes the exiting card out of layout flow and therefore has to reach its
+ * DOM node. Without the ref Framer warns and silently falls back to `sync` mode —
+ * the outgoing card would keep its slot and shove the incoming one down.
+ */
+export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function SwipeCard({
   txn,
   config = DEFAULT_SWIPE_CONFIG,
   flying = null,
-  resetToken = 0,
   onDirectionCommit,
   onTripleTap,
-  onExitComplete,
   onPreview,
   onOpenEmail,
-}: SwipeCardProps) {
-  const { state, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, reset } =
-    useSwipeGesture(onDirectionCommit, onTripleTap)
-  const reduceMotion = usePrefersReducedMotion()
+}, ref) {
+  const x = useMotionValue(0)
+  const y = useMotionValue(0)
 
-  const exitedRef = useRef(false)
+  // The card leans into the drag. 0.04°/px, so a 100px pull is a 4° tilt —
+  // enough to read as physical, not enough to look like a slot machine.
+  //
+  // Deliberately a plain motion value written from the drag handler below, not
+  // a `useTransform(x, …)`. A transform-derived value is re-`set()` from its
+  // input on every input change, so it would fight the exit animation for
+  // ownership of `rotate` and EXIT's rotation would be dead code that still
+  // looked plausible. One writer at a time: the drag owns it while dragging,
+  // the exit owns it while flying.
+  const rotate = useMotionValue(0)
 
-  // Reset gesture state when the card's transaction changes or the deck asks
-  // for a snap-back (panel cancelled with the card still at its drag offset).
+  // Which edge the card is leaning toward. This IS React state, but it only
+  // ever holds one of five values (four directions or null), so it re-renders
+  // on a direction *change* — not on every pointer frame the way the old
+  // useSwipeGesture state did.
+  const [dir, setDir] = useState<SwipeDirection | null>(null)
+
+  // Strength of the lean, 0..1, as a motion value — this one does change every
+  // frame, so it must never touch React. The badge reads it directly.
+  const progress = useMotionValue(0)
+
+  const reportPreview = useCallback(() => {
+    // While the card is flying out its x/y are being animated to the exit
+    // target, and those changes are not a preview: reporting them would leave
+    // the deck's edge wash lit on a card that has already left.
+    if (flying) return
+    const dx = x.get(), dy = y.get()
+    const d = previewDirection(dx, dy)
+    const p = overlayProgress(dx, dy)
+    rotate.set(dx * 0.04)
+    progress.set(p)
+    setDir(prev => (prev === d ? prev : d))   // bail out when unchanged
+    onPreview?.(d, p)
+  }, [x, y, rotate, progress, flying, onPreview])
+
+  useMotionValueEvent(x, 'change', reportPreview)
+  useMotionValueEvent(y, 'change', reportPreview)
+
+  // A commit fixes the badge at the bucket it committed to, at full strength —
+  // including a rail tap, where no drag ever moved the card.
   useEffect(() => {
-    reset()
-    exitedRef.current = false
-  }, [txn.ID, resetToken, reset])
+    if (!flying) return
+    setDir(flying)
+    progress.set(1)
+  }, [flying, progress])
 
-  const { dx, dy, dragging } = state
+  // The badge's own animation, straight off the motion value.
+  const badgeOpacity = useTransform(progress, [0, 0.85], [0, 1], { clamp: true })
+  const badgeScale = useTransform(progress, [0, 1], [0.85, 1], { clamp: true })
 
-  // Which direction hint to show: flying direction first, then live preview
-  const dir = flying ?? previewDirection(dx, dy)
+  // Triple-tap skips the card. Framer's tap gesture fires on release whether
+  // or not a drag happened, so a swipe that ends over the card would otherwise
+  // count as a tap; `dragged` gates that out. (onDragStart fires from
+  // PanSession once movement crosses ~3px, so a genuine tap never sets it.)
+  const dragged = useRef(false)
+  const taps = useRef(0)
+  const tapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(tapTimer.current), [])
+  const handleTap = useCallback(() => {
+    if (dragged.current) { dragged.current = false; return }
+    clearTimeout(tapTimer.current)
+    taps.current += 1
+    tapTimer.current = setTimeout(() => { taps.current = 0 }, TAP_WINDOW_MS)
+    if (taps.current >= 3) {
+      taps.current = 0
+      onTripleTap()
+    }
+  }, [onTripleTap])
+
   const action = dir ? config[dir] : null
-  const progress = action ? overlayProgress(dx, dy) : 0
-
-  // Report live drag direction/strength up to the deck (skip while flying out).
-  useEffect(() => {
-    if (!flying) onPreview?.(dir, progress)
-  }, [dir, progress, flying, onPreview])
-
-  // Position during drag or fly-out
-  const exit = flying ? EXIT[flying] : null
-  const tx = exit ? exit.x : dx
-  const ty = exit ? exit.y : dy
-  const rot = exit ? exit.rot : dx * 0.04
-
   const color = action ? actionColor(action) : null
   const Icon: PixelIconType | null = action ? (SWIPE_ICONS[action.icon] ?? Heart) : null
 
@@ -108,44 +163,50 @@ export function SwipeCard({
 
   const credit = txn.Direction === 'credit'
 
-  // Ring strength tracks the drag; capped so it stays tasteful.
-  const ring = color ? Math.min(progress, 1) : 0
-
   return (
-    <div
-      style={{
-        transform: `translateX(${tx}px) translateY(${ty}px) rotate(${rot}deg)`,
-        // Fly-out keeps moving from the release velocity — ease-out, not
-        // ease-in, so the card never hesitates at the moment of commitment.
-        transition: flying
-          ? 'transform 0.3s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.3s cubic-bezier(0.23, 1, 0.32, 1)'
-          : dragging
-          ? 'none'
-          : reduceMotion
-          ? 'transform 0.15s ease-out'
-          : 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
-        opacity: flying ? 0 : 1,
-        boxShadow: ring > 0
-          ? `0 0 0 ${2 + ring * 2}px ${color}, 0 18px 40px -12px ${color}99`
-          : '0 18px 40px -16px rgba(20,23,31,0.35)',
-        touchAction: 'none',
-        userSelect: 'none',
-        willChange: 'transform',
+    <m.div
+      ref={ref}
+      // zIndex keeps the live card above the deck's ghost card, which is
+      // absolutely positioned behind it at z-index 0.
+      style={{ x, y, rotate, boxShadow: CARD_SHADOW, zIndex: 1 }}
+      drag
+      dragSnapToOrigin
+      // No `dragElastic`: it only ever applies beyond a `dragConstraints`
+      // boundary (resolveConstraints() leaves constraints === false when none
+      // are set, and the elasticity branch never runs), and this card has no
+      // boundary — all four directions are live buckets it should track 1:1
+      // all the way to the commit threshold. Adding constraints purely to make
+      // an elasticity claim true would add resistance the deck never wanted.
+      dragMomentum={false}
+      // dragSnapToOrigin routes the release through the same inertia animation
+      // with `{min: 0, max: 0}`, so these bounce values ARE the snap-back
+      // spring — without them Framer defaults to a 1e6-stiffness overdamped
+      // teleport, since we set no dragElastic.
+      dragTransition={{ bounceStiffness: SPRING_SNAP.stiffness, bounceDamping: SPRING_SNAP.damping }}
+      onDragStart={() => { dragged.current = true }}
+      onDragEnd={(_, info) => {
+        const d = commitDirection(info.offset.x, info.offset.y, info.velocity.x, info.velocity.y)
+        if (d) onDirectionCommit(d)
       }}
+      onTap={handleTap}
+      // The deck overlaps cards, so entry and exit are AnimatePresence's job.
+      // Under the app's global reducedMotion policy Framer hands every
+      // positional key (x, y, rotate, scale) a `{type: false}` transition —
+      // set instantly, never animated — and animates only the opacity, so the
+      // card is never seen travelling. That is the whole reason the old
+      // hand-rolled `flying ? … : reduceMotion ? …` ternary is gone: `flying`
+      // short-circuited before reduceMotion was consulted, so the biggest
+      // movement in the app ignored the preference entirely. Verified in
+      // harness/gestures.mjs, which samples the leaving card every frame and
+      // asserts it is never caught mid-flight under the preference.
+      initial={{ opacity: 0, scale: 0.92, y: 16 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={flying ? { ...EXIT[flying], opacity: 0 } : { opacity: 0 }}
+      transition={FADE}
       data-testid="swipe-card"
       // Downward card drags are a commit gesture — PTR must never claim them.
       data-ptr-exempt=""
       className="relative w-full bg-surface border border-border rounded-[var(--radius)] cursor-grab active:cursor-grabbing overflow-hidden"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      onTransitionEnd={flying ? (e) => {
-        if (e.propertyName === 'opacity' && e.target === e.currentTarget && !exitedRef.current) {
-          exitedRef.current = true
-          onExitComplete()
-        }
-      } : undefined}
     >
       {/* Card body */}
       <div className="px-7 pt-9 pb-8 flex flex-col items-center gap-5">
@@ -208,23 +269,29 @@ export function SwipeCard({
         </div>
       </div>
 
-      {/* Confirming badge — appears at the committed/leaning edge */}
-      {action && color && dir && (dragging || flying) && (
-        <div
-          className="absolute flex items-center gap-2 px-4 py-2 rounded-[var(--radius)] font-semibold shadow-lg pointer-events-none"
+      {/* Confirming badge — appears at the committed/leaning edge. It carries
+          the action-coloured glow that used to be a ring on the card itself,
+          where it was a boxShadow string rebuilt from the drag offset on every
+          pointer frame — on the one element in the app being transformed at
+          60fps. */}
+      {action && color && dir && (
+        <m.div
+          className="absolute flex items-center gap-2 px-4 py-2 rounded-[var(--radius)] font-semibold pointer-events-none"
           style={{
             ...BADGE_POS[dir].style,
+            ...BADGE_POS[dir].center,
+            opacity: badgeOpacity,
+            scale: badgeScale,
             backgroundColor: color,
             // text-bg was paper-on-near-black in dark: ~1:1. Pick per fill.
             color: onActionColor(color),
-            opacity: flying ? 1 : Math.min(progress * 1.2, 1),
-            transform: `${BADGE_POS[dir].center} scale(${0.85 + ring * 0.15})`,
+            boxShadow: `0 10px 30px -8px ${color}`,
           }}
         >
           {Icon && <Icon size={18} className="shrink-0" />}
           <span className="text-sm tracking-wide">{action.label}</span>
-        </div>
+        </m.div>
       )}
-    </div>
+    </m.div>
   )
-}
+})

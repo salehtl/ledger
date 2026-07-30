@@ -27,6 +27,11 @@ export interface SwipeConfig {
 
 export const SWIPE_THRESHOLD = 80
 
+/** Travel past which a release commits, on either axis. */
+export const COMMIT_PX = 100
+/** px/s past which a release commits regardless of distance. */
+export const COMMIT_VELOCITY = 520
+
 export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
   left:  { bucket: 'want',   label: 'Want',     colorClass: 'bg-purple-500', textClass: 'text-purple-700', icon: 'Heart' },
   right: { bucket: 'need',   label: 'Need',     colorClass: 'bg-blue-500',   textClass: 'text-blue-700',   icon: 'Home' },
@@ -127,11 +132,17 @@ export function detectDirection(dx: number, dy: number, threshold = SWIPE_THRESH
 
 /**
  * 0–1 progress for overlay opacity based on drag magnitude.
- * Reaches 1 at SWIPE_THRESHOLD.
+ *
+ * Reaches 1 at COMMIT_PX — the distance at which a release actually commits —
+ * so a fully-lit badge and edge wash mean "let go now", not "20px more". It
+ * used to saturate at SWIPE_THRESHOLD, which was the commit distance too until
+ * commitDirection replaced the old detect/flick pair; leaving it there would
+ * have made the strongest possible feedback appear on a drag that still
+ * springs back.
  */
 export function overlayProgress(dx: number, dy: number): number {
   const dist = Math.max(Math.abs(dx), Math.abs(dy))
-  return Math.min(1, dist / SWIPE_THRESHOLD)
+  return Math.min(1, dist / COMMIT_PX)
 }
 
 /**
@@ -141,22 +152,34 @@ export function previewDirection(dx: number, dy: number): SwipeDirection | null 
   return detectDirection(dx, dy, 20)
 }
 
-/** Velocity (px/ms) above which a release counts as a flick. */
-export const FLICK_VELOCITY = 0.11
-/** A flick still needs enough travel to read as intentional. */
-export const FLICK_MIN_DISTANCE = 24
-
 /**
- * Momentum commit: a quick throw should sort the card even when it never
- * reached SWIPE_THRESHOLD. Returns the dominant direction when the release
- * velocity exceeds FLICK_VELOCITY over at least FLICK_MIN_DISTANCE, else null.
- * elapsedMs <= 0 (same-frame release) counts as maximally fast.
+ * Which bucket, if any, a released card swipe commits to.
+ *
+ * The dominant axis wins — a diagonal drag that clears both thresholds goes
+ * wherever the hand travelled further, which is what the eye expects. Was
+ * previously spread across useSwipeGesture's pointer handlers with a
+ * time-based speed estimate; Framer reports real px/s.
+ *
+ * The velocity clause requires the sign to match the offset so a card flung
+ * back toward centre (fast, but heading home) never commits to the edge it is
+ * leaving.
  */
-export function flickDirection(dx: number, dy: number, elapsedMs: number): SwipeDirection | null {
-  const dist = Math.max(Math.abs(dx), Math.abs(dy))
-  if (dist < FLICK_MIN_DISTANCE) return null
-  if (elapsedMs > 0 && dist / elapsedMs <= FLICK_VELOCITY) return null
-  return detectDirection(dx, dy, FLICK_MIN_DISTANCE)
+export function commitDirection(
+  offsetX: number,
+  offsetY: number,
+  velocityX: number,
+  velocityY: number,
+): SwipeDirection | null {
+  const horizontal =
+    Math.abs(offsetX) >= COMMIT_PX ||
+    (Math.sign(velocityX) === Math.sign(offsetX) && Math.abs(velocityX) >= COMMIT_VELOCITY)
+  const vertical =
+    Math.abs(offsetY) >= COMMIT_PX ||
+    (Math.sign(velocityY) === Math.sign(offsetY) && Math.abs(velocityY) >= COMMIT_VELOCITY)
+  if (!horizontal && !vertical) return null
+  const preferHorizontal = horizontal && (!vertical || Math.abs(offsetX) >= Math.abs(offsetY))
+  if (preferHorizontal) return offsetX > 0 ? 'right' : 'left'
+  return offsetY > 0 ? 'down' : 'up'
 }
 
 export function loadSwipeConfig(): SwipeConfig {
