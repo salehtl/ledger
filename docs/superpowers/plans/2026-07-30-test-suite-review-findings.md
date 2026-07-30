@@ -374,5 +374,91 @@ No strengthening applied — flagging any of these as gaps and rewriting them wo
 **Verification:** `go test ./...` → all packages ok (no regressions). `cd frontend && bun run test` → 163 files / 1292 tests passed (same counts as the Task 1 baseline — no tests added or removed at the suite level; `LinkRefundSheet`'s existing test was strengthened in place, `categorize_test.go` gained one new test). `git diff --stat` shows only `internal/categorize/categorize_test.go` and `frontend/src/components/transactions/LinkRefundSheet.test.tsx` changed — zero production source files touched; every mutation was reverted via `git checkout --` immediately after recording its result.
 
 ## Task 7 — Coverage map
+
+**No tests were written in this task.** Numbers are for finding gaps, not for chasing them; a coverage dev-dependency was added (see Step 4) so this map can be re-run in future reviews.
+
+### Step 1 — Go coverage (`go test ./... -coverprofile -covermode=atomic`)
+
+```
+ok   ledger/internal/anthropic   72.7%
+ok   ledger/internal/budget      95.4%
+ok   ledger/internal/categorize  87.2%
+ok   ledger/internal/config      78.4%
+ok   ledger/internal/importer    68.0%
+ok   ledger/internal/ingest      47.8%
+ok   ledger/internal/monitor     78.3%
+ok   ledger/internal/parse       88.2%
+ok   ledger/internal/push        40.0%
+ok   ledger/internal/recur       89.6%
+ok   ledger/internal/server      73.5%
+ok   ledger/internal/store       82.3%
+--   ledger/cmd/ledger            0%  (no *_test.go files at all — "no such tool covdata" from `go tool cover` is the benign symptom of a package with zero tests, not a build error)
+--   ledger/internal/web          0%  (no *_test.go files — expected, it's a //go:embed wrapper)
+```
+
+Combined statement total across tested packages: **78.4%** (`go tool cover -func` grand total).
+
+**Methodology correction, recorded because it changed a finding:** the brief's Step-1 command has no `-coverpkg=./...`, so by Go's default each package's coverage profile only counts execution *within that package's own test binary* — a `store` function exercised only by an `internal/server` test (calling through the real store, not a fake) still reports 0% in `store`'s own line. Cross-checking the whole 0%-symbol table below against a second run with `-coverpkg=./...` (which merges cross-package attribution) caught one false positive worth flagging: `store.BulkUnassignProject` reports 0% per-package but **100%** under `-coverpkg=./...` — `TestBulkAssignProject` (`internal/server/projects_test.go`, despite its name) exercises both the assign *and* the bulk-unassign endpoint end-to-end against a real store. `store.ProjectRollups` similarly jumps from 0% to 85% (via `TestGetProjectsListWithRollups`). Every other symbol below was re-verified under `-coverpkg=./...` and stayed genuinely at 0% — those are real gaps, not attribution artifacts.
+
+0%-covered exported symbols in the risk-bearing packages (`parse`, `store`, `server`, `importer`, `budget`), confirmed 0% under both plain and `-coverpkg=./...` runs:
+
+| Package | Symbol | Note |
+|---|---|---|
+| `importer` | `ReadXLSX` (reader.go:54) | XLSX ingestion path for historical `ledger import`; only the CSV path is exercised by tests |
+| `parse` | `DIBParser.Bank`, `ENBDParser.Bank`, `ENBDAlertParser.Bank` | trivial one-line getters (`return "dib"` etc.) — noise, not a real gap |
+| `parse` | `Processor.SetOnInsert` | wiring setter for the post-insert hook; the hook's *effect* is tested elsewhere, the setter itself isn't called from a test |
+| `server` | `handleVapidPublicKey` | trivial — reads one field off `pushSender` and echoes JSON |
+| `server` | `SetDriftMonitor`, `SetPushSender` | wiring setters, same shape as `SetOnInsert` |
+| `server` | `handleTransactionEmail` | serves the raw source email behind a transaction (the CLAUDE.md "nothing silently dropped" recoverability path) — read-only, but completely unexercised |
+| `store` | `RecentAIUsage` | real SQL query is untested; `internal/server/ai_usage_test.go` only exercises the handler against a **fake** implementing the interface, so the actual query (ordering, `LIMIT`) never runs against SQLite |
+| `store` | `SelectEarliestPeriod` | feeds the budget "first period available" UI affordance; no test, handler or store level |
+| `store` | `Vacuum` | only caller is `ledger compact` in `cmd/ledger` (also untested) |
+
+Not a gap (false positives caught and excluded, see methodology note above): `store.BulkUnassignProject` (100% under cross-package attribution — `TestBulkAssignProject` drives the real success path despite its name), `store.ProjectRollups` (85% — `TestGetProjectsListWithRollups`).
+
+### Step 2 — Frontend coverage (`bunx vitest run --coverage`, v8 provider)
+
+Added `@vitest/coverage-v8@2.1.9` as a dev dependency (exact match to installed `vitest@2.1.9`, confirmed via `node_modules/vitest/package.json` before adding). Full run: **163 files / 1292 tests passed**, 65s.
+
+```
+Statements   : 78.25% ( 12726/16263 )
+Branches     : 86.11% ( 3765/4372 )
+Functions    : 78.09% ( 945/1210 )
+Lines        : 78.25% ( 12726/16263 )
+```
+
+The all-files figure is dragged down by `harness/*.mjs` and `scripts/*.mjs` (0% — they're Playwright/Node driver scripts, not unit-tested code, and out of scope) and `src/main.tsx` (0%, pure bootstrap). Per-directory, excluding those:
+
+| Directory | Stmts | Branch | Funcs | Notes |
+|---|---|---|---|---|
+| `src/lib` | 96.53% | 95.60% | 98.89% | matches the CLAUDE.md convention of pulling logic into pure, unit-tested `lib/` functions. Weak spot: `sound.ts` 17.64% (haptic/audio feedback — no money-correctness impact). |
+| `src/api` | 92.34% | 92.80% | 85.34% | `types.ts` 0% (type-only, expected). `client.ts` 73.72% — uncovered lines are exactly the "one-shot" undo helpers `moveMoneyOnce`/`assignEnvelopesOnce`/`putTargetOnce` (lines 120-130) and the `renameMerchant` "blocked" error branch (144-145). The file's own comment flags these as designed to "outlive their sheet" (toast-closure undo) — the money-moving call itself is never asserted at the unit level. |
+| `src/components` | 97.63% | 85.45% | 95.83% | high; `components/dither-kit` (vendored chart library) drags branch/func numbers down in isolation (54.69%/73.43%) — several files at flat 0% (`block-legend.tsx`, `dot.tsx`, `grid.tsx`, `legend.tsx`, `polar-root.tsx`, `polar-context.tsx`, `x-axis.tsx`, `y-axis.tsx`) but these are unused-in-this-app chart primitives (only `core`+`bar-chart` are wired per `components/dither-kit/README.md`), not first-party risk. |
+| `src/screens` | 89.37% | 78.30% | 66.07% | `RulesManager.tsx` lowest at 73.97%/45.45% funcs; `Transactions.tsx` 75.89%/44.44% funcs (largest, most-changed screen — see risk list). |
+| `src/hooks` | 80.96% | 78.26% | 74.19% | `useTxnActions.ts` **44.64%/37.5% funcs, no dedicated test file at all** — see risk list. `useVisualViewport.ts` 51.85%, `useSheetDrag.ts` 76.36%, `useSwipeGesture.ts` 77.96% — all gesture/keyboard-geometry hooks that CLAUDE.md explicitly says are harness-covered, not vitest-covered. |
+
+Harness coverage cross-reference: **Task 8 has not run yet** (no `task-8-report.md` in this review directory) — harness coverage for the gesture hooks and sheets above is marked **TBD**, not confirmed, until Task 8 lands. Treat the "relies on the harness" note in the risk list below as an assumption to verify then, not a settled fact.
+
+**Known parallel-worktree trap:** `@vitest/coverage-v8@2.1.9` was installed only inside this worktree's `frontend/node_modules` (`bun add -d`). It will not exist in the main checkout or any other worktree until this branch merges to `main` and the main checkout re-runs `bun install` — re-running this coverage command elsewhere before then will fail with a missing-package error, not stale numbers. Flag this in the eventual PR description.
+
+### Step 3 — Top-10 uncovered-risk list (ranked by money-correctness impact × change frequency, not raw %)
+
+1. **`frontend/src/hooks/useTxnActions.ts`** (44.64% stmts, 37.5% funcs, no dedicated test file) — the shared mutation hook behind categorize/archive/restore/status-change/unlink-refund from Transactions *and* Insights drill-down, including every toast "Undo" closure. Only indirectly exercised through the screens that consume it; the undo-path re-POST and its own error branches have no direct assertion. Highest change-frequency + highest money/state-correctness blast radius of anything found.
+2. **`frontend/src/api/client.ts` one-shot undo helpers** (`moveMoneyOnce`, `assignEnvelopesOnce`, `putTargetOnce`, lines 120-130, 0% covered) — money-moving envelope/target writes deliberately kept outside React Query mutation hooks so they survive component unmount inside a toast's "Undo" closure; the file's own comment calls this out as the reason they're separate. No unit test calls them.
+3. **`internal/importer.ParseAmount`/`LoadMap`** (80.0%/70.6%) — the float-string→fils conversion for historical CSV/XLSX backfills (`mapping.go:109`, round-half-up `toFils`), covering only the `"sign"` `DirectionMode` branch well; the `"columns"` (separate debit/credit column) branch and various malformed-amount edges are thinner. This is hand-rolled money-precision code (`f*100 + 0.5`) on a path that runs once per historical import — exactly the kind of rarely-run, easy-to-regress arithmetic CLAUDE.md's "money is integer minor units" rule is meant to guard, and the columns-mode branch is the less-tested of the two.
+4. **`internal/store.RecentAIUsage`** (0% — real SQL never runs in tests) — the handler is tested only against a hand-written fake (`internal/server/ai_usage_test.go`), so a real SQL regression (bad `ORDER BY`, off-by-one `LIMIT`) would pass CI silently.
+5. **`cmd/ledger` package — 0 test files, entire `os.Args[1]` dispatch untested** — `import`/`compact`/`vapid-keys` routing, flag parsing, and `--dry-run` handling for the CSV/XLSX backfill path all run only at the `internal/importer`/`internal/store` unit level; nothing verifies the CLI wiring itself picks the right subcommand or forwards flags correctly. Changed whenever a new CLI verb is added.
+6. **`internal/importer.ReadXLSX`** (0%, plus `ReadFile`'s extension dispatch at 25%) — only the CSV import path has test coverage; XLSX backfills (`docs/map.example.toml` supports both) go through an entirely unexercised code path, from the extension-sniffing dispatcher down to the parser itself.
+7. **`frontend/src/screens/Transactions.tsx`** (75.89% stmts, 44.44% funcs) — the largest, highest-change-frequency screen (filters, bulk actions, swipe-to-categorize entry point) sits well below the `src/screens` average.
+8. **`internal/server.handleTransactionEmail`** (0%) — read-only, but it's the surface for CLAUDE.md's "nothing is ever silently dropped" guarantee (viewing the raw source email behind a parsed transaction); a regression here would quietly break the one recovery path a user has when a transaction looks wrong.
+9. **`internal/store.SelectEarliestPeriod`** (0%) — feeds the budget UI's earliest-available-period boundary; wrong data here silently mis-bounds date pickers/backfill ranges rather than erroring.
+10. **`internal/push.Send`** (0%) — the actual Web Push network call (VAPID-signed POST to the push service). Understandably hard to unit test (external network, browser-side crypto), but it's the only step in the push pipeline with zero coverage — `store.InsertPushSub`/`SelectPushSubs`/`DeletePushSub` and the HTTP subscribe/unsubscribe handlers are all tested around it.
+
+Deliberately excluded from the list as noise or false positives: `DIBParser.Bank`/`ENBDParser.Bank`/`ENBDAlertParser.Bank` (trivial one-line getters), `SetOnInsert`/`SetDriftMonitor`/`SetPushSender` (wiring setters with no logic of their own), `handleVapidPublicKey` (single field echo), vendored `dither-kit` chart primitives not wired into the app, `sound.ts`/harness/`scripts/*.mjs` (no money-correctness surface), and `store.BulkUnassignProject`/`ProjectRollups` (see methodology note in Step 1 — real coverage exists via `internal/server` tests, the per-package profile just doesn't attribute it).
+
+### Step 4 — Commit
+
+`frontend/package.json` (+ `@vitest/coverage-v8@2.1.9` dev dep), `frontend/bun.lock`, and this findings section committed together.
+
 ## Task 8 — Harness & Storybook seams
 ## Task 9 — Synthesis
