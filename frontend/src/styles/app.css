@@ -225,14 +225,6 @@ input, select, textarea { font-size: max(16px, 1rem); }
   mask-size: 2px 2px;
 }
 
-/* dither-kit's chart tooltip fades and glides via inline transitions (it
-   replaced framer-motion — see components/dither-kit/tooltip.tsx). Inline
-   styles can't carry a media query, so the reduced-motion opt-out lives here;
-   the card still appears and disappears, it just snaps. */
-@media (prefers-reduced-motion: reduce) {
-  .dither-tooltip { transition: none !important; }
-}
-
 /* ---- Dark theme (automatic, follows the OS) ----
    Overrides the same CSS vars the light @theme set; utilities pick these up
    with no markup changes. */
