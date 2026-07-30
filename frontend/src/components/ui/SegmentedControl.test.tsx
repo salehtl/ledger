@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { MotionProvider } from "../../app/MotionProvider";
 import { SegmentedControl } from "./SegmentedControl";
+
+const wrap = (ui: React.ReactNode) => render(<MotionProvider>{ui}</MotionProvider>);
 
 describe("SegmentedControl", () => {
   it("marks the active option and fires onChange", () => {
     const onChange = vi.fn();
-    render(
+    wrap(
       <SegmentedControl
         value="all"
         onChange={onChange}

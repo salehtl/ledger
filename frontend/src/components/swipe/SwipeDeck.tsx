@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, type CSSProperties } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type PixelIconType } from '../ui/PixelIcon'
 import { Pressable } from '../ui/Pressable'
+import { DUR, EASE_OUT } from '../../lib/motion'
 import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
 import { useToast } from '../Toast'
@@ -77,13 +78,26 @@ function EdgeRail({
         disabled={disabled}
         onClick={() => onCommit(dir)}
         aria-label={`${action.label} — sort this transaction`}
-        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
+        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
+        // Scale goes through Framer's own `animate`, not a hand-written
+        // style.transform: once `whileTap` engages `scale` as a tracked
+        // motion value on this element, Framer's render pass computes
+        // style.transform purely from its tracked values and overwrites any
+        // manually-set transform on the next frame. `animate` puts the
+        // "armed" scale under the same ownership so it survives. The
+        // transition is nested inside the animate target (not passed as a
+        // sibling `transition` prop) so it scopes to this scale only —
+        // Pressable's own top-level `transition={PRESS_TRANSITION}` prop
+        // would otherwise be shadowed by a sibling prop here, retuning the
+        // 140ms whileTap feel to this 200ms armed-scale duration too.
+        // Background, color and box-shadow stay ordinary CSS-transitioned
+        // style props — Task 6 moves those onto `animate` too, not here.
+        animate={{ scale: active ? 1.08 : 1, transition: { duration: DUR.base, ease: EASE_OUT } }}
         style={{
           backgroundColor: active ? color : `${color}1f`,
           // Ink or paper, whichever reads on this fill — white was fine on the
           // darker seeds and ~3:1 on the lighter ones.
           color: active ? onActionColor(color) : color,
-          transform: `scale(${active ? 1.08 : 1})`,
           boxShadow: active ? `0 10px 24px -8px ${color}` : 'none',
         }}
       >
