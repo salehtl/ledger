@@ -1,29 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { sheetOffset, shouldDismiss, SHEET_DISMISS_DISTANCE } from "./sheetDrag";
+import { shouldDismissSheet, SHEET_DISMISS_PX, SHEET_FLICK_VELOCITY } from "./sheetDrag";
 
-describe("sheetOffset", () => {
-  it("moves 1:1 when dragged down", () => {
-    expect(sheetOffset(50)).toBe(50);
-    expect(sheetOffset(0)).toBe(0);
+describe("shouldDismissSheet", () => {
+  it("dismisses once dragged past the distance threshold", () => {
+    expect(shouldDismissSheet(SHEET_DISMISS_PX + 1, 0)).toBe(true);
   });
-  it("applies damped resistance when dragged up past rest", () => {
-    const up = sheetOffset(-100);
-    expect(up).toBeLessThan(0);          // still moves up a little
-    expect(up).toBeGreaterThan(-100);    // but far less than the raw drag
+  it("snaps back below the threshold with no speed", () => {
+    expect(shouldDismissSheet(SHEET_DISMISS_PX - 1, 0)).toBe(false);
   });
-});
-
-describe("shouldDismiss", () => {
-  it("dismisses on a long slow drag down", () => {
-    expect(shouldDismiss(SHEET_DISMISS_DISTANCE + 1, 1000)).toBe(true);
-  });
-  it("dismisses on a quick flick even if short", () => {
-    expect(shouldDismiss(40, 100)).toBe(true);   // 0.4 px/ms > 0.11
-  });
-  it("snaps back on a short slow drag", () => {
-    expect(shouldDismiss(40, 1000)).toBe(false); // 0.04 px/ms, under both bars
+  it("dismisses a short downward flick on velocity alone", () => {
+    expect(shouldDismissSheet(24, SHEET_FLICK_VELOCITY + 1)).toBe(true);
   });
   it("never dismisses on an upward drag", () => {
-    expect(shouldDismiss(-200, 100)).toBe(false);
+    expect(shouldDismissSheet(-200, 0)).toBe(false);
+    expect(shouldDismissSheet(-10, SHEET_FLICK_VELOCITY + 1)).toBe(false);
+  });
+  it("ignores an upward flick that reverses a downward drag", () => {
+    expect(shouldDismissSheet(30, -(SHEET_FLICK_VELOCITY + 1))).toBe(false);
   });
 });
