@@ -19,6 +19,7 @@ import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope
 import { formatFils, flowAmount, aedFils, nativeAmountTag } from "../lib/money";
 import { AlertTriangle, Check, TrendingUp } from "../components/ui/PixelIcon";
 import { useFirstReveal } from "../hooks/useFirstReveal";
+import { PocketStrip } from "./home/PocketStrip";
 
 const BUCKET_LABEL: Record<string, string> = { need: "Needs", want: "Wants", saving: "Savings" };
 const VERDICT: Record<string, string> = { under: "On track", over: "Over pace", overbudget: "Over budget" };
@@ -54,12 +55,19 @@ export function Home({
   scope = DEFAULT_SCOPE,
   onOpenProject,
   onOpenProjects,
+  onOpenPlan,
+  onOpenRecurring,
+  onOpenReports,
 }: {
   scope?: Scope;
   /** Opens a specific project's detail as the AppShell-level Projects overlay. */
   onOpenProject?: (id: number) => void;
   /** Opens the full Projects list as the AppShell-level overlay. */
   onOpenProjects?: () => void;
+  /** Pocket-strip destinations: the Plan tab and the Recurring/Reports drill-ins. */
+  onOpenPlan?: () => void;
+  onOpenRecurring?: () => void;
+  onOpenReports?: () => void;
 }) {
   // The 6-month trend is always the trailing 6 real months (it matches the
   // static /api/insights/trend), independent of the selected scope. Memoized
@@ -171,6 +179,17 @@ export function Home({
           </p>
         )}
       </Card>
+
+      {/* pocket strip: RTA / next bill / net worth — anchored to today, so
+          current month only (a past month would contradict its own context) */}
+      {isCurrent && scope.kind === "month" && (
+        <PocketStrip
+          month={scope.period}
+          onOpenPlan={onOpenPlan}
+          onOpenRecurring={onOpenRecurring}
+          onOpenReports={onOpenReports}
+        />
+      )}
 
       {/* active projects glance — absent entirely when there are none */}
       {projects.data && projects.data.length > 0 && (
