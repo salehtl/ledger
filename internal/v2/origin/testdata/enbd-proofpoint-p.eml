@@ -1,0 +1,262 @@
+Return-path: <OnlineBanking@emiratesnbd.com>
+Original-recipient: rfc822;salehtl@icloud.com
+Received: from p00-icloudmta-smtpin-us-west-1a-100-percent-24 by p34-mailgateway-smtp-7cf685ff8d-zf778 (mailgateway 2622B97)
+	with SMTP id a44b9858-a61e-474a-ae0a-b11997f67554 
+	for <salehtl@icloud.com>; Fri, 5 Jun 2026 12:26:00 GMT
+X-ICLOUD-MAIL-BWL: 1
+X-Apple-MoveToFolder: INBOX 
+X-Apple-Action: WL/INBOX
+X-Apple-UUID: a44b9858-a61e-474a-ae0a-b11997f67554
+Received: from smtp-out-uae-p02.emiratesnbd.com (smtp-out-uae-p02.emiratesnbd.com [185.76.205.33])
+	by p00-icloudmta-smtpin-us-west-1a-100-percent-24 (Postfix) with ESMTPS id 29241C00091
+	for <salehtl@icloud.com>; Fri, 05 Jun 2026 12:25:57 +0000 (UTC)
+X-ICL-Info: GAtbRVYDBVFFSlVFSgQEUVUKE0oWX1gHVQoPB0UBDldbTlBZSgADTEZKRhIcDXkMGRAIEjpRWAkcFwE3HV1fEBQNAwQWUlJMFhYLVx5UCwcYEBQWDFVFDBcdSBQXXRYQFkQ1NjR1fjY5OQ8UFF9DBlsaCRpYWFMOGkQVGgxAGw0ADUsCGVUbEkVLSBIVWUQDARwVGRpUGAEaFEYHDEILERgNFloXRUJPABgDWggABEwQFA8FGURTERsbAlkbX1tCER1bEhVZRAMBHBUZGlQYARoURhoRVAteEU0CFkpWB1JYHVATTx1UVEZKS09NCAVPF0BTEhpTUFEUHQMVOFVbCwcYEhILXlQGWxoJGkY=
+X-ICL-Score: 2.33303322423
+Authentication-Results: bimi.icloud.com; bimi=none
+X-ARC-Info: policy=fail; arc=none; r1=-20; r2=0
+Authentication-Results: arc.icloud.com; arc=none
+Authentication-Results: dmarc.icloud.com; dmarc=pass header.from=emiratesnbd.com
+X-DMARC-Policy: v=DMARC1;p=reject;sp=quarantine;rua=mailto:emiratesnbd@emailauth.in;ruf=mailto:ruf@emiratesnbd.com;ri=3600;
+X-DMARC-Info: pass=pass; dmarc-policy=reject; s=r1; d=r1; pdomain=emiratesnbd.com
+Authentication-Results: dkim-verifier.icloud.com; dkim=pass header.d=emiratesnbd.com header.i=@emiratesnbd.com header.b=HrV3fyax
+Received-SPF: pass (spf.icloud.com: domain of OnlineBanking@emiratesnbd.com designates 185.76.205.33 as permitted sender) receiver=spf.icloud.com; client-ip=185.76.205.33; helo=smtp-out-uae-p02.emiratesnbd.com; envelope-from=OnlineBanking@emiratesnbd.com
+Authentication-Results: spf.icloud.com; spf=pass (spf.icloud.com: domain of OnlineBanking@emiratesnbd.com designates 185.76.205.33 as permitted sender) smtp.mailfrom=OnlineBanking@emiratesnbd.com
+Received: from pps.filterd (lvenrlyppt006p.uae.emiratesbank.com [127.0.0.1])
+	by lvenrlyppt006p.uae.emiratesbank.com (8.18.1.2/8.18.1.2) with ESMTP id 655C6vRl099885
+	for <SALEHTL@icloud.com>; Fri, 5 Jun 2026 16:25:54 +0400
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=emiratesnbd.com;
+	 h=content-transfer-encoding:content-type:date:from:message-id
+	:mime-version:subject:to; s=proofpoint-p; bh=HPQS/xHtokqk4T+5uu+
+	KOGAd/3KQUpfp0eOLkQnMuis=; b=HrV3fyaxBCTEO4diR7xaXrFtq574yus/uYe
+	dTZ9p016GdzUhRcaBNZz20txWCvjsGfH0xsxDX37POMZRRtOiOZXDX1d7MmNuMSD
+	ti/brSgkCW+mgHVIVSsSUk0tDM5GXCBvFtYRJbl4QKftBx88xRJ2lLqGgdPNfSSU
+	fZzqn9nF2mEyqCJYwDlG0VSXhevjcuW5dz7l7EeFlEkQBK+UgNVbABXIix99TGxu
+	+BMuHTLSV7BG80oEYBuobt21g32774gAw9vbS+6ptH6kJTaejVfXu/ar3a54o2uq
+	ywZW0Ntade5yiCog6aS9ov23pmIRpHgC5e6m3yOOPUJ5XKxed0Q==
+From: OnlineBanking@emiratesnbd.com
+To: SALEHTL@icloud.com
+Subject: Local Bank Transfer
+Message-ID: <d4da2f10-d6d7-b633-8583-b95ebcf3adeb@emiratesnbd.com>
+Content-Transfer-Encoding: quoted-printable
+Date: Fri, 05 Jun 2026 12:25:54 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+X-MANTSH: 1TFkXEhsRCllEF28aQlodb2VFBWRlEQpZTRdkRURPEQpZSRcacRoQGncGHBtxGBI
+ dEB0adwYYGgYaEQpZXhdsbHkRCkNOF14eSXBYW2leQkJbS18HYElHaUFvRXUbRh5PUEFuGVloE
+ QpYXBcZBBoEHxIFGxoEGxwfBBgYBBgfGhAbHhofGhEKXlkXQn1tflMRCk1cFxkeGREKTFoXaWh
+ hQUFNEQpMRhdNaxEKQ1oXGxIfBB0cBBgaHwQZGREKQl4XGxEKQlwXGxEKXk4XGxEKQksXZllYe
+ 0FPUEtkfm4RCkJJF2ZZWHtBT1BLZH5uEQpCRRdjHEVjAQFbXn1ITBEKQk4XZllYe0FPUEtkfm4
+ RCkJMF2dCS2saRlhDElNyEQpCbBdjHEVjAQFbXn1ITBEKQkAXb35QaAVFGXpCGVgRCkJYF3ppf
+ 1BnEx1AZUNeEQpaWBcdEQpwaBd6WmJCR0Iaa0lkexAaEQpwaBdjT1JAS0NeX2BgaBAaEQpwaBd
+ 6fgVgY31fTn5kSxAaEQpwaBdgY3NMHnNTEmVpZRAaEQpwaBdtc05MR0BvSXlkGRAaEQpwaBdvH
+ 25kZERhXmxFYhAaEQpwaBdkQWFSQEhSTwETUxAaEQpwaBdkE3h8GUZjR0dQRhAaEQpwfxdobng
+ TRh9fWUtoeRAbGxsRCnBfF24SZ0tNb21raVlzEBsSEQpwfRdoX1xJbGcebkJwcxAHGRoRCnB9F
+ 21dX3JvQ0d6XVNLEBoRCnBfF2Ieb0ZhS0Nnb2QYEBoRCnB9F24cTkZ+EgEdHWJ9EBoRCnB9F2B
+ BZVljW1pwUkBLEBoRCnBfF28BGBxhBWNdeU8ZEB4SEQpwfRdpckwaU39BHVJlWRAeEhEKcH0XZ
+ xxzHU8aaHJbSFAQGhEKcH0XZExcGEFZY0AYRR4QGhEKcH8XYU8fGXlJaVx5GmYQBxwcEQpwXxd
+ lThkeUkN7ZnlIHBAHHhIRCnB9F2xgY2FzeVh7exNdEAcZGhEKcH0XYXN8eFBbXVhMfBwQGhEKc
+ H8XbxtBaHpjZh5IZhMQBxIaEQpwXxdhb2xAbnB+fXxCcxAHHhIRCnB9F2JoUlNDaFlfck0bEAc
+ ZGhEKcH0XYkZfRU54R35LAU4QGhEKcH8XYVwZc0J5b3lCQF4QBx0YEQpwXxdrWk9tZFN4axxJE
+ xAHHhIRCnB9F21NRENmSVBCfXx5EAcZGhEKcH0XbRJzZnNzHxteeEYQGhEKcH8XbWRpTm0BTUV
+ 7TEAQBxIbEQpwXxdufG8aQR56G3N8ARAHGRoRCnB9F2JMXH19eRxbQhpCEAcZGhEKcH0XZUlyQ
+ RhIbFtNG3wQGhEKcH8XZnkdZX9pARxPa2QQBxIeEQpwXxdna0hdaBlCBUgTRRAHGRoRCnB9F21
+ EfWRCRl5LGENAEAcZGhEKcH0XZm9IQR5JBXhEAVsQGhEKcH8Xb05CREZ6bxNeWhkQBxsbGxEKc
+ F8XaUdrZExlZkhmc00QBxkaEQpwfRdsRG9zY05GbBwdZxAHGRoRCnB9F2gSTmUSGEJOf31EEBo
+ RCnB9F2lmExhEU29afRNeEBoRCnBfF2hScEgYUExyYE0SEBoRCnB9F2tvW19GUHpgfHNAEBoRC
+ nB9F29iQW9/GXpeZR96EBkaEQpwfRdkGhtOYE9lfW5ZZRAaEQptfhcaEQpYTRdLEQ==
+X-Proofpoint-GUID: t4cZrqCthhqau-JcmCkEo_1l4ezkD3sB
+X-Proofpoint-Spam-Details-Enc: AW1haW4tMjYwNjA1MDEyMSBTYWx0ZWRfXxqgOgcJFzSVc
+ A/18+ihhUPDFsO5bE/vRqR877vB5QBrUfXdQftTZRUtnTW02hdYWHX9L1gee2OBfTDO5GvHaMMN
+ GESrRDNHPx7plyqBtl6Ovs63HX77vGaRi/Ju3vyUQDFGqhPe6dB2D6AoVGrS+74+DGpJEUpl7Dd
+ azaMpD7wGTQv9EYrj+bP6VZkz5Nh3uU1jshrSJkimi6eKuBAZz7BwJJLq/RNIl8VwelIuAENw4R
+ B3s2HuhFx1TvO2RHqLxBdfYScogehJK8p9c7ykTxl9fBwaN1lBpl/XnMKMSrVZBJmb3razb5wHI
+ qQ1SpvAYCoxr0UtPbIgm1Q4OFRnuUBYdxTYXqOvz87CaV02ZqggHgHmy2tIRVXyHVdmF4lc/dJt
+ g4yN4lfLgI0uuP83lnpY0gZNDcYo6nYYbvsWu+6Dj+jPtNWs96E=
+X-Authority-Info: v=2.4 cv=ZILaWH7b c=1 sm=1 tr=0 ts=6a22c057 cx=c_apl:c_pps
+ a=tuknb4Bu0O4oXL8GnM1yDg==:117 a=tuknb4Bu0O4oXL8GnM1yDg==:17
+ a=IkcTkHD0fZMA:10 a=FelO9ux0wxsA:10 a=TcY3P4lw0v4A:10 a=WorIVg2UAAAA:8
+ a=3j4BkbkPAAAA:8 a=JqEG_dyiAAAA:8 a=BkpHzsgbAAAA:8 a=vnREMb7VAAAA:8
+ a=jU4qhlNgAAAA:8 a=BYtrmIwOAAAA:8 a=xMQaj6o3yA2EekmcaY4A:9
+ a=i3rtXuewPTqPqpq9:21 a=QEXdDO2ut3YA:10 a=M7qcbQtBhu2ErThXRRJf:22
+X-Proofpoint-ORIG-GUID: t4cZrqCthhqau-JcmCkEo_1l4ezkD3sB
+X-JNJ: AAAAAAABJX6XbAPevHyB/J5Lvqx51SnRZL1CvM9+0FCmpmVAitrw4CdxnfmaMkHU9KyuupsMfSpkzhwNidmWFJ8Y+s3yVi6L9mZJYtO7MT6KDgseXAbghNjOq5xXlCxd5P4Ym8SJGVhwlagp6+m1xfAJshKia3QmAD/SG4uwEe1wtLuL+G9dGxl62ZmQhfVBsJKDelycW0ZeCza47/JqNqe9yDAaesfyreTOuwPpKlN3boQwHH5xdP8yGDs7Fxs4T/x4jbBjw8IizaQWa6OAEemuONVl/ZPy/0uSzn49aQ6XcAgahjRTrln5AVKttm1c0c8GsqvhUBWuocBBlyBFvy5rA6W4WFtFOVO+Cw8mzzK4sFPPIPVB6mbGL7k5dc23vKjY4Fi6UpYuMoO74OGsPaDolXPlqlFsYck/PXoTBY0ATQ2HJTsMjnUGb0E26jxo9PiDeetkKVvrqzlbrMG+8ZLHWX8MAxH3wvnjG0rkh11sBnIqr1qv9PWPXp8BAjU/bQUH45MQNj4iKazYvJ9sVmoyYzUcAMiJN74W+GpMrHFpeoLGzBr8OTC5im6PkQ6F22fZjDucKerY8iN/cY0j+MA8g+QRhMeA0EHFqmzzF780sp3X8IxZDaBeXJ6McD+d1xVGk2EsrzSh5Uz23N2NOak=
+
+<br /><table role=3D"presentation" width=3D"500" border=3D"0" class=3D"pare=
+ntTable" style=3D"border:none" cellpadding=3D"0" cellspacing=3D"0" align=3D=
+"center">  <tbody>	 <tr>      <td height=3D"25" bgcolor=3D"#FFFFFF" style=
+=3D"font-family:'Plus Jakarta Sans', sans-serif;padding:10px;font-size:11px=
+;color:#666666">		  <table width=3D"100%" border=3D"0" role=3D"presentation=
+">          <tbody>            <tr>              <td align=3D"left" valign=
+=3D"top" bgcolor=3D"#ffffff" style=3D"background-color:#FFFFFF;color:#66666=
+6;font-family:'Plus Jakarta Sans', sans-serif;font-size:12px;font-weight:40=
+0;padding-left:15px">=C2=A0</td>              <td align=3D"right" bgcolor=
+=3D"#ffffff" style=3D"background-color:#FFFFFF;color:#666666;font-family:'P=
+lus Jakarta Sans', sans-serif;font-size:12px;font-weight:400;padding-right:=
+15px"><span style=3D"font-size:10px"><img style=3D"padding-right:5px" src=
+=3D"https://cdn.emiratesnbd.com/assets/images/2025/icon-lock-25feb25.png" w=
+idth=3D"8" height=3D"11" alt=3D"" /> CIF: ***17***</span></td>            <=
+/tr>          </tbody>        </table>		</td>    </tr>    <tr>      <td ali=
+gn=3D"center">		  <table role=3D"presentation" cellpadding=3D"0" cellspacin=
+g=3D"0" style=3D"width:500px;background-color:#ffffff;margin:0 auto 0 auto"=
+>          <tbody>				              <tr>              <td><img src=3D"https=
+://cdn.emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_01.jp=
+g" alt=3D"" width=3D"500" style=3D"display:block" border=3D"0" /></td>     =
+       </tr>              <tr>              <td bgcolor=3D"#FFFFFF" align=
+=3D"center">                <table width=3D"460" border=3D"0" cellpadding=
+=3D"0" cellspacing=3D"0" bgcolor=3D"#ffffff" role=3D"presentation">        =
+          <tbody><tr><td height=3D"20"></td></tr>                  <tr>    =
+                <td align=3D"left" style=3D"text-align:left;font-family:Plu=
+s Jakarta Sans, sans-serif;font-size:14px;color:#072447;line-height:20px;fo=
+nt-weight:normal"><table>    <tbody>        <tr>            <td style=3D"ma=
+rgin:0px;padding:0px">            <h1 style=3D"margin-top:0;margin-bottom:1=
+6px;font-size:26px;line-height:32px;font-weight:bold;letter-spacing:-0.02em=
+">            Dear Saleh Tariq Helal Lootah,</h1>            <br />        =
+    <p style=3D"margin-top:0px;margin-right:0px;margin-bottom:10px;color:#3=
+33333;line-height:20pt;font-family:sans-serif;font-size:15pt;font-weight:no=
+rmal;text-align:left">Here is a consolidated status of your Local Bank Tran=
+sfer.<br />            <br />            <strong><strong style=3D"color:#33=
+3333">Transaction Date:</strong><span style=3D"color:#333333"></span></stro=
+ng><span style=3D"color:#333333">=C2=A005/Jun/2026 04:25 PM</span><strong><=
+span style=3D"color:#333333"></span><br style=3D"color:#333333" />         =
+   <strong style=3D"color:#333333">From Account:=C2=A0</strong><span style=
+=3D"color:#333333"></span></strong><span style=3D"color:#333333">067***17**=
+*01</span><strong><span style=3D"color:#333333"></span><br style=3D"color:#=
+333333" />            <strong style=3D"color:#333333">Debit Amount:=C2=A0</=
+strong><span style=3D"color:#333333"></span></strong><span style=3D"color:#=
+333333">AED 4,100.00</span><strong><span style=3D"color:#333333"></span><br=
+ style=3D"color:#333333" />            <strong style=3D"color:#333333">Tran=
+saction Amount:=C2=A0</strong><span style=3D"color:#333333"></span></strong=
+><span style=3D"color:#333333">AED 4,100.00</span><strong><span style=3D"co=
+lor:#333333"></span><br style=3D"color:#333333" />            <strong style=
+=3D"color:#333333">Exchange Rate:=C2=A0</strong><span style=3D"color:#33333=
+3"></span></strong><span style=3D"color:#333333">N/A</span><strong><span st=
+yle=3D"color:#333333"></span><br style=3D"color:#333333" />            <str=
+ong style=3D"color:#333333">Buy Rate:=C2=A0</strong><span style=3D"color:#3=
+33333"></span></strong><span style=3D"color:#333333">N/A</span><strong><spa=
+n style=3D"color:#333333"></span><br style=3D"color:#333333" />            =
+<strong style=3D"color:#333333">Sell Rate:=C2=A0</strong><span style=3D"col=
+or:#333333"></span></strong><span style=3D"color:#333333">N/A</span><strong=
+><span style=3D"color:#333333"></span><br style=3D"color:#333333" />       =
+     <strong style=3D"color:#333333">Destination Country:=C2=A0</strong><sp=
+an style=3D"color:#333333"></span></strong><span style=3D"color:#333333">UN=
+ITED ARAB EMIRATES</span><strong><span style=3D"color:#333333"></span><br s=
+tyle=3D"color:#333333" />            <strong style=3D"color:#333333">Benefi=
+ciary Name:</strong><span style=3D"color:#333333"></span></strong><span sty=
+le=3D"color:#333333">=C2=A0Siddiq sabir sabir hussain</span><strong><span s=
+tyle=3D"color:#333333"></span><br style=3D"color:#333333" />            <st=
+rong style=3D"color:#333333">Beneficiary Account / IBAN:=C2=A0</strong><spa=
+n style=3D"color:#333333"></span></strong><span style=3D"color:#333333">AE2=
+5033000001***02***88</span><strong><span style=3D"color:#333333"></span><br=
+ style=3D"color:#333333" />            <strong style=3D"color:#333333">Bene=
+ficiary Bank Name:=C2=A0</strong><span style=3D"color:#333333"></span></str=
+ong><span style=3D"color:#333333">MASHREQBANK PSC </span><strong><span styl=
+e=3D"color:#333333"></span><br style=3D"color:#333333" />            <stron=
+g style=3D"color:#333333">SWIFT / Routing Code:=C2=A0</strong><span style=
+=3D"color:#333333"></span></strong><span style=3D"color:#333333">BOMLAEAD</=
+span><strong><span style=3D"color:#333333"></span><br style=3D"color:#33333=
+3" />            <strong style=3D"color:#333333">Correspondent Bank Name:</=
+strong><span style=3D"color:#333333">=C2=A0</span></strong><span style=3D"c=
+olor:#333333">N/A</span><strong><span style=3D"color:#333333"></span><br st=
+yle=3D"color:#333333" />            <strong style=3D"color:#333333">Transac=
+tion Fees:=C2=A0</strong><span style=3D"color:#333333"></span></strong><spa=
+n style=3D"color:#333333">No Fees</span><strong><span style=3D"color:#33333=
+3"></span><br style=3D"color:#333333" />            <strong style=3D"color:=
+#333333">Channel Reference No:</strong><span style=3D"color:#333333"></span=
+></strong><span style=3D"color:#333333">=C2=A037651F86216C</span><strong><s=
+pan style=3D"color:#333333"></span><br style=3D"color:#333333" />          =
+  <strong style=3D"color:#333333">SWIFT Reference No:=C2=A0</strong><span s=
+tyle=3D"color:#333333"></span></strong><span style=3D"color:#333333">202606=
+050006B98111625238523</span><strong><span style=3D"color:#333333"></span><b=
+r style=3D"color:#333333" />            <strong style=3D"color:#333333">Sta=
+tus:=C2=A0</strong><span style=3D"color:#333333"></span></strong><span styl=
+e=3D"color:#333333">Success</span></p>            </td>        </tr>    </t=
+body></table></td>                  </tr>                                  =
+  <tr><td height=3D"20"></td></tr>                </tbody></table>         =
+     </td>            </tr>          </tbody>        </table>        <table=
+ role=3D"presentation" width=3D"500" cellpadding=3D"0" cellspacing=3D"0" bo=
+rder=3D"0" align=3D"center" bgcolor=3D"#d4d5d9">          <tbody><tr>      =
+      <td align=3D"center"><a href=3D"https://www.emiratesnbd.com/en/ways-o=
+f-banking/mobile-banking" aria-label=3D"Read more about Mobile Banking"><im=
+g src=3D"https://cdn.emiratesnbd.com/assets/images/2025/enbd-general-edm-en=
+-25feb25_04.jpg" width=3D"162" height=3D"65" alt=3D"" style=3D"display:bloc=
+k;border:none;outline:none" /></a></td>            <td align=3D"center"><a =
+href=3D"https://www.emiratesnbd.com/en/schedule-of-fees-and-charges" aria-l=
+abel=3D"Read more about Key Facts Statement"><img src=3D"https://cdn.emirat=
+esnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_05.jpg" width=3D"1=
+80" height=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none"=
+ /></a></td>            <td align=3D"center"><img src=3D"https://cdn.emirat=
+esnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_06.jpg" width=3D"2=
+0" height=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none" =
+/></td>			            <td align=3D"center"><a href=3D"https://www.facebook.=
+com/EmiratesNBD" aria-label=3D"Facebook"><img src=3D"https://cdn.emiratesnb=
+d.com/assets/images/2025/enbd-general-edm-en-25feb25_07.jpg" width=3D"20" h=
+eight=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none" /></=
+a></td>            <td align=3D"center"><a href=3D"https://twitter.com/Emir=
+atesNBD_AE" aria-label=3D"Twitter"><img src=3D"https://cdn.emiratesnbd.com/=
+assets/images/2025/enbd-general-edm-en-25feb25_08.jpg" width=3D"20" height=
+=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none" /></a></t=
+d>            <td align=3D"center"><a href=3D"https://www.instagram.com/emi=
+ratesnbd_ae" aria-label=3D"Instagram"><img src=3D"https://cdn.emiratesnbd.c=
+om/assets/images/2025/enbd-general-edm-en-25feb25_09.jpg" width=3D"18" heig=
+ht=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none" /></a><=
+/td>            <td align=3D"center"><a href=3D"https://www.youtube.com/use=
+r/EmiratesNBDChannel" aria-label=3D"Youtube"><img src=3D"https://cdn.emirat=
+esnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_10.jpg" width=3D"1=
+8" height=3D"65" alt=3D"" style=3D"display:block;border:none;outline:none" =
+/></a></td>            <td align=3D"center"><a href=3D"https://www.linkedin=
+.com/company/emirates-nbd" aria-label=3D"LinkedIn"><img src=3D"https://cdn.=
+emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_11.jpg" widt=
+h=3D"18" height=3D"65" alt=3D"" style=3D"display:block;border:none;outline:=
+none" /></a></td>            <td align=3D"center"><a href=3D"https://www.sn=
+apchat.com/add/emirates_nbd" aria-label=3D"Snapchat"><img src=3D"https://cd=
+n.emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_12.jpg" wi=
+dth=3D"24" height=3D"65" alt=3D"" style=3D"display:block;border:none;outlin=
+e:none" /></a></td>            <td align=3D"center"><img src=3D"https://cdn=
+.emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25feb25_13.jpg" wid=
+th=3D"20" height=3D"65" alt=3D"" style=3D"display:block;border:none;outline=
+:none" /></td>          </tr>        </tbody></table>        <table width=
+=3D"500" cellpadding=3D"0" cellspacing=3D"0" border=3D"0" align=3D"center" =
+bgcolor=3D"#FFFFFF" role=3D"presentation">          <tbody><tr>            =
+<td bgcolor=3D"#072447" style=3D"padding:10px">				<table width=3D"100%" bo=
+rder=3D"0" role=3D"presentation">                <tbody>                  <=
+tr>                    <td width=3D"81%" align=3D"left" valign=3D"top" styl=
+e=3D"color:#ffffff;font-family:'Plus Jakarta Sans', sans-serif;font-size:12=
+px;font-weight:400;padding-left:15px;line-height:20px"><strong style=3D"fon=
+t-size:14px">Be aware!</strong><br />                      <span style=3D"c=
+olor:#ffffff">In our emails, we will never ask you for confidential informa=
+tion or to confirm any security details like User IDs, passwords or PINs.  =
+                    If you believe you received a fraudulent email please c=
+lick below: </span><br />                      <strong><a href=3D"https://w=
+ww.emiratesnbd.com/en/security" style=3D"color:#ffffff;text-decoration:none=
+">Learn more about securing your online identity &gt;</a></strong></td>    =
+                <td width=3D"19%" align=3D"center"><img src=3D"https://cdn.=
+emiratesnbd.com/assets/images/2025/icon-shield-white-25feb25.png" alt=3D"" =
+width=3D"60" border=3D"0" style=3D"display:block" /></td>                  =
+</tr>                </tbody>              </table>			  </td>          </tr=
+>          <tr>            <td><img src=3D"https://cdn.emiratesnbd.com/asse=
+ts/images/2025/enbd-general-edm-en-25feb25_15.jpg" alt=3D"" width=3D"500" b=
+order=3D"0" style=3D"display:block;width:100%" /></td>          </tr>      =
+  </tbody></table></td>    </tr>  </tbody></table>
+
+<DIV>
+DISCLAIMER: This e-mail message including any of its attachments is intende=
+d solely for the addressee(s) and may contain privileged information. If yo=
+u are not the addressee or you have received this email message in error, p=
+lease notify the sender who will remove your details from its database. You=
+ are not authorized to read, copy, disseminate, distribute or use this e-ma=
+il message or any attachment to it in any manner and must delete the email =
+and destroy any hard copies of it. This e-mail message does not contain fin=
+ancial instructions or commitments of any kind. Any views expressed in this=
+ message are those of the individual sender and do not necessarily reflect =
+the views of Emirates NBD PJSC, or any other related subsidiaries, entities=
+ or persons. <BR>
+<BR>
+Emirates NBD Bank (P.J.S.C.) is licensed by the Central Bank of the UAE.<BR>
+.&#x628;&#x646;&#x643; &#x627;&#x644;&#x625;&#x645;&#x627;&#x631;&#x627;&#x=
+62A; &#x62F;&#x628;&#x64A; &#x627;&#x644;&#x648;&#x637;&#x646;&#x64A; &#x63=
+4;.&#x645;.&#x639;. &#x647;&#x648; &#x628;&#x646;&#x643; &#x645;&#x631;&#x6=
+2E;&#x651;&#x635; &#x645;&#x646; &#x642;&#x628;&#x644; &#x645;&#x635;&#x631=
+;&#x641; &#x627;&#x644;&#x625;&#x645;&#x627;&#x631;&#x627;&#x62A; &#x627;&#=
+x644;&#x639;&#x631;&#x628;&#x64A;&#x629; &#x627;&#x644;&#x645;&#x62A;&#x62D=
+;&#x62F;&#x629; &#x627;&#x644;&#x645;&#x631;&#x643;&#x632;&#x64A;.<BR>
+</DIV>

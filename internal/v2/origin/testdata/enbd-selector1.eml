@@ -1,0 +1,393 @@
+Return-path: <Onlinebanking@EmiratesNBD.com>
+Original-recipient: rfc822;salehtl@icloud.com
+Received: from p00-icloudmta-smtpin-us-west-2a-60-percent-32 by p34-mailgateway-smtp-66666cf6dd-dc2d6 (mailgateway 2616B129)
+	with SMTP id 17298b4e-c269-4e8e-bc95-b460adbee800 
+	for <salehtl@icloud.com>; Sat, 9 May 2026 10:19:11 GMT
+X-ICLOUD-MAIL-BWL: 1
+X-Apple-MoveToFolder: INBOX 
+X-Apple-Action: WL/INBOX
+X-Apple-UUID: 17298b4e-c269-4e8e-bc95-b460adbee800
+Received: from DX2P273CU003.outbound.protection.outlook.com (mail-uaenorthazon11012016.outbound.protection.outlook.com [40.107.55.16])
+	by p00-icloudmta-smtpin-us-west-2a-60-percent-32 (Postfix) with ESMTPS id A2E00C000F7
+	for <salehtl@icloud.com>; Sat, 09 May 2026 10:19:09 +0000 (UTC)
+X-ICL-Info: GAtbRVYDBVFFSlVFSgQFUVUKE0oWX1gHVQoPB0UEBkxESVFZTQUYU0NZAxNFf1gOHBcDFRleXQsbHiYyFVlEAwEcFTk6dBgBGhRGERwNUw8cCwcDHUNYABFXBRgVEEQBSConOz14Yi41EAUbF0VSTBYWC1cQVVoNSD0+RSgCAVE2LFZHSx5ZFwEbCQIWVBgSBxYSEhtEXw0bVwkCDFxZDR5XBRgVEEYWB0QLFhFcGxcUHAgYCkReAw8WCEZJAAdQRUhQWRdFQgAaDAgTVkBEDQEcBQMRX1hMGgwSGxdfXUwWFgtXHFQLBxgQFBYMVUUMFx1IFBddFg8cHVtLSQFVVRNKU0dVBgJaRlQFQEgDG1BHS1RaS1UGVUAYUUZPAAZbNRwLHgpRQgcGFwQTVlNZD0s=
+X-ICL-Score: 2.33303322433
+Authentication-Results: bimi.icloud.com; bimi=none
+X-ARC-Info: policy=fail; arc=pass; id=mx.microsoft.com 1; r1=-22; r2=1
+Authentication-Results: arc.icloud.com; arc=pass
+Authentication-Results: dmarc.icloud.com; dmarc=pass header.from=emiratesnbd.com
+X-DMARC-Policy: v=DMARC1;p=reject;sp=quarantine;rua=mailto:emiratesnbd@emailauth.in;ruf=mailto:ruf@emiratesnbd.com;ri=3600;
+X-DMARC-Info: pass=pass; dmarc-policy=reject; s=r1; d=r1; pdomain=emiratesnbd.com
+Authentication-Results: dkim-verifier.icloud.com; dkim=pass header.d=emiratesnbd.com header.i=@emiratesnbd.com header.b=DVqu8Isx
+Received-SPF: pass (spf.icloud.com: domain of Onlinebanking@EmiratesNBD.com designates 40.107.55.16 as permitted sender) receiver=spf.icloud.com; client-ip=40.107.55.16; helo=DX2P273CU003.outbound.protection.outlook.com; envelope-from=Onlinebanking@EmiratesNBD.com
+Authentication-Results: spf.icloud.com; spf=pass (spf.icloud.com: domain of Onlinebanking@EmiratesNBD.com designates 40.107.55.16 as permitted sender) smtp.mailfrom=Onlinebanking@EmiratesNBD.com
+ARC-Seal: i=1; a=rsa-sha256; s=arcselector10001; d=microsoft.com; cv=none;
+ b=dY6JZlbMX0TCGVSIrHRFyivaJ5QX1nxQJKTDRMzzr0QS/YrGeEzT8ZAoqA/Cc3nqiKpXxmMSpypT5WxIhrJ6spDR12XrcmO1H1HvCmZwhSBFY6KKljqhZf/pcsakhPNPVaFaw+SBTeUwaItyBmv6YDqPwdljg06eb9jHITgG4HRh6JGevDpDuFz+Ik43cnp5pSO0YX6YKB2o1a6EQ60EqiAQrLc1IXxDfBDa+XeTbNbZzSUp+eDwr9AOWy9KJg8jTAuMMmCZjEULdCLZZe+spbXYKKf0TEQlQ8M0J2iiK4yQ+1xsEm6hBWO78mmWuAliuCzjQGr6y5YgX3Y9KEdeLg==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=microsoft.com;
+ s=arcselector10001;
+ h=From:Date:Subject:Message-ID:Content-Type:MIME-Version:X-MS-Exchange-AntiSpam-MessageData-ChunkCount:X-MS-Exchange-AntiSpam-MessageData-0:X-MS-Exchange-AntiSpam-MessageData-1;
+ bh=4AURsHCKqwt4VMVC0yf9eZU269bFWsxsN/2Hiy/9Y/I=;
+ b=ebN09cTPr6KkE8iOMSiJ0F/KEqsKqvs0xb5eoxShaFeVOZtA6VX6Dg82NPkcbm2lg7A7NTFiWEq7rmtHgJdNfmj8INI95sb5VdeM2TjIHslydSpJOi/g1V7oF1ZpFHpzfBX9bWfR8FdOdM7A7GFu87WASiS/49q7ldgrJA5VwbsdH/4mVeDVubOOc3jZ4dnzXYNzbSYvdpIEnEig6oKwjnkGBeXEFEh3IoKMGBtfk7ZpGCZigzJYtgFbKzns0ZuuX0Ioj0x2CZYJI6cxT8Qgw+AgeiNwhJKpRhrYZmio9tqPmmzNQRHvh4+aHikHvX7qCez2veTkv9KyK3gWoJxv1Q==
+ARC-Authentication-Results: i=1; mx.microsoft.com 1; spf=pass (sender ip is
+ 185.76.207.13) smtp.rcpttodomain=icloud.com smtp.mailfrom=emiratesnbd.com;
+ dmarc=pass (p=reject sp=quarantine pct=100) action=none
+ header.from=emiratesnbd.com; dkim=none (message not signed); arc=none (0)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=emiratesnbd.com;
+ s=selector1;
+ h=From:Date:Subject:Message-ID:Content-Type:MIME-Version:X-MS-Exchange-SenderADCheck;
+ bh=4AURsHCKqwt4VMVC0yf9eZU269bFWsxsN/2Hiy/9Y/I=;
+ b=DVqu8IsxSPTRmbWU/CooN4YxXAT9BTM7sdEQU1VXW4JeXVsL6PdVfcNdC+HOHuACA6X44doQ5Hv217h0oy78+4Yvv5VynsvR52ihfEw0UxcURmGjXWcimPrTHA9GO5rCKLiThbFEVg/kAbqZEXotXgzvVbjUlySah9ZNDjBU8IdR6o6FG57oQ+0jqcLxQQ8QGPOrN4fmltLA/u2SlNfflpt1yEzvWJbQCtQoIOWSMQgZNBAjt07Stfc63+pjQaTjK08qVd3XoaLdyJBx4mYCASumrVvaAzrfUC9uBVsuHW6qxw34kjM5rNjFOsZ8IkLOkZnPE/8x1FUYJ16YRieBoQ==
+Received: from DUZPR01CA0239.eurprd01.prod.exchangelabs.com
+ (2603:10a6:10:4b5::28) by DX1P273MB1207.AREP273.PROD.OUTLOOK.COM
+ (2603:1086:300:57::12) with Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.9891.21; Sat, 9 May
+ 2026 10:19:04 +0000
+Received: from DB1PEPF00039230.eurprd03.prod.outlook.com
+ (2603:10a6:10:4b5:cafe::b1) by DUZPR01CA0239.outlook.office365.com
+ (2603:10a6:10:4b5::28) with Microsoft SMTP Server (version=TLS1_3,
+ cipher=TLS_AES_256_GCM_SHA384) id 15.20.9891.21 via Frontend Transport; Sat,
+ 9 May 2026 10:19:03 +0000
+X-MS-Exchange-Authentication-Results: spf=pass (sender IP is 185.76.207.13)
+ smtp.mailfrom=EmiratesNBD.com; dkim=none (message not signed)
+ header.d=none;dmarc=pass action=none header.from=emiratesnbd.com;
+Received-SPF: Pass (protection.outlook.com: domain of EmiratesNBD.com
+ designates 185.76.207.13 as permitted sender)
+ receiver=protection.outlook.com; client-ip=185.76.207.13;
+ helo=o365connector.emiratesbank.com; pr=C
+Received: from o365connector.emiratesbank.com (185.76.207.13) by
+ DB1PEPF00039230.mail.protection.outlook.com (10.167.8.103) with Microsoft
+ SMTP Server (version=TLS1_2, cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id
+ 15.20.9891.9 via Frontend Transport; Sat, 9 May 2026 10:19:02 +0000
+Received: from wvenexcmbx001p.uae.emiratesbank.com (195.229.222.73) by
+ uaeextrelay.emiratesnbd.com (192.168.187.35) with Microsoft SMTP Server id
+ 15.2.2562.20; Sat, 9 May 2026 14:18:55 +0400
+Received: from wvenexcmbx004p.uae.emiratesbank.com (10.129.126.244) by
+ wvenexcmbx001p.uae.emiratesbank.com (10.129.126.133) with Microsoft SMTP
+ Server (version=TLS1_2, cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id
+ 15.2.2562.20; Sat, 9 May 2026 14:18:48 +0400
+Received: from [127.0.0.1] (10.229.237.216) by
+ wvenexcmbx004p.uae.emiratesbank.com (10.129.126.244) with Microsoft SMTP
+ Server (version=TLS1_2, cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id
+ 15.2.2562.20 via Frontend Transport; Sat, 9 May 2026 14:18:48 +0400
+From: <OnlineBanking@emiratesnbd.com>
+To: <SALEHTL@icloud.com>
+Subject: Local Bank Transfer
+Message-ID: <11c7f350-6483-c703-2222-3e075a717009@emiratesnbd.com>
+Content-Transfer-Encoding: quoted-printable
+Date: Sat, 9 May 2026 10:18:48 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+X-CFilter-Loop: Reflected
+X-EOPAttributedMessage: 0
+X-MS-PublicTrafficType: Email
+X-MS-TrafficTypeDiagnostic: DB1PEPF00039230:EE_|DX1P273MB1207:EE_
+X-MS-Office365-Filtering-Correlation-Id: ab577e9b-654b-46d4-1147-08deadb464f4
+X-MS-Exchange-SenderADCheck: 1
+X-MS-Exchange-AntiSpam-Relay: 0
+X-Microsoft-Antispam:
+	BCL:0;ARA:13230040|376014|1800799024|82310400026|36860700016|1032899013|7149299003|7049299003|3109299003|30052699003|69100299015|18002099003|56012099003|2066899003|3023799003|8096899003;
+X-Microsoft-Antispam-Message-Info:
+	S8x3Ac+2DVbHAYJH/mgiYtqfCJ+B03bayL2l+MjEFUFs60Ql3k1l5ZP+McTO7fHveBbpEOCTDp4EXLcGVfIBuoK/Za05HhwQ1ze58tqtOD7HmqDFcgnvIwpr1c4/sSXvSGKmzDp7GrIPDjEgKv0Ct83RbCtLQjpG9M29f4tHn8qEu5oP7U4vQYj0zK1g0AieGZxBzVrveLtgMLmI2dHzLL3E/xmaV+xNAuppjuy8oExC0igaJLxCvxdQmj6+BKMDxpJA4YJcjZQUHZ7/oxtBURXdpI+AAQUrl/m7MitpHhI+774LtoV6NvsMr1O17vbI6C7QYkXAG0Igt/xXIgQXyFCscAY5jh5oKZOmOn0wDVbdQR8ZCm48MUwngndzKl3SXK7pJbYD7damtLnDyBjqrl6sR1ROEkGi9fCg+8S1yxFuLrYU8ttPzcUY87+xpj4vN7rNJUOU7Zfsb25rENE1JzFxIcfQ9/cmLurZ5aXhAuBSJA/F1DaSFTGhMcLQfZTY7w0PxjlTw1YlEsf54CSUTKXUX8OmwQ3ppVBftyoiP9FdO4MN/YLGamPii2oXM0WYpNJrxBorK3Rf2VkBN+o4Ph+jsNlO7ryTFHIAaYKuBHq+nVyQ1bcZEw7AnoUxoIdtUcZroF+mxvlV6bby8lHpSSFBPF4TJj61uiXwL9CyYu2ljfKxzOkyVPs7N3AoCYLF
+X-Forefront-Antispam-Report:
+	CIP:185.76.207.13;CTRY:AE;LANG:en;SCL:1;SRV:;IPV:NLI;SFV:NSPM;H:o365connector.emiratesbank.com;PTR:InfoDomainNonexistent;CAT:NONE;SFS:(13230040)(376014)(1800799024)(82310400026)(36860700016)(1032899013)(7149299003)(7049299003)(3109299003)(30052699003)(69100299015)(18002099003)(56012099003)(2066899003)(3023799003)(8096899003);DIR:OUT;SFP:1101;
+X-MS-Exchange-AntiSpam-MessageData-ChunkCount: 1
+X-MS-Exchange-AntiSpam-MessageData-0:
+	4k6XYga/5FtarMPrT9N9EWSu+nqd5ZEhz4P+MjsjT8W2ZhUdKCDDaUsDKNckv64sAvAbw7gQb02Uvv3TOypyj2Nbl1X17SHnf7QgF8Sk2zKeKcSCnZhE5aWcCONEtpwdUK1Px5oXGGCPCA+pa09kYvv2jL/9wXZHe/e5NnNhstIJkXQH0Aka2J+GwjgszQz30kEwQJppjlFX+vYSi0WkzBTUjWpNS0GRvQH9z5rNyvJUOdCI8l8znWUPWKARA9kalPm0C1Wz9yripD0xnCtu6Qh7JNcWMWgqndUNkdjjcypWBdcJ9a3bwxRcS7LrX5aa6TowS0ovtIl5RsZ7UW4dgeetNF5Kmwd7Pxa8iXhHCqOqE/FAiAQrI4FuQYYo+jpr9IVPgUkHehqXOWfLURe0X0j/z6pSdqwYEQowEqENDIuD1hEPzQA6K/GBbIrr6PHr
+X-OriginatorOrg: emiratesnbd.com
+X-MS-Exchange-CrossTenant-OriginalArrivalTime: 09 May 2026 10:19:02.9517
+ (UTC)
+X-MS-Exchange-CrossTenant-Network-Message-Id: ab577e9b-654b-46d4-1147-08deadb464f4
+X-MS-Exchange-CrossTenant-Id: cf29f564-2303-4bfb-a13c-29ef0689ffb9
+X-MS-Exchange-CrossTenant-OriginalAttributedTenantConnectingIp: TenantId=cf29f564-2303-4bfb-a13c-29ef0689ffb9;Ip=[185.76.207.13];Helo=[o365connector.emiratesbank.com]
+X-MS-Exchange-CrossTenant-AuthSource:
+	DB1PEPF00039230.eurprd03.prod.outlook.com
+X-MS-Exchange-CrossTenant-AuthAs: Anonymous
+X-MS-Exchange-CrossTenant-FromEntityHeader: HybridOnPrem
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: DX1P273MB1207
+X-MANTSH: 1TFkXHBwRCllEF28aQlodb2VFBWRlEQpZTRdkRURPEQpZSRcacRoQGncGHhxxGRM
+ SEBsZEncGGBoGGhEKWV4XbGx5EQpDThccQG5kH19bfXBSYEZLX0d6GR5bXHNhfnlGYlxsHEYYW
+ REKWFwXGQQaBB8SBRsaGgQSGAQeGAQYEhAbHhofGhEKXlkXQmRhHB8RCk1cFxgeHREKTFoXaFt
+ BQU0RCkxGF01rEQpDWhceGgQbGh0EHx8EGxwRCkJeFxsRCkJcFxsRCl5OFxsRCkJLF2ZZWHtBT
+ 1BLZH5uEQpCSRdmWVh7QU9QS2R+bhEKQkUXbEtObE5CT04FQxoRCkJOF2ZZWHtBT1BLZH5uEQp
+ CTBdnQktrGkZYQxJTchEKQmwXYxxFYwEBW159SEwRCkJAF29+UGgFRRl6QhlYEQpCWBd6aX9QZ
+ xMdQGVDXhEKWlgXHBEKcGgXbn5/aB1IQG5HZWsQGhEKcGgXY0JtZEBzZhl/BXoQGhEKcGgXen4
+ FYGN9X05+ZEsQGhEKcGgXZEhefENIYV9ST2YQGhEKcGgXbx9uZGREYV5sRWIQGhEKcGgXa08bR
+ W5+Glt+Gl0QGhEKcGgXenIFQltgE2UcZmsQGhEKcGgXbh99bWJ4a1NDehMQGhEKcH8XaG54E0Y
+ fX1lLaHkQHR8RCnBfF24SZ0tNb21raVlzEB4SEQpwfRdoX1xJbGcebkJwcxAaEQpwfRdtXV9yb
+ 0NHel1TSxAaEQpwXxdiHm9GYUtDZ29kGBAHGRoRCnB9F24cTkZ+EgEdHWJ9EAcZGhEKcH0XYEF
+ lWWNbWnBSQEsQGhEKcF8XbwEYHGEFY115TxkQGRoRCnB9F2lyTBpTf0EdUmVZEBkaEQpwfRdnH
+ HMdTxpocltIUBAaEQpwfRdkTFwYQVljQBhFHhAaEQpwfxdhTx8ZeUlpXHkaZhAHHRkRCnBfF2V
+ OGR5SQ3tmeUgcEAceEhEKcH0XbGBjYXN5WHt7E10QBx4SEQpwfRdhc3x4UFtdWEx8HBAaEQpwf
+ xdvG0FoemNmHkhmExAHExkRCnBfF2FvbEBucH59fEJzEAceEhEKcH0XYmhSU0NoWV9yTRsQBx4
+ SEQpwfRdiRl9FTnhHfksBThAaEQpwfxdhXBlzQnlveUJAXhAHHR4RCnBfF2taT21kU3hrHEkTE
+ AcZGhEKcH0XbU1EQ2ZJUEJ9fHkQBxkaEQpwfRdtEnNmc3MfG154RhAaEQpwfxdtZGlObQFNRXt
+ MQBAHHRsRCnBfF258bxpBHnobc3wBEAceEhEKcH0XYkxcfX15HFtCGkIQBxkaEQpwfRdlSXJBG
+ EhsW00bfBAaEQpwfxdmeR1lf2kBHE9rZBAHHRMRCnBfF2drSF1oGUIFSBNFEAcZGhEKcH0XbUR
+ 9ZEJGXksYQ0AQBxkaEQpwfRdmb0hBHkkFeEQBWxAaEQpwfxdvTkJERnpvE15aGRAHEx0RCnBfF
+ 2lHa2RMZWZIZnNNEAcZGhEKcH0XbERvc2NORmwcHWcQBxkaEQpwfRdoEk5lEhhCTn99RBAaEQp
+ wfRdpZhMYRFNvWn0TXhAaEQpwXxdoUnBIGFBMcmBNEhAaEQpwfRdrb1tfRlB6YHxzQBAZGhEKc
+ H0Xb2JBb38Zel5lH3oQGhEKcH0XZBobTmBPZX1uWWUQGhEKcEMXb0RPH0lkcGIZU0wQHRoRCm1
+ +FxoRClhNF0sR
+X-Proofpoint-GUID: 6jDN5uqWZxJlaumP34qvYKTSlHvF6l2s
+X-Proofpoint-ORIG-GUID: 6jDN5uqWZxJlaumP34qvYKTSlHvF6l2s
+X-Proofpoint-Spam-Details-Enc: AW1haW4tMjYwNTA5MDExMCBTYWx0ZWRfX8VshnvBssghE
+ 4bufNNnCdl0w6UvZbW6vBjQA7l41qOht2uuvQdclGViNeZ0LgYAdVFWabQK5X7Dcsp3LGzwbwcR
+ g1RnihXyRDz69R9PAId4l7Jxn7+TC4K9mu9YvV5JV6Fzlp19wNKv6SmaNkgtL4l9o151+omWCJu
+ X4bYkXsfKmPPpR74D5E/T0rI4AKF0HwbKRhHjRFNwpzHEs77sVmiYnsXKCU8v9IjeMidISEIycX
+ aFkEWQ8Id5JwjmZ4ZOIm1RnWi1G7NsCej+Ngu8XjPaWAIU+EXY1Q+SV196I728iF5yLcVNzm5fN
+ R5gbZiOfo/PdTJOuTB7
+X-JNJ: AAAAAAABQwILhr+dlqn+c8bbvtdN86qb2rsI8bWOq45iYFBpCPFqJpl5+8ZMa218ohJ3Kc0xQRbnYpFcsJit3cyb0Jq38vthWz2yYm7eDnjypQo19qSOz1+e99MncdAV4a2UPpoEQUKNw8gCqFIErhpUvveQVOHPCX+bWFj0VGoURCb2OTzLnSxvcDsRNmMkNiyEuBWnPzHjSO8ZyJUQopF4RD85KfqK82hX1+ob+cZTJWPcgagAQkSz6e16D0dSOfxBkb1tpQTqTyNyTEApYvfjR3tjqqolaJZX8zerCZVArJsYCDUPaa68j2XdMM9ZajYs/nGp9Gbjczdb27p+a4zf4o0TC3drc67W5ylwb7g7mPvUd3mgIKWvp0VfXnm6Zz5w9VHLuMugcSL5KexnCi/DRomkbtT6AkbTLxCCKG+BMttbd3UHGnybeKdpQg486cK94DP6bWtmdZGsgnDKocgDZcAuZuty3Hy4MptROgWcHkJHw+6Gcs3aWnQUxIUHB7FlxT+qFUMNV1x9Zqb71N4UDHLIG58GXEt2Ujlwa/ONs8Uh535Vx2pO1rhfR77oZanl2wgjajZOgV1Zr+EgRYDO/Zdn4xb06QCpdP2MHMzG0vMY0IRV7BO7NF10D6fPKk4ODFmTB5KWm4TBdZIhun2kUGW/NpU+OmO5p1FRH3NTzLlihrwU4KCNh2me+8YOIXB3CxzFjM07
+
+<html>
+<head>
+<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Dutf-8">
+</head>
+<body>
+<br>
+<table role=3D"presentation" width=3D"500" border=3D"0" class=3D"parentTabl=
+e" style=3D"border:none" cellpadding=3D"0" cellspacing=3D"0" align=3D"cente=
+r">
+<tbody>
+<tr>
+<td height=3D"25" bgcolor=3D"#FFFFFF" style=3D"font-family:'Plus Jakarta Sa=
+ns', sans-serif;padding:10px;font-size:11px;color:#666666">
+<table width=3D"100%" border=3D"0" role=3D"presentation">
+<tbody>
+<tr>
+<td align=3D"left" valign=3D"top" bgcolor=3D"#ffffff" style=3D"background-c=
+olor:#FFFFFF;color:#666666;font-family:'Plus Jakarta Sans', sans-serif;font=
+-size:12px;font-weight:400;padding-left:15px">
+&nbsp;</td>
+<td align=3D"right" bgcolor=3D"#ffffff" style=3D"background-color:#FFFFFF;c=
+olor:#666666;font-family:'Plus Jakarta Sans', sans-serif;font-size:12px;fon=
+t-weight:400;padding-right:15px">
+<span style=3D"font-size:10px"><img style=3D"padding-right:5px" src=3D"http=
+s://cdn.emiratesnbd.com/assets/images/2025/icon-lock-25feb25.png" width=3D"=
+8" height=3D"11" alt=3D""> CIF: ***17***</span></td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td align=3D"center">
+<table role=3D"presentation" cellpadding=3D"0" cellspacing=3D"0" style=3D"w=
+idth:500px;background-color:#ffffff;margin:0 auto 0 auto">
+<tbody>
+<tr>
+<td><img src=3D"https://cdn.emiratesnbd.com/assets/images/2025/enbd-general=
+-edm-en-25feb25_01.jpg" alt=3D"" width=3D"500" style=3D"display:block" bord=
+er=3D"0"></td>
+</tr>
+<tr>
+<td bgcolor=3D"#FFFFFF" align=3D"center">
+<table width=3D"460" border=3D"0" cellpadding=3D"0" cellspacing=3D"0" bgcol=
+or=3D"#ffffff" role=3D"presentation">
+<tbody>
+<tr>
+<td height=3D"20"></td>
+</tr>
+<tr>
+<td align=3D"left" style=3D"text-align:left;font-family:Plus Jakarta Sans, =
+sans-serif;font-size:14px;color:#072447;line-height:20px;font-weight:normal=
+">
+<table>
+<tbody>
+<tr>
+<td style=3D"margin:0px;padding:0px">
+<h1 style=3D"margin-top:0;margin-bottom:16px;font-size:26px;line-height:32p=
+x;font-weight:bold;letter-spacing:-0.02em">
+Dear Saleh Tariq Helal Lootah,</h1>
+<br>
+<p style=3D"margin-top:0px;margin-right:0px;margin-bottom:10px;color:#33333=
+3;line-height:20pt;font-family:sans-serif;font-size:15pt;font-weight:normal=
+;text-align:left">
+Here is a consolidated status of your Local Bank Transfer.<br>
+<br>
+<strong><strong style=3D"color:#333333">Transaction Date:</strong><span sty=
+le=3D"color:#333333"></span></strong><span style=3D"color:#333333">&nbsp;09=
+/May/2026 02:18 PM</span><strong><span style=3D"color:#333333"></span><br s=
+tyle=3D"color:#333333">
+<strong style=3D"color:#333333">From Account:&nbsp;</strong><span style=3D"=
+color:#333333"></span></strong><span style=3D"color:#333333">067***17***01<=
+/span><strong><span style=3D"color:#333333"></span><br style=3D"color:#3333=
+33">
+<strong style=3D"color:#333333">Debit Amount:&nbsp;</strong><span style=3D"=
+color:#333333"></span></strong><span style=3D"color:#333333">AED 100,000.00=
+</span><strong><span style=3D"color:#333333"></span><br style=3D"color:#333=
+333">
+<strong style=3D"color:#333333">Transaction Amount:&nbsp;</strong><span sty=
+le=3D"color:#333333"></span></strong><span style=3D"color:#333333">AED 100,=
+000.00</span><strong><span style=3D"color:#333333"></span><br style=3D"colo=
+r:#333333">
+<strong style=3D"color:#333333">Exchange Rate:&nbsp;</strong><span style=3D=
+"color:#333333"></span></strong><span style=3D"color:#333333">N/A</span><st=
+rong><span style=3D"color:#333333"></span><br style=3D"color:#333333">
+<strong style=3D"color:#333333">Buy Rate:&nbsp;</strong><span style=3D"colo=
+r:#333333"></span></strong><span style=3D"color:#333333">N/A</span><strong>=
+<span style=3D"color:#333333"></span><br style=3D"color:#333333">
+<strong style=3D"color:#333333">Sell Rate:&nbsp;</strong><span style=3D"col=
+or:#333333"></span></strong><span style=3D"color:#333333">N/A</span><strong=
+><span style=3D"color:#333333"></span><br style=3D"color:#333333">
+<strong style=3D"color:#333333">Destination Country:&nbsp;</strong><span st=
+yle=3D"color:#333333"></span></strong><span style=3D"color:#333333">UNITED =
+ARAB EMIRATES</span><strong><span style=3D"color:#333333"></span><br style=
+=3D"color:#333333">
+<strong style=3D"color:#333333">Beneficiary Name:</strong><span style=3D"co=
+lor:#333333"></span></strong><span style=3D"color:#333333">&nbsp;SALEH TARI=
+Q HELAL AHMAD LOOTAH</span><strong><span style=3D"color:#333333"></span><br=
+ style=3D"color:#333333">
+<strong style=3D"color:#333333">Beneficiary Account / IBAN:&nbsp;</strong><=
+span style=3D"color:#333333"></span></strong><span style=3D"color:#333333">=
+AE17024000158***57***01</span><strong><span style=3D"color:#333333"></span>=
+<br style=3D"color:#333333">
+<strong style=3D"color:#333333">Beneficiary Bank Name:&nbsp;</strong><span =
+style=3D"color:#333333"></span></strong><span style=3D"color:#333333">DUBAI=
+ ISLAMIC BANK</span><strong><span style=3D"color:#333333"></span><br style=
+=3D"color:#333333">
+<strong style=3D"color:#333333">SWIFT / Routing Code:&nbsp;</strong><span s=
+tyle=3D"color:#333333"></span></strong><span style=3D"color:#333333">DUIBAE=
+AD</span><strong><span style=3D"color:#333333"></span><br style=3D"color:#3=
+33333">
+<strong style=3D"color:#333333">Correspondent Bank Name:</strong><span styl=
+e=3D"color:#333333">&nbsp;</span></strong><span style=3D"color:#333333">CEN=
+TRAL BANK OF THE U.A.E.</span><strong><span style=3D"color:#333333"></span>=
+<br style=3D"color:#333333">
+<strong style=3D"color:#333333">Transaction Fees:&nbsp;</strong><span style=
+=3D"color:#333333"></span></strong><span style=3D"color:#333333">AED 0</spa=
+n><strong><span style=3D"color:#333333"></span><br style=3D"color:#333333">
+<strong style=3D"color:#333333">Channel Reference No:</strong><span style=
+=3D"color:#333333"></span></strong><span style=3D"color:#333333">&nbsp;F9E6=
+338222F2</span><strong><span style=3D"color:#333333"></span><br style=3D"co=
+lor:#333333">
+<strong style=3D"color:#333333">SWIFT Reference No:&nbsp;</strong><span sty=
+le=3D"color:#333333"></span></strong><span style=3D"color:#333333">EPHCOR12=
+909Q1A4D</span><strong><span style=3D"color:#333333"></span><br style=3D"co=
+lor:#333333">
+<strong style=3D"color:#333333">Status:&nbsp;</strong><span style=3D"color:=
+#333333"></span></strong><span style=3D"color:#333333">Success</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td height=3D"20"></td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
+<table role=3D"presentation" width=3D"500" cellpadding=3D"0" cellspacing=3D=
+"0" border=3D"0" align=3D"center" bgcolor=3D"#d4d5d9">
+<tbody>
+<tr>
+<td align=3D"center"><a href=3D"https://www.emiratesnbd.com/en/ways-of-bank=
+ing/mobile-banking" aria-label=3D"Read more about Mobile Banking"><img src=
+=3D"https://cdn.emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25fe=
+b25_04.jpg" width=3D"162" height=3D"65" alt=3D"" style=3D"display:block;bor=
+der:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://www.emiratesnbd.com/en/schedule-of-=
+fees-and-charges" aria-label=3D"Read more about Key Facts Statement"><img s=
+rc=3D"https://cdn.emiratesnbd.com/assets/images/2025/enbd-general-edm-en-25=
+feb25_05.jpg" width=3D"180" height=3D"65" alt=3D"" style=3D"display:block;b=
+order:none;outline:none"></a></td>
+<td align=3D"center"><img src=3D"https://cdn.emiratesnbd.com/assets/images/=
+2025/enbd-general-edm-en-25feb25_06.jpg" width=3D"20" height=3D"65" alt=3D"=
+" style=3D"display:block;border:none;outline:none"></td>
+<td align=3D"center"><a href=3D"https://www.facebook.com/EmiratesNBD" aria-=
+label=3D"Facebook"><img src=3D"https://cdn.emiratesnbd.com/assets/images/20=
+25/enbd-general-edm-en-25feb25_07.jpg" width=3D"20" height=3D"65" alt=3D"" =
+style=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://twitter.com/EmiratesNBD_AE" aria-la=
+bel=3D"Twitter"><img src=3D"https://cdn.emiratesnbd.com/assets/images/2025/=
+enbd-general-edm-en-25feb25_08.jpg" width=3D"20" height=3D"65" alt=3D"" sty=
+le=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://www.instagram.com/emiratesnbd_ae" a=
+ria-label=3D"Instagram"><img src=3D"https://cdn.emiratesnbd.com/assets/imag=
+es/2025/enbd-general-edm-en-25feb25_09.jpg" width=3D"18" height=3D"65" alt=
+=3D"" style=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://www.youtube.com/user/EmiratesNBDCha=
+nnel" aria-label=3D"Youtube"><img src=3D"https://cdn.emiratesnbd.com/assets=
+/images/2025/enbd-general-edm-en-25feb25_10.jpg" width=3D"18" height=3D"65"=
+ alt=3D"" style=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://www.linkedin.com/company/emirates-n=
+bd" aria-label=3D"LinkedIn"><img src=3D"https://cdn.emiratesnbd.com/assets/=
+images/2025/enbd-general-edm-en-25feb25_11.jpg" width=3D"18" height=3D"65" =
+alt=3D"" style=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><a href=3D"https://www.snapchat.com/add/emirates_nbd" =
+aria-label=3D"Snapchat"><img src=3D"https://cdn.emiratesnbd.com/assets/imag=
+es/2025/enbd-general-edm-en-25feb25_12.jpg" width=3D"24" height=3D"65" alt=
+=3D"" style=3D"display:block;border:none;outline:none"></a></td>
+<td align=3D"center"><img src=3D"https://cdn.emiratesnbd.com/assets/images/=
+2025/enbd-general-edm-en-25feb25_13.jpg" width=3D"20" height=3D"65" alt=3D"=
+" style=3D"display:block;border:none;outline:none"></td>
+</tr>
+</tbody>
+</table>
+<table width=3D"500" cellpadding=3D"0" cellspacing=3D"0" border=3D"0" align=
+=3D"center" bgcolor=3D"#FFFFFF" role=3D"presentation">
+<tbody>
+<tr>
+<td bgcolor=3D"#072447" style=3D"padding:10px">
+<table width=3D"100%" border=3D"0" role=3D"presentation">
+<tbody>
+<tr>
+<td width=3D"81%" align=3D"left" valign=3D"top" style=3D"color:#ffffff;font=
+-family:'Plus Jakarta Sans', sans-serif;font-size:12px;font-weight:400;padd=
+ing-left:15px;line-height:20px">
+<strong style=3D"font-size:14px">Be aware!</strong><br>
+<span style=3D"color:#ffffff">In our emails, we will never ask you for conf=
+idential information or to confirm any security details like User IDs, pass=
+words or PINs. If you believe you received a fraudulent email please click =
+below:
+</span><br>
+<strong><a href=3D"https://www.emiratesnbd.com/en/security" style=3D"color:=
+#ffffff;text-decoration:none">Learn more about securing your online identit=
+y &gt;</a></strong></td>
+<td width=3D"19%" align=3D"center"><img src=3D"https://cdn.emiratesnbd.com/=
+assets/images/2025/icon-shield-white-25feb25.png" alt=3D"" width=3D"60" bor=
+der=3D"0" style=3D"display:block"></td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><img src=3D"https://cdn.emiratesnbd.com/assets/images/2025/enbd-general=
+-edm-en-25feb25_15.jpg" alt=3D"" width=3D"500" border=3D"0" style=3D"displa=
+y:block;width:100%"></td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
+DISCLAIMER: This e-mail message including any of its attachments is intende=
+d solely for the addressee(s) and may contain privileged information. If yo=
+u are not the addressee or you have received this email message in error, p=
+lease notify the sender who will
+ remove your details from its database. You are not authorized to read, cop=
+y, disseminate, distribute or use this e-mail message or any attachment to =
+it in any manner and must delete the email and destroy any hard copies of i=
+t. This e-mail message does not
+ contain financial instructions or commitments of any kind. Any views expre=
+ssed in this message are those of the individual sender and do not necessar=
+ily reflect the views of Emirates NBD PJSC, or any other related subsidiari=
+es, entities or persons.
+<br>
+<br>
+Emirates NBD Bank (P.J.S.C.) is licensed by the Central Bank of the UAE. <b=
+r>
+.=D8=A8=D9=86=D9=83 =D8=A7=D9=84=D8=A5=D9=85=D8=A7=D8=B1=D8=A7=D8=AA =D8=AF=
+=D8=A8=D9=8A =D8=A7=D9=84=D9=88=D8=B7=D9=86=D9=8A =D8=B4.=D9=85.=D8=B9. =D9=
+=87=D9=88 =D8=A8=D9=86=D9=83 =D9=85=D8=B1=D8=AE=D9=91=D8=B5 =D9=85=D9=86 =
+=D9=82=D8=A8=D9=84 =D9=85=D8=B5=D8=B1=D9=81 =D8=A7=D9=84=D8=A5=D9=85=D8=A7=
+=D8=B1=D8=A7=D8=AA =D8=A7=D9=84=D8=B9=D8=B1=D8=A8=D9=8A=D8=A9 =D8=A7=D9=84=
+=D9=85=D8=AA=D8=AD=D8=AF=D8=A9 =D8=A7=D9=84=D9=85=D8=B1=D9=83=D8=B2=D9=8A
+</body>
+</html>

@@ -1,0 +1,151 @@
+{
+  "generated_at": "2026-07-31T22:42:01Z",
+  "corpus_size": 6998,
+  "fixtures": [
+    {
+      "file": "dib-dkim-unexpired.eml",
+      "kind": "dib-dkim",
+      "source_id": 6849,
+      "received_at": "2026-06-21T06:56:04Z",
+      "sha256": "f3d86c1b2183d3128a9f9d467af602fc19787be88cc1ea1c7c6718a1e88cebd8",
+      "dkim_d": "dib.ae",
+      "dkim_selector": "selector2",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": true,
+      "x_expires_at": "2027-06-21T06:56:06Z",
+      "arc_instances": 0,
+      "arc_seal_domains": [],
+      "arc_seal_cv": [],
+      "note": "DIB signs with a ~1-year x=; this fixture stops verifying at x_expires_at."
+    },
+    {
+      "file": "enbd-proofpoint-p.eml",
+      "kind": "enbd-dkim-noexpiry",
+      "source_id": 2483,
+      "received_at": "2026-06-05T12:25:54Z",
+      "sha256": "864c36cf78c62d23030094eaa6a455899c430154bfa682b589095b3b6cc7b8f0",
+      "dkim_d": "emiratesnbd.com",
+      "dkim_selector": "proofpoint-p",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": false,
+      "arc_instances": 0,
+      "arc_seal_domains": [],
+      "arc_seal_cv": [],
+      "note": "subject \"Local Bank Transfer\", signed by proofpoint-p; no x= tag, so nothing here expires"
+    },
+    {
+      "file": "enbd-selector1.eml",
+      "kind": "enbd-dkim-noexpiry",
+      "source_id": 2481,
+      "received_at": "2026-05-09T10:18:48Z",
+      "sha256": "b81adabe7182cd8fc47d536f0b648dcaa93fcf9c07e3cbf86d0b2fcecbc50be7",
+      "dkim_d": "emiratesnbd.com",
+      "dkim_selector": "selector1",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": false,
+      "arc_instances": 1,
+      "arc_seal_domains": [
+        "microsoft.com"
+      ],
+      "arc_seal_cv": [
+        "none"
+      ],
+      "note": "subject \"Local Bank Transfer\", signed by selector1; no x= tag, so nothing here expires"
+    },
+    {
+      "file": "gmail-forward-1.eml",
+      "kind": "arc-2hop",
+      "source_id": 6998,
+      "received_at": "2026-07-31T21:32:32Z",
+      "sha256": "df6bb422a2a751a47d5e6d6f39b135b992612cb17279e49dcd31287471376481",
+      "dkim_d": "dib.ae",
+      "dkim_selector": "selector2",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": true,
+      "x_expires_at": "2027-07-31T21:32:28Z",
+      "arc_instances": 2,
+      "arc_seal_domains": [
+        "icloud.com",
+        "google.com"
+      ],
+      "arc_seal_cv": [
+        "none",
+        "pass"
+      ],
+      "note": "cv=none -\u003e cv=pass; no AMS carries an x= tag, so ARC fixtures cannot expire"
+    },
+    {
+      "file": "gmail-forward-2.eml",
+      "kind": "arc-2hop",
+      "source_id": 6997,
+      "received_at": "2026-07-31T21:29:40Z",
+      "sha256": "5f29a982016badcea8def04a7af7b3975986e064d717080dddcf43332c1a8857",
+      "dkim_d": "dib.ae",
+      "dkim_selector": "selector2",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": true,
+      "x_expires_at": "2027-07-31T21:29:34Z",
+      "arc_instances": 2,
+      "arc_seal_domains": [
+        "icloud.com",
+        "google.com"
+      ],
+      "arc_seal_cv": [
+        "none",
+        "pass"
+      ],
+      "note": "cv=none -\u003e cv=pass; no AMS carries an x= tag, so ARC fixtures cannot expire"
+    },
+    {
+      "file": "gmail-forward-3.eml",
+      "kind": "arc-2hop",
+      "source_id": 6996,
+      "received_at": "2026-07-31T13:54:33Z",
+      "sha256": "ec8f7a7f686b83b23ebc16961e83299abbe4660523e9a7d7e804be59467d9b47",
+      "dkim_d": "dib.ae",
+      "dkim_selector": "selector2",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": true,
+      "x_expires_at": "2027-07-31T13:54:26Z",
+      "arc_instances": 2,
+      "arc_seal_domains": [
+        "icloud.com",
+        "google.com"
+      ],
+      "arc_seal_cv": [
+        "none",
+        "pass"
+      ],
+      "note": "cv=none -\u003e cv=pass; no AMS carries an x= tag, so ARC fixtures cannot expire"
+    },
+    {
+      "file": "gmail-forward-inner-dkim.eml",
+      "kind": "arc-2hop-inner-dkim",
+      "source_id": 6995,
+      "received_at": "2026-07-31T11:04:20Z",
+      "sha256": "845b9bbdcf4960bd50d6059da7ced826cc417f395c0acc41bd932a1dd6fa08fb",
+      "dkim_d": "dib.ae",
+      "dkim_selector": "selector2",
+      "dkim_key_in_dns": true,
+      "dkim_verifies": true,
+      "has_x_tag": true,
+      "x_expires_at": "2027-07-31T11:04:04Z",
+      "arc_instances": 2,
+      "arc_seal_domains": [
+        "icloud.com",
+        "google.com"
+      ],
+      "arc_seal_cv": [
+        "none",
+        "pass"
+      ],
+      "note": "the original d=dib.ae signature survives the forward; Task 26's direct-DKIM path"
+    }
+  ]
+}
