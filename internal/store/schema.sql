@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS categories (
   kind      TEXT NOT NULL DEFAULT 'spending',  -- 'spending' | 'income' | 'excluded'
   bucket    TEXT,                              -- 'need' | 'want' | 'saving'
   parent_id INTEGER REFERENCES categories(id),
-  is_active INTEGER NOT NULL DEFAULT 1
+  is_active INTEGER NOT NULL DEFAULT 1,
+  color     TEXT                               -- palette name (see lib/paletteColor.ts); NULL = never chosen, resolves to neutral
 );
 
 -- Merchant -> category rules (the self-improving lookup)
