@@ -439,6 +439,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   colour is never the sole carrier of identity. Resolves through `projectColor`
   (`lib/paletteColor.ts`), so a stored palette name follows the theme and an
   unknown value degrades to the neutral instead of vanishing.
+- **Not for pickers.** A swatch grid you choose *from* shows the colour itself,
+  solid — the hatch is the project mark's identity, and hatching a picker would
+  say "these 24 squares are all projects". Both pickers (`ProjectForm`,
+  `CategoryManager`'s row editor) render a plain span in the hue inside a
+  `w-11 h-11 -m-1` target: 44px to tap, a smaller mark to look at, the negative
+  margin pulling the padding back out so the grid still reads as a grid.
 
 ### PixelSpinner
 - **Purpose:** the loading spinner and the pull-to-refresh gauge. Eight blocks

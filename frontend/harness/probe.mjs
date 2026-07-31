@@ -360,6 +360,150 @@ async function probeScreen(page, screen) {
   return bugs;
 }
 
+/**
+ * The category colour picker, measured at 320px.
+ *
+ * Its own pass rather than a `nav.mjs` screen, for two reasons. The editor is
+ * an inline row state, not a Dialog, so the opener crawl above walks straight
+ * past it (`ov.open` is false and it moves on). And the crawl's input battery
+ * would be actively destructive here: the rename field commits on blur and
+ * closes the editor, so typing "7" into it renames a fixture category and then
+ * finds no input left to type the original back into.
+ *
+ * Pinned to 320px whatever `--viewport` says, because 320 is the width the
+ * grid is sized against — 24 swatches at a 44px target is 1056px before gaps,
+ * so this either wraps to about six per row or it pushes the row editor's
+ * other controls out of reach. That is a fact about a specific width, and
+ * measuring it at 390 would prove nothing about the one that is tight.
+ *
+ * Verified to have teeth three ways (each broken, observed failing, reverted):
+ * shrinking the swatch to `w-9 h-9` fires `picker-swatch-too-small`; swapping
+ * `flex-wrap` for `flex-nowrap` fires `picker-past-viewport`; and dropping the
+ * `data-color-picker` marker fires `picker-missing` rather than passing an
+ * empty check, which is how three earlier checks in this repo managed to stay
+ * green over broken subjects.
+ */
+async function checkCategoryPicker(browser) {
+  const bugs = [];
+  const ctx = "settings-categories › row editor";
+  const context = await browser.newContext({
+    ...VIEWPORTS.small,
+    locale: "en-AE",
+    timezoneId: "Asia/Dubai",
+    reducedMotion: "reduce",
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await settle(page, 900);
+    await screenById("settings-categories").goto(page);
+    await settle(page, 400);
+
+    const edit = page.locator('button[aria-label^="Edit "]').first();
+    if (!(await edit.count())) {
+      bugs.push({
+        kind: "picker-unreachable",
+        severity: "high",
+        where: ctx,
+        detail: "no category row offered an Edit control, so the picker was never opened and nothing below this was measured",
+      });
+      return bugs;
+    }
+    await edit.click();
+    await page.waitForTimeout(500);
+
+    const geo = await page.evaluate(() => {
+      const vw = window.innerWidth;
+      const grid = document.querySelector("[data-color-picker]");
+      if (!grid) return { found: false, vw };
+      const gr = grid.getBoundingClientRect();
+      const editor = grid.parentElement.getBoundingClientRect();
+      const swatches = [...grid.querySelectorAll("button")].map((b) => {
+        const r = b.getBoundingClientRect();
+        return {
+          name: b.getAttribute("aria-label") || "(unlabelled)",
+          left: Math.round(r.left),
+          right: Math.round(r.right),
+          top: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        };
+      });
+      // Rows by distinct top edge, so "wraps to six per row" is measured
+      // rather than inferred from the class list.
+      const rows = [...new Set(swatches.map((s) => s.top))]
+        .sort((a, b) => a - b)
+        .map((t) => swatches.filter((s) => s.top === t).length);
+      return {
+        found: true,
+        vw,
+        swatches,
+        rows,
+        grid: { w: Math.round(gr.width), h: Math.round(gr.height), left: Math.round(gr.left), right: Math.round(gr.right) },
+        editor: { h: Math.round(editor.height) },
+      };
+    });
+
+    if (!geo.found) {
+      bugs.push({
+        kind: "picker-missing",
+        severity: "high",
+        where: ctx,
+        detail: "the row editor is open but carries no [data-color-picker] grid — there is no way to choose a category's colour",
+      });
+      return bugs;
+    }
+
+    console.error(
+      `      picker @${geo.vw}px: ${geo.swatches.length} swatches, rows ${geo.rows.join("+")}, ` +
+        `grid ${geo.grid.w}x${geo.grid.h}px at ${geo.grid.left}..${geo.grid.right}, editor ${geo.editor.h}px tall`,
+    );
+
+    for (const s of geo.swatches) {
+      if (s.w < 44 || s.h < 44) {
+        bugs.push({
+          kind: "picker-swatch-too-small",
+          severity: s.w < 32 || s.h < 32 ? "high" : "medium",
+          where: ctx,
+          input: `swatch "${s.name}"`,
+          detail: `${s.w}x${s.h}px, minimum is 44x44`,
+        });
+      }
+      if (s.right > geo.vw + 1 || s.left < -1) {
+        bugs.push({
+          kind: "picker-past-viewport",
+          severity: "high",
+          where: ctx,
+          input: `swatch "${s.name}"`,
+          detail: `spans ${s.left}..${s.right}px, viewport is 0..${geo.vw}px — it cannot be tapped`,
+        });
+      }
+    }
+
+    // The other controls in the editor have to survive the picker's arrival:
+    // a grid that pushes the name field or the bucket dots off-screen is a
+    // regression even if every swatch measures clean.
+    const inLayer = await audit(page);
+    for (const i of inLayer.issues) {
+      if (i.kind === "background-layer-not-inert") continue; // expected: SettingsPage covers the tab
+      bugs.push({ kind: i.kind, severity: i.severity, where: ctx, input: i.el, detail: i.detail });
+    }
+
+    // A screenshot for the judgement calls geometry cannot make — whether the
+    // grid dominates the row it lives in.
+    await page.screenshot({ path: path.join(OUT, "category-picker.small.png") });
+
+    // Escape, not blur: blur commits a rename and would mutate the fixture.
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
+  } catch (e) {
+    bugs.push({ kind: "picker-probe-error", severity: "high", where: ctx, detail: String(e).split("\n")[0].slice(0, 200) });
+  } finally {
+    await context.close();
+  }
+  return bugs;
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true });
   const browser = await chromium.launch({ headless: true });
@@ -392,6 +536,16 @@ async function main() {
     );
     for (const b of entry.bugs) console.error(`      · [${b.kind}] ${b.where}: ${b.input || ""} ${b.detail}`);
     await context.close();
+  }
+
+  // Runs whenever the categories screen is in scope, so `--screens
+  // settings-categories` exercises it too rather than only a full run.
+  if (wanted.includes("settings-categories")) {
+    const entry = { id: "settings-categories-picker", title: "Settings › Categories (row editor, 320px)", bugs: [], error: null, consoleErrors: [] };
+    entry.bugs = await checkCategoryPicker(browser);
+    report.screens.push(entry);
+    console.error(` ${entry.bugs.length ? "!! " : " ok "} ${entry.id.padEnd(28)} ${entry.bugs.length} interaction bug(s)`);
+    for (const b of entry.bugs) console.error(`      · [${b.kind}] ${b.where}: ${b.input || ""} ${b.detail}`);
   }
 
   await browser.close();

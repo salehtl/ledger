@@ -31,6 +31,32 @@ export const PALETTE_NAMES = [
 
 export type PaletteName = (typeof PALETTE_NAMES)[number];
 
+/**
+ * The same twenty-four names, ordered around the hue wheel, for a swatch grid.
+ *
+ * `PALETTE_NAMES` is append order and has to stay that way — the category
+ * colour backfill walks it as a ring (see the note above), so renumbering it
+ * would re-seed every category. But append order makes a poor picker: the six
+ * hues added later all land in a block after the original six, so azure sits
+ * beside amber and the grid reads as two unrelated batches rather than a
+ * spectrum.
+ *
+ * So the picker sorts a *copy*. Hues run rose (15°) → orchid (337°) with the
+ * neutral last, bases first and then the deep steps in the same order. At the
+ * six-per-row the 320px viewport allows, that puts each row on a contiguous
+ * arc and stacks each base directly above its own deep step.
+ *
+ * Kept honest by `paletteColor.test.ts`, which asserts this is a permutation of
+ * `PALETTE_NAMES` — adding a hue to one without the other fails there rather
+ * than silently dropping a colour the user can no longer pick.
+ */
+export const PALETTE_DISPLAY_ORDER = [
+  "rose", "ochre", "amber", "moss", "sage", "teal",
+  "sky", "azure", "indigo", "lilac", "orchid", "slate",
+  "rose-deep", "ochre-deep", "amber-deep", "moss-deep", "sage-deep", "teal-deep",
+  "sky-deep", "azure-deep", "indigo-deep", "lilac-deep", "orchid-deep", "slate-deep",
+] as const satisfies readonly PaletteName[];
+
 // Compile-time assertion that the CSS names and the canvas seeds are the same
 // set. If `DitherColor` gains or loses a member, this stops building.
 const _sameAsCanvas: readonly DitherColor[] = PALETTE_NAMES;

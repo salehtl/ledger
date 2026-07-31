@@ -7,6 +7,7 @@ import type { Category } from "../api/types";
 import { useToast } from "../components/Toast";
 import { bucketColor } from "../lib/insights";
 import { categoryColor } from "../lib/categoryColor";
+import { PALETTE_DISPLAY_ORDER } from "../lib/paletteColor";
 import { DUR, EASE_OUT } from "../lib/motion";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Input } from "../components/ui/Field";
@@ -169,6 +170,11 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   const { show } = useToast();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(cat.Name);
+  // Local so the swatch responds under the finger instead of after a round
+  // trip; the PUT that follows is the source of truth and rolls this back if
+  // it fails. Not derived from `cat.Color` on every render, because the
+  // refetch that `onChanged` triggers arrives after we already set it.
+  const [color, setColor] = useState(cat.Color);
   const usage = useQuery({ queryKey: ["category-usage", cat.ID], queryFn: () => getCategoryUsage(cat.ID) });
   const transactions = usage.data?.transactions ?? 0;
   const rules = usage.data?.rules ?? 0;
@@ -182,7 +188,11 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   // real backstop, this check is just the fast path that avoids the round trip.
   const inUse = transactions > 0 || rules > 0 || assignments > 0 || targets > 0;
 
-  const put = async (body: { name: string; bucket: string }) =>
+  // Colour rides the same PUT as name and bucket — no second endpoint, and no
+  // window where a rename and a recolour disagree. An empty `color` means
+  // "leave it alone" server-side (see server/categories.go), which is exactly
+  // what a category that has never been coloured wants.
+  const put = async (body: { name: string; bucket: string; color: string }) =>
     postJSON(`/api/categories/${cat.ID}`, { ...body, kind: cat.Kind }, "PUT");
 
   const commitRename = async () => {
@@ -190,7 +200,7 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     setEditing(false);
     if (!trimmed || trimmed === cat.Name) { setDraft(cat.Name); return; }
     try {
-      await put({ name: trimmed, bucket: cat.Bucket });
+      await put({ name: trimmed, bucket: cat.Bucket, color });
       onChanged();
       show({ message: `${trimmed} saved`, tone: "success" });
     } catch (e) {
@@ -210,10 +220,28 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
     const name = draft.trim() || cat.Name;
     setEditing(false);
     try {
-      await put({ name, bucket: b });
+      await put({ name, bucket: b, color });
       onChanged();
       show({ message: `Moved to ${BUCKET_LABELS[b] ?? b}`, tone: "success" });
     } catch { show({ message: "Couldn't move category", tone: "error" }); setDraft(cat.Name); }
+  };
+
+  // Deliberately does NOT close the editor: picking a colour is something you
+  // do by trying two or three, and a picker that vanishes on the first tap
+  // makes that four round trips through "Edit". No toast either — the row's
+  // own dot changes under the finger, and one toast per swatch would bury the
+  // ones that matter.
+  const pickColor = async (c: string) => {
+    if (c === color) return;
+    const prev = color;
+    setColor(c);
+    try {
+      await put({ name: draft.trim() || cat.Name, bucket: cat.Bucket, color: c });
+      onChanged();
+    } catch {
+      setColor(prev);
+      show({ message: "Couldn't change colour", tone: "error" });
+    }
   };
 
   // Undo re-creates rather than deferring the DELETE: the backend stays the
@@ -271,38 +299,93 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
   };
 
   return (
-    <div className="min-h-12 px-3 py-2 flex items-center gap-2.5">
+    // Editing turns the row into a two-line form: the name and bucket controls
+    // keep their single line, and the colour grid gets its own beneath them.
+    // 24 swatches at a 44px target is 1056px of width — there is no inline
+    // arrangement of that, so the row grows rather than the grid shrinking.
+    <div className={`min-h-12 px-3 py-2 flex gap-2.5 ${editing ? "flex-col" : "items-center"}`}>
       {editing ? (
         <>
-          <Input
-            aria-label={`Rename ${cat.Name}`}
-            className="min-w-0 flex-1"
-            autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            onBlur={() => void commitRename()}
-          />
-          {cat.Kind === "spending" && (
-            <div className="flex gap-1 shrink-0" role="group" aria-label={`Move ${cat.Name}`}>
-              {(["need", "want", "saving"] as const).map((b) => (
-                <Pressable
-                  key={b}
-                  aria-label={`Move to ${BUCKET_LABELS[b]}`}
-                  aria-pressed={cat.Bucket === b}
-                  // preventDefault keeps focus in the input so the tap doesn't
-                  // race the blur-commit; the move PUT carries the draft name.
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => void move(b)}
-                  className={`w-9 h-9 rounded-[var(--radius)] inline-flex items-center justify-center border transition-colors ${
-                    cat.Bucket === b ? "border-transparent bg-surface-2" : "border-border"
+          <div className="flex items-center gap-2.5">
+            <Input
+              aria-label={`Rename ${cat.Name}`}
+              className="min-w-0 flex-1"
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              onBlur={() => void commitRename()}
+            />
+            {cat.Kind === "spending" && (
+              <div className="flex gap-2 shrink-0" role="group" aria-label={`Move ${cat.Name}`}>
+                {(["need", "want", "saving"] as const).map((b) => (
+                  <Pressable
+                    key={b}
+                    aria-label={`Move to ${BUCKET_LABELS[b]}`}
+                    aria-pressed={cat.Bucket === b}
+                    // preventDefault keeps focus in the input so the tap doesn't
+                    // race the blur-commit; the move PUT carries the draft name.
+                    onPointerDown={(e) => e.preventDefault()}
+                    onClick={() => void move(b)}
+                    // These were a bare 36px box until the picker's harness
+                    // check first opened this editor and measured them — the
+                    // fourth sub-44px target in this codebase, invisible until
+                    // now because no pass had ever entered a row's edit state.
+                    // w-11 h-11 -m-1 buys the 44px target back without moving
+                    // anything: the visible bordered box below stays 36px, and
+                    // gap-2 puts the targets exactly adjacent rather than
+                    // overlapping, so the net layout width is unchanged.
+                    className="w-11 h-11 -m-1 inline-flex items-center justify-center"
+                  >
+                    <span
+                      aria-hidden
+                      className={`w-9 h-9 rounded-[var(--radius)] inline-flex items-center justify-center border transition-colors ${
+                        cat.Bucket === b ? "border-transparent bg-surface-2" : "border-border"
+                      }`}
+                    >
+                      <span className="w-2.5 h-2.5 rounded-[var(--radius)]" style={{ backgroundColor: bucketColor(b) }} />
+                    </span>
+                  </Pressable>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* data-color-picker, not a class selector: harness/probe.mjs
+              measures this grid, and the harness should not grab a control by
+              its Tailwind styling (same contract as data-sheet-handle). */}
+          <div data-color-picker role="group" aria-label={`Colour for ${cat.Name}`} className="flex flex-wrap gap-2">
+            {PALETTE_DISPLAY_ORDER.map((c) => (
+              <Pressable
+                key={c}
+                aria-label={c}
+                aria-pressed={color === c}
+                // Same reason as the bucket buttons above: without this the
+                // input blurs first, commitRename closes the editor, and the
+                // click lands on a row that no longer has a picker in it.
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => void pickColor(c)}
+                // w-11 h-11 -m-1: a 44px target around a smaller visual mark,
+                // the negative margin pulling 4px back out of the layout so the
+                // grid stays tight without shrinking the target. Copied
+                // deliberately from ProjectForm — this codebase has shipped
+                // three sub-44px target bugs, and harness/probe.mjs now
+                // measures this grid so it does not ship a fourth.
+                className="w-11 h-11 -m-1 inline-flex items-center justify-center"
+              >
+                {/* Solid, not ColorSwatch: the hatch is the *project* mark's
+                    identity, and a picker has to show the colour itself. 24px
+                    rather than the project form's 32px — this grid lives inside
+                    a list row, not on a page of its own. */}
+                <span
+                  aria-hidden
+                  className={`w-6 h-6 rounded-[var(--radius)] ${
+                    color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
                   }`}
-                >
-                  <span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)]" style={{ backgroundColor: bucketColor(b) }} />
-                </Pressable>
-              ))}
-            </div>
-          )}
+                  style={{ backgroundColor: categoryColor(c) }}
+                />
+              </Pressable>
+            ))}
+          </div>
         </>
       ) : (
         <>

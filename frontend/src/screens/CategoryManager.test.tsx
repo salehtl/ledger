@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { CategoryManager } from "./CategoryManager";
 import { MotionProvider } from "../app/MotionProvider";
+import { PALETTE_NAMES } from "../lib/paletteColor";
 
 const CATS = [
   { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
@@ -256,6 +257,99 @@ describe("CategoryManager", () => {
     const dining = screen.getByRole("button", { name: /edit dining/i });
     expect((groceries.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-teal)");
     expect((dining.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-orchid)");
+  });
+
+  describe("colour picker", () => {
+    const withColors = () => mockFetch(USAGE, (url) => {
+      if (url === "/api/categories") {
+        return new Response(JSON.stringify([{ ...CATS[0], Color: "teal" }, CATS[1], CATS[2]]));
+      }
+      return null;
+    });
+
+    it("offers every palette name, and only while the row is being edited", async () => {
+      vi.stubGlobal("fetch", withColors());
+      const { container } = wrap();
+      // Collapsed rows are calm text — a wall of swatches on every row would
+      // make the list unreadable.
+      await screen.findByRole("button", { name: /edit groceries/i });
+      expect(container.querySelector("[data-color-picker]")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit groceries/i }));
+      const picker = container.querySelector("[data-color-picker]") as HTMLElement;
+      expect(picker).toBeTruthy();
+      expect(picker.querySelectorAll("button")).toHaveLength(PALETTE_NAMES.length);
+      // Every name reachable: a colour the backfill can assign but the user
+      // cannot pick would be a colour they can never get rid of.
+      for (const name of PALETTE_NAMES) {
+        expect(within(picker).getByRole("button", { name })).toBeInTheDocument();
+      }
+    });
+
+    it("marks the category's current colour as the pressed swatch", async () => {
+      vi.stubGlobal("fetch", withColors());
+      wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      expect(screen.getByRole("button", { name: "teal" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "rose" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("picking a colour PUTs it with the name and bucket, and keeps the picker open", async () => {
+      const fetchMock = withColors();
+      vi.stubGlobal("fetch", fetchMock);
+      const { container } = wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      fireEvent.click(screen.getByRole("button", { name: "orchid" }));
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT");
+        expect(call).toBeTruthy();
+        // Name and bucket ride along — the server takes a whole category, so
+        // omitting them would blank the row it was meant to recolour.
+        expect(JSON.parse(String(call![1]!.body))).toMatchObject({
+          name: "Groceries", bucket: "need", kind: "spending", color: "orchid",
+        });
+      });
+      // Choosing a colour means trying two or three; the editor stays put.
+      expect(container.querySelector("[data-color-picker]")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "orchid" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("renaming a coloured category carries its colour through, not a blank", async () => {
+      // The PUT is whole-category. A rename that dropped `color` would rely on
+      // the server's empty-means-leave-alone branch; sending it keeps the two
+      // sides from having to agree about that.
+      const fetchMock = withColors();
+      vi.stubGlobal("fetch", fetchMock);
+      wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      const input = screen.getByLabelText("Rename Groceries");
+      fireEvent.change(input, { target: { value: "Food" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT");
+        expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Food", color: "teal" });
+      });
+    });
+
+    it("rolls the swatch back and says so when the PUT fails", async () => {
+      vi.stubGlobal("fetch", mockFetch(USAGE, (url, init) => {
+        if (url === "/api/categories") {
+          return new Response(JSON.stringify([{ ...CATS[0], Color: "teal" }, CATS[1], CATS[2]]));
+        }
+        if (url === "/api/categories/1" && init?.method === "PUT") {
+          return new Response(JSON.stringify({ error: "nope" }), { status: 500 });
+        }
+        return null;
+      }));
+      wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      fireEvent.click(screen.getByRole("button", { name: "orchid" }));
+      await waitFor(() => expect(screen.getByText("Couldn't change colour")).toBeInTheDocument());
+      // Back where it was: an optimistic swatch that stuck would tell the user
+      // a colour was saved that the server never took.
+      expect(screen.getByRole("button", { name: "teal" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "orchid" })).toHaveAttribute("aria-pressed", "false");
+    });
   });
 
   it("rename with duplicate name shows friendly toast", async () => {
