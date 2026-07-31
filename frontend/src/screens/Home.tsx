@@ -242,8 +242,20 @@ export function Home({
                     // the same guarantee the old `stagger-item` class gave, now
                     // enforced by the animator instead of by remembering to
                     // leave a class off.
-                    initial={firstReveal ? { opacity: 0, y: 8 } : false}
-                    animate={{ opacity: 1, y: 0 }}
+                    //
+                    // TRANSFORM ONLY — no `opacity: 0` here, deliberately, and
+                    // do not add one. `LazyMotion` loads its feature bundle in
+                    // an effect, and until that promise settles `m.*` renders
+                    // straight from `initial` with no animation running. An
+                    // `opacity: 0` resting state therefore means this card's
+                    // rows paint *invisible* until a separate 58KB chunk has
+                    // been fetched and executed — above the fold, on the first
+                    // screen, on a cold load or the first load after a deploy
+                    // invalidates the precache. A `y` offset degrades to "8px
+                    // low for a moment" instead of "gone". The cascade is
+                    // decorative; the transactions are not.
+                    initial={firstReveal ? { y: 8 } : false}
+                    animate={{ y: 0 }}
                     // The cap reproduces the retired `:nth-child(n+7)` rule: past
                     // the sixth row the delay stops growing, so a long list still
                     // finishes arriving in well under half a second.

@@ -131,9 +131,16 @@ function NewCategoryRow({ section, onCreate, onCancel }: { section: SectionDef; 
     // user just asked for it. DUR.fast stands in for the retired `.row-in`'s
     // 150ms; every duration comes from lib/motion.ts, and 10ms is not worth a
     // token of its own.
+    //
+    // Transform-only, for the same reason as the two list staggers (see
+    // Home.tsx). The window is narrower here — the user has already tapped
+    // "+", so React is live — but `LazyMotion` resolves its features in an
+    // effect, and a tap inside that window would otherwise leave an invisible
+    // row with an `autoFocus`'d input inside it. Keyboard up, nothing to type
+    // into.
     <m.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ y: 8 }}
+      animate={{ y: 0 }}
       transition={{ duration: DUR.fast, ease: EASE_OUT }}
       className="px-3 py-2 flex items-center gap-2.5"
     >
