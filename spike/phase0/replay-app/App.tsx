@@ -8,8 +8,9 @@ import { Op, bucketDebits, getDb, insertOps, reopenDb, resetDb } from "./replay"
 // cold restore. Chunking bounds peak memory: only one chunk's decrypted
 // buffers and parsed ops are ever reachable at once, instead of ~3,683
 // decrypted buffers AND ~3,683 op objects all alive simultaneously (see
-// task-3c-brief.md). 250 is a starting point; tune here if the on-device
-// measurement wants a different memory/overhead tradeoff.
+// spike/phase0/RESULTS.md, "Pre-fix catastrophic run", for the memory
+// incident this design fixes). 250 is a starting point; tune here if the
+// on-device measurement wants a different memory/overhead tradeoff.
 const CHUNK_SIZE = 250;
 const CHUNK_BYTES = CHUNK_SIZE * RECORD_SIZE;
 
@@ -31,11 +32,11 @@ const LOG_CAP = 50;
 // via getDb() on mount, before any button is pressable, so by the time
 // "Cold Restore" is pressed for the first time there is already an open
 // connection for reopenDb() to close — every press pays the same
-// close+open+CREATE-TABLE cost. See task-3c-report.md's "reuse sqlite
-// connection" addendum for why a shared/reopened connection exists at all: a
-// bare per-press SQLite.openDatabaseSync() with no matching close was
-// leaking a native connection on every press (Cold Restore AND Reset DB),
-// memory outside the JS heap that no amount of chunking/GC can reclaim.
+// close+open+CREATE-TABLE cost. A shared/reopened connection exists at all
+// because a bare per-press SQLite.openDatabaseSync() with no matching close
+// was leaking a native connection on every press (Cold Restore AND Reset
+// DB), memory outside the JS heap that no amount of chunking/GC can
+// reclaim.
 //
 // resetMs: resetDb(db) — `DELETE FROM transactions` — split out from
 // dbOpenMs because it is NOT uniform and is NOT a database-open cost: it
@@ -128,8 +129,8 @@ export default function App() {
   // Row count actually read during the warm-start measurement, plus the
   // manifest's expected count (fetched separately, see the effect below) so
   // the UI can flag a partial-corpus warm start as VOID. This exists
-  // because per-chunk commits (see task-3c-report.md) mean a force-quit or
-  // error mid-cold-restore leaves a partial table durably in phase0.db —
+  // because per-chunk commits mean a force-quit or error mid-cold-restore
+  // leaves a partial table durably in phase0.db —
   // and the protocol's warm phase is built on force-quitting. Without a row
   // count on screen, a warm-start reading over e.g. 2,000 rows is
   // indistinguishable from one over the full 3,683.
@@ -251,10 +252,10 @@ export default function App() {
       const tc = performance.now();
       decodeMs += tc - tb;
 
-      // Own transaction per chunk (see report: task-3c) — insertOps wraps
-      // this call in db.withTransactionSync internally, so each chunk
-      // commits before the yield below rather than holding a transaction
-      // open across an awaited event-loop tick.
+      // Own transaction per chunk — insertOps wraps this call in
+      // db.withTransactionSync internally, so each chunk commits before the
+      // yield below rather than holding a transaction open across an
+      // awaited event-loop tick.
       insertOps(db, ops);
       const td = performance.now();
       insertMs += td - tc;
