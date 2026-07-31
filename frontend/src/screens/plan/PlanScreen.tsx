@@ -72,7 +72,11 @@ export function PlanScreen({ scope }: { scope: Scope }) {
   const byId = (id: number): Envelope | undefined => s.envelopes.find((e) => e.category_id === id);
   const sheetEnvelope =
     sheet && sheet.kind !== "move" ? byId(sheet.categoryId) : sheet ? byId(sheet.toId) : undefined;
-  const sheetColor = sheetEnvelope && categories.data?.find((c) => c.ID === sheetEnvelope.category_id)?.Color;
+  // One lookup, shared by every row's dot and the assign sheet's dot — built
+  // fresh each render from the category inventory, which reacts (query-cache)
+  // to picker changes without this screen needing to know about the picker.
+  const colorById = new Map(categories.data?.map((c) => [c.ID, c.Color] as const) ?? []);
+  const sheetColor = sheetEnvelope && colorById.get(sheetEnvelope.category_id);
 
   const runAutoAssign = () => {
     autoAssign.mutate(undefined, {
@@ -144,6 +148,7 @@ export function PlanScreen({ scope }: { scope: Scope }) {
                   envelope={e}
                   claim={claims.get(e.category_id)}
                   pace={pace}
+                  color={colorById.get(e.category_id)}
                   onOpen={(env) => setSheet({ kind: "assign", categoryId: env.category_id })}
                 />
               ))}
