@@ -19,7 +19,7 @@ import {
   type Envelope,
 } from "../../lib/envelope";
 import { assignEnvelopesOnce } from "../../api/client";
-import { useAutoAssign, useEnvelopes, useUpcoming, writeSummary } from "../../api/hooks";
+import { useAutoAssign, useCategories, useEnvelopes, useUpcoming, writeSummary } from "../../api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { ReadyToAssignBanner } from "./ReadyToAssignBanner";
 import { EnvelopeRow } from "./EnvelopeRow";
@@ -43,6 +43,11 @@ export function PlanScreen({ scope }: { scope: Scope }) {
   const focus = insightsFocus(scope);
   const month = focus.period;
   const envelopes = useEnvelopes(month);
+  // The envelope wire shape carries no colour of its own (it's keyed off
+  // category_id, not the category row) — the assign sheet's dot needs the
+  // category's own stored colour, so the inventory is fetched here and
+  // looked up by id below, purely for that one dot.
+  const categories = useCategories();
   const upcoming = useUpcoming();
   const autoAssign = useAutoAssign(month);
   const qc = useQueryClient();
@@ -67,6 +72,7 @@ export function PlanScreen({ scope }: { scope: Scope }) {
   const byId = (id: number): Envelope | undefined => s.envelopes.find((e) => e.category_id === id);
   const sheetEnvelope =
     sheet && sheet.kind !== "move" ? byId(sheet.categoryId) : sheet ? byId(sheet.toId) : undefined;
+  const sheetColor = sheetEnvelope && categories.data?.find((c) => c.ID === sheetEnvelope.category_id)?.Color;
 
   const runAutoAssign = () => {
     autoAssign.mutate(undefined, {
@@ -152,6 +158,7 @@ export function PlanScreen({ scope }: { scope: Scope }) {
           claim={claims.get(sheetEnvelope.category_id)}
           month={month}
           canMoveIn={s.envelopes.some((e) => e.category_id !== sheetEnvelope.category_id && e.available_fils > 0)}
+          color={sheetColor}
           onClose={() => setSheet(null)}
           onMoveMoney={() => setSheet({ kind: "move", toId: sheetEnvelope.category_id })}
           onEditTarget={() => setSheet({ kind: "target", categoryId: sheetEnvelope.category_id })}
