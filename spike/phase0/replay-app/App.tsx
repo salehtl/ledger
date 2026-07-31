@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, SafeAreaView, ScrollView, Text } from "react-native";
 import { RECORD_SIZE, derivePub, hexToBytes, openBlob } from "./crypto";
 import { SERVER, RECIPIENT_PRIV_HEX } from "./config";
-import { Op, bucketDebits, insertOps, openDb, resetDb } from "./replay";
+import { Op, bucketDebits, getDb, insertOps, reopenDb, resetDb } from "./replay";
 
 // CHUNK_SIZE: records processed per decrypt -> decode -> insert cycle during
 // cold restore. Chunking bounds peak memory: only one chunk's decrypted
@@ -18,9 +18,17 @@ const CHUNK_BYTES = CHUNK_SIZE * RECORD_SIZE;
 // ScrollView/DOM it drives) without bound.
 const LOG_CAP = 50;
 
-// dbOpenMs: connection-open + CREATE TABLE, inside the measured window (it
-// used to run before t0 and was silently excluded from a measurement whose
-// whole purpose is the cold-restore total).
+// dbOpenMs: close-the-previous-connection (if any) + open-a-genuinely-fresh
+// native connection + CREATE TABLE, inside the measured window. coldRestore
+// always calls replay.ts's reopenDb() rather than reusing the shared
+// connection, specifically so dbOpenMs is a real, uniform cost on EVERY
+// cold-restore press — not just the first — even though the warm-start
+// effect and the Reset DB button deliberately reuse the shared connection
+// (via getDb()) and pay no open cost of their own. See task-3c-report.md's
+// "reuse sqlite connection" addendum for why: a bare per-press
+// SQLite.openDatabaseSync() with no matching close was leaking a native
+// connection on every press (Cold Restore AND Reset DB), which is memory
+// outside the JS heap that no amount of chunking/GC can reclaim.
 // decryptMs / decodeMs: crypto-only vs decode+parse-only, each summed across
 // chunks (see CHUNK_SIZE above) but still isolated from one another so the
 // Phase 0 decision rule can tell whether decrypt itself dominates, rather
@@ -64,12 +72,25 @@ function sampleMemory(): string | null {
 export default function App() {
   const [log, setLog] = useState<string[]>([]);
   const [warmMs, setWarmMs] = useState<number | null>(null);
+  // Guards against a double-press starting a second coldRestore() while one
+  // is already in flight. This matters specifically because of reopenDb():
+  // if two coldRestore() calls overlapped, the second's reopenDb() would
+  // close the connection the first one is still mid-use with, turning a
+  // double-tap into a hard "closed database" error instead of the old
+  // behavior (two independently-leaked connections racing each other).
+  // Also disables Reset DB while running, so it can't race a cold restore's
+  // inserts via the same shared connection.
+  const [isRunning, setIsRunning] = useState(false);
   const say = (s: string) => setLog((l) => [...l, s].slice(-LOG_CAP));
 
   useEffect(() => {
-    // Warm-start measurement: data already in SQLite from a prior cold restore.
+    // Warm-start measurement: data already in SQLite from a prior cold
+    // restore. Deliberately reuses the shared connection (getDb()) rather
+    // than forcing a fresh open — warm start is not meant to measure a
+    // connection-open cost, cold restore already does that (see dbOpenMs
+    // comment on Timings below).
     const t0 = performance.now();
-    const db = openDb();
+    const db = getDb();
     const n = db.getFirstSync<{ n: number }>("SELECT COUNT(*) AS n FROM transactions")?.n ?? 0;
     if (n > 0) {
       bucketDebits(db);
@@ -78,11 +99,27 @@ export default function App() {
   }, []);
 
   async function coldRestore() {
+    if (isRunning) return;
+    setIsRunning(true);
+    try {
+      await runColdRestore();
+    } catch (e) {
+      say(String(e));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  async function runColdRestore() {
     const t0 = performance.now();
     const memBefore = sampleMemory();
     const priv = hexToBytes(RECIPIENT_PRIV_HEX);
     const recipPub = derivePub(priv); // derived once, not per record — see crypto.ts
-    const db = openDb();
+    // reopenDb(), not getDb(): every cold-restore press closes whatever
+    // connection is currently shared and opens a genuinely fresh one, so
+    // dbOpenMs below is always a real open cost, and nothing leaks across
+    // repeated presses (see replay.ts).
+    const db = reopenDb();
     resetDb(db);
     const t1 = performance.now();
     const dbOpenMs = t1 - t0;
@@ -149,7 +186,10 @@ export default function App() {
     const yieldMs = totalMs - stageSum;
 
     const t: Timings = { dbOpenMs, fetchMs, decryptMs, decodeMs, insertMs, computeMs, yieldMs, totalMs };
-    say(`ops=${opsCount}/${manifest.count}  ` + JSON.stringify(t));
+    // dbOpenMs is a genuine close+reopen every press (reopenDb()) — not a
+    // warm-connection reuse — stated explicitly here per-run so the Phase 0
+    // write-up can't misread it as only-first-press-pays-open-cost.
+    say(`ops=${opsCount}/${manifest.count}  ` + JSON.stringify(t) + `  (dbOpenMs: fresh close+reopen, every press)`);
 
     if (opsCount !== manifest.count) {
       say(`COUNT MISMATCH: decrypted ${opsCount} ops but manifest declares ${manifest.count}`);
@@ -177,8 +217,8 @@ export default function App() {
   return (
     <SafeAreaView style={{ flex: 1, padding: 16 }}>
       <Text>warm start: {warmMs === null ? "no data yet (run cold restore, then relaunch)" : `${warmMs.toFixed(0)}ms`}</Text>
-      <Button title="Cold Restore" onPress={() => coldRestore().catch((e) => say(String(e)))} />
-      <Button title="Reset DB" onPress={() => resetDb(openDb())} />
+      <Button title="Cold Restore" disabled={isRunning} onPress={() => coldRestore()} />
+      <Button title="Reset DB" disabled={isRunning} onPress={() => resetDb(getDb())} />
       <ScrollView>{log.map((l, i) => <Text key={i} selectable>{l}</Text>)}</ScrollView>
     </SafeAreaView>
   );
