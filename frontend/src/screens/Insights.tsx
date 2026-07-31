@@ -5,7 +5,7 @@ import type { CategorySpend, MonthlyTotal, Summary, Txn, Category, BudgetConfig 
 import { Money } from "../components/Money";
 import { SettingsPage } from "./settings/SettingsPage";
 import { ReportsScreen, type ReportSection } from "./reports/ReportsScreen";
-import { useAgeOfMoney, useNetWorth, useTrend24 } from "../api/hooks";
+import { useAgeOfMoney, useCategories, useNetWorth, useTrend24 } from "../api/hooks";
 import { deltaSummary, pctLabel, yoyRows, yoySummary } from "../lib/reports";
 import { Card } from "../components/ui/Card";
 import { SectionLabel } from "../components/ui/SectionLabel";
@@ -78,12 +78,22 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
   // solid at the same `pct >= 1.0` point Home's `ProgressBar`s turn red.
   const overBudget = useMemo(() => overBudgetBuckets(summary.data?.buckets ?? []), [summary.data]);
 
+  // The breakdown's spend figures come from the summary endpoint, which carries
+  // no colour, so the category's own hue is joined in by id — the same shape
+  // PlanScreen uses to colour its envelope rows. Only the categories lens reads
+  // it; buckets take the bucket ramp and merchants have no colour of their own.
+  const categories = useCategories();
+  const colorById = useMemo(
+    () => new Map((categories.data ?? []).map((c) => [c.ID, c.Color])),
+    [categories.data],
+  );
+
   const rows = useMemo<BreakdownRow[]>(() => {
     if (lens === "buckets") return bucketRows(bucketComparison(curData, prevData), total, overBudget);
     if (lens === "merchants") return merchantRows(txns, total);
     const deltas = categoryDeltas(curData, prevData);
-    return categoryRows(withShare([...deltas].sort((a, b) => b.spent - a.spent), total));
-  }, [lens, curData, prevData, txns, total, overBudget]);
+    return categoryRows(withShare([...deltas].sort((a, b) => b.spent - a.spent), total), colorById);
+  }, [lens, curData, prevData, txns, total, overBudget, colorById]);
 
   // Memoized (and hoisted above the early returns, so it stays a hook): this is
   // FlowBars' `data`, and dither-kit restarts the 900ms entrance wave whenever
