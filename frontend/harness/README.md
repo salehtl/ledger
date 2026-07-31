@@ -107,6 +107,39 @@ knows about four things it would otherwise report forever:
 If you add a deliberate exception to a convention, teach the audit about it in
 the same commit. Otherwise the next person learns to skip the output.
 
+### Inline editors the crawl cannot reach — the category colour picker
+
+`probe.mjs`'s opener crawl only follows controls that open a **Dialog**. An
+inline editor — `CategoryManager`'s row edit state, which swaps a row for a
+name field, three bucket dots and a 24-swatch colour grid — never registers as
+one, so the crawl clicks it, sees no dialog, and moves on. Worse, the input
+battery would be destructive there: the rename field commits on blur, so typing
+`7` into it renames a fixture category and then finds no field left to type the
+original back into.
+
+So the picker gets its own pass at the end of a run, pinned to **320px**
+whatever `--viewport` says, because 320 is the width the grid is sized against:
+24 swatches at a 44px target is 1056px before gaps, and it either wraps to six
+per row or it pushes the editor's other controls off-screen. It reports the
+measured geometry (`24 swatches, rows 6+6+6+6, grid 262x168px at 29..291`), runs
+the full `audit.mjs` over the open editor, and drops
+`harness/shots/category-picker.small.png` for the judgement calls geometry
+cannot make. It found the bucket dots sitting at 36px on its very first run —
+the fourth sub-44px target in this codebase, invisible until something finally
+opened a row's edit state.
+
+Teeth, verified by breaking each subject and watching it fail:
+
+| break | finding |
+| --- | --- |
+| swatch `w-11 h-11` → `w-9 h-9` | 24 × `picker-swatch-too-small` |
+| grid `flex-wrap` → `flex-nowrap` | 18 × `picker-past-viewport` |
+| drop the `data-color-picker` marker | `picker-missing` |
+
+That last one matters most: without it the check would sample nothing and pass,
+which is exactly how three earlier checks here stayed green over broken
+subjects.
+
 ## Sheets and the hero number — `sheets.mjs`, `hero.mjs`
 
 Two defects the screen recordings caught that every other tool called clean.

@@ -1,4 +1,4 @@
-import { projectColor, PALETTE_NAMES, isPaletteName, hueVar } from "./paletteColor";
+import { projectColor, PALETTE_NAMES, PALETTE_DISPLAY_ORDER, isPaletteName, hueVar } from "./paletteColor";
 
 describe("projectColor", () => {
   it("resolves a palette name to its CSS var", () => {
@@ -64,5 +64,33 @@ describe("hueVar", () => {
     for (const name of PALETTE_NAMES) {
       expect(hueVar(name)).toBe(`var(--color-${name})`);
     }
+  });
+});
+
+describe("PALETTE_DISPLAY_ORDER", () => {
+  // The picker renders this list, the backfill walks PALETTE_NAMES. If they
+  // ever stop being the same set, a colour the store can assign becomes one
+  // the user cannot pick — invisible, because the row still renders it fine.
+  it("is a permutation of PALETTE_NAMES — same names, no dupes, none dropped", () => {
+    expect(PALETTE_DISPLAY_ORDER).toHaveLength(PALETTE_NAMES.length);
+    expect(new Set(PALETTE_DISPLAY_ORDER).size).toBe(PALETTE_DISPLAY_ORDER.length);
+    expect([...PALETTE_DISPLAY_ORDER].sort()).toEqual([...PALETTE_NAMES].sort());
+  });
+
+  // Six per row is what 320px fits (see the picker in CategoryManager), so
+  // "base above its own deep" only holds if the halves stay aligned.
+  it("puts every base step directly above its own deep step in a six-wide grid", () => {
+    const half = PALETTE_DISPLAY_ORDER.length / 2;
+    for (let i = 0; i < half; i++) {
+      expect(PALETTE_DISPLAY_ORDER[i + half]).toBe(`${PALETTE_DISPLAY_ORDER[i]}-deep`);
+    }
+  });
+
+  it("does not reorder PALETTE_NAMES itself — the backfill indexes into it", () => {
+    // store.SeedCategoryColor mirrors this array by index; a reorder here would
+    // silently re-seed every category on the next backfill.
+    expect(PALETTE_NAMES[0]).toBe("azure");
+    expect(PALETTE_NAMES[6]).toBe("ochre");
+    expect(PALETTE_NAMES[12]).toBe("azure-deep");
   });
 });
