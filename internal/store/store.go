@@ -61,6 +61,14 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed categories: %w", err)
 	}
+	// Runs after SeedDefaultCategories so it covers both shapes of "no colour
+	// yet": rows a migration inherited from a pre-color database, and rows
+	// SeedDefaultCategories just inserted on a brand-new one (schema.sql has
+	// the column from the start, but the seed INSERT never sets it).
+	if err := st.BackfillCategoryColors(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill category colors: %w", err)
+	}
 	if err := st.seedFXRates(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed fx rates: %w", err)
@@ -150,7 +158,16 @@ func migrate(db *sql.DB) error {
 	// v3: detector provenance for proposed schedules (count, avg interval, last
 	// amounts, matched tx ids as JSON). In the CREATE TABLE for fresh databases;
 	// guarded here for databases created before the column existed.
-	return addColumnIfMissing(db, "scheduled_transactions", "provenance", "TEXT NOT NULL DEFAULT ''")
+	if err := addColumnIfMissing(db, "scheduled_transactions", "provenance", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Per-category colour, a palette name (see lib/paletteColor.ts). In the
+	// CREATE TABLE for fresh databases; guarded here for databases created
+	// before the column existed. Nullable — NULL means "never chosen" and the
+	// frontend resolves it to the neutral, so no backfill is required for
+	// correctness here; Open runs BackfillCategoryColors separately so
+	// existing categories get a starting colour instead of staying neutral.
+	return addColumnIfMissing(db, "categories", "color", "TEXT")
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {

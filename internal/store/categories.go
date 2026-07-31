@@ -15,6 +15,7 @@ type CategoryRow struct {
 	Kind     string // "spending" | "income" | "excluded"
 	Bucket   string // "need" | "want" | "saving"; empty when kind != "spending"
 	IsActive bool
+	Color    string // palette name (see lib/paletteColor.ts); "" = never chosen, resolves to neutral
 }
 
 // RuleRow represents a row in the rules table. DisplayName, when set, is the
@@ -164,7 +165,7 @@ func boolToInt(b bool) int {
 // SelectCategories returns all active categories ordered by kind then name.
 func (s *Store) SelectCategories() ([]CategoryRow, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, name, kind, COALESCE(bucket,''), is_active
+		`SELECT id, name, kind, COALESCE(bucket,''), is_active, COALESCE(color,'')
 		 FROM categories WHERE is_active=1
 		 ORDER BY kind, name`,
 	)
@@ -176,13 +177,89 @@ func (s *Store) SelectCategories() ([]CategoryRow, error) {
 	for rows.Next() {
 		var c CategoryRow
 		var active int
-		if err := rows.Scan(&c.ID, &c.Name, &c.Kind, &c.Bucket, &active); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Kind, &c.Bucket, &active, &c.Color); err != nil {
 			return nil, err
 		}
 		c.IsActive = active == 1
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// Category returns one category row by id, active or not (unlike
+// SelectCategories, which lists only active ones). sql.ErrNoRows if the id
+// doesn't exist.
+func (s *Store) Category(id int64) (CategoryRow, error) {
+	var c CategoryRow
+	var active int
+	err := s.DB.QueryRow(
+		`SELECT id, name, kind, COALESCE(bucket,''), is_active, COALESCE(color,'')
+		 FROM categories WHERE id=?`, id,
+	).Scan(&c.ID, &c.Name, &c.Kind, &c.Bucket, &active, &c.Color)
+	if err != nil {
+		return CategoryRow{}, err
+	}
+	c.IsActive = active == 1
+	return c, nil
+}
+
+// paletteNames mirrors frontend/src/lib/paletteColor.ts's PALETTE_NAMES,
+// base names first then the -deep variants in the same order. Order is
+// load-bearing: SeedCategoryColor indexes into this slice by id, so a
+// different order here than the frontend's array hands out different
+// colours than the frontend would predict for the same id.
+var paletteNames = []string{
+	"azure", "amber", "lilac", "sage", "rose", "slate",
+	"ochre", "moss", "teal", "sky", "indigo", "orchid",
+	"azure-deep", "amber-deep", "lilac-deep", "sage-deep", "rose-deep", "slate-deep",
+	"ochre-deep", "moss-deep", "teal-deep", "sky-deep", "indigo-deep", "orchid-deep",
+}
+
+// SeedCategoryColor picks a starting colour for a category that has none.
+//
+// 7 is coprime to 24, so id -> index is a bijection mod 24: ids 1..24 get
+// distinct colours, and consecutive ids land far apart on the hue wheel
+// rather than side by side (a plain "% 24" would not have this property for
+// most multipliers, and definitely not for one that shares a factor with 24
+// — don't "simplify" this to that). It depends only on the row's own id, so
+// adding or deleting a category never reshuffles anyone else's colour. Ids
+// above 24 wrap and may collide with an existing assignment; that's
+// acceptable — colour uniqueness across categories is a non-goal.
+func SeedCategoryColor(id int64) string {
+	return paletteNames[(id*7)%int64(len(paletteNames))]
+}
+
+// BackfillCategoryColors assigns SeedCategoryColor to every category row
+// that doesn't have one yet (color IS NULL or ”). Safe to call repeatedly:
+// once a row has a colour it is never touched again. Open calls this once
+// after the column is guaranteed to exist (schema.sql on a fresh database,
+// the addColumnIfMissing migration on an older one) and after
+// SeedDefaultCategories, so it covers both a pre-color database's existing
+// rows and the default set a brand-new database just seeded.
+func (s *Store) BackfillCategoryColors() error {
+	rows, err := s.DB.Query(`SELECT id FROM categories WHERE color IS NULL OR color=''`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if _, err := s.DB.Exec(`UPDATE categories SET color=? WHERE id=?`, SeedCategoryColor(id), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // InsertRule writes a new categorization rule and returns its ID.

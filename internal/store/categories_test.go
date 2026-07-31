@@ -945,3 +945,68 @@ func TestCategoryUsageCountsTargets(t *testing.T) {
 		t.Fatalf("unexpected other usage: %+v", u)
 	}
 }
+
+// seedCategoryColorFixtures inserts categories the way InsertCategory always
+// has — it never sets color — then runs the same backfill Open() runs after
+// migration, so these rows behave exactly like ones a pre-color database
+// would have inherited: no colour until the backfill assigns one. Named
+// differently from the package-level seedCategories var (the default 50/30/20
+// set) to avoid colliding with it in this package.
+func seedCategoryColorFixtures(t *testing.T, st *Store, names ...string) []int64 {
+	t.Helper()
+	ids := make([]int64, len(names))
+	for i, name := range names {
+		id, err := st.InsertCategory(CategoryRow{Name: name, Kind: "spending", Bucket: "need", IsActive: true})
+		if err != nil {
+			t.Fatalf("InsertCategory(%q): %v", name, err)
+		}
+		ids[i] = id
+	}
+	if err := st.BackfillCategoryColors(); err != nil {
+		t.Fatalf("BackfillCategoryColors: %v", err)
+	}
+	return ids
+}
+
+func TestCategoryColorBackfill(t *testing.T) {
+	s := openTestStore(t)
+	// Categories created before the column existed have no colour. Names
+	// deliberately avoid the default 50/30/20 seed set (which already
+	// includes "Groceries" and "Rent") — openTestStore's Open() seeds those
+	// before this test runs, so reusing their names would 409 on the
+	// UNIQUE(name) constraint instead of exercising the backfill.
+	ids := seedCategoryColorFixtures(t, s, "Fuel", "Pets", "Hobbies")
+
+	got := map[string]bool{}
+	for _, id := range ids {
+		c, err := s.Category(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Color == "" {
+			t.Fatalf("category %d has no colour after backfill", id)
+		}
+		got[c.Color] = true
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("backfill assigned %d distinct colours to %d categories: %v", len(got), len(ids), got)
+	}
+}
+
+func TestSeedCategoryColorIsStable(t *testing.T) {
+	// Depends only on the row's own id, so adding or deleting a category
+	// never reshuffles anyone else's colour.
+	for id := int64(1); id <= 24; id++ {
+		if SeedCategoryColor(id) != SeedCategoryColor(id) {
+			t.Fatalf("id %d is not stable", id)
+		}
+	}
+	seen := map[string]int64{}
+	for id := int64(1); id <= 24; id++ {
+		c := SeedCategoryColor(id)
+		if prev, dup := seen[c]; dup {
+			t.Fatalf("ids %d and %d both got %s", prev, id, c)
+		}
+		seen[c] = id
+	}
+}
