@@ -236,6 +236,28 @@ describe("CategoryManager", () => {
     expect(screen.queryByText("Groceries")).not.toBeInTheDocument();
   });
 
+  it("each row's dot carries the category's own colour, not its bucket", async () => {
+    // Groceries and Dining share the "need"/"want" spending kind but get
+    // distinct stored colours here — proving the row reads cat.Color, not
+    // bucketColor(cat.Bucket) (which would tie both to their bucket's hue
+    // regardless of what's stored).
+    vi.stubGlobal("fetch", mockFetch(USAGE, (url) => {
+      if (url === "/api/categories") {
+        return new Response(JSON.stringify([
+          { ...CATS[0], Color: "teal" },
+          CATS[1],
+          { ...CATS[2], Color: "orchid" },
+        ]));
+      }
+      return null;
+    }));
+    wrap();
+    const groceries = await screen.findByRole("button", { name: /edit groceries/i });
+    const dining = screen.getByRole("button", { name: /edit dining/i });
+    expect((groceries.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-teal)");
+    expect((dining.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-orchid)");
+  });
+
   it("rename with duplicate name shows friendly toast", async () => {
     const fetchMock = mockFetch(USAGE, (url, init) => {
       if (url === "/api/categories/1" && init?.method === "PUT") {
