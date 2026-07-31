@@ -1,24 +1,34 @@
-// Pure drag-to-dismiss geometry for a bottom sheet. Framework-free so the
-// damping curve and the dismissal rule are unit-tested without rendering.
+// Pure drag-to-dismiss decision for a bottom sheet. Framework-free so the
+// dismissal rule is unit-tested without rendering — a Framer drag cannot be
+// driven meaningfully in jsdom, so the rule has to live somewhere it can be.
+//
+// The damping curve that used to live here (`sheetOffset`) is gone: Framer's
+// `dragElastic` owns the rubber-band now, asymmetrically, so there is nothing
+// left for us to compute per pointermove.
 
-/** Drag-down distance (px) that dismisses on release. */
-export const SHEET_DISMISS_DISTANCE = 120;
-/** Flick velocity (px/ms) that dismisses regardless of distance. */
-export const SHEET_DISMISS_VELOCITY = 0.11;
+import { flicked, FLICK_MIN_PX } from "./gesture";
+
+/** Downward travel past which a release dismisses the sheet. */
+export const SHEET_DISMISS_PX = 110;
+/** px/s past which a downward release dismisses regardless of distance. */
+export const SHEET_FLICK_VELOCITY = 550;
 
 /**
- * Resolve raw vertical drag into the sheet's visible offset. Downward (dy > 0)
- * moves 1:1. Dragging up past rest gets rubber-band damping — the further you
- * push, the less it moves — instead of an invisible wall.
+ * Should a released sheet drag dismiss?
+ *
+ * Sheets only dismiss downward — an upward drag is rubber-banding, never a
+ * gesture — so the direction check comes first and the rest of the function
+ * only ever sees a positive offset. Velocity is Framer's signed px/s reading
+ * and, via `flicked`, only counts when it agrees with the drag direction and
+ * the drag actually travelled: flicking back up after dragging down cancels
+ * rather than confirms, and a shivered tap on the handle (reported at
+ * ~600px/s on five pixels) is not a dismissal. See `lib/gesture.ts`.
+ *
+ * Direction agreement is already implied here by `offsetY > 0` plus a positive
+ * velocity; `flicked` re-derives it rather than the call site checking twice.
  */
-export function sheetOffset(dy: number): number {
-  if (dy >= 0) return dy;
-  return -Math.sqrt(-dy) * 6;
-}
-
-/** Should the sheet dismiss on release? A long drag down OR a quick flick down. */
-export function shouldDismiss(dy: number, elapsedMs: number): boolean {
-  if (dy <= 0) return false;
-  const velocity = dy / Math.max(1, elapsedMs);
-  return dy >= SHEET_DISMISS_DISTANCE || velocity >= SHEET_DISMISS_VELOCITY;
+export function shouldDismissSheet(offsetY: number, velocityY: number): boolean {
+  if (offsetY <= 0) return false;
+  if (offsetY >= SHEET_DISMISS_PX) return true;
+  return flicked(offsetY, velocityY, FLICK_MIN_PX, SHEET_FLICK_VELOCITY);
 }

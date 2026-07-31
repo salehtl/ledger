@@ -1,4 +1,5 @@
 import { Card } from "../ui/Card";
+import { Pressable } from "../ui/Pressable";
 import { Money } from "../Money";
 import { bucketColor, BUCKET_LABEL } from "../../lib/insights";
 import type { BucketComparison, SavingsResult } from "../../lib/insights";
@@ -52,15 +53,14 @@ export function ComparativeSummary({ label, note, net, savings, buckets, overBud
             </>
           );
           return onSelectBucket ? (
-            <button
+            <Pressable
               key={b.bucket}
-              type="button"
               aria-label={`See ${BUCKET_LABEL[b.bucket] ?? b.bucket} transactions`}
-              className="flex min-h-11 items-center gap-1.5 press"
+              className="flex min-h-11 items-center gap-1.5"
               onClick={() => onSelectBucket(b.bucket)}
             >
               {chip}
-            </button>
+            </Pressable>
           ) : (
             <span key={b.bucket} className="flex min-h-11 items-center gap-1.5">{chip}</span>
           );

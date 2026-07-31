@@ -6,6 +6,7 @@ import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types"
 import { Switch } from "../../components/ui/Switch";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Card } from "../../components/ui/Card";
+import { Pressable } from "../../components/ui/Pressable";
 import { loadSwipeConfig } from "../../lib/swipe";
 import { loadFontScale } from "../../lib/fontScale";
 import { useIngestHealth } from "../../hooks/useIngestHealth";
@@ -53,16 +54,16 @@ function HubRow({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Pressable
       onClick={onClick}
-      className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left press hover:bg-surface-2/50"
+      className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left hover:bg-surface-2/50"
     >
       <span className={tone === "danger" ? "text-bad" : undefined}>{label}</span>
       <span className="flex items-center gap-2 text-muted min-w-0">
         {value !== undefined && <span className="truncate text-xs">{value}</span>}
         <ChevronRight size={16} aria-hidden className="shrink-0" />
       </span>
-    </button>
+    </Pressable>
   );
 }
 

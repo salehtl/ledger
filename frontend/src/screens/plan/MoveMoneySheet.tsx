@@ -4,6 +4,7 @@ import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { Input } from "../../components/ui/Field";
 import { Money } from "../../components/Money";
 import { SectionLabel } from "../../components/ui/SectionLabel";
+import { Pressable } from "../../components/ui/Pressable";
 import { useToast } from "../../components/Toast";
 import {
   filsLabel,
@@ -103,14 +104,13 @@ export function MoveMoneySheet({ envelopes, toId, claim, month, onClose }: {
             <ul className="mt-1 divide-y divide-border">
               {sources.map((s) => (
                 <li key={s.category_id}>
-                  <button
-                    type="button"
+                  <Pressable
                     onClick={() => pick(s)}
-                    className="w-full min-h-11 py-2 flex items-center justify-between gap-3 text-left press"
+                    className="w-full min-h-11 py-2 flex items-center justify-between gap-3 text-left"
                   >
                     <span className="min-w-0 truncate text-sm font-medium">{s.category_name}</span>
                     <span className="tnum shrink-0"><Money fils={s.available_fils} /></span>
-                  </button>
+                  </Pressable>
                 </li>
               ))}
             </ul>

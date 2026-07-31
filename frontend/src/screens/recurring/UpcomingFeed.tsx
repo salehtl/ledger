@@ -1,4 +1,5 @@
 import { Card } from "../../components/ui/Card";
+import { Pressable } from "../../components/ui/Pressable";
 import { Pill } from "../../components/ui/Pill";
 import { Money } from "../../components/Money";
 import { flowAmount } from "../../lib/money";
@@ -30,10 +31,9 @@ export function UpcomingFeed({ items, onOpen }: {
           const drift = priceChangeLine(s);
           return (
             <li key={s.id}>
-              <button
-                type="button"
+              <Pressable
                 onClick={() => onOpen(s)}
-                className="press w-full min-h-11 p-4 flex items-start justify-between gap-3 text-left"
+                className="w-full min-h-11 p-4 flex items-start justify-between gap-3 text-left"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 min-w-0">
@@ -63,7 +63,7 @@ export function UpcomingFeed({ items, onOpen }: {
                     </span>
                   );
                 })()}
-              </button>
+              </Pressable>
             </li>
           );
         })}
@@ -86,10 +86,9 @@ export function RecentlyPaidList({ schedules, onOpenMatch }: {
       <ul className="divide-y divide-border">
         {schedules.map((s) => (
           <li key={s.id}>
-            <button
-              type="button"
+            <Pressable
               onClick={() => onOpenMatch(s)}
-              className="press w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
+              className="w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
             >
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium tracking-[-0.01em] truncate">{scheduleName(s)}</p>
@@ -100,7 +99,7 @@ export function RecentlyPaidList({ schedules, onOpenMatch }: {
               <span className="tnum text-sm shrink-0 text-muted">
                 <Money fils={s.last_amount_fils ?? s.amount_fils} />
               </span>
-            </button>
+            </Pressable>
           </li>
         ))}
       </ul>

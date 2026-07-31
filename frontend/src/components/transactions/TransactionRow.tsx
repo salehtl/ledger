@@ -9,6 +9,7 @@ import { ColorSwatch } from "../ui/ColorSwatch";
 import { displayMerchant, isSplitTxn, splitLabel, type SplitCategoryInfo, type TxnDepth } from "../../lib/txSplit";
 import { SplitLines } from "./SplitLines";
 import { ChevronDown, ChevronRight } from "../ui/PixelIcon";
+import { Pressable } from "../ui/Pressable";
 
 /**
  * One calm transaction line: merchant + amount on top, category · date beneath.
@@ -52,11 +53,10 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
 
   return (
     <div>
-      <button
-        type="button"
+      <Pressable
         onClick={() => onOpen(txn)}
         aria-label={`Open ${merchant || "transaction"}`}
-        className="w-full text-left flex items-center gap-3 py-3 press"
+        className="w-full text-left flex items-center gap-3 py-3"
       >
         <span
           aria-hidden
@@ -101,21 +101,20 @@ export function TransactionRow({ txn, onOpen, projectsById, splitCategories }: {
             </div>
           </div>
         </div>
-      </button>
+      </Pressable>
 
       {split && (
         <div className="pl-4 pb-2">
-          <button
-            type="button"
+          <Pressable
             aria-expanded={expanded}
             onClick={() => setExpanded((e) => !e)}
-            className="min-h-11 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted press rounded-[var(--radius)]"
+            className="min-h-11 -ml-1.5 px-1.5 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.04em] text-muted rounded-[var(--radius)]"
           >
             {expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
             {expanded
               ? "Hide parts"
               : `Show ${depth.Splits!.length} part${depth.Splits!.length === 1 ? "" : "s"}`}
-          </button>
+          </Pressable>
           {expanded && (
             <SplitLines splits={depth.Splits!} currency={txn.Currency} categories={splitCategories} />
           )}

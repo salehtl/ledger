@@ -1,6 +1,7 @@
 // frontend/src/components/ui/IconButton.tsx
-import type { ButtonHTMLAttributes, MouseEvent, ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { fire } from "../../lib/feedback";
+import { Pressable, type PressableProps } from "./Pressable";
 
 type Size = "md" | "sm";
 type Tone = "muted" | "accent" | "danger";
@@ -19,26 +20,26 @@ const TONES: Record<Tone, string> = {
  *  `size="sm"` (36px) is for dense stacked rows only (e.g. CategoryManager). */
 export function IconButton(
   { label, size = "md", tone = "muted", className = "", children, onClick, ...rest }:
+  // PressableProps, not ButtonHTMLAttributes: see the same note in Button.tsx.
   { label: string; size?: Size; tone?: Tone; className?: string; children: ReactNode }
-    & ButtonHTMLAttributes<HTMLButtonElement>,
+    & PressableProps,
 ) {
   const handleClick = (e: MouseEvent<HTMLButtonElement>) => {
     fire("selection");
     onClick?.(e);
   };
   return (
-    <button
-      type="button"
+    <Pressable
       aria-label={label}
       // Marks the documented 36px dense-row allowance (see components/README.md)
       // so the UI harness can tell a sanctioned small target apart from an
       // accidental one instead of reporting every category row forever.
       data-dense-target={size === "sm" ? "" : undefined}
-      className={`inline-flex items-center justify-center rounded-[var(--radius)] transition-colors press disabled:opacity-30 disabled:cursor-not-allowed ${SIZES[size]} ${TONES[tone]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-[var(--radius)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${SIZES[size]} ${TONES[tone]} ${className}`}
       onClick={handleClick}
       {...rest}
     >
       {children}
-    </button>
+    </Pressable>
   );
 }

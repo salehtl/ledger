@@ -6,6 +6,7 @@ import { getRefundCandidates, linkRefund } from "../../api/client";
 import type { Txn } from "../../api/types";
 import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { Pressable } from "../ui/Pressable";
 import { Money } from "../Money";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 
@@ -57,9 +58,9 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
         <ul className="divide-y divide-border">
           {candidates.data.map((c) => (
             <li key={c.ID}>
-              <button
+              <Pressable
                 disabled={busy}
-                className="w-full min-h-11 text-left py-2.5 flex items-center justify-between gap-3 press disabled:opacity-50"
+                className="w-full min-h-11 text-left py-2.5 flex items-center justify-between gap-3 disabled:opacity-50"
                 onClick={() => pick(c)}
               >
                 <span className="min-w-0">
@@ -70,7 +71,7 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
                   </span>
                 </span>
                 <span className="shrink-0 tnum"><Money fils={-(aedFils(c) ?? c.AmountFils)} /></span>
-              </button>
+              </Pressable>
             </li>
           ))}
         </ul>

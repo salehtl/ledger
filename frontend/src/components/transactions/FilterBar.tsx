@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { X } from "../ui/PixelIcon";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import { SectionLabel } from "../ui/SectionLabel";
+import { Pressable } from "../ui/Pressable";
 import { bucketColor } from "../../lib/insights";
 import type { Category, Txn } from "../../api/types";
 
@@ -20,21 +21,20 @@ const DIRECTION_LABEL: Record<string, string> = { debit: "Spending", credit: "In
 /** A tap-to-toggle filter chip — the whole filter surface is these, no sheets. */
 function Chip({ label, active, dot, onClick }: { label: string; active: boolean; dot?: string; onClick: () => void }) {
   return (
-    <button
-      type="button"
+    <Pressable
       aria-pressed={active}
       onClick={onClick}
       // components/README.md sanctions 36px for these chips inside their dense
       // filter panel; the marker tells the UI audit this is the exception, not
       // an oversight.
       data-dense-target=""
-      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap press transition-colors ${
+      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius)] text-sm font-medium whitespace-nowrap transition-colors ${
         active ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted hover:text-fg"
       }`}
     >
       {dot && <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ background: dot }} />}
       {label}
-    </button>
+    </Pressable>
   );
 }
 
@@ -87,26 +87,24 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
       {active > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {tokens.map((t) => (
-            <button
+            <Pressable
               key={t.key}
-              type="button"
               onClick={t.remove}
               data-dense-target=""
-              className="inline-flex min-h-9 items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-[var(--radius)] text-xs font-medium bg-accent/10 text-fg press"
+              className="inline-flex min-h-9 items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-[var(--radius)] text-xs font-medium bg-accent/10 text-fg"
               aria-label={`Remove ${t.label} filter`}
             >
               {t.label}
               <X size={13} aria-hidden />
-            </button>
+            </Pressable>
           ))}
-          <button
-            type="button"
+          <Pressable
             onClick={() => onChange(EMPTY_FILTERS)}
             data-dense-target=""
-            className="inline-flex min-h-9 items-center text-xs font-medium text-muted hover:text-fg px-2 py-1 press"
+            className="inline-flex min-h-9 items-center text-xs font-medium text-muted hover:text-fg px-2 py-1"
           >
             Clear all
-          </button>
+          </Pressable>
         </div>
       )}
 

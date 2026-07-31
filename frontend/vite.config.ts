@@ -1,9 +1,62 @@
 /// <reference types="vitest" />
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
+
+/**
+ * Put a `<link rel="modulepreload">` for the Framer feature bundle in the HTML
+ * head, so it downloads in parallel with the entry chunk instead of after it.
+ *
+ * Vite already rewrites `import("./motionFeatures")` through `__vitePreload`,
+ * but that only fires when the thunk is *called* — and `LazyMotion` calls it
+ * from a `useEffect`, i.e. after the first paint. That ordering is not
+ * cosmetic: until the promise settles there is no animation feature loaded, so
+ * every `m.*` renders straight from its `initial` prop. Content whose entrance
+ * is deferred to JS therefore waits on a second network round trip that does
+ * not even begin until the entry chunk has parsed, executed and painted.
+ *
+ * The components no longer put `opacity` in `initial` (see `screens/Home.tsx`),
+ * so a slow chunk can no longer *hide* anything — this is belt and braces,
+ * turning a serial fetch into a parallel one so the first stagger is not
+ * skipped on a cold load.
+ *
+ * Matched on the chunk's `name`, which is the module basename and stable,
+ * rather than on the hashed `fileName`.
+ */
+function preloadMotionFeatures(): Plugin {
+  let base = "/";
+  return {
+    name: "ledger:preload-motion-features",
+    apply: "build",
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(html, ctx) {
+        if (!ctx.bundle) return html;
+        const chunk = Object.values(ctx.bundle).find(
+          (c) => c.type === "chunk" && c.name === "motionFeatures",
+        );
+        // Don't fail the build if the chunk is gone — the test in
+        // styles/tokens.test.ts is what asserts it still exists.
+        if (!chunk) return html;
+        return {
+          html,
+          tags: [
+            {
+              tag: "link",
+              attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${chunk.fileName}` },
+              injectTo: "head",
+            },
+          ],
+        };
+      },
+    },
+  };
+}
 
 export default defineConfig({
   // fileURLToPath, not `new URL(...).pathname`: the latter hands back a
@@ -13,6 +66,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    preloadMotionFeatures(),
     VitePWA({
       // "prompt": a new service worker waits instead of silently taking over,
       // so PwaUpdatePrompt can offer a "New version — tap to refresh" toast.

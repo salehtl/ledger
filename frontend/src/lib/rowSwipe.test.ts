@@ -1,69 +1,45 @@
 import { describe, it, expect } from "vitest";
-import {
-  swipeAxis, swipeTarget, swipeOffset, swipeCommits, swipeProgress,
-  ROW_COMMIT, ROW_MAX_TRAVEL,
-} from "./rowSwipe";
+import { swipeCommits, swipeProgress, ROW_COMMIT, ROW_FLICK_VELOCITY } from "./rowSwipe";
+import { FLICK_MIN_PX } from "./gesture";
 
-const BOTH = { lead: true, trail: true };
-const LEAD_ONLY = { lead: true, trail: false };
-
-describe("swipeAxis", () => {
-  it("stays undecided within the slop", () => {
-    expect(swipeAxis(4, 4)).toBeNull();
-  });
-  it("locks horizontal when dx dominates", () => {
-    expect(swipeAxis(20, 5)).toBe("h");
-  });
-  it("locks vertical when dy dominates", () => {
-    expect(swipeAxis(5, 20)).toBe("v");
-  });
-});
-
-describe("swipeTarget", () => {
-  it("maps a rightward drag to the leading action", () => {
-    expect(swipeTarget(30, BOTH)).toBe("lead");
-  });
-  it("maps a leftward drag to the trailing action", () => {
-    expect(swipeTarget(-30, BOTH)).toBe("trail");
-  });
-  it("returns null when the pointed-at action is absent", () => {
-    expect(swipeTarget(-30, LEAD_ONLY)).toBeNull();
-  });
-});
-
-describe("swipeOffset", () => {
-  it("tracks the finger 1:1 within max travel", () => {
-    expect(swipeOffset(60, BOTH)).toBe(60);
-  });
-  it("rubber-bands past max travel", () => {
-    const off = swipeOffset(ROW_MAX_TRAVEL + 100, BOTH);
-    expect(off).toBeGreaterThan(ROW_MAX_TRAVEL);
-    expect(off).toBeLessThan(ROW_MAX_TRAVEL + 100);
-  });
-  it("only rubber-bands (never fully opens) toward a missing action", () => {
-    const off = swipeOffset(-120, LEAD_ONLY);
-    expect(off).toBeLessThan(0);
-    expect(Math.abs(off)).toBeLessThan(ROW_COMMIT); // stays short of commit
-  });
-});
+const both = { lead: true, trail: true };
+const leadOnly = { lead: true, trail: false };
 
 describe("swipeCommits", () => {
-  it("commits past the threshold toward a real action", () => {
-    expect(swipeCommits(ROW_COMMIT + 5, BOTH)).toBe("lead");
-    expect(swipeCommits(-(ROW_COMMIT + 5), BOTH)).toBe("trail");
+  it("commits the lead action on a long rightward drag", () => {
+    expect(swipeCommits(ROW_COMMIT + 1, 0, both)).toBe("lead");
   });
-  it("does not commit short of the threshold", () => {
-    expect(swipeCommits(ROW_COMMIT - 5, BOTH)).toBeNull();
+  it("commits the trail action on a long leftward drag", () => {
+    expect(swipeCommits(-(ROW_COMMIT + 1), 0, both)).toBe("trail");
   });
-  it("never commits toward a missing action", () => {
-    expect(swipeCommits(-200, LEAD_ONLY)).toBeNull();
+  it("commits on a short flick", () => {
+    expect(swipeCommits(FLICK_MIN_PX + 6, ROW_FLICK_VELOCITY + 1, both)).toBe("lead");
+  });
+  it("ignores a fast reading that never cleared the distance floor", () => {
+    // A shivered tap on a row is reported at ~600px/s over a few pixels.
+    // Without the floor the trailing action fires and a transaction is
+    // archived with no gesture the user would recognise as one.
+    expect(swipeCommits(-5, -(ROW_FLICK_VELOCITY * 2), both)).toBeNull();
+    expect(swipeCommits(FLICK_MIN_PX - 1, ROW_FLICK_VELOCITY + 1, both)).toBeNull();
+    expect(swipeCommits(FLICK_MIN_PX, ROW_FLICK_VELOCITY + 1, both)).toBe("lead");
+  });
+  it("returns null below both thresholds", () => {
+    expect(swipeCommits(ROW_COMMIT - 1, 0, both)).toBeNull();
+  });
+  it("never commits an action the row does not have", () => {
+    expect(swipeCommits(-(ROW_COMMIT + 1), 0, leadOnly)).toBeNull();
+  });
+  it("ignores velocity that reverses the drag", () => {
+    // Past the distance floor, so this isolates the direction rule.
+    expect(swipeCommits(FLICK_MIN_PX + 6, -(ROW_FLICK_VELOCITY + 1), both)).toBeNull();
   });
 });
 
 describe("swipeProgress", () => {
-  it("is 0 at rest and clamps to 1 at the commit threshold", () => {
+  it("ramps 0..1 across the commit distance and clamps beyond it", () => {
     expect(swipeProgress(0)).toBe(0);
-    expect(swipeProgress(ROW_COMMIT / 2)).toBeCloseTo(0.5);
+    expect(swipeProgress(ROW_COMMIT)).toBe(1);
     expect(swipeProgress(ROW_COMMIT * 2)).toBe(1);
+    expect(swipeProgress(-ROW_COMMIT)).toBe(1);
   });
 });

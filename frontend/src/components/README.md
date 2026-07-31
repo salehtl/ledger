@@ -63,7 +63,9 @@ living catalog; update the story in the same commit as the component.
   else should reach for that class. In practice, though, four other surfaces
   carry a Tailwind default shadow utility (not the token): `Toast.tsx`
   (`shadow-lg`), `swipe/SwipeDeck.tsx` (`shadow-lg`, the resting-stack card),
-  `swipe/SwipeCard.tsx` (`shadow-lg`, the commit-direction chip), and
+  `swipe/SwipeCard.tsx` (two inline `boxShadow`s — the card's own resting
+  elevation, and the commit chip's action-coloured glow, which is inline
+  because it is tinted per bucket), and
   `dither-kit/tooltip.tsx` (`shadow-sm`, vendored chrome). Everywhere else,
   separation is a `border border-border` hairline, never a shadow. Reconciling
   those four (token vs. ad hoc utility, and whether they should be elevated at
@@ -72,8 +74,11 @@ living catalog; update the story in the same commit as the component.
   36px (`IconButton size="sm"`) is allowed only inside dense stacked rows.
 - **16px inputs.** Form controls use `Input`/`Select` (text-base). Anything
   smaller makes iOS Safari zoom on focus.
-- **Press feedback.** Every tappable element carries `.press` (scale on
-  `:active`) — hover-only affordances don't exist on touch.
+- **Press feedback.** Every tappable element is a `Pressable` (or a
+  component built on one, like `Button`/`IconButton`) — a subtle `whileTap`
+  scale, not a bare `.press` CSS class. Hover-only affordances don't exist on
+  touch, and `whileTap` is pointer-based so it's correct there in a way
+  `:active`/`:hover` never were. See `ui/Pressable.tsx`.
 - **Haptics.** `Button` and `IconButton` fire `fire("selection")` from
   `lib/feedback` themselves; don't add a second call in onClick handlers.
 - **Money & counts** use `.tnum` (tabular mono figures) via `<Money>` or the
@@ -144,7 +149,119 @@ living catalog; update the story in the same commit as the component.
   (tighter than the standard `0.14em`) at eyebrow weight/size, because it's
   chrome sitting next to a sans screen title rather than a standalone label.
 
+## Motion
+
+All motion in the app is Framer Motion (npm package `motion`, imported from
+`motion/react`). Read this before animating anything.
+
+- **One motion root.** `app/MotionProvider.tsx` mounts `LazyMotion` +
+  `MotionConfig` once, in `main.tsx`. Don't nest another.
+- **`m.*`, never `motion.*`.** `LazyMotion strict` makes a bare `motion.div`
+  throw rather than quietly pulling the whole feature bundle into the entry
+  chunk. `domMax` is loaded as a thunk so it lands in its own chunk; the app
+  needs it for drag and layout animations.
+- **Every duration and curve comes from `lib/motion.ts`.** `DUR` (`press` /
+  `fast` / `base` / `sheet`), `EASE_OUT`, `EASE_DRAWER`, and the transition
+  tokens built from them. No literal seconds in a component. 300ms is the
+  ceiling and `motion.test.ts` enforces it; anything slower needs a written
+  reason. Note `dragTransition` is *not* a `Transition` — see `INERTIA_ROW`
+  in that file for why the drag bounce is a separately-typed token.
+- **Reduced motion is global and must not be re-implemented.**
+  `MotionConfig reducedMotion="user"` disables transform and layout animations
+  for a user who asked the OS to minimise motion, and leaves opacity and colour
+  alone — "gentler, not zero". A per-component `useReducedMotion()` branch is a
+  bug in the making (a hand-rolled version is how the swipe card's 800px
+  fly-out came to ignore the preference entirely). The **one** exception is a
+  non-transform property Framer's policy doesn't cover — `clipPath`, which
+  `ProgressBar` and `BudgetPage` gate by hand with `useReducedMotion()`.
+- **Gesture decisions are pure functions in `lib/`.** `sheetDrag`, `edgeBack`,
+  `rowSwipe`, `swipe`, `toastSwipe` each take `(offset, velocity)` straight
+  from Framer's `onDragEnd` info and return a decision, with co-located tests.
+  Framer's drag cannot be driven meaningfully in jsdom (no layout, no real
+  pointer velocity), so this is where gesture edge cases are actually covered;
+  component tests assert render and lifecycle only, and the gestures themselves
+  are verified in `harness/gestures.mjs`.
+- **`Pressable` is the press primitive.** The global `.press` class no longer
+  exists — see the Pressable entry below for why it was a hazard.
+- **Tests that render an `m.*` must wrap it in `MotionProvider`.** `strict`
+  does *not* throw on an unwrapped `m.*` — it renders with no features loaded.
+  With only `whileTap` that is merely inert. With an `initial` prop it is worse:
+  the element renders **stuck at its initial state** and stays there, so a test
+  can end up asserting against rows frozen mid-entrance. Same mechanism as the
+  first-paint rule above.
+
+### The three CSS exemptions
+
+Three animations stay in CSS. The first two are indefinite opacity loops, and
+neither is gated behind `prefers-reduced-motion` — that preference asks for
+less *movement*, not less comprehension, and nothing here travels. The third,
+described at the end of this section, is the one that actually moves something.
+
+1. **The pixel spinner** (`.pixel-spinner-cell`, `styles/app.css`). Framer
+   cannot express it at all: the eight cells phase-shift one shared keyframe
+   with *negative* `animation-delay`, and Framer's `delay` only postpones a
+   start. Reproducing it would mean eight separately-scheduled JS loops held in
+   phase, replacing one declaration.
+2. **The skeleton pulse** (`animate-pulse`, `Skeleton.tsx` and four other
+   sites). An indefinite loop is the one shape a JS scheduler is strictly worse
+   at than a CSS keyframe — handed to the compositor once, it costs the main
+   thread nothing, on the screen where the main thread is already scarce.
+
+Both use `animation`, never `transition`, which is what keeps them clear of the
+harness auditor's stray-CSS-transition check (`harness/audit.mjs`, check 9).
+That check flags a CSS transition on a *moving* property — transform, box
+dimensions — and deliberately ignores `transition-colors`/`transition-opacity`,
+which are not motion-policy violations.
+
+There is also a **third exemption, and it is the one that matters**, because it
+is a transition on a `transform`: `Switch`'s knob, marked `data-css-transition`.
+Not because Framer cannot express it — every current call site passes `checked`,
+so an `m.span animate={{ x: checked ? 20 : 0 }}` would work today — but because
+`Switch` accepts `InputHTMLAttributes`, so an *uncontrolled* `<Switch
+defaultChecked />` is a legal call, and in that shape the state lives only in the
+DOM node where nothing but a sibling selector can see it. Migrating means
+narrowing the prop type to controlled-only. If that ever happens, drop the marker
+and move the knob to Framer.
+
+### Never put `opacity: 0` in `initial` for first-paint content
+
+`LazyMotion` resolves its feature bundle in an effect, and until that promise
+settles `m.*` renders straight from `initial` with no animator running. An
+`opacity: 0` resting state therefore means the content is **invisible until a
+separate chunk has been fetched and executed** — which on a cold load, or the
+first load after a deploy invalidates the precache, is a network round trip that
+does not even start until the entry chunk has painted.
+
+So an entrance for anything the user is waiting on is **transform-only**: a `y`
+offset degrades to "8px low for a moment", an opacity offset degrades to "gone".
+`opacity: 0` in `initial` is fine for something that mounts on interaction —
+`Dialog`, `Toast`, `SwipeCard`, the tooltip — because by then the bundle has long
+since loaded. `audit.mjs` check 10 catches the invisible-text case.
+
+**Hover is already gated; don't add a utility for it.** Tailwind v4 compiles
+`hover:` to `@media (hover: hover) { &:hover { … } }`, so a tap on iOS (which
+reports `hover: none`) cannot leave a hover state stuck. Verified against the
+shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
+
 ## Primitives — `components/ui/`
+
+### Pressable
+- **Purpose:** the app's one press-feedback primitive — an `m.button` with
+  `whileTap={{ scale: 0.97 }}`, accepting every native `<button>` prop plus
+  `className`. Defaults `type="button"`.
+- **Use when:** building any new tappable element, or converting a raw
+  `<button>` — replace it with `Pressable` rather than reaching for a `.press`
+  class. `Button` and `IconButton` are both built on it.
+- **Don't use when:** the element isn't semantically a button (a link, a
+  toggleable row that's actually a `<div>`) — use `m.a`/`m.div` with the same
+  `whileTap` instead; converting non-buttons to `<button>` changes semantics
+  and accessibility.
+- Replaces the old global `.press` CSS class, which was declared outside every
+  cascade layer in `app.css` and therefore outranked all of Tailwind's
+  `@layer utilities` rules — and because it used the `transition` shorthand,
+  it silently reset `transition-property` to `transform` alone, killing every
+  `transition-colors` in the app. A component owning its own motion can't
+  reach across the codebase like that.
 
 ### Button
 - **Purpose:** any labeled tap action. Variants: `primary` (the screen's one
@@ -556,8 +673,16 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   category selection, including Transfer (which offers excluded categories),
   and email-backed cards expose a read-only source-message preview. Credits use
   the semantic positive ink and the category picker surfaces Income first.
-  distance or on flick velocity (`lib/swipe.flickDirection`); skipping is the
-  visible "Skip for now" button or a triple tap.
+  The card is a Framer `drag` element; a release commits on distance or on
+  flick velocity via `lib/swipe.commitDirection`, and skipping is the visible
+  "Skip for now" button or a triple tap. Cards enter and leave through the
+  deck's `AnimatePresence mode="popLayout"`, which overlaps them — the next
+  card is mounted and draggable ~20ms after a commit rather than waiting out
+  the previous card's exit. That needs two things kept true: `SwipeCard` must
+  forward its ref (popLayout cannot take an exiting child out of layout flow
+  without the DOM node, and falls back to `sync` with a warning), and the
+  deck's `index` must advance one render *after* `flyDirection` is set, since
+  AnimatePresence animates a child out as it was last rendered.
 - `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition
   examples.
 - `TrendBars` / `FlowBars` (`charts/`) — monthly spending / money-in-vs-out
@@ -583,6 +708,15 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `SearchSheet`), kept because a real input would summon the keyboard.
 - `FilterBar` chips and `SwipeableRow` action icons run at 36px inside their
   dense panels/rows — the sanctioned exception to the 44px target, same as
-  `IconButton size="sm"`.
+  `IconButton size="sm"`. Marked `data-dense-target` so `harness/audit.mjs`
+  knows it is a decision, not an oversight.
+- The pixel spinner and the skeleton pulse are the only two animations still in
+  CSS — both indefinite opacity loops, both ungated under reduced motion. See
+  **Motion** above.
+- `Switch`'s knob is the only CSS transition left on a transform. Not because
+  Framer cannot drive it — every call site passes `checked` — but because the
+  component's prop type still permits an uncontrolled `<Switch defaultChecked />`,
+  whose state only a sibling selector can observe. Marked `data-css-transition`,
+  the motion equivalent of `data-dense-target`.
 - Transactions list is not virtualized; acceptable at current volumes.
   Revisit if months exceed ~500 rows.

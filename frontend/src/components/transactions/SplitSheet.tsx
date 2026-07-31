@@ -6,6 +6,7 @@ import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Field";
 import { IconButton } from "../ui/IconButton";
+import { Pressable } from "../ui/Pressable";
 import { SectionLabel } from "../ui/SectionLabel";
 import { X } from "../ui/PixelIcon";
 import { aedFils, formatFils, nativeAmountTag } from "../../lib/money";
@@ -229,12 +230,11 @@ export function SplitSheet({ txn, categories, onSubmit, onClose }: {
               {list.map((c) => {
                 const selected = lines.some((l) => l.categoryId === c.ID);
                 return (
-                  <button
+                  <Pressable
                     key={c.ID}
-                    type="button"
                     aria-pressed={selected}
                     onClick={() => toggle(c.ID)}
-                    className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 press transition-colors ${
+                    className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center gap-2 transition-colors ${
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
                   >
@@ -244,7 +244,7 @@ export function SplitSheet({ txn, categories, onSubmit, onClose }: {
                       style={{ background: selected ? "currentColor" : c.Kind === "income" ? "var(--color-good)" : bucketColor(c.Bucket) }}
                     />
                     {c.Name}
-                  </button>
+                  </Pressable>
                 );
               })}
             </div>

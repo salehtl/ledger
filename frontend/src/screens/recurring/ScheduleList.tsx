@@ -1,4 +1,5 @@
 import { Card } from "../../components/ui/Card";
+import { Pressable } from "../../components/ui/Pressable";
 import { Pill } from "../../components/ui/Pill";
 import { Money } from "../../components/Money";
 import { cadenceLabel, scheduleName } from "../../lib/recurring";
@@ -25,10 +26,9 @@ export function ScheduleList({ schedules, onOpen }: {
             : [cadenceLabel(s.interval_days), `next ${shortDate(s.next_due)}`, s.source === "detected" ? "detected" : "manual"].join(" · ");
           return (
             <li key={s.id}>
-              <button
-                type="button"
+              <Pressable
                 onClick={() => onOpen(s)}
-                className="press w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
+                className="w-full min-h-11 p-4 flex items-center justify-between gap-3 text-left"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 min-w-0">
@@ -42,7 +42,7 @@ export function ScheduleList({ schedules, onOpen }: {
                 <span className={`tnum text-sm shrink-0 ${paused ? "text-muted" : "font-medium"}`}>
                   <Money fils={s.amount_fils} />
                 </span>
-              </button>
+              </Pressable>
             </li>
           );
         })}

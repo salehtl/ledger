@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { m } from "motion/react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects } from "../api/client";
 import type { Summary, MonthlyTotal } from "../api/types";
@@ -7,6 +8,7 @@ import { RollingNumber } from "../components/RollingNumber";
 import { Card } from "../components/ui/Card";
 import { ProgressBar } from "../components/ui/ProgressBar";
 import { SectionLabel } from "../components/ui/SectionLabel";
+import { Pressable } from "../components/ui/Pressable";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { TrendBars } from "../components/charts/TrendBars";
@@ -17,6 +19,7 @@ import {
 } from "../lib/insights";
 import { type Scope, DEFAULT_SCOPE, scopeAnchor, scopeLabel } from "../lib/scope";
 import { formatFils, flowAmount, aedFils, nativeAmountTag } from "../lib/money";
+import { DUR, EASE_OUT } from "../lib/motion";
 import { AlertTriangle, Check, TrendingUp } from "../components/ui/PixelIcon";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 import { PocketStrip } from "./home/PocketStrip";
@@ -196,13 +199,12 @@ export function Home({
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <SectionLabel as="h2">Projects</SectionLabel>
-            <button
-              type="button"
+            <Pressable
               onClick={onOpenProjects}
-              className="min-h-11 min-w-11 -mr-2 px-3 flex items-center justify-end text-sm font-medium text-fg press"
+              className="min-h-11 min-w-11 -mr-2 px-3 flex items-center justify-end text-sm font-medium text-fg"
             >
               All ›
-            </button>
+            </Pressable>
           </div>
           <div className="space-y-3">
             {projects.data.map((p) => (
@@ -228,10 +230,38 @@ export function Home({
             <EmptyState title="No recent activity" hint="New transactions will appear here." />
           ) : (
             <ul className="divide-y divide-border">
-              {s.recent.map((t) => {
+              {s.recent.map((t, i) => {
                 const amount = flowAmount(t.Direction, aedFils(t) ?? t.AmountFils);
                 return (
-                  <li key={t.ID} className={`py-2 flex items-center justify-between gap-3${firstReveal ? " stagger-item" : ""}`}>
+                  <m.li
+                    key={t.ID}
+                    // `initial={false}` — not a hidden state — is what keeps the
+                    // cascade one-shot. On a refetch Framer adopts `animate` as
+                    // the starting value and plays nothing, so the list cannot
+                    // re-deal itself every time the query revalidates. That is
+                    // the same guarantee the old `stagger-item` class gave, now
+                    // enforced by the animator instead of by remembering to
+                    // leave a class off.
+                    //
+                    // TRANSFORM ONLY — no `opacity: 0` here, deliberately, and
+                    // do not add one. `LazyMotion` loads its feature bundle in
+                    // an effect, and until that promise settles `m.*` renders
+                    // straight from `initial` with no animation running. An
+                    // `opacity: 0` resting state therefore means this card's
+                    // rows paint *invisible* until a separate 58KB chunk has
+                    // been fetched and executed — above the fold, on the first
+                    // screen, on a cold load or the first load after a deploy
+                    // invalidates the precache. A `y` offset degrades to "8px
+                    // low for a moment" instead of "gone". The cascade is
+                    // decorative; the transactions are not.
+                    initial={firstReveal ? { y: 8 } : false}
+                    animate={{ y: 0 }}
+                    // The cap reproduces the retired `:nth-child(n+7)` rule: past
+                    // the sixth row the delay stops growing, so a long list still
+                    // finishes arriving in well under half a second.
+                    transition={{ duration: DUR.sheet, ease: EASE_OUT, delay: Math.min(i * 0.04, 0.24) }}
+                    className="py-2 flex items-center justify-between gap-3"
+                  >
                     <div className="min-w-0">
                       <p className="truncate font-medium">{t.MerchantRaw || "—"}</p>
                       <p className="text-xs text-muted">{t.PostedAt.slice(0, 10)}{t.CategoryName ? ` · ${t.CategoryName}` : ""}{nativeAmountTag(t) ? ` · ${nativeAmountTag(t)}` : ""}{aedFils(t) === null ? " · no AED rate" : ""}</p>
@@ -243,7 +273,7 @@ export function Home({
                     >
                       {amount.text}
                     </span>
-                  </li>
+                  </m.li>
                 );
               })}
             </ul>

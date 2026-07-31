@@ -5,6 +5,7 @@ import { createProject, updateProject } from "../../api/client";
 import { dirhamsToFils, filsToDirhams } from "../../lib/format";
 import { Input, NumberField } from "../../components/ui/Field";
 import { Button } from "../../components/ui/Button";
+import { Pressable } from "../../components/ui/Pressable";
 import { Switch } from "../../components/ui/Switch";
 import { useToast } from "../../components/Toast";
 import { PALETTE_NAMES, projectColor } from "../../lib/paletteColor";
@@ -108,13 +109,12 @@ export function ProjectForm({
           <p className="text-sm mb-1.5">Color</p>
           <div className="flex flex-wrap gap-2">
             {COLOR_PRESETS.map((c) => (
-              <button
+              <Pressable
                 key={c}
-                type="button"
                 aria-label={c}
                 aria-pressed={color === c}
                 onClick={() => setColor(c)}
-                className={`w-8 h-8 rounded-[var(--radius)] press ${
+                className={`w-8 h-8 rounded-[var(--radius)] ${
                   color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
                 }`}
                 style={{ backgroundColor: projectColor(c) }}

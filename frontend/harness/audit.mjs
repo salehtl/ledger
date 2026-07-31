@@ -9,11 +9,16 @@
 // what the Tailwind classes imply.
 //
 // Precision matters more than recall here: this feeds reviewers, and a checker
-// that cries wolf gets ignored. So it deliberately understands three things
+// that cries wolf gets ignored. So it deliberately understands four things
 // about this app that would otherwise generate hundreds of false positives —
 // screen-reader-only text, intentional clipping (line-clamp, the rolling-digit
-// animation), and the fact that screens stack as full-screen overlays, leaving
-// a perfectly good UI "obscured" underneath.
+// animation), the fact that screens stack as full-screen overlays leaving a
+// perfectly good UI "obscured" underneath, and that a `transition-colors` is
+// not a motion-policy violation (check 9).
+//
+// One deliberate hole in that politeness: `visible()` treats `opacity: 0` as
+// "skip me", which means every check below steps over content the user cannot
+// see. Check 10 exists to close it and does NOT use `visible()`.
 
 /** @returns {Promise<{counts:Record<string,number>, issues:Array<object>}>} */
 export async function audit(page) {
@@ -313,6 +318,93 @@ export async function audit(page) {
       if (!img.hasAttribute("alt")) {
         issues.push({ kind: "img-without-alt", severity: "low", el: describe(img), detail: "no alt attribute" });
       }
+    }
+
+    // ---- 9. stray CSS transitions on moving properties -------------------
+    // Motion-migration guard. Movement is Framer's job now: it is the only
+    // animator here that can be interrupted mid-flight by a gesture, retarget
+    // from the current velocity rather than restarting from zero, and be
+    // switched off wholesale by `MotionConfig reducedMotion="user"`. A CSS
+    // transition on transform or a box dimension can do none of those, so one
+    // reappearing means a component grew its own motion behind the policy's
+    // back — exactly the class of bug the migration existed to remove.
+    //
+    // Deliberately scoped to properties that MOVE or RESIZE. `transition-colors`
+    // and `transition-opacity` are used on a couple of dozen elements per
+    // screen and are none of Framer's business: they carry no position, no
+    // gesture can grab them, and reduced motion has no opinion about a colour.
+    // Flagging those would bury every real finding, and a checker that cries
+    // wolf gets ignored.
+    //
+    // The two sanctioned CSS animations — the pixel spinner and the skeleton
+    // pulse — set `animation`, never `transition`, so they fall outside this
+    // check by construction rather than by exception, and it stays silent on
+    // them. The one genuine exception carries `data-css-transition` and says
+    // why in its own source (see `ui/Switch.tsx`), the same contract
+    // `data-dense-target` uses for the 44px rule.
+    const MOVING_PROP =
+      /^(all|transform|translate|rotate|scale|width|height|min-width|min-height|max-width|max-height|top|right|bottom|left|inset|margin|margin-top|margin-right|margin-bottom|margin-left|padding|flex-basis|gap)$/;
+    for (const el of all) {
+      // `hasAttribute`, not `closest`: matching the `data-dense-target`
+      // precedent, and because `closest` would let a marker on a screen root
+      // silence every descendant on that screen.
+      if (!visible(el) || el.hasAttribute("data-css-transition")) continue;
+      const s = getComputedStyle(el);
+      if (!s.transitionProperty || s.transitionProperty === "none") continue;
+      // A declared property with a 0s duration animates nothing.
+      const durations = (s.transitionDuration || "").split(",").map((d) => parseFloat(d) || 0);
+      if (!durations.some((d) => d > 0)) continue;
+      const moving = s.transitionProperty
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => MOVING_PROP.test(p));
+      if (!moving.length) continue;
+      issues.push({
+        kind: "stray-css-transition",
+        severity: "medium",
+        el: describe(el),
+        detail: `CSS transition on ${moving.join(", ")} — movement belongs to Framer (lib/motion.ts); mark it data-css-transition with a reason if it genuinely cannot move`,
+      });
+    }
+
+    // ---- 10. text rendered at zero opacity --------------------------------
+    // The blind spot that let a real regression through. `visible()` treats
+    // `opacity: 0` as "not visible" and skips the element, so every other check
+    // here steps politely over content that the user simply cannot see — the
+    // one failure this tool exists to catch, silently exempted.
+    //
+    // The regression it is written against: an `m.*` with `opacity: 0` in
+    // `initial`. `LazyMotion` resolves its feature bundle in an effect, so
+    // until that chunk lands the element renders straight from `initial` with
+    // no animator to clear it, and above-the-fold content paints invisible.
+    // jsdom cannot see it (no opacity), and the screenshots cannot either —
+    // `shoot.mjs` waits for load, by which time it has resolved.
+    //
+    // Reported only for elements that actually contain text, and only for the
+    // outermost one in a zero-opacity chain, so a faded container yields one
+    // finding rather than one per descendant. Anything deliberately transient
+    // can carry `data-transient-opacity`.
+    for (const el of all) {
+      const s = getComputedStyle(el);
+      if (parseFloat(s.opacity) !== 0) continue;
+      // Hidden by a mechanism that removes it from the a11y tree too — that is
+      // a considered choice, not content that got lost.
+      if (s.display === "none" || s.visibility === "hidden") continue;
+      if (el.hasAttribute("data-transient-opacity") || el.closest("[aria-hidden='true'], [inert], [hidden]")) continue;
+      if (srOnly(el)) continue;
+      // Outermost offender only.
+      const parent = el.parentElement;
+      if (parent && parseFloat(getComputedStyle(parent).opacity) === 0) continue;
+      const text = (el.textContent || "").trim().replace(/\s+/g, " ");
+      if (!text) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      issues.push({
+        kind: "invisible-text",
+        severity: "high",
+        el: describe(el),
+        detail: `laid out at ${Math.round(r.width)}x${Math.round(r.height)}px but painted at opacity 0, with text in it ("${text.slice(0, 60)}") — if this is a Framer entrance, drop opacity from \`initial\` (see components/README.md); if it is deliberately transient, mark it data-transient-opacity`,
+      });
     }
 
     const seen = new Set();

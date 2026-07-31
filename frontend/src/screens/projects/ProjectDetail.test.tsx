@@ -4,14 +4,23 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProjectDetail } from "./ProjectDetail";
 import * as client from "../../api/client";
 import { ToastProvider } from "../../components/Toast";
+import { MotionProvider } from "../../app/MotionProvider";
 import type { ProjectDetail as ProjectDetailType, Txn } from "../../api/types";
 
+// MotionProvider, because the screens under test drill in through
+// SettingsPage and close through Dialog. With no LazyMotion ancestor those
+// exits never run: AnimatePresence drops the child on the spot and onClose
+// fires on the click, so the "backs out and calls onClose" assertions below
+// would pass through a path the app never takes — and would keep passing if
+// the exit were broken outright.
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
-      <ToastProvider>{ui}</ToastProvider>
-    </QueryClientProvider>,
+    <MotionProvider>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>{ui}</ToastProvider>
+      </QueryClientProvider>
+    </MotionProvider>,
   );
 }
 

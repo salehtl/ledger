@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
-import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
-import { shouldDismissToast } from "../lib/toastSwipe";
+import { AnimatePresence, m, useDragControls, useMotionValue } from "motion/react";
+import { toastExitX } from "../lib/toastSwipe";
+import { FADE, SPRING_SNAP } from "../lib/motion";
+import { Pressable } from "./ui/Pressable";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -30,61 +32,48 @@ const ToastContext = createContext<Ctx | null>(null);
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
-  const reduced = usePrefersReducedMotion();
-  const [mounted, setMounted] = useState(false);
-  const [leaving, setLeaving] = useState(false);
 
-  // Slide/fade out, then ask the provider to drop it from state.
-  const beginDismiss = useCallback(() => {
-    if (reduced) { onDismissRef.current(); return; }
-    setLeaving(true);
-    window.setTimeout(() => onDismissRef.current(), 200);
-  }, [reduced]);
+  // The live horizontal offset. A motion value, so dragging never re-renders
+  // React — and, crucially, so the exit animation can read where the finger
+  // actually left the toast. The previous version wrote `transform` directly
+  // to the DOM and React overwrote it on the very next render, discarding the
+  // swipe direction at the moment of commitment.
+  const x = useMotionValue(0);
+  const [exitX, setExitX] = useState(0);
+
+  // The toast is draggable everywhere EXCEPT its buttons, which is why the drag
+  // is started by hand instead of by Framer's own listener.
+  //
+  // A toast is the one draggable surface in the app with interactive children,
+  // and its Undo is destructive to miss: `SwipeDeck.undoCommit` is one-shot, so
+  // a press on "Undo" that turns into a dismissal doesn't just fail to undo, it
+  // spends the undo. With a plain `drag="x"` the press became a drag as soon as
+  // the finger moved a few pixels.
+  //
+  // The obvious guard — `e.stopPropagation()` in the button's React
+  // `onPointerDown` — cannot work here, and it is worth writing down why so it
+  // is not "fixed" back. Framer registers a NATIVE pointerdown listener on the
+  // element itself (`VisualElementDragControls.addListeners`), while React 19
+  // delegates all its listeners to the root container. Stopping propagation on
+  // a synthetic event stops the synthetic tree only; the native listener on an
+  // ancestor has already been reached by the time React's root handler runs.
+  // (The same reasoning applies to SwipeCard's "View source email" button.)
+  //
+  // `dragListener={false}` removes Framer's listener altogether and hands the
+  // decision to the handler below, which is ours and therefore can gate it.
+  // This is the deleted `if (e.target.closest("button")) return;` restored to
+  // the one place it still has authority.
+  const dragControls = useDragControls();
+
+  const beginDismiss = useCallback((direction = 0) => {
+    setExitX(direction);
+    onDismissRef.current();
+  }, []);
   const beginRef = useRef(beginDismiss);
   beginRef.current = beginDismiss;
 
-  const elRef = useRef<HTMLDivElement>(null);
-  const dragX = useRef<{ start: number; t: number; dx: number } | null>(null);
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (reduced) return;
-    // A press starting on the action/dismiss buttons is a tap, not a drag.
-    // Capturing here would retarget the browser's click to the toast body and
-    // silently swallow the button's onClick.
-    if ((e.target as HTMLElement).closest("button")) return;
-    dragX.current = { start: e.clientX, t: Date.now(), dx: 0 };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    if (elRef.current) elRef.current.style.transition = "none";
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragX.current) return;
-    dragX.current.dx = e.clientX - dragX.current.start;
-    if (elRef.current) elRef.current.style.transform = `translateX(${dragX.current.dx}px)`;
-  };
-  const onPointerUp = () => {
-    const d = dragX.current;
-    dragX.current = null;
-    if (!d) return;
-    if (shouldDismissToast(d.dx, Date.now() - d.t)) {
-      if (elRef.current) elRef.current.style.transition = "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)";
-      beginDismiss();
-      return;
-    }
-    if (elRef.current) {                       // snap back
-      elRef.current.style.transition = "transform 200ms var(--ease-out)";
-      elRef.current.style.transform = "translateX(0)";
-    }
-  };
-
-  // Trigger the enter transition one frame after mount.
-  useEffect(() => {
-    const r = requestAnimationFrame(() => setMounted(true));
-    return () => cancelAnimationFrame(r);
-  }, []);
-
   // Auto-dismiss after 5s, pausing while the tab is hidden so a backgrounded
-  // toast still gets its full on-screen time when the user returns. Sticky
-  // toasts skip the timer entirely and persist until dismissed by the user.
+  // toast still gets its full on-screen time. Sticky toasts skip the timer.
   useEffect(() => {
     if (toast.sticky) return;
     let remaining = 5000;
@@ -101,7 +90,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearTimeout(id); document.removeEventListener("visibilitychange", onVis); };
-  }, []); // mount-only; beginRef holds the latest callback
+  }, [toast.sticky]);
 
   // "error" spends the app's one fill register (bg-accent) and so needs the
   // fill's own constant-white text (text-accent-fg) rather than text-bg, which
@@ -109,36 +98,65 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const isError = toast.tone === "error";
   const tone = toast.tone === "success" ? "bg-good" : isError ? "bg-accent" : "bg-fg";
   const fg = isError ? "text-accent-fg" : "text-bg";
-  const hidden = !mounted || leaving;
+
   return (
-    <div
-      ref={elRef}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      style={{
-        transition: reduced
-          ? "opacity 150ms var(--ease-out)"
-          : "transform 200ms var(--ease-out), opacity 200ms var(--ease-out)",
-        transform: reduced ? undefined : hidden ? "translateY(12px)" : "translateY(0)",
-        opacity: hidden ? 0 : 1,
-        willChange: reduced ? "opacity" : "transform, opacity",
-        touchAction: "pan-y",
+    <m.div
+      layout
+      style={{ x }}
+      drag="x"
+      dragListener={false}
+      dragControls={dragControls}
+      onPointerDown={(e) => {
+        if ((e.target as HTMLElement).closest("button")) return;
+        dragControls.start(e);
       }}
-      className={`pointer-events-auto flex items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
+      dragSnapToOrigin
+      // No `dragConstraints`, and therefore deliberately no `dragElastic`.
+      // Elasticity is only ever applied to the part of a drag that is OUTSIDE
+      // the constraint box: `resolveConstraints()` sets `this.constraints =
+      // false` when the prop is absent, and the elastic branch in
+      // `updateAxis()` is guarded on `this.constraints[axis]`. With no box
+      // there is no outside, so `dragElastic` here was a no-op and was
+      // removed rather than made real.
+      //
+      // Making it real would be wrong anyway. A row rubber-bands to say "this
+      // direction has no action" — but a toast dismisses BOTH ways
+      // (`toastExitX` reads the sign), so there is no dead side to resist,
+      // and 1:1 tracking is what lets a short flick reach the threshold.
+      //
+      // `SPRING_SNAP` is a spring `Transition`, not inertia options: spread
+      // into the drag it overwrites `type: "inertia"`, so an uncommitted
+      // swipe springs home instead of decaying. That one is intentional.
+      dragTransition={SPRING_SNAP}
+      onDragEnd={(_, info) => {
+        const exit = toastExitX(info.offset.x, info.velocity.x);
+        if (exit !== 0) beginDismiss(exit);
+      }}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      // The toast leaves the way it was sent: swiped toasts continue in the
+      // swipe direction, timed-out toasts just fade.
+      exit={{ opacity: 0, x: exitX, y: exitX === 0 ? 12 : 0 }}
+      transition={FADE}
+      className={`pointer-events-auto flex touch-pan-y items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
     >
       <span className="flex-1 text-sm">{toast.message}</span>
       {toast.action && (
-        <button
-          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline press`}
+        <Pressable
+          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline`}
           onClick={() => { try { toast.action!.onAction(); } finally { beginDismiss(); } }}
         >
           {toast.action.label}
-        </button>
+        </Pressable>
       )}
-      <button aria-label="Dismiss" className={`${isError ? "text-accent-fg/70" : "text-bg/70"} press`} onClick={beginDismiss}>×</button>
-    </div>
+      <Pressable
+        aria-label="Dismiss"
+        className={isError ? "text-accent-fg/70" : "text-bg/70"}
+        onClick={() => beginDismiss()}
+      >
+        ×
+      </Pressable>
+    </m.div>
   );
 }
 
@@ -158,9 +176,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={ctx}>
       {children}
       <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] z-40 flex flex-col items-center gap-2 px-4 pointer-events-none" role="region" aria-label="Notifications">
-        {toasts.map((t) => (
-          <ToastItem key={t.id} toast={t} onDismiss={() => dispatch({ type: "remove", id: t.id })} />
-        ))}
+        <AnimatePresence initial={false}>
+          {toasts.map((t) => (
+            <ToastItem key={t.id} toast={t} onDismiss={() => dispatch({ type: "remove", id: t.id })} />
+          ))}
+        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );
