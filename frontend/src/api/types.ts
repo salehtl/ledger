@@ -4,7 +4,7 @@ import type { Allocation, Cadence, EnvelopeSummary, TargetType } from "../lib/en
 import type { ProvenanceInfo } from "../lib/recurring";
 import type { AccountKind } from "../lib/reconcile";
 
-export interface Category { ID: number; Name: string; Kind: string; Bucket: string; IsActive: boolean; }
+export interface Category { ID: number; Name: string; Kind: string; Bucket: string; IsActive: boolean; Color: string; }
 export interface Rule { ID: number; MatchType: string; Pattern: string; CategoryID: number; Priority: number; Source: string; IsActive: boolean; }
 export interface AppSettings {
   auto_categorize: boolean;

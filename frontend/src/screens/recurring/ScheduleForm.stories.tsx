@@ -4,8 +4,8 @@ import type { Schedule } from "../../api/types";
 import type { Category } from "../../api/types";
 
 const categories: Category[] = [
-  { ID: 5, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true },
-  { ID: 7, Name: "Utilities", Kind: "spending", Bucket: "need", IsActive: true },
+  { ID: 5, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
+  { ID: 7, Name: "Utilities", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
 ];
 
 const active: Schedule = {

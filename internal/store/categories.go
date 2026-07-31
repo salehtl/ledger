@@ -237,6 +237,36 @@ func SeedCategoryColor(id int64) string {
 	return paletteNames[((id*7)%n+n)%n]
 }
 
+// IsPaletteName reports whether name is one of the 24 palette names. The
+// server calls this to reject an unknown colour at the API boundary rather
+// than storing it: paletteColor.ts interpolates the stored value into
+// var(--color-NAME), and an unknown name is valid CSS that resolves to
+// nothing, so the mark would silently disappear rather than degrading. An
+// empty string is not a palette name (it means "never chosen") and reports
+// false here; callers that want to allow "empty is fine" check for that
+// separately, same as the frontend's isPaletteName.
+func IsPaletteName(name string) bool {
+	for _, n := range paletteNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SetCategoryColor sets one category's colour. Deliberately a separate
+// setter rather than a field on UpdateCategory: UpdateCategory overwrites
+// name/kind/bucket only and never touches color (see its doc comment), so a
+// rename or re-bucket can never clear a colour the user already picked.
+// Passing the empty string here does store NULL (see nullableStr) -- it is
+// the caller's job to decide when clearing is actually wanted; the PUT
+// handler today never calls this with an empty string, precisely so an
+// omitted "color" field in a request body can't reach here at all.
+func (s *Store) SetCategoryColor(id int64, color string) error {
+	_, err := s.DB.Exec(`UPDATE categories SET color=? WHERE id=?`, nullableStr(color), id)
+	return err
+}
+
 // BackfillCategoryColors assigns SeedCategoryColor to every category row
 // that doesn't have one yet (color IS NULL or the empty string). Safe to
 // call repeatedly: once a row has a colour it is never touched again. Open

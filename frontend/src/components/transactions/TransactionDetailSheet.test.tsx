@@ -7,8 +7,8 @@ import type { Category } from "../../api/types";
 import type { TxnDepth } from "../../lib/txSplit";
 
 const cats: Category[] = [
-  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
+  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
 ];
 
 const txn = (over: Partial<TxnDepth> = {}): TxnDepth => ({

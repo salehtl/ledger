@@ -20,8 +20,8 @@ const all: TxnDepth[] = [
   },
 ];
 const cats: Category[] = [
-  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 2, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true },
+  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 2, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
 ];
 const rules = [
   { ID: 4, MatchType: "contains", Pattern: "netflix", CategoryID: 2, Priority: 100, Source: "ai_confirmed", IsActive: true },

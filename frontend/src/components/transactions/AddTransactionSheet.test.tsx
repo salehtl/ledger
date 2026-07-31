@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { AddTransactionSheet } from "./AddTransactionSheet";
 import type { Category } from "../../api/types";
 
-const cats: Category[] = [{ ID: 3, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true }];
+const cats: Category[] = [{ ID: 3, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" }];
 
 describe("AddTransactionSheet", () => {
   it("submits a built payload from valid input", () => {

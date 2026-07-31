@@ -6,13 +6,13 @@ import { DEFAULT_SWIPE_CONFIG } from '../../lib/swipe'
 import type { Category, Project, Txn } from '../../api/types'
 
 const CATS: Category[] = [
-  { ID: 1, Name: 'Dining',        Kind: 'spending', Bucket: 'want',   IsActive: true },
-  { ID: 2, Name: 'Entertainment', Kind: 'spending', Bucket: 'want',   IsActive: true },
-  { ID: 3, Name: 'Groceries',     Kind: 'spending', Bucket: 'need',   IsActive: true },
-  { ID: 4, Name: 'Savings',       Kind: 'spending', Bucket: 'saving', IsActive: true },
-  { ID: 5, Name: 'Archived',      Kind: 'spending', Bucket: 'want',   IsActive: false },
-  { ID: 6, Name: 'Salary',        Kind: 'income',   Bucket: '',       IsActive: true },
-  { ID: 7, Name: 'Freelance',     Kind: 'income',   Bucket: '',       IsActive: true },
+  { ID: 1, Name: 'Dining',        Kind: 'spending', Bucket: 'want',   IsActive: true, Color: "" },
+  { ID: 2, Name: 'Entertainment', Kind: 'spending', Bucket: 'want',   IsActive: true, Color: "" },
+  { ID: 3, Name: 'Groceries',     Kind: 'spending', Bucket: 'need',   IsActive: true, Color: "" },
+  { ID: 4, Name: 'Savings',       Kind: 'spending', Bucket: 'saving', IsActive: true, Color: "" },
+  { ID: 5, Name: 'Archived',      Kind: 'spending', Bucket: 'want',   IsActive: false, Color: "" },
+  { ID: 6, Name: 'Salary',        Kind: 'income',   Bucket: '',       IsActive: true, Color: "" },
+  { ID: 7, Name: 'Freelance',     Kind: 'income',   Bucket: '',       IsActive: true, Color: "" },
 ]
 
 function txn(p: Partial<Txn> = {}): Txn {
@@ -155,7 +155,7 @@ describe('SubcategoryPanel transfers', () => {
       <SubcategoryPanel
         action={DEFAULT_SWIPE_CONFIG.up}
         txn={txn(txnOverrides)}
-        categories={[...CATS, { ID: 8, Name: 'Transfers', Kind: 'excluded', Bucket: '', IsActive: true }]}
+        categories={[...CATS, { ID: 8, Name: 'Transfers', Kind: 'excluded', Bucket: '', IsActive: true, Color: '' }]}
         makeRule={false}
         onMakeRuleChange={() => {}}
         onSelect={onSelect}

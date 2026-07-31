@@ -23,11 +23,11 @@ import {
 } from "./txSplit";
 
 const cats: Category[] = [
-  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
-  { ID: 3, Name: "Salary", Kind: "income", Bucket: "", IsActive: true },
-  { ID: 4, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true },
-  { ID: 5, Name: "Old", Kind: "spending", Bucket: "want", IsActive: false },
+  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
+  { ID: 3, Name: "Salary", Kind: "income", Bucket: "", IsActive: true, Color: "" },
+  { ID: 4, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true, Color: "" },
+  { ID: 5, Name: "Old", Kind: "spending", Bucket: "want", IsActive: false, Color: "" },
 ];
 
 const txn = (over: Partial<TxnDepth> = {}): TxnDepth => ({
