@@ -1010,3 +1010,50 @@ func TestSeedCategoryColorIsStable(t *testing.T) {
 		seen[c] = id
 	}
 }
+
+// TestCategoryColorSurvivesRestart: Open runs BackfillCategoryColors on every
+// start (mirrors TestDeletedSeedCategoryStaysDeletedAcrossRestart's
+// close/reopen/assert shape for the same reason — Open's bootstrap steps run
+// unconditionally, so a second pass must be a no-op for anything already
+// set). The guard is color IS NULL or the empty string; the risk is that guard
+// missing and the second Open silently reassigning a colour the user (or,
+// here, a rename via UpdateCategory) already chose. The hand-set value is
+// deliberately NOT what SeedCategoryColor would produce for this id, so a
+// silent reassignment back to the seed formula is detectable rather than
+// coincidentally matching.
+func TestCategoryColorSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var groceriesID int64
+	if err := st.DB.QueryRow(`SELECT id FROM categories WHERE name='Groceries'`).Scan(&groceriesID); err != nil {
+		t.Fatalf("seeded Groceries not found: %v", err)
+	}
+	seeded := SeedCategoryColor(groceriesID)
+	handSet := "orchid"
+	if handSet == seeded {
+		// Guard against the two formulas ever colliding for this id, which
+		// would make the test pass for the wrong reason.
+		handSet = "sky"
+	}
+	if _, err := st.DB.Exec(`UPDATE categories SET color=? WHERE id=?`, handSet, groceriesID); err != nil {
+		t.Fatalf("hand-set colour: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { st2.Close() })
+
+	c, err := st2.Category(groceriesID)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	if c.Color != handSet {
+		t.Fatalf("colour after restart = %q, want hand-set %q (seed formula would give %q) — BackfillCategoryColors must not touch a row that already has a colour", c.Color, handSet, seeded)
+	}
+}

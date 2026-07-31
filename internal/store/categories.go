@@ -225,17 +225,25 @@ var paletteNames = []string{
 // adding or deleting a category never reshuffles anyone else's colour. Ids
 // above 24 wrap and may collide with an existing assignment; that's
 // acceptable — colour uniqueness across categories is a non-goal.
+//
+// The extra +n, %n normalizes the index into [0, n): Go's % preserves the
+// dividend's sign, so a negative id would otherwise compute a negative index
+// and panic. No caller can produce one today — InsertCategory never lets a
+// caller supply an id, and SQLite autoincrements category ids from 1 — so
+// this is belt-and-braces against a future or hand-rolled caller, not a live
+// path.
 func SeedCategoryColor(id int64) string {
-	return paletteNames[(id*7)%int64(len(paletteNames))]
+	n := int64(len(paletteNames))
+	return paletteNames[((id*7)%n+n)%n]
 }
 
 // BackfillCategoryColors assigns SeedCategoryColor to every category row
-// that doesn't have one yet (color IS NULL or ”). Safe to call repeatedly:
-// once a row has a colour it is never touched again. Open calls this once
-// after the column is guaranteed to exist (schema.sql on a fresh database,
-// the addColumnIfMissing migration on an older one) and after
-// SeedDefaultCategories, so it covers both a pre-color database's existing
-// rows and the default set a brand-new database just seeded.
+// that doesn't have one yet (color IS NULL or the empty string). Safe to
+// call repeatedly: once a row has a colour it is never touched again. Open
+// calls this once after the column is guaranteed to exist (schema.sql on a
+// fresh database, the addColumnIfMissing migration on an older one) and
+// after SeedDefaultCategories, so it covers both a pre-color database's
+// existing rows and the default set a brand-new database just seeded.
 func (s *Store) BackfillCategoryColors() error {
 	rows, err := s.DB.Query(`SELECT id FROM categories WHERE color IS NULL OR color=''`)
 	if err != nil {
