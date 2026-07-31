@@ -228,15 +228,23 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
 
   // Deliberately does NOT close the editor: picking a colour is something you
   // do by trying two or three, and a picker that vanishes on the first tap
-  // makes that four round trips through "Edit". No toast either — the row's
-  // own dot changes under the finger, and one toast per swatch would bury the
+  // makes that four round trips through "Edit". No toast either — the pressed
+  // swatch takes the ring immediately, and one toast per swatch would bury the
   // ones that matter.
+  //
+  // `cat.Name`, NOT the draft, and that distinction is the whole point. `move`
+  // can carry the draft because it closes the editor and toasts, so the rename
+  // it commits is visible and expected. This one is silent and leaves the
+  // editor open, so carrying the draft would mean a half-typed name lands on
+  // the server the moment you tap a colour — and Escape, which the user
+  // reasonably expects to discard it, only resets local state. Enter and blur
+  // own the rename; picking a colour picks a colour.
   const pickColor = async (c: string) => {
     if (c === color) return;
     const prev = color;
     setColor(c);
     try {
-      await put({ name: draft.trim() || cat.Name, bucket: cat.Bucket, color: c });
+      await put({ name: cat.Name, bucket: cat.Bucket, color: c });
       onChanged();
     } catch {
       setColor(prev);
@@ -331,10 +339,12 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
                     // check first opened this editor and measured them — the
                     // fourth sub-44px target in this codebase, invisible until
                     // now because no pass had ever entered a row's edit state.
-                    // w-11 h-11 -m-1 buys the 44px target back without moving
-                    // anything: the visible bordered box below stays 36px, and
-                    // gap-2 puts the targets exactly adjacent rather than
-                    // overlapping, so the net layout width is unchanged.
+                    // w-11 h-11 -m-1 buys the 44px target back while the
+                    // visible bordered box below stays 36px, and gap-2 puts the
+                    // targets exactly adjacent rather than overlapping.
+                    // The group does grow 8px (3x36 + 2x4 = 116 -> 3x44 - 8 =
+                    // 124), taken off the flex-1 name input beside it; measured
+                    // harmless at 320px, where the input still clears 100px.
                     className="w-11 h-11 -m-1 inline-flex items-center justify-center"
                   >
                     <span

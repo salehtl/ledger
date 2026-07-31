@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { CategoryManager } from "./CategoryManager";
 import { MotionProvider } from "../app/MotionProvider";
-import { PALETTE_NAMES } from "../lib/paletteColor";
+import { PALETTE_NAMES, PALETTE_DISPLAY_ORDER } from "../lib/paletteColor";
 
 const CATS = [
   { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
@@ -286,6 +286,20 @@ describe("CategoryManager", () => {
       }
     });
 
+    it("lays the swatches out in hue order, not the array's append order", async () => {
+      // The ordering is the only user-visible reason PALETTE_DISPLAY_ORDER
+      // exists. Asserting the *set* (above) passes just as happily on append
+      // order, so reverting to `PALETTE_NAMES.map` here would otherwise be
+      // invisible to the whole suite.
+      vi.stubGlobal("fetch", withColors());
+      const { container } = wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      const picker = container.querySelector("[data-color-picker]") as HTMLElement;
+      const rendered = [...picker.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
+      expect(rendered).toEqual([...PALETTE_DISPLAY_ORDER]);
+      expect(rendered).not.toEqual([...PALETTE_NAMES]);
+    });
+
     it("marks the category's current colour as the pressed swatch", async () => {
       vi.stubGlobal("fetch", withColors());
       wrap();
@@ -312,6 +326,35 @@ describe("CategoryManager", () => {
       // Choosing a colour means trying two or three; the editor stays put.
       expect(container.querySelector("[data-color-picker]")).toBeTruthy();
       expect(screen.getByRole("button", { name: "orchid" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("does not commit a half-typed rename when you tap a swatch", async () => {
+      // The path nothing covered. pickColor is silent and leaves the editor
+      // open, so if it carried the draft the way `move` does, typing "Foo" and
+      // then tapping a colour would rename the category on the server with no
+      // toast, no editor close, and nothing on screen saying it happened.
+      const fetchMock = withColors();
+      vi.stubGlobal("fetch", fetchMock);
+      wrap();
+      fireEvent.click(await screen.findByRole("button", { name: /edit groceries/i }));
+      fireEvent.change(screen.getByLabelText("Rename Groceries"), { target: { value: "Foo" } });
+      fireEvent.click(screen.getByRole("button", { name: "orchid" }));
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find((c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT");
+        expect(call).toBeTruthy();
+        expect(JSON.parse(String(call![1]!.body))).toMatchObject({ name: "Groceries", color: "orchid" });
+      });
+
+      // ...and Escape still means Escape. cancelEdit only resets local state,
+      // so a rename smuggled out by the swatch tap would already be on the
+      // server and this row would come back as "Foo".
+      fireEvent.keyDown(screen.getByLabelText("Rename Groceries"), { key: "Escape" });
+      expect(await screen.findByText("Groceries")).toBeInTheDocument();
+      expect(screen.queryByText("Foo")).not.toBeInTheDocument();
+      const renames = fetchMock.mock.calls.filter(
+        (c) => c[0] === "/api/categories/1" && c[1]?.method === "PUT" && JSON.parse(String(c[1]!.body)).name === "Foo",
+      );
+      expect(renames).toHaveLength(0);
     });
 
     it("renaming a coloured category carries its colour through, not a blank", async () => {
