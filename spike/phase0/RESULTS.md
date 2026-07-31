@@ -54,12 +54,24 @@ Sweden (Stockholm), Ukraine (Kyiv).
 | se1 (Sweden) | connected, 0.023s |
 | ua3 (Ukraine) | **error: Connection timed out** |
 
-4/5 nodes completed a TCP handshake against `178.104.132.41:25`. The one
-failure (Kyiv) is a single node on a distinct geography/network path from the
-four that succeeded; nothing else in this spike points at a Hetzner- or
-ufw-side block specific to that node, so it reads as node/path-specific noise
-(consistent with well-documented degraded transit conditions from Ukraine)
-rather than evidence the provider filters port 25.
+4/5 nodes completed a TCP handshake against `178.104.132.41:25`. A
+provider-level inbound block on port 25 would fail *every* external probe
+uniformly, regardless of which node originates it — a single successful
+handshake is already sufficient to rule that out, and here four independent,
+geographically diverse nodes succeeded. That makes the outcome dispositive
+for the question this spike asks (does Hetzner/this host block inbound 25),
+independent of what happened with the fifth node.
+
+The ua3 (Kyiv) timeout is therefore not evidence of a Hetzner-side block; the
+most plausible explanation is that ua3 itself — a check-host.net probe node
+running on its own commodity hosting — has outbound TCP/25 blocked by *its*
+provider, which is the single most common cause of exactly this signature
+(one node fails to originate a connection to 25 from anywhere) and is a
+well-known limitation of public TCP-checker services, not a property of the
+target. This is a plausible explanation, not a confirmed one — it was not
+independently verified (e.g. by asking ua3 to probe a known-open port 25
+elsewhere) — but no re-probing was required to reach the verdict, since the
+four successes already answer the question.
 
 Port 2525 (control) — nodes queried: Switzerland (Zurich), Cyprus (Larnaca),
 Spain (Madrid), Spain (Barcelona), India (Delhi).
@@ -72,10 +84,19 @@ Spain (Madrid), Spain (Barcelona), India (Delhi).
 | es2 (Spain/Barcelona) | connected, 0.031s |
 | in2 (India) | connected, 0.181s |
 
-5/5 nodes connected. The control confirms the probe method itself works end
-to end (public routing, ufw opened correctly, listener reachable) — so the
-port-25 result above is a meaningful signal about port 25 specifically, not
-an artifact of a broken test setup.
+5/5 nodes connected. Note that check-host.net assigns a fresh, randomly
+selected node set per request — the control's five nodes (ch2, cy1, es1, es2,
+in2) are entirely disjoint from port 25's five (ir3, it2, nl2, se1, ua3); ua3
+was never asked to probe 2525, so this control says nothing about whether ua3
+specifically can reach this host at all, and it cannot be used to argue that
+ua3's port-25 timeout is anomalous relative to "the same node on the control."
+What the control *does* establish is that the probe method itself works end
+to end (public routing, the temporary ufw hole, the listener) — a clean 5/5
+here confirms the harness is capable of producing all-success results, which
+matters mainly as a sanity check and would become the load-bearing evidence
+only in the scenario where port 25 saw zero connections (i.e. it disambiguates
+"nothing reached us because the harness is broken" from "nothing reached us
+because 25 is blocked" — the case that didn't occur here).
 
 Raw JSON for both requests is preserved in the check-host.net permanent
 report links captured during the run (`check-report/45fca7a8k2db` for :25,
@@ -84,14 +105,21 @@ session scratchpad during execution.
 
 ### Verdict: **GO**
 
-Hetzner does **not** block inbound TCP/25 on this host. Both the target port
-(25) and the control port (2525) were reachable from geographically diverse
-external vantage points, with only a single, isolated timeout on 25 from one
-node (Kyiv) against an otherwise clean 4/5 — read as path noise, not a
-provider policy block, especially since that same class of transient failure
-did not appear on the control port. Self-hosted SMTP ingestion per spec §3.2
-is viable on this host's public interface: no provider outreach or unblock
-request is needed.
+Hetzner does **not** block inbound TCP/25 on this host. The verdict rests on
+the four successful external handshakes to port 25 (Iran, Italy, Netherlands,
+Sweden): a provider-level inbound-25 block would produce failures across the
+board, so even one success would be dispositive, and four independent,
+geographically diverse successes make the case solidly. The fifth node's
+(ua3, Kyiv) timeout does not weigh against this — it is most plausibly that
+probe node's own outbound-25 restriction (a common limitation of TCP-checker
+services), not a signal about this host or Hetzner. The control port (2525,
+5/5) is not being used here to explain away the ua3 timeout — its nodes were
+disjoint from port 25's and it says nothing about ua3 specifically — it
+served only to confirm the probe harness itself is capable of reaching this
+host end to end, which was not otherwise in doubt given four raw successes on
+25. Self-hosted SMTP ingestion per spec §3.2 is viable on this host's public
+interface at the provider level: no provider outreach or unblock request is
+needed.
 
 ### Cleanup performed
 
@@ -107,6 +135,23 @@ request is needed.
 
 ### Next steps
 
-None required for port reachability — this precondition of spec §3.2 is
-satisfied. Remaining Phase 0 spikes (B: blob generator, device measurement,
-etc.) are independent of this result and can proceed regardless.
+The **provider-level** precondition of spec §3.2 is satisfied — no Hetzner
+outreach or unblock request is needed. But this spike's cleanup step
+(correctly) deleted the temporary ufw rules and restored the host's firewall
+to its normal default-deny-incoming state with only `tailscale0` allowed. As
+recorded above, that means **port 25 is currently unreachable from the
+public internet on this host**, by the host's own firewall rather than by
+the provider. Anyone implementing the SMTP receiver from spec §3.2 must not
+read this GO verdict as "port 25 already works" — before the receiver ships:
+
+1. Add a permanent `sudo ufw allow 25/tcp` (and the matching v6 rule) when
+   the SMTP receiver is ready to bind, scoped as tightly as the design
+   allows (e.g. restrict source if the sending MTAs are known, though
+   inbound mail generally requires open access).
+2. Check the Hetzner Cloud **Firewall** feature at the project/panel level
+   (a separate layer from the host's own `ufw`/`iptables`, not inspected in
+   this spike) — if a Cloud Firewall is attached to this server, it can
+   independently block 25 upstream of the host and must be opened too.
+
+Remaining Phase 0 spikes (B: blob generator, device measurement, etc.) are
+independent of this result and can proceed regardless.
