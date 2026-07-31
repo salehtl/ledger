@@ -156,8 +156,21 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
   // flag before `onTap` ever reads it, and every drag banks a tap. Resetting
   // on pointerdown is ordering-independent and also clears the stale flag left
   // by a drag that ended in `onTapCancel` (pointercancel, or a release off the
-  // element), which used to eat the next genuine tap. Capture phase, because
-  // the "View source email" button inside the card stops pointerdown.
+  // element), which used to eat the next genuine tap.
+  //
+  // Capture phase, so the "View source email" button's own `stopPropagation`
+  // cannot skip the reset. Note what that guard does and does not do: it stops
+  // React's *synthetic* pointerdown from reaching a bubble-phase handler on
+  // this card, which is why the reset is in capture — but it does NOT stop the
+  // card from dragging. Framer's drag listener is a native listener on this
+  // element (`VisualElementDragControls.addListeners`) and React 19 delegates
+  // at the root, so by the time any synthetic handler runs, Framer's has
+  // already been called. Pressing the button and moving does start a card
+  // drag. That is left as-is: `dragged` means the resulting release is not
+  // also counted as a tap, `dragSnapToOrigin` returns the card, and the only
+  // way to genuinely gate it would be `dragListener={false}` plus
+  // `dragControls` (what `Toast` does, where the stake is a one-shot undo).
+  // Here the stake is a card that springs back.
   const dragged = useRef(false)
   const taps = useRef(0)
   const tapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -222,9 +235,14 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
       tabIndex={-1}
       // The deck overlaps cards, so entry and exit are AnimatePresence's job.
       // Under the app's global reducedMotion policy Framer hands every
-      // positional key (x, y, rotate, scale) a `{type: false}` transition —
-      // set instantly, never animated — and animates only the opacity, so the
-      // card is never seen travelling. That is the whole reason the old
+      // positional key (x, y, rotate, scale) a `{type: false}` transition
+      // (`visual-element-target.mjs`) — it *sets* them instantly rather than
+      // skipping them — and then fades what is by that point an already
+      // offscreen node. So the user does not see a card travel; they see a
+      // cut. That is the correct reading of the preference and is left alone
+      // deliberately: no per-component reduced-motion branch.
+      //
+      // It is also the whole reason the old
       // hand-rolled `flying ? … : reduceMotion ? …` ternary is gone: `flying`
       // short-circuited before reduceMotion was consulted, so the biggest
       // movement in the app ignored the preference entirely. Verified in

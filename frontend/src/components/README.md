@@ -190,11 +190,12 @@ All motion in the app is Framer Motion (npm package `motion`, imported from
   can end up asserting against rows frozen mid-entrance. Same mechanism as the
   first-paint rule above.
 
-### The two CSS exemptions
+### The three CSS exemptions
 
-Exactly two animations stay in CSS. Both are indefinite opacity loops, and
+Three animations stay in CSS. The first two are indefinite opacity loops, and
 neither is gated behind `prefers-reduced-motion` — that preference asks for
-less *movement*, not less comprehension, and nothing here travels.
+less *movement*, not less comprehension, and nothing here travels. The third,
+described at the end of this section, is the one that actually moves something.
 
 1. **The pixel spinner** (`.pixel-spinner-cell`, `styles/app.css`). Framer
    cannot express it at all: the eight cells phase-shift one shared keyframe

@@ -1,6 +1,7 @@
 // frontend/src/lib/swipe.ts
 import { seedOfColor, type Rgb } from '../components/dither-kit/palette'
 import { bucketDither } from './ditherColor'
+import { flicked, FLICK_MIN_PX } from './gesture'
 
 export type SwipeDirection = 'left' | 'right' | 'up' | 'down'
 
@@ -31,8 +32,13 @@ export const SWIPE_THRESHOLD = 80
 export const COMMIT_PX = 100
 /** px/s past which a release commits regardless of distance. */
 export const COMMIT_VELOCITY = 520
-/** A flick still needs enough travel on its axis to read as intentional. */
-export const FLICK_MIN_DISTANCE = 24
+/**
+ * A flick still needs enough travel on its axis to read as intentional. This
+ * is the app-wide floor from `lib/gesture.ts`, aliased so the deck's own
+ * threshold block reads as one list; the guard it names is now shared with the
+ * toast, sheet, edge-back and row predicates.
+ */
+export const FLICK_MIN_DISTANCE = FLICK_MIN_PX
 
 export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
   left:  { bucket: 'want',   label: 'Want',     colorClass: 'bg-purple-500', textClass: 'text-purple-700', icon: 'Heart' },
@@ -186,19 +192,12 @@ export function quantizePreview(p: number): number {
  * previously spread across useSwipeGesture's pointer handlers with a
  * time-based speed estimate; Framer reports real px/s.
  *
- * The velocity clause has two guards, and both earn their keep:
- *
- * - the sign must match the offset, so a card flung back toward centre (fast,
- *   but heading home) never commits to the edge it is leaving;
- * - the axis must also have travelled FLICK_MIN_DISTANCE. Framer's PanSession
- *   starts a drag at ~3px and reports `info.velocity` over the last ~100ms, so
- *   a jittery tap reaches 600px/s on five pixels of travel — past
- *   COMMIT_VELOCITY — and it cannot fall back to being a tap either, because
- *   `onDragStart` has already armed SwipeCard's `dragged` guard. Without the
- *   floor a twitch sorted a card the user never meant to touch, on the
- *   highest-frequency surface in the app, costing an undo each time. This is
- *   the guard the deleted `flickDirection` carried and that `commitDirection`
- *   initially dropped.
+ * The velocity clause's guards — direction agreement and the FLICK_MIN_DISTANCE
+ * floor — now live in `lib/gesture.ts`'s `flicked`, which is where the full
+ * rationale is written down. This deck is where the missing floor was first
+ * found (a twitch sorted a card the user never meant to touch, on the
+ * highest-frequency surface in the app, costing an undo each time); the other
+ * four drag surfaces were carrying the same hole and now share the fix.
  *
  * The floor is measured per axis rather than on the overall travel, so 30px of
  * downward drag cannot license a sideways velocity commit.
@@ -209,12 +208,10 @@ export function commitDirection(
   velocityX: number,
   velocityY: number,
 ): SwipeDirection | null {
-  const flicked = (offset: number, velocity: number) =>
-    Math.abs(offset) >= FLICK_MIN_DISTANCE &&
-    Math.sign(velocity) === Math.sign(offset) &&
-    Math.abs(velocity) >= COMMIT_VELOCITY
-  const horizontal = Math.abs(offsetX) >= COMMIT_PX || flicked(offsetX, velocityX)
-  const vertical = Math.abs(offsetY) >= COMMIT_PX || flicked(offsetY, velocityY)
+  const flick = (offset: number, velocity: number) =>
+    flicked(offset, velocity, FLICK_MIN_DISTANCE, COMMIT_VELOCITY)
+  const horizontal = Math.abs(offsetX) >= COMMIT_PX || flick(offsetX, velocityX)
+  const vertical = Math.abs(offsetY) >= COMMIT_PX || flick(offsetY, velocityY)
   if (!horizontal && !vertical) return null
   const preferHorizontal = horizontal && (!vertical || Math.abs(offsetX) >= Math.abs(offsetY))
   if (preferHorizontal) return offsetX > 0 ? 'right' : 'left'

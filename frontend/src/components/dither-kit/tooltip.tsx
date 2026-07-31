@@ -58,7 +58,23 @@ export function Tooltip({
             "dither-tooltip pointer-events-none absolute z-10 rounded-[var(--radius)] border px-2 py-1 shadow-sm",
             VARIANT[variant]
           )}
-          initial={{ opacity: 0 }}
+          // `left`/`top` must be in `initial` as well as `animate`, or the
+          // entrance glides in from the wrong place. Framer reads an animation's
+          // origin from `latestValues`, and anything absent from `initial` is
+          // not there — so `DOMKeyframesResolver` falls back to reading the DOM
+          // (`positionalValues.left = (_bbox, { left }) => parseFloat(left)`).
+          // This element is absolutely positioned with no `left` of its own
+          // until Framer sets one, and browsers resolve a computed `left: auto`
+          // on an abspos box to its *used* value — i.e. wherever the static
+          // flow would have put it. So every fresh hover animated 190ms from
+          // the corner of the chart to the hovered point.
+          //
+          // This is the job the deleted `armed` gate did ("without the gate the
+          // entrance would fly in from wherever the previous hover left the
+          // card"); the migration kept its exit half and dropped this one.
+          // jsdom cannot reproduce it — computed `left` there is the literal
+          // string "auto" — which is why the chart tests stayed green.
+          initial={{ opacity: 0, left: chart.tooltipLeft, top: chart.tooltipTop }}
           animate={{ opacity: 1, left: chart.tooltipLeft, top: chart.tooltipTop }}
           exit={{ opacity: 0 }}
           transition={{

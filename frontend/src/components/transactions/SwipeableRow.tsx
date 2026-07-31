@@ -31,6 +31,36 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
   const actions: RowActions = { lead: !!lead, trail: !!trail };
   const moved = useRef(false);
 
+  // Which axis Framer actually locked this gesture to, or null if it never
+  // locked one. This is the safety net the hand-rolled `endGesture()` used to
+  // provide with `if (axis.current === "h")`, and it is not optional.
+  //
+  // `info.offset` in onDragEnd is RAW pointer travel: it is measured from the
+  // gesture's start point and `dragDirectionLock` does not touch it. The lock
+  // only gates `updateAxis()`, i.e. whether the element moves. Framer's
+  // `getCurrentDirection(offset, lockThreshold = 10)` tests `y` FIRST, so the
+  // first coalesced pointermove carrying more than 10px of vertical travel
+  // locks the gesture to "y" even when x moved further in that same frame —
+  // ordinary at flick speed with 16ms event batching. From then on the row is
+  // visually stationary no matter how far sideways the finger goes, but
+  // onDragEnd still fires with the full raw offset. Without this guard a fast
+  // diagonal flick down-and-left across a row archived the transaction with no
+  // animation, no revealed panel and nothing on screen to say it happened.
+  //
+  // It also gives the row a free distance floor: a sub-10px twitch never locks
+  // an axis at all, so it can never reach swipeCommits.
+  //
+  // Reset on pointerdown, NOT in onDragStart — the same ordering trap
+  // SwipeCard's `dragged` ref documents, and here it is fatal rather than
+  // merely subtle. `onDragStart` is dispatched through `frame.update(...)`
+  // (VisualElementDragControls' onStart), so it runs on the NEXT frame, while
+  // `onDirectionLock` is called synchronously from `onMove` on the same
+  // pointermove that started the drag. Clearing the axis in onDragStart
+  // therefore erases the lock one frame after it was recorded, and since
+  // Framer only notifies once per gesture it is never set again — the ref
+  // stays null forever and the row stops committing anything at all.
+  const axis = useRef<"x" | "y" | null>(null);
+
   // The live offset. A motion value, not React state: the previous version
   // called setDx() on every pointermove, which re-rendered the row and
   // dirtied layout on two `width`-driven panels — per frame, inside a
@@ -65,7 +95,10 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
   // if a click actually follows, and a scroll never produces one. Without
   // this reset, the next genuine tap on the same row would still see a stale
   // moved=true from the earlier scroll and have its click wrongly swallowed.
-  const onPointerDownCapture = () => { moved.current = false; };
+  // Capture phase, so it beats Framer's own native pointerdown listener on the
+  // inner element (React delegates at the root, and the root's capture pass
+  // runs before the event reaches any descendant's native listener).
+  const onPointerDownCapture = () => { moved.current = false; axis.current = null; };
 
   return (
     <div className="relative overflow-hidden" onClickCapture={onClickCapture} onPointerDownCapture={onPointerDownCapture}>
@@ -115,7 +148,13 @@ export function SwipeableRow({ lead, trail, onCommit, children }: {
         dragElastic={0.4}
         dragMomentum={false}
         onDragStart={() => { moved.current = true; }}
+        // Fires once per gesture, the moment dragDirectionLock picks an axis.
+        onDirectionLock={(dir) => { axis.current = dir; }}
         onDragEnd={(_, info) => {
+          // Only a gesture Framer accepted as horizontal may commit. See the
+          // `axis` ref above: info.offset.x is raw travel and says nothing
+          // about whether the row ever moved.
+          if (axis.current !== "x") return;
           const committed = swipeCommits(info.offset.x, info.velocity.x, actions);
           if (committed) { fire("selection"); onCommit(committed); }
         }}

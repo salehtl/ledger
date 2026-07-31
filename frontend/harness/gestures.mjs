@@ -34,13 +34,21 @@ const ENGINE_NAME = arg("engine", "chromium");
 const ENGINE = ENGINE_NAME === "webkit" ? webkit : chromium;
 
 const results = [];
+const skipped = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok });
   console.log(`${ok ? " ok " : "FAIL"}  ${name}${detail ? `  ${detail}` : ""}`);
 };
 // A check the *input* could not set up is not a pass and not a failure. Saying
-// so out loud beats a green line that proves nothing.
-const skip = (name, why) => console.log(`skip  ${name}  ${why}`);
+// so out loud beats a green line that proves nothing — and it has to be
+// RECORDED, not just printed: the closing `PASS — N checks` line is what a
+// caller reads, and a run that skipped four checks used to be indistinguishable
+// from a full one because N counted only the checks that ran. The summary now
+// carries the skip count and names them.
+const skip = (name, why) => {
+  skipped.push({ name, why });
+  console.log(`skip  ${name}  ${why}`);
+};
 
 // Mirrored from lib/sheetDrag.ts and lib/edgeBack.ts rather than imported: if
 // someone edits a threshold this file should fail and make them think about the
@@ -229,6 +237,25 @@ async function openTransactionsRow(page, { search } = {}) {
 }
 
 const dialogOpen = async (page) => (await page.locator('[role="dialog"]').count()) > 0;
+
+/**
+ * The open dialog's own <h2> — Dialog renders the title there and nothing else
+ * on the page uses that shape inside a dialog.
+ *
+ * `dialogOpen` alone cannot tell the row's actions apart from an ordinary row
+ * tap: TransactionDetailSheet and CategorizeSheet are both `Dialog`, so both
+ * are `[role="dialog"]`. Deleting `drag`/`onDragEnd` from SwipeableRow — the
+ * exact mutation this section says it catches — makes the pointer stream read
+ * as a tap, opens the *detail* sheet instead, and a count-based check goes
+ * green while the gesture is gone. The title is what distinguishes them: the
+ * detail sheet is titled with the merchant name, the lead action's sheet with
+ * "Categorize" (or "Edit split" for a row that already has splits).
+ */
+const dialogTitle = async (page) => {
+  const h2 = page.locator('[role="dialog"] h2').first();
+  if (!(await h2.count())) return null;
+  return (await h2.textContent())?.trim() ?? null;
+};
 
 const mainScrollTop = (page) => page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0);
 
@@ -454,7 +481,12 @@ const page = await browser.newPage({ ...VIEWPORTS.phone });
   const { center } = await openTransactionsRow(page);
   await dragSlow(page, center, { x: ROW_COMMIT + 40 });
   await page.waitForTimeout(700); // dragSnapToOrigin spring + sheet enter
-  check("long rightward swipe commits the lead action (opens its sheet)", await dialogOpen(page));
+  const title = await dialogTitle(page);
+  check(
+    "long rightward swipe commits the lead action (opens the categorize/split sheet, not the detail sheet)",
+    /^(Categorize|Edit split)$/.test(title ?? ""),
+    `dialog title: ${title === null ? "<no dialog>" : JSON.stringify(title)}`,
+  );
 }
 
 {
@@ -462,6 +494,59 @@ const page = await browser.newPage({ ...VIEWPORTS.phone });
   await dragSlow(page, center, { x: 30 }); // well under both ROW_COMMIT and the flick bar
   await page.waitForTimeout(700);
   check("short swipe springs back without committing", !(await dialogOpen(page)));
+}
+
+// ---- the diagonal flick (review finding #1) ------------------------------
+//
+// `info.offset` handed to `onDragEnd` is RAW pointer travel and is NOT
+// affected by `dragDirectionLock`; the lock only decides whether the element
+// moves. Framer's `getCurrentDirection(offset, lockThreshold = 10)` tests the
+// y axis FIRST, so a gesture whose first move carries more than 10px of
+// vertical travel locks to "y" — the row then stays visually stationary for
+// the rest of the drag no matter how far sideways the finger goes, while
+// `onDragEnd` still reports the full horizontal offset. Ungated, that offset
+// went straight to `swipeCommits` and fired an action nothing on screen had
+// hinted at: the archive case destroyed a transaction with no animation, no
+// revealed panel and no feedback at all.
+//
+// `touchDragScroll` above cannot cover this — it holds x at exactly `from.x`,
+// so `offset.x` is 0 and the commit predicate declines for the wrong reason.
+// These two need a genuinely diagonal path. `dragSlow`'s 12 even steps put
+// 25px of vertical travel in the first move, which is what locks the axis.
+{
+  const { center } = await openTransactionsRow(page);
+  await dragSlow(page, center, { x: 100, y: -300 });
+  await page.waitForTimeout(900);
+  const title = await dialogTitle(page);
+  check(
+    "a diagonal flick that locked to the vertical axis commits nothing (no sheet opens)",
+    title === null,
+    `dialog title: ${title === null ? "<none>" : JSON.stringify(title)}`,
+  );
+  if (title !== null) await page.keyboard.press("Escape").catch(() => {});
+}
+
+{
+  // The same gesture leftward, where the trailing action is Archive — the
+  // destructive one. Counted before and after rather than asserted to be
+  // zero, so it holds whatever the seed and the checks above have already
+  // left under this search term.
+  const archivedCount = async () => {
+    await page.locator("button").filter({ hasText: /^Archived$/ }).first().click();
+    await page.waitForTimeout(500);
+    return page.locator('ul.divide-y li button[aria-label^="Open "]').count();
+  };
+  await openTransactionsRow(page, { search: "hypermarket" });
+  const before = await archivedCount();
+  const { center } = await openTransactionsRow(page, { search: "hypermarket" });
+  await dragSlow(page, center, { x: -100, y: -300 });
+  await page.waitForTimeout(900);
+  const after = await archivedCount();
+  check(
+    "a diagonal flick that locked to the vertical axis never archives a row",
+    after === before,
+    `archived rows under "hypermarket": ${before} -> ${after}`,
+  );
 }
 
 {
@@ -810,7 +895,13 @@ const geometry = (page) =>
     const svgRect = svg ? svg.getBoundingClientRect() : null;
     return {
       indicatorHeight: elRect ? Math.round(elRect.height) : null,
-      docHeight: document.documentElement.scrollHeight,
+      // <main>, not document.documentElement. AppShell pins the document to
+      // `h-[100svh] overflow-hidden`, so documentElement.scrollHeight is a
+      // constant by construction and reading it made this check unfailable —
+      // it would have stayed green with the old `height` transition fully
+      // reinstated. <main> is the scroller the indicator actually sits above,
+      // and it is what grows if the clipper ever contributes layout.
+      docHeight: document.querySelector("main")?.scrollHeight ?? null,
       gaugeFullyVisible:
         elRect && svgRect
           ? svgRect.top >= elRect.top - 0.5 && svgRect.bottom <= elRect.bottom + 0.5
@@ -895,13 +986,18 @@ const refreshingVisible = () => !!document.querySelector('[role="status"][aria-l
 
   const docHeights = new Set(geoms.map((g) => g.docHeight));
   check(
-    "the pull never changes the page's own layout height (the clipper contributes no layout)",
-    docHeights.size === 1,
-    `doc scrollHeight values: [${[...docHeights].join(",")}]`,
+    "the pull never changes the scroller's own layout height (the clipper contributes no layout)",
+    docHeights.size === 1 && !docHeights.has(null),
+    `main scrollHeight values: [${[...docHeights].join(",")}]`,
   );
 }
 
 await browser.close();
 const failed = results.filter((r) => !r.ok).length;
-console.log(failed ? `\n${failed} of ${results.length} checks FAILED` : `\nPASS — ${results.length} checks (${ENGINE_NAME})`);
+if (skipped.length) {
+  console.log(`\n${skipped.length} check(s) SKIPPED — these proved nothing this run:`);
+  for (const s of skipped) console.log(`  - ${s.name}  (${s.why})`);
+}
+const tally = `${results.length} ran, ${skipped.length} skipped`;
+console.log(failed ? `\n${failed} of ${results.length} checks FAILED  (${tally})` : `\nPASS — ${tally} (${ENGINE_NAME})`);
 process.exit(failed ? 1 : 0);

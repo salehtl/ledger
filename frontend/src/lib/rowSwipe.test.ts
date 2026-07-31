@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { swipeCommits, swipeProgress, ROW_COMMIT, ROW_FLICK_VELOCITY } from "./rowSwipe";
+import { FLICK_MIN_PX } from "./gesture";
 
 const both = { lead: true, trail: true };
 const leadOnly = { lead: true, trail: false };
@@ -12,7 +13,15 @@ describe("swipeCommits", () => {
     expect(swipeCommits(-(ROW_COMMIT + 1), 0, both)).toBe("trail");
   });
   it("commits on a short flick", () => {
-    expect(swipeCommits(20, ROW_FLICK_VELOCITY + 1, both)).toBe("lead");
+    expect(swipeCommits(FLICK_MIN_PX + 6, ROW_FLICK_VELOCITY + 1, both)).toBe("lead");
+  });
+  it("ignores a fast reading that never cleared the distance floor", () => {
+    // A shivered tap on a row is reported at ~600px/s over a few pixels.
+    // Without the floor the trailing action fires and a transaction is
+    // archived with no gesture the user would recognise as one.
+    expect(swipeCommits(-5, -(ROW_FLICK_VELOCITY * 2), both)).toBeNull();
+    expect(swipeCommits(FLICK_MIN_PX - 1, ROW_FLICK_VELOCITY + 1, both)).toBeNull();
+    expect(swipeCommits(FLICK_MIN_PX, ROW_FLICK_VELOCITY + 1, both)).toBe("lead");
   });
   it("returns null below both thresholds", () => {
     expect(swipeCommits(ROW_COMMIT - 1, 0, both)).toBeNull();
@@ -21,7 +30,8 @@ describe("swipeCommits", () => {
     expect(swipeCommits(-(ROW_COMMIT + 1), 0, leadOnly)).toBeNull();
   });
   it("ignores velocity that reverses the drag", () => {
-    expect(swipeCommits(20, -(ROW_FLICK_VELOCITY + 1), both)).toBeNull();
+    // Past the distance floor, so this isolates the direction rule.
+    expect(swipeCommits(FLICK_MIN_PX + 6, -(ROW_FLICK_VELOCITY + 1), both)).toBeNull();
   });
 });
 

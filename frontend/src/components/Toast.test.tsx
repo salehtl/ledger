@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { MotionProvider } from "../app/MotionProvider";
 import { toastReducer, ToastProvider, useToast } from "./Toast";
 
@@ -97,6 +97,70 @@ function StickyTrigger() {
     </button>
   );
 }
+
+// A Framer drag CAN be driven here — PanSession listens on `window` and
+// schedules through the frame loop, both of which jsdom provides — so the
+// press-vs-drag guard is regressable without a browser. Real timers, because
+// PanSession's velocity sampling reads the wall clock; these drags commit on
+// distance (TOAST_DISMISS_PX = 80) rather than speed, so nothing here depends
+// on how fast the frames actually landed.
+const frame = () => act(async () => { await new Promise((r) => requestAnimationFrame(r)); });
+
+const undoButton = () => screen.queryByRole("button", { name: /undo/i });
+
+/**
+ * A dismissed toast is removed from provider state immediately but stays in
+ * the DOM for AnimatePresence's 200ms exit, so "gone" has to be waited for.
+ * The negative cases below settle for longer than this window before asserting
+ * the toast is still there, so a dismissal that merely ran slowly cannot pass
+ * as a dismissal that never happened.
+ */
+const EXIT_SETTLE_MS = 600;
+
+async function dragFrom(el: Element, dx: number) {
+  fireEvent.pointerDown(el, { pointerId: 1, clientX: 0, clientY: 0, isPrimary: true, buttons: 1 });
+  for (const step of [0.2, 0.6, 1]) {
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: dx * step, clientY: 0, isPrimary: true, buttons: 1 });
+    await frame();
+  }
+  fireEvent.pointerUp(window, { pointerId: 1, clientX: dx, clientY: 0, isPrimary: true, buttons: 0 });
+  await frame();
+}
+
+describe("toast press-vs-drag guard", () => {
+  it("dismisses on a swipe that starts on the message", async () => {
+    // The control. Without this passing, the guard test below proves nothing:
+    // a toast that never drags would satisfy it for the wrong reason.
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    await dragFrom(screen.getByText("Ignored Spinneys"), 200);
+    await waitFor(() => expect(undoButton()).toBeNull(), { timeout: 2000 });
+  });
+
+  it("does not dismiss when the press lands on the Undo button", async () => {
+    // The regression. `drag="x"` on the toast wrapped both Pressables, so a
+    // press on Undo that wandered a few pixels became a toast drag; the
+    // dismissal then fired while the pointer-up landed off the button, so no
+    // click ran. The user tapped Undo, the toast vanished, and the undo never
+    // happened — and SwipeDeck's undo is one-shot, so it could not be retried.
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    await dragFrom(screen.getByRole("button", { name: /undo/i }), 200);
+    await act(async () => { await new Promise((r) => setTimeout(r, EXIT_SETTLE_MS)); });
+    expect(undoButton()).toBeInTheDocument();
+  });
+
+  it("does not dismiss when the press lands on the × button", async () => {
+    wrap(<ToastProvider><Trigger /></ToastProvider>);
+    fireEvent.click(screen.getByText("go"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    await dragFrom(screen.getByRole("button", { name: "Dismiss" }), 200);
+    await act(async () => { await new Promise((r) => setTimeout(r, EXIT_SETTLE_MS)); });
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+  });
+});
 
 describe("sticky toast", () => {
   beforeEach(() => vi.useFakeTimers());
