@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"testing"
 )
 
@@ -28,10 +29,17 @@ func TestSealOpenRoundTrip(t *testing.T) {
 }
 
 func TestSealRejectsOversize(t *testing.T) {
-	_, recipPub, _ := genKeypair()
-	big := bytes.Repeat([]byte("x"), 5000) // incompressible enough after our gzip? force it:
+	_, recipPub, err := genKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Random bytes are incompressible, so gzip cannot shrink 5000B below
+	// padSize (968B) and seal must reject it.
+	big := make([]byte, 5000)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := seal(big, recipPub); err == nil {
-		// only fails if gzip(big) > padSize; xxxx… compresses tiny, so build junk
-		t.Skip("compressible input fit; oversize handling covered by junk case below")
+		t.Fatal("seal succeeded on oversize payload, want error")
 	}
 }
