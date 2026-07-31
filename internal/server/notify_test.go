@@ -261,8 +261,17 @@ func TestEvaluateBudgetThresholdsMonthRollover(t *testing.T) {
 	// levels belong to the PREVIOUS month. (Wall time can't be injected, so
 	// the test moves the recorded month back instead of the clock forward —
 	// the same divergence the first evaluation of a new month sees.)
+	//
+	// Anchor to the first of the month before stepping back. AddDate(0,-1,0)
+	// on a 31st overflows into the month it started in — 2026-07-31 becomes
+	// "June 31", which normalises to 2026-07-01 — so the month string would
+	// be unchanged and the rollover never simulated. That made this test pass
+	// every day except the 31st of July, October, December and March, where
+	// it failed for a reason that had nothing to do with the code under test.
 	srv.thresholdMu.Lock()
-	srv.thresholdMonth = time.Now().UTC().AddDate(0, -1, 0).Format("2006-01")
+	now := time.Now().UTC()
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	srv.thresholdMonth = firstOfMonth.AddDate(0, -1, 0).Format("2006-01")
 	srv.thresholdMu.Unlock()
 
 	// First evaluation of the "new" month: same level 100 as the old month —
