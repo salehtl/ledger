@@ -39,8 +39,21 @@ const contrast = (a: string, b: string) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
-/** The page ground each theme's palette is printed on — `--color-bg`. */
-const GROUND = { light: "#f2f1ef", dark: "#141416" } as const;
+/**
+ * The page ground each theme's palette is printed on — read from `--color-bg`
+ * rather than hardcoded.
+ *
+ * The hardcoded version made the contrast floor below a statement about a
+ * ground that no longer necessarily exists. Light `moss` (#88891c) clears the
+ * floor on #f2f1ef by 0.30 — darken the paper to about #e0dfdd and it drops to
+ * ~2.85:1 while this file stayed green, which is the exact regression the
+ * floor is here to catch. Reading the declaration means the assertion moves
+ * with the theme.
+ */
+const GROUND = {
+  light: declared(LIGHT_CSS, "bg")!,
+  dark: declared(DARK_CSS, "bg")!,
+} as const;
 
 describe("palette tokens", () => {
   // app.css and palette.ts necessarily hold the same values — the canvas paints
@@ -207,8 +220,8 @@ describe("bucket contrast", () => {
     // page. The under/exceeded stops alias --color-fg/--color-bad, which the
     // rest of the design already holds to that bar.
     const grounds: [string, string[]][] = [
-      [declared(LIGHT_CSS, "pace-over")!, ["#f2f1ef", "#e3e2de"]],
-      [declared(DARK_CSS, "pace-over")!, ["#141416", "#232326"]],
+      [declared(LIGHT_CSS, "pace-over")!, [GROUND.light, "#e3e2de"]],
+      [declared(DARK_CSS, "pace-over")!, [GROUND.dark, "#232326"]],
     ];
     for (const [ink, ons] of grounds) {
       for (const ground of ons) {
@@ -228,8 +241,8 @@ describe("bucket contrast", () => {
     // The check that would have caught the swipe rails sitting at 1.02:1 in
     // dark: a bucket mark is a non-text graphic, so 3:1 is the floor.
     const grounds: [Record<DitherColor, { fill: [number, number, number] }>, string][] = [
-      [PALETTE_LIGHT, "#f2f1ef"],
-      [PALETTE_DARK, "#141416"],
+      [PALETTE_LIGHT, GROUND.light],
+      [PALETTE_DARK, GROUND.dark],
     ];
     for (const [table, ground] of grounds) {
       for (const name of ["amber", "lilac", "sage", "azure"] as DitherColor[]) {

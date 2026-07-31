@@ -3,9 +3,11 @@ import type { DitherColor } from "../components/dither-kit/palette";
 /**
  * The categorical palette, as CSS-consumer names.
  *
- * Same twelve hues as `palette.ts`'s `DitherColor`, which the canvas needs as
- * raw RGB. The type alias keeps the two from drifting apart in name: adding a
- * hue to the palette without adding it here is a type error.
+ * Same twenty-four hues as `palette.ts`'s `DitherColor`, which the canvas needs
+ * as raw RGB. The pair of assertions below keeps the two from drifting apart in
+ * either direction — adding a hue to one list without the other is a type
+ * error. One assertion alone would only catch one of the two directions; see
+ * the note there.
  *
  * ORDER IS LOAD-BEARING, in two ways:
  *
@@ -58,9 +60,24 @@ export const PALETTE_DISPLAY_ORDER = [
 ] as const satisfies readonly PaletteName[];
 
 // Compile-time assertion that the CSS names and the canvas seeds are the same
-// set. If `DitherColor` gains or loses a member, this stops building.
+// set. It takes TWO checks, because assignability is one-directional and each
+// catches the opposite drift:
+//
+//  1. A name here that `DitherColor` lacks fails the assignment below (TS2322).
+//  2. A `DitherColor` member that is missing here is NOT caught by that — a
+//     narrower array is still assignable to a wider element type, so it
+//     compiles clean. The `Exclude` line is what closes it.
+//
+// (2) is the direction that actually bites: `palette.ts` is vendored registry
+// source, and re-forking it against `shadcn add --diff` is exactly the
+// operation that adds a hue on the canvas side alone. Such a hue reaches
+// `hueVar`, which interpolates it into `var(--color-newname)` — valid CSS that
+// resolves to nothing, so the mark silently disappears. Every loop in
+// `tokens.test.ts` iterates `PALETTE_NAMES` and is structurally blind to it.
 const _sameAsCanvas: readonly DitherColor[] = PALETTE_NAMES;
 void _sameAsCanvas;
+const _noExtraCanvasHues: [Exclude<DitherColor, PaletteName>] extends [never] ? true : never = true;
+void _noExtraCanvasHues;
 
 export function isPaletteName(v: string | null | undefined): v is PaletteName {
   return !!v && (PALETTE_NAMES as readonly string[]).includes(v);
@@ -90,9 +107,15 @@ export function projectColor(stored: string | null | undefined): string {
 /**
  * CSS colour for a categorical palette hue.
  *
- * No fallback branch, unlike `projectColor`: the compile-time assertion above
- * pins `PALETTE_NAMES` to `DitherColor`, so a `DitherColor` is always a name
- * with a matching `--color-…` var in both the light and dark tables.
+ * No fallback branch, unlike `projectColor`, and the reason is narrower than it
+ * looks. What makes a bare interpolation safe here is specifically the
+ * `Exclude<DitherColor, PaletteName>` assertion above: it is the one that rules
+ * out a `DitherColor` this file has never heard of. The other assertion runs
+ * the opposite way (every `PALETTE_NAMES` entry is a `DitherColor`) and would
+ * happily let a canvas-only hue through this function as
+ * `var(--color-newname)`. With both in place, a `DitherColor` is always a name
+ * `tokens.test.ts` has checked has a `--color-…` var in the light and dark
+ * tables both.
  *
  * Anything painted in the DOM rather than on canvas should come through here,
  * so an OS theme flip is handled by the cascade instead of a `useDitherTheme()`
