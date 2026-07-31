@@ -114,6 +114,13 @@ func verifyMessageSignature(ctx context.Context, p *sigParams, h Header, body []
 	if p.bodyHash == nil {
 		return errors.New("arc: message signature has no bh= tag")
 	}
+	// RFC 6376 6.1.1: a signature whose h= omits From must PERMFAIL. Without
+	// this, a chain can be sealed over Subject and Date alone and still verify
+	// while From — half the key identifying a trusted sender — is unsigned and
+	// freely rewritable after the fact.
+	if !coversFrom(p.headers) {
+		return errors.New("arc: h= does not cover the From header (RFC 6376 6.1.1)")
+	}
 	sum := sha256.Sum256(CanonBody(p.bodyCan, body))
 	if !bytes.Equal(sum[:], p.bodyHash) {
 		return fmt.Errorf("%w: body hash mismatch", ErrBadSignature)
@@ -132,6 +139,16 @@ func verifyMessageSignature(ctx context.Context, p *sigParams, h Header, body []
 	}
 	writeSelf(hasher, p)
 	return verifyWithDNSKey(ctx, p, hasher, lookup)
+}
+
+// coversFrom reports whether an h= list names the From header.
+func coversFrom(headers []string) bool {
+	for _, n := range headers {
+		if strings.EqualFold(strings.TrimSpace(n), "from") {
+			return true
+		}
+	}
+	return false
 }
 
 // verifySeal checks an ARC-Seal, which covers a fixed list of header fields and
@@ -182,6 +199,10 @@ func verifyWithDNSKey(ctx context.Context, p *sigParams, hasher hash.Hash, looku
 		if p.algo != "rsa-sha256" {
 			return fmt.Errorf("%w: %s signature against an RSA key", ErrBadSignature, p.algo)
 		}
+		// RFC 8301 requires refusing RSA keys below 1024 bits. There is no
+		// explicit check here because Go 1.25's crypto/rsa rejects keys under
+		// 1024 bits itself; if that floor is ever relaxed, or this code is
+		// backported, the check has to become explicit.
 		if err := rsa.VerifyPKCS1v15(k, crypto.SHA256, digest, p.sig); err != nil {
 			return fmt.Errorf("%w: %v", ErrBadSignature, err)
 		}
