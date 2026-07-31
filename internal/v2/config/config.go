@@ -98,21 +98,33 @@ type AuthConfig struct {
 	SessionTTL      time.Duration `toml:"session_ttl"`
 }
 
-// modeOrder lists every dispatch mode cmd/ledgerd's main() recognizes, in
-// the order its switch declares them. It is the single source of truth for
-// both the switch's default-case usage message and this package's own
-// drift test.
+// modeOrder lists every dispatch mode cmd/ledgerd's main() is meant to
+// recognize, in the order its dispatch table declares them. This package
+// cannot see cmd/ledgerd (config is imported by main, not the reverse), so
+// it cannot itself verify that main's dispatch table actually has an entry
+// for each of these — see the "cross-package coverage" note on
+// modeImplemented below for where that's actually checked.
 var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "purge-user", "parse-rate"}
 
-// modeImplemented records, per mode in modeOrder, whether cmd/ledgerd's
-// switch has a case for it. "Implemented" means dispatched, not that the
-// mode's subsystem is finished — runRelay, runVerify, runSeedDictionary,
-// runPurgeUser and runParseRate return a "not implemented yet" error naming
-// the task that fills them in, until that task lands. A mode present in
-// modeOrder but missing (or false) here is exactly the defect
-// TestEveryDispatchModeHasACase exists to catch: a mode named in a comment
-// or help text that the switch has no case for, so it silently falls
-// through to the "unknown mode" default.
+// modeImplemented is this package's own declared expectation of which modes
+// in modeOrder are meant to have a real dispatch entry in cmd/ledgerd.
+// "Implemented" means dispatched, not that the mode's subsystem is
+// finished — runRelay, runVerify, runSeedDictionary, runPurgeUser and
+// runParseRate return a "not implemented yet" error naming the task that
+// fills them in, until that task lands.
+//
+// Cross-package coverage, read this before trusting TestEveryDispatchModeHasACase:
+// modeOrder and modeImplemented are both defined in this file, so a test
+// that only compares them (as TestEveryDispatchModeHasACase below does) is
+// checking this package's internal bookkeeping against itself — it cannot
+// detect a mode added here without a matching case in cmd/ledgerd's actual
+// dispatch table, which lives in a different package entirely. That
+// real check — the one that would actually catch a mode advertised here
+// with no cmd/ledgerd handler — is cmd/ledgerd/main_test.go's
+// TestModeHandlersCoverConfigModesExactly, which reads cmd/ledgerd's own
+// modeHandlers map directly, plus a checkModeHandlers() call at the top of
+// main() that panics on the same drift at runtime, every time the binary
+// is invoked. Keep both in sync by hand; nothing here enforces it.
 var modeImplemented = map[string]bool{
 	"serve":           true,
 	"relay":           true,
@@ -122,9 +134,11 @@ var modeImplemented = map[string]bool{
 	"parse-rate":      true,
 }
 
-// Modes returns every mode cmd/ledgerd dispatches on. Callers (the
-// switch's default case, --help text) must build their listing from this
-// slice rather than repeating the literal list, so the two can't drift.
+// Modes returns every mode cmd/ledgerd is meant to dispatch on. cmd/ledgerd
+// builds its default-case usage message from this slice rather than
+// repeating the literal list, so at least that part can't drift; whether
+// every entry actually has a dispatch case is verified in cmd/ledgerd's own
+// tests (see the modeImplemented doc comment above).
 func Modes() []string {
 	out := make([]string, len(modeOrder))
 	copy(out, modeOrder)

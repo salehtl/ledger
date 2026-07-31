@@ -41,7 +41,14 @@ export LEDGER_TEST_POSTGRES_URL
 # passed against a *previous* cluster can report a cached pass without ever
 # touching the cluster this run just booted — silently correct-looking on a
 # script whose whole job is "no, actually run it."
-go vet ./internal/v2/...
-go test -count=1 ./internal/v2/...
+#
+# cmd/ledgerd is included alongside internal/v2/...: it dispatches on config
+# modes via a table that must stay in sync with internal/v2/config's own
+# list (see cmd/ledgerd/main_test.go), and it is the one package outside
+# internal/v2/ this plan modifies repeatedly (Tasks 9, 24, 32-36 all edit
+# its dispatch). A gate that didn't run its tests would let that drift ship
+# unnoticed on every one of those tasks.
+go vet ./internal/v2/... ./cmd/ledgerd
+go test -count=1 ./internal/v2/... ./cmd/ledgerd
 
 echo "v2-check: OK (go)"

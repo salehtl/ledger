@@ -17,7 +17,48 @@ import (
 	"ledger/internal/v2/pg"
 )
 
+// modeHandlers is the single dispatch table main() uses — the real switch,
+// as a map instead of a `switch` statement specifically so it can be
+// inspected by a test (TestModeHandlersCoverConfigModesExactly, in
+// main_test.go) rather than only exercised by one. A `switch`'s case set
+// isn't introspectable at runtime; a map's keys are. checkModeHandlers below
+// asserts, on every single invocation of this binary — not only under a
+// test someone has to remember to run — that this table's key set is
+// exactly config.Modes(): no mode advertised without a handler, and no
+// handler for a mode nothing advertises.
+var modeHandlers = map[string]func(config.Config) error{
+	"serve":           runServe,
+	"relay":           runRelay,
+	"verify":          runVerify,
+	"seed-dictionary": runSeedDictionary,
+	"purge-user":      runPurgeUser,
+	"parse-rate":      runParseRate,
+}
+
+// checkModeHandlers panics if modeHandlers and config.Modes() ever name
+// different sets of modes. It is called unconditionally at the top of
+// main(), so a mode added to one without the other breaks the very first
+// time the binary runs anywhere — dev, a test that invokes main's logic,
+// or production — rather than staying latent until someone happens to run
+// the right test file.
+func checkModeHandlers() {
+	want := make(map[string]bool, len(modeHandlers))
+	for _, m := range config.Modes() {
+		want[m] = true
+		if _, ok := modeHandlers[m]; !ok {
+			panic(fmt.Sprintf("cmd/ledgerd: config.Modes() advertises mode %q but modeHandlers has no case for it", m))
+		}
+	}
+	for m := range modeHandlers {
+		if !want[m] {
+			panic(fmt.Sprintf("cmd/ledgerd: modeHandlers has a case for mode %q but config.Modes() does not advertise it", m))
+		}
+	}
+}
+
 func main() {
+	checkModeHandlers()
+
 	mode := "serve"
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		mode = os.Args[1]
@@ -33,20 +74,9 @@ func main() {
 	}
 	cfg.Mode = mode
 
-	switch mode {
-	case "serve":
-		err = runServe(cfg)
-	case "relay":
-		err = runRelay(cfg)
-	case "verify":
-		err = runVerify(cfg)
-	case "seed-dictionary":
-		err = runSeedDictionary(cfg)
-	case "purge-user":
-		err = runPurgeUser(cfg)
-	case "parse-rate":
-		err = runParseRate(cfg)
-	default:
+	if handler, ok := modeHandlers[mode]; ok {
+		err = handler(cfg)
+	} else {
 		err = fmt.Errorf("unknown mode %q (%s)", mode, strings.Join(config.Modes(), "|"))
 	}
 	if err != nil {
