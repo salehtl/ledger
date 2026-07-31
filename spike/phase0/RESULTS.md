@@ -6,7 +6,7 @@ Phase 0 has two independent exit gates (spec §5). Both are resolved:
 
 | Gate | Verdict | One-line reason |
 |---|---|---|
-| Port 25 (spec §3.2 precondition) | **GO** | 4/5 geographically diverse external probes handshook Hetzner's public :25; the 5th is explained by the probe node's own outbound restriction, not a Hetzner block. |
+| Port 25 (spec §3.2 precondition) — **primary host only** | **GO (primary host); backup-relay provider unconfirmed** | 4/5 geographically diverse external probes handshook Hetzner's public :25 on the primary host; the 5th is explained by the probe node's own outbound restriction, not a Hetzner block. Spec §3.2 and §5 Phase 0 require confirming **both** VPS providers — the backup-relay VPS has not been probed by this spike; see Next steps. |
 | On-device replay spike (spec §3.3/§4 trade-off 2) | **PROVISIONAL PASS** | Median cold restore (58.0s) is well over the 10s budget, but `decryptMs` (pure-JS X25519+GCM) is 94.3% of it; the non-crypto remainder (3.3s) fits comfortably — though ~75% of that remainder is `fetchMs`, itself flagged below as inflated and unrepresentative. The measured 13ms figure is a post-mount SQLite read, not first paint — the spec's <2s **first-paint** criterion is unmeasured in Phase 0. The provisional is conditioned on a mandatory early Phase 2 native-crypto benchmark (see below). |
 
 Phase 1 planning is unblocked, with the native-crypto benchmark carried forward as a named early Phase 2 task rather than a Phase 0 blocker — see "Replay spike" below for the full reasoning, numbers, and caveats.
@@ -16,9 +16,20 @@ Phase 1 planning is unblocked, with the native-crypto benchmark carried forward 
 **Task:** Spike A — empirically determine whether this server's provider permits
 inbound TCP/25, which gates the self-hosted SMTP ingestion design in v2 spec §3.2.
 
+**Scope:** this spike probes the **primary host (Hetzner) only**. Spec §3.2's
+precondition and §5 Phase 0 both require confirming port 25 with **both** VPS
+providers (primary + backup relay); the backup-relay provider's inbound-25
+status is not addressed by anything below and remains unconfirmed — see Next
+steps.
+
 ### Host identity
 
-- Public IPv4: `178.104.132.41` (via `curl -4 -s ifconfig.me`)
+- **Probe date: 2026-07-31.**
+- Public IPv4: `178.104.132.41` (via `curl -4 -s ifconfig.me`). This address
+  is **DHCP-assigned** on `eth0` (`valid_lft` was finite, not `forever`), not
+  a static allocation — a renewal could in principle change it; not expected
+  to affect the verdict (Hetzner assigns from the same `CLOUD-NBG1` block
+  either way) but worth recording since the verdict is IP-specific.
 - Provider (RIPE whois): **Hetzner Online GmbH**, netname `CLOUD-NBG1`
   (Nuremberg, DE datacenter), route `178.104.0.0/15`, origin `AS24940`,
   descr `HETZNER-DC`. Abuse contact `abuse@hetzner.com`.
@@ -112,9 +123,30 @@ because 25 is blocked" — the case that didn't occur here).
 Raw JSON for both requests is preserved in the check-host.net permanent
 report links captured during the run (`check-report/45fca7a8k2db` for :25,
 `check-report/45fca869kcf` for :2525) and was also saved locally to the
-session scratchpad during execution.
+session scratchpad during execution. check-host.net report IDs and the
+session scratchpad are both ephemeral, so both raw responses (353 and 366
+bytes) are inlined below to keep gate A permanently auditable from this
+document alone:
 
-### Verdict: **GO**
+<details>
+<summary>Raw check-host.net response — port 25 (5 nodes)</summary>
+
+```json
+{"ir3.node.check-host.net":[{"address":"178.104.132.41","time":0.089968}],"it2.node.check-host.net":[{"address":"178.104.132.41","time":0.024691}],"nl2.node.check-host.net":[{"address":"178.104.132.41","time":0.013028}],"se1.node.check-host.net":[{"address":"178.104.132.41","time":0.02332}],"ua3.node.check-host.net":[{"error":"Connection timed out"}]}
+```
+
+</details>
+
+<details>
+<summary>Raw check-host.net response — port 2525 control (5 nodes)</summary>
+
+```json
+{"ch2.node.check-host.net":[{"address":"178.104.132.41","time":0.010352}],"cy1.node.check-host.net":[{"address":"178.104.132.41","time":0.061777}],"es1.node.check-host.net":[{"address":"178.104.132.41","time":0.036652}],"es2.node.check-host.net":[{"address":"178.104.132.41","time":0.030581}],"in2.node.check-host.net":[{"address":"178.104.132.41","time":0.180574}]}
+```
+
+</details>
+
+### Verdict: **GO — primary host only**
 
 Hetzner does **not** block inbound TCP/25 on this host. The verdict rests on
 the four successful external handshakes to port 25 (Iran, Italy, Netherlands,
@@ -132,6 +164,14 @@ host end to end, which was not otherwise in doubt given four raw successes on
 interface at the provider level: no provider outreach or unblock request is
 needed.
 
+**This verdict covers the primary host (Hetzner) only.** Spec §3.2's
+precondition and §5 Phase 0 both call for confirming port 25 with **both**
+VPS providers before the SMTP receiver is built; the backup-relay VPS named
+in spec §3.2 has not been probed by this spike and its inbound-25 status is
+**unconfirmed**. This does not weaken the GO above — the evidence for the
+primary host is solid — it means a second, equivalent probe against the
+backup-relay provider is still outstanding. See Next steps.
+
 ### Cleanup performed
 
 - `sudo pkill -f "http.server 25"` and `pkill -f "http.server 2525"` — both
@@ -146,10 +186,11 @@ needed.
 
 ### Next steps
 
-The **provider-level** precondition of spec §3.2 is satisfied — no Hetzner
-outreach or unblock request is needed. But this spike's cleanup step
-(correctly) deleted the temporary ufw rules and restored the host's firewall
-to its normal default-deny-incoming state with only `tailscale0` allowed. As
+The **provider-level** precondition of spec §3.2 is satisfied **for the
+primary host** — no Hetzner outreach or unblock request is needed. But this
+spike's cleanup step (correctly) deleted the temporary ufw rules and
+restored the host's firewall to its normal default-deny-incoming state with
+only `tailscale0` allowed. As
 recorded above, that means **port 25 is currently unreachable from the
 public internet on this host**, by the host's own firewall rather than by
 the provider. Anyone implementing the SMTP receiver from spec §3.2 must not
@@ -163,6 +204,14 @@ read this GO verdict as "port 25 already works" — before the receiver ships:
    (a separate layer from the host's own `ufw`/`iptables`, not inspected in
    this spike) — if a Cloud Firewall is attached to this server, it can
    independently block 25 upstream of the host and must be opened too.
+3. **Confirm port 25 with the backup-relay provider.** This spike only
+   probed the primary host; spec §3.2's precondition and §5 Phase 0 both
+   require the same confirmation for the backup-relay VPS before relay mode
+   ships. `docs/superpowers/specs/2026-07-31-v2-open-questions-research.md`
+   (Question 2) has already completed the provider survey — Vultr
+   recommended as primary, Netcup as fallback — and flags re-running this
+   exact port-25 probe against whichever provider is chosen as **the single
+   most important unresolved item** in that document.
 
 Remaining Phase 0 spikes (B: blob generator, device measurement, etc.) are
 independent of this result and can proceed regardless.
@@ -194,6 +243,22 @@ shape than one bulk 3.7 MB transfer — likely worse per-request overhead
 batching the real hot-stream sync protocol ends up using. This spike does
 not measure that shape; see Caveat 7.
 
+**A second deviation, also stated up front: the seal itself is not spec
+§3.4's design.** Both `seal()`/`open()` (`spike/phase0/blobgen/main.go:75`)
+and `openBlob()` (`spike/phase0/replay-app/crypto.ts:10`) use a **fixed,
+all-zero 12-byte GCM nonce and no AAD** — a hand-rolled HPKE-alike, not
+HPKE, and not spec §3.4's actual design, which specifies "GCM with
+per-blob **random** 96-bit nonces; AAD binds `(user_id, stream, writer_id,
+writer_counter)`" so blobs cannot be replayed across positions, streams,
+or users. The zero nonce is safe *only* in this spike's own convention
+(the plan states: a fresh HKDF-derived key per blob, so nonce reuse never
+happens under a repeated key) and must not be read as a proposal for the
+production design. The implementation plan
+(`docs/superpowers/plans/2026-07-31-v2-phase0-kill-risks.md`, "Self-review
+notes") already states this deviation; it is restated here because an
+earlier version of this document covered only the transport deviation
+above and left the crypto-format deviation implicit.
+
 ### Setup
 
 - **Device:** the user's **daily-driver iPhone** — not the oldest available
@@ -201,9 +266,10 @@ not measure that shape; see Caveat 7.
   hardware); that request was not met here, so this result is an **upper
   bound** — a slower device is expected to measure worse, not better (see
   Caveat 1 below).
-- **Client:** Expo Go, SDK 54 (`expo ~54.0.36`, `react-native 0.81.5`,
-  `expo-sqlite ~16.0.10` — pinned to match the installed Expo Go build, see
-  commit `36421a0`).
+- **Client:** Expo Go, SDK 54 (`react-native 0.81.5`, `expo-sqlite ~16.0.10`
+  — pinned to match the installed Expo Go build, see commit `36421a0`).
+  `package.json` itself only declares `"expo": "^54.0.0"`; the actual pin
+  is `bun.lock`, which resolves `expo@54.0.36`.
 - **Transport:** Tailscale, **DERP-relayed** (not a direct peer-to-peer
   connection) — see Caveat 2.
 - **Build under test:** commit **`27ba7c6`** ("reuse sqlite connection across
@@ -217,11 +283,26 @@ not measure that shape; see Caveat 7.
   §3.3's "~4 MB" estimate for a multi-year, two-bank history. Three full
   months of confirmed-debit bucket totals (2026-06, 2026-05, 2026-04) are
   checked against `manifest.json` on every restore as a correctness gate,
-  independent of timing.
-- **Protocol:** per the brief — one cold restore discarded (JIT/cache
-  warm-up), then Reset DB → Cold Restore ×3 with the full breakdown recorded
-  each time, then force-quit + relaunch ×3 for warm start. Every run's month
-  checks were verified `MATCH` before any timing was trusted.
+  independent of timing. **This gate deliberately mixes currencies**: both
+  the Go generator's check query (`main.go`, `SUM(t.amount)`) and the
+  on-device `bucketDebits()` aggregate (`replay.ts`, `SUM(amount)`) sum
+  `amount` across all rows in a bucket/month with no currency filter or
+  conversion — the check only proves client and server compute the *same*
+  (currency-blind) sum over the *same* replayed rows, not a real
+  currency-correct budget total. Fine for this spike's purpose (verifying
+  replay fidelity), but this is not the check §3.7's real client-side FX
+  conversion would need to pass.
+- **Protocol:** the brief's intended sequence was one cold restore discarded
+  (JIT/cache warm-up), then Reset DB → Cold Restore ×3 with the full
+  breakdown recorded each time, then force-quit + relaunch ×3 for warm
+  start. **What actually ran does not match that sequence — corrected
+  here.** The server log (`blobserver.log`, phone `100.100.215.38`) for this
+  session shows exactly **three** `all.bin` fetches (18:41:36, 18:43:01,
+  18:44:01) — the only phone requests recorded in the session window — and
+  they map one-to-one onto the three runs in the table below. **No
+  discarded warm-up cold restore was performed**; the three runs reported
+  are the complete set of cold restores executed. Every run's month checks
+  were verified `MATCH` before any timing was trusted.
 
 ### Per-run measurements (ms, full precision as captured)
 
@@ -240,27 +321,45 @@ minimum. `fetchMs` varied ~11% (2466.58–2738.83 ms) and `decryptMs` ~18%
 (52138.37–61331.62 ms) across the same three runs. With only three samples
 this is reported as raw variance, not characterized further — no confidence
 interval is meaningful at n=3, and it is plausible some of this variance is
-thermal (see "Affirmative findings" below). **Gap in the record:** the
-protocol's discarded warm-up cold restore (run #0, before Reset DB → the
-three runs above, discarded per the brief's cold-start-jank-trap step) was
-not itself recorded with a `totalMs` value in what reached this write-up —
-so the jank-discard step is not independently auditable from this document.
-Flagged as a process gap for any repeat of this protocol, not fixed here.
+thermal (see "Affirmative findings" below). **Corrected — no discarded run
+occurred.** An earlier draft of this document described the protocol as
+including a discarded warm-up cold restore before the three reported runs
+and flagged its absence as a recording gap. The server log (see the
+Protocol note above) settles this: only three `all.bin` fetches exist for
+this session, matching the three reported runs exactly — there is no
+fourth request to have been discarded or lost from the record. Run 1's
+decrypt cost — 61331.62 ms / 3,683 = **16.65 ms/blob**, versus the
+14.86 ms/blob implied by the median `decryptMs` — is therefore most
+plausibly the JIT/cache warm-up the protocol meant to discard, landing
+*inside* Run 1 itself rather than being absorbed by a separate discarded
+run. Because Run 1 is the maximum of the three-run sample, not the median,
+this does not change the reported median `totalMs`/`decryptMs` (both are
+Run 3's values); if anything, keeping the warm-up-affected run in the
+reported set — rather than the protocol's original discard-then-3 design —
+means these figures are conservative (biased slightly slow), not flattered.
 
 **Warm start: 13 ms**, identical across all three post-relaunch
-measurements. Stating precisely what this covers: it is the wall-clock span
-inside the app's warm-start `useEffect` (`App.tsx`) — `SELECT COUNT(*)` plus
-`bucketDebits()`'s `GROUP BY` aggregate over the already-populated on-device
-SQLite table — timed only *after* process launch, Hermes bundle evaluation,
-and React mount have already happened, and ending before any UI re-render.
-**It is a SQLite read time, not first paint.** Spec §5's Phase 0 exit
-criterion is "cold replay **+ first paint** within an acceptable budget
-(target <2s warm...)" — first paint itself was never instrumented in this
-spike and is **unmeasured** in Phase 0 (see Caveat 8). Read the 13ms figure
-as strong secondary evidence that the on-device query/aggregate layer is not
-a bottleneck for a warm relaunch, not as direct evidence the spec's
-warm/first-paint budget is met — it doesn't measure that budget's own
-gate.
+measurements. Stating precisely what this covers — **corrected from an
+earlier draft that undercounted it:** it is the wall-clock span inside the
+app's warm-start `useEffect` (`App.tsx`), timed from *before* `getDb()` is
+called. Because this is the first `getDb()` call in a freshly relaunched
+process, the window includes `getDb()`'s native SQLite connection open and
+its `CREATE TABLE IF NOT EXISTS` (`replay.ts`) — not just `SELECT COUNT(*)`
+plus `bucketDebits()`'s `GROUP BY` aggregate — still timed only *after*
+process launch, Hermes bundle evaluation, and React mount have already
+happened, and ending before any UI re-render. This is a different code path
+from cold restore's `dbOpenMs` (median 44 ms, `reopenDb()`'s
+close-then-reopen): `getDb()`'s lazy first-open and `reopenDb()`'s
+close+reopen are architecturally different operations, so 13 ms being
+smaller than 44 ms is not a contradiction between the two figures. **It is
+a SQLite read time (plus a first-open cost), not first paint.** Spec §5's
+Phase 0 exit criterion is "cold replay **+ first paint** within an
+acceptable budget (target <2s warm...)" — first paint itself was never
+instrumented in this spike and is **unmeasured** in Phase 0 (see Caveat 8).
+Read the 13ms figure as strong secondary evidence that the on-device
+query/aggregate/connection-open layer is not a bottleneck for a warm
+relaunch, not as direct evidence the spec's warm/first-paint budget is met
+— it doesn't measure that budget's own gate.
 
 ### Medians and derived figures
 
@@ -274,6 +373,11 @@ gate.
 | dbOpenMs | 44.44 |
 | computeMs | 0.654 |
 | yieldMs | 1.945 |
+
+(Each field's median is taken independently across the three runs, so they
+do not necessarily come from the same run: the per-field medians above sum
+to 58,027.37 ms, a hair under the reported median `totalMs` of 58,028.20 ms
+— immaterial at this precision, noted for completeness.)
 
 - `decryptMs` is **94.3%** of median `totalMs`.
 - Median `totalMs` − median `decryptMs` = **3315.24 ms**.
@@ -344,16 +448,25 @@ incident.
 A 4th press (attempted beyond the 3-run protocol) failed with
 `TypeError: Network request timed out`. This is *plausibly* the
 DERP-relayed 3.7 MB fetch being flaky under repeated load rather than an
-app defect, but that is not independently confirmed for this specific
-session: the only server-log evidence of request-storm-shaped behavior in
-this document (the ~39-fetch burst, below) comes from the earlier,
-different, pre-fix build/session — no server-log check was made for this
-particular 4th-press timeout. Treat "not an app defect" as a hypothesis,
-not a finding (see Caveat 2).
+app defect. **The server log does speak to this, on a re-check:** the log
+for this exact session (phone `100.100.215.38`) shows precisely three
+`GET /all.bin` requests — 18:41:36, 18:43:01, 18:44:01 — and then **no
+request line at all** from that phone after 18:44:01 for the remainder of
+the session; the next log entry is a different IP at 18:53:21. A fetch that
+had reached the server would have produced a request line (as it did for
+every prior press, including the pre-fix request-storm burst below); its
+total absence here is evidence the 4th press's `fetch()` never reached the
+server at all, which supports — without conclusively proving — the
+transport-flakiness hypothesis over an app-level hang or crash. Still short
+of a definitive claim: an absent request line is also consistent with other
+client-side failure points upstream of the network (e.g. the DERP relay
+itself dropping the connection before it egressed), so this is evidence
+for, not confirmation of, "not an app defect" (see Caveat 2).
 
 ### Decision rule applied
 
-Per the plan's rule (`task-4-brief.md` Step 4):
+Per the plan's rule (`docs/superpowers/plans/2026-07-31-v2-phase0-kill-risks.md`,
+Task 4, Step 4):
 
 > Cold over budget but `decryptMs` is the dominant stage and (totalMs −
 > decryptMs) fits comfortably → **PROVISIONAL PASS**.
@@ -516,12 +629,19 @@ equally precise about strengths.
   full 3,683-row `GROUP BY`/`substr`/`CASE`/`SUM` budget aggregate over
   SQLite in 0.65 ms is ~0.18 µs/transaction. Combined with `insertMs`
   (271.03 ms for 3,683 rows) and the warm-start SQLite read (13 ms — see
-  above for what that figure does and doesn't cover), the entire on-device
-  data layer — the actual local-first thesis — is effectively free. Nothing
-  about *this* architecture is slow; one library (`@noble`'s pure-JS
+  above for what that figure does and doesn't cover), **the measured SQLite
+  write+aggregate path is effectively free.** Nothing about *this* narrow
+  slice of the architecture is slow; one library (`@noble`'s pure-JS
   X25519/GCM) is. `computeMs` was previously used only as an input to the
-  FAIL-branch check; it deserves to be read affirmatively as validating the
-  local-first bet, independent of the crypto question.
+  FAIL-branch check; it deserves to be read affirmatively as validating this
+  slice of the local-first bet, independent of the crypto question. **This
+  is narrower than "the entire on-device data layer," and an earlier draft
+  overstated it as such:** op-log replay semantics (causality/supersede
+  resolution against a parent version, per-entity version-head tracking),
+  the writer hash-chain verification that must run over all 3,683 blobs
+  before any are trusted, the quarantine lane, and §3.7's on-device FX
+  conversion are all part of the real data layer and none of them are
+  exercised here — see Caveat 9.
 - **Cold restore is a once-per-device-install cost**, not a recurring one.
   Every subsequent app open pays the warm-start cost, not the cold-restore
   cost. This frequency framing matters: "58s, once, at onboarding" and "58s
@@ -571,10 +691,14 @@ equally precise about strengths.
    representative of real-world fetch cost; a direct connection or a
    production server path would very likely measure differently in either
    direction. The 4th-press timeout is *plausibly* transport flakiness
-   rather than an app defect, but this is a hypothesis, not a confirmed
-   finding — no server-log check was made for that specific press (the only
-   request-storm evidence in this document is from a different, earlier,
-   pre-fix session — see the "Pre-fix catastrophic run" section).
+   rather than an app defect; the server log for this session supports that
+   reading (no request line at all after the third `all.bin` fetch at
+   18:44:01 — the 4th press's fetch never reached the server) without
+   conclusively confirming it (an absent request line is also consistent
+   with a failure further upstream, e.g. the DERP relay itself). See the
+   "On the 4th-press timeout" discussion above and the "Pre-fix
+   catastrophic run" section for the unrelated, earlier request-storm
+   evidence.
 3. **`decodeMs` is also a stand-in, not real work.** On Expo SDK 54 / RN
    0.81, `global.TextDecoder` is Expo's winter-runtime polyfill (a fork of
    the `text-encoding` package) — per record it converts the `Uint8Array` to
@@ -604,7 +728,19 @@ equally precise about strengths.
    per-chunk sampling first. The reported 8→16→20 MB progression is "no
    growth beyond 20 MB observed at three point-in-time samples, still
    rising run-over-run" — not proof of a peak or a ceiling; see Caveat 6 and
-   the Memory section above.
+   the Memory section above. Separately: the measured build (`27ba7c6`)
+   renders only `warm start: {ms}` in the UI, with **no row count and no
+   VOID/partial-corpus indicator** — those were added later, in `6de466a`.
+   The partial-corpus concern that indicator exists to catch (a force-quit
+   or error mid-cold-restore leaving a partial table, so a warm-start
+   reading is silently taken over fewer than 3,683 rows) therefore applies
+   to these warm-start numbers too, with nothing on screen at the time that
+   could have flagged it. In practice this is mitigated here: every
+   warm-start measurement in this session was preceded by a full cold
+   restore whose month checks were independently verified `MATCH` (with
+   `ops=3683/3683`) before the app was relaunched, so the corpus is known
+   complete going into each warm-start reading even though the build itself
+   could not have shown that on screen.
 5. **The pre-fix catastrophic run is part of this record**, not a separate,
    discarded incident — see the dedicated section above, which has itself
    been corrected here: the request-log burst (~39 `all.bin` fetches, ~144
@@ -631,22 +767,37 @@ equally precise about strengths.
    lands on `fetchMs`, a FAIL-branch input. A production per-blob transport
    shape is not measured by this spike.
 8. **First paint is unmeasured in Phase 0.** The measured "warm start" 13ms
-   figure is the wall-clock span of a `SELECT COUNT(*)` + `bucketDebits()`
-   aggregate inside a post-mount `useEffect` — after process launch, Hermes
-   bundle evaluation, and React mount have already happened, and before any
-   UI re-render. It is a SQLite read time, not time-to-first-paint. Spec
-   §5's Phase 0 exit criterion names "first paint" explicitly (target <2s
-   warm); this spike never instrumented that, so the criterion, as
-   literally written, has **not** been directly measured — only a fast,
-   suggestive proxy for one part of it.
+   figure is the wall-clock span of `getDb()`'s native connection open +
+   `CREATE TABLE IF NOT EXISTS` (the first `getDb()` call in a freshly
+   relaunched process) plus a `SELECT COUNT(*)` + `bucketDebits()` aggregate
+   inside a post-mount `useEffect` — after process launch, Hermes bundle
+   evaluation, and React mount have already happened, and before any UI
+   re-render. It is a SQLite read time (plus a first-open cost), not
+   time-to-first-paint. Spec §5's Phase 0 exit criterion names "first
+   paint" explicitly (target <2s warm); this spike never instrumented
+   that, so the criterion, as literally written, has **not** been directly
+   measured — only a fast, suggestive proxy for one part of it.
+9. **"Effectively free" was measured only for the SQLite write+aggregate
+   path, not for full op-log replay.** `insertMs`/`computeMs` time a naive
+   per-record `INSERT OR REPLACE` plus one currency-blind `SUM` aggregate
+   (see the manifest-checks note in Setup) — not spec §3.3's actual replay
+   semantics. Unmeasured by this spike: causality/supersede resolution
+   (applying an op only when its named parent is the entity's current
+   head; detecting and resolving concurrent forks), per-entity version-head
+   tracking, the writer hash-chain verification that must run over all
+   3,683 blobs before any of them are trusted, the quarantine lane, and
+   §3.7's on-device FX conversion during replay. Phase 1/2 planning should
+   not inherit "replay is free" as a settled result from this spike — only
+   the narrow SQLite write+aggregate path is shown to be cheap.
 
 ### Verdict: **PROVISIONAL PASS**
 
 The replay spike passes provisionally: correctness is unconditional (3/3
-runs, full corpus, all month checks `MATCH`), the on-device data layer
-itself is effectively free (`computeMs` 0.65ms for a full 3,683-row budget
-aggregate; `insertMs` 271ms; a 13ms post-mount SQLite read — see
-"Affirmative findings"), and cold restore's overage is concentrated almost
+runs, full corpus, all month checks `MATCH`), the measured SQLite
+write+aggregate path is effectively free (`computeMs` 0.65ms for a full
+3,683-row budget aggregate; `insertMs` 271ms; a 13ms post-mount SQLite
+read+first-open — see "Affirmative findings"; full op-log replay semantics
+are unmeasured, Caveat 9), and cold restore's overage is concentrated almost
 entirely (94.3%) in one pure-JS crypto library the architecture already
 expects to replace with native crypto before production. Cold restore is
 also a once-per-install cost, not a recurring one. **What this verdict does

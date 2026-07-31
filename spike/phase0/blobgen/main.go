@@ -18,9 +18,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"crypto/sha256"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
-	"crypto/sha256"
 
 	_ "modernc.org/sqlite"
 )
@@ -32,14 +32,14 @@ const (
 )
 
 type op struct {
-	IID      string `json:"iid"`
-	PostedAt string `json:"posted_at"`
-	Amount   int64  `json:"amount"`
-	Currency string `json:"currency"`
+	IID       string `json:"iid"`
+	PostedAt  string `json:"posted_at"`
+	Amount    int64  `json:"amount"`
+	Currency  string `json:"currency"`
 	Direction string `json:"direction"`
-	Merchant string `json:"merchant"`
-	Bucket   string `json:"bucket"`
-	Status   string `json:"status"`
+	Merchant  string `json:"merchant"`
+	Bucket    string `json:"bucket"`
+	Status    string `json:"status"`
 }
 
 func genKeypair() (priv, pub []byte, err error) {
