@@ -8,6 +8,8 @@
 
 ## Question 1: FX rate source (spec §3.7)
 
+> **Beta decision (2026-07-31): FX stays manual for the closed beta**, reusing v1's existing manual-rate model client-side rather than integrating any of the vendors below — see `2026-07-31-multi-user-beta-design.md` §3.7. This research is not wasted: it stands, unchanged, as the starting point for **post-beta automated-rate work**. The one item that specifically needs re-visiting before automation is picked up is the **Open Exchange Rates redistribution-ToS ambiguity** below ("fetch once, sync full table to every client" — the clarifying `legal@` email was never sent, since the beta doesn't need it); everything else here (coverage, historical depth, pricing) should just be re-verified for currency at that time.
+
 ### Requirements recap
 
 One upstream call/day (total, not per user); daily rates; ~170 currencies; server fetches the **entire table for a base currency** in one response (never per-pair — a per-pair query is a travel-history side channel); needs a **historical backfill** (spec's own budget: "a couple MB once, few hundred bytes/day incremental" for ~170 currencies × days); home currency is user-chosen (likely AED or USD) so the source must support deriving cross-rates from a single base table; this runs for years, so licensing/redistribution terms toward end users matter.
