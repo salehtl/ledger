@@ -6,6 +6,7 @@ import { getJSON, postJSON, getCategoryUsage, deleteCategory } from "../api/clie
 import type { Category } from "../api/types";
 import { useToast } from "../components/Toast";
 import { bucketColor } from "../lib/insights";
+import { categoryColor } from "../lib/categoryColor";
 import { DUR, EASE_OUT } from "../lib/motion";
 import { SettingsPage } from "./settings/SettingsPage";
 import { Input } from "../components/ui/Field";
@@ -308,8 +309,13 @@ function CategoryRow({ cat, onChanged }: { cat: Category; onChanged: () => void 
           <Pressable
             aria-label={`Edit ${cat.Name}`}
             onClick={() => setEditing(true)}
-            className="min-w-0 flex-1 min-h-11 text-left inline-flex items-center"
+            className="min-w-0 flex-1 min-h-11 text-left inline-flex items-center gap-2"
           >
+            {/* The category's own colour, leading the name — solid to stay
+                distinct from ColorSwatch's hatched project mark at the same
+                hue. aria-hidden: the name right beside it already carries
+                identity, colour is never the sole signal. */}
+            <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: categoryColor(cat.Color) }} />
             <span className="truncate font-medium text-fg">{cat.Name}</span>
           </Pressable>
           <span className="text-[11px] text-muted tnum shrink-0">{meta}</span>

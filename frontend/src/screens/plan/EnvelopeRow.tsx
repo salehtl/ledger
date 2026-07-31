@@ -1,6 +1,7 @@
 import { Money } from "../../components/Money";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import { Pressable } from "../../components/ui/Pressable";
+import { categoryColor } from "../../lib/categoryColor";
 import { paceTone } from "../../lib/insights";
 import {
   claimShort,
@@ -25,12 +26,16 @@ const VERDICT = { over: "Over pace", overbudget: "Overspent" } as const;
  * row": plain spend, no bar, no overspend shouting — envelope depth is opt-in.
  * The whole row is the tap target (opens the assign sheet).
  */
-export function EnvelopeRow({ envelope, claim, pace, onOpen }: {
+export function EnvelopeRow({ envelope, claim, pace, color, onOpen }: {
   envelope: Envelope;
   /** Upcoming-bill claim on this category, if any (from /api/upcoming). */
   claim?: CategoryClaim;
   /** Fraction of the month elapsed — the bar's pace marker. */
   pace?: number;
+  /** The category's own stored colour (palette name, may be unset) — the
+   *  envelope wire shape carries no colour of its own, so the caller looks
+   *  it up against the category inventory and passes it down. */
+  color?: string | null;
   onOpen: (e: Envelope) => void;
 }) {
   const e = envelope;
@@ -67,7 +72,13 @@ export function EnvelopeRow({ envelope, claim, pace, onOpen }: {
       className="w-full text-left px-4 py-3"
     >
       <div className="flex items-baseline justify-between gap-3">
-        <p className="min-w-0 truncate text-sm font-medium leading-5 tracking-[-0.01em]">{e.category_name}</p>
+        <p className="min-w-0 flex items-center gap-2 text-sm font-medium leading-5 tracking-[-0.01em]">
+          {/* The category's own colour, leading the name. Solid, not
+              ColorSwatch — form keeps it distinct from a project's hatched
+              mark at the same hue. aria-hidden: the name carries identity. */}
+          <span aria-hidden className="w-2.5 h-2.5 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: categoryColor(color) }} />
+          <span className="truncate">{e.category_name}</span>
+        </p>
         {/* An envelope spent to exactly its balance has 0.00 available — a
             real, and rather important, figure. Money renders 0 as "—", which
             read as "no data" on precisely the rows that most need a number. */}
