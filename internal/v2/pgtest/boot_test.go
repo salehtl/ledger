@@ -27,6 +27,26 @@ func TestBootStandaloneServesConnectionsAndStopScriptTearsDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BootStandalone: %v", err)
 	}
+	// Safety net: BootStandalone's whole point is a cluster that survives
+	// its caller (Setsid-detached), so if any assertion between here and
+	// the explicit stop-script run below fails, t.Fatal unwinds without
+	// ever running it — leaking a live postgres process plus its
+	// /tmp/pgtest-* directory.
+	//
+	// stop.sh is NOT idempotent — verified by actually invoking it twice:
+	// its own `rm -rf` removes the directory it lives in, i.e. itself, so a
+	// second `exec.Command(stopScript).Run()` after a successful first run
+	// fails with "fork/exec ...: no such file or directory". In the
+	// normal-pass case the explicit invocation below always runs first (a
+	// t.Cleanup func runs after the test body returns, never before), so
+	// guard with an existence check rather than relying on the second call
+	// being silently swallowed: if the script is already gone, the explicit
+	// run below already tore everything down and there's nothing left to do.
+	t.Cleanup(func() {
+		if _, err := os.Stat(stopScript); err == nil {
+			_ = exec.Command(stopScript).Run()
+		}
+	})
 	if stopScript == "" {
 		t.Fatal("BootStandalone returned an empty stop script path")
 	}
