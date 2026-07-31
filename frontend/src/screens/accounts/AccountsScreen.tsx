@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import { RollingNumber } from "../../components/RollingNumber";
 import { Skeleton } from "../../components/Skeleton";
@@ -18,10 +18,20 @@ import { AddAccountSheet } from "./AddAccountSheet";
  * tracking, topped by the one number that matters: everything on the books.
  * Tap a row for detail, history and the 30-second check-in.
  */
-export function AccountsScreen() {
+export function AccountsScreen({ onDetailChange }: {
+  /** Fires when the account-detail panel opens/closes, so the hosting
+   *  SettingsPage can mark its own header `covered` — the same idiom
+   *  Settings uses via onSubpageChange. This screen can only inert its own
+   *  body; the "Back from Accounts" header belongs to the host. */
+  onDetailChange?: (open: boolean) => void;
+} = {}) {
   const balances = useAccountBalances();
   const [detailId, setDetailId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+
+  const detailOpen =
+    detailId !== null && (balances.data?.some((a) => a.account_id === detailId) ?? false);
+  useEffect(() => { onDetailChange?.(detailOpen); }, [detailOpen, onDetailChange]);
 
   // isPending, not isLoading: the persisted-cache provider leaves restoring
   // queries pending-but-not-fetching, where isLoading lies (false, no data).
@@ -60,7 +70,12 @@ export function AccountsScreen() {
   const totals = booksTotal(accounts);
 
   return (
+    // The list stays mounted beneath the full-screen AccountDetail so
+    // back-nav reveals it without a flash — which leaves its controls in the
+    // tab order behind the overlay unless it's marked inert (the ProjectsFlow
+    // rule). The detail and sheet render outside the wrapper.
     <div className="space-y-4">
+      <div className="contents" inert={detail !== undefined}>
       <Card>
         <SectionLabel>On the books</SectionLabel>
         <p
@@ -109,6 +124,7 @@ export function AccountsScreen() {
       <Button variant="secondary" className="w-full" onClick={() => setAddOpen(true)}>
         Add account
       </Button>
+      </div>
 
       {detail && <AccountDetail account={detail} onClose={() => setDetailId(null)} />}
       {addOpen && <AddAccountSheet onClose={() => setAddOpen(false)} onCreated={setDetailId} />}

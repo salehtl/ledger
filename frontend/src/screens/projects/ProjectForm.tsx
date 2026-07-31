@@ -107,6 +107,11 @@ export function ProjectForm({
 
         <div>
           <p className="text-sm mb-1.5">Color</p>
+          {/* Hit target is the full 44px button; the visible swatch stays a
+              32px inner span so the palette keeps its rhythm. -m-1 pulls 4px
+              of the invisible padding back out of the layout — with gap-2 that
+              leaves neighboring 44px targets exactly adjacent, never
+              overlapping, while the optical gap only grows 8px → 12px. */}
           <div className="flex flex-wrap gap-2">
             {COLOR_PRESETS.map((c) => (
               <Pressable
@@ -114,11 +119,16 @@ export function ProjectForm({
                 aria-label={c}
                 aria-pressed={color === c}
                 onClick={() => setColor(c)}
-                className={`w-8 h-8 rounded-[var(--radius)] ${
-                  color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
-                }`}
-                style={{ backgroundColor: projectColor(c) }}
-              />
+                className="w-11 h-11 -m-1 inline-flex items-center justify-center"
+              >
+                <span
+                  aria-hidden
+                  className={`w-8 h-8 rounded-[var(--radius)] ${
+                    color === c ? "ring-2 ring-offset-2 ring-offset-bg ring-fg" : ""
+                  }`}
+                  style={{ backgroundColor: projectColor(c) }}
+                />
+              </Pressable>
             ))}
           </div>
         </div>

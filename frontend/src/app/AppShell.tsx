@@ -93,6 +93,7 @@ export function AppShell() {
   // Settings owns its own sub-page stack, so it has to tell us when one is
   // open — otherwise the Settings panel's back arrow stays tabbable behind it.
   const [settingsSubpage, setSettingsSubpage] = useState(false);
+  const [accountsSubpage, setAccountsSubpage] = useState(false);
 
   return (
     <div className="flex flex-col h-[100svh] overflow-hidden">
@@ -152,8 +153,8 @@ export function AppShell() {
                 />
               </SettingsPage>
             ) : o.kind === "accounts" ? (
-              <SettingsPage title="Accounts" onClose={popOverlay}>
-                <AccountsScreen />
+              <SettingsPage title="Accounts" onClose={popOverlay} covered={accountsSubpage}>
+                <AccountsScreen onDetailChange={setAccountsSubpage} />
               </SettingsPage>
             ) : o.kind === "reports" ? (
               <SettingsPage title="Reports" onClose={popOverlay}>
