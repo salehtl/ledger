@@ -144,6 +144,19 @@ func (s *Store) SeedDefaultCategories() error {
 }
 
 // InsertCategory writes one category and returns its new row ID.
+//
+// Every inserted row leaves here with a colour. The seed needs the id SQLite
+// just assigned, so it is a second statement rather than a column on the
+// INSERT. Without it a new category would render neutral — indistinguishable
+// from a deliberately picked slate — until the next Open ran
+// BackfillCategoryColors and repainted it to something else; a user-visible
+// property mutating on restart reads as a bug even when it is documented.
+// Seeding here also makes "colour never chosen" unreachable for any row
+// created through this path, so no consumer has to model that state.
+//
+// A caller-supplied Color is honoured when it is a real palette name (see
+// IsPaletteName); anything else is treated as unset and seeded, so a bad value
+// can never reach the column that paletteColor.ts interpolates into var().
 func (s *Store) InsertCategory(c CategoryRow) (int64, error) {
 	res, err := s.DB.Exec(
 		`INSERT INTO categories (name, kind, bucket, is_active) VALUES (?, ?, ?, ?)`,
@@ -152,7 +165,18 @@ func (s *Store) InsertCategory(c CategoryRow) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	color := c.Color
+	if !IsPaletteName(color) {
+		color = SeedCategoryColor(id)
+	}
+	if _, err := s.DB.Exec(`UPDATE categories SET color=? WHERE id=?`, color, id); err != nil {
+		return id, err
+	}
+	return id, nil
 }
 
 func boolToInt(b bool) int {
@@ -204,10 +228,21 @@ func (s *Store) Category(id int64) (CategoryRow, error) {
 }
 
 // paletteNames mirrors frontend/src/lib/paletteColor.ts's PALETTE_NAMES,
-// base names first then the -deep variants in the same order. Order is
-// load-bearing: SeedCategoryColor indexes into this slice by id, so a
-// different order here than the frontend's array hands out different
-// colours than the frontend would predict for the same id.
+// base names first then the -deep variants in the same order.
+//
+// MEMBERSHIP is the load-bearing half, and it drifts asymmetrically. A name
+// only the frontend knows is loud: the user picks it and the API 400s it. A
+// name only this list knows is silent: the backfill hands it out, the
+// frontend's categoryColor does not recognise it, and the dot renders as the
+// neutral forever, indistinguishable from a deliberately chosen grey. Nothing
+// used to read one list against the other; frontend/src/lib/paletteColor.test.ts
+// now parses this literal out of this file and deep-equals it against
+// PALETTE_NAMES, so both directions fail a test instead.
+//
+// ORDER, by contrast, is only a readability contract — it keeps a diff of the
+// two lists aligned. Nothing at runtime needs Go and TS to predict the same
+// index: SeedCategoryColor runs once and the resulting NAME is stored on the
+// row, so the frontend never recomputes a colour from an id.
 var paletteNames = []string{
 	"azure", "amber", "lilac", "sage", "rose", "slate",
 	"ochre", "moss", "teal", "sky", "indigo", "orchid",

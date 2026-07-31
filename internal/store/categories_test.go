@@ -1057,3 +1057,96 @@ func TestCategoryColorSurvivesRestart(t *testing.T) {
 		t.Fatalf("colour after restart = %q, want hand-set %q (seed formula would give %q) — BackfillCategoryColors must not touch a row that already has a colour", c.Color, handSet, seeded)
 	}
 }
+
+// TestInsertCategorySeedsColor: a category created through the API (as opposed
+// to one the first-run seed wrote) must come back with a colour immediately.
+// Before InsertCategory seeded one, the only thing that ever filled the column
+// was BackfillCategoryColors at Open, so a new category rendered as the
+// neutral until the next restart.
+func TestInsertCategorySeedsColor(t *testing.T) {
+	st := openTestStore(t)
+	id, err := st.InsertCategory(CategoryRow{Name: "Pets", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	c, err := st.Category(id)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	if c.Color == "" {
+		t.Fatal("freshly inserted category has no colour — it would render as the neutral until the next Open ran BackfillCategoryColors")
+	}
+	if !IsPaletteName(c.Color) {
+		t.Fatalf("colour %q is not a palette name; the frontend interpolates this into var(--color-NAME) and an unknown name resolves to nothing", c.Color)
+	}
+	if want := SeedCategoryColor(id); c.Color != want {
+		t.Fatalf("colour = %q, want the seed formula's %q", c.Color, want)
+	}
+}
+
+// TestInsertedCategoryColorSurvivesRestart is the other half of the same
+// defect. Seeding at insert is only worth anything if the value sticks: the
+// user-visible failure was a colour that looked settled and then silently
+// changed on the next deploy or reboot, because that was the first time
+// BackfillCategoryColors saw the row. Assert the colour observed right after
+// the insert is the colour still there after a close/reopen.
+func TestInsertedCategoryColorSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id, err := st.InsertCategory(CategoryRow{Name: "Pets", Kind: "spending", Bucket: "want", IsActive: true})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	before, err := st.Category(id)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { st2.Close() })
+	after, err := st2.Category(id)
+	if err != nil {
+		t.Fatalf("Category after restart: %v", err)
+	}
+	if after.Color != before.Color {
+		t.Fatalf("colour changed across restart: %q -> %q; a user-visible property must not mutate on reboot", before.Color, after.Color)
+	}
+}
+
+// TestInsertCategoryHonoursValidColor: a caller that already knows the colour
+// (nothing does today, but CategoryRow carries the field) gets it stored
+// rather than silently dropped for a seed.
+func TestInsertCategoryHonoursValidColor(t *testing.T) {
+	st := openTestStore(t)
+	id, err := st.InsertCategory(CategoryRow{Name: "Pets", Kind: "spending", Bucket: "want", IsActive: true, Color: "orchid-deep"})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	c, _ := st.Category(id)
+	if c.Color != "orchid-deep" {
+		t.Fatalf("colour = %q, want the supplied orchid-deep", c.Color)
+	}
+}
+
+// TestInsertCategoryRejectsUnknownColor: an unknown name must never reach the
+// column. paletteColor.ts interpolates the stored value into
+// var(--color-NAME), which is valid CSS that resolves to nothing, so the dot
+// would silently disappear rather than degrade. Fall back to the seed.
+func TestInsertCategoryRejectsUnknownColor(t *testing.T) {
+	st := openTestStore(t)
+	id, err := st.InsertCategory(CategoryRow{Name: "Pets", Kind: "spending", Bucket: "want", IsActive: true, Color: "chartreuse"})
+	if err != nil {
+		t.Fatalf("InsertCategory: %v", err)
+	}
+	c, _ := st.Category(id)
+	if c.Color != SeedCategoryColor(id) {
+		t.Fatalf("colour = %q, want the seed %q — an unvalidated name must not be stored", c.Color, SeedCategoryColor(id))
+	}
+}
