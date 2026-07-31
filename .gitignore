@@ -1,5 +1,6 @@
 # Build artifacts
 /ledger
+/ledgerd
 /dist
 /web/dist
 

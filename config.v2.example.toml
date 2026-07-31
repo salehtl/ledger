@@ -1,0 +1,52 @@
+# ledgerd (v2) configuration. Secrets NEVER live here — they come from the
+# environment / systemd credentials only (see deploy/README.md and
+# deploy/ledgerd.service). ledgerd.Load rejects the file outright if a
+# secret's key (or any misspelled key) shows up below: BurntSushi/toml would
+# otherwise decode this file and silently ignore an unrecognized key, which
+# for a secret means "looks configured, does nothing".
+#
+# v2 shares no port, no database and no config file with the v1 `ledger`
+# binary — this file is independent of config.example.toml.
+
+[mail]
+# domain: NOT YET CHOSEN — spec §6 / plan task D1. Every inbound address v2
+# issues (e.g. "<local>@in.<domain>") is derived from this value, so it has
+# no default and ledgerd refuses to start without it. Set it here or via
+# LEDGER_MAIL_DOMAIN once the domain is picked.
+domain             = ""
+smtp_listen        = ":25"        # SMTP receiver bind address (LEDGER_SMTP_LISTEN)
+max_message_bytes  = 1048576      # DATA cap in bytes; spec §3.2 caps it at 1 MiB
+per_address_daily  = 50           # max accepted deliveries per inbound address per day
+invalid_rcpt_burst = 5            # invalid RCPTs from one IP before the tarpit engages
+tarpit_base        = "2s"         # base delay applied per invalid RCPT once tarpitting
+
+[server]
+http_listen  = ":443"             # HTTPS API + sync listener (LEDGER_HTTP_LISTEN)
+admin_listen = "127.0.0.1:8079"   # Tailscale-only admin API (LEDGER_ADMIN_LISTEN); refuses non-loopback/non-tailnet binds
+dsn          = ""                 # Postgres DSN (LEDGER_PG_DSN) — required; never :8080, never /var/lib/ledger
+# Secret, never stored here: LEDGER_ADMIN_TOKEN — static bearer token for the
+# admin API, compared with subtle.ConstantTimeCompare.
+
+[relay]
+enabled     = false               # whether this primary mounts the relay-facing API
+primary_url = ""                  # in relay mode: the primary's base URL to forward to
+spool_dir   = ""                  # in relay mode: durable local spool directory
+# Secret, never stored here: LEDGER_RELAY_TOKEN — bearer token relay mode
+# uses to authenticate delivery to the primary.
+
+[push]
+enabled  = false                  # Phase 1 default: no client exists yet, so push stays off
+expo_url = ""                     # Expo push endpoint
+# Secret, never stored here: LEDGER_EXPO_ACCESS_TOKEN — Expo's optional
+# enhanced-security push token.
+
+[auth]
+apple_client_ids  = []            # Sign in with Apple client identifiers (not secret; LEDGER_APPLE_CLIENT_IDS, comma-separated)
+google_client_ids = []            # Google Sign-In client identifiers (not secret; LEDGER_GOOGLE_CLIENT_IDS, comma-separated)
+session_ttl       = "720h"        # 30 days; opaque server-side session lifetime
+
+# --- Consumed by later Phase 1 tasks; inert today. ---
+#
+# Secret, never stored anywhere in this file: LEDGER_DICT_HMAC_KEY — keys the
+# merchant-dictionary submitter HMAC (Task 33). It is a cryptographic key,
+# not a setting, and has no TOML representation at all.
