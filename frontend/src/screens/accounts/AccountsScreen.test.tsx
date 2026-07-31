@@ -108,12 +108,12 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-function wrap() {
+function wrap(props?: Parameters<typeof AccountsScreen>[0]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <AccountsScreen />
+        <AccountsScreen {...props} />
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -297,6 +297,32 @@ describe("AccountsScreen", () => {
     });
     expect(await screen.findByText("Transaction added")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Add transaction" })).toBeNull();
+  });
+
+  it("list goes inert while a detail page covers it, and wakes when it closes", async () => {
+    wrap();
+    await openDetail("ENBD Current");
+    // The list stays mounted under the full-screen detail, so without inert
+    // its controls stay in the tab order behind the overlay.
+    expect(screen.getByText("Add account").closest("[inert]")).not.toBeNull();
+    // The detail itself must not be caught in the inert wrapper.
+    expect(screen.getByRole("heading", { name: "ENBD Current" }).closest("[inert]")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back from ENBD Current" }));
+    await waitFor(() => {
+      expect(screen.getByText("Add account").closest("[inert]")).toBeNull();
+    });
+  });
+
+  it("reports detail open/closed to its host so the hosting page can cover its header", async () => {
+    const onDetailChange = vi.fn();
+    wrap({ onDetailChange });
+    await screen.findByText("58,720.00");
+    expect(onDetailChange).toHaveBeenLastCalledWith(false);
+    await openDetail("ENBD Current");
+    expect(onDetailChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "Back from ENBD Current" }));
+    await waitFor(() => expect(onDetailChange).toHaveBeenLastCalledWith(false));
   });
 
   it("create account survives a failed kind PUT: says it was added, routes to the fix", async () => {
