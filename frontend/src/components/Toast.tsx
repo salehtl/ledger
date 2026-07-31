@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useMemo, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, m, useMotionValue } from "motion/react";
+import { AnimatePresence, m, useDragControls, useMotionValue } from "motion/react";
 import { toastExitX } from "../lib/toastSwipe";
 import { FADE, SPRING_SNAP } from "../lib/motion";
 import { Pressable } from "./ui/Pressable";
@@ -41,6 +41,30 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const x = useMotionValue(0);
   const [exitX, setExitX] = useState(0);
 
+  // The toast is draggable everywhere EXCEPT its buttons, which is why the drag
+  // is started by hand instead of by Framer's own listener.
+  //
+  // A toast is the one draggable surface in the app with interactive children,
+  // and its Undo is destructive to miss: `SwipeDeck.undoCommit` is one-shot, so
+  // a press on "Undo" that turns into a dismissal doesn't just fail to undo, it
+  // spends the undo. With a plain `drag="x"` the press became a drag as soon as
+  // the finger moved a few pixels.
+  //
+  // The obvious guard — `e.stopPropagation()` in the button's React
+  // `onPointerDown` — cannot work here, and it is worth writing down why so it
+  // is not "fixed" back. Framer registers a NATIVE pointerdown listener on the
+  // element itself (`VisualElementDragControls.addListeners`), while React 19
+  // delegates all its listeners to the root container. Stopping propagation on
+  // a synthetic event stops the synthetic tree only; the native listener on an
+  // ancestor has already been reached by the time React's root handler runs.
+  // (The same reasoning applies to SwipeCard's "View source email" button.)
+  //
+  // `dragListener={false}` removes Framer's listener altogether and hands the
+  // decision to the handler below, which is ours and therefore can gate it.
+  // This is the deleted `if (e.target.closest("button")) return;` restored to
+  // the one place it still has authority.
+  const dragControls = useDragControls();
+
   const beginDismiss = useCallback((direction = 0) => {
     setExitX(direction);
     onDismissRef.current();
@@ -80,6 +104,12 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       layout
       style={{ x }}
       drag="x"
+      dragListener={false}
+      dragControls={dragControls}
+      onPointerDown={(e) => {
+        if ((e.target as HTMLElement).closest("button")) return;
+        dragControls.start(e);
+      }}
       dragSnapToOrigin
       // No `dragConstraints`, and therefore deliberately no `dragElastic`.
       // Elasticity is only ever applied to the part of a drag that is OUTSIDE

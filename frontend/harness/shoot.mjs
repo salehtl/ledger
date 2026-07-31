@@ -6,6 +6,11 @@
 //   node harness/shoot.mjs --screens home,plan      # a subset
 //   node harness/shoot.mjs --viewport small         # 320px stress width
 //   node harness/shoot.mjs --list                   # print screen ids
+//   node harness/shoot.mjs --no-first-paint         # skip the cold-chunk pass
+//
+// Every run starts with a first-paint audit that blocks Framer's feature chunk
+// (see `firstPaintAudit`) — the only window in which `audit.mjs`'s check 10 can
+// observe the regression it was written for.
 //
 // Screens that scroll are captured in segments (screen.0.png, screen.1.png…)
 // because the app scrolls an inner container, so a fullPage screenshot would
@@ -72,10 +77,99 @@ async function scrollTo(page, kind, y) {
   await page.waitForTimeout(260);
 }
 
+/**
+ * Audit the app in the window `audit.mjs`'s check 10 was actually written for:
+ * before Framer's feature chunk has landed.
+ *
+ * Check 10 catches content that renders at `opacity: 0` because `LazyMotion`
+ * resolves its features in an effect and, until that chunk arrives, every `m.*`
+ * renders straight from its `initial`. The per-screen pass below cannot ever
+ * see that: it waits `domcontentloaded` → settle(900) → navigate → settle(500)
+ * before auditing, by which point the chunk resolved long ago. So the one check
+ * written against a real regression could not observe it, and the shipped fix
+ * (transform-only entrances for first-paint content) had nothing standing
+ * guard over it.
+ *
+ * This pass blocks `motionFeatures-*.js` outright — the permanent version of
+ * the cold-network window, and strictly harsher than the real thing — and
+ * audits immediately after `domcontentloaded`. Any first-paint content that
+ * still depends on Framer to become visible reports as `invisible-text`.
+ *
+ * Deliberately not screenshotted and deliberately run per-screen only for the
+ * two list screens that carry entrance animations above the fold.
+ */
+const FIRST_PAINT_SCREENS = ["home", "transactions"];
+
+async function firstPaintAudit(browser) {
+  const findings = [];
+  for (const id of FIRST_PAINT_SCREENS) {
+    const screen = screenById(id);
+    if (!screen) continue;
+    const context = await browser.newContext({
+      ...VIEWPORT,
+      locale: "en-AE",
+      timezoneId: "Asia/Dubai",
+      colorScheme: arg("scheme", "light"),
+      // NOT reducedMotion: "reduce" — under the preference Framer sets opacity
+      // keys instantly, which would paper over exactly what this looks for.
+    });
+    const page = await context.newPage();
+    // The chunk never arrives. LazyMotion's promise never settles, so `m.*`
+    // stays at `initial` for the lifetime of the page.
+    //
+    // Both spellings, because the module has two names depending on who is
+    // serving it: the production build emits `assets/motionFeatures-<hash>.js`,
+    // while the vite dev server this harness normally runs against serves the
+    // unbundled source at `/src/app/motionFeatures.ts`. Matching only the
+    // built name made this pass a silent no-op in dev — it reported a
+    // confident green while the feature bundle loaded perfectly normally.
+    let blocked = 0;
+    await page.route(/motionFeatures(-[^/]*)?\.(js|ts)(\?.*)?$/, (route) => {
+      blocked++;
+      return route.abort();
+    });
+    try {
+      await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 30000 });
+      if (id !== "home") {
+        await settle(page, 400);
+        await screen.goto(page);
+      }
+      // Just enough for React to commit its first render — NOT enough for a
+      // network round trip, which is the whole point.
+      await settle(page, 350);
+      const a = await audit(page);
+      const invisible = a.issues.filter((i) => i.kind === "invisible-text");
+      for (const i of invisible) findings.push({ screen: id, el: i.el, detail: i.detail });
+      // A green line here is only worth anything if the module was genuinely
+      // withheld. If the route never matched, the page loaded normally and
+      // this pass observed nothing — report that as a failure of the check
+      // itself rather than as a pass.
+      if (blocked === 0) {
+        findings.push({
+          screen: id,
+          el: "<harness>",
+          detail: "the motionFeatures route never matched — the feature bundle was NOT blocked, so this pass proved nothing",
+        });
+      }
+      console.error(
+        `${invisible.length || blocked === 0 ? "FAIL" : " ok "} first-paint (features blocked) ${id.padEnd(14)} ` +
+          `${invisible.length} invisible-text finding(s), ${blocked} request(s) blocked`,
+      );
+    } catch (e) {
+      console.error(`FAIL first-paint (features blocked) ${id.padEnd(14)} ${String(e).split("\n")[0].slice(0, 160)}`);
+      findings.push({ screen: id, el: "<navigation failed>", detail: String(e).split("\n")[0].slice(0, 200) });
+    }
+    await context.close();
+  }
+  return findings;
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true });
   const browser = await chromium.launch({ headless: true, args: ["--font-render-hinting=none"] });
   const report = { base: BASE, viewport: VIEWPORT_NAME, screens: [] };
+
+  report.firstPaint = flag("no-first-paint") ? "skipped" : await firstPaintAudit(browser);
 
   for (const id of wanted) {
     const screen = screenById(id);
@@ -153,6 +247,12 @@ async function main() {
   } catch {}
   await writeFile(reportPath, JSON.stringify(report, null, 2));
   console.error(`\nreport: ${reportPath}`);
+  if (Array.isArray(report.firstPaint) && report.firstPaint.length) {
+    console.error(
+      `\nFIRST-PAINT FAILURES (${report.firstPaint.length}) — content that needs Framer's feature chunk to become visible:`,
+    );
+    for (const f of report.firstPaint) console.error(`  ${f.screen}: ${f.el} — ${f.detail.slice(0, 160)}`);
+  }
   if (flag("json")) console.log(JSON.stringify(report, null, 2));
 }
 
