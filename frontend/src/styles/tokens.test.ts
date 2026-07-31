@@ -1,6 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { PALETTE_LIGHT, PALETTE_DARK, type DitherColor } from "../components/dither-kit/palette";
+import {
+  PALETTE_LIGHT,
+  PALETTE_DARK,
+  type DitherColor,
+  type Seed,
+} from "../components/dither-kit/palette";
 import { PALETTE_NAMES } from "../lib/paletteColor";
 
 // Vitest runs from the frontend root; resolve against cwd rather than
@@ -19,6 +24,23 @@ const declared = (block: string, token: string): string | null => {
 };
 const hex = ([r, g, b]: [number, number, number]) =>
   `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+/** A `Seed`'s painted colour. `line`/`star` are derived tints of it. */
+const seedHex = (s: Seed) => hex(s.fill);
+
+// WCAG 2.1 relative luminance and contrast ratio, at module scope because two
+// describes below need them: the bucket-level checks and the palette-wide floor.
+const channel = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const lum = (h: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) => channel(parseInt(h.substr(i, 2), 16) / 255));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a: string, b: string) => {
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+/** The page ground each theme's palette is printed on — `--color-bg`. */
+const GROUND = { light: "#f2f1ef", dark: "#141416" } as const;
 
 describe("palette tokens", () => {
   // app.css and palette.ts necessarily hold the same values — the canvas paints
@@ -150,17 +172,35 @@ describe("built output", () => {
   });
 });
 
-describe("bucket contrast", () => {
-  const channel = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-  const lum = (h: string) => {
-    const [r, g, b] = [1, 3, 5].map((i) => channel(parseInt(h.substr(i, 2), 16) / 255));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  const contrast = (a: string, b: string) => {
-    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
-    return (hi + 0.05) / (lo + 0.05);
-  };
+describe("palette contrast", () => {
+  // 3:1, not 4.5:1 — palette hues are graphical objects (dots, chart fills,
+  // DitherFill backgrounds), never text. WCAG 1.4.11. This is the same
+  // threshold app.css already cites when it rules that neither the amber nor
+  // the red clears 3:1 on the hero ground.
+  //
+  // Why this exists: before it, every ratio in the palette was hand-measured
+  // and recorded only in an app.css comment. Adding a hue meant trusting prose.
+  // Now adding a hue is: propose values → run this → nudge lightness until
+  // green. It reads palette.ts, the same source the mirror tests above pin
+  // app.css to, so a green run is a statement about what actually ships.
+  const FLOOR = 3;
 
+  it.each([
+    ["light", GROUND.light],
+    ["dark", GROUND.dark],
+  ])("keeps every palette hue at or above %s 3:1 on the page ground", (theme, ground) => {
+    const table = theme === "light" ? PALETTE_LIGHT : PALETTE_DARK;
+    const failures: string[] = [];
+    for (const name of PALETTE_NAMES) {
+      const hex = seedHex(table[name as DitherColor]);
+      const ratio = contrast(hex, ground);
+      if (ratio < FLOOR) failures.push(`${name} ${hex} = ${ratio.toFixed(2)}:1`);
+    }
+    expect(failures, `below ${FLOOR}:1 on ${ground}`).toEqual([]);
+  });
+});
+
+describe("bucket contrast", () => {
   it("keeps the over-pace ink legible on paper, on the dark ground, and on the bar track", () => {
     // ProgressBar's middle stop. A bar fill is a non-text graphic → 3:1 floor,
     // and it must clear it against the track it is printed on, not just the

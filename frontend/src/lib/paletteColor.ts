@@ -3,13 +3,30 @@ import type { DitherColor } from "../components/dither-kit/palette";
 /**
  * The categorical palette, as CSS-consumer names.
  *
- * Same six hues as `palette.ts`'s `DitherColor`, which the canvas needs as raw
- * RGB. The type alias keeps the two from drifting apart in name: adding a hue
- * to the palette without adding it here is a type error.
+ * Same twelve hues as `palette.ts`'s `DitherColor`, which the canvas needs as
+ * raw RGB. The type alias keeps the two from drifting apart in name: adding a
+ * hue to the palette without adding it here is a type error.
+ *
+ * ORDER IS LOAD-BEARING, in two ways:
+ *
+ *  1. All twelve base names first, then all twelve `-deep` steps. The category
+ *     colour backfill seeds from `PALETTE_NAMES[(id * 7) % 24]` and relies on
+ *     walking bases and deeps as one even ring; interleaving them would hand
+ *     consecutive ids the same hue at two lightnesses.
+ *  2. The first six of each half are the original palette, in their original
+ *     positions. Nothing stores an index today — projects store the *name* —
+ *     but keeping them put means a diff of this array reads as "six added"
+ *     rather than "everything moved".
+ *
+ * Hue-wheel order would make a nicer swatch grid than append order does; that
+ * is the picker's problem to solve at render time, not a reason to renumber the
+ * ring the backfill walks.
  */
 export const PALETTE_NAMES = [
   "azure", "amber", "lilac", "sage", "rose", "slate",
+  "ochre", "moss", "teal", "sky", "indigo", "orchid",
   "azure-deep", "amber-deep", "lilac-deep", "sage-deep", "rose-deep", "slate-deep",
+  "ochre-deep", "moss-deep", "teal-deep", "sky-deep", "indigo-deep", "orchid-deep",
 ] as const;
 
 export type PaletteName = (typeof PALETTE_NAMES)[number];
