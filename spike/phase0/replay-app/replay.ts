@@ -45,10 +45,22 @@ export function getDb(): SQLite.SQLiteDatabase {
 // connection-open cost — dbOpenMs stays meaningful on every run, not just
 // the first — while still never leaking: the old handle is always closed
 // before the new one replaces it in the module-level `db` reference.
+//
+// Null `db` BEFORE calling closeSync(), not after. If closeSync() throws
+// (SQLITE_BUSY, or any other native error) while `db` still points at the
+// old handle, every later reopenDb() call would re-enter this branch and
+// throw at the same line forever — the instrument would be wedged until
+// force-quit, which is exactly the "can't complete the 4-press protocol"
+// failure this function exists to fix. By nulling first, a throw here still
+// propagates to the caller (it is not swallowed — a close failure is a real
+// problem worth surfacing), but `db` is already null when it does, so the
+// *next* reopenDb()/getDb() call opens a clean new connection instead of
+// retrying the same broken close.
 export function reopenDb(): SQLite.SQLiteDatabase {
   if (db) {
-    db.closeSync();
+    const old = db;
     db = null;
+    old.closeSync();
   }
   return getDb();
 }
