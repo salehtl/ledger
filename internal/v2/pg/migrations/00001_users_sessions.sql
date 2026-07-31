@@ -1,4 +1,8 @@
 -- +goose Up
+-- gen_random_uuid() has been built into core since PG13, so pgcrypto is not
+-- actually required for it on the PG16 this project targets (test and prod
+-- alike). Kept anyway on the chance a later migration wants pgcrypto's other
+-- functions (digest(), crypt(), ...); harmless either way.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE users (
