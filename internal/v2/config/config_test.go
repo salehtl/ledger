@@ -266,6 +266,54 @@ func TestLoadRejectsATOMLDecodeError(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsASemanticallyInvalidDuration and
+// TestLoadRejectsASemanticallyInvalidInteger pin BurntSushi/toml v1.6.0's
+// existing behavior for a value that parses as valid TOML but has the wrong
+// type for its destination field: it already fails loudly (a "toml: ...
+// incompatible types" / "invalid duration" decode error), so this is a
+// regression test for behavior Load already benefits from, not a new check
+// Load itself performs. Losing it silently — e.g. a future Go/toml upgrade
+// that started coercing "bogus" to a zero duration instead of erroring —
+// would be exactly the kind of "looks configured, silently wrong" failure
+// this package exists to prevent, so it is worth pinning explicitly.
+func TestLoadRejectsASemanticallyInvalidDuration(t *testing.T) {
+	clearV2Env(t)
+	path := writeTOML(t, `
+[mail]
+domain      = "example.test"
+tarpit_base = "bogus"
+
+[server]
+dsn = "postgres:///x"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load() to reject tarpit_base = \"bogus\" (not a valid duration)")
+	}
+	if !strings.Contains(err.Error(), "tarpit_base") {
+		t.Fatalf("error should name the offending key, got: %v", err)
+	}
+}
+
+func TestLoadRejectsASemanticallyInvalidInteger(t *testing.T) {
+	clearV2Env(t)
+	path := writeTOML(t, `
+[mail]
+domain             = "example.test"
+max_message_bytes  = "abc"
+
+[server]
+dsn = "postgres:///x"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load() to reject max_message_bytes = \"abc\" (not an integer)")
+	}
+	if !strings.Contains(err.Error(), "max_message_bytes") {
+		t.Fatalf("error should name the offending key, got: %v", err)
+	}
+}
+
 func TestValidateRejectsNonPositiveRateLimitsAndTTLs(t *testing.T) {
 	base := func() Config {
 		c := defaults()

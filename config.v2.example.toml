@@ -15,14 +15,17 @@
 # LEDGER_MAIL_DOMAIN once the domain is picked.
 domain             = ""
 smtp_listen        = ":25"        # SMTP receiver bind address (LEDGER_SMTP_LISTEN)
-max_message_bytes  = 1048576      # DATA cap in bytes; spec §3.2 caps it at 1 MiB
+max_message_bytes  = 1048576      # DATA cap in bytes; spec §3.2 caps it at 1 MB (1048576, matching validate()'s wording)
 per_address_daily  = 50           # max accepted deliveries per inbound address per day
 invalid_rcpt_burst = 5            # invalid RCPTs from one IP before the tarpit engages
 tarpit_base        = "2s"         # base delay applied per invalid RCPT once tarpitting
 
 [server]
 http_listen  = ":443"             # HTTPS API + sync listener (LEDGER_HTTP_LISTEN)
-admin_listen = "127.0.0.1:8079"   # Tailscale-only admin API (LEDGER_ADMIN_LISTEN); refuses non-loopback/non-tailnet binds
+admin_listen = "127.0.0.1:8079"   # admin API bind address (LEDGER_ADMIN_LISTEN). Today validate() only refuses a
+                                   # literal ":8080" suffix (v1's port); Task 32 adds the real restriction to
+                                   # loopback/tailnet-only (100.64.0.0/10) addresses, so e.g. "0.0.0.0:8079" is
+                                   # NOT rejected yet even though it will be once that task lands.
 dsn          = ""                 # Postgres DSN (LEDGER_PG_DSN) — required; never :8080, never /var/lib/ledger
 # Secret, never stored here: LEDGER_ADMIN_TOKEN — static bearer token for the
 # admin API, compared with subtle.ConstantTimeCompare.
