@@ -1,5 +1,6 @@
 import { TABS, type TabId } from "../../app/nav";
 import { fire } from "../../lib/feedback";
+import { Pressable } from "./Pressable";
 
 export function BottomNav({
   active, reviewCount, onNavigate,
@@ -10,12 +11,12 @@ export function BottomNav({
         const Icon = t.icon;
         const isActive = active === t.id;
         return (
-          <button
+          <Pressable
             key={t.id}
             aria-label={t.id === "review" && reviewCount > 0 ? `Review, ${reviewCount} need review` : t.label}
             aria-current={isActive ? "page" : undefined}
             onClick={() => { fire("navigation"); onNavigate(t.id); }}
-            className={`relative min-h-14 flex flex-col items-center justify-center gap-1 press font-mono text-[8px] uppercase tracking-[0.1em] ${isActive ? "text-fg font-medium" : "text-muted"}`}
+            className={`relative min-h-14 flex flex-col items-center justify-center gap-1 font-mono text-[8px] uppercase tracking-[0.1em] ${isActive ? "text-fg font-medium" : "text-muted"}`}
           >
             {/* The active mark: a 2px spot tick on the top rule. */}
             {isActive && (
@@ -32,7 +33,7 @@ export function BottomNav({
               )}
             </span>
             {t.label}
-          </button>
+          </Pressable>
         );
       })}
     </nav>

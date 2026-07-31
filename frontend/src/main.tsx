@@ -7,6 +7,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { queryClient, persister, PERSIST_MAX_AGE } from "./queryClient";
 import { ToastProvider } from "./components/Toast";
 import { AppShell } from "./app/AppShell";
+import { MotionProvider } from "./app/MotionProvider";
 import { applyFontScale, loadFontScale } from "./lib/fontScale";
 import { loadHapticsEnabled, loadSoundEnabled } from "./lib/feedback";
 
@@ -24,9 +25,11 @@ createRoot(document.getElementById("root")!).render(
       client={queryClient}
       persistOptions={{ persister, maxAge: PERSIST_MAX_AGE }}
     >
-      <ToastProvider>
-        <AppShell />
-      </ToastProvider>
+      <MotionProvider>
+        <ToastProvider>
+          <AppShell />
+        </ToastProvider>
+      </MotionProvider>
     </PersistQueryClientProvider>
   </React.StrictMode>,
 );

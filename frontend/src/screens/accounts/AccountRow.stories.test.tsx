@@ -44,10 +44,12 @@ describe("AccountRow stories", () => {
     expect(zero!.textContent).toBe("0.00");
   });
 
-  it("the whole row is one 44px-class tap target with press feedback", () => {
+  it("the whole row is one 44px-class tap target, its press feedback owned by the shared Pressable primitive", () => {
     render(<CheckedIn />);
     const btn = screen.getByRole("button", { name: /ENBD Current/ });
-    expect(btn.className).toContain("press");
+    // Regression guard for the unlayered `.press` cascade bug: the class must
+    // never come back. Pressable.test.tsx covers the actual whileTap behavior.
+    expect(btn.className).not.toContain("press");
     expect(btn.className).toContain("w-full");
   });
 

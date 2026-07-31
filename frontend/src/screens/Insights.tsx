@@ -9,6 +9,7 @@ import { useAgeOfMoney, useNetWorth, useTrend24 } from "../api/hooks";
 import { deltaSummary, pctLabel, yoyRows, yoySummary } from "../lib/reports";
 import { Card } from "../components/ui/Card";
 import { SectionLabel } from "../components/ui/SectionLabel";
+import { Pressable } from "../components/ui/Pressable";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
@@ -119,12 +120,12 @@ export function Insights({ scope = DEFAULT_SCOPE }: { scope?: Scope }) {
           has to take the screen underneath out of the tab order itself —
           otherwise Tab from its back arrow walks back into Insights. */}
       <div className="contents" inert={reportsFocus !== null}>
-      <button
-        className="w-full min-h-11 flex items-center gap-2 px-3 rounded-[var(--radius)] border border-border bg-surface text-base text-muted press"
+      <Pressable
+        className="w-full min-h-11 flex items-center gap-2 px-3 rounded-[var(--radius)] border border-border bg-surface text-base text-muted"
         onClick={() => setSearchOpen(true)}
       >
         <Search size={16} aria-hidden /> Search transactions…
-      </button>
+      </Pressable>
 
       <ComparativeSummary label={label} note={focus.note} net={savings.net} savings={savings} buckets={buckets} overBudgetBuckets={overBudget} onSelectBucket={(bucket) => setDrill({ type: "bucket", bucket })} />
 
@@ -211,16 +212,16 @@ function ReportTile({ label, stat, meta, pending = false, onOpen }: {
   onOpen: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <Pressable
       onClick={onOpen}
-      className="min-h-11 rounded-[var(--radius)] border border-border bg-surface p-3 text-left press"
+      className="min-h-11 rounded-[var(--radius)] border border-border bg-surface p-3 text-left"
     >
       <span className="flex items-center justify-between font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">
         {label} <span aria-hidden>›</span>
       </span>
       {pending ? (
         <span aria-busy="true" aria-label="Loading" className="mt-1 flex h-6 items-center">
+          {/* Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated. */}
           <span className="block h-4 w-16 animate-pulse rounded-[var(--radius)] bg-surface-2" />
         </span>
       ) : (
@@ -229,6 +230,6 @@ function ReportTile({ label, stat, meta, pending = false, onOpen }: {
       <span className="mt-0.5 block font-mono text-[10px] tracking-[0.04em] text-muted">
         {pending ? "loading…" : meta}
       </span>
-    </button>
+    </Pressable>
   );
 }

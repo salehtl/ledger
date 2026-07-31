@@ -1,6 +1,7 @@
 // frontend/src/lib/swipe.ts
 import { seedOfColor, type Rgb } from '../components/dither-kit/palette'
 import { bucketDither } from './ditherColor'
+import { flicked, FLICK_MIN_PX } from './gesture'
 
 export type SwipeDirection = 'left' | 'right' | 'up' | 'down'
 
@@ -26,6 +27,18 @@ export interface SwipeConfig {
 }
 
 export const SWIPE_THRESHOLD = 80
+
+/** Travel past which a release commits, on either axis. */
+export const COMMIT_PX = 100
+/** px/s past which a release commits regardless of distance. */
+export const COMMIT_VELOCITY = 520
+/**
+ * A flick still needs enough travel on its axis to read as intentional. This
+ * is the app-wide floor from `lib/gesture.ts`, aliased so the deck's own
+ * threshold block reads as one list; the guard it names is now shared with the
+ * toast, sheet, edge-back and row predicates.
+ */
+export const FLICK_MIN_DISTANCE = FLICK_MIN_PX
 
 export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
   left:  { bucket: 'want',   label: 'Want',     colorClass: 'bg-purple-500', textClass: 'text-purple-700', icon: 'Heart' },
@@ -127,11 +140,17 @@ export function detectDirection(dx: number, dy: number, threshold = SWIPE_THRESH
 
 /**
  * 0–1 progress for overlay opacity based on drag magnitude.
- * Reaches 1 at SWIPE_THRESHOLD.
+ *
+ * Reaches 1 at COMMIT_PX — the distance at which a release actually commits —
+ * so a fully-lit badge and edge wash mean "let go now", not "20px more". It
+ * used to saturate at SWIPE_THRESHOLD, which was the commit distance too until
+ * commitDirection replaced the old detect/flick pair; leaving it there would
+ * have made the strongest possible feedback appear on a drag that still
+ * springs back.
  */
 export function overlayProgress(dx: number, dy: number): number {
   const dist = Math.max(Math.abs(dx), Math.abs(dy))
-  return Math.min(1, dist / SWIPE_THRESHOLD)
+  return Math.min(1, dist / COMMIT_PX)
 }
 
 /**
@@ -141,22 +160,62 @@ export function previewDirection(dx: number, dy: number): SwipeDirection | null 
   return detectDirection(dx, dy, 20)
 }
 
-/** Velocity (px/ms) above which a release counts as a flick. */
-export const FLICK_VELOCITY = 0.11
-/** A flick still needs enough travel to read as intentional. */
-export const FLICK_MIN_DISTANCE = 24
+/** How many discrete levels a preview strength is reported to the deck in. */
+export const PREVIEW_STEPS = 10
 
 /**
- * Momentum commit: a quick throw should sort the card even when it never
- * reached SWIPE_THRESHOLD. Returns the dominant direction when the release
- * velocity exceeds FLICK_VELOCITY over at least FLICK_MIN_DISTANCE, else null.
- * elapsedMs <= 0 (same-frame release) counts as maximally fast.
+ * Round a 0..1 preview strength to PREVIEW_STEPS levels before it crosses out
+ * of the card.
+ *
+ * The card tracks its own lean at full per-frame resolution — the badge reads
+ * the motion value directly and renders nothing. But the deck needs the same
+ * number for its edge wash, and the only way into a React tree is React state,
+ * so the exact float re-rendered SwipeDeck (four EdgeRails, the wash, the
+ * progress bar and the card, none of them memoized) once per pointer frame:
+ * ~60 renders a second for the length of every drag.
+ *
+ * Ten steps is the resolution the wash can actually express — it is a
+ * translucent gradient nobody reads to better than a tenth — so this costs
+ * nothing visible and turns those ~60 renders/s into at most eleven over the
+ * whole drag, because SwipeDeck's handlePreview already bails when the value
+ * it is handed has not changed.
  */
-export function flickDirection(dx: number, dy: number, elapsedMs: number): SwipeDirection | null {
-  const dist = Math.max(Math.abs(dx), Math.abs(dy))
-  if (dist < FLICK_MIN_DISTANCE) return null
-  if (elapsedMs > 0 && dist / elapsedMs <= FLICK_VELOCITY) return null
-  return detectDirection(dx, dy, FLICK_MIN_DISTANCE)
+export function quantizePreview(p: number): number {
+  return Math.round(p * PREVIEW_STEPS) / PREVIEW_STEPS
+}
+
+/**
+ * Which bucket, if any, a released card swipe commits to.
+ *
+ * The dominant axis wins — a diagonal drag that clears both thresholds goes
+ * wherever the hand travelled further, which is what the eye expects. Was
+ * previously spread across useSwipeGesture's pointer handlers with a
+ * time-based speed estimate; Framer reports real px/s.
+ *
+ * The velocity clause's guards — direction agreement and the FLICK_MIN_DISTANCE
+ * floor — now live in `lib/gesture.ts`'s `flicked`, which is where the full
+ * rationale is written down. This deck is where the missing floor was first
+ * found (a twitch sorted a card the user never meant to touch, on the
+ * highest-frequency surface in the app, costing an undo each time); the other
+ * four drag surfaces were carrying the same hole and now share the fix.
+ *
+ * The floor is measured per axis rather than on the overall travel, so 30px of
+ * downward drag cannot license a sideways velocity commit.
+ */
+export function commitDirection(
+  offsetX: number,
+  offsetY: number,
+  velocityX: number,
+  velocityY: number,
+): SwipeDirection | null {
+  const flick = (offset: number, velocity: number) =>
+    flicked(offset, velocity, FLICK_MIN_DISTANCE, COMMIT_VELOCITY)
+  const horizontal = Math.abs(offsetX) >= COMMIT_PX || flick(offsetX, velocityX)
+  const vertical = Math.abs(offsetY) >= COMMIT_PX || flick(offsetY, velocityY)
+  if (!horizontal && !vertical) return null
+  const preferHorizontal = horizontal && (!vertical || Math.abs(offsetX) >= Math.abs(offsetY))
+  if (preferHorizontal) return offsetX > 0 ? 'right' : 'left'
+  return offsetY > 0 ? 'down' : 'up'
 }
 
 export function loadSwipeConfig(): SwipeConfig {

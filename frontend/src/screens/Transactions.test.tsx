@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { Transactions } from "./Transactions";
+import { MotionProvider } from "../app/MotionProvider";
 import type { Category } from "../api/types";
 import type { TxnDepth } from "../lib/txSplit";
 
@@ -63,7 +64,7 @@ afterEach(() => {
 
 function wrap(props: { from?: string; to?: string } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><ToastProvider><Transactions {...props} /></ToastProvider></QueryClientProvider>);
+  return render(<MotionProvider><QueryClientProvider client={qc}><ToastProvider><Transactions {...props} /></ToastProvider></QueryClientProvider></MotionProvider>);
 }
 
 describe("Transactions", () => {

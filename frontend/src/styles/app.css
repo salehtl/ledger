@@ -67,7 +67,15 @@
 
 /* Motion tokens — strong custom easings (Emil Kowalski's craft bar). Built-in
    CSS easings are too weak; these give entrances/exits intentional punch.
-   Usable in CSS rules and in JS inline styles via var(--ease-*). */
+
+   NOT authoritative any more. Since the Framer migration every curve the app
+   actually animates with is interpolated in JS from `lib/motion.ts`, which
+   never reads the stylesheet; after `.stagger-item`/`.row-in` were retired
+   nothing in this file consumes these. They stay as the published token names
+   the component catalog documents, and because a future CSS-only decoration
+   should reach for the same curves rather than invent one. If you change a
+   number here, change its tuple in `lib/motion.ts` too — the JS is what
+   ships. */
 :root {
   /* ── Categorical palette ────────────────────────────────────────────────
      Deliberately NOT in @theme. These are consumed only through runtime
@@ -112,39 +120,28 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* entering/exiting UI */
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement   */
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);   /* iOS-like sheet curve  */
-  --dur-press: 140ms;                               /* button press feedback */
 }
 
-/* Press feedback — subtle scale confirms the UI heard the tap. Applies to any
-   pressable element. Disabled under reduced motion (movement removed, not the
-   element). Scale on :active is correct on touch too (unlike hover). */
-.press { transition: transform var(--dur-press) var(--ease-out); }
-.press:active { transform: scale(0.97); }
-@media (prefers-reduced-motion: reduce) {
-  .press:active { transform: none; }
-}
-
-/* First-paint list stagger — a one-shot cascade (decorative). Apply only on a
-   list's first mount; never on refetch. Steps are short (<=80ms). Reduced
-   motion keeps the fade, drops the upward movement. */
-@keyframes stagger-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.stagger-item { opacity: 0; animation: stagger-in 300ms var(--ease-out) forwards; }
-.stagger-item:nth-child(1) { animation-delay: 0ms; }
-.stagger-item:nth-child(2) { animation-delay: 40ms; }
-.stagger-item:nth-child(3) { animation-delay: 80ms; }
-.stagger-item:nth-child(4) { animation-delay: 120ms; }
-.stagger-item:nth-child(5) { animation-delay: 160ms; }
-.stagger-item:nth-child(6) { animation-delay: 200ms; }
-.stagger-item:nth-child(n+7) { animation-delay: 240ms; } /* cap the cascade */
-@media (prefers-reduced-motion: reduce) {
-  @keyframes stagger-in { from { opacity: 0; } to { opacity: 1; } }
-}
-
-/* One-shot entry for a single row born in place (inline add). Shares the
-   stagger keyframes — reduced motion therefore keeps the fade only. */
-.row-in { animation: stagger-in 150ms var(--ease-out); }
+/* The first-paint list stagger and the inline-add row entry used to live here
+   as `.stagger-item` / `.row-in` — six `:nth-child` delay rules plus a capped
+   seventh, and a second `@keyframes` block to strip the translate under
+   reduced motion. All of it is now three props on an `m.li`/`m.div`
+   (screens/Home.tsx, screens/Transactions.tsx, screens/CategoryManager.tsx);
+   the cap survives as `Math.min(i * 0.04, 0.24)` and the reduced-motion
+   override is handled globally by `MotionConfig reducedMotion="user"`. */
 
 /* Pixel-art spinner — see components/ui/PixelSpinner.tsx.
+
+   One of exactly two animations the Framer migration left in CSS, and the
+   only one Framer could not express at all. The eight cells share a single
+   keyframe and are phase-shifted by *negative* `animation-delay` — each cell
+   starts mid-cycle, already partway through the fade, which is what makes the
+   brightness appear to travel round a ring of stationary blocks. Framer has
+   no negative-delay equivalent: `delay` only ever postpones a start, so the
+   same effect would need eight independently-scheduled JS animation loops
+   kept in phase with each other, to replace one declaration. The other
+   exemption is the skeleton pulse; components/Skeleton.tsx carries the
+   general ruling for indefinite opacity loops.
 
    Nothing rotates. Rotating the pixel Loader2 glyph was a no-op: it is
    four-fold symmetric, so the 90° steps that keep a pixel grid sharp mapped it
@@ -176,9 +173,30 @@ body { background: var(--color-bg); color: var(--color-fg); font-family: var(--f
    and an open bottom sheet could be dragged around the screen along with the
    top bar, exposing an unscrimmed strip above it. */
 html, body { overscroll-behavior: none; }
-/* iOS Safari paints a gray flash box on tapped links/buttons; our .press scale
-   and haptics are the feedback channel, so kill the default highlight. */
+/* iOS Safari paints a gray flash box on tapped links/buttons; the Pressable
+   primitive's whileTap scale and haptics are the feedback channel, so kill
+   the default highlight. */
 html { -webkit-tap-highlight-color: transparent; }
+
+/* No `.hover-gated` utility here, on purpose — sticky hover on touch is
+   already handled, and a second mechanism would be dead weight that reads
+   like it is doing something.
+
+   Tailwind v4 changed the `hover:` variant to compile to
+   `@media (hover: hover) { &:hover { … } }`. Verified against this app's own
+   build output, not just the changelog: every `hover:` selector Tailwind
+   emits for this codebase sits inside a single `@media (hover:hover)` block,
+   and none sits outside one. iOS Safari reports `hover: none`, so a tap there
+   never enters a hover state that could stick.
+
+   Worth recording what the utility would have been, because it is the obvious
+   thing to reach for and it is wrong twice over: `.hover-gated:hover { color:
+   inherit }` does not restore the un-hovered colour, it inherits the parent's
+   — which on `text-muted hover:text-fg` controls would have made the hovered
+   state *brighter* than the resting one, the precise bug it was meant to fix.
+
+   If a hover state ever does stick on a touch device, suspect a `:hover` rule
+   written by hand outside Tailwind's variant, not this file. */
 
 /* Backstop against iOS zoom-on-focus: Safari zooms the viewport onto any
    focused control whose font-size is under 16px. Shared Input/Select set
@@ -209,20 +227,18 @@ input, select, textarea { font-size: max(16px, 1rem); }
    mount and on value change; transform-only so rolls stay composited and a
    mid-roll retarget transitions smoothly instead of restarting. All cells are
    bottom-aligned 1lh boxes so wheel columns and static separators share a
-   baseline. The row scales down (never up) when the value would overflow. */
+   baseline. The row scales down (never up) when the value would overflow.
+   Timing (duration, easing, stagger, reduced motion) lives in
+   RollingNumber.tsx via Framer Motion, not here. */
 .rolling-number { display: block; overflow: hidden; }
 .rolling-row {
   display: inline-block; white-space: nowrap;
   transform-origin: left center;
-  transition: transform 200ms var(--ease-out); /* fit-scale changes, not rolls */
 }
 .rolling-cell { display: inline-block; height: 1lh; vertical-align: bottom; }
 .rolling-wheel { overflow: hidden; }
-.rolling-wheel-track { display: block; transition: transform 650ms var(--ease-in-out); }
+.rolling-wheel-track { display: block; }
 .rolling-wheel-digit { display: block; height: 1lh; }
-@media (prefers-reduced-motion: reduce) {
-  .rolling-wheel-track, .rolling-row { transition: none; }
-}
 .money-neg { color: var(--color-bad); }
 .money-zero { color: var(--color-muted); }
 
@@ -234,26 +250,6 @@ input, select, textarea { font-size: max(16px, 1rem); }
   mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
   -webkit-mask-size: 2px 2px;
   mask-size: 2px 2px;
-}
-
-/* ---- Swipe Mode (edge-targeting deck) ---- */
-/* New card rises as the one above it flies off. */
-@keyframes swipe-card-in {
-  from { transform: scale(0.92) translateY(16px); opacity: 0; }
-  to   { transform: scale(1) translateY(0); opacity: 1; }
-}
-.swipe-card-in { animation: swipe-card-in 0.32s var(--ease-drawer) both; }
-
-@media (prefers-reduced-motion: reduce) {
-  .swipe-card-in { animation: none; }
-}
-
-/* dither-kit's chart tooltip fades and glides via inline transitions (it
-   replaced framer-motion — see components/dither-kit/tooltip.tsx). Inline
-   styles can't carry a media query, so the reduced-motion opt-out lives here;
-   the card still appears and disappears, it just snaps. */
-@media (prefers-reduced-motion: reduce) {
-  .dither-tooltip { transition: none !important; }
 }
 
 /* ---- Dark theme (automatic, follows the OS) ----

@@ -175,6 +175,56 @@ Two traps worth knowing when you extend this:
   main checkout serves the main checkout — it is easy to "verify a fix" against
   a tree that does not contain it.
 
+## Drag gestures — `gestures.mjs`
+
+```bash
+node harness/gestures.mjs                  # Chromium (default)
+node harness/gestures.mjs --engine webkit  # real-pointer cases on the ship engine
+```
+
+Sheets and drill-in pages dismiss on a drag, and the *rules* — 110px or
+550px/s down, a third of the width or 550px/s right, never the other way — are
+pure functions in `lib/sheetDrag.ts` and `lib/edgeBack.ts` with unit tests. What
+those tests cannot see is whether the rules are still **connected** to anything:
+`drag`, `dragControls`, `dragElastic`, `onDragStart` and both `onDragEnd`
+handlers could be deleted from `Dialog`/`SettingsPage` and every vitest file
+would still pass. jsdom cannot drive a Framer drag — no layout to measure, no
+frame clock behind the pointer stream — so this drives one in a real engine.
+
+It also pins a bug only a real pointer produces: a drag that *starts* on the
+sheet handle and *ends* off the panel makes the browser synthesise a `click` on
+the nearest common ancestor of press and release — the overlay root, which
+closes the sheet. So an upward pull dismissed, which is exactly what
+`dragElastic: { top: 0 }` exists to prevent. `Dialog` disarms one root click per
+drag, and the upward-drag plus both scrim-tap checks here are that guard's only
+automated coverage.
+
+Two input drivers, because neither can do both jobs:
+
+- **Real input** (`page.mouse`) for everything about hit-testing, clicks and
+  click synthesis — a script-dispatched event would never synthesise the click
+  the regression above depends on.
+- **In-page, frame-paced pointer events** for the flick. Playwright's bottleneck
+  is the per-call protocol round-trip, so a `mouse.move({ steps })` burst reaches
+  Framer at 200–900px/s depending on machine load — it cleared the 550px/s bar in
+  about half of runs, and a check that flaky is worse than none. Dispatching one
+  `pointermove` per animation frame puts the frame clock in charge instead.
+  Framer does not check `isTrusted`, so PanSession, velocity, `onDragEnd` and the
+  predicate all run exactly as they do for a finger.
+
+That is also why it defaults to **Chromium**, unlike `ios.mjs`: headless WebKit
+runs a ~50ms frame clock, and 60px over three 50ms frames is 400px/s — a slow
+drag, whatever you dispatch. Under `--engine webkit` the flick reports `skip`
+with the velocity it managed, rather than a green line that proves nothing.
+
+Each check was verified to have teeth by breaking the thing it guards: dropping
+the click disarm fails the upward-drag check, passing `0` for velocity fails the
+flick check, and gutting `SettingsPage`'s `onDragEnd` fails the edge-swipe check.
+
+`Dialog`'s drag region carries `data-sheet-handle` for the same reason
+`DialogFooter` carries `data-dialog-footer`: it is otherwise a div identified
+only by Tailwind classes, and the harness should not grab it by styling.
+
 ## Driving it yourself
 
 `nav.mjs` exports the pieces for ad-hoc interaction scripts:

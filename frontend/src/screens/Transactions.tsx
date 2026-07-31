@@ -1,5 +1,6 @@
 // frontend/src/screens/Transactions.tsx
 import { useEffect, useMemo, useState } from "react";
+import { m } from "motion/react";
 import { useQuery } from "@tanstack/react-query";
 import { getJSON, getProjects, postJSON } from "../api/client";
 import type { Category, Txn } from "../api/types";
@@ -20,11 +21,13 @@ import { TransactionDetailSheet } from "../components/transactions/TransactionDe
 import { LinkRefundSheet } from "../components/transactions/LinkRefundSheet";
 import { AddTransactionSheet } from "../components/transactions/AddTransactionSheet";
 import { Fab } from "../components/ui/Fab";
+import { Pressable } from "../components/ui/Pressable";
 import { FilterBar } from "../components/transactions/FilterBar";
 import { useToast } from "../components/Toast";
 import { txnTotals, applyTxnFilters, filtersActive, exportUrl, exportFilename, EMPTY_FILTERS, type TxnFilters, type ManualTxnPayload } from "../lib/transactions";
 import { searchTxns } from "../lib/analysis";
 import { formatFils } from "../lib/money";
+import { DUR, EASE_OUT } from "../lib/motion";
 import { AlertTriangle, ListOrdered, Search, Plus, Download, SlidersHorizontal, Tag, Archive, ArchiveRestore } from "../components/ui/PixelIcon";
 import { useTxnActions } from "../hooks/useTxnActions";
 import { useFirstReveal } from "../hooks/useFirstReveal";
@@ -198,28 +201,26 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <button
-          type="button"
+        <Pressable
           onClick={() => { fire("selection"); setFilterOpen((o) => !o); }}
           aria-expanded={filterOpen}
           aria-label="Filters"
-          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] border press ${
+          className={`shrink-0 min-h-11 min-w-11 px-3 inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] border ${
             activeFilters > 0 ? "border-accent/30 bg-accent/10 text-fg" : "border-border bg-surface text-muted"
           }`}
         >
           <SlidersHorizontal size={16} aria-hidden />
           {activeFilters > 0 && <span className="tnum text-xs font-semibold">{activeFilters}</span>}
-        </button>
-        <button
-          type="button"
+        </Pressable>
+        <Pressable
           onClick={() => { fire("selection"); void exportCsv(); }}
           disabled={exporting}
           aria-label="Export CSV"
           title="Export CSV — current status, period and search"
-          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-[var(--radius)] border border-border bg-surface text-muted press disabled:opacity-50"
+          className="shrink-0 min-h-11 min-w-11 inline-flex items-center justify-center rounded-[var(--radius)] border border-border bg-surface text-muted disabled:opacity-50"
         >
           <Download size={16} aria-hidden />
-        </button>
+        </Pressable>
       </div>
 
       {(activeFilters > 0 || filterOpen) && (
@@ -242,7 +243,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
           </div>
           <Card className="!p-0 overflow-hidden">
             <ul className="divide-y divide-border">
-              {rows.map((t) => {
+              {rows.map((t, i) => {
                 const archived = t.Status === "archived";
                 // Categorizing a split parent is server-refused (409) — the
                 // swipe's lead action edits the split instead.
@@ -265,13 +266,25 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                   }
                 };
                 return (
-                  <li key={t.ID} className={firstReveal ? "stagger-item" : undefined}>
+                  <m.li
+                    key={t.ID}
+                    // See Home.tsx's recent list for the full reasoning:
+                    // `initial={false}` on a refetch is what keeps this
+                    // one-shot; the 0.24s ceiling reproduces the retired
+                    // `.stagger-item:nth-child(n+7)` cap — which matters far
+                    // more here, where the list runs to hundreds of rows; and
+                    // the entrance is transform-only so that a feature bundle
+                    // still in flight cannot leave the entire list invisible.
+                    initial={firstReveal ? { y: 8 } : false}
+                    animate={{ y: 0 }}
+                    transition={{ duration: DUR.sheet, ease: EASE_OUT, delay: Math.min(i * 0.04, 0.24) }}
+                  >
                     <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>
                       <div className="px-4">
                         <TransactionRow txn={t} onOpen={setDetail} projectsById={projectsById} splitCategories={splitCats} />
                       </div>
                     </SwipeableRow>
-                  </li>
+                  </m.li>
                 );
               })}
             </ul>

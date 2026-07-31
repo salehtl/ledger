@@ -1,6 +1,9 @@
-import { useState, useCallback, useRef, type CSSProperties } from 'react'
+import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react'
+import { AnimatePresence, m } from 'motion/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Heart, type PixelIconType } from '../ui/PixelIcon'
+import { Pressable } from '../ui/Pressable'
+import { DUR, EASE_OUT } from '../../lib/motion'
 import { postJSON, del, getProjects, assignTxnProject } from '../../api/client'
 import { fire } from '../../lib/feedback'
 import { useToast } from '../Toast'
@@ -72,24 +75,43 @@ function EdgeRail({
   const { style, vertical } = RAIL_POS[dir]
   return (
     <div className="absolute z-10" style={style}>
-      <button
-        type="button"
+      <Pressable
         disabled={disabled}
         onClick={() => onCommit(dir)}
         aria-label={`${action.label} — sort this transaction`}
-        className={`press flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold transition-[transform,background-color,color,box-shadow] duration-200 disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
-        style={{
+        className={`flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-semibold disabled:opacity-50 ${vertical ? 'flex-col px-2 py-3 w-12 min-h-11' : 'px-4 py-2 min-h-11'}`}
+        // Everything that changes when the rail arms goes through Framer's own
+        // `animate`, not a hand-written style + a Tailwind `transition-[…]`
+        // class. Two reasons. (1) Once `whileTap` engages `scale` as a tracked
+        // motion value on this element, Framer's render pass computes
+        // style.transform purely from its tracked values and overwrites any
+        // manually-set transform on the next frame. (2) Framer writes
+        // background-color/color/box-shadow as inline styles too, and an
+        // inline style has nothing to transition *from* under a CSS
+        // `transition-[…]` rule when it is replaced wholesale each render —
+        // the fill popped instead of ramping. Under `animate` they genuinely
+        // interpolate over DUR.base.
+        //
+        // The transition is nested inside the animate target (not passed as a
+        // sibling `transition` prop) so it scopes to these values only —
+        // Pressable's own top-level `transition={PRESS_TRANSITION}` prop
+        // would otherwise be shadowed by a sibling prop here, retuning the
+        // 140ms whileTap feel to this 200ms armed duration too.
+        animate={{
+          scale: active ? 1.08 : 1,
           backgroundColor: active ? color : `${color}1f`,
           // Ink or paper, whichever reads on this fill — white was fine on the
           // darker seeds and ~3:1 on the lighter ones.
           color: active ? onActionColor(color) : color,
-          transform: `scale(${active ? 1.08 : 1})`,
-          boxShadow: active ? `0 10px 24px -8px ${color}` : 'none',
+          // A zero-spread transparent shadow, not `none`: `none` is not a
+          // shadow value Framer can interpolate from, so the lift would pop.
+          boxShadow: active ? `0 10px 24px -8px ${color}` : '0 0 0 0 rgba(0,0,0,0)',
+          transition: { duration: DUR.base, ease: EASE_OUT },
         }}
       >
         <Icon size={16} className="shrink-0" aria-hidden />
         <span className="text-[11px] tracking-wide leading-none">{action.label}</span>
-      </button>
+      </Pressable>
     </div>
   )
 }
@@ -209,7 +231,9 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       seq: ++seqRef.current, index: state.index, txn: current, kind: isTransfer ? 'transfer' : 'categorize', categoryName,
     }
     commitRef.current = commit
-    // Close panel and start card exit animation
+    // Close the panel and mark the card as flying. Do NOT advance the index
+    // here — see the effect below for why the two must land in separate
+    // renders.
     setState(s => ({ ...s, pendingDirection: null, flyDirection: dir }))
     try {
       const resp = await postJSON<{ ok: boolean; rule_id?: number }>(
@@ -245,9 +269,28 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     }
   }, [current, categories, projects.data, config, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit])
 
-  const handleExitComplete = useCallback(() => {
-    setState(s => ({ ...s, flyDirection: null, index: s.index + 1, previewDir: null, previewProgress: 0 }))
-  }, [])
+  // One render after the card is marked flying, swap in the next one.
+  // AnimatePresence holds the outgoing card mounted for its exit — with the
+  // props it had when `flying` was set — while the incoming card enters over
+  // it. That overlap is what removes the old 300ms exit + 320ms enter serial
+  // cost; on a 40-card sitting it is ~25s of dead time.
+  //
+  // The two MUST land in separate renders. AnimatePresence animates out the
+  // element as it was *last rendered*: batch `flyDirection` and `index` into
+  // one setState and the outgoing card's final render is the one where
+  // `flying` was still null, so it fades straight down instead of flying to
+  // its bucket and the whole directional exit becomes dead code that still
+  // looks plausible.
+  useEffect(() => {
+    if (!state.flyDirection) return
+    setState(s => ({
+      ...s,
+      flyDirection: null,
+      index: s.index + 1,
+      previewDir: null,
+      previewProgress: 0,
+    }))
+  }, [state.flyDirection])
 
   const handleTripleTap = useCallback(() => {
     if (!current) return
@@ -263,11 +306,11 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       : { ...s, previewDir: dir, previewProgress: progress }))
   }, [])
 
-  // Bumped on panel cancel so the card springs back from its commit offset.
-  const [resetToken, setResetToken] = useState(0)
+  // No reset token any more: `dragSnapToOrigin` already returned the card to
+  // centre the instant the pointer lifted, so by the time the panel is
+  // cancelled there is no offset left to undo.
   const handleCancel = useCallback(() => {
     setState(s => ({ ...s, pendingDirection: null, previewDir: null, previewProgress: 0 }))
-    setResetToken(t => t + 1)
   }, [])
 
   const pendingAction = state.pendingDirection ? config[state.pendingDirection] : null
@@ -309,10 +352,17 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
           <span className="text-muted" style={{ fontSize: '1rem' }}> / {total}</span>
         </p>
       </div>
+      {/* `scaleX` on a full-width fill, not an animated `width` under
+          `transition-all`: width is a layout property, and `transition-all`
+          also swept in every other property that ever changes here. Unlike
+          ProgressBar this bar carries no dither texture for a scale to
+          distort, so the cheap transform is the right one. */}
       <div className="h-1.5 bg-border rounded-[var(--radius)] overflow-hidden mb-4">
-        <div
-          className="h-full bg-accent rounded-[var(--radius)] transition-all duration-300"
-          style={{ width: `${progress * 100}%` }}
+        <m.div
+          className="h-full origin-left bg-accent rounded-[var(--radius)]"
+          style={{ width: '100%' }}
+          animate={{ scaleX: progress }}
+          transition={{ duration: DUR.sheet, ease: EASE_OUT }}
         />
       </div>
 
@@ -320,10 +370,13 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
       <div className="relative flex-1 flex items-center justify-center">
         {/* Edge color wash from the active direction */}
         {activeDir && activeColor && (
-          <div
+          <m.div
             aria-hidden
-            className="absolute inset-0 pointer-events-none rounded-[var(--radius)] transition-opacity duration-150"
-            style={{ opacity: washOpacity, background: WASH[activeDir](activeColor) }}
+            className="absolute inset-0 pointer-events-none rounded-[var(--radius)]"
+            style={{ background: WASH[activeDir](activeColor) }}
+            initial={false}
+            animate={{ opacity: washOpacity }}
+            transition={{ duration: DUR.fast, ease: EASE_OUT }}
           />
         )}
 
@@ -358,32 +411,36 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
               style={{ transform: 'scale(0.94) translateY(14px)', zIndex: 0 }}
             />
           )}
-          {current && (
-            <div key={current.ID} className="relative swipe-card-in" style={{ zIndex: 1 }}>
+          {/* `mode="popLayout"` takes the exiting card out of layout flow so
+              the incoming card takes its place immediately rather than being
+              pushed down by the one still leaving. `initial={false}` so the
+              very first card of a session is already there rather than
+              sliding in on top of the tab transition. */}
+          <AnimatePresence initial={false} mode="popLayout">
+            {current && (
               <SwipeCard
+                key={current.ID}
                 txn={current}
                 config={config}
                 flying={state.flyDirection}
-                resetToken={resetToken}
                 onDirectionCommit={handleDirectionCommit}
                 onTripleTap={handleTripleTap}
-                onExitComplete={handleExitComplete}
                 onPreview={handlePreview}
                 onOpenEmail={() => setEmailOpen(true)}
               />
-            </div>
-          )}
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
       <div className="flex items-center justify-center gap-1 mt-3">
         <p className="text-xs text-muted">Swipe a card to sort ·</p>
-        <button
-          className="text-xs font-medium text-muted underline underline-offset-2 press min-h-11 px-2"
+        <Pressable
+          className="text-xs font-medium text-muted underline underline-offset-2 min-h-11 px-2"
           onClick={handleTripleTap}
         >
           Skip for now
-        </button>
+        </Pressable>
       </div>
 
       {current && current.Direction === 'credit' && (

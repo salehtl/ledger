@@ -1,5 +1,6 @@
 import { Money } from "../../components/Money";
 import { ProgressBar } from "../../components/ui/ProgressBar";
+import { Pressable } from "../../components/ui/Pressable";
 import { paceTone } from "../../lib/insights";
 import {
   claimShort,
@@ -59,12 +60,11 @@ export function EnvelopeRow({ envelope, claim, pace, onOpen }: {
   const verdictClass = alarm ? `font-medium ${TONE_TEXT[paceTone(alarm)]}` : "text-muted";
 
   return (
-    <button
-      type="button"
+    <Pressable
       onClick={() => onOpen(e)}
       aria-label={`Open ${e.category_name}`}
       data-envelope={enveloped ? (overspent ? "overspent" : "funded") : "jar"}
-      className="w-full text-left px-4 py-3 press"
+      className="w-full text-left px-4 py-3"
     >
       <div className="flex items-baseline justify-between gap-3">
         <p className="min-w-0 truncate text-sm font-medium leading-5 tracking-[-0.01em]">{e.category_name}</p>
@@ -93,6 +93,6 @@ export function EnvelopeRow({ envelope, claim, pace, onOpen }: {
           {short > 0 && ` — short ${formatFils(short)}`}
         </p>
       )}
-    </button>
+    </Pressable>
   );
 }

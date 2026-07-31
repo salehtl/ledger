@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Switch } from "../../components/ui/Switch";
+import { Pressable } from "../../components/ui/Pressable";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "../settings/SettingsPage";
 import { shortDate } from "../../lib/format";
@@ -128,13 +129,12 @@ export function AccountDetail({ account, onClose }: {
             ) : history.isError ? (
               <div className="flex items-center gap-1 text-sm text-muted">
                 <p>Couldn't load history.</p>
-                <button
-                  type="button"
-                  className="text-xs font-medium text-muted underline underline-offset-2 press min-h-11 px-2"
+                <Pressable
+                  className="text-xs font-medium text-muted underline underline-offset-2 min-h-11 px-2"
                   onClick={() => history.refetch()}
                 >
                   Try again
-                </button>
+                </Pressable>
               </div>
             ) : points.length === 0 ? (
               <p className="text-sm text-muted">
@@ -205,13 +205,12 @@ export function AccountDetail({ account, onClose }: {
               </div>
             </div>
           ) : (
-            <button
-              type="button"
-              className="min-h-11 px-1 text-sm font-medium text-bad press"
+            <Pressable
+              className="min-h-11 px-1 text-sm font-medium text-bad"
               onClick={() => setArmDelete(true)}
             >
               Delete {MASK} {a.last4}…
-            </button>
+            </Pressable>
           )}
         </div>
       </div>

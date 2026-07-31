@@ -10,6 +10,7 @@ function Pulse({ className = "" }: { className?: string }) {
 
 /** Mirrors NetWorthChart: readout line, meta line, h-36 plot, axis, drill row. */
 export function NetWorthSkeleton() {
+  // Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated.
   return (
     <div aria-busy="true" aria-label="Loading" className="animate-pulse">
       <div className="flex h-8 items-center justify-between gap-3">
@@ -31,6 +32,7 @@ export function NetWorthSkeleton() {
 /** Mirrors the computable AgeOfMoneyTile: headline row, the always-reserved
  *  h-8 sparkline strip, two explainer lines, inside the same bordered card. */
 export function AgeOfMoneySkeleton() {
+  // Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated.
   return (
     <div
       aria-busy="true"
@@ -54,6 +56,7 @@ export function AgeOfMoneySkeleton() {
  *  and a spending block of 37px rows (36px cells + hairline), a net row —
  *  capped at the same 60vh the loaded table scrolls inside. */
 export function MatrixSkeleton() {
+  // Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated.
   return (
     <div aria-busy="true" aria-label="Loading" className="max-h-[60vh] overflow-hidden animate-pulse">
       <div className="flex h-[22px] items-center gap-6 px-3">
@@ -86,6 +89,7 @@ export function MatrixSkeleton() {
 /** Mirrors TrendCompare: summary rows, legend, then twelve min-h-11 month
  *  rows each with the two stacked 5px compare bars. */
 export function TrendsSkeleton() {
+  // Opacity-only pulse — see Skeleton.tsx for why this stays CSS and ungated.
   return (
     <div aria-busy="true" aria-label="Loading" className="animate-pulse">
       <div className="flex h-6 items-center justify-between gap-3">

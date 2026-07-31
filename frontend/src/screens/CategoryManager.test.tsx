@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../components/Toast";
 import { CategoryManager } from "./CategoryManager";
+import { MotionProvider } from "../app/MotionProvider";
 
 const CATS = [
   { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
@@ -40,7 +41,7 @@ function mockFetch(usage: Record<number, Usage>, overrides?: (url: string, init?
 function wrap() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}><ToastProvider><CategoryManager onClose={() => {}} /></ToastProvider></QueryClientProvider>,
+    <MotionProvider><QueryClientProvider client={qc}><ToastProvider><CategoryManager onClose={() => {}} /></ToastProvider></QueryClientProvider></MotionProvider>,
   );
 }
 

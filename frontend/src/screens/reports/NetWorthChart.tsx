@@ -14,6 +14,7 @@ import {
   polylinePoints,
   type NetWorthPoint,
 } from "../../lib/reports";
+import { Pressable } from "../../components/ui/Pressable";
 
 /**
  * The net-worth line: month-end balances across budget + tracking accounts,
@@ -168,14 +169,13 @@ export function NetWorthChart({ points, onDrillMonth }: {
       </div>
 
       {onDrillMonth && (
-        <button
-          type="button"
+        <Pressable
           onClick={() => onDrillMonth(p.month)}
-          className="mt-2 flex min-h-11 w-full items-center justify-between border-t border-border text-sm font-medium press"
+          className="mt-2 flex min-h-11 w-full items-center justify-between border-t border-border text-sm font-medium"
         >
           <span>Transactions in {monthYear(p.month)}</span>
           <span aria-hidden className="text-muted">›</span>
-        </button>
+        </Pressable>
       )}
     </div>
   );

@@ -1,23 +1,64 @@
+import { m, useMotionValue, animate } from "motion/react";
+import { useEffect } from "react";
 import { PixelSpinner } from "./ui/PixelSpinner";
 import { PULL_THRESHOLD } from "../lib/pullToRefresh";
+import { SPRING_SNAP } from "../lib/motion";
 
+/**
+ * The gauge that rides down as you pull.
+ *
+ * The container is a fixed-height clipper and the gauge is translated inside
+ * it, so nothing animates `height`. The previous version transitioned height
+ * at gesture-release — a layout animation at the exact moment the app is
+ * also refetching — and did it on a built-in `ease-out`, the last one in the
+ * codebase.
+ *
+ * During the pull the motion value is *jumped*, not animated, so it tracks
+ * the finger 1:1 and cancels any residual release spring from a quick
+ * re-pull. Only the release springs.
+ */
 export function PullToRefreshIndicator({ pullDistance, refreshing }: {
   pullDistance: number;
   refreshing: boolean;
 }) {
-  const height = refreshing ? PULL_THRESHOLD : pullDistance;
+  // Clamped: resist() (lib/pullToRefresh.ts) legitimately returns up to
+  // MAX_PULL (96px), well past PULL_THRESHOLD (64px) — an ordinary firm pull
+  // reaches it. Unclamped, `next` below goes positive and translates the
+  // gauge below the clipper's visible [0, PULL_THRESHOLD] window, clipping
+  // the spinner fully out of view at exactly the moment the user is pulling
+  // hardest and watching it most closely.
+  const target = refreshing ? PULL_THRESHOLD : Math.min(pullDistance, PULL_THRESHOLD);
   const visible = refreshing || pullDistance > 0;
   const progress = Math.min(1, pullDistance / PULL_THRESHOLD);
-  const transition = refreshing || pullDistance === 0 ? "height 0.2s ease-out" : "none";
+
+  // y=0 is the rest position at the bottom of the clipper; -PULL_THRESHOLD
+  // parks it fully above the clip and out of sight.
+  const y = useMotionValue(-PULL_THRESHOLD);
+
+  useEffect(() => {
+    const next = target - PULL_THRESHOLD;
+    // Dragging: follow the finger exactly. `jump`, not `set`: MotionValue.set()
+    // does not stop an in-flight animate() (only .stop()/.jump() do), so a
+    // quick re-pull started before the previous release's spring has settled
+    // would have its finger-tracking .set() calls interleaved with, and
+    // periodically overwritten by, the old spring's residual rAF frames —
+    // visible as jitter. jump() cancels whatever's running and sets in one
+    // call, which is the "track the finger, cancel anything in flight"
+    // semantic this branch actually wants.
+    if (!refreshing && pullDistance > 0) y.jump(next);
+    // Releasing or entering the refreshing state: spring, so the gauge
+    // settles rather than snapping.
+    else animate(y, next, SPRING_SNAP);
+  }, [target, refreshing, pullDistance, y]);
 
   return (
     <div
       data-testid="ptr-indicator"
       aria-hidden={!visible}
-      className="absolute inset-x-0 top-0 z-10 flex items-end justify-center overflow-hidden pointer-events-none"
-      style={{ height, transition }}
+      className="absolute inset-x-0 top-0 z-10 overflow-hidden pointer-events-none"
+      style={{ height: PULL_THRESHOLD }}
     >
-      <div className="pb-2">
+      <m.div className="flex h-full items-end justify-center pb-2" style={{ y }}>
         {refreshing ? (
           <PixelSpinner size={24} role="status" aria-label="Refreshing" className="text-muted" />
         ) : (
@@ -32,7 +73,7 @@ export function PullToRefreshIndicator({ pullDistance, refreshing }: {
             style={{ opacity: Math.min(1, progress * 3) }}
           />
         )}
-      </div>
+      </m.div>
     </div>
   );
 }

@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { MotionProvider } from "../app/MotionProvider";
 import { PullToRefreshIndicator } from "./PullToRefreshIndicator";
 import { PULL_THRESHOLD } from "../lib/pullToRefresh";
 
+// Every render goes through MotionProvider: the gauge is an m.div driven by a
+// motion value, and an unwrapped m.* renders with no features loaded, so the
+// translate this file is implicitly exercising would be silently inert.
+const wrap = (ui: React.ReactNode) => render(<MotionProvider>{ui}</MotionProvider>);
+
 describe("PullToRefreshIndicator", () => {
   it("shows an animating loader while refreshing", () => {
-    render(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
+    wrap(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
     const status = screen.getByRole("status", { name: /refreshing/i });
     expect(status).toBeInTheDocument();
     // Every block carries the travelling-trail animation. The previous spinner
@@ -16,7 +22,7 @@ describe("PullToRefreshIndicator", () => {
   });
 
   it("staggers each block a step apart, which is what makes the trail travel", () => {
-    render(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
+    wrap(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
     const cells = [...screen.getByRole("status", { name: /refreshing/i }).querySelectorAll<SVGRectElement>(".pixel-spinner-cell")];
     // Identical delays would pulse all eight in unison instead of rotating.
     const delays = cells.map((c) => c.style.animationDelay);
@@ -28,17 +34,20 @@ describe("PullToRefreshIndicator", () => {
     expect(delays[7]).toBe("-100ms");
   });
 
-  it("grows the overlay with pull distance and does not run the trail", () => {
-    render(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
-    const overlay = screen.getByTestId("ptr-indicator");
-    expect(overlay).toHaveStyle({ height: "32px" });
+  it("does not run the trail spinner during a determinate pull", () => {
+    wrap(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
     // The pull gauge is determinate — it fills, it does not spin.
-    expect(overlay.querySelector(".pixel-spinner-cell")).toBeNull();
+    expect(screen.getByTestId("ptr-indicator").querySelector(".pixel-spinner-cell")).toBeNull();
+  });
+
+  it("keeps the container height fixed regardless of pull distance — the gauge translates inside a clipper rather than resizing it", () => {
+    wrap(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
+    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ height: `${PULL_THRESHOLD}px` });
   });
 
   it("fills the gauge in proportion to the pull", () => {
     const { container, rerender } = render(
-      <PullToRefreshIndicator pullDistance={PULL_THRESHOLD / 2} refreshing={false} />,
+      <MotionProvider><PullToRefreshIndicator pullDistance={PULL_THRESHOLD / 2} refreshing={false} /></MotionProvider>,
     );
     const litCount = () =>
       [...container.querySelectorAll<SVGRectElement>("rect")].filter(
@@ -46,30 +55,25 @@ describe("PullToRefreshIndicator", () => {
       ).length;
     expect(litCount()).toBe(4); // half pulled -> half the ring
 
-    rerender(<PullToRefreshIndicator pullDistance={PULL_THRESHOLD} refreshing={false} />);
+    rerender(<MotionProvider><PullToRefreshIndicator pullDistance={PULL_THRESHOLD} refreshing={false} /></MotionProvider>);
     expect(litCount()).toBe(8); // at the threshold the ring is complete
 
-    rerender(<PullToRefreshIndicator pullDistance={PULL_THRESHOLD * 3} refreshing={false} />);
+    rerender(<MotionProvider><PullToRefreshIndicator pullDistance={PULL_THRESHOLD * 3} refreshing={false} /></MotionProvider>);
     expect(litCount()).toBe(8); // over-pull cannot overfill it
   });
 
   it("uses the threshold height while refreshing", () => {
-    render(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
+    wrap(<PullToRefreshIndicator pullDistance={0} refreshing={true} />);
     expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ height: `${PULL_THRESHOLD}px` });
   });
 
-  it("is hidden at rest", () => {
-    render(<PullToRefreshIndicator pullDistance={0} refreshing={false} />);
+  it("clips to a fixed height so nothing animates layout", () => {
+    render(<MotionProvider><PullToRefreshIndicator pullDistance={0} refreshing={false} /></MotionProvider>);
+    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ height: `${PULL_THRESHOLD}px` });
+  });
+
+  it("marks itself hidden from assistive tech when idle", () => {
+    render(<MotionProvider><PullToRefreshIndicator pullDistance={0} refreshing={false} /></MotionProvider>);
     expect(screen.getByTestId("ptr-indicator")).toHaveAttribute("aria-hidden", "true");
-  });
-
-  it("animates height while collapsing at rest", () => {
-    render(<PullToRefreshIndicator pullDistance={0} refreshing={false} />);
-    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ transition: "height 0.2s ease-out" });
-  });
-
-  it("does not animate height during an active pull", () => {
-    render(<PullToRefreshIndicator pullDistance={32} refreshing={false} />);
-    expect(screen.getByTestId("ptr-indicator")).toHaveStyle({ transition: "none" });
   });
 });
