@@ -3,6 +3,7 @@ package arc
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -33,23 +34,56 @@ type Header []Field
 // ErrNoHeader is returned when the input has no parseable header block.
 var ErrNoHeader = errors.New("arc: message has no header block")
 
+// ErrBareLF is returned when the header block contains an LF that is not part
+// of a CRLF.
+var ErrBareLF = errors.New("arc: header block contains a bare LF")
+
 // ReadHeader splits a raw RFC822 message into its header fields and its body.
 //
 // The input must use CRLF line endings — which real delivered mail does, and
 // which the v1 corpus preserves byte-exactly. Bare-LF input is rejected rather
 // than silently repaired, because repairing it would change the bytes that
 // every signature is computed over.
+//
+// # Why a bare LF is fatal rather than tolerated
+//
+// This is a parser-differential problem, and it is the reason this function is
+// strict where a lenient reader would be friendlier.
+//
+// RFC 5322 terminates header lines with CRLF, but Go's net/textproto — and
+// therefore net/mail, go-message, and most of the mail ecosystem — also accepts
+// a bare LF as a line terminator, and a bare LF LF as the end of the header
+// block. This parser does not. Two readers that disagree about where the header
+// block ends do not disagree politely: they read two different documents out of
+// the same bytes.
+//
+// Prepending "X-Junk: a\n\nX-Junk2: b\r\n" to a validly sealed message is
+// enough. This parser sees one extra header field and a chain that still
+// verifies; net/mail sees a one-field header, no From, no Subject, and a body
+// that begins with the entire real message. A caller that trusted the verified
+// chain and then re-parsed the message would be authenticating one document and
+// acting on another — a confused deputy on any path where the message bytes are
+// attacker-influenced, which is every inbound path.
+//
+// Rejecting the ambiguity outright is the only fix that does not depend on
+// every downstream parser agreeing with this one. See
+// TestBareLFInHeaderIsRejected.
 func ReadHeader(raw []byte) (Header, []byte, error) {
 	i := bytes.Index(raw, []byte(crlf+crlf))
 	var block, body []byte
 	if i < 0 {
-		// A message may legitimately be all header and no body.
+		// A message may legitimately be all header and no body. Scanning the
+		// whole input for a bare LF then also catches a header block that a
+		// lenient parser would terminate at an "\n\n" we cannot see.
 		block, body = raw, nil
 	} else {
 		block, body = raw[:i+len(crlf)], raw[i+2*len(crlf):]
 	}
 	if len(block) == 0 {
 		return nil, nil, ErrNoHeader
+	}
+	if j := bareLF(block); j >= 0 {
+		return nil, nil, fmt.Errorf("%w at offset %d", ErrBareLF, j)
 	}
 
 	var h Header
@@ -85,6 +119,16 @@ func ReadHeader(raw []byte) (Header, []byte, error) {
 		return nil, nil, ErrNoHeader
 	}
 	return h, body, nil
+}
+
+// bareLF returns the offset of the first LF not preceded by CR, or -1.
+func bareLF(b []byte) int {
+	for i, ch := range b {
+		if ch == '\n' && (i == 0 || b[i-1] != '\r') {
+			return i
+		}
+	}
+	return -1
 }
 
 // CanonHeader canonicalizes one header field per RFC 6376 section 3.4.1/3.4.2.

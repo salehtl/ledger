@@ -22,15 +22,18 @@ was not needed and has not been used.
 
 ### Corpus-wide validation
 
-Every message in the corpus was run through `arc.Verify` against live DNS:
+Every message in the corpus is run through `arc.Verify` against live DNS by
+`internal/v2/corpus/cmd/arc-corpus-scan`, which exits non-zero if either of the
+verdict's two claims stops holding — so this is an assertion, not a report:
 
 ```
-scanned 6998 messages in 1.56s
-status: map[none:5776 pass:1222]
-  1-instance pass          1082
-  2-instance pass          140
-negative control (1 body byte flipped): map[fail:1222]
-failure reasons:            (none)
+$ LEDGER_CORPUS_DB=$S/corpus.db go run ./internal/v2/corpus/cmd/arc-corpus-scan
+scanned:     6998 messages in 1.341s
+chain status:    5776 none / 1222 pass
+by shape:        1082 1-instance pass / 140 2-instance pass
+NEGATIVE CONTROL — one mid-body byte flipped:   1222 fail
+failure reasons: none
+OK: 1222/1222 ARC chains verify, and all 1222 fail when one body byte is flipped.
 ```
 
 Every chain passes. Nothing fails, and nothing was skipped.
@@ -78,6 +81,20 @@ the wrong reason proves nothing:
 | `TestFlippedCVIsRejected` | `cv=none` → `cv=pass` | `cv=` rule |
 | `TestUnknownKeyDoesNotPass` | no keys resolvable | key lookup |
 | `TestNoARCHeadersIsNone` | unsigned-by-ARC message | reports `none`, not `pass` |
+| `TestBareLFInHeaderIsRejected` | `X-Junk: a\n\nX-Junk2: b\r\n` prepended | header parse (finding 4) |
+
+Every mutation now asserts *where* it landed (`onlyFieldChanged`), and
+`TestMutationAssertionIsNotVacuous` checks that assertion rejects what it claims
+to. Two of these tests were originally green for the wrong reason: they selected
+headers by the substring `"i=1"`, which also occurs inside an instance-2 AAR's
+`arc=pass (i=1 ...)` comment, so they edited the wrong field and were caught by
+a structural rule rather than the signature rule they named.
+
+Synthetic chains (`internal/v2/arc/build_test.go`) cover the rules the corpus
+cannot reach — seal `h=`, seal `bh=`, `l=`, `rsa-sha1`, instance gaps, duplicate
+instances, the 50-instance ceiling, `h=` without `From`, and every key-record
+failure mode — plus single-instance tampering, which is the shape 1,082 of the
+1,222 corpus chains actually have. See finding 5.
 
 `TestTamperedLowerAMSBreaksTheSeals` is the sharpest of these. RFC 8617
 deliberately does *not* verify any AMS below the highest instance, so nothing in
@@ -96,9 +113,11 @@ Implemented, per RFC 8617 §5.2:
 
 - Instance assembly with a strict `1..N`, no-gaps, no-duplicates, exactly-one-of-each rule, and the §5.1.2 ceiling of 50.
 - `cv=none` required at instance 1, `cv=pass` at every later instance.
+- RFC 6376 §6.1.1: a signature whose `h=` omits `From` is a verification failure.
+- Bare LF in the header block is a hard rejection — see finding 4.
 - Highest-instance AMS verified as a DKIM signature with the header field name substituted: `bh=` over the canonicalized body, `h=` header selection bottom-up per RFC 6376 §5.4.2, self-inclusion with `b=` emptied and the trailing CRLF removed.
 - Every ARC-Seal from instance 1 upward, over the cumulative AAR/AMS/AS triples of instances `1..i` in instance order, relaxed header canonicalization, no body hash.
-- DKIM key records: `v=`/`k=`/`p=`, RSA as both SubjectPublicKeyInfo and PKCS#1 (erratum 3017), Ed25519, revocation (`p=`), multi-string TXT.
+- DKIM key records: `v=`/`k=`/`p=`, RSA as both SubjectPublicKeyInfo and PKCS#1 (erratum 3017), Ed25519, and revocation (`p=`). Where a name carries several TXT records, the first one containing `p=` that parses is used, so unrelated records under `_domainkey` are skipped. Multi-string TXT records need no handling here: Go's resolver already joins the character-strings within a single RR.
 - Both `simple` and `relaxed` canonicalization for headers and bodies.
 
 Deliberately not implemented:
@@ -144,13 +163,47 @@ byte-exact ARC-Authentication-Results the first hop wrote — including its
 chains sealed by Google, Apple and Microsoft, at one and two hops, because all
 1,222 in the corpus do.
 
-Task 26 must **not** assume that a passing chain means the AAR is true. Verify
-proves the chain was not tampered with after instance 1 sealed it; it proves
-nothing about whether instance 1 was honest. Task 26 owns that judgement, and
-`§3.2:51`'s refusal to allowlist forwarder domains still stands.
-
-Task 26 should also assume the direct-DKIM path is the primary one and build it
+It should also assume the direct-DKIM path is the primary one and build it
 first, with ARC consulted only when the inner signature fails.
+
+**Three things a passing chain does not mean.** Each of these is a way to read
+`Status == "pass"` as more than it says, and the third is the one that reads as
+a bug report against ARC itself rather than against the caller.
+
+**1. It does not mean the AAR is true.** Verify proves the chain was not
+tampered with after instance 1 sealed it. It proves nothing about whether
+instance 1 was honest. A chain sealed end-to-end by an attacker's own domain is
+a perfectly valid chain. Task 26 owns that judgement, and `§3.2:51`'s refusal to
+allowlist forwarder domains still stands.
+
+**2. It does not mean `From` and `Subject` are authentic.** Only the header
+fields named in the top ARC-Message-Signature's `h=` are covered. Anything
+outside that list is unsigned and may have been added or rewritten by anyone
+after sealing. `ChainResult.SignedHeaders` reports exactly which fields were
+covered, and `ChainResult.SignedValue(name)` returns a value only for those.
+
+`From` is guaranteed present in that list — RFC 6376 §6.1.1 makes its absence a
+verification failure and this package enforces it (`TestAMSMustCoverFrom`).
+Nothing else is guaranteed, `Subject` included. `TestRewritingAnUnsignedHeaderIsNotDetected`
+demonstrates a chain that passes while its Subject is rewritten.
+
+**3. Read the BOTTOM-most occurrence of any header you treat as verified.**
+A signature covers the bottom-most instance of a repeated field (RFC 6376
+§5.4.2), because later hops prepend their copies above it. Prepending a second
+`From:` to a validly sealed message leaves the chain passing while a naive
+reader — `net/mail`, `go-message`, anything using `Header.Get` — hands back the
+attacker's line. This is inherent to DKIM and ARC, not specific to this
+implementation; `go-msgauth`'s DKIM verifier behaves identically.
+
+Use `ChainResult.SignedValue`, which does the bottom-most pick and refuses
+unsigned names, rather than re-reading the raw message.
+`TestSingleInstanceChainTampering/prepended_From` pins this.
+
+**And use the parse Verify gives you.** `ChainResult.Header` and
+`ChainResult.Body` are the exact split the verification was computed over.
+Re-parsing the raw bytes with a second parser invites the two to disagree about
+where the header block ends — which is precisely the bug found in this
+package's own first implementation and recorded in finding 4 below.
 
 ---
 
@@ -183,8 +236,9 @@ fixtures in the corpus."
 retirement — `selector1._domainkey.emiratesnbd.com` resolves fine. The body hash
 matches. The key record parses. The signature simply fails, because
 emiratesnbd.com publishes that selector as a CNAME into Microsoft 365, which
-**replaces the key behind the unchanged selector name**. Only messages from
-2026-04 onward verify against today's key.
+**replaces the key behind the unchanged selector name**. The rotation lands cleanly between 2025-12-15 and
+2026-01-25: every ENBD message on or before the first date fails, every one on
+or after the second verifies.
 
 This is the finding that matters most for fixture hygiene, because every cheap
 check says these fixtures are healthy:
@@ -220,6 +274,71 @@ fixtures verify identically forever. The ARC test suite cannot rot.
 
 The DIB DKIM fixture expires **2027-06-21**; the two ENBD fixtures never do.
 
+### 4. A verified chain is not a verified *document* — the bare-LF hole
+
+Found in review, after the first version of this document was written, and the
+most serious defect in the spike. It is recorded here rather than quietly fixed
+because the lesson generalises past this package.
+
+The first implementation split the header block on `\r\n\r\n` and header lines
+on `\r\n`, and its own doc comment claimed bare-LF input was rejected. It was
+not. Go's `net/textproto` — and therefore `net/mail`, `go-message`, and most of
+the mail ecosystem — also accepts a bare LF as a line terminator and a bare
+`LF LF` as the end of the header block. This parser did not.
+
+Prepending 22 bytes to a genuinely sealed fixture was enough:
+
+```
+X-Junk: a\n\nX-Junk2: b\r\n
+```
+
+`arc.Verify` reported `Status=pass, Instances=2, SealDomains=[icloud.com
+google.com]` with instance 1's AAR intact. `net/mail`, reading the same bytes,
+saw **one** header field, no `From`, no `Subject`, and a body beginning with the
+entire real message.
+
+Every individual signature check was correct. The chain really was intact — over
+the document *this parser* saw. The vulnerability was that a caller would
+authenticate that document and then act on a different one, which is a confused
+deputy on any path where message bytes are attacker-influenced. That is every
+inbound path, and v2's whole premise is an SMTP endpoint anyone can send to.
+
+*Fix:* `ReadHeader` rejects any bare LF in the header block outright
+(`ErrBareLF`). Repairing the input was never an option — rewriting bytes changes
+what every signature is computed over. Body LFs are untouched, since the header
+block is already delimited by then and real MIME bodies contain them.
+`TestBareLFInHeaderIsRejected` uses the exact 22-byte prepend and first asserts
+that `net/mail` really is fooled, so the test keeps its meaning if `ReadHeader`
+is ever loosened.
+
+*Also fixed:* `ChainResult` now carries `Header` and `Body` — the exact split
+the verification was computed over — so a caller has no reason to re-parse and
+no way to disagree.
+
+**The generalisable lesson:** a signature verifier is only as trustworthy as the
+agreement between its parser and every other parser that will touch the same
+bytes. Correct crypto over a differently-framed document proves nothing. Where
+strictness and leniency disagree, strictness is the only safe side, because the
+alternative is depending on every downstream library to share your
+interpretation.
+
+### 5. Two safety rules had no coverage until a synthetic builder existed
+
+The corpus can only demonstrate rules that Google, Apple and Microsoft actually
+exercise. Rules that exist to reject chains no honest sealer emits — a seal
+carrying `h=` or `bh=`, an instance numbered 51, a duplicated instance, `l=`,
+`rsa-sha1` — had no test at all, and a rule with no test can be deleted without
+anything going red.
+
+`internal/v2/arc/build_test.go` generates a key, publishes it through a fake
+resolver, and signs chains that are valid except in one chosen way. It
+self-checks: any chain it claims is valid must verify, so a fault-injection test
+cannot pass because the builder silently produced garbage. That covers all seven
+rules, every key-record failure mode, and — importantly — single-instance
+adversarial cases, which are 1,082 of the corpus's 1,222 chains but were
+previously untested because every fixture-based adversarial test mutated the one
+two-instance message.
+
 ---
 
 ## Reproducing the evidence
@@ -232,9 +351,27 @@ reproduce:
 S=/path/to/scratch
 sudo sqlite3 "file:/var/lib/ledger/ledger.db?mode=ro" ".backup '$S/corpus.db'"
 sudo chown "$(id -un)" "$S/corpus.db"
+
+# The GO verdict's headline evidence: every chain verifies, and every one of
+# them fails when a body byte is flipped. Exits non-zero if either stops being
+# true, so this is an assertion and not just a report.
+LEDGER_CORPUS_DB=$S/corpus.db go run ./internal/v2/corpus/cmd/arc-corpus-scan
+
+# Regenerate the committed fixtures, and run the offline suite.
 LEDGER_CORPUS_DB=$S/corpus.db go run ./internal/v2/corpus/cmd/extract-fixtures \
   --out internal/v2/origin/testdata
 go test ./internal/v2/arc/ ./internal/v2/corpus/ -v
+```
+
+`arc-corpus-scan` output as of 2026-07-31:
+
+```
+scanned:     6998 messages in 1.341s
+chain status:    5776 none / 1222 pass
+by shape:        1082 1-instance pass / 140 2-instance pass
+NEGATIVE CONTROL — one mid-body byte flipped:   1222 fail
+failure reasons: none
+OK: 1222/1222 ARC chains verify, and all 1222 fail when one body byte is flipped.
 ```
 
 The corpus grows as v1 keeps ingesting — 6,994 when the plan was written, 6,998

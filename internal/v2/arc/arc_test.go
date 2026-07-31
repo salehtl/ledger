@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -141,6 +143,9 @@ func TestTamperedBodyBreaksTheAMS(t *testing.T) {
 	if got.Status != "fail" {
 		t.Fatalf("Status = %q, want fail: %+v", got.Status, got)
 	}
+	if !strings.Contains(got.Reason, "body hash mismatch") {
+		t.Fatalf("Reason = %q, want a body-hash failure", got.Reason)
+	}
 }
 
 func TestRemovedInstanceBreaksTheChain(t *testing.T) {
@@ -225,6 +230,10 @@ func TestFlippedCVIsRejected(t *testing.T) {
 	if bytes.Equal(forged, raw) {
 		t.Fatal("fixture has no cv=none seal to flip")
 	}
+	// Assert the substring landed on instance 1's seal and nothing else. A
+	// bare bytes.Replace is exactly the class of matcher that silently edited
+	// the wrong header earlier in this file's history.
+	assertOnlyFieldChanged(t, raw, forged, "ARC-Seal", 1)
 	got, err := Verify(context.Background(), forged, staticTXT(t))
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +263,9 @@ func TestUnknownKeyDoesNotPass(t *testing.T) {
 	}
 	if got.Status == "pass" {
 		t.Fatalf("chain passed with no keys available: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "no usable public key") {
+		t.Fatalf("Reason = %q, want a key-lookup failure", got.Reason)
 	}
 }
 
@@ -364,6 +376,10 @@ func mutateTag(t *testing.T, raw []byte, name string, instance int, tag string) 
 		if bytes.Equal(out, raw) {
 			t.Fatalf("could not find %q in the raw message to mutate", old)
 		}
+		// "Something changed" is not good enough: an 8-character base64 prefix
+		// could occur in another field. Require that the intended field, and
+		// only the intended field, differs.
+		assertOnlyFieldChanged(t, raw, out, name, instance)
 		return out
 	}
 	t.Fatalf("no %s field with i=%d", name, instance)
@@ -468,4 +484,147 @@ func TestAARValuesParseWithAuthres(t *testing.T) {
 			t.Fatalf("instance %d AAR (%s) carries no dkim=pass result", i+1, identifier)
 		}
 	}
+}
+
+// TestBareLFInHeaderIsRejected pins the fix for a confused-deputy bug.
+//
+// Before the fix this exact input verified as a clean two-instance chain with
+// instance 1's AAR intact, while net/mail read a completely different document
+// out of the same bytes: one header field, no From, no Subject, and a body
+// beginning with the whole real message. A caller would have authenticated one
+// document and acted on another.
+func TestBareLFInHeaderIsRejected(t *testing.T) {
+	raw := mustRead(t, "gmail-forward-1.eml")
+
+	// Establish the premise: unmodified, this fixture passes.
+	base, err := Verify(context.Background(), raw, staticTXT(t))
+	if err != nil || base.Status != StatusPass {
+		t.Fatalf("fixture should pass unmodified: %+v %v", base, err)
+	}
+
+	poisoned := append([]byte("X-Junk: a\n\nX-Junk2: b\r\n"), raw...)
+
+	// Show that a mainstream parser really is fooled, so this test keeps
+	// meaning something if ReadHeader is ever loosened.
+	m, err := mail.ReadMessage(bytes.NewReader(poisoned))
+	if err != nil {
+		t.Fatalf("net/mail could not read the poisoned message at all: %v", err)
+	}
+	if m.Header.Get("From") != "" || m.Header.Get("Subject") != "" {
+		t.Fatal("premise broken: net/mail no longer misreads this input, so the test proves nothing")
+	}
+
+	got, err := Verify(context.Background(), poisoned, staticTXT(t))
+	if !errors.Is(err, ErrBareLF) {
+		t.Fatalf("err = %v, want ErrBareLF", err)
+	}
+	if got.Status == StatusPass {
+		t.Fatalf("a message net/mail reads as a different document verified: %+v", got)
+	}
+}
+
+func TestBareLFVariants(t *testing.T) {
+	raw := mustRead(t, "gmail-forward-1.eml")
+	for name, prefix := range map[string]string{
+		"lone LF between fields": "X-Junk: a\nX-Junk2: b\r\n",
+		"LF LF header break":     "X-Junk: a\n\nX-Junk2: b\r\n",
+		"LF inside a value":      "X-Junk: a\nb\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Verify(context.Background(), append([]byte(prefix), raw...), staticTXT(t))
+			if !errors.Is(err, ErrBareLF) {
+				t.Fatalf("err = %v, want ErrBareLF", err)
+			}
+		})
+	}
+	// A bare LF in the BODY is not a parser-differential problem — the header
+	// block is already delimited — and real MIME bodies contain them, so it
+	// must not be rejected.
+	t.Run("body LF is fine", func(t *testing.T) {
+		h, body, err := ReadHeader([]byte("From: a@b\r\nSubject: x\r\n\r\nline1\nline2\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h) != 2 || string(body) != "line1\nline2\n" {
+			t.Fatalf("h=%d body=%q", len(h), body)
+		}
+	})
+}
+
+// assertOnlyFieldChanged requires that before and after differ in exactly one
+// header field, and that it is the field with the given name and i= instance.
+//
+// Mutation helpers that match on a substring are how two tests in this file
+// once passed for the wrong reason. Every mutation now proves where it landed.
+func assertOnlyFieldChanged(t *testing.T, before, after []byte, name string, instance int) {
+	t.Helper()
+	if err := onlyFieldChanged(before, after, name, instance); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// onlyFieldChanged is the checkable core of assertOnlyFieldChanged. It returns
+// an error rather than calling t.Fatal so that TestMutationAssertionIsNotVacuous
+// can verify it actually rejects what it claims to.
+func onlyFieldChanged(before, after []byte, name string, instance int) error {
+	bh, bbody, err := ReadHeader(before)
+	if err != nil {
+		return err
+	}
+	ah, abody, err := ReadHeader(after)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(bbody, abody) {
+		return errors.New("mutation changed the body, not just a header field")
+	}
+	if len(bh) != len(ah) {
+		return fmt.Errorf("mutation changed the field count: %d -> %d", len(bh), len(ah))
+	}
+	var changed []int
+	for i := range bh {
+		if bh[i].Raw != ah[i].Raw {
+			changed = append(changed, i)
+		}
+	}
+	if len(changed) != 1 {
+		return fmt.Errorf("mutation changed %d header fields, want exactly 1", len(changed))
+	}
+	got := bh[changed[0]]
+	if !strings.EqualFold(strings.TrimSpace(got.Name), name) {
+		return fmt.Errorf("mutation landed on %q, want %q", strings.TrimSpace(got.Name), name)
+	}
+	if i := ParseTags(got.Value)["i"]; i != strconv.Itoa(instance) {
+		return fmt.Errorf("mutation landed on %s i=%s, want i=%d", name, i, instance)
+	}
+	return nil
+}
+
+// TestMutationAssertionIsNotVacuous checks the checker. A mutation assertion
+// that never rejects anything gives exactly the false confidence it was added
+// to remove.
+func TestMutationAssertionIsNotVacuous(t *testing.T) {
+	raw := mustRead(t, "gmail-forward-1.eml")
+
+	for name, mutated := range map[string][]byte{
+		"landed on the wrong field": bytes.Replace(raw, []byte("Delivered-To:"), []byte("Xelivered-To:"), 1),
+		"landed on two fields": bytes.Replace(
+			bytes.Replace(raw, []byte("Delivered-To:"), []byte("Xelivered-To:"), 1),
+			[]byte("Return-Path:"), []byte("Xeturn-Path:"), 1),
+		"changed the body": append(append([]byte{}, raw...), []byte("extra\r\n")...),
+		"changed nothing":  append([]byte{}, raw...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := onlyFieldChanged(raw, mutated, "ARC-Seal", 1); err == nil {
+				t.Fatal("accepted a mutation it should have rejected")
+			}
+		})
+	}
+
+	t.Run("accepts a correctly-landed mutation", func(t *testing.T) {
+		good := mutateTag(t, raw, "ARC-Seal", 1, "b")
+		if err := onlyFieldChanged(raw, good, "ARC-Seal", 1); err != nil {
+			t.Fatalf("rejected a correctly-landed mutation: %v", err)
+		}
+	})
 }

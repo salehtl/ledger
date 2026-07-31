@@ -35,6 +35,7 @@ package arc
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,51 @@ type ChainResult struct {
 	AARValues   []string // raw ARC-Authentication-Results value per instance
 	// Reason explains a "fail". It is diagnostic text, never a trust input.
 	Reason string
+
+	// Header and Body are the exact split this verification was computed over,
+	// populated whenever the message parsed at all.
+	//
+	// Use these rather than re-parsing the raw bytes. A second parser is a
+	// second opinion about where the header block ends, and the two only have
+	// to disagree once for a caller to authenticate one document and act on
+	// another. ReadHeader is strict specifically so that cannot happen; handing
+	// the result back removes the temptation to find out.
+	Header Header
+	Body   []byte
+
+	// SignedHeaders names the header fields covered by the verified
+	// highest-instance ARC-Message-Signature — its h= list, lowercased. Empty
+	// unless Status is "pass".
+	//
+	// A passing chain does NOT mean every header is authentic. It means these
+	// fields, and the body, were intact when the newest hop signed them.
+	// Anything absent from this list is unsigned and may have been added or
+	// rewritten afterwards by anyone. From is guaranteed present: RFC 6376
+	// 6.1.1 makes its absence a verification failure, and this package enforces
+	// that. Nothing else is guaranteed.
+	SignedHeaders []string
+}
+
+// SignedValue returns the value of a signed header field as it was covered by
+// the verified signature, and reports whether the field was signed at all.
+//
+// It returns the BOTTOM-most occurrence, which is the one a signature covers
+// (RFC 6376 5.4.2): later hops prepend their own copies above it. Reading the
+// topmost From of a passing message is how a verified chain gets attributed to
+// an attacker who simply added a second From line.
+func (r ChainResult) SignedValue(name string) (string, bool) {
+	if r.Status != StatusPass {
+		return "", false
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if !slices.Contains(r.SignedHeaders, name) {
+		return "", false
+	}
+	f, ok := NewPicker(r.Header).Pick(name)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(f.Value), true
 }
 
 // instance is one ARC set.
@@ -84,20 +130,24 @@ func Verify(ctx context.Context, raw []byte, lookupTXT LookupTXT) (ChainResult, 
 	amss := h.Get("ARC-Message-Signature")
 	seals := h.Get("ARC-Seal")
 	if len(aars) == 0 && len(amss) == 0 && len(seals) == 0 {
-		return ChainResult{Status: StatusNone}, nil
+		return ChainResult{Status: StatusNone, Header: h, Body: body}, nil
 	}
 
 	insts, err := assemble(aars, amss, seals)
 	if err != nil {
-		// The count is still worth reporting even when the chain is malformed.
+		// Instances is deliberately 0 on this path. The chain did not resolve
+		// into instances at all, so there is no count to report; a header
+		// tally would read like a verified instance count and it is not one.
+		// The Reason carries the detail.
 		return ChainResult{
-			Status:    StatusFail,
-			Instances: max(len(aars), len(amss), len(seals)),
-			Reason:    err.Error(),
+			Status: StatusFail,
+			Header: h,
+			Body:   body,
+			Reason: err.Error(),
 		}, nil
 	}
 
-	res := ChainResult{Instances: len(insts)}
+	res := ChainResult{Instances: len(insts), Header: h, Body: body}
 	for _, in := range insts {
 		res.SealDomains = append(res.SealDomains, ParseTags(in.as.Value)["d"])
 		res.AARValues = append(res.AARValues, strings.TrimSpace(in.aar.Value))
@@ -132,6 +182,9 @@ func Verify(ctx context.Context, raw []byte, lookupTXT LookupTXT) (ChainResult, 
 	}
 	if err := verifyMessageSignature(ctx, amsSig, h, body, lookupTXT); err != nil {
 		return fail("instance %d ARC-Message-Signature: %v", top.n, err)
+	}
+	for _, n := range amsSig.headers {
+		res.SignedHeaders = append(res.SignedHeaders, strings.ToLower(strings.TrimSpace(n)))
 	}
 
 	// Each seal covers every ARC header of every instance at or below it, in
