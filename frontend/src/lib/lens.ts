@@ -2,11 +2,19 @@ import type { Txn } from "../api/types";
 import { BUCKET_LABEL, type BucketComparison, type CategoryDelta } from "./insights";
 import { merchantBreakdown } from "./analysis";
 import { bucketDither, bucketDensity, categoryDither } from "./ditherColor";
+import { isPaletteName } from "./paletteColor";
 import type { DitherColor } from "../components/dither-kit/palette";
 import type { Density } from "../components/charts/DitherFill";
 
 // The three dimensions you can slice spending by on the Insights page.
 export type Lens = "buckets" | "categories" | "merchants";
+
+/** A stored category colour as a canvas seed, or the neutral if it is missing
+ *  or not a palette name. `PaletteName` and `DitherColor` are pinned to the
+ *  same set by the assertions in `paletteColor.ts`, so the narrowing is exact. */
+function ditherFor(color: string | undefined): DitherColor {
+  return isPaletteName(color) ? color : "slate";
+}
 
 // A single ranked row in the analysis breakdown. `share` is a fraction of the
 // month's total spend; delta fields are present only for lenses that compare
@@ -67,13 +75,31 @@ export function bucketRows(buckets: BucketComparison[], total: number, overBudge
     }));
 }
 
-/** Category rows ranked by spend (rows arrive pre-sorted with a `pct` share),
- *  each a distinct palette hue, carrying its id for drill-down and its delta. */
-export function categoryRows(rows: (CategoryDelta & { pct: number })[]): BreakdownRow[] {
-  return rows.map((c, i) => ({
+/**
+ * Category rows ranked by spend (rows arrive pre-sorted with a `pct` share),
+ * carrying each category's id for drill-down and its delta.
+ *
+ * The bar takes the category's **own** colour, looked up by id. It used to take
+ * `categoryDither(i)` — the hue at its *spend rank* — which had two faults that
+ * only showed once categories carried colours of their own: a category changed
+ * hue whenever its rank changed between months, and `CATEGORY_DITHER` holds
+ * five entries, so with 21 categories everything from sixth place down
+ * collapsed into the same neutral grey.
+ *
+ * An id with no usable colour falls to the neutral rather than being
+ * interpolated: an unknown name would reach `var(--color-…)` as valid CSS that
+ * resolves to nothing, and the bar would vanish instead of degrading. In
+ * practice the map always hits — every category is seeded at insert and
+ * backfilled at startup — so this covers the window before the query lands.
+ */
+export function categoryRows(
+  rows: (CategoryDelta & { pct: number })[],
+  colorById: ReadonlyMap<number, string>,
+): BreakdownRow[] {
+  return rows.map((c) => ({
     key: `cat:${c.category_id}`,
     name: c.name,
-    ditherColor: categoryDither(i),
+    ditherColor: ditherFor(colorById.get(c.category_id)),
     spent: c.spent,
     share: c.pct,
     delta: c.delta,
