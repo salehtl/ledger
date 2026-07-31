@@ -38,6 +38,22 @@ describe("SplitSheet", () => {
     expect(screen.queryByRole("button", { name: "Transfers" })).not.toBeInTheDocument();
   });
 
+  it("paints the picker dot and the chosen line with the category's own colour", () => {
+    // Two sites in one sheet: the picker chip and the per-line header. Both
+    // used to read bucketColor(c.Bucket) — which can only return
+    // --color-need/want/save/transfer/muted, so teal is unreachable through it
+    // and a regression cannot pass this by coincidence.
+    const colored = cats.map((c) => (c.ID === 1 ? { ...c, Color: "teal" } : c));
+    render(<SplitSheet txn={txn()} categories={colored} onSubmit={() => {}} onClose={() => {}} />);
+    const picker = screen.getByRole("button", { name: "Groceries" });
+    expect((picker.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-teal)");
+    fireEvent.click(picker);
+    // Selecting inverts the chip to the accent, so read the line header, which
+    // is the second site and keeps the hue.
+    const line = screen.getByLabelText("Amount for Groceries").closest("div.border") as HTMLElement;
+    expect((line.querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor).toBe("var(--color-teal)");
+  });
+
   it("prefills the first line with the whole amount and the next with the rest", () => {
     render(<SplitSheet txn={txn()} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Groceries" }));

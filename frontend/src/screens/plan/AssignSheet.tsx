@@ -81,7 +81,7 @@ export function AssignSheet({ envelope, claim, month, canMoveIn, color, onClose,
     <Dialog
       title={e.category_name}
       titleAdornment={
-        <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[var(--radius)]" style={{ background: categoryColor(color) }} />
+        <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[var(--radius)]" style={{ backgroundColor: categoryColor(color) }} />
       }
       onClose={onClose}
     >

@@ -4,6 +4,7 @@ import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../.
 import { SectionLabel } from "../ui/SectionLabel";
 import { Pressable } from "../ui/Pressable";
 import { bucketColor } from "../../lib/insights";
+import { categoryColor } from "../../lib/categoryColor";
 import type { Category, Txn } from "../../api/types";
 
 const BUCKET_OPTS = [
@@ -32,7 +33,7 @@ function Chip({ label, active, dot, onClick }: { label: string; active: boolean;
         active ? "bg-accent/10 text-fg" : "bg-surface-2 text-muted hover:text-fg"
       }`}
     >
-      {dot && <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ background: dot }} />}
+      {dot && <span aria-hidden className="w-2 h-2 rounded-[var(--radius)] shrink-0" style={{ backgroundColor: dot }} />}
       {label}
     </Pressable>
   );
@@ -158,7 +159,9 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
                   <Chip
                     key={c.ID}
                     label={c.Name}
-                    dot={bucketColor(c.Bucket)}
+                    // The category's own colour. The bucket chips above keep
+                    // bucketColor: those really are buckets.
+                    dot={categoryColor(c.Color)}
                     active={filters.categoryIds.includes(c.ID)}
                     onClick={() => onChange({ ...filters, categoryIds: toggle(filters.categoryIds, c.ID) })}
                   />

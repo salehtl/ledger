@@ -10,7 +10,7 @@ import { Pressable } from "../ui/Pressable";
 import { SectionLabel } from "../ui/SectionLabel";
 import { X } from "../ui/PixelIcon";
 import { aedFils, formatFils, nativeAmountTag } from "../../lib/money";
-import { bucketColor } from "../../lib/insights";
+import { categoryColor } from "../../lib/categoryColor";
 import {
   absorbRemainder,
   displayMerchant,
@@ -135,10 +135,11 @@ export function SplitSheet({ txn, categories, onSubmit, onClose }: {
               <div key={line.categoryId} className="border border-border rounded-[var(--radius)] p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="inline-flex items-center gap-1.5 min-w-0 font-mono text-xs tracking-[0.04em]">
+                    {/* Category colour, not bucket — see CategorizeSheet's picker. */}
                     <span
                       aria-hidden
                       className="w-2 h-2 rounded-[var(--radius)] shrink-0"
-                      style={{ background: cat?.Kind === "income" ? "var(--color-good)" : bucketColor(cat?.Bucket ?? "") }}
+                      style={{ backgroundColor: categoryColor(cat?.Color) }}
                     />
                     <span className="truncate">{cat?.Name ?? "—"}</span>
                   </span>
@@ -238,10 +239,11 @@ export function SplitSheet({ txn, categories, onSubmit, onClose }: {
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
                   >
+                    {/* Category colour, not bucket — see CategorizeSheet's picker. */}
                     <span
                       aria-hidden
                       className="w-2 h-2 rounded-[var(--radius)] shrink-0"
-                      style={{ background: selected ? "currentColor" : c.Kind === "income" ? "var(--color-good)" : bucketColor(c.Bucket) }}
+                      style={{ backgroundColor: selected ? "currentColor" : categoryColor(c.Color) }}
                     />
                     {c.Name}
                   </Pressable>
