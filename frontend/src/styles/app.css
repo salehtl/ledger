@@ -92,15 +92,33 @@
   --color-rose:  #c5646e;
   --color-slate: #76767e;
 
+  /* Six more hues, filling the widest gaps on the wheel above, added when
+     categories gained their own colour and 21 of them needed more than 12
+     slots. The original six are untouched: they are stored on project rows.
+     tokens.test.ts asserts every one of the 24 clears 3:1 on --color-bg — the
+     ratios below are no longer hand-measured prose. */
+  --color-ochre:  #c36a47;
+  --color-moss:   #88891c;
+  --color-teal:   #00877a;
+  --color-sky:    #00768c;
+  --color-indigo: #505ba9;
+  --color-orchid: #a45892;
+
   /* A second, deeper step per hue — separated on lightness, the axis that
-     survives red-green colour blindness. Projects draw from all twelve; the
-     bucket aliases below only ever use the base steps. */
+     survives red-green colour blindness. Projects and categories draw from all
+     twenty-four; the bucket aliases below only ever use the base steps. */
   --color-azure-deep: #003c6c;
   --color-amber-deep: #855405;
   --color-lilac-deep: #51317c;
   --color-sage-deep:  #0d6d32;
   --color-rose-deep:  #9a3d49;
   --color-slate-deep: #515159;
+  --color-ochre-deep:  #98441f;
+  --color-moss-deep:   #626200;
+  --color-teal-deep:   #005d54;
+  --color-sky-deep:    #004e5e;
+  --color-indigo-deep: #2f3580;
+  --color-orchid-deep: #7b336b;
 
   /* ── Pace inks ──────────────────────────────────────────────────────────
      The one ramp a progress/pace bar's dots travel: ink while inside pace,
@@ -282,14 +300,20 @@ input, select, textarea { font-size: max(16px, 1rem); }
        fills. Unchanged by the Task 12 contrast audit. */
     --color-bad: #f0866f;
 
-    /* Same six hues, re-stepped for the dark ground. The bucket aliases above
-       are inherited — only the palette values change per theme. */
+    /* Same twelve hues, re-stepped for the dark ground. The bucket aliases
+       above are inherited — only the palette values change per theme. */
     --color-azure: #2c72b3;
     --color-amber: #c58632;
     --color-lilac: #8365b5;
     --color-sage:  #53a768;
     --color-rose:  #cc6a74;
     --color-slate: #7f7f87;
+    --color-ochre:  #cd7350;
+    --color-moss:   #979831;
+    --color-teal:   #009c8c;
+    --color-sky:    #0089a3;
+    --color-indigo: #606cbc;
+    --color-orchid: #ae619b;
 
     /* On near-black the base is already the dark end, so the second step goes
        lighter — a deeper one would collapse into the ground. */
@@ -299,6 +323,12 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-sage-deep:  #76ca89;
     --color-rose-deep:  #f28c95;
     --color-slate-deep: #a0a0a9;
+    --color-ochre-deep:  #f39571;
+    --color-moss-deep:   #b9bb56;
+    --color-teal-deep:   #23c1af;
+    --color-sky-deep:    #00adcd;
+    --color-indigo-deep: #7f8ee1;
+    --color-orchid-deep: #d282be;
 
     /* Re-stepped for the dark ground like the palette above; the under/
        exceeded ends are aliases and inherit. Deliberately *not* lightened as
