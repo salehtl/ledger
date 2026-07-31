@@ -32,8 +32,15 @@ export function SegmentedControl<T extends string>({
           onClick={() => { fire("selection"); onChange(o.value); }}
           // min-h-11: this is a page-level control, so it takes the standard
           // 44px target. The 36px allowance is only for dense stacked rows.
+          //
+          // min-w-11 on the auto-width branch: `px-4` alone sizes a segment to
+          // its text, so a single-glyph label lands under the minimum — the
+          // +/- sign toggle in BalanceField measured 40x44 and 39x44. Longer
+          // labels already clear 44px, so this only ever widens the short ones.
+          // The full-width branch keeps `min-w-0` deliberately: its segments
+          // divide a fixed row and must be allowed to shrink (see above).
           className={`rounded-[var(--radius)] text-sm font-medium transition-colors inline-flex min-h-11 items-center justify-center gap-1.5 py-2 ${
-            fullWidth ? "flex-1 min-w-0 px-2" : "px-4"
+            fullWidth ? "flex-1 min-w-0 px-2" : "min-w-11 px-4"
           } ${value === o.value ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
         >
           {/* Truncates rather than pushing the badge out of the control when a
