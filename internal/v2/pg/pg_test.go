@@ -2,6 +2,7 @@ package pg_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -58,5 +59,30 @@ func TestMigrationsAreReversible(t *testing.T) {
 	}
 	if err := pg.Migrate(ctx, pool); err != nil {
 		t.Fatalf("re-up: %v", err)
+	}
+}
+
+func TestParallelMigrationsDoNotRaceOnGooseGlobals(t *testing.T) {
+	// goose.SetDialect/SetBaseFS mutate unsynchronized package-level state
+	// (dialect.go, goose.go in the vendored source) that pg.Migrate calls on
+	// every invocation. Nothing else in this suite runs concurrently, so a
+	// missing mutex around that state would sit unnoticed until the first
+	// t.Parallel() test anywhere in the ~20 v2 packages this harness exists
+	// to serve — this test exists to be that first one, under `go test -race`.
+	for i := 0; i < 8; i++ {
+		t.Run(fmt.Sprintf("db%d", i), func(t *testing.T) {
+			t.Parallel()
+			pool := pgtest.New(t) // New -> pg.Migrate, called concurrently across subtests
+			ctx := context.Background()
+			var n int
+			if err := pool.QueryRow(ctx,
+				`SELECT count(*) FROM information_schema.tables
+				  WHERE table_schema='public' AND table_name IN ('users','sessions')`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 2 {
+				t.Fatalf("expected users+sessions tables, found %d", n)
+			}
+		})
 	}
 }

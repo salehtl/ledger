@@ -21,10 +21,27 @@ PG_STOP=""
 cleanup() { [[ -n "$PG_STOP" ]] && $PG_STOP || true; }
 trap cleanup EXIT
 
-eval "$(go run ./internal/v2/pgtest/cmd/boot)"   # prints LEDGER_TEST_POSTGRES_URL= and PG_STOP=
+# `eval "$(go run ...)"` alone does NOT fail loudly if `go run` fails: a
+# failed boot writes its error to stderr and exits 1 with EMPTY stdout, so
+# the substitution yields "", `eval ""` trivially succeeds (exit 0), and
+# `set -e` never sees a nonzero status — the script would silently continue
+# with LEDGER_TEST_POSTGRES_URL unset and fall back to one initdb per
+# package, exactly what this script exists to avoid. Capturing into a
+# variable and checking `go run`'s own exit status explicitly closes that
+# gap; boot's stderr (the actual error) still streams straight to the
+# terminal since only stdout is captured here.
+BOOT_OUT="$(go run ./internal/v2/pgtest/cmd/boot)" || {
+	echo "v2-check: failed to boot postgres cluster (see error above)" >&2
+	exit 1
+}
+eval "$BOOT_OUT"   # sets LEDGER_TEST_POSTGRES_URL= and PG_STOP=
 export LEDGER_TEST_POSTGRES_URL
 
+# -count=1 defeats the test cache. Without it, a `go test` that already
+# passed against a *previous* cluster can report a cached pass without ever
+# touching the cluster this run just booted — silently correct-looking on a
+# script whose whole job is "no, actually run it."
 go vet ./internal/v2/...
-go test ./internal/v2/...
+go test -count=1 ./internal/v2/...
 
 echo "v2-check: OK (go)"
