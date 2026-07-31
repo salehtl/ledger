@@ -62,8 +62,9 @@ export const SPRING_SNAP: Transition = { type: "spring", stiffness: 550, damping
  * as the other's is a silent reinterpretation. Hence a separately-typed token
  * for the bounce, so the type system says which animator a token is for.
  *
- * Derived rather than imported: Framer does not re-export `InertiaOptions`
- * from `motion/react`, and going through the prop stays correct if it moves.
+ * Taken from the prop rather than from the exported `InertiaOptions` (which
+ * *is* re-exported from `motion/react`) only so it cannot drift from whatever
+ * `dragTransition` actually accepts.
  */
 type DragTransition = NonNullable<HTMLMotionProps<"div">["dragTransition"]>;
 

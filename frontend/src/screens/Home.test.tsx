@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider, type Persister } from "@tanstack/react-query-persist-client";
 import { Home } from "./Home";
+import { MotionProvider } from "../app/MotionProvider";
 import type { Summary, CategorySpend, MonthlyTotal, Project } from "../api/types";
 
 const summary: Summary = {
@@ -41,7 +42,7 @@ beforeEach(() => {
 
 function wrap(props: Partial<Parameters<typeof Home>[0]> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><Home {...props} /></QueryClientProvider>);
+  return render(<MotionProvider><QueryClientProvider client={qc}><Home {...props} /></QueryClientProvider></MotionProvider>);
 }
 
 describe("Home", () => {

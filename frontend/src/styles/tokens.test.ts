@@ -77,6 +77,14 @@ describe("built output", () => {
   // explains why). Point it back at the barrel and the entry chunk silently
   // gains ~110KB — no error, no failing test, nothing visible until someone
   // loads the app on mobile data. Assert the shape of the output instead.
+  //
+  // SCOPE, because this is easy to over-trust: it reads the **committed
+  // artifact**, so it only sees a regression once someone has rebuilt the dist.
+  // It does NOT detect a stale dist — which is the exact condition that hid the
+  // original 65KB overrun for nine tasks, since a stale `index-*.js` is still an
+  // `index-*.js` under the ceiling with a `motionFeatures-*.js` next to it. The
+  // thing that catches staleness is rebuilding before you finish a branch
+  // (CLAUDE.md), not this test.
   it("keeps the entry chunk inside the motion budget, with the feature bundle split out", () => {
     const js = readdirSync(distDir).filter((f) => f.endsWith(".js"));
     const entry = js.find((f) => f.startsWith("index-"));

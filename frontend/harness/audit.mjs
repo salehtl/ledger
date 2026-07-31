@@ -15,6 +15,10 @@
 // animation), the fact that screens stack as full-screen overlays leaving a
 // perfectly good UI "obscured" underneath, and that a `transition-colors` is
 // not a motion-policy violation (check 9).
+//
+// One deliberate hole in that politeness: `visible()` treats `opacity: 0` as
+// "skip me", which means every check below steps over content the user cannot
+// see. Check 10 exists to close it and does NOT use `visible()`.
 
 /** @returns {Promise<{counts:Record<string,number>, issues:Array<object>}>} */
 export async function audit(page) {
@@ -341,7 +345,10 @@ export async function audit(page) {
     const MOVING_PROP =
       /^(all|transform|translate|rotate|scale|width|height|min-width|min-height|max-width|max-height|top|right|bottom|left|inset|margin|margin-top|margin-right|margin-bottom|margin-left|padding|flex-basis|gap)$/;
     for (const el of all) {
-      if (!visible(el) || el.closest("[data-css-transition]")) continue;
+      // `hasAttribute`, not `closest`: matching the `data-dense-target`
+      // precedent, and because `closest` would let a marker on a screen root
+      // silence every descendant on that screen.
+      if (!visible(el) || el.hasAttribute("data-css-transition")) continue;
       const s = getComputedStyle(el);
       if (!s.transitionProperty || s.transitionProperty === "none") continue;
       // A declared property with a 0s duration animates nothing.
@@ -357,6 +364,46 @@ export async function audit(page) {
         severity: "medium",
         el: describe(el),
         detail: `CSS transition on ${moving.join(", ")} — movement belongs to Framer (lib/motion.ts); mark it data-css-transition with a reason if it genuinely cannot move`,
+      });
+    }
+
+    // ---- 10. text rendered at zero opacity --------------------------------
+    // The blind spot that let a real regression through. `visible()` treats
+    // `opacity: 0` as "not visible" and skips the element, so every other check
+    // here steps politely over content that the user simply cannot see — the
+    // one failure this tool exists to catch, silently exempted.
+    //
+    // The regression it is written against: an `m.*` with `opacity: 0` in
+    // `initial`. `LazyMotion` resolves its feature bundle in an effect, so
+    // until that chunk lands the element renders straight from `initial` with
+    // no animator to clear it, and above-the-fold content paints invisible.
+    // jsdom cannot see it (no opacity), and the screenshots cannot either —
+    // `shoot.mjs` waits for load, by which time it has resolved.
+    //
+    // Reported only for elements that actually contain text, and only for the
+    // outermost one in a zero-opacity chain, so a faded container yields one
+    // finding rather than one per descendant. Anything deliberately transient
+    // can carry `data-transient-opacity`.
+    for (const el of all) {
+      const s = getComputedStyle(el);
+      if (parseFloat(s.opacity) !== 0) continue;
+      // Hidden by a mechanism that removes it from the a11y tree too — that is
+      // a considered choice, not content that got lost.
+      if (s.display === "none" || s.visibility === "hidden") continue;
+      if (el.hasAttribute("data-transient-opacity") || el.closest("[aria-hidden='true'], [inert], [hidden]")) continue;
+      if (srOnly(el)) continue;
+      // Outermost offender only.
+      const parent = el.parentElement;
+      if (parent && parseFloat(getComputedStyle(parent).opacity) === 0) continue;
+      const text = (el.textContent || "").trim().replace(/\s+/g, " ");
+      if (!text) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      issues.push({
+        kind: "invisible-text",
+        severity: "high",
+        el: describe(el),
+        detail: `laid out at ${Math.round(r.width)}x${Math.round(r.height)}px but painted at opacity 0, with text in it ("${text.slice(0, 60)}") — if this is a Framer entrance, drop opacity from \`initial\` (see components/README.md); if it is deliberately transient, mark it data-transient-opacity`,
       });
     }
 

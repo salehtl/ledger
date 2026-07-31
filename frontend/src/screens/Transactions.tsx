@@ -270,11 +270,13 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
                     key={t.ID}
                     // See Home.tsx's recent list for the full reasoning:
                     // `initial={false}` on a refetch is what keeps this
-                    // one-shot, and the 0.24s ceiling reproduces the retired
+                    // one-shot; the 0.24s ceiling reproduces the retired
                     // `.stagger-item:nth-child(n+7)` cap — which matters far
-                    // more here, where the list runs to hundreds of rows.
-                    initial={firstReveal ? { opacity: 0, y: 8 } : false}
-                    animate={{ opacity: 1, y: 0 }}
+                    // more here, where the list runs to hundreds of rows; and
+                    // the entrance is transform-only so that a feature bundle
+                    // still in flight cannot leave the entire list invisible.
+                    initial={firstReveal ? { y: 8 } : false}
+                    animate={{ y: 0 }}
                     transition={{ duration: DUR.sheet, ease: EASE_OUT, delay: Math.min(i * 0.04, 0.24) }}
                   >
                     <SwipeableRow lead={lead} trail={trail} onCommit={onCommit}>

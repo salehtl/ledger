@@ -28,16 +28,26 @@ export function Switch({ className = "", ...rest }: InputHTMLAttributes<HTMLInpu
           colour as the page behind it, so "off" read as an empty slot. */}
       {/* data-css-transition: the app's only sanctioned CSS transition on a
           transform, and the harness auditor's check 9 skips it on the strength
-          of this marker. The knob's travel is driven by `peer-checked:`, i.e.
-          by the native checkbox's own `:checked` state — there is no React
-          state here to hand Framer. Creating some would mean making this a
-          controlled component, and the whole point of the design (see the
-          docblock) is that it stays an uncontrolled `<input type="checkbox">`
-          so forms, labels and tests keep native semantics. A sibling selector
-          is the only thing that can observe `:checked`, and only CSS has
-          sibling selectors. `motion-reduce:transition-none` is therefore also
-          hand-written rather than inherited from MotionConfig — this one
-          element genuinely is outside the global policy's reach. */}
+          of this marker.
+
+          The reason is narrower than "Framer can't do this". Every current
+          call site passes `checked`, so `rest.checked` is right there and an
+          `m.span animate={{ x: checked ? 20 : 0 }}` would work today with no
+          new state and no API change. What stops it is the *type*: this
+          component takes `InputHTMLAttributes<HTMLInputElement>`, so an
+          uncontrolled `<Switch defaultChecked />` is a legal call. In that
+          case the checked state lives only in the DOM node, and a sibling
+          selector is the one thing that can observe it — React never re-renders,
+          so no `animate` prop would ever update. Migrating means either
+          narrowing the prop type to require `checked` (an API break for a
+          decorative 200ms slide) or leaving a documented trap where one call
+          shape animates and the other silently does not.
+
+          If the type is ever narrowed to a controlled-only signature, delete
+          this marker and move the knob to Framer.
+
+          `motion-reduce:transition-none` is hand-written for the same reason:
+          this element is outside `MotionConfig`'s reach. */}
       <span
         aria-hidden
         data-css-transition="peer-checked drives the knob; see comment above"

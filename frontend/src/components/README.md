@@ -184,8 +184,11 @@ All motion in the app is Framer Motion (npm package `motion`, imported from
 - **`Pressable` is the press primitive.** The global `.press` class no longer
   exists — see the Pressable entry below for why it was a hazard.
 - **Tests that render an `m.*` must wrap it in `MotionProvider`.** `strict`
-  does *not* throw on an unwrapped `m.*`: it renders with no features loaded,
-  so the animation is silently inert and the test proves nothing.
+  does *not* throw on an unwrapped `m.*` — it renders with no features loaded.
+  With only `whileTap` that is merely inert. With an `initial` prop it is worse:
+  the element renders **stuck at its initial state** and stays there, so a test
+  can end up asserting against rows frozen mid-entrance. Same mechanism as the
+  first-paint rule above.
 
 ### The two CSS exemptions
 
@@ -207,10 +210,32 @@ Both use `animation`, never `transition`, which is what keeps them clear of the
 harness auditor's stray-CSS-transition check (`harness/audit.mjs`, check 9).
 That check flags a CSS transition on a *moving* property — transform, box
 dimensions — and deliberately ignores `transition-colors`/`transition-opacity`,
-which are not motion-policy violations. `Switch`'s knob is the single marked
-exception (`data-css-transition`), because its travel is driven by
-`peer-checked:` off a native checkbox and there is no React state to give
-Framer.
+which are not motion-policy violations.
+
+There is also a **third exemption, and it is the one that matters**, because it
+is a transition on a `transform`: `Switch`'s knob, marked `data-css-transition`.
+Not because Framer cannot express it — every current call site passes `checked`,
+so an `m.span animate={{ x: checked ? 20 : 0 }}` would work today — but because
+`Switch` accepts `InputHTMLAttributes`, so an *uncontrolled* `<Switch
+defaultChecked />` is a legal call, and in that shape the state lives only in the
+DOM node where nothing but a sibling selector can see it. Migrating means
+narrowing the prop type to controlled-only. If that ever happens, drop the marker
+and move the knob to Framer.
+
+### Never put `opacity: 0` in `initial` for first-paint content
+
+`LazyMotion` resolves its feature bundle in an effect, and until that promise
+settles `m.*` renders straight from `initial` with no animator running. An
+`opacity: 0` resting state therefore means the content is **invisible until a
+separate chunk has been fetched and executed** — which on a cold load, or the
+first load after a deploy invalidates the precache, is a network round trip that
+does not even start until the entry chunk has painted.
+
+So an entrance for anything the user is waiting on is **transform-only**: a `y`
+offset degrades to "8px low for a moment", an opacity offset degrades to "gone".
+`opacity: 0` in `initial` is fine for something that mounts on interaction —
+`Dialog`, `Toast`, `SwipeCard`, the tooltip — because by then the bundle has long
+since loaded. `audit.mjs` check 10 catches the invisible-text case.
 
 **Hover is already gated; don't add a utility for it.** Tailwind v4 compiles
 `hover:` to `@media (hover: hover) { &:hover { … } }`, so a tap on iOS (which
@@ -687,9 +712,10 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
 - The pixel spinner and the skeleton pulse are the only two animations still in
   CSS — both indefinite opacity loops, both ungated under reduced motion. See
   **Motion** above.
-- `Switch`'s knob is the only CSS transition left on a transform, because
-  `peer-checked:` off a native checkbox is the only thing that can see
-  `:checked` without making the component controlled. Marked
-  `data-css-transition`, the motion equivalent of `data-dense-target`.
+- `Switch`'s knob is the only CSS transition left on a transform. Not because
+  Framer cannot drive it — every call site passes `checked` — but because the
+  component's prop type still permits an uncontrolled `<Switch defaultChecked />`,
+  whose state only a sibling selector can observe. Marked `data-css-transition`,
+  the motion equivalent of `data-dense-target`.
 - Transactions list is not virtualized; acceptable at current volumes.
   Revisit if months exceed ~500 rows.
