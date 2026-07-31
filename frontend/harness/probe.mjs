@@ -376,13 +376,17 @@ async function probeScreen(page, screen) {
  * other controls out of reach. That is a fact about a specific width, and
  * measuring it at 390 would prove nothing about the one that is tight.
  *
- * Verified to have teeth three ways (each broken, observed failing, reverted):
+ * Verified to have teeth four ways (each broken, observed failing, reverted):
  * shrinking the swatch to `w-9 h-9` fires `picker-swatch-too-small`; swapping
  * `flex-wrap` for `flex-nowrap` fires `picker-past-viewport`; and dropping the
  * `data-color-picker` marker fires `picker-missing` rather than passing an
  * empty check, which is how three earlier checks in this repo managed to stay
- * green over broken subjects.
+ * green over broken subjects; and rendering a short palette fires
+ * `picker-wrong-swatch-count`, which is the same hole one level in — a marked
+ * grid with nothing in it would otherwise measure zero and report green.
  */
+const EXPECTED_SWATCHES = 24; // PALETTE_NAMES.length — see lib/paletteColor.ts
+
 async function checkCategoryPicker(browser) {
   const bugs = [];
   const ctx = "settings-categories › row editor";
@@ -458,6 +462,19 @@ async function checkCategoryPicker(browser) {
       `      picker @${geo.vw}px: ${geo.swatches.length} swatches, rows ${geo.rows.join("+")}, ` +
         `grid ${geo.grid.w}x${geo.grid.h}px at ${geo.grid.left}..${geo.grid.right}, editor ${geo.editor.h}px tall`,
     );
+
+    // Assert the count, not just the marker. A grid that renders with the
+    // marker present but nothing inside it measures zero swatches, iterates an
+    // empty list, and reports a confident green — the same shape of hole
+    // `picker-missing` closes one level up.
+    if (geo.swatches.length !== EXPECTED_SWATCHES) {
+      bugs.push({
+        kind: "picker-wrong-swatch-count",
+        severity: "high",
+        where: ctx,
+        detail: `${geo.swatches.length} swatches, expected ${EXPECTED_SWATCHES} — the palette has ${EXPECTED_SWATCHES} names, so anything else means colours the user cannot reach (or a grid measuring nothing)`,
+      });
+    }
 
     for (const s of geo.swatches) {
       if (s.w < 44 || s.h < 44) {
