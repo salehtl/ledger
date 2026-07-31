@@ -182,6 +182,7 @@ func main() {
 		WHERE t.direction='debit' AND t.status='confirmed'
 		  AND substr(t.posted_at,1,7) IN (
 		    SELECT DISTINCT substr(posted_at,1,7) FROM transactions
+		    WHERE substr(posted_at,1,7) < strftime('%Y-%m','now')
 		    ORDER BY 1 DESC LIMIT 4)
 		GROUP BY 1,2 ORDER BY 1 DESC`)
 	if err != nil {
