@@ -10,7 +10,7 @@ import { Switch } from "../ui/Switch";
 import { SectionLabel } from "../ui/SectionLabel";
 import { Pressable } from "../ui/Pressable";
 import { aedFils, nativeAmountTag } from "../../lib/money";
-import { bucketColor } from "../../lib/insights";
+import { categoryColor } from "../../lib/categoryColor";
 import { assignTxnProject, getProjects } from "../../api/client";
 
 const BUCKET_LABEL: Record<string, string> = { income: "Income", need: "Needs", want: "Wants", saving: "Savings", excluded: "Excluded" };
@@ -130,10 +130,18 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
                       selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:opacity-80"
                     }`}
                   >
+                    {/* The category's own colour, not bucketColor(c.Bucket): the
+                        same Groceries dot has to be the same teal here as in Plan
+                        and Settings, or the colour teaches nothing. The old
+                        income special-case (var(--color-good)) goes with it —
+                        income categories carry a stored colour like any other.
+                        Only a *transaction's* bucket mark still uses
+                        bucketColor (SplitLines, TransactionRow, the detail
+                        sheet), because that one reads bucket_snapshot. */}
                     <span
                       aria-hidden
                       className="w-2 h-2 rounded-[var(--radius)] shrink-0"
-                      style={{ background: selected ? "currentColor" : c.Kind === "income" ? "var(--color-good)" : bucketColor(c.Bucket) }}
+                      style={{ backgroundColor: selected ? "currentColor" : categoryColor(c.Color) }}
                     />
                     {c.Name}
                   </Pressable>

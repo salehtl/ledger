@@ -43,6 +43,31 @@ describe("CategorizeSheet", () => {
     expect(screen.queryByRole("button", { name: "Groceries" })).not.toBeInTheDocument();
   });
 
+  it("paints each picker dot with the category's own colour, not its bucket", () => {
+    // Same shape as CategoryManager's CategoryRow test, and it works for the
+    // same reason: bucketColor can only ever return --color-need/want/save/
+    // transfer/muted, so teal and orchid are unreachable through it. A
+    // regression to bucketColor(c.Bucket) fails here rather than shipping
+    // Groceries teal in Plan and amber in this sheet.
+    const colored: Category[] = [
+      { ...cats[0], Color: "teal" },
+      { ...cats[1], Color: "orchid" },
+    ];
+    wrap(<CategorizeSheet txn={txn} categories={colored} onSubmit={() => {}} onClose={() => {}} />);
+    const dot = (name: string) =>
+      (screen.getByRole("button", { name }).querySelector("span[aria-hidden]") as HTMLElement).style.backgroundColor;
+    expect(dot("Groceries")).toBe("var(--color-teal)");
+    expect(dot("Dining")).toBe("var(--color-orchid)");
+  });
+
+  it("falls back to the neutral for a category with no stored colour", () => {
+    // Not "no colour at all": an unset colour must render the slate neutral,
+    // never an interpolated var(--color-) that resolves to nothing.
+    wrap(<CategorizeSheet txn={txn} categories={cats} onSubmit={() => {}} onClose={() => {}} />);
+    const el = screen.getByRole("button", { name: "Groceries" }).querySelector("span[aria-hidden]") as HTMLElement;
+    expect(el.style.backgroundColor).toBe("var(--color-slate)");
+  });
+
   it("marks an unconverted foreign row with the native tag and a no-rate note", () => {
     const foreign: Txn = { ...txn, AmountFils: 1009, Currency: "USD", AmountAedFils: null };
     wrap(<CategorizeSheet txn={foreign} categories={cats} onSubmit={() => {}} onClose={() => {}} />);

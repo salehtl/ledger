@@ -4,13 +4,13 @@ import type { Category } from "../../api/types";
 import type { TxnDepth } from "../../lib/txSplit";
 
 const cats: Category[] = [
-  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
-  { ID: 2, Name: "Transport", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
-  { ID: 3, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
-  { ID: 4, Name: "Entertainment", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
-  { ID: 5, Name: "Investments", Kind: "spending", Bucket: "saving", IsActive: true, Color: "" },
-  { ID: 6, Name: "Salary", Kind: "income", Bucket: "", IsActive: true, Color: "" },
-  { ID: 7, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true, Color: "" },
+  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "teal" },
+  { ID: 2, Name: "Transport", Kind: "spending", Bucket: "need", IsActive: true, Color: "sky" },
+  { ID: 3, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "orchid" },
+  { ID: 4, Name: "Entertainment", Kind: "spending", Bucket: "want", IsActive: true, Color: "lilac" },
+  { ID: 5, Name: "Investments", Kind: "spending", Bucket: "saving", IsActive: true, Color: "sage-deep" },
+  { ID: 6, Name: "Salary", Kind: "income", Bucket: "", IsActive: true, Color: "moss" },
+  { ID: 7, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true, Color: "slate" },
 ];
 
 function txn(over: Partial<TxnDepth> = {}): TxnDepth {
