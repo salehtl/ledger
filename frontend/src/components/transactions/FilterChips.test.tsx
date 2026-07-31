@@ -5,8 +5,8 @@ import { EMPTY_FILTERS, type TxnFilters } from "../../lib/transactions";
 import type { Category, Txn } from "../../api/types";
 
 const cats: Category[] = [
-  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
+  { ID: 1, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 2, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
 ];
 const txns: Txn[] = [
   { ID: 1, PostedAt: "2026-06-10", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED", Direction: "debit", MerchantRaw: "X", Status: "confirmed", Confidence: 0, Source: "email", CategoryID: 1, CategoryName: "Groceries", Bucket: "need", Kind: "spending", BucketSnapshot: "" },

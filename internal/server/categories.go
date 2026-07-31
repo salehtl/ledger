@@ -78,6 +78,7 @@ type updateCategoryReq struct {
 	Name        string `json:"name"`
 	Kind        string `json:"kind"`
 	Bucket      string `json:"bucket"`
+	Color       string `json:"color"`
 	ApplyToPast bool   `json:"apply_to_past"`
 }
 
@@ -166,6 +167,14 @@ func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bucket required for spending categories"}`, http.StatusBadRequest)
 		return
 	}
+	// Empty is legal (means "leave the colour alone" -- see the SetCategoryColor
+	// call below, and "never chosen" for a category that has none). Only a
+	// non-empty unknown name is refused: storing it would render as the
+	// silent-disappearance case paletteColor.ts warns about.
+	if req.Color != "" && !store.IsPaletteName(req.Color) {
+		http.Error(w, `{"error":"unknown colour"}`, http.StatusBadRequest)
+		return
+	}
 	// Changing kind away from 'spending' with envelope assignments on the
 	// books would orphan them: EnvelopeMonthSummary lists only active spending
 	// categories, so every assigned fil would silently vanish from Plan and
@@ -190,6 +199,17 @@ func (s *Server) handlePutCategory(w http.ResponseWriter, r *http.Request) {
 	if err := s.catStore.UpdateCategory(store.CategoryRow{ID: id, Name: req.Name, Kind: req.Kind, Bucket: req.Bucket}); err != nil {
 		writeCategoryDBErr(w, err)
 		return
+	}
+	// Conditional on purpose: an empty Color means the request didn't send
+	// one -- every caller before the picker lands in a later task -- and
+	// UpdateCategory above never touches color for the same reason. Calling
+	// SetCategoryColor unconditionally here would turn that omission into a
+	// clear, wiping a colour the user already chose on every plain rename.
+	if req.Color != "" {
+		if err := s.catStore.SetCategoryColor(id, req.Color); err != nil {
+			http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 	if req.ApplyToPast && req.Bucket != "" {
 		if err := s.catStore.SnapshotBucketForCategory(id, req.Bucket); err != nil {

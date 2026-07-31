@@ -36,9 +36,9 @@ function txn(over: Partial<ReportTxn>): ReportTxn {
 }
 
 const categories: Category[] = [
-  { ID: 2, Name: "Salary", Kind: "income", Bucket: "saving", IsActive: true },
-  { ID: 5, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 9, Name: "Transfers", Kind: "transfer", Bucket: "need", IsActive: true },
+  { ID: 2, Name: "Salary", Kind: "income", Bucket: "saving", IsActive: true, Color: "" },
+  { ID: 5, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 9, Name: "Transfers", Kind: "transfer", Bucket: "need", IsActive: true, Color: "" },
 ];
 
 function mockGets(over: {

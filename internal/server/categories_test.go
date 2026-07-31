@@ -130,6 +130,108 @@ func TestPutCategoryRejectsSpendingWithoutBucket(t *testing.T) {
 	}
 }
 
+func TestPutCategoryRejectsUnknownColour(t *testing.T) {
+	// An unknown name must never reach storage: paletteColor.ts interpolates
+	// the stored value into var(--color-NAME), and an unknown one is valid
+	// CSS that resolves to nothing -- the mark silently disappears rather
+	// than degrading.
+	srv, st := newTestServer(t)
+	id, _ := st.InsertCategory(store.CategoryRow{Name: "Coffee", Kind: "spending", Bucket: "want", IsActive: true})
+	body := `{"name":"Coffee","kind":"spending","bucket":"want","color":"chartreuse"}`
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// The bad value must never have reached storage.
+	c, err := st.Category(id)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	if c.Color == "chartreuse" {
+		t.Fatal("unknown colour reached storage")
+	}
+}
+
+func TestPutCategoryAcceptsPaletteName(t *testing.T) {
+	srv, st := newTestServer(t)
+	id, _ := st.InsertCategory(store.CategoryRow{Name: "Coffee", Kind: "spending", Bucket: "want", IsActive: true})
+	body := `{"name":"Coffee","kind":"spending","bucket":"want","color":"teal"}`
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Round-trips on read via the single-category getter -- proves the write
+	// actually reached storage, not just that the handler returned 200.
+	c, err := st.Category(id)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	if c.Color != "teal" {
+		t.Fatalf("Category color = %q, want teal", c.Color)
+	}
+	// And on the list endpoint's underlying query too -- the other read path
+	// GET /api/categories serves from.
+	cats, err := st.SelectCategories()
+	if err != nil {
+		t.Fatalf("SelectCategories: %v", err)
+	}
+	var found bool
+	for _, cc := range cats {
+		if cc.ID == id {
+			found = true
+			if cc.Color != "teal" {
+				t.Fatalf("list color = %q, want teal", cc.Color)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("category not found in SelectCategories")
+	}
+}
+
+// TestPutCategoryAllowsEmptyColour covers two legal empty-colour shapes: an
+// omitted "color" field must not clobber a colour already chosen (the reason
+// UpdateCategory itself never touches color -- see its doc comment), and an
+// explicit empty string on a category that has never had one is accepted,
+// not rejected.
+func TestPutCategoryAllowsEmptyColour(t *testing.T) {
+	srv, st := newTestServer(t)
+	id, _ := st.InsertCategory(store.CategoryRow{Name: "Coffee", Kind: "spending", Bucket: "want", IsActive: true})
+	if err := st.SetCategoryColor(id, "teal"); err != nil {
+		t.Fatalf("SetCategoryColor: %v", err)
+	}
+
+	// A rename that sends no "color" field at all -- every caller today,
+	// since no UI sends one yet.
+	rec := httptest.NewRecorder()
+	body := `{"name":"Coffee Shop","kind":"spending","bucket":"want"}`
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id, 10), strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	c, err := st.Category(id)
+	if err != nil {
+		t.Fatalf("Category: %v", err)
+	}
+	if c.Name != "Coffee Shop" {
+		t.Fatalf("name = %q, want the rename to have applied", c.Name)
+	}
+	if c.Color != "teal" {
+		t.Fatalf("color = %q after a plain rename, want teal preserved", c.Color)
+	}
+
+	// An explicit empty color on a category that has never had one.
+	id2, _ := st.InsertCategory(store.CategoryRow{Name: "Fresh", Kind: "spending", Bucket: "want", IsActive: true})
+	rec2 := httptest.NewRecorder()
+	body2 := `{"name":"Fresh","kind":"spending","bucket":"want","color":""}`
+	srv.ServeHTTP(rec2, httptest.NewRequest(http.MethodPut, "/api/categories/"+strconv.FormatInt(id2, 10), strings.NewReader(body2)))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
 func TestPostCategoryDuplicateName(t *testing.T) {
 	st := newTestServerStore(t)
 	srv := newTestServerWithStore(t, st)

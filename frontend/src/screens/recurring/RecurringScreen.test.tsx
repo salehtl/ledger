@@ -17,7 +17,7 @@ function wrap(ui: React.ReactNode) {
 }
 
 const categories: Category[] = [
-  { ID: 5, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true },
+  { ID: 5, Name: "Subscriptions", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
 ];
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {

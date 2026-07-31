@@ -17,10 +17,10 @@ function txn(p: Partial<Txn>): Txn {
 }
 
 const CATS: Category[] = [
-  { ID: 11, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true },
-  { ID: 12, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true },
-  { ID: 13, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true },
-  { ID: 14, Name: "Salary", Kind: "income", Bucket: "", IsActive: true },
+  { ID: 11, Name: "Dining", Kind: "spending", Bucket: "want", IsActive: true, Color: "" },
+  { ID: 12, Name: "Groceries", Kind: "spending", Bucket: "need", IsActive: true, Color: "" },
+  { ID: 13, Name: "Transfers", Kind: "excluded", Bucket: "", IsActive: true, Color: "" },
+  { ID: 14, Name: "Salary", Kind: "income", Bucket: "", IsActive: true, Color: "" },
 ];
 
 interface Call { url: string; method: string; body: unknown; }

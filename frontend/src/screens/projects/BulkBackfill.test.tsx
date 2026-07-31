@@ -33,8 +33,8 @@ const TXNS: Txn[] = [
 ];
 
 const CATEGORIES: Category[] = [
-  { ID: 1, Name: "Home", Kind: "expense", Bucket: "want", IsActive: true },
-  { ID: 2, Name: "Groceries", Kind: "expense", Bucket: "need", IsActive: true },
+  { ID: 1, Name: "Home", Kind: "expense", Bucket: "want", IsActive: true, Color: "" },
+  { ID: 2, Name: "Groceries", Kind: "expense", Bucket: "need", IsActive: true, Color: "" },
 ];
 
 function makeProjectDetail(overrides: Partial<ProjectDetail> = {}): ProjectDetail {

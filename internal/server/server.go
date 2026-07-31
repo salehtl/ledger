@@ -53,6 +53,7 @@ type CategoryStore interface {
 	ClearTransactionCategory(txID int64) error
 	UpdateTransactionStatus(txID int64, status string) error
 	UpdateCategory(store.CategoryRow) error
+	SetCategoryColor(id int64, color string) error
 	SnapshotBucketForCategory(categoryID int64, bucket string) error
 	CategoryUsage(id int64) (store.CategoryUsage, error)
 	DeleteCategory(id int64) error
