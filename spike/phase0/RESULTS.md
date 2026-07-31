@@ -7,7 +7,7 @@ Phase 0 has two independent exit gates (spec §5). Both are resolved:
 | Gate | Verdict | One-line reason |
 |---|---|---|
 | Port 25 (spec §3.2 precondition) | **GO** | 4/5 geographically diverse external probes handshook Hetzner's public :25; the 5th is explained by the probe node's own outbound restriction, not a Hetzner block. |
-| On-device replay spike (spec §3.3/§4 trade-off 2) | **PROVISIONAL PASS** | Median cold restore (58.0s) is well over the 10s budget, but `decryptMs` (pure-JS X25519+GCM) is 94.3% of it; the non-crypto remainder (3.3s) fits comfortably, and warm start (13ms) is far inside the 2s budget. The provisional is conditioned on a mandatory early Phase 2 native-crypto benchmark (see below). |
+| On-device replay spike (spec §3.3/§4 trade-off 2) | **PROVISIONAL PASS** | Median cold restore (58.0s) is well over the 10s budget, but `decryptMs` (pure-JS X25519+GCM) is 94.3% of it; the non-crypto remainder (3.3s) fits comfortably — though ~75% of that remainder is `fetchMs`, itself flagged below as inflated and unrepresentative. The measured 13ms figure is a post-mount SQLite read, not first paint — the spec's <2s **first-paint** criterion is unmeasured in Phase 0. The provisional is conditioned on a mandatory early Phase 2 native-crypto benchmark (see below). |
 
 Phase 1 planning is unblocked, with the native-crypto benchmark carried forward as a named early Phase 2 task rather than a Phase 0 blocker — see "Replay spike" below for the full reasoning, numbers, and caveats.
 
@@ -177,6 +177,23 @@ real iPhone over the real transport (Expo Go + Tailscale). This is the
 workload spec §4 trade-off 2 names explicitly: "~4 MB of hot blobs and ~3,700
 HPKE opens on restore."
 
+**Deviation from spec §3.3, stated up front:** the crypto layer faithfully
+models per-op singleton blobs — `openBlob` runs 3,683 times, once per
+record, each an independent HPKE-derived AEAD open, exactly as spec §3.3
+requires ("every record is individually sealed/opened"). The **transport**
+does not model this: the corpus is fetched as one pre-batched `all.bin` HTTP
+GET (a single 3.7 MB response), not as 3,683 individual per-blob fetches.
+This was a stated, deliberate spike-convenience simplification (Task 2's own
+self-review: "`all.bin` is a transport container"), but an earlier draft of
+this verdict dropped it. Restating it here because it lands squarely on
+`fetchMs` (2.47s median) — one of the stages the plan's FAIL branch
+scrutinizes (`fetchMs + insertMs + computeMs`). A production sync of 3,683
+individually-transported blobs would plausibly have a different `fetchMs`
+shape than one bulk 3.7 MB transfer — likely worse per-request overhead
+(TLS/HTTP framing/bridge marshalling ×3,683), partly offset by whatever
+batching the real hot-stream sync protocol ends up using. This spike does
+not measure that shape; see Caveat 7.
+
 ### Setup
 
 - **Device:** the user's **daily-driver iPhone** — not the oldest available
@@ -214,9 +231,36 @@ HPKE opens on restore."
 | 2 | 44.441583037376404 | 2469.831041932106 | 52138.37249994278 | 501.5009980201721 | 265.0840848684311 | 0.6283340454101562 | 1.535750150680542 | 55421.394291996956 |
 | 3 | 46.168707966804504 | 2466.583792090416 | 54712.961748838425 | 526.5069608688354 | 271.0302052497864 | 0.7506250143051147 | 4.198752045631409 | 58028.2007920742 |
 
-Every run: `ops=3683/3683` (no partial corpus, no `VOID` banner), and
-`2026-06: MATCH`, `2026-05: MATCH`, `2026-04: MATCH`. Warm start: **13ms**,
-identical across all three post-relaunch measurements.
+Every run: `ops=3683/3683` (full corpus), and `2026-06: MATCH`,
+`2026-05: MATCH`, `2026-04: MATCH`.
+
+**Dispersion (n=3):** `totalMs` ranged from 55421.39 ms (Run 2, the minimum)
+to 65038.10 ms (Run 1, the maximum) — a spread of ~17% relative to the
+minimum. `fetchMs` varied ~11% (2466.58–2738.83 ms) and `decryptMs` ~18%
+(52138.37–61331.62 ms) across the same three runs. With only three samples
+this is reported as raw variance, not characterized further — no confidence
+interval is meaningful at n=3, and it is plausible some of this variance is
+thermal (see "Affirmative findings" below). **Gap in the record:** the
+protocol's discarded warm-up cold restore (run #0, before Reset DB → the
+three runs above, discarded per the brief's cold-start-jank-trap step) was
+not itself recorded with a `totalMs` value in what reached this write-up —
+so the jank-discard step is not independently auditable from this document.
+Flagged as a process gap for any repeat of this protocol, not fixed here.
+
+**Warm start: 13 ms**, identical across all three post-relaunch
+measurements. Stating precisely what this covers: it is the wall-clock span
+inside the app's warm-start `useEffect` (`App.tsx`) — `SELECT COUNT(*)` plus
+`bucketDebits()`'s `GROUP BY` aggregate over the already-populated on-device
+SQLite table — timed only *after* process launch, Hermes bundle evaluation,
+and React mount have already happened, and ending before any UI re-render.
+**It is a SQLite read time, not first paint.** Spec §5's Phase 0 exit
+criterion is "cold replay **+ first paint** within an acceptable budget
+(target <2s warm...)" — first paint itself was never instrumented in this
+spike and is **unmeasured** in Phase 0 (see Caveat 8). Read the 13ms figure
+as strong secondary evidence that the on-device query/aggregate layer is not
+a bottleneck for a warm relaunch, not as direct evidence the spec's
+warm/first-paint budget is met — it doesn't measure that budget's own
+gate.
 
 ### Medians and derived figures
 
@@ -236,17 +280,44 @@ identical across all three post-relaunch measurements.
 - Non-crypto stages excluding fetch (`dbOpenMs + decodeMs + insertMs +
   computeMs + yieldMs`, medians) = **844.6 ms**.
 - Per-blob decrypt cost: 54712.96 / 3683 = **14.86 ms/blob**.
-- Warm start: **13 ms**, all three runs identical.
+- Warm start: **13 ms**, all three runs identical — a SQLite read time, not
+  first paint (see the note above and Caveat 8).
 
-### Memory (Hermes `performance.memory`, JS-heap only)
+### Memory (Hermes `HermesInternal.getInstrumentedStats()`, JS-heap only)
 
-Sampling was point-in-time (before/after-compute/end per run — see Caveat 4
-for why this build doesn't have per-chunk peak sampling), so the sequences
-below have different sample counts per metric; transcribed as captured
-rather than forced into a uniform per-run table:
+**Correction to the instrument attribution.** The field names below
+(`js_heapSize`, `js_totalAllocatedBytes`, `js_numGCs`, `js_externalBytes`)
+are `HermesInternal.getInstrumentedStats()`'s own key names, not
+`performance.memory`'s (which would report `usedJSHeapSize`/
+`totalJSHeapSize`). `sampleMemory()` (`App.tsx`) tries `performance.memory`
+first and only falls back to `HermesInternal.getInstrumentedStats()` if
+`performance.memory` is absent — the fact that these are the shape actually
+captured means **`performance.memory` was not available** in this Expo
+Go/SDK 54/iOS runtime, contradicting the code comment's expectation (based
+on RN 0.81's documented Hermes mapping) that this fallback branch would be
+dead code here.
+
+This has a real consequence beyond the label: `sampleHeapMB()` (`App.tsx`),
+which the per-chunk peak-sampling added in `6de466a` depends on, reads
+*only* `performance.memory` — deliberately with no `HermesInternal`
+fallback, since `getInstrumentedStats()` doesn't guarantee a stable numeric
+field to max-track. If `performance.memory` is unavailable on this device
+the way it evidently was for this run, `sampleHeapMB()` returns `null` on
+every chunk, `memPeak` reports `unavailable`, and `6de466a`'s per-chunk peak
+sampling produces **no data at all** here. **Re-running this measurement on
+`6de466a` does not, by itself, close the mid-run-peak gap** — that
+instrument would need a `HermesInternal` fallback path (or another
+per-chunk-capable source) before it could measure a peak on this specific
+device. Caveat 4 is corrected accordingly.
+
+Sampling was point-in-time (before/after-compute/end per run in this
+build), so the sequences below have different sample counts per metric;
+transcribed as captured rather than forced into a uniform per-run table:
 
 - **`js_heapSize`:** 8,388,608 bytes (8 MB) before run 1 → 16,777,216 bytes
-  (16 MB) → 20,971,520 bytes (20 MB). **Bounded** across the three runs.
+  (16 MB) → 20,971,520 bytes (20 MB). Did not exceed 20 MB at these three
+  sampled points, and was still rising run-over-run rather than
+  plateauing — see the softened framing below.
 - **`js_totalAllocatedBytes`** (cumulative across the session): 6,687,455,472
   → 13,361,724,032 → 20,039,266,568 — i.e. **~6.7 GB allocated per run**
   (consistent ~6.7 GB deltas between samples).
@@ -255,18 +326,30 @@ rather than forced into a uniform per-run table:
   — i.e. **~1,643 GCs per run** (deltas: 1,644, 1,643, 1,643).
 - **`js_externalBytes`**: ~12.5 MB, stable.
 
-Reading these together: the heap **ceiling** is bounded (8 → 16 → 20 MB),
-nowhere near the >500 MB RSS the pre-fix build hit (see "Pre-fix catastrophic
-run" below) — but see Caveat 6, this is JS heap, not RSS, and the two must
-not be equated. The **allocated/GC** figures — ~6.7 GB allocated and ~1,643
-GCs, per single cold restore, to process 3.7 MB of input — are strong
-empirical confirmation of the allocation-churn theory from the pre-fix
-incident (see below): pure-JS X25519 (BigInt arithmetic) and the pure-JS
-`TextDecoder` polyfill are both allocation-heavy per record, ×3,683 records.
+Reading these together, stated carefully: the heap did **not exceed 20 MB
+at the three sampled points** (before/after-compute/end — not a within-run
+peak, per the correction above), nowhere near the >500 MB RSS the pre-fix
+build hit (see "Pre-fix catastrophic run" below) — but see Caveat 6, this is
+JS heap, not RSS, and the two must not be equated. With n=3 monotonically
+*rising* samples, no within-run peak, and no RSS correlate, this is
+"no growth beyond 20 MB observed at these sample points, still climbing
+run-over-run" — not proof of a bounded ceiling; see Caveat 4. The
+**allocated/GC** figures — ~6.7 GB allocated and ~1,643 GCs, per single cold
+restore, to process 3.7 MB of input — do confirm that pure-JS X25519
+(BigInt arithmetic) and the pure-JS `TextDecoder` polyfill are both heavily
+allocation-churning per record, ×3,683 records; see "Pre-fix catastrophic
+run" below for what this does and does not explain about the earlier
+incident.
 
 A 4th press (attempted beyond the 3-run protocol) failed with
-`TypeError: Network request timed out` — the DERP-relayed 3.7 MB fetch
-timing out, not an app defect (see Caveat 2).
+`TypeError: Network request timed out`. This is *plausibly* the
+DERP-relayed 3.7 MB fetch being flaky under repeated load rather than an
+app defect, but that is not independently confirmed for this specific
+session: the only server-log evidence of request-storm-shaped behavior in
+this document (the ~39-fetch burst, below) comes from the earlier,
+different, pre-fix build/session — no server-log check was made for this
+particular 4th-press timeout. Treat "not an app defect" as a hypothesis,
+not a finding (see Caveat 2).
 
 ### Decision rule applied
 
@@ -283,23 +366,32 @@ Per the plan's rule (`task-4-brief.md` Step 4):
 - `fetchMs + insertMs + computeMs` alone (2469.83 + 271.03 + 0.654 = 2741.5
   ms) is nowhere near the budget — the FAIL branch ("these alone approach the
   budget") does not apply either.
-- Warm start (13 ms) is far inside the 2s budget.
+- Warm start (13 ms) is a strong secondary signal, not a direct pass against
+  the spec's warm/first-paint budget: it measures a post-mount SQLite read,
+  not first paint, which is unmeasured in Phase 0 (see the note above and
+  Caveat 8). It is not scored against the 2s target here.
 - Correctness is unconditional: `ops=3683/3683` and all three month checks
   `MATCH` on every one of the three runs.
 
-**Verdict: PROVISIONAL PASS.**
+**Verdict: PROVISIONAL PASS**, resting on the cold-restore decomposition
+(decrypt dominant, non-crypto remainder small) and unconditional
+correctness — not on the warm-start figure, which doesn't measure the
+budget it would need to measure to count as evidence either way.
 
 ### Why the provisional is defensible (projection, not measurement)
 
 Pure-JS X25519 + AES-GCM (via `@noble`'s BigInt-based scalar arithmetic) is
 the plan's acknowledged known-slow stand-in for the production design, which
 uses native JSI-bound crypto. At the measured **14.86 ms/blob**, applying the
-plan's cited 10–100× native-JSI speedup range:
+plan's cited 10–100× native-JSI speedup range, and decomposing the flat
+"+3.3s non-crypto" addend into its two components so the disclaimed one is
+visible rather than hidden inside a lump sum:
 
-| Assumed native-JSI factor | Projected decrypt | Projected cold (+3.3s non-crypto) |
-|---|---|---|
-| 10× (conservative) | ~5.5s | **~8.8s** — inside the 10s gate |
-| 50× | ~1.1s | **~4.4s** — comfortably inside |
+| Assumed native-JSI factor | Projected decrypt | + fetchMs (2.47s, disclaimed — Caveat 2) | + other non-crypto (0.84s) | Projected cold |
+|---|---|---|---|---|
+| 10× (conservative) | ~5.5s | 2.47s | 0.84s | **~8.8s** — inside the 10s gate |
+| 50× | ~1.1s | 2.47s | 0.84s | **~4.4s** — comfortably inside |
+| 100× | ~0.5s | 2.47s | 0.84s | **~3.9s** — comfortably inside |
 
 These are **projections, clearly labeled as such — not measurements.** No
 native-JSI crypto benchmark has been run on-device. They exist only to show
@@ -307,10 +399,26 @@ that the provisional's central bet (that decrypt, not architecture, is the
 bottleneck) is arithmetically plausible under the plan's own stated speedup
 range, not to substitute for actually measuring it.
 
+**The margin is thin, and it is not free.** At 10×, the projected ~8.8s
+clears the 10s gate by only **~12%** — and roughly 75% of the "+3.3s"
+addend it relies on is `fetchMs`, the same figure Caveat 2 says is inflated
+by the DERP relay and not representative of production networking. This
+projection also does not include the unmeasured first-paint cost (Caveat
+8) or Caveat 1's expectation that an older device measures worse across the
+board, not only at crypto. Stack those three — a less favorable real-world
+`fetchMs`, a nonzero first-paint cost on top, and a slower (non-daily,
+non-current) device — and the 10× row's margin can plausibly evaporate. The
+50× and 100× rows have enough headroom to absorb this; the 10× row does
+not. **This projection shows the provisional's central bet is plausible,
+not that the 10× case is safely proven** — it survives only if real-world
+fetch and first paint stay roughly where (or better than) they were
+measured here.
+
 **Mandatory Phase 2 follow-up (per the decision rule):** a native-crypto
 (JSI) benchmark of X25519 + AES-GCM open, on-device, over this same corpus
 shape, is a **mandatory early Phase 2 task** before this provisional is
-trusted for the production cold-restore budget.
+trusted for the production cold-restore budget (now also recorded in spec
+§5's Phase 2 entry).
 
 ### Pre-fix catastrophic run (historical context, real finding)
 
@@ -330,42 +438,125 @@ not the manifest. No broken-pipe or error output appeared in the server log.
 This burst timing coincides exactly with the reported RAM explosion and
 freeze.
 
-**Root cause, per review — NOT whole-corpus retention.** The two-pass
+**Root cause — corrected here a second time.** The write-up this section
+originally drew on already ruled out whole-corpus retention (the two-pass
 decrypt-then-decode structure held ~3,683 decrypted plaintexts and ~3,683
-parsed `Op` objects live at once, which looked like an obvious culprit, but
-quantified out to only **~5–8 MB of actual retained data** at peak (small
-transaction records) — nowhere near 500 MB. The more plausible driver:
-**allocation churn outrunning Hermes' garbage collector inside a loop that
-never yields** — 3,683 X25519 scalar multiplications through `@noble`'s
-BigInt arithmetic, plus 3,683 calls into Expo's pure-JS `TextDecoder`
-polyfill (each allocating multiple intermediate arrays), all running
-back-to-back synchronously with no `await` between them and therefore no
-opportunity for the collector to reclaim short-lived garbage as it went. A
-second, independent contributor was confirmed separately: `expo-sqlite`'s
-`openDatabaseSync` opened a brand-new native connection on every "Cold
-Restore" press with nothing closing the previous one — native-side memory
-entirely outside the JS heap and outside anything JS-side chunking or GC
-pressure could reclaim.
+parsed `Op` objects live at once, which quantified out to only **~5–8 MB of
+actual retained data** at peak — nowhere near 500 MB) and then named
+**allocation churn outrunning Hermes' garbage collector** as "the more
+plausible driver." Re-reading that claim against this same document's own
+evidence, it does not hold up as stated, and is corrected here.
 
-**The fix that mattered was yielding between chunks**, not merely bounding
-the retained working set: chunking the corpus into groups of `CHUNK_SIZE =
-250` records with an `await new Promise(r => setTimeout(r, 0))` between
-chunks gives Hermes' collector repeated opportunities to run at all.
-`CHUNK_SIZE` is the tuning knob if a slower/older device's RAM climbs again.
-The connection leak was fixed separately (a single reused/reopened
-connection). Post-fix, the exact same server log shows a clean session
-(18:41–18:44): precisely 3 `all.bin` fetches (18:41:36, 18:43:01, 18:44:01),
-no burst — these are the three runs in the measurement table above, and the
-~60–85s spacing between them is confirmed as genuine per-restore duration
-(consistent with the ~58s median measured), not user pacing.
+The server log above already supplies a **sufficient** explanation without
+invoking churn at all: a burst of ~39 `all.bin` fetches within ~2 seconds is
+~144 MB of concurrently- or rapidly-sequentially-live 3.7 MB response
+bodies (plus RN bridge-marshalling copies of each), which is on the order
+of hundreds of MB by itself — before adding the second, independently
+confirmed bug: `expo-sqlite`'s `openDatabaseSync` opening a brand-new native
+connection on every "Cold Restore" press with nothing closing the previous
+one (native-side page cache/journal/WAL state, entirely outside the JS
+heap). **Together, the request storm and the connection leak are
+arithmetically sufficient to explain >500 MB RSS on their own** — two
+confirmed instrument bugs, not an architectural property of pure-JS crypto.
 
-This is recorded here because it is a genuine finding about pure-JS crypto's
-allocation behavior on Hermes under a naive (non-yielding) implementation,
-independent of the raw `decryptMs` timing, and it directly informs the
-native-crypto decision above: even setting aside the raw wall-clock cost,
-pure-JS crypto at this volume produces GC pressure (~6.7 GB allocated, ~1,643
-GCs per restore, per the memory table above) that a native implementation
-would avoid by construction.
+Allocation churn, by contrast, is **not shown to be sufficient**, and this
+document's own post-fix data argues against it being the dominant driver:
+the fixed build allocates ~6.7 GB and triggers ~1,643 GCs *per single cold
+restore* (see the memory section above), yet the heap ceiling stays at
+20 MB. Large allocation churn coexisting with a small, non-growing live set
+is the signature of a collector doing its job — rapid allocate-and-reclaim —
+not of churn driving sustained high RSS. If churn were the dominant pre-fix
+driver, a rising or elevated retained/heap figure would be the more natural
+signature to expect; that isn't what the post-fix numbers show.
+**Allocation churn is therefore demoted from "the more plausible driver" to,
+at most, a plausible contributing factor** — the request storm plus the
+connection leak are the better-evidenced explanation.
+
+One plausible (not confirmed) mechanism for how 39 fetches could cluster
+into a 2-second window: the pre-fix build had no `isRunning` guard against
+overlapping presses (that guard was added later, in the same fix pass,
+`27ba7c6`), and a JS thread reporting FPS 0 gives no visual feedback that a
+restore is already in progress — a user re-pressing what looks like an
+unresponsive button, with each press starting its own full `coldRestore()`
+including its own `fetch(all.bin)`, is one route to a burst of
+near-simultaneous fetches. There is no client-side interaction log for that
+session to confirm this, but the guard's later, independent addition is at
+least consistent with the failure mode this theory describes.
+
+**The fix that shipped addressed both confirmed bugs, not just one:**
+chunking the corpus into groups of `CHUNK_SIZE = 250` records with an
+`await new Promise(r => setTimeout(r, 0))` between chunks (which also gives
+the collector repeated opportunities to run, whatever churn's actual share
+of the pre-fix figure was), plus a separate fix reusing/closing a single
+SQLite connection instead of leaking one per press, plus (in the same pass)
+the `isRunning` guard against overlapping presses that the request-storm
+theory above depends on. Post-fix, the exact same server log shows a clean
+session (18:41–18:44): precisely 3 `all.bin` fetches (18:41:36, 18:43:01,
+18:44:01), no burst — these are the three runs in the measurement table
+above, and the ~60–85s spacing between them is confirmed as genuine
+per-restore duration (consistent with the ~58s median measured), not user
+pacing.
+
+This remains worth recording for a reason independent of the root-cause
+debate above: regardless of which factor(s) explain the pre-fix >500 MB
+figure, the post-fix data separately confirms that pure-JS X25519 (BigInt
+arithmetic) and the pure-JS `TextDecoder` polyfill do produce real,
+substantial allocation/GC pressure on Hermes (~6.7 GB allocated, ~1,643 GCs,
+per single cold restore, per the memory section above) — cost a native
+implementation would avoid by construction. That is presented here as a
+secondary data point supporting the Phase 2 native-crypto benchmark, not as
+the explanation for the pre-fix crash.
+
+### Affirmative findings
+
+This document has been scrupulous about weaknesses above; it should be
+equally precise about strengths.
+
+- **`computeMs` = 0.65 ms is the strongest single result in this spike.** A
+  full 3,683-row `GROUP BY`/`substr`/`CASE`/`SUM` budget aggregate over
+  SQLite in 0.65 ms is ~0.18 µs/transaction. Combined with `insertMs`
+  (271.03 ms for 3,683 rows) and the warm-start SQLite read (13 ms — see
+  above for what that figure does and doesn't cover), the entire on-device
+  data layer — the actual local-first thesis — is effectively free. Nothing
+  about *this* architecture is slow; one library (`@noble`'s pure-JS
+  X25519/GCM) is. `computeMs` was previously used only as an input to the
+  FAIL-branch check; it deserves to be read affirmatively as validating the
+  local-first bet, independent of the crypto question.
+- **Cold restore is a once-per-device-install cost**, not a recurring one.
+  Every subsequent app open pays the warm-start cost, not the cold-restore
+  cost. This frequency framing matters: "58s, once, at onboarding" and "58s
+  every time" are different problems even though today's `totalMs` number
+  is the same either way, and the spec's <10s target treats it as the
+  former.
+- **Per-chunk commits mean usable rows exist in SQLite well before the
+  restore finishes** — chunk 1 (250 records) commits roughly 3.7–3.9s into
+  the run (≈250 × the ~14.9ms/blob decrypt cost, plus decode/insert), and
+  under a 50–100× native-crypto speedup that would drop to well under a
+  second. The data layer's chunked-commit design already supports a
+  progressive "first useful paint" that doesn't wait for the full corpus —
+  this instrument doesn't render one, but the underlying mechanism (rows
+  land in SQLite as you go) is already there for Phase 2 to build on.
+- **More damning, in the same breath: the UI is still frozen in ~3.7–3.9s
+  slabs today**, not responsive. The chunk yield (`await setTimeout(0)`)
+  restores GC breathing room between chunks — that's what fixed the
+  pre-fix freeze/crash — but it is not the same thing as restoring
+  responsiveness: total `yieldMs` across an entire ~58s restore is only
+  1.9–4.2 ms (see the per-run table), meaning almost none of that 58s is
+  actually spent yielded to the event loop. Each chunk is still one long
+  synchronous block from the device's perspective. Fixing perceived
+  responsiveness, not just crash-safety, is contingent on the same
+  unmeasured native-crypto speedup as the cold-restore budget itself: at
+  10×, each ~3.8s chunk slab drops to ~380ms (still a visible stall); at
+  50–100×, it drops to ~40–80ms, closer to imperceptible.
+- **~6.7 GB allocated and ~55s of continuous BigInt math per cold restore is
+  plausibly a thermal/battery event, not only a GC story.** Sustained CPU
+  load at that volume is a reasonable candidate for driving performance-core
+  throttling, and older/cheaper devices throttle sooner and harder than a
+  current daily-driver iPhone — meaning Caveat 1's "expected to measure
+  worse on an older device" may compound non-linearly (thermal throttling
+  partway through a run), not just linearly with raw clock-speed
+  differences. Not measured here (no thermal-state API was read), offered as
+  a reasoned expectation to carry into the oldest-device follow-up.
 
 ### Caveats
 
@@ -379,7 +570,11 @@ would avoid by construction.
    3.7 MB body. Do not treat the measured 2.47s median `fetchMs` as
    representative of real-world fetch cost; a direct connection or a
    production server path would very likely measure differently in either
-   direction.
+   direction. The 4th-press timeout is *plausibly* transport flakiness
+   rather than an app defect, but this is a hypothesis, not a confirmed
+   finding — no server-log check was made for that specific press (the only
+   request-storm evidence in this document is from a different, earlier,
+   pre-fix session — see the "Pre-fix catastrophic run" section).
 3. **`decodeMs` is also a stand-in, not real work.** On Expo SDK 54 / RN
    0.81, `global.TextDecoder` is Expo's winter-runtime polyfill (a fork of
    the `text-encoding` package) — per record it converts the `Uint8Array` to
@@ -391,39 +586,79 @@ would avoid by construction.
    non-crypto remainder" above, which is fine at its current small share
    (526.51ms of 3315.24ms) but would need separate handling if it ever grew
    to dominate.
-4. **Build caveat: these runs predate `6de466a`.** The build under test
+4. **Build caveat: these runs predate `6de466a`, and re-running on `6de466a`
+   would not by itself fix the memory gap.** The build under test
    (`27ba7c6`) is one commit before the fix that split `dbOpenMs` cleanly
    from `keyDeriveMs`/`resetMs`. Concretely, `dbOpenMs` here still silently
    includes one X25519 `derivePub` call and the `DELETE FROM transactions`
-   reset — immaterial in magnitude (44ms) but worth stating precisely. Also,
-   the memory figures above are three point-in-time before/after samples,
-   not the per-chunk running-maximum sampling added in `6de466a` — so the
-   true **mid-run peak** heap usage was not captured here; the reported 8→16
-   →20 MB progression is evidence of a bounded ceiling across runs, not proof
-   of the peak within any single run. The heap-ceiling and GC-count evidence
-   above is still strong evidence of boundedness even so.
+   reset — immaterial in magnitude (44ms) but worth stating precisely. Also
+   — and this is a correction from an earlier draft of this write-up — the
+   memory figures above are `HermesInternal.getInstrumentedStats()` readings
+   (not `performance.memory`, see the Memory section's instrument
+   correction), which means `performance.memory` is unavailable on this
+   device, which in turn means `6de466a`'s per-chunk peak-sampling
+   (`sampleHeapMB()`, `performance.memory`-only, no fallback) would return
+   **no data** if re-run on this same device. The true **mid-run peak** heap
+   usage remains uncaptured, and simply moving to `6de466a` does not close
+   that gap here — the instrument needs a `HermesInternal` fallback for
+   per-chunk sampling first. The reported 8→16→20 MB progression is "no
+   growth beyond 20 MB observed at three point-in-time samples, still
+   rising run-over-run" — not proof of a peak or a ceiling; see Caveat 6 and
+   the Memory section above.
 5. **The pre-fix catastrophic run is part of this record**, not a separate,
-   discarded incident — see the dedicated section above. Root cause was
-   allocation churn outrunning the collector in a never-yielding loop (plus
-   an independent SQLite connection leak), **not** whole-corpus retention
-   (actual retention was ~5–8 MB). This is real evidence about pure-JS
-   crypto's behavior on Hermes and feeds directly into the native-crypto
-   Phase 2 task above.
+   discarded incident — see the dedicated section above, which has itself
+   been corrected here: the request-log burst (~39 `all.bin` fetches, ~144
+   MB, in ~2s) plus the independently-confirmed SQLite connection leak are
+   **sufficient by themselves** to explain the >500 MB RSS figure, and are
+   the better-evidenced explanation. Allocation churn is demoted to a
+   plausible contributing factor at most — this document's own post-fix
+   data (6.7 GB allocated against a 20 MB heap ceiling) argues against churn
+   being the dominant driver. Not whole-corpus retention either way (actual
+   retention was ~5–8 MB). The GC-pressure figures remain real evidence
+   about pure-JS crypto's cost on Hermes and still feed the native-crypto
+   Phase 2 task, independent of which factor(s) caused the pre-fix crash.
 6. **JS-heap figures are not RSS.** The 8/16/20 MB `js_heapSize` figures in
    the memory table measure the Hermes JS heap only; they must never be
    equated with the pre-fix build's >500 MB RSS figure, which included
    native allocations (SQLite connections, engine overhead, image/font
    caches) entirely outside the JS heap.
+7. **Only the crypto shape was modeled faithfully; the transport shape was
+   not.** `openBlob` ran 3,683 times (genuine per-op singleton HPKE opens,
+   per spec §3.3), but the corpus was fetched as a single pre-batched 3.7 MB
+   `all.bin` response, not as 3,683 individual per-blob HTTP fetches. This
+   was a stated spike-convenience simplification that a prior draft of this
+   verdict dropped; restated in the Setup section above and here because it
+   lands on `fetchMs`, a FAIL-branch input. A production per-blob transport
+   shape is not measured by this spike.
+8. **First paint is unmeasured in Phase 0.** The measured "warm start" 13ms
+   figure is the wall-clock span of a `SELECT COUNT(*)` + `bucketDebits()`
+   aggregate inside a post-mount `useEffect` — after process launch, Hermes
+   bundle evaluation, and React mount have already happened, and before any
+   UI re-render. It is a SQLite read time, not time-to-first-paint. Spec
+   §5's Phase 0 exit criterion names "first paint" explicitly (target <2s
+   warm); this spike never instrumented that, so the criterion, as
+   literally written, has **not** been directly measured — only a fast,
+   suggestive proxy for one part of it.
 
 ### Verdict: **PROVISIONAL PASS**
 
 The replay spike passes provisionally: correctness is unconditional (3/3
-runs, full corpus, all month checks `MATCH`), warm start is far inside
-budget, and cold restore's overage is concentrated almost entirely (94.3%) in
-a stage the architecture already expects to replace with native crypto before
-production. The provisional is not free — it is conditioned on the
-**mandatory early Phase 2 native-crypto (JSI) benchmark** actually landing in
-the 10–100× range the projection above assumes; if it doesn't, this verdict
-must be revisited before Phase 3 turns crypto on for real users (spec §5
-Phase 3). Phase 1 planning (plaintext backend, per spec §5) is unblocked in
-the meantime, since Phase 1 does not depend on the crypto path being fast.
+runs, full corpus, all month checks `MATCH`), the on-device data layer
+itself is effectively free (`computeMs` 0.65ms for a full 3,683-row budget
+aggregate; `insertMs` 271ms; a 13ms post-mount SQLite read — see
+"Affirmative findings"), and cold restore's overage is concentrated almost
+entirely (94.3%) in one pure-JS crypto library the architecture already
+expects to replace with native crypto before production. Cold restore is
+also a once-per-install cost, not a recurring one. **What this verdict does
+not rest on:** the warm-start figure is a SQLite read time, not first paint,
+and the spec's first-paint criterion is unmeasured in Phase 0 (Caveat 8);
+and the 10× native-crypto projection that makes the provisional's central
+bet plausible clears the 10s gate by only ~12% while depending partly on a
+`fetchMs` this document itself disclaims as unrepresentative (Caveat 2,
+"Why the provisional is defensible"). The provisional is not free — it is
+conditioned on the **mandatory early Phase 2 native-crypto (JSI) benchmark**
+actually landing in the 10–100× range the projection above assumes (now
+also written into spec §5's Phase 2 entry); if it doesn't, this verdict must
+be revisited before Phase 3 turns crypto on for real users (spec §5 Phase
+3). Phase 1 planning (plaintext backend, per spec §5) is unblocked in the
+meantime, since Phase 1 does not depend on the crypto path being fast.
