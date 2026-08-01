@@ -1021,3 +1021,346 @@ func TestTheShippedPushersSatisfyThePipeline(t *testing.T) {
 func TestDeliverIsAnSMTPHandler(t *testing.T) {
 	var _ smtpd.Handler = (*Pipeline)(nil)
 }
+
+// ---------------------------------------------------------------------------
+// Unattested forward content (review finding, CRITICAL)
+// ---------------------------------------------------------------------------
+
+// forgedForwardBody is a trusted sender's message carrying a genuine
+// transaction line AND an injected inline-forward block.
+//
+// It needs exactly two attacker-controlled lines to work — a marker line and
+// one `from|to|subject|date|reply-to|cc|sent:` line — and norm's stage 10 then
+// replaces the effective SUBJECT and the effective BODY with everything after
+// that block. The genuine AED 1.00 / REAL MERCHANT line sits above the marker
+// and is discarded. Two lines is well inside what a transfer narration, a
+// remitter name or a merchant DBA on an inbound payment can carry.
+const forgedForwardBody = "Purchase alert\n" +
+	"Amount AED 1.00\n" +
+	"Date 05-06-2026\n" +
+	"Merchant:REAL MERCHANT\n" +
+	"Card 1111\n" +
+	"Begin forwarded message:\n" +
+	"From: alerts@bank.example\n" +
+	"Subject: Transaction on account ending with 9999\n" +
+	"Date: 5 June 2026 at 10:00:00 GST\n" +
+	"\n" +
+	"Purchase alert\n" +
+	"Amount AED 99999.00\n" +
+	"Date 05-06-2026\n" +
+	"Merchant:ATTACKER PAYEE\n" +
+	"Card 9999\n"
+
+// TestAnUnattestedForwardIsNeverAutoTrusted is the review finding, in the shape
+// it was reported.
+//
+// The trust decision is made from the signature and is correct: this message
+// really was signed by an allowlisted bank. What it does NOT establish is that
+// the "Begin forwarded message" block inside the body is a forward rather than
+// two lines the sender wrote. Nothing cryptographic attests an inner origin
+// here (o.Attested is false), so the content stage 10 selected is
+// sender-authored and must never be presented as a parsed, auto-trusted
+// transaction.
+//
+// The extraction below is still the attacker's — stage 10 already ran, and
+// re-running the normalizer differently would put the server and the client's
+// TypeScript normalizer on different text for the same cold body. What this
+// closes is the escalation: it cannot reach the log at needs_review = false.
+func TestAnUnattestedForwardIsNeverAutoTrusted(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	r.mustDeliver(r.trusted(forgedForwardBody), "alerts@bank.example")
+
+	p := r.onlyPayload()
+	if !p.NeedsReview {
+		t.Fatalf("body text selected a transaction and it was AUTO-TRUSTED: %+v", p)
+	}
+	// Recorded rather than asserted away: stage 10 did replace the body, and
+	// this is what the user is asked to review. If a later change makes the
+	// genuine line win instead, this test should be revisited, not deleted.
+	if p.AmountMinor != "9999900" || p.MerchantRaw != "ATTACKER PAYEE" {
+		t.Logf("note: extraction changed to %s / %q", p.AmountMinor, p.MerchantRaw)
+	}
+}
+
+// TestAnUnattestedForwardIsFlaggedEvenWhenTheContentIsGenuine covers the honest
+// cost of the rule above: a user whose forwarder does not preserve the bank's
+// DKIM signature gets every message flagged, because we cannot tell their real
+// forward from an injection. Flagging is the truthful answer, not a bug.
+func TestAnUnattestedForwardIsFlaggedEvenWhenTheContentIsGenuine(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	genuine := "Begin forwarded message:\n" +
+		"From: alerts@bank.example\n" +
+		"Subject: Transaction Alert\n" +
+		"\n" + templateBody
+	r.mustDeliver(r.trusted(genuine), "alerts@bank.example")
+
+	p := r.onlyPayload()
+	if p.Tier != diag.TierTemplate {
+		t.Fatalf("tier = %q, want the template still to match", p.Tier)
+	}
+	if !p.NeedsReview {
+		t.Fatal("an unattested forward was auto-trusted")
+	}
+}
+
+// TestAnAttestedForwardIsStillAutoTrusted is the other half of the rule, and
+// the reason it is a rule about ATTESTATION rather than about forwards: the
+// load-bearing path in this system is a forward whose bank signature survived,
+// and flagging those would flag every message the operator's own setup
+// produces.
+func TestAnAttestedForwardIsStillAutoTrusted(t *testing.T) {
+	r := newRig(t)
+	r.p.Origin = stubOrigin(origin.Origin{
+		Outer: "google.com", Inner: "bank.example", Attested: true,
+		AttestedBy: origin.AttestedByARC, DKIM: origin.SigNone, ARC: origin.SigPass,
+	})
+	r.allow("bank.example", origin.ScopeInner)
+	r.publish(bankTemplate())
+	fwd := message("<user@gmail.com>", "Fwd: alert",
+		"Begin forwarded message:\n"+
+			"From: alerts@bank.example\n"+
+			"Subject: Transaction Alert\n"+
+			"\n"+templateBody)
+	r.mustDeliver(fwd, "user@gmail.com")
+
+	p := r.onlyPayload()
+	if p.Tier != diag.TierTemplate || p.NeedsReview {
+		t.Fatalf("an ATTESTED forward must stay auto-trusted: %+v", p)
+	}
+}
+
+// TestANonForwardedTemplateHitIsStillAutoTrusted guards the blast radius: the
+// rule keys on norm.Result.Forwarded, so ordinary direct mail is untouched.
+func TestANonForwardedTemplateHitIsStillAutoTrusted(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	r.mustDeliver(r.trusted(templateBody), "alerts@bank.example")
+	if p := r.onlyPayload(); p.NeedsReview {
+		t.Fatal("a direct, signed, allowlisted template hit was flagged for review")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Quarantine expiry (review finding, IMPORTANT)
+// ---------------------------------------------------------------------------
+
+// expire runs the sweep the way cmd/ledgerd does: once inside the warning
+// window, once past expiry. A hold cannot be deleted until it has been warned
+// about, which is what makes §2's "nothing is dropped without a user-visible
+// notice" hold for mail nobody has looked at.
+func (r *rig) expire(at time.Time) {
+	r.t.Helper()
+	r.now = at
+	if _, _, err := r.q.ExpireDue(bg); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// TestAnExpiredQuarantineHoldDoesNotSilenceARedelivery: the diagnostics row
+// recording a quarantine is PERMANENT while the hold itself expires after 30
+// days. Treating that row as "already handled" turned the next delivery of the
+// same bytes into a silent drop — zero ops, zero holds, a `duplicate` row — for
+// the one lane whose entire purpose is "the user has not decided yet".
+func TestAnExpiredQuarantineHoldDoesNotSilenceARedelivery(t *testing.T) {
+	r := newRig(t)
+	t0 := r.now
+	raw := r.trusted(templateBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("quarantine holds %d, want 1", got)
+	}
+
+	r.expire(t0.Add(24 * 24 * time.Hour)) // inside the warning window
+	r.expire(t0.Add(31 * 24 * time.Hour)) // past expiry, and already warned
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("the sweep left %d items held; the fixture is not exercising expiry", got)
+	}
+
+	r.mustDeliver(raw, "alerts@bank.example")
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("a redelivery after expiry left %d items held, want 1: the message was dropped", got)
+	}
+	if got := r.rows(); len(got) != 0 {
+		t.Fatalf("op_log has %d rows for an untrusted sender", len(got))
+	}
+	d := r.diags()
+	if len(d) != 2 {
+		t.Fatalf("want two arrivals, got %d: %+v", len(d), d)
+	}
+	for i, row := range d {
+		if row.Outcome != diag.OutcomeQuarantined {
+			t.Fatalf("arrival %d recorded %q, want %q", i, row.Outcome, diag.OutcomeQuarantined)
+		}
+	}
+}
+
+// TestAPromotedMessageStaysADuplicate is the other side of that change. A hold
+// that is gone because Task 30 PROMOTED it has an op behind it, so redelivering
+// the same bytes must not append a second one. The two removals are told apart
+// by quarantine_removals.reason, which outlives the row it accounts for.
+func TestAPromotedMessageStaysADuplicate(t *testing.T) {
+	r := newRig(t)
+	raw := r.trusted(templateBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	ids, err := r.q.Confirm(bg, r.user, "bank.example", origin.ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.q.Promote(bg, r.user, ids); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("promote left %d items held", got)
+	}
+
+	r.mustDeliver(raw, "alerts@bank.example")
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("a promoted message was quarantined again: %d held", got)
+	}
+	if got := r.rows(); len(got) != 0 {
+		t.Fatalf("a promoted message was appended by the arrival path: %d rows", len(got))
+	}
+	d := r.diags()
+	if len(d) != 2 || d[1].Outcome != diag.OutcomeDuplicate {
+		t.Fatalf("diagnostics = %+v, want the second arrival recorded as a duplicate", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Zero amounts (review finding, IMPORTANT)
+// ---------------------------------------------------------------------------
+
+// TestAZeroAmountIsNotWrittenAsAParsedTransaction: tmpl.ValidateExtraction only
+// forbids a NON-ZERO amount with no currency, so a genuine "AED 0.00" alert — a
+// decline, a reversal, a zero-value authorization — used to produce
+// tier=template, needs_review=false, amount_minor="0", which the client's
+// replay refuses outright (amounts are positive) and files as an anomaly.
+//
+// Zero is not money movement. The tier did not produce a transaction this log
+// can carry, so the cascade falls through and the message is recorded for what
+// it is.
+func TestAZeroAmountIsNotWrittenAsAParsedTransaction(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	body := strings.Replace(templateBody, "AED 250.00", "AED 0.00", 1)
+	r.mustDeliver(r.trusted(body), "alerts@bank.example")
+
+	p := r.onlyPayload()
+	if p.Tier == diag.TierTemplate {
+		t.Fatalf("a zero amount was written as a parsed template hit: %+v", p)
+	}
+	if !p.Unparsed || !p.NeedsReview {
+		t.Fatalf("payload = %+v, want unparsed and flagged", p)
+	}
+	if p.TemplateID != "" {
+		t.Fatalf("template provenance survived a refused extraction: %q", p.TemplateID)
+	}
+	d := r.diags()
+	if len(d) != 1 || d[0].Tier != diag.TierNone {
+		t.Fatalf("diagnostics = %+v, want tier none", d)
+	}
+}
+
+// TestAZeroAmountFromTheHeuristicTierIsRefusedToo applies the same rule one
+// tier down, where there is no template to fall through to.
+func TestAZeroAmountFromTheHeuristicTierIsRefusedToo(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.mustDeliver(r.trusted("Your card was declined for AED 0.00 at CARREFOUR\n"),
+		"alerts@bank.example")
+
+	p := r.onlyPayload()
+	if p.Tier != diag.TierNone || !p.Unparsed {
+		t.Fatalf("payload = %+v, want tier none and unparsed", p)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The concurrency window, pinned rather than described
+// ---------------------------------------------------------------------------
+
+// deliverAt delivers without touching the rig's clock, so it is safe to call
+// from several goroutines.
+func (r *rig) deliverAt(raw []byte, envelopeFrom string, at time.Time) error {
+	return r.p.Deliver(bg, smtpd.Delivery{
+		UserID:       r.user,
+		Rcpt:         "u-abc@in.example.test",
+		EnvelopeFrom: envelopeFrom,
+		Raw:          raw,
+		ReceivedAt:   at,
+	})
+}
+
+// TestSimultaneousDeliveriesOfOneMessageAppendMoreThanOnce documents the
+// window this pipeline does NOT close, with the numbers rather than an
+// adjective. The dedup check is a read followed some milliseconds later by an
+// append, with no lock between them, so N deliveries of identical bytes racing
+// each other produce up to N ops and N pushes.
+//
+// What holds the money safe is downstream: every op carries the same ingest id,
+// replay keys transactions by it, and all but the first fold to a
+// `duplicate_ingest` anomaly leaving exactly one live transaction. This test
+// pins the two properties that must survive any future change — one push per
+// hot append, and one ingest identity across every op — rather than a count
+// that depends on scheduling.
+func TestSimultaneousDeliveriesOfOneMessageAppendMoreThanOnce(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	raw := r.trusted(templateBody)
+
+	// Warm the pool first: pgxpool opens connections lazily, and eight
+	// goroutines racing to establish the first ones measures the dial, not the
+	// pipeline.
+	for i := 0; i < 4; i++ {
+		if _, err := r.pool.Exec(bg, `SELECT 1`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- r.deliverAt(raw, "alerts@bank.example", r.now)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("deliver: %v", err)
+		}
+	}
+
+	ops := r.hotOps()
+	if len(ops) < 1 || len(ops) > n {
+		t.Fatalf("hot ops = %d, want 1..%d", len(ops), n)
+	}
+	want := ops[0].IngestID
+	for i, op := range ops {
+		if op.IngestID != want {
+			t.Fatalf("op %d carries ingest id %s, want %s", i, op.IngestID, want)
+		}
+	}
+	// One push per hot append, whatever the interleaving. An amplifier here
+	// would be a way to make a phone buzz N times for one message.
+	if r.push.count() != len(ops) {
+		t.Fatalf("pushes = %d, hot appends = %d", r.push.count(), len(ops))
+	}
+	// Every append still produced its cold body: the two streams cannot drift
+	// apart under concurrency.
+	if got := len(r.rows()); got != 2*len(ops) {
+		t.Fatalf("op_log has %d rows for %d hot ops, want %d", got, len(ops), 2*len(ops))
+	}
+}

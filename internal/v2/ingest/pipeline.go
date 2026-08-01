@@ -322,7 +322,15 @@ func (p *Pipeline) Deliver(ctx context.Context, d smtpd.Delivery) error {
 	rec.BodySizeBucket = sizeBucket(len(res.Text))
 
 	// --- 5-7. The cascade ---------------------------------------------------
-	tr, err := p.parse(ctx, dec.Domain, res)
+	//
+	// o.Attested travels with the normalized text, not just with the trust
+	// decision: it is what says the forward norm may have unwrapped is a real
+	// one rather than two lines the sender typed. See parse.
+	if res.Forwarded && !o.Attested {
+		p.logf("ingest: user %s: the body of a message from %s claims to be a forward and nothing attests it; "+
+			"the extraction will be flagged for review", d.UserID, o.Outer)
+	}
+	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
 	if err != nil {
 		return err
 	}
@@ -344,41 +352,59 @@ func (p *Pipeline) Deliver(ctx context.Context, d smtpd.Delivery) error {
 // 1. Dedup, by ingest identity
 // ---------------------------------------------------------------------------
 
-// handledOutcomes are the outcomes that mean these bytes are already stored
-// somewhere durable for this user: an op exists, or a quarantine row does.
+// handledOutcomes are the diagnostics outcomes that mean an OP exists for these
+// bytes. They are the only outcomes that may be read as "already handled" out of
+// a table whose rows are permanent.
 //
-// 'rejected' is deliberately absent even though this package writes it beside a
-// quarantine hold — the hold itself is what the second half of the check below
-// finds, and a protocol-layer rejection written by smtpd (too_large) stored
-// nothing at all and must not make a later, smaller retry look like a duplicate.
-var handledOutcomes = []string{diag.OutcomeAppended, diag.OutcomeQuarantined, diag.OutcomeSuperseded}
+// 'quarantined' is deliberately NOT here, and its absence is the whole point.
+// A quarantine hold expires after 30 days; the diagnostics row recording it
+// never does. Treating that row as durable storage turned the next delivery of
+// the same bytes — after the hold and its raw body were swept — into a silent
+// drop: no op, no hold, a `duplicate` row, and a message the user was never
+// shown. That is §2's drop policy broken for the one lane whose entire purpose
+// is "the user has not decided yet". The live quarantine row is what answers for
+// that lane, and it answers only while it exists.
+//
+// 'rejected' is absent for a different reason: this package writes it beside a
+// quarantine hold (the hold is what the check finds), and smtpd writes it for a
+// protocol refusal that stored nothing at all — which must not make a later,
+// smaller retry look like a duplicate.
+var handledOutcomes = []string{diag.OutcomeAppended, diag.OutcomeSuperseded}
 
 // alreadyHandled reports whether this (user, ingest id) has already been stored.
 //
-// Two sources, because there are two places a message can end up and each can
-// exist without the other for a window: the quarantine row is written before its
-// diagnostics row, and an append whose diagnostics row failed is still an
-// append. Reading op_log itself is not an option and will not become one — its
-// blobs are ciphertext from Phase 3 on, and an ingest_id column beside them
-// would put the join key permanently outside the envelope.
+// Three sources, because a message can be in three states and each can exist
+// without the others:
 //
-// # The race this does not close, stated rather than implied
+//  1. A LIVE quarantine hold. Expires; see handledOutcomes.
+//  2. A diagnostics row saying an op was appended. Permanent, and so is the op.
+//  3. A quarantine_removals row with reason 'promoted'. This is what tells a
+//     hold that was promoted into the op log (Task 30) apart from one that
+//     merely expired — the two are indistinguishable from the quarantine table,
+//     which no longer holds either, and getting them the wrong way round is a
+//     silent drop in one direction and a duplicate transaction in the other.
+//     It also covers a promote whose diagnostics row failed to write.
 //
-// This is a lookup followed, some milliseconds later, by an append, with no lock
-// between them. Two SIMULTANEOUS deliveries of the same bytes for the same user
-// — a forwarder delivering the same message down two connections at once — can
-// both read "not handled" and both append.
+// Reading op_log itself is not an option and will not become one — its blobs are
+// ciphertext from Phase 3 on, and an ingest_id column beside them would put the
+// join key permanently outside the envelope.
 //
-// It is left open deliberately. The consequence is bounded and visible: replay
-// keys transactions by ingest id, so the second op is refused with a
-// `duplicate_ingest` anomaly and no second transaction is materialized (see
-// oplog's AppendIngest doc and spec §3.3:67). Closing it would mean either a
-// lock held across the whole append — the counter row is already the per-user
-// serialization point, and this would add a second one for a case that does not
-// happen in ordinary SMTP — or a new unencrypted (user_id, ingest_id) table,
-// which is a new metadata surface for a problem the replay engine already
-// resolves. Sequential redelivery, which is what MTA retries actually are, is
-// closed completely.
+// # The window this does not close, with the numbers
+//
+// This is a read followed, some milliseconds later, by an append, with no lock
+// between them. It closes SEQUENTIAL redelivery — which is what an MTA retry
+// actually is — completely. It closes nothing about concurrency: N deliveries of
+// identical bytes racing each other produce up to N appends. Measured at N=8:
+// 8 hot ops, 16 rows and 8 pushes.
+//
+// What keeps the money right is downstream and was verified directly: every op
+// carries the same ingest id, replay keys transactions by it, and 8 identical
+// ingest ids fold to ONE live transaction with 7 `duplicate_ingest` anomalies.
+// The cost of the window is therefore a bounded, visible mess in the log and up
+// to N notifications — not wrong money. Closing it would need either a second
+// per-user lock held across the whole append, or a new unencrypted
+// (user_id, ingest_id) table, which is a new metadata surface for a problem the
+// replay engine already resolves.
 func (p *Pipeline) alreadyHandled(ctx context.Context, userID uuid.UUID, ingestID []byte) (bool, error) {
 	held, err := p.Quarantine.Held(ctx, userID, [][]byte{ingestID})
 	if err != nil {
@@ -392,10 +418,19 @@ func (p *Pipeline) alreadyHandled(ctx context.Context, userID uuid.UUID, ingestI
 	  WHERE user_id = $1 AND ingest_id = $2 AND outcome = ANY($3) LIMIT 1`,
 		userID, ingestID, handledOutcomes).Scan(&one)
 	switch {
+	case err == nil:
+		return true, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return false, fmt.Errorf("ingest: check diagnostics for a redelivery: %w", err)
+	}
+	err = p.Pool.QueryRow(ctx, `SELECT 1 FROM quarantine_removals
+	  WHERE user_id = $1 AND ingest_id = $2 AND reason = $3 LIMIT 1`,
+		userID, ingestID, quarantine.ReasonPromoted).Scan(&one)
+	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
-		return false, fmt.Errorf("ingest: check diagnostics for a redelivery: %w", err)
+		return false, fmt.Errorf("ingest: check quarantine removals for a redelivery: %w", err)
 	}
 	return true, nil
 }
@@ -469,14 +504,67 @@ func (t tierResult) apply(rec *diag.Record) {
 	rec.EmptyGroups = t.emptyGroups
 }
 
+// carriesMoney reports whether an extraction is a transaction this log can
+// carry.
+//
+// A ZERO amount is not one, and refusing it here rather than in tmpl is
+// deliberate. tmpl's job is extraction, and it is right that a genuine "0.00"
+// is a value rather than a failure — Extraction.Produced says so explicitly.
+// The pipeline's job is different: it decides whether what was extracted is a
+// TRANSACTION, and the wire model's amount_minor is a positive decimal that the
+// replay engine refuses outright at zero (client/src/replay/replay.ts,
+// positiveMoney). tmpl.ValidateExtraction only forbids a NON-ZERO amount with
+// no currency, so a real "AED 0.00" alert — a decline, a reversal, a zero-value
+// authorization — used to reach the log as tier=template, needs_review=false
+// and then fail to decode on every device.
+//
+// Zero is not money movement. Refusing it costs nothing a user can see and
+// turns an undecodable "trusted" op into an honest unparsed one.
+func carriesMoney(e tmpl.Extraction) bool { return e.AmountMinor > 0 }
+
 // parse runs the template tier, then the heuristic tier, then gives up in a way
 // that still produces an op.
 //
 // domain is the CRYPTOGRAPHICALLY VERIFIED domain the trust decision matched:
 // the outer signing domain, or the attested inner origin for forwarded mail. It
 // is never an envelope claim, a From header, or norm.Result.From.
-func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result) (tierResult, error) {
+//
+// attested is origin.Origin.Attested, and it decides whether a TEMPLATE hit may
+// be auto-trusted — see unattestedForward below.
+func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, attested bool) (tierResult, error) {
 	out := tierResult{tier: diag.TierNone, needsReview: true, unparsed: true}
+
+	// The body claims to be a forward and nothing cryptographic says it is.
+	//
+	// This is the one place the trust decision and the parse decision are not
+	// about the same bytes. Trust is decided from the signature over the
+	// message as delivered, which is correct. But norm's stage 10 may then have
+	// REPLACED the effective subject and the effective body with an inline
+	// forward's inner content — content selected purely from body text, which
+	// the sender wrote. Two lines inside a trusted sender's message (a marker
+	// line, then one `from:`/`subject:`/`date:` line) are enough to discard
+	// everything above them and substitute an attacker-chosen subject for the
+	// SIGNED one. A transfer narration or a remitter name carries that.
+	//
+	// origin.Origin.Attested is the only evidence that a forward is real: it
+	// means a bank's own signature survived the forward, or a trusted sealer's
+	// ARC chain records that the first hop saw one. Without it, the unwrapped
+	// content cannot be presented as a parsed, auto-trusted transaction.
+	//
+	// Why flag rather than re-normalize without stage 10: the client re-derives
+	// this same text from the cold raw body with the TypeScript normalizer to
+	// check a template match. A server that parsed some messages from
+	// differently-normalized text would put the two executors on different
+	// input for the same message, which is the disagreement the whole
+	// dual-executor contract exists to prevent. So the extraction stands and
+	// the AUTO-TRUST does not.
+	//
+	// The cost is real and is the honest one: a user whose forwarder does not
+	// preserve their bank's DKIM signature sees every message flagged for
+	// review, because we genuinely cannot tell their forward from an injection.
+	// The load-bearing path is unaffected — forwarded bank mail in this corpus
+	// keeps a verifiable signature, so it is attested.
+	unattestedForward := res.Forwarded && !attested
 
 	defs, err := p.templatesFor(ctx, domain)
 	if err != nil {
@@ -503,8 +591,15 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result) (t
 				// and for a forward that is the INNER message's date.
 				ext.PostedAt = res.EmailDate
 			}
+			if !carriesMoney(ext) {
+				// Matched, but produced no money. Not this template's
+				// transaction; keep looking, and do not record it as drift —
+				// nothing about the template failed.
+				continue
+			}
 			return tierResult{
-				tier: diag.TierTemplate, ext: ext, needsReview: false, unparsed: false,
+				tier: diag.TierTemplate, ext: ext,
+				needsReview: unattestedForward, unparsed: false,
 				matched: true, templateID: def.ID, templateVersion: def.Version,
 				emptyGroups: ext.EmptyGroups,
 			}, nil
@@ -521,7 +616,7 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result) (t
 	// mail into a ledger (spec §3.2). NeedsReview is a method on the result
 	// precisely so no caller can construct a trusted one.
 	h, herr := heuristic.Parse(res.Text)
-	if herr == nil {
+	if herr == nil && carriesMoney(h.Extraction) {
 		ext := h.Extraction
 		if ext.PostedAt.IsZero() {
 			ext.PostedAt = res.EmailDate
@@ -741,12 +836,19 @@ func (p *Pipeline) record(ctx context.Context, rec diag.Record) error {
 // recordAfterStore writes the diagnostics row for a message that is ALREADY
 // durably stored, and never escalates a failure to the caller.
 //
-// The trade, stated rather than hidden: a failure here loses one row of the
-// instrument that proves nothing was dropped, and the message itself is
-// unaffected. The alternative — returning the error — asks the sender to
-// deliver the message a second time, and the dedup check would not see the
-// first one, so the price of a lost diagnostics row would be a DUPLICATE
-// TRANSACTION. One is a hole in a report; the other is wrong money.
+// The trade, stated precisely rather than flattered: a failure here loses one
+// row of the instrument that proves nothing was dropped, and the message itself
+// is unaffected. Returning the error instead would ask the sender to deliver the
+// message again IMMEDIATELY, into a dedup check that cannot see the first copy,
+// so it converts a lost report row into a near-certain second append. Swallowing
+// it removes that certainty and nothing more: the row is still missing, so a
+// redelivery days later can still re-append.
+//
+// This ordering therefore closes MTA retry and nothing else. What actually
+// prevents wrong money from a re-append — here, and in the concurrency window
+// alreadyHandled documents — is replay: transactions are keyed by ingest id, and
+// every copy after the first folds to a `duplicate_ingest` anomaly rather than a
+// second transaction.
 //
 // The context is detached from the caller's so a cancelled SMTP session does
 // not take the record with it.
