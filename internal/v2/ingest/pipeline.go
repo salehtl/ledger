@@ -618,35 +618,11 @@ func (p *Pipeline) appendOps(ctx context.Context, d smtpd.Delivery, ingestID []b
 	receivedAt time.Time, res norm.Result, tr tierResult) error {
 	idHex := hex.EncodeToString(ingestID)
 
-	posted := tr.ext.PostedAt
-	if posted.IsZero() {
-		posted = res.EmailDate
+	tp, err := txnPayloadOf(res, tr, receivedAt)
+	if err != nil {
+		return fmt.Errorf("%w (user %s)", err, d.UserID)
 	}
-	if posted.IsZero() {
-		posted = receivedAt
-	}
-	if tr.ext.AmountMinor < 0 {
-		// Unreachable through either tier — both refuse a negative amount — and
-		// checked anyway, because "amounts are always positive and direction
-		// carries the sign" is an invariant of the money model rather than a
-		// property of today's extractors.
-		return fmt.Errorf("ingest: extracted a negative amount for user %s", d.UserID)
-	}
-	payload, err := json.Marshal(txnPayload{
-		AmountMinor:       strconv.FormatInt(tr.ext.AmountMinor, 10),
-		Currency:          tr.ext.Currency,
-		Direction:         tr.ext.Direction,
-		PostedAt:          wireTime(posted),
-		MerchantRaw:       tr.ext.Merchant,
-		Last4:             tr.ext.Last4,
-		IsTransfer:        tr.ext.IsTransfer,
-		Tier:              tr.tier,
-		NeedsReview:       tr.needsReview,
-		Unparsed:          tr.unparsed,
-		TemplateID:        templateProvenance(tr),
-		TemplateVersion:   templateProvenanceVersion(tr),
-		NormalizerVersion: norm.CurrentVersion,
-	})
+	payload, err := json.Marshal(tp)
 	if err != nil {
 		return fmt.Errorf("ingest: encode payload: %w", err)
 	}
@@ -685,6 +661,46 @@ func (p *Pipeline) appendOps(ctx context.Context, d smtpd.Delivery, ingestID []b
 		return fmt.Errorf("ingest: append: %w", err)
 	}
 	return nil
+}
+
+// txnPayloadOf builds the wire payload for one parsed message.
+//
+// It is a function rather than inline code in appendOps because Reprocess
+// builds the same payload from the same inputs and then COMPARES the two: a
+// second construction that resolved posted_at differently, or rendered the
+// amount differently, would report a difference where there is none and
+// supersede a transaction on every re-run. One constructor makes "identical
+// inputs produce identical bytes" a property rather than a coincidence.
+func txnPayloadOf(res norm.Result, tr tierResult, receivedAt time.Time) (txnPayload, error) {
+	posted := tr.ext.PostedAt
+	if posted.IsZero() {
+		posted = res.EmailDate
+	}
+	if posted.IsZero() {
+		posted = receivedAt
+	}
+	if tr.ext.AmountMinor < 0 {
+		// Unreachable through either tier — both refuse a negative amount — and
+		// checked anyway, because "amounts are always positive and direction
+		// carries the sign" is an invariant of the money model rather than a
+		// property of today's extractors.
+		return txnPayload{}, errors.New("ingest: extracted a negative amount")
+	}
+	return txnPayload{
+		AmountMinor:       strconv.FormatInt(tr.ext.AmountMinor, 10),
+		Currency:          tr.ext.Currency,
+		Direction:         tr.ext.Direction,
+		PostedAt:          wireTime(posted),
+		MerchantRaw:       tr.ext.Merchant,
+		Last4:             tr.ext.Last4,
+		IsTransfer:        tr.ext.IsTransfer,
+		Tier:              tr.tier,
+		NeedsReview:       tr.needsReview,
+		Unparsed:          tr.unparsed,
+		TemplateID:        templateProvenance(tr),
+		TemplateVersion:   templateProvenanceVersion(tr),
+		NormalizerVersion: norm.CurrentVersion,
+	}, nil
 }
 
 // templateProvenance reports the template that PRODUCED the transaction, which
