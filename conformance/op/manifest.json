@@ -1,0 +1,73 @@
+{
+  "note": "Encoded by internal/v2/oplog TestWriteConformanceFixtures. parent_version is a raw JSON NUMBER on the wire and a decimal string in this manifest; money and counters are decimal strings on the wire. authored_at_cases pin PARSED INSTANTS, never strings: Go's RFC3339Nano trims trailing zeros where JavaScript's toISOString pads to three digits.",
+  "schema_version": 1,
+  "types": [
+    "txn_ingested",
+    "txn_superseded",
+    "txn_categorized",
+    "txn_split",
+    "txn_edited",
+    "rule_added",
+    "rate_set",
+    "rate_unset",
+    "home_currency_set",
+    "writer_checkpoint"
+  ],
+  "parent_free": [
+    "rate_set",
+    "rate_unset",
+    "home_currency_set",
+    "writer_checkpoint"
+  ],
+  "golden_ops_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2luZ2VzdGVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBJMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOm51bGwsImluZ2VzdF9pZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwYXlsb2FkIjp7ImFtb3VudF9taW5vciI6IjI1MDAwIiwiY3VycmVuY3kiOiJBRUQifX0seyJ2IjoxLCJ0eXBlIjoidHhuX2NhdGVnb3JpemVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBBMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOjMsInBheWxvYWQiOnsiY2F0ZWdvcnkiOiJncm9jZXJpZXMifX0seyJ2IjoxLCJ0eXBlIjoicmF0ZV9zZXQiLCJvcF9pZCI6IjAxSjAwMDAwMDAwMDAwMDAwMDAwMDAwMFIxIiwiYXV0aG9yZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInBhcmVudF92ZXJzaW9uIjpudWxsLCJwYXlsb2FkIjp7ImN1cnJlbmN5IjoiVVNEIiwicmF0ZV9taWNybyI6IjM2NzI1MDAifX1dfQ==",
+  "golden_raw_body_base64": "eyJ2IjoxLCJraW5kIjoicmF3X2JvZHkiLCJpbmdlc3RfaWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicmVjZWl2ZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInJhd19iYXNlNjQiOiJhR2s9In0=",
+  "golden_checkpoint_base64": "eyJoZWFkcyI6W3sid3JpdGVyX2lkIjoiZGV2LWEiLCJzdHJlYW0iOiJob3QiLCJjb3VudGVyIjoiMTIiLCJoYXNoIjoiY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYyJ9LHsid3JpdGVyX2lkIjoiaW5nZXN0Iiwic3RyZWFtIjoiY29sZCIsImNvdW50ZXIiOiI5IiwiaGFzaCI6ImRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQifSx7IndyaXRlcl9pZCI6ImluZ2VzdCIsInN0cmVhbSI6ImhvdCIsImNvdW50ZXIiOiI5IiwiaGFzaCI6ImJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmIifV19",
+  "expect_ops": [
+    {
+      "type": "txn_ingested",
+      "op_id": "01J000000000000000000000I1",
+      "authored_at_unix_ms": "1780653600000",
+      "has_entity": true,
+      "parent_version": null,
+      "ingest_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "type": "txn_categorized",
+      "op_id": "01J000000000000000000000A1",
+      "authored_at_unix_ms": "1780653600000",
+      "has_entity": true,
+      "parent_version": "3",
+      "ingest_id": ""
+    },
+    {
+      "type": "rate_set",
+      "op_id": "01J000000000000000000000R1",
+      "authored_at_unix_ms": "1780653600000",
+      "has_entity": false,
+      "parent_version": null,
+      "ingest_id": ""
+    }
+  ],
+  "authored_at_cases": [
+    {
+      "wire": "2026-06-05T10:00:00Z",
+      "expect_unix_ms": "1780653600000"
+    },
+    {
+      "wire": "2026-06-05T10:00:00.1Z",
+      "expect_unix_ms": "1780653600100"
+    },
+    {
+      "wire": "2026-06-05T10:00:00.0015Z",
+      "expect_unix_ms": "1780653600001"
+    },
+    {
+      "wire": "2026-06-05T10:00:00.0000015Z",
+      "expect_unix_ms": "1780653600000"
+    },
+    {
+      "wire": "2026-06-05T14:00:00.5+04:00",
+      "expect_unix_ms": "1780653600500"
+    }
+  ]
+}
