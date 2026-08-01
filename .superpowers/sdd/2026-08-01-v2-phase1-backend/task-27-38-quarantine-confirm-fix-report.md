@@ -215,15 +215,28 @@ instead of one.
 
 ## Verification
 
-Isolated worktree at `587c568` + exactly these files (the shared tree carries
-several other sessions' in-flight work; `reprocess.go` and `api.go` were
-reconstructed from HEAD plus this round's hunks only):
+The shared tree carried four other sessions' in-flight work throughout this
+round, so nothing here was verified against it. `reprocess.go`, `api.go` and
+`pipeline.go` were reconstructed as HEAD plus this round's hunks only — the
+other sessions' uncommitted edits to the first two are left in the working tree
+for them to commit — and the whole set was staged as explicit blobs through a
+temporary index, so no foreign staged entry could be swept in.
+
+Gate, in a **clean worktree checked out at this commit** (parent `d08daef`),
+with an empty `git status`:
 
 ```
 go clean -testcache && bash scripts/v2-check.sh
 → v2-check: OK (go + client + conformance)   exit 0
+   go vet + go test ./internal/v2/... ./cmd/ledgerd, then 1910 client tests, 0 fail
 ```
 
-Mutation battery: 16/16 killed, 0 survivors, plus the two race mutations
-(claim removed → 5/5 reproductions; diagnostics moved back after the promote →
-retry double-appends).
+One earlier run of the same gate at the same tree failed on
+`client/src/replay/fx.test.ts` — a 5s test timing out at 7.5s while four other
+sessions' suites were running on the box. It passes in isolation (51/51, 5.19s)
+and passed on the clean re-run above; it is load, not this change.
+
+Mutation battery, run against the committed tree: **16/16 killed, 0 survivors**,
+plus the two race mutations — remove the promotion claim and defect 1
+reproduces 5/5; move the diagnostics row back after the promote and defect 2's
+retry appends a second copy.
