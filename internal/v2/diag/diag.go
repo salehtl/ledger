@@ -317,6 +317,30 @@ func (r Record) validate() (Record, error) {
 		return r, badf("arc_result is not one of %v", arcResults)
 	}
 
+	// The rule inner_origin_domain has always had, applied to the column the
+	// TRUST DECISION actually keys on. The unprefixed spelling of sender_domain
+	// is a claim that a signature this process verified names that domain;
+	// without a passing DKIM or ARC there is no such signature, and the only
+	// remaining source is the envelope — which is the attacker's assertion the
+	// prefix exists to keep distinguishable.
+	//
+	// This is not only a labelling question. admin.reprocessTemplate reads these
+	// values back through tmpl.MatchesSenderDomain to decide whose mail a
+	// template republish re-parses, so an unattested domain laundered into the
+	// verified form widens that set.
+	//
+	// origin.Resolve already maintains the invariant — Origin.Outer is prefixed
+	// unless DKIM passed, an ARC chain sealed the message, or a proved relay
+	// handed it over, all of which set one of these two verdicts. The check is
+	// here, and again as a CHECK constraint, because "the current caller does the
+	// right thing" is not the same guarantee.
+	if r.SenderDomain != "" && !strings.HasPrefix(r.SenderDomain, UnverifiedPrefix) &&
+		r.DKIMResult != ResultPass && r.ARCResult != ResultPass {
+		return r, badf("sender_domain is in the verified form but neither dkim_result nor "+
+			"arc_result passed; a domain nothing attested must carry the %s prefix",
+			UnverifiedPrefix)
+	}
+
 	// The most content-adjacent field in the table. An inner origin is only
 	// knowable from an attestation; without one, the sole available source is
 	// the forwarded body's own From line, which is content and is untrusted.

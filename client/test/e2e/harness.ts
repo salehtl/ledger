@@ -19,6 +19,11 @@
  *     `config`'s own defaults own the other two, and a stack that took them
  *     would collide with a hand-started `ledgerd`. Every listener here is drawn
  *     from 18000–18999 and bound to `127.0.0.1`.
+ *   - Both of the above are CHECKED, not merely done:
+ *     {@link assertScratchListeners} runs on the merged spawn environment and
+ *     throws before anything is created. Setting the variables was a habit with
+ *     a comment on it and no test; now dropping one fails every e2e test
+ *     immediately instead of binding the production mail port for 60 seconds.
  *   - **Never `/var/lib/ledger`, never the shared database.** Each stack
  *     creates and drops its OWN Postgres database inside the throwaway cluster
  *     `scripts/v2-check.sh` boots.
@@ -85,8 +90,78 @@ const ADMIN_DSN = process.env["LEDGER_TEST_POSTGRES_URL"] ?? "";
 const PORT_LO = 18000;
 const PORT_HI = 19000; // exclusive
 
+/**
+ * The listener environment variables every spawn must set, and the ports no
+ * spawn may ever be pointed at. See {@link assertScratchListeners}.
+ *
+ * `mail.smtp_listen` DEFAULTS to `:25` — every interface, the live MTA port —
+ * so LEDGER_SMTP_LISTEN is not one setting among three: it is the one whose
+ * ABSENCE is dangerous rather than merely wrong.
+ */
+const LISTENER_VARS = ["LEDGER_HTTP_LISTEN", "LEDGER_SMTP_LISTEN", "LEDGER_ADMIN_LISTEN"] as const;
+const FORBIDDEN_PORTS: Record<number, string> = {
+  25: "the live MTA port, and this box is a production mail host",
+  8080: "v1's ledger, running on this box right now",
+  8443: "config's own default HTTPS listener",
+  8079: "config's own default admin listener",
+};
+
 /** Ports handed out by THIS process, so two stacks in one suite cannot collide. */
 const claimed = new Set<number>();
+
+/**
+ * Refuses to spawn a test server unless EVERY listener is a loopback scratch
+ * port. Called by {@link startStack} on the fully-merged environment — after
+ * `opts.env`, so a caller cannot override its way past it either.
+ *
+ * This is the harness's primary safety rail made enforceable instead of
+ * remembered. Setting `LEDGER_SMTP_LISTEN` on every spawn was a line in
+ * `startStack` with a comment on it and no test: delete the line and a
+ * `bun test` binds `:25` on every interface — including the Tailscale one — on
+ * a box where `:25` is free, where the harness runs as root, and which is the
+ * production host. The failure is loud (readiness times out after 60s) but it
+ * happens AFTER the bind.
+ *
+ * It is deliberately a positive rule — the value must be `127.0.0.1:<scratch>`
+ * — rather than a blocklist of bad ports. A blocklist has to be right about
+ * every future port; this has to be right about one address and one range, and
+ * an unset variable fails it for the same reason a wrong one does. The
+ * forbidden-port table exists only to make the error message name what was
+ * nearly hit.
+ *
+ * @throws if any listener is unset, not loopback, or outside 18000–18999.
+ */
+export function assertScratchListeners(env: Record<string, string>): void {
+  for (const name of LISTENER_VARS) {
+    const value = env[name];
+    if (value === undefined || value === "") {
+      throw new Error(
+        `${name} is not set by the harness: the spawned process would take it from the ` +
+          `ambient shell or from ledgerd's own default, and mail.smtp_listen defaults to ` +
+          `:25 on every interface. This harness runs on the production mail host; every ` +
+          `listener must be an explicit loopback scratch port set right here.`,
+      );
+    }
+    const m = /^127\.0\.0\.1:(\d+)$/.exec(value);
+    if (m === null) {
+      throw new Error(
+        `${name}=${JSON.stringify(value)} is not a loopback scratch listener. ` +
+          `A test server may only bind 127.0.0.1:${PORT_LO}-${PORT_HI - 1}.`,
+      );
+    }
+    const port = Number(m[1]);
+    const why = FORBIDDEN_PORTS[port];
+    if (why !== undefined) {
+      throw new Error(`${name} points at port ${port}: ${why}. Refusing to start.`);
+    }
+    if (port < PORT_LO || port >= PORT_HI) {
+      throw new Error(
+        `${name}=${value} is outside the scratch range ${PORT_LO}-${PORT_HI - 1}. ` +
+          `Ports outside it belong to something real on this box.`,
+      );
+    }
+  }
+}
 
 function bindable(port: number): boolean {
   try {
@@ -482,12 +557,8 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
   installSafetyNets();
 
   const binary = await ledgerdBinary();
-  const dir = mkdtempSync(join(tmpdir(), "ledger-e2e-"));
-  mkdirSync(join(dir, "state"), { recursive: true, mode: 0o700 });
 
   const database = `t_e2e_${process.pid}_${nextStackID++}`;
-  psql(ADMIN_DSN, `CREATE DATABASE ${database}`);
-
   const httpPort = scratchPort("LEDGER_E2E_HTTP_PORT");
   const smtpPort = scratchPort("LEDGER_E2E_SMTP_PORT");
   const adminPort = scratchPort("LEDGER_E2E_ADMIN_PORT");
@@ -498,7 +569,9 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     LEDGER_MAIL_DOMAIN: mailDomain,
     LEDGER_PG_DSN: dsnFor(database),
     LEDGER_HTTP_LISTEN: `127.0.0.1:${httpPort}`,
-    // The rail. Without this the process inherits `:25` from the defaults.
+    // The rail. Without this the process inherits `:25` from the defaults —
+    // and assertScratchListeners below refuses to spawn at all if it is ever
+    // dropped, so this line is enforced rather than remembered.
     LEDGER_SMTP_LISTEN: `127.0.0.1:${smtpPort}`,
     LEDGER_ADMIN_LISTEN: `127.0.0.1:${adminPort}`,
     // Set unconditionally: with no token the console is not served AT ALL, and
@@ -511,6 +584,14 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     LEDGER_DICT_HMAC_KEY: randomHex(32),
     ...(opts.env ?? {}),
   };
+  // The rail, enforced. It runs on the MERGED environment — so `opts.env`
+  // cannot override its way past it — and BEFORE the scratch directory and the
+  // database exist, so a refusal leaves nothing behind to clean up.
+  assertScratchListeners(env);
+
+  const dir = mkdtempSync(join(tmpdir(), "ledger-e2e-"));
+  mkdirSync(join(dir, "state"), { recursive: true, mode: 0o700 });
+  psql(ADMIN_DSN, `CREATE DATABASE ${database}`);
 
   const args = ["serve"];
   if (opts.devAuth !== false) args.push("--dev-auth");

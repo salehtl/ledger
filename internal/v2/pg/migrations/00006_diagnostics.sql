@@ -202,6 +202,22 @@ CREATE TABLE parse_diagnostics (
     inner_origin_domain IS NULL OR dkim_result = 'pass' OR arc_result = 'pass'
   ),
 
+  -- And the same rule for the column the TRUST DECISION keys on, which is the
+  -- one that needed it most. The unprefixed spelling of sender_domain means
+  -- "a signature we verified names this domain"; with neither dkim_result nor
+  -- arc_result passing there is no such signature and the only available
+  -- source is the envelope, which is exactly the assertion the 'unverified:'
+  -- prefix exists to keep distinguishable from evidence.
+  --
+  -- It has a live consumer: admin.reprocessTemplate reads these values back
+  -- through tmpl.MatchesSenderDomain to decide whose mail a template republish
+  -- re-parses. An unattested domain laundered into the verified form widens
+  -- that set. diag.Record enforces the rule in Go; this is the guarantee.
+  CONSTRAINT parse_diagnostics_verified_sender_needs_an_attestation CHECK (
+    sender_domain = '' OR sender_domain LIKE 'unverified:%'
+    OR dkim_result = 'pass' OR arc_result = 'pass'
+  ),
+
   -- Only a refusal has a reason, and every refusal has one. Otherwise
   -- reject_reason drifts into a general-purpose note field, which is how free
   -- text gets into tables that promised not to have any.

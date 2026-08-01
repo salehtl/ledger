@@ -139,6 +139,159 @@ func TestRecordStructHasExactlyTheDisclosedFields(t *testing.T) {
 	}
 }
 
+// roundTripAssertions is what a write-then-read must preserve, per disclosed
+// column. Keyed by COLUMN so the test below can require that every one of the
+// nineteen is actually asserted on.
+//
+// Values are rendered to something reflect.DeepEqual compares meaningfully: a
+// timestamp through the database comes back in a different location, and the
+// empty array comes back as an empty slice however it went in.
+var roundTripAssertions = map[string]func(Record) any{
+	"id":                  func(r Record) any { return r.ID },
+	"user_id":             func(r Record) any { return r.UserID },
+	"event":               func(r Record) any { return r.Event },
+	"ingest_id":           func(r Record) any { return r.IngestID },
+	"received_at":         func(r Record) any { return r.ReceivedAt.UTC().Format(time.RFC3339Nano) },
+	"sender_domain":       func(r Record) any { return r.SenderDomain },
+	"dkim_result":         func(r Record) any { return r.DKIMResult },
+	"arc_result":          func(r Record) any { return r.ARCResult },
+	"inner_origin_domain": func(r Record) any { return r.InnerOriginDomain },
+	"template_id":         func(r Record) any { return r.TemplateID },
+	"template_version":    func(r Record) any { return r.TemplateVersion },
+	"normalizer_version":  func(r Record) any { return r.NormalizerVersion },
+	"matched":             func(r Record) any { return r.Matched },
+	"empty_groups": func(r Record) any {
+		if len(r.EmptyGroups) == 0 {
+			return []string{}
+		}
+		return r.EmptyGroups
+	},
+	"tier":             func(r Record) any { return r.Tier },
+	"body_size_bucket": func(r Record) any { return r.BodySizeBucket },
+	"structure_sig":    func(r Record) any { return r.StructureSig },
+	"outcome":          func(r Record) any { return r.Outcome },
+	"reject_reason":    func(r Record) any { return r.RejectReason },
+}
+
+// Nothing else in this package pins the INSERT's argument list to its column
+// list. Every read-back that existed was either the column NAMES from
+// information_schema, one column in isolation, a count, or a deliberately
+// order-insensitive concatenation of all the text — so transposing
+// r.DKIMResult and r.ARCResult in Diag.Record's Pool.Exec call passed the
+// entire suite. The two columns share three of four enum values, so the swap
+// clears the Go validation and every CHECK, and the pair records THE TRUST
+// DECISION: which signature said this message came from the bank it claims.
+//
+// The fixtures below therefore give every column a value distinct from every
+// other column of the same type, and dkim_result differs from arc_result in
+// each record while staying legal in both enums — so a transposition is
+// visible as a wrong VALUE rather than as a constraint violation, which is the
+// case a test can accidentally pass.
+func TestEveryDisclosedColumnRoundTripsThroughTheInsert(t *testing.T) {
+	for _, col := range disclosedColumns {
+		if _, ok := roundTripAssertions[col]; !ok {
+			t.Fatalf("no round-trip assertion for the disclosed column %s: a column whose "+
+				"value nothing reads back is a column the INSERT can misplace silently", col)
+		}
+	}
+	if len(roundTripAssertions) != len(disclosedColumns) {
+		t.Fatalf("%d round-trip assertions for %d disclosed columns",
+			len(roundTripAssertions), len(disclosedColumns))
+	}
+
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	u := insertUser(t, pool)
+	t0 := *now
+
+	want := []Record{
+		{
+			ID:                uuid.New(),
+			UserID:            uuid.NullUUID{UUID: u, Valid: true},
+			Event:             EventArrival,
+			IngestID:          ingestID(0x61),
+			ReceivedAt:        t0,
+			SenderDomain:      "gmail.com",
+			DKIMResult:        ResultPass, // both values below are legal in the
+			ARCResult:         ResultNone, // OTHER column's enum too
+			InnerOriginDomain: "dib.ae",
+			TemplateID:        "dib.card",
+			TemplateVersion:   3,
+			NormalizerVersion: 1,
+			Matched:           true,
+			EmptyGroups:       []string{"amount_amt", "merchant_v"},
+			Tier:              TierTemplate,
+			BodySizeBucket:    4096,
+			StructureSig:      StructureSig("Amount:\nAED 250.00"),
+			Outcome:           OutcomeAppended,
+		},
+		{
+			// The other shape entirely: unscoped, refused, nothing parsed.
+			ID:                uuid.New(),
+			Event:             EventArrival,
+			IngestID:          ingestID(0x62),
+			ReceivedAt:        t0.Add(time.Minute),
+			SenderDomain:      UnverifiedPrefix + "sender.test",
+			DKIMResult:        ResultFail,
+			ARCResult:         ResultNone,
+			NormalizerVersion: 0,
+			Tier:              TierNone,
+			BodySizeBucket:    0,
+			Outcome:           OutcomeRejected,
+			RejectReason:      RejectTooLarge,
+		},
+		{
+			// A reprocess, so `event` and `outcome` are each pinned on more
+			// than one value and cannot be reading each other.
+			ID:                uuid.New(),
+			UserID:            uuid.NullUUID{UUID: u, Valid: true},
+			Event:             EventReprocess,
+			IngestID:          ingestID(0x63),
+			ReceivedAt:        t0.Add(2 * time.Minute),
+			SenderDomain:      "emiratesnbd.com",
+			DKIMResult:        ResultNone,
+			ARCResult:         ResultPass,
+			InnerOriginDomain: "alerts.emiratesnbd.com",
+			TemplateID:        "enbd.alert",
+			TemplateVersion:   2,
+			NormalizerVersion: 1,
+			Matched:           true,
+			EmptyGroups:       []string{"last4_v"},
+			Tier:              TierTemplate,
+			BodySizeBucket:    16384,
+			StructureSig:      StructureSig("Dear Customer\nAED 1.00"),
+			Outcome:           OutcomeSuperseded,
+		},
+	}
+	for i, r := range want {
+		if err := d.Record(bg, r); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+
+	got, err := d.Query(bg, Filter{From: t0.Add(-time.Hour), To: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[uuid.UUID]Record{}
+	for _, r := range got {
+		byID[r.ID] = r
+	}
+	for _, w := range want {
+		g, ok := byID[w.ID]
+		if !ok {
+			t.Fatalf("record %s did not come back at all", w.ID)
+		}
+		for _, col := range disclosedColumns {
+			read := roundTripAssertions[col]
+			if !reflect.DeepEqual(read(w), read(g)) {
+				t.Errorf("%s.%s: wrote %v, read back %v — the INSERT's argument list does "+
+					"not line up with its column list", w.IngestID[:1], col, read(w), read(g))
+			}
+		}
+	}
+}
+
 // specSection2 returns the text of spec §2, the breach inventory that is
 // adopted verbatim into the privacy page.
 func specSection2(t *testing.T) string {
@@ -643,6 +796,73 @@ func TestInnerOriginDomainRequiresAnAttestation(t *testing.T) {
 		user, ingestID(0x77), StructureSig("x"))
 	if err == nil {
 		t.Fatal("the database accepted an unattested inner origin")
+	}
+}
+
+// The same rule for sender_domain, which had no version of it at all: the
+// UNPREFIXED spelling means "a signature we verified names this domain", and
+// nothing enforced that a signature had in fact verified.
+//
+// It is not a labelling nicety. admin.reprocessTemplate reads this column back
+// through tmpl.MatchesSenderDomain to decide whose mail a template republish
+// re-parses, so a domain nobody attested wearing the verified spelling widens
+// that set — the exact laundering the prefix exists to prevent, one column over
+// from the one that got a CHECK for it.
+func TestAVerifiedSenderDomainRequiresAnAttestation(t *testing.T) {
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	user := insertUser(t, pool)
+
+	unattested := []struct{ dkim, arc string }{
+		{ResultNone, ResultNone},
+		{ResultFail, ResultNone},
+		{ResultTempError, ResultNone},
+		{ResultFail, ResultFail},
+	}
+	for i, att := range unattested {
+		r := validRecord(user, *now)
+		r.IngestID = ingestID(byte(0x80 + i))
+		r.DKIMResult, r.ARCResult = att.dkim, att.arc
+		r.SenderDomain = "emiratesnbd.com" // the VERIFIED spelling
+		r.InnerOriginDomain = ""
+		if err := d.Record(bg, r); err == nil {
+			t.Errorf("dkim=%s arc=%s: an unattested domain was stored as a verified one",
+				att.dkim, att.arc)
+		}
+		// The same row is fine once it says what it is.
+		r.IngestID = ingestID(byte(0x90 + i))
+		r.SenderDomain = UnverifiedPrefix + "emiratesnbd.com"
+		if err := d.Record(bg, r); err != nil {
+			t.Errorf("dkim=%s arc=%s: a marked envelope domain was refused: %v", att.dkim, att.arc, err)
+		}
+	}
+
+	// Either attestation alone carries the verified form, and "" needs none.
+	for i, att := range []struct{ dkim, arc string }{{ResultPass, ResultNone}, {ResultNone, ResultPass}} {
+		r := validRecord(user, *now)
+		r.IngestID = ingestID(byte(0xa0 + i))
+		r.DKIMResult, r.ARCResult = att.dkim, att.arc
+		r.SenderDomain = "emiratesnbd.com"
+		r.InnerOriginDomain = ""
+		if err := d.Record(bg, r); err != nil {
+			t.Errorf("dkim=%s arc=%s: %v", att.dkim, att.arc, err)
+		}
+	}
+	empty := validRecord(user, *now)
+	empty.IngestID = ingestID(0xb0)
+	empty.DKIMResult, empty.ARCResult, empty.SenderDomain, empty.InnerOriginDomain = ResultNone, ResultNone, "", ""
+	if err := d.Record(bg, empty); err != nil {
+		t.Errorf("a null sender with no verdicts was refused: %v", err)
+	}
+
+	// And the database enforces it independently of Go, which is the half that
+	// still holds for a repair script or a future caller.
+	if _, err := pool.Exec(bg, `INSERT INTO parse_diagnostics
+	  (user_id,event,ingest_id,received_at,sender_domain,dkim_result,arc_result,
+	   normalizer_version,matched,tier,body_size_bucket,structure_sig,outcome)
+	  VALUES ($1,'arrival',$2,now(),'emiratesnbd.com','none','none',1,false,'none',1024,$3,'quarantined')`,
+		user, ingestID(0xc0), StructureSig("x")); err == nil {
+		t.Fatal("the database accepted an unattested domain in the verified form")
 	}
 }
 
