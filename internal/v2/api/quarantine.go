@@ -47,6 +47,7 @@ package api
 // a warning has been on this channel for a whole warning window.
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -61,6 +62,20 @@ import (
 const (
 	defaultQuarantineLimit = 50
 	maxQuarantineLimit     = 200
+
+	// defaultMaxReingestPerConfirm bounds how many held messages one
+	// confirmation re-ingests.
+	//
+	// It exists because the work is real — a normalize, a parse and two appends
+	// per message — and because ingest.Reprocess refuses more than 500 ids in
+	// one call outright, so an unbounded pass-through would fail ENTIRELY on an
+	// account with a large backlog rather than making progress. What did not fit
+	// is reported as `remaining`, and confirming again continues: the second
+	// call re-reads the (now shorter) held set, because Confirm is idempotent.
+	//
+	// 500 is the same number as ingest's own cap, so a single batch is always
+	// legal. At the per-address daily ceiling that is ten days of held mail.
+	defaultMaxReingestPerConfirm = 500
 
 	// quarantineBlobBudget bounds the raw-message bytes one ?include_blob=1
 	// page may carry, and it is chosen against PEAK MEMORY rather than
@@ -155,13 +170,59 @@ type ConfirmSenderRequest struct {
 	Scope  string `json:"scope"` // "outer" | "inner"
 }
 
-// ConfirmSenderResponse names the messages now eligible for re-ingest. The
-// re-ingest itself (Task 30) is what appends them to the op log; confirming
-// changes no chain.
+// ConfirmSenderResponse names the messages the confirmation released, and what
+// re-ingesting them did.
+//
+// IngestIDs is the set the allowlist row made eligible; Reingest is the outcome
+// of feeding exactly that set back through the parse cascade, which is the
+// moment those messages enter the integrity chains (spec §3.2:58).
 type ConfirmSenderResponse struct {
 	Domain    string   `json:"domain"`
 	Scope     string   `json:"scope"`
 	IngestIDs []string `json:"ingest_ids"` // hex sha256
+	// Reingest is absent when no reprocessor is configured — a deployment where
+	// confirming allowlists the origin and nothing else. It is never absent in
+	// a Phase 1 server.
+	Reingest *ReingestReport `json:"reingest,omitempty"`
+}
+
+// Report is one re-ingest, in outcomes that sum to Examined. It mirrors
+// ingest.Report; see [Reprocessor] for why this package declares its own.
+type Report struct {
+	Examined   int `json:"examined"`
+	Appended   int `json:"appended"`
+	Superseded int `json:"superseded"`
+	Unchanged  int `json:"unchanged"`
+	Failed     int `json:"failed"`
+}
+
+// ReingestReport is [Report] plus the two facts a caller needs to know whether
+// it is finished.
+type ReingestReport struct {
+	Report
+	// Remaining is how many released ids this call did NOT attempt, because one
+	// confirmation re-ingests a bounded batch. Confirming again continues.
+	Remaining int `json:"remaining"`
+	// Incomplete is set when the re-ingest returned an infrastructure error.
+	// The counts describe what did happen; the rest of the mail is still held,
+	// still visible in the quarantine lane, and still confirmable.
+	Incomplete bool `json:"incomplete,omitempty"`
+}
+
+// Reprocessor re-runs the parse cascade over mail this user already has, which
+// for held mail is what appends it for the first time.
+//
+// An interface, and this package declares its own rather than importing
+// internal/v2/ingest, for the same reason internal/v2/admin does: ingest
+// imports half of v2, and an API package that could not be tested without
+// constructing a whole pipeline, a trust store and an appender is one nobody
+// tests. The adapter lives in cmd/ledgerd, where the two Report types meet.
+//
+// ⚠ PHASE 1 ONLY, inherited from what it calls: server-side reprocessing reads
+// plaintext bodies, which are HPKE-sealed from Phase 3 on. See Task 30's
+// docs/superpowers/specs/v2-phase1-only-inventory.md.
+type Reprocessor interface {
+	Reprocess(ctx context.Context, userID uuid.UUID, ingestIDs [][]byte) (Report, error)
 }
 
 // handleQuarantine serves the lane.
@@ -325,7 +386,69 @@ func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, use
 	for _, id := range ids {
 		out.IngestIDs = append(out.IngestIDs, hex.EncodeToString(id))
 	}
+	out.Reingest = s.reingest(r.Context(), userID, ids)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// reingest feeds the just-released ids back through the parse cascade.
+//
+// # Why this is here and not a second endpoint
+//
+// Confirming a sender is the ONLY way held mail ever enters the integrity
+// chains (internal/v2/ingest/reprocess.go). Before this, the confirmation
+// allowlisted the domain and REPORTED the eligible ids, and nothing consumed
+// them: `Pipeline.Reprocess`'s only caller was the admin console's
+// template-scoped republish, which cannot name an ingest id. So a client that
+// did not make a second call the API never described left the mail the user had
+// just vouched for sitting in quarantine until it EXPIRED — announced, per §2,
+// but gone. A design where forgetting a call drops a user's bank mail is the
+// defect; splitting it into two endpoints preserves it.
+//
+// # Why a failure here is not a failed confirmation
+//
+// The allowlist row is already committed and the held mail is untouched — a
+// re-ingest that fails leaves every message exactly where it was, visible in
+// the lane and confirmable again. Answering 500 would tell the user their bank
+// was not trusted when it was, and the natural response (confirm again) is
+// already the repair.
+//
+// # Why repeating this is cheap
+//
+// Confirm returns the ids still HELD for that origin, and a promoted message is
+// no longer held. So a second confirmation of an already-confirmed origin
+// re-ingests nothing, which is what keeps this route's deliberate absence of a
+// rate limit (Task 27) safe.
+func (s *Server) reingest(ctx context.Context, userID uuid.UUID, ids [][]byte) *ReingestReport {
+	// Absent means "this deployment cannot re-ingest"; an all-zero report means
+	// "there was nothing held to re-ingest". Collapsing them would make a
+	// confirmation of an origin with no held mail indistinguishable from one on
+	// a server where the promotion path is missing, which is the exact confusion
+	// this whole seam exists to end.
+	if s.Reprocessor == nil {
+		return nil
+	}
+	out := &ReingestReport{}
+	if len(ids) == 0 {
+		return out
+	}
+	batch := ids
+	if limit := s.maxReingestPerConfirm(); len(batch) > limit {
+		batch, out.Remaining = batch[:limit], len(batch)-limit
+	}
+	rep, err := s.Reprocessor.Reprocess(ctx, userID, batch)
+	out.Report = rep
+	if err != nil {
+		s.logf("api: re-ingesting %d confirmed message(s) for %s: %v", len(batch), userID, err)
+		out.Incomplete = true
+	}
+	return out
+}
+
+func (s *Server) maxReingestPerConfirm() int {
+	if s.MaxReingestPerConfirm > 0 {
+		return s.MaxReingestPerConfirm
+	}
+	return defaultMaxReingestPerConfirm
 }
 
 func (s *Server) quarantineByteBudget() int {

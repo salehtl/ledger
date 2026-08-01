@@ -184,12 +184,16 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     expect(held.items[0]?.ingest_id).toBe(await sha256Hex(first));
 
     // 2. Confirm the bank as an outer origin — it signed the message as we
-    //    received it, with no forwarder in between.
-    const confirmed = await s.json<{ ingest_ids: string[] }>(a, "POST", "/api/v1/quarantine/confirm", {
-      domain: "emiratesnbd.com",
-      scope: "outer",
-    });
+    //    received it, with no forwarder in between. The confirmation also
+    //    RE-INGESTS what it releases (Task 38): held mail enters the integrity
+    //    chains at that moment and nowhere else, so `first` becomes an op here
+    //    rather than waiting in quarantine for a second call.
+    const confirmed = await s.json<{ ingest_ids: string[]; reingest: { appended: number } }>(
+      a, "POST", "/api/v1/quarantine/confirm", { domain: "emiratesnbd.com", scope: "outer" },
+    );
     expect(confirmed.ingest_ids).toContain(await sha256Hex(first));
+    expect(confirmed.reingest.appended).toBe(1);
+    expect((await s.json<{ items: unknown[] }>(a, "GET", "/api/v1/quarantine")).items).toHaveLength(0);
 
     // 3. The trusted lane. This is the fixture with three lines beginning `.`
     //    (`grep -c '^\.' internal/v2/origin/testdata/enbd-proofpoint-p.eml`),
@@ -217,7 +221,7 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     const { ops } = a.materialize();
     const ingested = ops.filter((o) => o.op.type === "txn_ingested");
     expect(ingested.map((o) => o.op.ingest_id).sort()).toEqual(
-      [await sha256Hex(second), await sha256Hex(derived)].sort(),
+      [await sha256Hex(first), await sha256Hex(second), await sha256Hex(derived)].sort(),
     );
 
     // The cold stream carries the raw mail on its own chain, at its own
@@ -226,16 +230,16 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     // separate, explicit step (spec §3.3:72) rather than something a body
     // fetch does for itself.
     const pins = await a.pullColdHashes();
-    expect(pins.pinned).toBe(2);
+    expect(pins.pinned).toBe(3);
     await a.pull({ stream: STREAM_COLD });
     expect(a.cursor(STREAM_HOT)).toBeGreaterThan(0n);
     expect(a.cursor(STREAM_COLD)).toBeGreaterThan(0n);
     // The COUNTER, not the cursor: cursors address the shared per-user `seq`
-    // space (two messages produced four rows across the two streams), while
-    // the counter is the position on the `(ingest, cold)` chain — two bodies,
-    // counters 1 and 2, exactly as Decision 13 says.
-    expect(a.pinnedHead("ingest", STREAM_COLD).counter).toBe(2n);
-    expect(a.pinnedHead("ingest", STREAM_HOT).counter).toBe(2n);
+    // space (three messages produced six rows across the two streams), while
+    // the counter is the position on the `(ingest, cold)` chain — three bodies,
+    // counters 1 to 3, exactly as Decision 13 says.
+    expect(a.pinnedHead("ingest", STREAM_COLD).counter).toBe(3n);
+    expect(a.pinnedHead("ingest", STREAM_HOT).counter).toBe(3n);
   }, TIMEOUT);
 
   // -------------------------------------------------------------------------

@@ -354,6 +354,10 @@ func runServe(cfg config.Config) error {
 	// every one of the relay's forwards with a 404, which its drain reads as a
 	// permanent rejection and files a whole spool under `rejected/`.
 	syncAPI.Mail = pipeline
+	// The same pipeline again, for the user-facing half of Task 30: confirming a
+	// sender must re-ingest the mail that confirmation releases, or it sits held
+	// until it expires. See api.Server.Reprocessor.
+	syncAPI.Reprocessor = apiReingestAdapter{pipeline}
 	srv.Handler = syncAPI.Handler()
 
 	// The inbound SMTP receiver (Task 24). It is the most exposed surface in the
@@ -1346,6 +1350,37 @@ type reprocessAdapter struct{ p *ingest.Pipeline }
 func (a reprocessAdapter) Reprocess(ctx context.Context, userID uuid.UUID, ids [][]byte) (admin.Report, error) {
 	rep, err := a.p.Reprocess(ctx, userID, ids)
 	return toAdminReport(rep), err
+}
+
+// apiReingestAdapter is the same seam for the USER-facing side: confirming a
+// sender re-ingests the mail it releases (spec §3.2:58), which is the only way
+// held mail ever enters the integrity chains.
+//
+// A second type rather than a second method, because Go cannot give one adapter
+// two Reprocess methods with different return types, and neither package may
+// import the other's Report: internal/v2/api is the public listener and
+// internal/v2/admin is the tailnet console, and a shared type between them is a
+// coupling that would eventually carry an admin-only field onto the public API.
+// Both are the SAME pipeline instance, so a confirmation and a template
+// republish re-parse through identical code.
+type apiReingestAdapter struct{ p *ingest.Pipeline }
+
+func (a apiReingestAdapter) Reprocess(ctx context.Context, userID uuid.UUID, ids [][]byte) (api.Report, error) {
+	rep, err := a.p.Reprocess(ctx, userID, ids)
+	return toAPIReport(rep), err
+}
+
+// toAPIReport is toAdminReport's twin, and is a separate function for the same
+// reason the adapter is a separate type. Every field is carried; a dropped one
+// would under-report a re-ingest to the user who just asked for it.
+func toAPIReport(r ingest.Report) api.Report {
+	return api.Report{
+		Examined:   r.Examined,
+		Appended:   r.Appended,
+		Superseded: r.Superseded,
+		Unchanged:  r.Unchanged,
+		Failed:     r.Failed,
+	}
 }
 
 // toAdminReport is the field-for-field mapping, extracted from the method so a

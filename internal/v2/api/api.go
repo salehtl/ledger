@@ -17,7 +17,7 @@
 //	POST /api/v1/address/challenge {}                              -> {nonce}
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
 //	GET  /api/v1/quarantine?after=&after_id=&limit=&include_blob=  -> {items, removed, action_needed, ...}
-//	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids}
+//	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids, reingest}
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
@@ -329,6 +329,21 @@ type Server struct {
 	// caller who can spend an unlimited number of the cheap calls is not
 	// meaningfully limited on the expensive one.
 	SamplesPerUser *Limiter
+
+	// Reprocessor re-ingests the mail a sender confirmation releases, which is
+	// the only way held mail ever enters the integrity chains (§3.2:58). Nil
+	// means POST /api/v1/quarantine/confirm allowlists the origin and stops
+	// there — the pre-Task-38 behaviour, kept reachable because every unit test
+	// in this package runs without a pipeline, and because a route that 500s
+	// when a Phase-1-only component is absent would make trusting a bank depend
+	// on it. See quarantine.go.
+	Reprocessor Reprocessor
+
+	// MaxReingestPerConfirm bounds how many released messages one confirmation
+	// re-ingests; 0 means defaultMaxReingestPerConfirm. A field for the same
+	// reason the byte budgets are: a test must be able to reach the
+	// bounded-batch path without seeding five hundred messages.
+	MaxReingestPerConfirm int
 
 	// QuarantineByteBudget bounds the raw-message bytes one
 	// GET /api/v1/quarantine?include_blob=1 page may carry; 0 means
