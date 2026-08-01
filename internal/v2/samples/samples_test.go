@@ -21,6 +21,7 @@ import (
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
+	"ledger/internal/v2/norm"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/pgtest"
 )
@@ -243,13 +244,33 @@ func (h *harness) receiveAt(user uuid.UUID, raw []byte, domain string, at time.T
 	}); err != nil {
 		h.t.Fatal(err)
 	}
-	h.arrival(user, sum[:], domain, at)
+	// The diagnostics half carries the layout fingerprint the server computed at
+	// arrival, exactly as ingest writes it — that value IS the report path's
+	// signature now, so a fixture that left it empty would exercise a shape
+	// production never produces.
+	h.arrivalWith(user, sum[:], domain, sigOf(h.t, raw, at), at)
 	return sum[:]
+}
+
+// sigOf is what the server records at arrival: the structure signature of the
+// normalized body.
+func sigOf(t *testing.T, raw []byte, at time.Time) string {
+	t.Helper()
+	res, err := norm.Normalize(norm.CurrentVersion, raw, at)
+	if err != nil {
+		return ""
+	}
+	return diag.StructureSig(res.Text)
 }
 
 // arrival writes only the diagnostics half, for the tests that need an origin
 // record with no body behind it.
 func (h *harness) arrival(user uuid.UUID, ingestID []byte, domain string, at time.Time) {
+	h.t.Helper()
+	h.arrivalWith(user, ingestID, domain, diag.StructureSig("You spent AED 0 at A on 0/0/0"), at)
+}
+
+func (h *harness) arrivalWith(user uuid.UUID, ingestID []byte, domain, sig string, at time.Time) {
 	h.t.Helper()
 	if err := h.d.Record(bg, diag.Record{
 		UserID:            uuid.NullUUID{UUID: user, Valid: true},
@@ -262,6 +283,7 @@ func (h *harness) arrival(user uuid.UUID, ingestID []byte, domain string, at tim
 		NormalizerVersion: 1,
 		Tier:              diag.TierNone,
 		BodySizeBucket:    1 << 10,
+		StructureSig:      sig,
 		Outcome:           diag.OutcomeAppended,
 	}); err != nil {
 		h.t.Fatal(err)
@@ -342,6 +364,55 @@ func TestDonateRefusesAConsentStringThatIsNotAnIdentifier(t *testing.T) {
 	}
 }
 
+// Well-formed is not the same as REAL. The package doc claims the row makes
+// "what did they actually agree to" answerable a year later — and that is only
+// true if the identifier names a text somebody versioned. Until 2026-08-01 the
+// only check was a grammar, so `whatever-v3` was accepted and attested to
+// nothing, indistinguishably from a genuine record.
+func TestDonateRefusesAConsentIdentifierNoTextIsRegisteredUnder(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	id := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+
+	for _, unknown := range []string{
+		"donate-sample-v2",     // the next version, before anybody wrote it
+		"donate-sample-v1.1",   // a typo away from the real one
+		"alpha-plaintext-v1",   // a real consent text, for a different thing
+		"terms-and-conditions", // plausible, unversioned, meaningless
+	} {
+		err := h.s.Donate(bg, Sample{UserID: u, IngestID: id, Consent: unknown})
+		if !errors.Is(err, ErrUnknownConsent) {
+			t.Errorf("Donate with consent %q = %v, want ErrUnknownConsent", unknown, err)
+		}
+	}
+	if n := h.count(); n != 0 {
+		t.Fatalf("%d donations attested to a text nobody has", n)
+	}
+}
+
+// The registry itself has to be answerable, which means every identifier in it
+// names a document a reader can go and find — and §2, the text users are
+// actually shown, is where the naming happens.
+func TestEveryRegisteredConsentIdentifierIsNamedInSpecSection2(t *testing.T) {
+	if len(ConsentTexts) == 0 {
+		t.Fatal("no consent text is registered, so no donation can ever be accepted")
+	}
+	sec := specSection2(t)
+	for id, where := range ConsentTexts {
+		if !reConsent.MatchString(id) {
+			t.Errorf("registered consent identifier %q is not an identifier", id)
+		}
+		if strings.TrimSpace(where) == "" {
+			t.Errorf("consent identifier %q names no document; the row it justifies is "+
+				"unanswerable a year from now", id)
+		}
+		if !strings.Contains(sec, "`"+id+"`") {
+			t.Errorf("spec §2 does not name the consent text `%s` — §2 is the privacy page, "+
+				"and a consent identifier users' rows attest to must appear in it", id)
+		}
+	}
+}
+
 func TestDonateRecordsWhatWasAgreedAndWhen(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("alice")
@@ -378,9 +449,9 @@ func TestDonateRecordsWhatWasAgreedAndWhen(t *testing.T) {
 func TestReportPathStoresNoRawBody(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("alice")
-	sig := diag.StructureSig("You spent AED 0 at A on 0/0/0")
+	id := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 
-	if err := h.s.Report(bg, Sample{UserID: u, SenderDomain: "testbank.test", StructureSig: sig}); err != nil {
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
 		t.Fatal(err)
 	}
 	var (
@@ -431,10 +502,11 @@ func TestAStructuralReportCarriesNoFragmentOfTheMessage(t *testing.T) {
 	}
 
 	for _, r := range []struct {
-		u   uuid.UUID
-		sig string
-	}{{a, sigA}, {b, sigB}} {
-		if err := h.s.Report(bg, Sample{UserID: r.u, SenderDomain: "testbank.test", StructureSig: r.sig}); err != nil {
+		u    uuid.UUID
+		body string
+	}{{a, aliceBody}, {b, bobBody}} {
+		id := h.receive(r.u, rawMail(r.body), "testbank.test")
+		if err := h.s.Report(bg, Sample{UserID: r.u, IngestID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -449,9 +521,15 @@ func TestAStructuralReportCarriesNoFragmentOfTheMessage(t *testing.T) {
 			t.Errorf("a structural report stored %q; the row is: %s", forbidden, stored)
 		}
 	}
-	// And the positive half: what IS stored is the digest and the bank.
-	if !strings.Contains(stored, sigA) || !strings.Contains(stored, "testbank.test") {
-		t.Fatalf("the report did not store the signature and the sender domain: %s", stored)
+	// And the positive half: what IS stored is the digest the SERVER computed for
+	// that message at arrival, and the bank it verified.
+	wantSig := sigOf(t, rawMail(aliceBody), h.now)
+	if wantSig == "" {
+		t.Fatal("the fixture message does not normalize; the report path has nothing to store")
+	}
+	if !strings.Contains(stored, wantSig) || !strings.Contains(stored, "testbank.test") {
+		t.Fatalf("the report did not store the recorded signature %s and the sender domain: %s",
+			wantSig, stored)
 	}
 }
 
@@ -461,9 +539,12 @@ func TestAStructuralReportCarriesNoFragmentOfTheMessage(t *testing.T) {
 func TestRepeatedReportsOfOneFormatStoreOneRow(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("alice")
-	sig := diag.StructureSig("You spent AED 0 at A on 0/0/0")
+	// Five DIFFERENT messages of the same layout — which is what a user actually
+	// generates — not one message reported five times.
 	for i := 0; i < 5; i++ {
-		if err := h.s.Report(bg, Sample{UserID: u, SenderDomain: "testbank.test", StructureSig: sig}); err != nil {
+		id := h.receive(u, rawMail(fmt.Sprintf("You spent AED %d.00 at MERCHANT %d on 0%d/01/2026",
+			100+i, i, i+1)), "testbank.test")
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -472,27 +553,250 @@ func TestRepeatedReportsOfOneFormatStoreOneRow(t *testing.T) {
 	}
 }
 
-func TestReportRefusesAnythingButAHostnameAndADigest(t *testing.T) {
+// ---------------------------------------------------------------------------
+// The report path's PROVENANCE (spec §2:25)
+// ---------------------------------------------------------------------------
+
+// §2 — the text adopted verbatim into the privacy page — says of this table
+// that it "takes the sender domain from its own verification record rather than
+// from the request", and describes the report row's sender_domain as "the
+// cryptographically verified signing domain, never an envelope claim". The
+// migration repeats it on the column.
+//
+// Until 2026-08-01 that was true of Donate and FALSE of Report, which is the
+// path §3.5:114 says the client takes BY DEFAULT: it inserted whatever domain
+// and signature the session sent. Any account could file ~1,440 rows a day
+// under any bank's name, and Clusters — the view that decides which parser gets
+// written next — was steerable by its own users.
+//
+// The request now names one of the caller's OWN messages by ingest id and
+// carries nothing else. There is no field for a domain, and one supplied through
+// the Go API is refused rather than ignored.
+func TestReportTakesItsProvenanceFromTheServersOwnRecord(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("alice")
-	good := diag.StructureSig("x")
-	cases := []struct{ domain, sig string }{
-		{"testbank.test", ""},
-		{"testbank.test", "not-a-digest"},
-		{"testbank.test", strings.ToUpper(good)},
-		{"", good},
-		{"You spent AED 250.00 at STARBUCKS", good},
-		{"unverified:testbank.test", good},
-		{"testbank.test", good + "00"},
+	raw := rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026")
+	id := h.receive(u, raw, "testbank.test")
+
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		err := h.s.Report(bg, Sample{UserID: u, SenderDomain: c.domain, StructureSig: c.sig})
-		if !errors.Is(err, ErrInvalidSample) {
-			t.Errorf("Report(%q, %q) = %v, want ErrInvalidSample", c.domain, c.sig, err)
+	var domain, sig string
+	if err := h.pool.QueryRow(bg,
+		`SELECT sender_domain, structure_sig FROM donated_samples`).Scan(&domain, &sig); err != nil {
+		t.Fatal(err)
+	}
+	if domain != "testbank.test" {
+		t.Fatalf("stored sender_domain = %q, want the domain THIS SERVER verified at arrival", domain)
+	}
+	if want := sigOf(t, raw, h.now); sig != want {
+		t.Fatalf("stored structure_sig = %q, want the fingerprint this server recorded (%q)", sig, want)
+	}
+}
+
+// The other half, and the one that was exploitable: a caller cannot name the
+// bank. Not "it is ignored" — refused, so a call site cannot believe it filed a
+// report under a domain it chose.
+func TestReportRefusesACallerSuppliedOrigin(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	id := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+
+	for name, s := range map[string]Sample{
+		"a domain":      {UserID: u, IngestID: id, SenderDomain: "dib.ae"},
+		"a signature":   {UserID: u, IngestID: id, StructureSig: "0123456789abcdef0123456789abcdef"},
+		"both of them":  {UserID: u, IngestID: id, SenderDomain: "dib.ae", StructureSig: "0123456789abcdef0123456789abcdef"},
+		"another bank":  {UserID: u, IngestID: id, SenderDomain: "emiratesnbd.com"},
+		"an empty host": {UserID: u, IngestID: id, SenderDomain: " "},
+	} {
+		if err := h.s.Report(bg, s); !errors.Is(err, ErrOriginNotCallerSupplied) {
+			t.Errorf("Report with %s = %v, want ErrOriginNotCallerSupplied", name, err)
 		}
 	}
 	if n := h.count(); n != 0 {
-		t.Fatalf("%d malformed reports were stored", n)
+		t.Fatalf("%d reports with a caller-supplied origin were stored", n)
+	}
+}
+
+// The concrete attack the old shape allowed, run end to end: an account that
+// has never received a message from a bank cannot put a row under that bank's
+// name, however many signatures it invents.
+func TestAnAccountCannotFileAReportUnderABankItDoesNotUse(t *testing.T) {
+	h := newHarness(t)
+	alice := h.user("alice")
+	mallory := h.user("mallory")
+
+	// Alice really does bank at testbank.test.
+	aliceMail := h.receive(alice, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+	if err := h.s.Report(bg, Sample{UserID: alice, IngestID: aliceMail}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mallory has received nothing at all. Every id she can name is either
+	// somebody else's or made up, and both answer the same way.
+	for name, id := range map[string][]byte{
+		"another account's message": aliceMail,
+		"an invented digest":        sha256Of("no such message"),
+	} {
+		if err := h.s.Report(bg, Sample{UserID: mallory, IngestID: id}); !errors.Is(err, ErrNotIngested) {
+			t.Errorf("Report of %s = %v, want ErrNotIngested", name, err)
+		}
+	}
+
+	cl, err := h.s.Clusters(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cl) != 1 || cl[0].UserCount != 1 {
+		t.Fatalf("clusters = %+v, want exactly Alice's one report: the demand signal the "+
+			"operator reads must not include rows for banks nobody uses", cl)
+	}
+}
+
+func sha256Of(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
+// A report is evidence about a bank's format, so it needs the same proof a
+// donation does: a domain that was only ever an envelope claim cannot gate a
+// template, and storing one would launder an assertion into evidence.
+func TestReportRefusesAnUnverifiedOrigin(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	id := sha256Of("an arrival nobody could verify")
+	h.arrival(u, id, diag.UnverifiedPrefix+"testbank.test", h.now)
+
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); !errors.Is(err, ErrUnverifiedOrigin) {
+		t.Fatalf("Report of an unverified arrival = %v, want ErrUnverifiedOrigin", err)
+	}
+	if n := h.count(); n != 0 {
+		t.Fatalf("%d unverified reports stored", n)
+	}
+}
+
+// A message the normalizer could not read has no layout to fingerprint, so
+// there is no cluster to file it under. The row would be "this person uses this
+// bank" and nothing else, which is a fact about a person rather than about a
+// format — and the table's own CHECK refuses it.
+func TestReportRefusesAMessageWithNoRecordedLayout(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	id := sha256Of("a message with no text part")
+	h.arrivalWith(u, id, "testbank.test", "", h.now)
+
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); !errors.Is(err, ErrNoRecordedStructure) {
+		t.Fatalf("Report of an unnormalizable arrival = %v, want ErrNoRecordedStructure", err)
+	}
+	if n := h.count(); n != 0 {
+		t.Fatalf("%d reports with no layout stored", n)
+	}
+}
+
+func TestBothPathsRefuseAnIngestIDThatIsNotOne(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	for name, id := range map[string][]byte{
+		"absent":    nil,
+		"too short": make([]byte, 31),
+		"too long":  make([]byte, 33),
+	} {
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); !errors.Is(err, ErrInvalidSample) {
+			t.Errorf("Report with an ingest id that is %s = %v, want ErrInvalidSample", name, err)
+		}
+		// The same rule on the donation path, in Go rather than at the HTTP
+		// layer: a shorter id would make the diagnostics lookup a PREFIX match on
+		// nothing in particular.
+		err := h.s.Donate(bg, Sample{UserID: u, IngestID: id, Consent: consentDonateSampleV1})
+		if !errors.Is(err, ErrInvalidSample) {
+			t.Errorf("Donate with an ingest id that is %s = %v, want ErrInvalidSample", name, err)
+		}
+	}
+}
+
+// A report is the content-free path, and "content-free" is enforced rather than
+// documented: a caller holding a body has taken the wrong route, and silently
+// dropping the extra field would let it believe it had donated.
+func TestReportRefusesAnythingWithContentOrConsentOnIt(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	raw := rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026")
+	id := h.receive(u, raw, "testbank.test")
+
+	for name, s := range map[string]Sample{
+		"a body":    {UserID: u, IngestID: id, Raw: raw},
+		"a consent": {UserID: u, IngestID: id, Consent: consentDonateSampleV1},
+	} {
+		if err := h.s.Report(bg, s); !errors.Is(err, ErrInvalidSample) {
+			t.Errorf("Report carrying %s = %v, want ErrInvalidSample", name, err)
+		}
+	}
+	if n := h.count(); n != 0 {
+		t.Fatalf("%d rows stored", n)
+	}
+}
+
+// Re-reporting refreshes the EXPIRY and nothing else. created_at is what
+// Cluster.FirstSeen reports — "how long have people been hitting this format" —
+// and bumping it on every repeat would make a format somebody has hit for
+// months look like it appeared this morning.
+func TestARepeatedReportRefreshesTheExpiryAndNotTheFirstSighting(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	first := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: first}); err != nil {
+		t.Fatal(err)
+	}
+
+	later := h.now.Add(30 * 24 * time.Hour)
+	h.s.Now = func() time.Time { return later }
+	second := h.receiveAt(u, rawMail("You spent AED 12.75 at PARKING METER on 02/02/2026"),
+		"testbank.test", later)
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: second}); err != nil {
+		t.Fatal(err)
+	}
+
+	var created, expires time.Time
+	if err := h.pool.QueryRow(bg,
+		`SELECT created_at, expires_at FROM donated_samples`).Scan(&created, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if !created.Equal(h.now) {
+		t.Fatalf("created_at = %v, want the FIRST sighting %v", created, h.now)
+	}
+	if want := later.Add(DefaultRetention); !expires.Equal(want) {
+		t.Fatalf("expires_at = %v, want it refreshed to %v: a format somebody is still hitting "+
+			"is still live demand", expires, want)
+	}
+}
+
+// The package doc claims a donation "lands in the SAME cluster the user's
+// earlier content-free reports of that format did". That is only true if the
+// two signatures come out the same, and until the report path derived its
+// signature server-side the two came from different executors entirely — the
+// client's TypeScript for a report, Go for a donation — with no conformance
+// suite between them. Now both are this server's own.
+func TestAReportAndADonationOfTheSameFormatShareOneCluster(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	first := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+	second := h.receive(u, rawMail("You spent AED 12.75 at PARKING METER on 02/01/2026"), "testbank.test")
+
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.Donate(bg, Sample{UserID: u, IngestID: second, Consent: consentDonateSampleV1}); err != nil {
+		t.Fatal(err)
+	}
+	cl, err := h.s.Clusters(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cl) != 1 {
+		t.Fatalf("a report and a donation of one format produced %d clusters: %+v", len(cl), cl)
+	}
+	if cl[0].SampleCount != 2 || cl[0].DonatedCount != 1 || cl[0].UserCount != 1 {
+		t.Fatalf("cluster = %+v, want 2 samples, 1 of them donated, 1 user", cl[0])
 	}
 }
 
@@ -513,6 +817,117 @@ func TestDonateOnlyAcceptsAnIngestIDTheUserActuallyReceived(t *testing.T) {
 	if n := h.count(); n != 0 {
 		t.Fatalf("a cross-account donation stored %d rows", n)
 	}
+
+	// The assertion above is short-circuited by verifiedOrigin, which runs first
+	// and is scoped by the arrival row — so it passes even with the cold-stream
+	// read made COMPLETELY user-unscoped (proved by mutation, 2026-08-01). The
+	// body read has to be pinned where it happens. It is protected in fact by
+	// blob.Envelope binding user_id into the AAD, but that is a property of
+	// another package, and a Phase 3 rewrite of coldBody would lose it silently.
+	if _, _, err := h.s.coldBody(bg, alice, bobsMail); !errors.Is(err, ErrNotIngested) {
+		t.Fatalf("coldBody(alice, bob's message) = %v, want ErrNotIngested: one account's cold "+
+			"stream must not be reachable through another's donation", err)
+	}
+	// And the positive control, so the test above cannot pass by reading nothing.
+	if _, _, err := h.s.coldBody(bg, bob, bobsMail); err != nil {
+		t.Fatalf("coldBody(bob, bob's own message) = %v, want the body", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Which arrival row decides the origin
+// ---------------------------------------------------------------------------
+
+// A DIB alert forwarded through Gmail arrives with sender_domain=gmail.com and,
+// when the inner signature validated, inner_origin_domain=dib.ae. The sample
+// must be filed under DIB: templates match the bank's domain, so a sample under
+// the forwarder's domain gates nothing at all — and Gmail forwarding is the
+// primary onboarding path, so this is the common case rather than the exotic
+// one. parse_diagnostics refuses an inner_origin_domain unless a signature
+// passed, which is what makes a stored value an attestation.
+func TestTheOriginIsTheAttestedInnerDomainWhenThereIsOne(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("alice")
+	raw := rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026")
+	sum := sha256.Sum256(raw)
+
+	if err := h.d.Record(bg, diag.Record{
+		UserID:            uuid.NullUUID{UUID: u, Valid: true},
+		Event:             diag.EventArrival,
+		IngestID:          sum[:],
+		ReceivedAt:        h.now,
+		SenderDomain:      "gmail.com",
+		InnerOriginDomain: "dib.ae",
+		DKIMResult:        diag.ResultPass,
+		ARCResult:         diag.ResultPass,
+		NormalizerVersion: 1,
+		Tier:              diag.TierNone,
+		BodySizeBucket:    1 << 10,
+		StructureSig:      sigOf(t, raw, h.now),
+		Outcome:           diag.OutcomeAppended,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: sum[:]}); err != nil {
+		t.Fatal(err)
+	}
+	var domain string
+	if err := h.pool.QueryRow(bg, `SELECT sender_domain FROM donated_samples`).Scan(&domain); err != nil {
+		t.Fatal(err)
+	}
+	if domain != "dib.ae" {
+		t.Fatalf("a forwarded DIB alert was filed under %q; a sample filed under the forwarder "+
+			"gates no template at all", domain)
+	}
+}
+
+// A message can leave more than one arrival row — a redelivery from the backup
+// relay, a retry after a transient failure — and they do not all carry the same
+// evidence. The row that RECORDED a domain wins over one that recorded none,
+// whatever the clock says, and among rows that both recorded one the EARLIEST
+// wins: the first arrival is the one whose signature was actually checked
+// against the network.
+func TestTheOriginComesFromTheEarliestArrivalRowThatRecordedOne(t *testing.T) {
+	t.Run("an earlier row beats a later one", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.user("alice")
+		id := sha256Of("delivered twice")
+		h.arrival(u, id, "testbank.test", h.now)
+		h.arrival(u, id, "elsewhere.test", h.now.Add(time.Second))
+
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
+			t.Fatal(err)
+		}
+		var domain string
+		if err := h.pool.QueryRow(bg, `SELECT sender_domain FROM donated_samples`).Scan(&domain); err != nil {
+			t.Fatal(err)
+		}
+		if domain != "testbank.test" {
+			t.Fatalf("origin = %q, want the first arrival's", domain)
+		}
+	})
+
+	t.Run("a row with no domain never wins a tie", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.user("alice")
+		id := sha256Of("delivered twice at the same instant")
+		// Same received_at: the id tiebreak is a random uuid, so a query that
+		// depended on it would pick one of these at random and the donation would
+		// 409 as unverified_origin roughly half the time.
+		h.arrivalWith(u, id, "", diag.StructureSig("You spent AED 0 at A on 0/0/0"), h.now)
+		h.arrival(u, id, "testbank.test", h.now)
+
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
+			t.Fatalf("Report over a tie with an empty-domain row = %v", err)
+		}
+		var domain string
+		if err := h.pool.QueryRow(bg, `SELECT sender_domain FROM donated_samples`).Scan(&domain); err != nil {
+			t.Fatal(err)
+		}
+		if domain != "testbank.test" {
+			t.Fatalf("origin = %q, want the row that actually recorded a domain", domain)
+		}
+	})
 }
 
 // The other half of the same rule: a caller may not hand this store a body at
@@ -630,12 +1045,29 @@ func TestDonatingTheSameMessageTwiceStoresOneRow(t *testing.T) {
 	u := h.user("alice")
 	id := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 	for i := 0; i < 3; i++ {
+		h.s.Now = func() time.Time { return h.now.Add(time.Duration(i) * time.Hour) }
 		if err := h.s.Donate(bg, Sample{UserID: u, IngestID: id, Consent: "donate-sample-v1"}); err != nil {
 			t.Fatalf("donation %d: %v", i, err)
 		}
 	}
 	if n := h.count(); n != 1 {
 		t.Fatalf("three donations of one message stored %d rows", n)
+	}
+	// And the row is the FIRST donation's, untouched. A repeat that overwrote
+	// consented_at would move the record of when the person agreed, and one that
+	// extended expires_at would quietly turn a 180-day promise into an
+	// indefinite one for anybody whose client retries.
+	var consentedAt, expires time.Time
+	if err := h.pool.QueryRow(bg,
+		`SELECT consented_at, expires_at FROM donated_samples`).Scan(&consentedAt, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if !consentedAt.Equal(h.now) {
+		t.Fatalf("consented_at = %v, want the instant of the FIRST donation %v", consentedAt, h.now)
+	}
+	if want := h.now.Add(DefaultRetention); !expires.Equal(want) {
+		t.Fatalf("expires_at = %v, want %v: a donation's retention window is fixed when it is "+
+			"stored and never extended", expires, want)
 	}
 }
 
@@ -732,18 +1164,26 @@ func TestClustersCountDistinctUsersNotSamples(t *testing.T) {
 // answer must be ordered by PEOPLE, and a content-free report must count.
 func TestClustersRankByUserCountAndCountReportsToo(t *testing.T) {
 	h := newHarness(t)
-	loud := diag.StructureSig("Amount: AED 0\nMerchant: A\n")
-	quiet := diag.StructureSig("You spent AED 0 at A on 0/0/0")
-
+	// Two genuinely different layouts, each reported by its own users off their
+	// own mail — which is the only way a report can be filed at all now.
+	const (
+		loudBody  = "Amount: AED 250.00\nMerchant: STARBUCKS\nDate: 01/01/2026"
+		quietBody = "You spent AED 250.00 at STARBUCKS on 01/01/2026"
+	)
+	if sigOf(t, rawMail(loudBody), h.now) == sigOf(t, rawMail(quietBody), h.now) {
+		t.Fatal("the two fixture layouts fingerprint the same; the test cannot see two clusters")
+	}
 	for i := 0; i < 14; i++ {
 		u := h.user(fmt.Sprintf("user-%d", i))
-		if err := h.s.Report(bg, Sample{UserID: u, SenderDomain: "fab.ae", StructureSig: loud}); err != nil {
+		id := h.receive(u, rawMail(loudBody), "fab.ae")
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := 0; i < 3; i++ {
 		u := h.user(fmt.Sprintf("other-%d", i))
-		if err := h.s.Report(bg, Sample{UserID: u, SenderDomain: "testbank.test", StructureSig: quiet}); err != nil {
+		id := h.receive(u, rawMail(quietBody), "testbank.test")
+		if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -800,9 +1240,8 @@ func TestForSenderCoversSubdomainsAndNotLookalikes(t *testing.T) {
 func TestForSenderReturnsOnlyReplayableSamples(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("alice")
-	if err := h.s.Report(bg, Sample{
-		UserID: u, SenderDomain: "testbank.test", StructureSig: diag.StructureSig("x"),
-	}); err != nil {
+	id := h.receive(u, rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+	if err := h.s.Report(bg, Sample{UserID: u, IngestID: id}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := h.s.ForSender(bg, "testbank.test")

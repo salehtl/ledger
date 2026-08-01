@@ -12,6 +12,11 @@
 // the user was shown, so "what did they actually agree to" is answerable a year
 // later from the row alone.
 //
+// Answerable requires the identifier to name something, so the accepted set is
+// a closed registry ([ConsentTexts]) rather than a grammar. A well-formed string
+// nobody versioned is refused: it would attest to nothing while looking exactly
+// like a record that attests to something.
+//
 // # The default path stores nothing
 //
 // [Samples.Report] is the path the client takes by default: a sender domain and
@@ -20,15 +25,31 @@
 // — "which untemplated format do the most people hit" ([Samples.Clusters]) —
 // without anybody reading a message. A full sample is a separate, explicit act.
 //
+// # NEITHER path takes its provenance from the request
+//
+// Both [Samples.Report] and [Samples.Donate] take an INGEST ID naming one of
+// the caller's own messages, and read everything that identifies it — the
+// verified sender domain, and for a report the layout fingerprint too — out of
+// this server's own parse_diagnostics arrival record. A caller that names a
+// domain or a signature is REFUSED ([ErrOriginNotCallerSupplied]), not
+// overridden.
+//
+// That is spec §2:25, the text adopted verbatim into the privacy page: the
+// table "takes the sender domain from its own verification record rather than
+// from the request". It was true of Donate and false of Report until
+// 2026-08-01, which mattered because Report is the DEFAULT path: any
+// authenticated account could file rows under any bank's name, at ~1,440 a day,
+// and steer the demand signal an operator reads to decide which parser to write
+// next. A sample filed under a bank also blocks that bank's template publishes
+// until somebody retires it, so the same hole was a way to jam parser
+// development for a bank the attacker does not even use.
+//
 // # A donation cannot introduce content the user did not receive
 //
-// [Samples.Donate] takes an INGEST ID, never a body, and REFUSES a caller that
-// supplies one ([ErrBodySupplied]). It reads the bytes out of that user's own
-// cold stream and the sender domain out of this server's own arrival record.
+// [Samples.Donate] never takes a body and REFUSES a caller that supplies one
+// ([ErrBodySupplied]). It reads the bytes out of that user's own cold stream.
 // So the worst a hostile client can do is donate its own mail; it cannot upload
-// a fabricated "bank email", and it cannot file a sample under a bank it does
-// not use — which matters more than it looks, because a sample filed under a
-// bank blocks that bank's template publishes until somebody retires it.
+// a fabricated "bank email".
 //
 // ⚠ PHASE 1 ONLY, for the cold-stream read. Cold blobs are HPKE-sealed to the
 // user's key from Phase 3 onward and the server holds no private key, so
@@ -100,6 +121,10 @@ var (
 	// sample without one is not storable, however real the mail is.
 	ErrNoConsent = errors.New("samples: a donation needs the identifier of the consent the user gave")
 
+	// ErrUnknownConsent means the identifier is well formed and names no text
+	// this system has ever shown anybody. See [ConsentTexts].
+	ErrUnknownConsent = errors.New("samples: that consent identifier names no registered consent text")
+
 	// ErrBodySupplied means a caller tried to hand this store a body. See the
 	// package doc: the body comes out of the user's own log, never off the wire.
 	ErrBodySupplied = errors.New("samples: a donation may not carry a caller-supplied body")
@@ -114,6 +139,14 @@ var (
 	// ErrUnverifiedOrigin means the message's sending domain was never proven,
 	// so it cannot gate a template that matches verified domains.
 	ErrUnverifiedOrigin = errors.New("samples: this message's origin was never cryptographically verified")
+
+	// ErrNoRecordedStructure means this server recorded no layout fingerprint
+	// for the message, because no normalizer could read it. There is no cluster
+	// to file a content-free report under: the row would say "this person uses
+	// this bank" and nothing else. Donating the message is the path that still
+	// works, and it is the one worth taking — mail no normalizer can read is
+	// exactly what an operator needs to see.
+	ErrNoRecordedStructure = errors.New("samples: this server recorded no layout fingerprint for that message")
 
 	// ErrInvalidSample describes the CALLER's own submission and is safe to
 	// report back in detail.
@@ -132,6 +165,32 @@ var (
 	reConsent  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
 
+// consentDonateSampleV1 is the identifier of the donation consent text shown
+// during onboarding (spec §3.5:113, named in §2's donated-sample paragraph).
+const consentDonateSampleV1 = "donate-sample-v1"
+
+// ConsentTexts is the registry of every consent identifier this store will
+// record, mapped to where the text it names can be read.
+//
+// It exists because a grammar is not a registry. The package doc claims what a
+// row records is the IDENTIFIER of the text the user was shown, so that "what
+// did they actually agree to" is answerable a year later from the row alone —
+// and that is only true if the identifier names something somebody versioned.
+// Without this, `whatever-v3` was accepted and attested to nothing, in a column
+// that exists precisely to make consent auditable; and editing the onboarding
+// copy without bumping the string would leave every subsequent row attesting to
+// the wrong document, indistinguishably.
+//
+// So the list is closed, and adding to it is the moment somebody has to say
+// which text they mean. TestEveryRegisteredConsentIdentifierIsNamedInSpecSection2
+// keeps it honest: an identifier here that §2 — the text users are actually
+// shown — does not name fails the build.
+var ConsentTexts = map[string]string{
+	consentDonateSampleV1: "the onboarding donation consent (spec §3.5:113; named in §2's " +
+		"donated-sample paragraph): one example email, with a client-side redaction preview " +
+		"showing exactly what will be sent",
+}
+
 // Sample is one row of the queue: either a content-free structural REPORT or a
 // consented DONATION of a real message. Its fields are exactly the disclosed
 // column list and no others — see the package doc and
@@ -139,7 +198,10 @@ var (
 //
 // Which fields a caller may set depends on the direction:
 //
-//   - [Samples.Report] reads UserID, SenderDomain and StructureSig.
+//   - [Samples.Report] reads UserID and IngestID, and REFUSES a SenderDomain
+//     or StructureSig supplied by the caller: both come from this server's own
+//     arrival record. The IngestID is a lookup key and is NOT stored — a report
+//     carries no provenance because it carries no content.
 //   - [Samples.Donate] reads UserID, IngestID and Consent, and REFUSES a
 //     Raw, SenderDomain or StructureSig supplied by the caller. Everything
 //     else it fills in from this server's own records.
@@ -248,7 +310,37 @@ DO UPDATE SET expires_at = EXCLUDED.expires_at`
 
 // Report records that this user is hitting a layout, and nothing else.
 //
-// Repeating it is idempotent apart from refreshing the expiry: a format
+// The caller names one of its OWN messages by ingest id and supplies nothing
+// else. Both stored values — the sender domain and the layout fingerprint —
+// come from this server's own arrival record for that message, and a caller
+// that names either is REFUSED rather than overridden.
+//
+// That is not defensive tidying. Spec §2:25 is adopted verbatim into the
+// user-facing privacy page and says of this table that it "takes the sender
+// domain from its own verification record rather than from the request", and
+// describes a report's sender_domain as "the cryptographically verified signing
+// domain, never an envelope claim"; migration 00013 repeats it on the column.
+// Until 2026-08-01 that was true of [Samples.Donate] and false here — on the
+// path §3.5:114 says the client takes BY DEFAULT — so any authenticated account
+// could file rows under any bank's name and steer [Samples.Clusters], the view
+// that decides which parser gets written next. A privacy-page sentence the code
+// does not implement is worse than a missing check.
+//
+// Deriving the fingerprint here rather than accepting the client's has a second
+// effect worth stating: `structure_sig` stops being a cross-executor contract
+// on this path. A report's signature and a donation's now come from the same Go
+// function over the same normalizer, which is what makes the package doc's
+// "a donation lands in the SAME cluster the user's earlier reports did" true
+// rather than aspirational. (The one way they can still differ is a normalizer
+// version bumped between the arrival and the donation, which moves every
+// signature for that message by design.)
+//
+// The ingest id itself is a LOOKUP KEY and is not stored on the row: a report
+// carries no provenance, because it carries no content. The client is not
+// telling this server anything new by sending it — parse_diagnostics already
+// holds that id against that user.
+//
+// Repeating a report is idempotent apart from refreshing the expiry: a format
 // somebody is still hitting is still live demand, and one row per user per
 // format is the difference between a demand signal and a per-user
 // transaction-timing ledger.
@@ -259,25 +351,30 @@ func (s *Samples) Report(ctx context.Context, sample Sample) error {
 	if sample.UserID == uuid.Nil {
 		return fmt.Errorf("%w: a report must be scoped to a user", ErrInvalidSample)
 	}
-	if !reHostname.MatchString(sample.SenderDomain) {
-		// The detail names the caller's own submission, so it is safe to
-		// return. It deliberately does not echo the value.
-		return fmt.Errorf("%w: sender_domain must be a verified hostname", ErrInvalidSample)
+	if sample.SenderDomain != "" || sample.StructureSig != "" {
+		return ErrOriginNotCallerSupplied
 	}
-	if !reDigest.MatchString(sample.StructureSig) {
-		return fmt.Errorf("%w: structure_sig must be 32 lower-case hex characters", ErrInvalidSample)
-	}
-	if len(sample.Raw) > 0 || len(sample.IngestID) > 0 || sample.Consent != "" {
+	if len(sample.Raw) > 0 || sample.Consent != "" {
 		// A report is the CONTENT-FREE path. If a caller has a body, the
 		// consented path is the one that stores it, and quietly dropping the
 		// extra fields would let a call site believe it had donated.
-		return fmt.Errorf("%w: a structural report carries no body, no ingest id and no consent", ErrInvalidSample)
+		return fmt.Errorf("%w: a structural report carries no body and no consent", ErrInvalidSample)
+	}
+	if len(sample.IngestID) != 32 {
+		return fmt.Errorf("%w: ingest_id must be a 32-byte sha-256", ErrInvalidSample)
+	}
+
+	domain, sig, err := s.recordedArrival(ctx, sample.UserID, sample.IngestID)
+	if err != nil {
+		return err
+	}
+	if !reDigest.MatchString(sig) {
+		return ErrNoRecordedStructure
 	}
 
 	now := s.now()
-	_, err := s.Pool.Exec(ctx, reportSQL,
-		sample.UserID, sample.SenderDomain, sample.StructureSig, now, now.Add(s.retention()))
-	if err != nil {
+	if _, err := s.Pool.Exec(ctx, reportSQL,
+		sample.UserID, domain, sig, now, now.Add(s.retention())); err != nil {
 		return sanitize("record a structural report", err)
 	}
 	return nil
@@ -287,22 +384,39 @@ func (s *Samples) Report(ctx context.Context, sample Sample) error {
 // The opt-in path: a consented donation of real mail
 // ---------------------------------------------------------------------------
 
-// arrivalOriginSQL reads the VERIFIED origin this server recorded when the
-// message arrived. It is the same read ingest.Pipeline.recordedOrigin does and
-// for the same reason: parse_diagnostics is the only record of which domain's
-// signature actually validated, and the alternative — the body's own From line
-// — is content an attacker wrote.
+// arrivalRecordSQL reads the two facts this server recorded when the message
+// arrived: the VERIFIED origin, and the content-free layout fingerprint. It is
+// the same read ingest.Pipeline.recordedOrigin does and for the same reason:
+// parse_diagnostics is the only record of which domain's signature actually
+// validated, and the alternative — the body's own From line, or the request —
+// is something an attacker wrote.
 //
 // COALESCE picks the attested inner origin when there is one, matching what
 // origin.Decide hands the template selector for a forwarded message: a DIB
 // alert forwarded through Gmail must be filed under dib.ae, or it would gate
 // nothing. parse_diagnostics refuses inner_origin_domain unless a signature
 // passed, so a stored value IS an attestation.
-const arrivalOriginSQL = `
-SELECT COALESCE(NULLIF(inner_origin_domain, ''), sender_domain)
+//
+// The ORDER BY is three keys and each earns its place. One message can leave
+// several arrival rows — a redelivery through the backup relay, a retry after a
+// transient failure — and they do not all carry the same evidence:
+//
+//  1. a row that recorded NO domain never beats one that did, at any timestamp.
+//     parse_diagnostics.id is a random uuid, so a tie broken by it would pick a
+//     domainless redelivery row roughly half the time and the sample would be
+//     refused as unverified for no reason the caller could act on;
+//  2. among rows that both recorded one, the EARLIEST wins — the first arrival
+//     is the one whose signature was checked against the network;
+//  3. `id` last, so the result is deterministic rather than merely usually
+//     right. (ingest's own read uses `received_at, id` for the same reason.)
+const arrivalRecordSQL = `
+SELECT COALESCE(NULLIF(inner_origin_domain, ''), sender_domain), structure_sig
   FROM parse_diagnostics
  WHERE user_id = $1 AND ingest_id = $2 AND event = $3
- ORDER BY received_at
+ ORDER BY (COALESCE(NULLIF(inner_origin_domain, ''), sender_domain) = ''),
+          (structure_sig = ''),
+          received_at,
+          id
  LIMIT 1`
 
 const donateSQL = `
@@ -341,11 +455,17 @@ func (s *Samples) Donate(ctx context.Context, sample Sample) error {
 		return fmt.Errorf("%w: got %d bytes that are not a consent identifier",
 			ErrNoConsent, len(sample.Consent))
 	}
+	if _, known := ConsentTexts[sample.Consent]; !known {
+		// Well formed and naming nothing. See ConsentTexts: a row whose
+		// identifier names no versioned text attests to nothing, in the one
+		// column that exists to make consent auditable.
+		return fmt.Errorf("%w: no consent text is registered under that identifier", ErrUnknownConsent)
+	}
 	if len(sample.IngestID) != 32 {
 		return fmt.Errorf("%w: ingest_id must be a 32-byte sha-256", ErrInvalidSample)
 	}
 
-	domain, err := s.verifiedOrigin(ctx, sample.UserID, sample.IngestID)
+	domain, _, err := s.recordedArrival(ctx, sample.UserID, sample.IngestID)
 	if err != nil {
 		return err
 	}
@@ -374,22 +494,26 @@ func (s *Samples) Donate(ctx context.Context, sample Sample) error {
 	return nil
 }
 
-// verifiedOrigin returns the domain this server proved the message came from.
-func (s *Samples) verifiedOrigin(ctx context.Context, userID uuid.UUID, ingestID []byte) (string, error) {
-	var domain string
-	err := s.Pool.QueryRow(ctx, arrivalOriginSQL, userID, ingestID, diag.EventArrival).Scan(&domain)
+// recordedArrival returns the domain this server proved the message came from
+// and the layout fingerprint it recorded for it. Both paths in this package go
+// through it, so a report and a donation of one message can never disagree
+// about which bank sent it.
+func (s *Samples) recordedArrival(ctx context.Context, userID uuid.UUID, ingestID []byte) (domain, sig string, err error) {
+	err = s.Pool.QueryRow(ctx, arrivalRecordSQL, userID, ingestID, diag.EventArrival).Scan(&domain, &sig)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", ErrNotIngested
+		// Covers "that message belongs to somebody else" and "this account never
+		// received it" alike; see the Errors block for why they are one answer.
+		return "", "", ErrNotIngested
 	case err != nil:
-		return "", sanitize("read the recorded origin", err)
+		return "", "", sanitize("read the recorded origin", err)
 	}
 	if !reHostname.MatchString(domain) {
 		// Either the envelope-claim prefix or the empty string (a null sender).
 		// Neither can gate a template.
-		return "", ErrUnverifiedOrigin
+		return "", "", ErrUnverifiedOrigin
 	}
-	return domain, nil
+	return domain, sig, nil
 }
 
 // coldBody pulls one message out of the user's own cold stream.

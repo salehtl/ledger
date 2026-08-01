@@ -14,6 +14,7 @@ import (
 
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
+	"ledger/internal/v2/norm"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/samples"
 )
@@ -72,11 +73,23 @@ func (h *sampleHarness) receive(u uuid.UUID, raw []byte, domain string) string {
 		NormalizerVersion: 1,
 		Tier:              diag.TierNone,
 		BodySizeBucket:    1 << 10,
+		StructureSig:      sampleSig(h.t, raw, h.now),
 		Outcome:           diag.OutcomeAppended,
 	}); err != nil {
 		h.t.Fatal(err)
 	}
 	return hex.EncodeToString(sum[:])
+}
+
+// sampleSig is the layout fingerprint the server records at arrival, which is
+// what the report path now stores — the client no longer computes one.
+func sampleSig(t *testing.T, raw []byte, at time.Time) string {
+	t.Helper()
+	res, err := norm.Normalize(norm.CurrentVersion, raw, at)
+	if err != nil {
+		return ""
+	}
+	return diag.StructureSig(res.Text)
 }
 
 func (h *sampleHarness) rows() int {
@@ -112,23 +125,92 @@ func TestSampleIntakeRequiresASession(t *testing.T) {
 func TestReportStoresTheFingerprintAndNothingElse(t *testing.T) {
 	h := newSampleHarness(t)
 	u := h.user("alice")
-	sig := diag.StructureSig("You spent AED 0 at A on 0/0/0")
+	raw := sampleMail("You spent AED 250.00 at STARBUCKS on 01/01/2026")
+	id := h.receive(u, raw, "testbank.test")
 
 	rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(u), map[string]any{
-		"sender_domain": "testbank.test",
-		"structure_sig": sig,
+		"ingest_id": id,
 	})
 	wantStatus(t, rec, http.StatusNoContent)
 
 	var (
-		raw     []byte
-		consent *string
+		stored   []byte
+		consent  *string
+		ingestID []byte
+		domain   string
+		sig      string
 	)
-	if err := h.pool.QueryRow(bg, `SELECT raw, consent FROM donated_samples`).Scan(&raw, &consent); err != nil {
+	if err := h.pool.QueryRow(bg,
+		`SELECT raw, consent, ingest_id, sender_domain, structure_sig FROM donated_samples`).
+		Scan(&stored, &consent, &ingestID, &domain, &sig); err != nil {
 		t.Fatal(err)
 	}
-	if raw != nil || consent != nil {
-		t.Fatalf("the default path stored a body (%d bytes) or a consent record (%v)", len(raw), consent)
+	if stored != nil || consent != nil {
+		t.Fatalf("the default path stored a body (%d bytes) or a consent record (%v)", len(stored), consent)
+	}
+	// The ingest id is a LOOKUP KEY on this route and is not part of the row: a
+	// report carries no provenance because it carries no content.
+	if ingestID != nil {
+		t.Fatalf("the default path stored the ingest id it was looked up by: %x", ingestID)
+	}
+	if domain != "testbank.test" || sig != sampleSig(t, raw, h.now) {
+		t.Fatalf("stored (%q,%q), want the domain and fingerprint THIS SERVER recorded", domain, sig)
+	}
+}
+
+// The request the old client sent — a bank name and a fingerprint it computed
+// itself — is REFUSED, not quietly reinterpreted. A client that believes it is
+// choosing the domain has to find out.
+func TestReportRefusesTheOldCallerSuppliedShape(t *testing.T) {
+	h := newSampleHarness(t)
+	u := h.user("alice")
+	id := h.receive(u, sampleMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
+	for name, body := range map[string]map[string]any{
+		"a domain and a signature": {"sender_domain": "dib.ae", "structure_sig": strings.Repeat("ab", 16)},
+		"an id and a domain":       {"ingest_id": id, "sender_domain": "dib.ae"},
+	} {
+		rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(u), body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("report with %s = %d, want 400: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	if n := h.rows(); n != 0 {
+		t.Fatalf("%d rows stored from a caller-supplied origin", n)
+	}
+}
+
+// The report path answers the same way the donation path does about a message
+// this account did not receive, and for the same reason.
+func TestReportCannotReachAnotherAccountsMail(t *testing.T) {
+	h := newSampleHarness(t)
+	alice := h.user("alice")
+	bob := h.user("bob")
+	bobsID := h.receive(bob, sampleMail("You spent AED 9,912.45 at DR ALIA FERTILITY CLINIC on 12/03/2026"), "testbank.test")
+
+	for _, id := range []string{bobsID, hex.EncodeToString(make([]byte, 32))} {
+		rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(alice), map[string]any{
+			"ingest_id": id,
+		})
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("reporting %s = %d, want 404: %s", id[:8], rec.Code, rec.Body.String())
+		}
+	}
+	if n := h.rows(); n != 0 {
+		t.Fatalf("%d cross-account reports were stored", n)
+	}
+}
+
+func TestReportRefusesMailWhoseOriginWasNeverVerified(t *testing.T) {
+	h := newSampleHarness(t)
+	u := h.user("alice")
+	id := h.receive(u, sampleMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"),
+		diag.UnverifiedPrefix+"testbank.test")
+	rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(u), map[string]any{"ingest_id": id})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("reporting unverified mail = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if n := h.rows(); n != 0 {
+		t.Fatalf("%d rows stored", n)
 	}
 }
 
@@ -138,9 +220,9 @@ func TestReportStoresTheFingerprintAndNothingElse(t *testing.T) {
 func TestReportHasNoFieldThatCanCarryContent(t *testing.T) {
 	h := newSampleHarness(t)
 	u := h.user("alice")
+	id := h.receive(u, sampleMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 	rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(u), []byte(
-		`{"sender_domain":"testbank.test","structure_sig":"`+diag.StructureSig("x")+
-			`","raw":"WW91IHNwZW50IEFFRCAyNTAuMDAgYXQgU1RBUkJVQ0tT"}`))
+		`{"ingest_id":"`+id+`","raw":"WW91IHNwZW50IEFFRCAyNTAuMDAgYXQgU1RBUkJVQ0tT"}`))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("a report carrying a body = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
@@ -149,22 +231,50 @@ func TestReportHasNoFieldThatCanCarryContent(t *testing.T) {
 	}
 }
 
-func TestReportRefusesAMalformedFingerprint(t *testing.T) {
+func TestReportRefusesAMalformedIngestID(t *testing.T) {
 	h := newSampleHarness(t)
 	session := h.session(h.user("alice"))
-	for _, body := range []map[string]any{
-		{"sender_domain": "testbank.test", "structure_sig": "You spent AED 250.00 at STARBUCKS"},
-		{"sender_domain": "You spent AED 250.00 at STARBUCKS", "structure_sig": diag.StructureSig("x")},
-		{"sender_domain": "unverified:testbank.test", "structure_sig": diag.StructureSig("x")},
-		{"sender_domain": "testbank.test", "structure_sig": ""},
-	} {
-		rec := h.req(http.MethodPost, "/api/v1/samples/report", session, body)
+	for _, id := range []string{"", "not-hex", strings.Repeat("ab", 16), strings.Repeat("AB", 32)} {
+		rec := h.req(http.MethodPost, "/api/v1/samples/report", session, map[string]any{"ingest_id": id})
 		if rec.Code != http.StatusBadRequest {
-			t.Errorf("report %v = %d, want 400: %s", body, rec.Code, rec.Body.String())
+			t.Errorf("report with ingest_id %q = %d, want 400: %s", id, rec.Code, rec.Body.String())
 		}
 	}
 	if n := h.rows(); n != 0 {
 		t.Fatalf("%d malformed reports were stored", n)
+	}
+}
+
+// A message no normalizer could read has no layout to cluster, so the default
+// path has nothing to file — and the answer says which path does work.
+func TestReportOfAMessageWithNoRecordedLayoutIsAConflict(t *testing.T) {
+	h := newSampleHarness(t)
+	u := h.user("alice")
+	sum := sha256.Sum256([]byte("a message with no text part"))
+	if err := h.d.Record(bg, diag.Record{
+		UserID:            uuid.NullUUID{UUID: u, Valid: true},
+		Event:             diag.EventArrival,
+		IngestID:          sum[:],
+		ReceivedAt:        h.now,
+		SenderDomain:      "testbank.test",
+		DKIMResult:        diag.ResultPass,
+		ARCResult:         diag.ResultNone,
+		NormalizerVersion: 1,
+		Tier:              diag.TierNone,
+		BodySizeBucket:    1 << 10,
+		Outcome:           diag.OutcomeRejected,
+		RejectReason:      diag.RejectNoTextPart,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := h.req(http.MethodPost, "/api/v1/samples/report", h.session(u), map[string]any{
+		"ingest_id": hex.EncodeToString(sum[:]),
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("reporting an unnormalizable message = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "donating") {
+		t.Fatalf("the refusal does not name the path that does work: %s", rec.Body.String())
 	}
 }
 
@@ -200,7 +310,7 @@ func TestDonateRequiresConsent(t *testing.T) {
 	u := h.user("alice")
 	id := h.receive(u, sampleMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 
-	for _, consent := range []string{"", "I said yes on the phone"} {
+	for _, consent := range []string{"", "I said yes on the phone", "donate-sample-v2"} {
 		rec := h.req(http.MethodPost, "/api/v1/samples/donate", h.session(u), map[string]any{
 			"ingest_id": id, "consent": consent,
 		})
@@ -282,11 +392,10 @@ func TestSampleIntakeSharesOneBudgetAcrossBothRoutes(t *testing.T) {
 	// refills, so the test does not depend on the wall clock.
 	h.srv.SamplesPerUser = NewLimiter(0, 2, 16, func() time.Time { return h.now })
 
-	sig := diag.StructureSig("You spent AED 0 at A on 0/0/0")
 	for i := 0; i < 2; i++ {
-		rec := h.req(http.MethodPost, "/api/v1/samples/report", session, map[string]any{
-			"sender_domain": fmt.Sprintf("bank%d.test", i), "structure_sig": sig,
-		})
+		id := h.receive(u, sampleMail(fmt.Sprintf("You spent AED %d.00 at STARBUCKS on 01/01/2026", i+1)),
+			fmt.Sprintf("bank%d.test", i))
+		rec := h.req(http.MethodPost, "/api/v1/samples/report", session, map[string]any{"ingest_id": id})
 		wantStatus(t, rec, http.StatusNoContent)
 	}
 	rec := h.req(http.MethodPost, "/api/v1/samples/donate", session, map[string]any{
@@ -296,9 +405,11 @@ func TestSampleIntakeSharesOneBudgetAcrossBothRoutes(t *testing.T) {
 		t.Fatalf("the donation route = %d after the report route spent the budget, want 429", rec.Code)
 	}
 	// A different user is unaffected: the budget is per caller, not global.
-	other := h.session(h.user("bob"))
+	bob := h.user("bob")
+	other := h.session(bob)
+	bobsID := h.receive(bob, sampleMail("You spent AED 7.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 	if rec := h.req(http.MethodPost, "/api/v1/samples/report", other, map[string]any{
-		"sender_domain": "testbank.test", "structure_sig": sig,
+		"ingest_id": bobsID,
 	}); rec.Code != http.StatusNoContent {
 		t.Fatalf("a second user = %d; one user drained a shared budget", rec.Code)
 	}

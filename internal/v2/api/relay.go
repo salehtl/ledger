@@ -74,13 +74,47 @@ import (
 
 // Relay route paths. internal/v2/relay declares the same two strings as the
 // client's constants, and TestTheRelayRoutesAreTheOnesTheRelayCalls asserts they
-// are the same — a relay pointed at a path this mux does not serve gets a 404,
-// which its drain classifies as a per-message rejection and would file an entire
-// spool under rejected/.
+// are the same — a relay pointed at a path this mux does not serve gets a 404
+// from the catch-all, which is indistinguishable by status from this handler's
+// own "no such recipient".
 const (
 	relayAddressesPath = "/api/v1/relay/addresses"
 	relayDeliverPath   = "/api/v1/relay/deliver"
 )
+
+// relayVerdictHeader is how THIS handler tells the relay that a message is
+// undeliverable, as opposed to this server not being in a state to take it.
+//
+// The relay sets a message aside only for an answer carrying it. That is not
+// belt-and-braces: the two relay routes are mounted only when the deployment is
+// relay-capable (relayRoutesMountable), so a primary with no LEDGER_RELAY_TOKEN
+// answers the catch-all's 404 to every delivery — and without a marker the relay
+// read that as "this message is undeliverable" and filed its ENTIRE spool of
+// already-accepted mail under rejected/, permanently, in one tick. So the
+// header is set here on the four answers that really are about the message, and
+// on nothing else: a 401, a 429, a 503 or a catch-all 404 carries no verdict and
+// the relay keeps the mail.
+//
+// Literals rather than an import of internal/v2/relay, on the same terms as
+// relaySpoolHeader below: this package must not depend on the relay in
+// production code, and TestTheRelayRoutesAreTheOnesTheRelayCalls asserts the two
+// spellings agree.
+const (
+	relayVerdictHeader = "X-Ledger-Relay-Verdict"
+	relayVerdictReject = "reject"
+)
+
+// relayReject answers a relayed delivery with a per-message REJECTION: this
+// server has looked at the message and it can never be placed, so the relay
+// should stop retrying it and set it aside for an operator.
+//
+// Every caller of this is a statement that no retry, and no repair on this
+// server, would change the answer. Anything that a restart, a migration or a
+// fixed environment variable could fix must NOT come through here.
+func relayReject(w http.ResponseWriter, status int, code, detail string) {
+	w.Header().Set(relayVerdictHeader, relayVerdictReject)
+	writeErr(w, status, code, detail)
+}
 
 const (
 	// maxRelayDeliverBytes caps POST /api/v1/relay/deliver.
@@ -254,7 +288,9 @@ func (s *Server) handleRelayDeliver(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := base64.StdEncoding.DecodeString(req.Raw)
 	if err != nil || len(raw) == 0 {
-		writeErr(w, http.StatusBadRequest, "bad_request", "raw must be a non-empty base64 message")
+		// The relay re-encodes the same bytes on every retry, so this answer
+		// cannot change: an explicit rejection.
+		relayReject(w, http.StatusBadRequest, "bad_request", "raw must be a non-empty base64 message")
 		return
 	}
 	if len(raw) > s.maxMessageBytes() {
@@ -262,7 +298,7 @@ func (s *Server) handleRelayDeliver(w http.ResponseWriter, r *http.Request) {
 		// aside rather than retry it. That is correct: this server would refuse
 		// the same bytes at DATA too, and a message that cannot be stored will
 		// not become storable by being sent again.
-		writeErr(w, http.StatusRequestEntityTooLarge, "too_large",
+		relayReject(w, http.StatusRequestEntityTooLarge, "too_large",
 			"the message exceeds this server's SMTP size cap")
 		return
 	}
@@ -272,7 +308,7 @@ func (s *Server) handleRelayDeliver(w http.ResponseWriter, r *http.Request) {
 	suffix := s.Addresses.Suffix
 	local, ok := addresses.LocalPartOf(req.LocalPart+suffix, suffix)
 	if !ok || local != req.LocalPart {
-		writeErr(w, http.StatusBadRequest, "bad_request",
+		relayReject(w, http.StatusBadRequest, "bad_request",
 			"local_part must be a normalized inbound address local part")
 		return
 	}
@@ -287,7 +323,7 @@ func (s *Server) handleRelayDeliver(w http.ResponseWriter, r *http.Request) {
 		// since retired or purged.
 		s.logf("api: POST %s: no such recipient; the relay's replica is out of date and a "+
 			"message it ACCEPTED cannot be placed", relayDeliverPath)
-		writeErr(w, http.StatusNotFound, "not_found", "no such recipient")
+		relayReject(w, http.StatusNotFound, "not_found", "no such recipient")
 		return
 	case err != nil:
 		// TEMPORARY: an outage here must not make the relay discard mail.
