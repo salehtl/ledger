@@ -57,6 +57,14 @@ func (f *fakeVerifier) Verify(_ context.Context, idToken string, opts auth.Verif
 	if id.IdP == "" {
 		id.IdP = auth.IdPApple
 	}
+	if id.IssuedAt.IsZero() {
+		// A real verifier ALWAYS reports iat — VerifyOpts.MaxAge refuses a
+		// token that will not say when it was minted — so a fake that left it
+		// zero would make every freshness-checking endpoint (account deletion,
+		// address rotation) untestable except in its refusal path. A test that
+		// wants a stale token sets identity.IssuedAt itself.
+		id.IssuedAt = time.Now()
+	}
 	return id, nil
 }
 
@@ -982,7 +990,11 @@ func TestRosterIsScopedToTheCaller(t *testing.T) {
 func TestExchangeIssuesASessionForAVerifiedIdentity(t *testing.T) {
 	h := newHarness(t)
 	h.apple.identity = auth.Identity{IdP: auth.IdPApple, Subject: "sub-1"}
-	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	// Creating an account needs an invite code (Phase 2, Decision 8); signing
+	// in to one that exists does not. See invite_test.go.
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{
+		IdP: auth.IdPApple, IDToken: "tok", InviteCode: h.invite("exchange test"),
+	})
 	wantStatus(t, w, http.StatusOK)
 	got := decodeJSON[ExchangeResponse](t, w)
 	if got.SessionToken == "" || got.UserID == "" {
@@ -1038,7 +1050,9 @@ func TestResponsesAreNotCacheable(t *testing.T) {
 	// pull response carries the user's op log. Neither may be written to a
 	// shared cache, a proxy, or a client's disk cache.
 	h := newHarness(t)
-	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{
+		IdP: auth.IdPApple, IDToken: "tok", InviteCode: h.invite(""),
+	})
 	wantStatus(t, w, http.StatusOK)
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("the response carrying a session token has Cache-Control %q, want no-store", got)
@@ -1129,6 +1143,9 @@ func TestPhase1DoesNotBindANonce(t *testing.T) {
 
 func TestSignInIsRateLimitedPerClient(t *testing.T) {
 	h := newHarness(t)
+	// A RETURNING user, so what is measured is the rate limit and not the
+	// invite gate: the fake verifier maps id_token "tok" to subject "sub-tok".
+	h.user("sub-tok")
 	// No refill during the test: the burst is the whole budget.
 	h.srv.SignInPerIP = NewLimiter(0, 3, 128, time.Now)
 	h.h = h.srv.Handler()
@@ -1159,6 +1176,8 @@ func TestOneClientCannotSpendEveryoneElsesSignInBudget(t *testing.T) {
 	// every other client at 429 — an amplification nuisance traded for a total
 	// sign-in outage, which is exactly what ratelimit.go says it refuses to do.
 	h := newHarness(t)
+	// A returning user, for the reason above: this measures the limiters.
+	h.user("sub-tok")
 	frozen := time.Now()
 	clock := func() time.Time { return frozen }
 	h.srv.SignInPerIP = NewLimiter(0, 3, 128, clock)
@@ -1404,7 +1423,11 @@ func TestDevAuthExchangeIssuesAWorkingSession(t *testing.T) {
 	}
 	h := srv.Handler()
 
-	body, _ := json.Marshal(ExchangeRequest{IdP: auth.IdPApple, IDToken: "dev:alice"})
+	code, err := auth.MintInvite(bg, pool, "dev-auth test", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(ExchangeRequest{IdP: auth.IdPApple, IDToken: "dev:alice", InviteCode: code})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/exchange", bytes.NewReader(body)))
 	if rec.Code != http.StatusOK {

@@ -67,10 +67,13 @@ func TestModesIsTheExactSetInOrder(t *testing.T) {
 	// --retention-due` reads a deadline that, until that command existed,
 	// nothing anywhere wrote. "seed-templates" joined it for the same class of
 	// reason: the bank templates were written, corpus-validated and unreachable,
-	// so a freshly deployed ledgerd parsed nothing at all.
+	// so a freshly deployed ledgerd parsed nothing at all. "mint-invite" joined
+	// it with Phase 2's Task 6, and is the third of the same shape: account
+	// creation is gated on a single-use code, and without a command to mint one
+	// a freshly deployed ledgerd lets nobody sign up at all.
 	want := []string{
 		"serve", "relay", "verify", "seed-dictionary", "seed-templates",
-		"purge-user", "record-consent", "parse-rate",
+		"purge-user", "record-consent", "parse-rate", "mint-invite",
 	}
 	got := Modes()
 	if len(got) != len(want) {

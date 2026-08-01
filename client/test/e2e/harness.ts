@@ -526,6 +526,29 @@ export class Stack {
     };
   }
 
+  /**
+   * Mints one single-use invite code against THIS stack's database, by running
+   * the real `ledgerd mint-invite` — the same command the operator runs.
+   *
+   * Account CREATION is gated on a code (Phase 2, Decision 8), so every test
+   * that signs a NEW subject in needs one. Minting it through the CLI rather
+   * than an INSERT is the point: it is the only thing in the suite that proves
+   * the mint → hand over → redeem loop works end to end, and an INSERT would
+   * be the test performing setup that production is supposed to perform.
+   *
+   * Signing in to an account that already exists needs no code, so a second
+   * profile on the same subject calls `login` with nothing.
+   */
+  mintInvite(note = "e2e"): string {
+    const out = this.run(["mint-invite", "--note", note]);
+    if (out.exitCode !== 0) {
+      throw new Error(`ledgerd mint-invite exited ${out.exitCode}: ${out.stderr}`);
+    }
+    const code = out.stdout.trim();
+    if (code === "") throw new Error(`ledgerd mint-invite printed no code (stderr: ${out.stderr})`);
+    return code;
+  }
+
   /** Last resort, from the process-exit hook. Synchronous and unconditional. */
   killNow(): void {
     if (this.proc.exitCode === null && this.proc.signalCode === null) {

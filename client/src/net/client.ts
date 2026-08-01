@@ -518,12 +518,22 @@ export class Client {
    * state file would mix their pinned heads and their cursors, and the AAD
    * check (I4) would then fail on every row of whichever one lost — a confusing
    * report of a problem that is entirely local.
+   *
+   * `inviteCode` is the closed beta's gate. It is required to CREATE an
+   * account and ignored entirely for one that already exists, so a caller may
+   * pass it on every sign-in without spending it and an existing user may
+   * always omit it. A server that requires one and did not get one answers
+   * `403 not_invited`, which surfaces here as an `ApiError` with that code —
+   * distinguishable from a credential failure on purpose, because re-entering
+   * an Apple password will never fix it.
    */
-  async login(idp: string, idToken: string): Promise<string> {
+  async login(idp: string, idToken: string, inviteCode?: string): Promise<string> {
     const out = await this.request<{ session_token: string; user_id: string }>(
       "POST",
       "/api/v1/auth/exchange",
-      { idp, id_token: idToken },
+      inviteCode === undefined
+        ? { idp, id_token: idToken }
+        : { idp, id_token: idToken, invite_code: inviteCode },
       false,
     );
     if (this.st.userId !== null && this.st.userId !== out.user_id) {

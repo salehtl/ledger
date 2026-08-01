@@ -6,7 +6,7 @@
 //
 // # The contract, in full
 //
-//	POST /api/v1/auth/exchange     {idp, id_token}                 -> {session_token, user_id}
+//	POST /api/v1/auth/exchange     {idp, id_token, invite_code?}   -> {session_token, user_id}
 //	POST /api/v1/writers/challenge {}                              -> {nonce}
 //	POST /api/v1/writers/register  {writer_id, pubkey, nonce, sig} -> 204
 //	GET  /api/v1/writers                                           -> {writers:[...]}
@@ -44,6 +44,23 @@
 // token>`. Every query is scoped by the user id RESOLVED from that token and
 // never by a user id taken from the request — there is no user field anywhere
 // in the request shapes above, deliberately.
+//
+// # Two answers a client must tell apart
+//
+// Every session rejection is the same 401 with the same body, with ONE
+// exception: a session whose account has been DELETED answers
+// `410 {"error":"account_deleted"}`. The distinction is not cosmetic and not an
+// oracle — it is the only thing a device may key a local wipe on. Wiping on a
+// 401 would fire on every routine token expiry and destroy an offline user's
+// outbox, so "sign in again" and "there is nothing to sign in to" have to be
+// different answers. See requireSession and 00021_deleted_account_sessions.sql,
+// which explains why the obvious implementation of this check can never fire.
+//
+// The exchange has its own second answer for the same reason:
+// `403 {"error":"not_invited"}` when account CREATION was required and no
+// unredeemed invite code authorized it. It is a fact about this deployment's
+// policy rather than about the credential, and the person holding the phone
+// needs to know that re-entering their Apple password will not help.
 //
 // # Wire encodings
 //
@@ -86,14 +103,27 @@
 //
 // # Replay of an ID token, stated plainly
 //
-// POST /api/v1/auth/exchange binds no nonce in Phase 1 (see handleExchange for
-// why a client-supplied one would be theatre). The consequence: a captured
-// Apple or Google ID token is a REPLAYABLE BEARER CREDENTIAL here for its whole
-// validity window — anything that observes one (a malicious SDK in the client
-// app, a log line, an intercepting proxy) can exchange it for a session. That
-// compounds with the absence of a sign-up allowlist: a replayed token for an
-// account this deployment has never seen creates one. Closing it needs the
-// issue → store → compare → consume-once flow described at the call site.
+// POST /api/v1/auth/exchange binds no nonce (see handleExchange for why a
+// client-supplied one would be theatre). The consequence: a captured Apple or
+// Google ID token is a REPLAYABLE BEARER CREDENTIAL here for its whole validity
+// window — anything that observes one (a malicious SDK in the client app, a log
+// line, an intercepting proxy) can exchange it for a session. Closing it needs
+// the issue → store → compare → consume-once flow described at the call site,
+// which needs a challenge store this path still does not have.
+//
+// This is DELIBERATE, and it is now the only place in this package where it is
+// true. POST /api/v1/address/rotate carried the identical empty VerifyOpts{} for
+// the whole of Phase 1 and no longer does: its challenge table always was the
+// missing store, so it binds the rotation nonce and a five-minute MaxAge (see
+// addresses.go). Two adjacent call sites that looked the same and now differ is
+// the point — the difference is that one has a store and one does not, and it
+// is written down in both places rather than left as a silent asymmetry.
+//
+// What bounds the exchange in the meantime: a replayed token for an identity
+// this deployment has never seen CANNOT create an account, because account
+// creation needs a single-use invite code (Decision 8). It can still take over
+// a session for an identity that already has one, which is why closing this is
+// named as Phase-4-blocking rather than closed.
 //
 // # Sessions are weak capabilities
 //
@@ -111,8 +141,9 @@
 // DELETE /api/v1/account is the third member of that class and the strongest
 // case for it: a stolen session must not be able to destroy a life's financial
 // history. It demands the same three factors AND requires the ID token to have
-// been minted within the last five minutes, which rotation does not (see
-// account.go for why that difference is a gap in rotation rather than a policy).
+// been minted within the last five minutes — which rotation now requires too:
+// account.go called that difference a gap in rotation rather than a policy, and
+// Phase 2 closed it.
 package api
 
 import (
@@ -244,6 +275,26 @@ const (
 	pushRate    = 1.0 / 60.0 // 1/minute sustained
 	pushBurst   = 20
 	pushMaxKeys = 4096
+
+	// The quarantine budget is the address and account budget, deliberately
+	// identical to both (TestQuarantineBudgetMatchesTheAddressAndAccountBudgets
+	// pins it), because it bounds the same kind of thing: a rare, deliberate
+	// user gesture that costs the server a great deal.
+	//
+	// POST /api/v1/quarantine/confirm re-ingests every message the confirmation
+	// releases — up to defaultMaxReingestPerConfirm of them — through the whole
+	// parse cascade, synchronously, inside a user-facing request. It was the
+	// most expensive thing a session could ask this API to do and the only
+	// write path with no budget at all, which read as a decision and was not
+	// one.
+	//
+	// Trusting a bank is something a user does a handful of times in the life
+	// of the account, so the sustained rate is mean; the burst is 10 because
+	// the legitimate shape is a person tapping through several senders in one
+	// onboarding sitting.
+	quarantineRate    = 1.0 / 60.0 // 1/minute sustained
+	quarantineBurst   = 10
+	quarantineMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -353,6 +404,10 @@ type Server struct {
 	// budget, for the reason the two above share: they are one flow, and a
 	// caller who can register without limit is not limited by a bounded delete.
 	PushPerUser *Limiter
+	// QuarantinePerUser bounds POST /api/v1/quarantine/confirm, which re-ingests
+	// held mail through the parse cascade inside the request. See the
+	// quarantineRate block above.
+	QuarantinePerUser *Limiter
 
 	// Reprocessor re-ingests the mail a sender confirmation releases, which is
 	// the only way held mail ever enters the integrity chains (§3.2:58). Nil
@@ -547,6 +602,9 @@ func (s *Server) Handler() http.Handler {
 	if s.PushPerUser == nil {
 		s.PushPerUser = NewLimiter(pushRate, pushBurst, pushMaxKeys, s.now)
 	}
+	if s.QuarantinePerUser == nil {
+		s.QuarantinePerUser = NewLimiter(quarantineRate, quarantineBurst, quarantineMaxKeys, s.now)
+	}
 	if s.RelayPerIP == nil {
 		s.RelayPerIP = NewLimiter(relayRate, relayBurst, relayMaxKeys, s.now)
 	}
@@ -678,6 +736,22 @@ func (s *Server) requireSession(h authedHandler) http.HandlerFunc {
 		}
 		userID, err := s.Sessions.Resolve(r.Context(), token)
 		if err != nil {
+			// Checked BEFORE the collapse below, which it wraps. This is the
+			// one rejection that is deliberately distinguishable, and it has to
+			// be: a client may only wipe its local ledger on "there is nothing
+			// to sign in to", never on "sign in again". Wiping on a 401 would
+			// fire on every routine token expiry and destroy an offline user's
+			// outbox, so the two must not be the same answer.
+			//
+			// It is not an oracle: it is a fact about an account that no longer
+			// exists, offered only to a caller who already holds that account's
+			// session token. See auth.ErrSessionAccountDeleted and
+			// 00021_deleted_account_sessions.sql.
+			if errors.Is(err, auth.ErrSessionAccountDeleted) {
+				s.logf("api: %s %s: session belongs to a deleted account", r.Method, r.URL.Path)
+				writeAccountDeleted(w)
+				return
+			}
 			if errors.Is(err, auth.ErrSessionInvalid) {
 				// The reason is logged, never returned.
 				s.logf("api: %s %s: session rejected: %v", r.Method, r.URL.Path, err)
@@ -751,6 +825,16 @@ func writeErr(w http.ResponseWriter, status int, code, detail string) {
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	writeJSON(w, http.StatusUnauthorized, errorBody{Error: "unauthorized"})
+}
+
+// writeAccountDeleted is the ONE 410 this package emits, on the same terms.
+//
+// 410 rather than 404 or another 401 because it is the status whose meaning is
+// exactly this one: the resource existed, it is gone, and the condition is
+// permanent. A client keys its "wipe local data" path on this and on nothing
+// else — see the Task 26 and Task 29 handling in the app.
+func writeAccountDeleted(w http.ResponseWriter) {
+	writeJSON(w, http.StatusGone, errorBody{Error: "account_deleted"})
 }
 
 // ---------------------------------------------------------------------------

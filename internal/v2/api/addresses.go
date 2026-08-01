@@ -25,8 +25,16 @@ package api
 //
 // Steps 2 and 3 are independent on purpose. A stolen session has neither. A
 // stolen ID token (which the exchange endpoint's doc admits is a replayable
-// bearer credential in Phase 1) has no device key. Malware on an unlocked
-// device that can sign has no way to produce a fresh IdP assertion.
+// bearer credential there) has no device key. Malware on an unlocked device
+// that can sign has no way to produce a fresh IdP assertion.
+//
+// And the two are not merely independent, they are TIED: the nonce the ID token
+// must carry is the same single-use challenge factor 3 signs and spends, so a
+// token minted for one rotation cannot authorize another. That binding is what
+// makes "fresh" mean minted-for-this-action rather than merely still-valid, and
+// it is the thing Phase 1 shipped as an empty auth.VerifyOpts{}. The exchange
+// endpoint still has no such store and is deliberately left unbound; see
+// handleExchange, which says so in full.
 //
 // # GET is allowed to issue, and that is not a hole
 //
@@ -155,19 +163,40 @@ func (s *Server) handleAddressRotate(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	// Factor 2: fresh IdP re-authentication, bound to the session's account.
+	// Factor 2: fresh IdP re-authentication, BOUND to this specific rotation
+	// and bound to the session's account.
 	//
-	// The binding is the load-bearing half. Verifying the token and not
-	// checking WHO it names would accept any valid Apple or Google token from
-	// anyone as "re-authentication" for this session's account.
+	// # The nonce is the real binding, and it is the rotation challenge itself
 	//
-	// Phase 1 caveat, stated plainly rather than papered over: the exchange
-	// endpoint binds no nonce (see handleExchange), so "fresh" here means the
-	// token is currently valid, not that it was minted for THIS action. A token
-	// captured within its validity window satisfies this check. Closing it
-	// needs the issue -> store -> compare -> consume-once flow described at
-	// handleExchange, and it is the same fix in both places.
-	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{})
+	// VerifyOpts.Nonce only defeats replay when the expected value comes from
+	// server-side state created BEFORE the token existed — issue, store,
+	// compare, consume exactly once. Phase 1 passed an empty VerifyOpts here
+	// and said the store did not exist, which was not true of THIS endpoint:
+	// address_rotation_challenges is exactly that store (32 bytes from
+	// crypto/rand, 5-minute TTL, spent by RotateAuthorized before it verifies
+	// anything), it was already in the same commit, and the only thing missing
+	// was passing it. So "fresh IdP re-authentication" checked nothing at all:
+	// any currently-valid ID token satisfied factor 2.
+	//
+	// The value is the CANONICAL encoding of the decoded nonce, not the string
+	// the caller typed: it is the exact string POST /api/v1/address/challenge
+	// handed out, which is what the client passes to Apple or Google as `nonce`
+	// when it starts authorization. A caller who re-encodes it differently is
+	// normalized onto the server's own spelling rather than being refused for
+	// base64 trivia.
+	//
+	// Consume-once is not implemented here — it is RotateAuthorized below,
+	// which spends the challenge whether or not the signature verifies. A
+	// replayed token therefore fails twice over: its nonce names a challenge
+	// that is already spent, and factor 3 cannot be satisfied with it.
+	//
+	// MaxAge matches the account-deletion path exactly. The two are one class
+	// (spec §3.4) and account.go documented rotation's missing window as a gap
+	// in rotation rather than a policy difference; this closes it.
+	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{
+		Nonce:  base64.StdEncoding.EncodeToString(nonce),
+		MaxAge: reauthMaxAge,
+	})
 	if err != nil {
 		if errors.Is(err, auth.ErrNotConfigured) || errors.Is(err, auth.ErrKeySetUnavailable) {
 			// A fact about the server, not the credential: the user's token may
@@ -181,14 +210,33 @@ func (s *Server) handleAddressRotate(w http.ResponseWriter, r *http.Request, use
 		writeAddressRotationRejected(w)
 		return
 	}
-	reauthed, err := auth.UpsertUser(r.Context(), s.Pool, id)
+	// Re-checked against the Identity, not only handed to the verifier, so a
+	// Verifier implementation that ignored MaxAge cannot silently turn this
+	// back into a session-plus-key endpoint. Same guard, same reason, as
+	// account.go's.
+	if id.IssuedAt.IsZero() || s.now().Sub(id.IssuedAt) > reauthMaxAge {
+		s.logf("api: rotate address for %s: id token is not fresh (iat %s)", userID, id.IssuedAt.UTC())
+		writeAddressRotationRejected(w)
+		return
+	}
+	// A COMPARISON, never auth.UpsertUser.
+	//
+	// This handler used to resolve the re-authenticating identity by UPSERTING
+	// it, which resolves an unknown subject by CREATING it: one valid session
+	// plus any Apple or Google token minted a `users` row on every rejected
+	// rotation — a row-creation primitive on the path that answers 403. Since
+	// Phase 2 it is worse than untidy, because account creation is the closed
+	// beta's only gate (see handleExchange) and this was a way straight past
+	// it. account.go found and fixed the same defect on the deletion path;
+	// auth.IdentityMatchesUser is that fix, extracted so the two cannot drift.
+	same, err := auth.IdentityMatchesUser(r.Context(), s.Pool, userID, id)
 	if err != nil {
 		s.logf("api: rotate address for %s: resolve re-auth identity: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
-	if reauthed != userID {
-		s.logf("api: rotate address for %s: re-auth names a different account (%s)", userID, reauthed)
+	if !same {
+		s.logf("api: rotate address for %s: re-auth names a different account", userID)
 		writeAddressRotationRejected(w)
 		return
 	}
