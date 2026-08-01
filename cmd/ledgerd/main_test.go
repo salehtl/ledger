@@ -100,7 +100,11 @@ func TestUnknownModeIsNotInTheDispatchTable(t *testing.T) {
 // cluster (see task-3-report.md) rather than a fast unit test, since it
 // necessarily depends on external process state a unit test shouldn't own.
 func TestNonServeHandlersStubImmediatelyWithNoIO(t *testing.T) {
-	for _, m := range []string{"relay", "verify", "seed-dictionary", "purge-user", "parse-rate"} {
+	// seed-dictionary is no longer in this list: Task 33 implemented it, and
+	// TestSeedDictionaryRefusesWithoutACorpusBeforeTouchingPostgres below
+	// carries the "returns immediately, with no I/O" half of this test's job
+	// for that mode.
+	for _, m := range []string{"relay", "verify", "purge-user", "parse-rate"} {
 		h, ok := modeHandlers[m]
 		if !ok {
 			t.Fatalf("modeHandlers missing %q", m)
@@ -109,6 +113,22 @@ func TestNonServeHandlersStubImmediatelyWithNoIO(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
 			t.Fatalf("modeHandlers[%q](zero config) = %v, want a \"not implemented yet\" stub error", m, err)
 		}
+	}
+}
+
+// The corpus path is checked BEFORE the Postgres pool is opened, so running the
+// seed with no snapshot configured is an immediate, self-explaining refusal
+// rather than a connection attempt against whatever DSN happened to be in the
+// environment. The zero config carries an empty DSN, so a handler that reached
+// pg.Open would be doing exactly that.
+func TestSeedDictionaryRefusesWithoutACorpusBeforeTouchingPostgres(t *testing.T) {
+	t.Setenv("LEDGER_CORPUS_DB", "")
+	err := modeHandlers["seed-dictionary"](config.Config{})
+	if err == nil {
+		t.Fatal("seed-dictionary with no corpus snapshot returned no error")
+	}
+	if !strings.Contains(err.Error(), "LEDGER_CORPUS_DB") {
+		t.Fatalf("error does not name the missing input: %v", err)
 	}
 }
 
