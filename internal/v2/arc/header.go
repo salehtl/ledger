@@ -86,14 +86,34 @@ func ReadHeader(raw []byte) (Header, []byte, error) {
 		return nil, nil, fmt.Errorf("%w at offset %d", ErrBareLF, j)
 	}
 
-	var h Header
+	// A folded field is accumulated in byte buffers and turned into strings
+	// once, when the next field starts. Appending to the Field's strings in
+	// place instead — last.Value += ... — is quadratic in the number of
+	// continuation lines, because every += copies the whole value again. That
+	// is not a style point on an inbound path: a 350 KB header of six-byte
+	// folds measured 8.8s before this change and grows with the square, so a
+	// message a sender is free to construct is a way to spend the receiver's
+	// CPU. See TestFoldedHeaderCostIsLinearInItsInput.
+	var (
+		h      Header
+		name   string
+		valBuf []byte
+		rawBuf []byte
+		open   bool
+	)
+	flush := func() {
+		if open {
+			h = append(h, Field{Name: name, Value: string(valBuf), Raw: string(rawBuf)})
+			valBuf, rawBuf, open = nil, nil, false
+		}
+	}
 	for len(block) > 0 {
 		j := bytes.Index(block, []byte(crlf))
 		if j < 0 {
 			// Trailing bytes with no CRLF: treat as a final line.
 			j = len(block)
 		}
-		line := string(block[:j])
+		line := block[:j]
 		adv := j + len(crlf)
 		if adv > len(block) {
 			adv = len(block)
@@ -101,20 +121,26 @@ func ReadHeader(raw []byte) (Header, []byte, error) {
 		block = block[adv:]
 
 		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-			if len(h) == 0 {
+			if !open {
 				return nil, nil, ErrNoHeader // continuation with nothing to continue
 			}
-			last := &h[len(h)-1]
-			last.Value += crlf + line
-			last.Raw += line + crlf
+			valBuf = append(append(valBuf, crlf...), line...)
+			rawBuf = append(append(rawBuf, line...), crlf...)
 			continue
 		}
-		name, value, ok := strings.Cut(line, ":")
+		flush()
+		n, v, ok := strings.Cut(string(line), ":")
 		if !ok {
 			return nil, nil, ErrNoHeader
 		}
-		h = append(h, Field{Name: name, Value: value, Raw: line + crlf})
+		// flush() has just cleared both buffers, so these start fresh. The
+		// exact capacity covers an unfolded field — the overwhelming majority
+		// — without a single growth.
+		name, valBuf, open = n, []byte(v), true
+		rawBuf = make([]byte, 0, len(line)+len(crlf))
+		rawBuf = append(append(rawBuf, line...), crlf...)
 	}
+	flush()
 	if len(h) == 0 {
 		return nil, nil, ErrNoHeader
 	}

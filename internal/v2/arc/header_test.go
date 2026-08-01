@@ -2,6 +2,8 @@ package arc
 
 import (
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +154,72 @@ func TestHeaderPickBottomUpWithRepeats(t *testing.T) {
 		if !ok || f.Value != want {
 			t.Fatalf("Pick = %#v, %v; want value %q", f, ok, want)
 		}
+	}
+}
+
+// TestFoldedHeaderCostIsLinearInItsInput pins the cost of folding, not just
+// its correctness.
+//
+// ReadHeader runs on the raw bytes of inbound mail, so the number of
+// continuation lines in a header field is chosen by the sender. Accumulating a
+// folded field with `value += line` is quadratic in that number: measured on
+// this input, 5,000 folds took 90ms, 20,000 took 1.33s and 50,000 took 8.8s — a
+// curve a sender can ride into a denial of service with one small message.
+//
+// The assertion is on bytes allocated rather than on elapsed time. A wall-clock
+// budget is a flaky test on a loaded machine — an earlier draft of this check
+// measured 21x on an idle run and failed the gate — while allocation is
+// deterministic and independent of what else the box is doing. It is also the
+// sharper signal: quadratic concatenation allocated 10,773x the input size here
+// and linear accumulation allocates 13x, so the 100x threshold has two orders
+// of magnitude of headroom on each side.
+func TestFoldedHeaderCostIsLinearInItsInput(t *testing.T) {
+	// The limit only has to sit between "linear" and "quadratic", and at these
+	// sizes those are three orders of magnitude apart.
+	const maxAllocRatio = 100
+
+	for _, n := range []int{10_000, 40_000} {
+		raw := []byte("DKIM-Signature: v=1;" + strings.Repeat("\r\n a=b;", n) + "\r\nFrom: a@b\r\n\r\nbody\r\n")
+
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		h, _, err := ReadHeader(raw)
+		runtime.ReadMemStats(&after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h) != 2 {
+			t.Fatalf("n=%d: got %d fields, want 2", n, len(h))
+		}
+
+		allocated := after.TotalAlloc - before.TotalAlloc
+		if ratio := float64(allocated) / float64(len(raw)); ratio > maxAllocRatio {
+			t.Fatalf("n=%d folds: parsing %d bytes allocated %d bytes (%.0fx the input, limit %dx); "+
+				"folding accumulation has gone superlinear again",
+				n, len(raw), allocated, ratio, maxAllocRatio)
+		}
+	}
+}
+
+// Folding must still be byte-exact after that change: Raw and Value are signed
+// material, and a signature is computed over precisely these bytes.
+func TestFoldedFieldBytesSurviveAccumulation(t *testing.T) {
+	raw := "A: one\r\n two\r\n\tthree\r\nB: plain\r\n\r\nbody\r\n"
+	h, _, err := ReadHeader([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h) != 2 {
+		t.Fatalf("got %d fields, want 2: %#v", len(h), h)
+	}
+	if want := " one\r\n two\r\n\tthree"; h[0].Value != want {
+		t.Fatalf("folded value = %q, want %q", h[0].Value, want)
+	}
+	if want := "A: one\r\n two\r\n\tthree\r\n"; h[0].Raw != want {
+		t.Fatalf("folded raw = %q, want %q", h[0].Raw, want)
+	}
+	if h[1].Raw != "B: plain\r\n" {
+		t.Fatalf("field after a folded one = %q", h[1].Raw)
 	}
 }
