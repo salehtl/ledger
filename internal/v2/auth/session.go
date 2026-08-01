@@ -87,10 +87,13 @@ func (s *Sessions) Issue(ctx context.Context, userID uuid.UUID) (string, error) 
 		// rather than assumed.
 		return "", fmt.Errorf("auth: issue session: read random: %w", err)
 	}
-	// RawURLEncoding: no padding, no characters needing escaping in an
-	// Authorization header or a URL. The token is hashed in its ENCODED form,
-	// which is the form that arrives on the wire, so Resolve never has to
-	// decode attacker-supplied base64 to look a session up.
+	// RawURLEncoding: no padding, and no characters needing escaping in an
+	// Authorization header, which is the ONLY place this token may travel. It
+	// must never be put in a URL — query strings land in access logs, browser
+	// history and Referer headers, none of which should ever hold a live
+	// credential. The token is hashed in its ENCODED form, the form that
+	// arrives on the wire, so Resolve never has to decode attacker-supplied
+	// base64 to look a session up.
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	now := s.now()
 	_, err := s.Pool.Exec(ctx,
