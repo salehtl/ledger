@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,9 +27,28 @@ import (
 // ---------------------------------------------------------------------------
 
 // templateJSON is a minimal but REAL definition: it passes the whole publish
-// gate, including the 29-rule dialect. amountPattern is the one thing the tests
-// vary, because a regression is a version that stops extracting an amount.
+// gate, including the 29-rule dialect. amountPattern is the one thing most
+// tests vary, because a regression is a version that stops extracting an
+// amount.
 func templateJSON(version int, amountPattern string) []byte {
+	return templateJSONWith(version, amountPattern, "debit", false)
+}
+
+// templateJSONWith varies the two further things the VALUE-level gate tests
+// need: which direction the template asserts, and whether it also reads a
+// card's last four digits.
+//
+// Those two are what separate the three ways a new version can differ from the
+// live one. A flipped direction and a rewired amount pattern both MATCH every
+// sample and extract something else out of it — the failure the publish gate
+// exists to catch and could not see. Adding last4 extracts something where
+// there was nothing before, which is the improvement the gate must not block.
+func templateJSONWith(version int, amountPattern, direction string, last4 bool) []byte {
+	extra := ""
+	if last4 {
+		extra = `,
+	    {"field": "last4", "type": "last4", "source": "body", "patterns": ["card ending (?P<v>[0-9]{4})"]}`
+	}
 	return []byte(fmt.Sprintf(`{
 	  "id": "testbank.card",
 	  "version": %d,
@@ -43,10 +63,10 @@ func templateJSON(version int, amountPattern string) []byte {
 	  "extract": [
 	    {"field": "amount", "type": "amount", "source": "body", "patterns": [%q]},
 	    {"field": "merchant", "type": "text", "source": "body", "patterns": ["at (?P<v>[A-Za-z]+) on"]},
-	    {"field": "direction", "type": "const", "source": "body", "value": "debit"}
+	    {"field": "direction", "type": "const", "source": "body", "value": %q}%s
 	  ],
 	  "required": ["amount", "merchant", "direction"]
-	}`, version, amountPattern))
+	}`, version, amountPattern, direction, extra))
 }
 
 const (
@@ -54,6 +74,9 @@ const (
 	broadAmount = `AED (?P<amt>[0-9]+\.[0-9]{2})`
 	// narrowAmount extracts only from the "spent" one — the regression.
 	narrowAmount = `spent AED (?P<amt>[0-9]+\.[0-9]{2})`
+	// balanceAmount matches just as broadly and reads the WRONG NUMBER: the
+	// available balance instead of the transaction. Every sample still matches.
+	balanceAmount = `balance AED (?P<amt>[0-9]+\.[0-9]{2})`
 )
 
 func rawMail(body string) []byte {
@@ -67,6 +90,12 @@ func rawMail(body string) []byte {
 var (
 	sampleSpent    = rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026")
 	samplePurchase = rawMail("Purchase of AED 75.50 at CARREFOUR on 02/01/2026")
+	// sampleWithBalance carries a second amount — the account balance a real
+	// bank alert prints under the transaction — and a card number the live
+	// template does not read. Both are the difference between "the template
+	// matched" and "the template extracted the right thing".
+	sampleWithBalance = rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026 with card ending 4321\r\n" +
+		"Available balance AED 9999.99")
 )
 
 // fakeSamples is a scriptable stand-in for the donated-sample store: it can be
@@ -277,6 +306,12 @@ func adminRoutes() []struct {
 		{"GET", "/admin/dictionary", nil},
 		{"POST", "/admin/dictionary/moderate", map[string]any{"pattern": "x", "category": "y", "approved": true}},
 		{"POST", "/admin/dictionary/approve-seed", map[string]any{}},
+		// The catch-all, which is GUARDED for the same reason as the rest: an
+		// unauthenticated caller must not be able to map which routes exist by
+		// comparing 404 against 401. Every other entry here is a real route, so
+		// without this line removing `guard` from the catch-all changed nothing
+		// any test could see.
+		{"GET", "/admin/no-such-route", nil},
 	}
 }
 
@@ -359,16 +394,51 @@ func TestEveryRefusalIsTheSameResponse(t *testing.T) {
 	}
 }
 
+// The token guard on Routes, tested so that DELETING it fails.
+//
+// The earlier version of this test built a Handler with a nil Waitlist, so
+// Routes refused for that reason instead and the whole token guard could be
+// deleted with the suite green — a check true by construction rather than by
+// measurement, which is the shape this plan keeps finding. The handler below is
+// therefore FULLY POPULATED and the empty token is the only thing wrong with
+// it, and the same handler WITH a token is mounted right after, so the refusal
+// cannot be coming from anywhere else.
 func TestTheConsoleRoutesRefuseToMountWithoutAToken(t *testing.T) {
 	pool := pgtest.New(t)
-	h := &Handler{Templates: &tmpl.Store{Pool: pool}, Diag: &diag.Diag{Pool: pool}}
-	mux := http.NewServeMux()
-	if err := h.Routes(mux); err == nil {
-		t.Fatal("Routes mounted an unauthenticated admin console")
+	key, err := dict.ParseKey(testKeyHex)
+	if err != nil {
+		t.Fatal(err)
 	}
+	handler := func(token string) *Handler {
+		return &Handler{
+			Templates:   &tmpl.Store{Pool: pool},
+			Diag:        &diag.Diag{Pool: pool},
+			Waitlist:    &Waitlist{Pool: pool},
+			Quarantine:  &quarantine.Store{Pool: pool, TTL: quarantine.DefaultTTL, WarnBefore: quarantine.DefaultWarnBefore},
+			Dict:        &dict.Dict{Pool: pool, HMACKey: key},
+			Samples:     &fakeSamples{byDomain: map[string][]Sample{}},
+			Reprocessor: &fakeReprocessor{},
+			Token:       token,
+			Logf:        func(string, ...any) {},
+		}
+	}
+
+	mux := http.NewServeMux()
+	if err := handler("").Routes(mux); err == nil {
+		t.Fatal("Routes mounted an unauthenticated admin console")
+	} else if !strings.Contains(err.Error(), "LEDGER_ADMIN_TOKEN") {
+		t.Fatalf("the refusal does not name the missing credential: %v", err)
+	}
+	// The control: the ONLY difference is the token, so the refusal above is
+	// about the token and not about some other unset field.
+	if err := handler(testToken).Routes(http.NewServeMux()); err != nil {
+		t.Fatalf("a fully-populated console with a token did not mount: %v", err)
+	}
+
 	// And nothing was mounted on the way to that error, including the
-	// dictionary console this handler is responsible for mounting.
-	for _, p := range []string{"/admin/templates", "/admin/dictionary", "/admin/waitlist"} {
+	// dictionary console this handler is responsible for mounting — which is a
+	// real Dict here, so it would genuinely have mounted.
+	for _, p := range []string{"/admin/templates", "/admin/dictionary", "/admin/waitlist", "/admin/samples"} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 		if rec.Code != http.StatusNotFound {
@@ -572,6 +642,58 @@ func TestPublishSucceedsWithNoSamplesAndNoLiveVersion(t *testing.T) {
 	}
 }
 
+// A corpus that is not CONFIGURED is not an empty corpus, and this is the
+// distinction the whole gate rests on: "the gate could not run" reported as
+// "the gate found nothing" is how a gate stops being one.
+//
+// The test is here because the property is otherwise invisible. Replacing the
+// 503 with `if h.Samples != nil { … }` — the obvious "tidy up the nil check"
+// edit, and precisely the adapter shape a future implementer would reach for —
+// made every publish sail through against zero samples with the suite green.
+//
+// Note what it does NOT rely on: there IS a live version and the candidate
+// would regress against the real corpus, so a handler that silently replayed
+// nothing publishes a template that breaks real mail.
+func TestPublishRefusesWhenTheCorpusIsNotConfiguredAtAll(t *testing.T) {
+	c := newConsole(t)
+	c.publishV1(broadAmount)
+	c.ok("POST", "/admin/templates", map[string]any{"definition": json.RawMessage(templateJSON(2, narrowAmount))})
+
+	// The same console, with no Samples at all.
+	h := &Handler{
+		Templates: c.templates, Diag: c.diag, Waitlist: c.waitlist,
+		Reprocessor: c.reproc, Token: testToken, Logf: func(string, ...any) {},
+	}
+	mux := http.NewServeMux()
+	if err := h.Routes(mux); err != nil {
+		t.Fatal(err)
+	}
+	c.h = mux
+
+	rec := c.do("POST", "/admin/templates/testbank.card/2/publish", testToken, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("publish with no corpus configured = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	if rec := c.do("POST", "/admin/templates/testbank.card/2/validate", testToken, nil); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("validate with no corpus configured = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	// And it published nothing on the way to that answer.
+	live, err := c.templates.Published(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 || live[0].Version != 1 {
+		t.Fatalf("live set after a refused publish = %+v", live)
+	}
+	r2, err := c.templates.Get(bg, "testbank.card", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Status != tmpl.StatusDraft {
+		t.Fatalf("the candidate is now %q", r2.Status)
+	}
+}
+
 // A sample store that is unreachable must NOT publish. Treating a failed replay
 // as "no regressions found" is how a gate silently stops being one.
 func TestPublishRefusesWhenTheSampleStoreFails(t *testing.T) {
@@ -723,6 +845,109 @@ func TestAccountingIsTheEveryEmailAccountedForReport(t *testing.T) {
 		c.now.Add(-time.Hour).Format(time.RFC3339), c.now.Add(time.Hour).Format(time.RFC3339)), nil)
 	if got["inbound_total"] != float64(1) {
 		t.Fatalf("accounting = %v", got)
+	}
+}
+
+// accountingURL is the report over a window that brackets the console's clock.
+func (c *console) accountingURL() string {
+	return fmt.Sprintf("/admin/accounting?from=%s&to=%s",
+		c.now.Add(-time.Hour).Format(time.RFC3339Nano),
+		c.now.Add(time.Hour).Format(time.RFC3339Nano))
+}
+
+// `balanced` used to be a tautology: verify.Accounting increments inbound_total
+// in exactly the branches that increment arrival_sum and unaccounted, so
+// `arrival_sum + unaccounted == inbound_total` was true by construction and the
+// whole expression reduced to `unaccounted == 0`. An operator reads a field
+// called "balanced" as independent corroboration, and it was a restatement.
+//
+// This is the test the shape demands: make the SECOND measurement disagree with
+// the report and require the answer to change. Nothing about the report itself
+// moves — unaccounted stays 0 — so the old expression would still say true.
+func TestBalancedIsMeasuredAgainstASecondCountAndNotDerivedFromTheFirst(t *testing.T) {
+	c := newConsole(t)
+	u := insertUser(t, c.pool)
+	for i, r := range []diag.Record{
+		diagRow(u, c.now, 0x50, nil),
+		// Outside the window, and a REPROCESS rather than an arrival. Neither
+		// belongs in inbound_total, so a second count that ignored the window
+		// or the event kind would disagree with the report over these two and
+		// nothing else.
+		diagRow(u, c.now.Add(-2*time.Hour), 0x53, nil),
+		diagRow(u, c.now, 0x54, func(r *diag.Record) {
+			r.Event = diag.EventReprocess
+			r.Outcome = diag.OutcomeUnchanged
+		}),
+	} {
+		if err := c.diag.Record(bg, r); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+	got := c.ok("GET", c.accountingURL(), nil)
+	if got["balanced"] != true || got["unaccounted"] != float64(0) || got["inbound_total"] != float64(1) {
+		t.Fatalf("a healthy window is not balanced: %v", got)
+	}
+
+	orig := arrivalTally
+	t.Cleanup(func() { arrivalTally = orig })
+	for _, tc := range []struct {
+		name string
+		lie  func(diag.ArrivalTally) diag.ArrivalTally
+	}{
+		{"the second count sees a message the report did not",
+			func(a diag.ArrivalTally) diag.ArrivalTally { a.Rows++; a.Named++; return a }},
+		{"the second count cannot place a message the report placed",
+			func(a diag.ArrivalTally) diag.ArrivalTally { a.Named--; return a }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			arrivalTally = func(ctx context.Context, d *diag.Diag, from, to time.Time) (diag.ArrivalTally, error) {
+				a, err := orig(ctx, d, from, to)
+				return tc.lie(a), err
+			}
+			got := c.ok("GET", c.accountingURL(), nil)
+			// The report is untouched, which is the whole point: the OLD
+			// expression is still satisfied and must no longer be enough.
+			if got["unaccounted"] != float64(0) || got["arrival_sum"] != got["inbound_total"] {
+				t.Fatalf("the report itself moved, so this is not testing the cross-check: %v", got)
+			}
+			if got["balanced"] != false {
+				t.Fatalf("balanced ignored a second count that disagrees with the report: %v", got)
+			}
+		})
+	}
+}
+
+// The same field, falsified by DATA rather than by a seam: an arrival row this
+// build cannot classify. It has to be planted past the CHECK, because the
+// closed enum is what stops it arising on the normal path — which is also why
+// the seam above exists.
+func TestAccountingIsUnbalancedWhenAnArrivalCannotBeClassified(t *testing.T) {
+	c := newConsole(t)
+	u := insertUser(t, c.pool)
+	if err := c.diag.Record(bg, diagRow(u, c.now, 0x51, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.pool.Exec(bg,
+		`ALTER TABLE parse_diagnostics DROP CONSTRAINT parse_diagnostics_outcome_matches_event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.pool.Exec(bg, `INSERT INTO parse_diagnostics
+	  (user_id, event, ingest_id, received_at, sender_domain, dkim_result, arc_result,
+	   normalizer_version, matched, tier, body_size_bucket, structure_sig, outcome)
+	  VALUES ($1,'arrival',$2,$3,'','none','none',0,false,'none',0,'','superseded')`,
+		u, ingest32(0x52), c.now); err != nil {
+		t.Fatal(err)
+	}
+
+	got := c.ok("GET", c.accountingURL(), nil)
+	if got["inbound_total"] != float64(2) || got["unaccounted"] != float64(1) {
+		t.Fatalf("the unclassifiable arrival was not counted: %v", got)
+	}
+	if got["balanced"] != false || got["ok"] != false {
+		t.Fatalf("a window holding an arrival nobody can name reports clean: %v", got)
+	}
+	if findings, _ := got["findings"].([]any); len(findings) == 0 {
+		t.Fatalf("no finding for an unclassifiable arrival: %v", got)
 	}
 }
 

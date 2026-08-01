@@ -44,6 +44,7 @@ package admin
 // everybody out; that exact composition shipped once in this codebase already.
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
@@ -354,6 +355,29 @@ type sampleResult struct {
 	// EmptyGroups names the capture groups that matched but captured nothing —
 	// the drift signal, and the field an operator fixes a pattern from.
 	EmptyGroups []string `json:"empty_groups,omitempty"`
+
+	// ext is what the template pulled out of this message: an amount, a
+	// merchant, a card fragment. It is UNEXPORTED and has no tag, so
+	// encoding/json cannot reach it — the publish gate compares these values
+	// and reports which FIELDS differ, never what they were. See fieldDelta.
+	ext tmpl.Extraction
+}
+
+// fieldDelta is one donated message whose extraction differs between the live
+// template and the candidate, and the names of the fields that differ.
+//
+// It carries NAMES ONLY, for the same reason parse_diagnostics.empty_groups
+// does: this console must never return donated content, and "the amount this
+// candidate reads out of Alice's mail changed from X to Y" would put a user's
+// transaction in an operator's browser, a log and a bug report. A field name is
+// a template-authored identifier out of a six-word vocabulary.
+//
+// It is enough to act on. The operator knows which sample and which field, and
+// the sample is theirs to replay against a draft as many times as they like.
+type fieldDelta struct {
+	SampleID     uuid.UUID `json:"sample_id"`
+	SenderDomain string    `json:"sender_domain"`
+	Fields       []string  `json:"fields"`
 }
 
 type validateResponse struct {
@@ -404,21 +428,64 @@ func (h *Handler) validateTemplate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// publishTemplate promotes a stored version to live, refusing a REGRESSION.
+// publishRequest is the optional body of a publish. An absent body means "no
+// acknowledgement", which is the safe reading and the one every caller that
+// sends nothing gets.
+type publishRequest struct {
+	// AcceptChanges acknowledges the value-level differences a previous call
+	// reported (see publishTemplate). It is deliberately NOT a force flag: it
+	// cannot get past a match regression, and there is no flag that can.
+	AcceptChanges bool `json:"accept_changes"`
+}
+
+// publishTemplate promotes a stored version to live, comparing the candidate
+// against the outgoing version over the DONATED CORPUS — both whether each
+// message still parses and WHAT each parse produces.
 //
-// A regression is a donated sample the currently live version parses and the
-// candidate does not. That comparison — rather than "the candidate parses
-// everything" — is the honest one: a corpus always contains messages no
-// template was ever meant to handle, and a gate that demanded 100% would be
-// switched off within a week.
+// # Three ways a new version can differ, three verdicts
 //
-// The refusal is absolute; there is no force flag. A template version that
-// stops parsing real mail somebody actually received is a bug essentially every
-// time, and a flag to skip the check is a flag that becomes the habit. An
-// operator who genuinely means to drop a format retires the sample.
+//	regression  the live version parsed this message and the candidate does
+//	            not. REFUSED, absolutely; there is no force flag. A version
+//	            that stops parsing real mail somebody received is a bug
+//	            essentially every time, and a flag to skip the check is a flag
+//	            that becomes the habit. The remedy is to retire the sample,
+//	            which names the mail that will stop being parsed, one message
+//	            at a time, on the record.
+//
+//	change      both versions parse it and a field's extracted VALUE differs.
+//	            Refused until acknowledged with {"accept_changes": true}.
+//
+//	gain        the candidate extracts a field the live version could not.
+//	            Never blocks. Nothing that was right becomes wrong, and this is
+//	            the shape of most genuine improvements.
+//
+// # Why "change" is acknowledged rather than refused or ignored
+//
+// Comparing only the match booleans — which this gate did until a review proved
+// it through the real corpus — cannot see the single most likely way to break a
+// parser. A one-character edit to a capture group that reads the AVAILABLE
+// BALANCE instead of the transaction matches every donated sample perfectly and
+// extracts the wrong money; so does flipping a const direction from debit to
+// credit. Both published clean, with `"regressions": []` and a 200. A published
+// template is auto-trusted and ships to every device in the beta, and
+// /reprocess then supersedes already-correct ops with the new values.
+//
+// But a value difference is also what a genuine fix looks like — a widened
+// merchant capture, a corrected date layout — and the two are INDISTINGUISHABLE
+// from here. Refusing all of them would make the gate an obstacle to every
+// improvement and it would be switched off; ignoring them is the defect above.
+// So the gate measures the difference, names the sample and the field, and
+// requires a human to say yes. That is not the force flag the regression class
+// deliberately lacks: it cannot skip a regression, and it is not a blanket
+// "publish anyway" — it acknowledges a specific, enumerated set of differences
+// the caller has been shown.
 func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 	rec, ok := h.lookup(w, r)
 	if !ok {
+		return
+	}
+	var req publishRequest
+	if !decodeOptionalBodyN(w, r, maxBodyBytes, &req) {
 		return
 	}
 	ctx := r.Context()
@@ -473,6 +540,8 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	regressions := []sampleResult{}
+	changes := []fieldDelta{}
+	gains := []fieldDelta{}
 	if live != nil {
 		baseline, _, err := replay(*live, samples)
 		if err != nil {
@@ -481,8 +550,24 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for i := range candidate {
-			if baseline[i].Matched && !candidate[i].Matched {
+			switch {
+			case baseline[i].Matched && !candidate[i].Matched:
 				regressions = append(regressions, candidate[i])
+			case baseline[i].Matched && candidate[i].Matched:
+				changed, gained := diffExtractions(baseline[i].ext, candidate[i].ext)
+				at := func(fields []string) fieldDelta {
+					return fieldDelta{
+						SampleID:     candidate[i].SampleID,
+						SenderDomain: candidate[i].SenderDomain,
+						Fields:       fields,
+					}
+				}
+				if len(changed) > 0 {
+					changes = append(changes, at(changed))
+				}
+				if len(gained) > 0 {
+					gains = append(gains, at(gained))
+				}
 			}
 		}
 	}
@@ -493,9 +578,29 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 			"error":       "regression",
 			"template_id": rec.ID, "version": rec.Version,
 			"samples": len(samples), "matched": matched,
-			"regressions": regressions,
+			"regressions": regressions, "changes": changes, "gains": gains,
 		})
 		return
+	}
+	if len(changes) > 0 && !req.AcceptChanges {
+		h.logf("admin: refusing to publish %s v%d: it extracts different values from "+
+			"%d of %d donated samples (fields: %s)",
+			rec.ID, rec.Version, len(changes), len(samples), strings.Join(changedFieldNames(changes), ","))
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":       "value_change",
+			"template_id": rec.ID, "version": rec.Version,
+			"samples": len(samples), "matched": matched,
+			"regressions": regressions, "changes": changes, "gains": gains,
+		})
+		return
+	}
+	if len(changes) > 0 {
+		// On the record at operator volume, like a retirement: this publish
+		// changes what the system already extracted from mail people really
+		// received, and somebody chose to do it.
+		h.logf("admin: publishing %s v%d WITH ACKNOWLEDGED value changes on %d of %d "+
+			"donated samples (fields: %s)",
+			rec.ID, rec.Version, len(changes), len(samples), strings.Join(changedFieldNames(changes), ","))
 	}
 
 	if err := h.Templates.SetStatus(ctx, rec.ID, rec.Version, tmpl.StatusPublished); err != nil {
@@ -514,8 +619,88 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"template_id": rec.ID, "version": rec.Version, "status": tmpl.StatusPublished,
-		"samples": len(samples), "matched": matched, "regressions": regressions,
+		"samples": len(samples), "matched": matched,
+		"regressions": regressions, "changes": changes, "gains": gains,
 	})
+}
+
+// diffExtractions compares what two versions of a template pulled out of the
+// SAME message, field by field, and splits the difference into the two classes
+// that get different verdicts:
+//
+//	changed  both versions produced the field and the values differ, or the
+//	         live version produced it and the candidate no longer does. Either
+//	         way something that was extracted is now extracted differently.
+//	gained   the live version produced nothing for the field and the candidate
+//	         does. Additive; nothing that was right becomes wrong.
+//
+// The fields are tmpl's own six, so the names in the response are the names in
+// the definition the operator is editing. Currency travels WITH the amount —
+// tmpl.Extraction.Produced reads "amount" as `Currency != ""` — so a template
+// that changed AED to USD reports as an amount change, which is what it is.
+//
+// The VALUES never leave this function. It returns names.
+func diffExtractions(base, cand tmpl.Extraction) (changed, gained []string) {
+	for _, f := range []string{
+		tmpl.FieldAmount, tmpl.FieldDate, tmpl.FieldMerchant,
+		tmpl.FieldLast4, tmpl.FieldDirection, tmpl.FieldIsTransfer,
+	} {
+		hadIt, was := extracted(base, f)
+		hasIt, now := extracted(cand, f)
+		switch {
+		case !hadIt && !hasIt:
+		case !hadIt && hasIt:
+			gained = append(gained, f)
+		case was != now:
+			changed = append(changed, f)
+		}
+	}
+	return changed, gained
+}
+
+// extracted renders one field of an extraction as (present, comparable value).
+//
+// The string it returns is CONTENT — an amount, a merchant, a card fragment —
+// and exists only to be compared against another one inside diffExtractions. It
+// is never returned, logged or serialized.
+//
+// is_transfer is always present: a flag has a definite value either way, so
+// false -> true is a change rather than a gain. That is the opposite of
+// tmpl.Extraction.Produced's reading, which has to fail closed because a
+// template can REQUIRE the field; here the question is only whether two
+// extractions differ, and they do.
+func extracted(e tmpl.Extraction, field string) (bool, string) {
+	switch field {
+	case tmpl.FieldAmount:
+		return e.Currency != "", strconv.FormatInt(e.AmountMinor, 10) + " " + e.Currency
+	case tmpl.FieldDate:
+		return !e.PostedAt.IsZero(), e.PostedAt.UTC().Format(time.RFC3339Nano)
+	case tmpl.FieldMerchant:
+		return e.Merchant != "", e.Merchant
+	case tmpl.FieldLast4:
+		return e.Last4 != "", e.Last4
+	case tmpl.FieldDirection:
+		return e.Direction != "", e.Direction
+	case tmpl.FieldIsTransfer:
+		return true, strconv.FormatBool(e.IsTransfer)
+	default:
+		return false, ""
+	}
+}
+
+// changedFieldNames is the operator-log summary: which fields changed anywhere
+// in the corpus, deduplicated. Names only, like fieldDelta.
+func changedFieldNames(deltas []fieldDelta) []string {
+	var out []string
+	for _, d := range deltas {
+		for _, f := range d.Fields {
+			if !slices.Contains(out, f) {
+				out = append(out, f)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 type reprocessResponse struct {
@@ -678,6 +863,9 @@ func replay(d tmpl.Definition, samples []Sample) ([]sampleResult, int, error) {
 		}
 		ext, xerr := c.Execute(nr.Subject, nr.Text)
 		res.EmptyGroups = ext.EmptyGroups
+		// Kept for the publish gate's value comparison. res.ext is unexported
+		// and untagged, so it cannot reach a response.
+		res.ext = ext
 		if xerr != nil {
 			res.Reason = xerr.Error()
 			results = append(results, res)
@@ -1102,6 +1290,42 @@ func decodeBodyN(w http.ResponseWriter, r *http.Request, max int64, dst any) boo
 				"request body exceeds "+strconv.FormatInt(max, 10)+" bytes")
 			return false
 		}
+		writeErr(w, http.StatusBadRequest, "body is not valid JSON for this endpoint")
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "body carries more than one JSON value")
+		return false
+	}
+	return true
+}
+
+// decodeOptionalBodyN is decodeBodyN for an endpoint whose body is OPTIONAL:
+// an empty request leaves dst at its zero value rather than answering 400.
+//
+// Only publish uses it, and the zero value there is "acknowledge nothing" —
+// the refusing reading. A caller that sends nothing gets the strict gate; a
+// caller that sends a typo still gets a loud 400, because the decoder that runs
+// on a non-empty body is the same strict one.
+func decodeOptionalBodyN(w http.ResponseWriter, r *http.Request, max int64, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, max)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				"request body exceeds "+strconv.FormatInt(max, 10)+" bytes")
+			return false
+		}
+		writeErr(w, http.StatusBadRequest, "request body could not be read")
+		return false
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return true
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
 		writeErr(w, http.StatusBadRequest, "body is not valid JSON for this endpoint")
 		return false
 	}

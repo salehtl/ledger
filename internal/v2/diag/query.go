@@ -203,6 +203,52 @@ LIMIT $3`
 	return out, nil
 }
 
+// ArrivalTally is a SECOND, independent count of the arrival rows in a window.
+//
+// It exists to be disagreed with. verify.Accounting derives inbound_total and
+// the per-outcome split from ONE grouped scan, so `arrival_sum + unaccounted ==
+// inbound_total` holds by construction there — both sides increment in the same
+// branch — and the console published that identity as a health check called
+// "balanced". An equation that cannot be false is worse than no equation: an
+// operator reads it as independent corroboration and it is not one. This is the
+// other measurement to check it against.
+//
+// It is deliberately NOT computed the same way: a plain count with the outcome
+// test in SQL, over this package's own copy of the arrival vocabulary. The two
+// share the diag.Outcome* constants and nothing else, so a defect in either
+// classifier — a missed branch, a mis-ordered case, an outcome added to one
+// list and not the other — shows up as Rows != Named or as a disagreement with
+// the report, instead of cancelling out.
+type ArrivalTally struct {
+	// Rows is every event='arrival' row in [from, to).
+	Rows int64
+	// Named is those whose outcome is one this build can place. Rows > Named
+	// means the ledger holds an arrival nobody can classify, which is exactly
+	// what "unaccounted" is supposed to report.
+	Named int64
+}
+
+// ArrivalTally counts the arrivals in [from, to) two ways. A zero From or To
+// means unbounded in that direction, like [Filter].
+func (d *Diag) ArrivalTally(ctx context.Context, from, to time.Time) (ArrivalTally, error) {
+	if err := d.check(); err != nil {
+		return ArrivalTally{}, err
+	}
+	const q = `
+SELECT count(*), count(*) FILTER (WHERE outcome = ANY($3::text[]))
+FROM parse_diagnostics
+WHERE event = $4
+  AND ($1::timestamptz IS NULL OR received_at >= $1)
+  AND ($2::timestamptz IS NULL OR received_at <  $2)`
+	var t ArrivalTally
+	if err := d.Pool.QueryRow(ctx, q,
+		nullTime(from), nullTime(to), arrivalOutcomes, EventArrival,
+	).Scan(&t.Rows, &t.Named); err != nil {
+		return ArrivalTally{}, sanitize("arrival tally", err)
+	}
+	return t, nil
+}
+
 // AffectedFilter names the mail a template change could change the meaning of.
 type AffectedFilter struct {
 	// TemplateID matches every row that names this template in ANY version:

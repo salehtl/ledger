@@ -18,6 +18,7 @@ import { join } from "node:path";
 
 import { STREAM_COLD, STREAM_HOT } from "../../src/wire/blob";
 import {
+  assertScratchListeners,
   clientFor,
   corpusFixtures,
   databaseExists,
@@ -62,7 +63,95 @@ async function boot(): Promise<Stack> {
   return s;
 }
 
+// ---------------------------------------------------------------------------
+// The listener rail
+// ---------------------------------------------------------------------------
+
+/**
+ * The one safety rail nothing tested, on the box it protects.
+ *
+ * `mail.smtp_listen` defaults to `:25` — every interface — and this machine is
+ * the production mail host with `:25` free and the harness running as root. So
+ * the removal mutation ("delete the LEDGER_SMTP_LISTEN line from the spawn
+ * env") is the one mutation nobody can responsibly RUN: proving the finding
+ * would mean binding the live MTA port.
+ *
+ * These tests are how it gets covered without ever spawning anything.
+ * `assertScratchListeners` is a pure function over the environment, so the
+ * hostile cases are cheap and safe, and `startStack` calls it on the merged
+ * environment before it creates so much as a temp directory — which means
+ * dropping the line does not bind `:25`, it fails every e2e test in the suite
+ * on the first call. No Postgres needed, so this block does not skip.
+ */
+describe("the listener rail", () => {
+  const good = {
+    LEDGER_HTTP_LISTEN: "127.0.0.1:18001",
+    LEDGER_SMTP_LISTEN: "127.0.0.1:18002",
+    LEDGER_ADMIN_LISTEN: "127.0.0.1:18003",
+  };
+
+  test("accepts loopback scratch ports", () => {
+    expect(() => assertScratchListeners({ ...good })).not.toThrow();
+  });
+
+  test("refuses an unset listener, which is what dropping the line looks like", () => {
+    for (const name of ["LEDGER_HTTP_LISTEN", "LEDGER_SMTP_LISTEN", "LEDGER_ADMIN_LISTEN"]) {
+      const env: Record<string, string> = { ...good };
+      delete env[name];
+      expect(() => assertScratchListeners(env)).toThrow(new RegExp(`${name} is not set`));
+      // And the SMTP one says what would happen, because that is the one whose
+      // default is a port something real is listening on elsewhere.
+      expect(() => assertScratchListeners({ ...good, [name]: "" })).toThrow(new RegExp(name));
+    }
+    expect(() => assertScratchListeners({ ...good, LEDGER_SMTP_LISTEN: undefined as unknown as string }))
+      .toThrow(/:25/);
+  });
+
+  test("refuses the live MTA port however it is spelled", () => {
+    for (const listen of ["127.0.0.1:25", ":25", "0.0.0.0:25", "[::]:25"]) {
+      expect(() => assertScratchListeners({ ...good, LEDGER_SMTP_LISTEN: listen })).toThrow();
+    }
+  });
+
+  test("refuses a listener that is not loopback, and ports that belong to something real", () => {
+    expect(() => assertScratchListeners({ ...good, LEDGER_HTTP_LISTEN: "0.0.0.0:18001" })).toThrow(/loopback/);
+    expect(() => assertScratchListeners({ ...good, LEDGER_HTTP_LISTEN: ":18001" })).toThrow(/loopback/);
+    expect(() => assertScratchListeners({ ...good, LEDGER_HTTP_LISTEN: "100.64.0.1:18001" })).toThrow(/loopback/);
+    // v1 is listening on 8080 on this box right now.
+    expect(() => assertScratchListeners({ ...good, LEDGER_HTTP_LISTEN: "127.0.0.1:8080" })).toThrow(/8080/);
+    expect(() => assertScratchListeners({ ...good, LEDGER_ADMIN_LISTEN: "127.0.0.1:8079" })).toThrow(/8079/);
+    // And anything outside the scratch range, which is where everything that
+    // is not this harness lives.
+    expect(() => assertScratchListeners({ ...good, LEDGER_SMTP_LISTEN: "127.0.0.1:2525" })).toThrow(/scratch range/);
+  });
+});
+
 describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
+  // The end-to-end form of the rail: the refusal happens on the MERGED spawn
+  // environment, so an `opts.env` override cannot get past it, and it happens
+  // before the scratch database exists.
+  //
+  // Two tests rather than one so that each hostile value can be run ALONE. The
+  // MTA case must never be run against a build whose rail is missing — that is
+  // the whole point of it — while the 8080 case is safe to run that way (v1
+  // holds the port, so the bind is refused by the kernel), which is what makes
+  // "delete the assertScratchListeners call" a mutation somebody can actually
+  // execute on this box.
+  // Both match the RAIL's own wording, not merely "an error mentioning the
+  // port". Measured: with the rail deleted, `127.0.0.1:8080` still rejects —
+  // ledgerd cannot bind a port v1 already holds and says so — so a test that
+  // accepted any error containing "8080" passed with the guard removed. That is
+  // the same true-by-construction pass this whole round is about.
+  test("startStack refuses a caller that points the SMTP listener at the MTA port", async () => {
+    await expect(startStack({ env: { LEDGER_SMTP_LISTEN: "0.0.0.0:25" } }))
+      .rejects.toThrow(/not a loopback scratch listener/);
+  }, TIMEOUT);
+
+  test("startStack refuses a caller that points a listener at v1's port", async () => {
+    await expect(startStack({ env: { LEDGER_HTTP_LISTEN: "127.0.0.1:8080" } }))
+      .rejects.toThrow(/port 8080: v1's ledger.*Refusing to start/);
+  }, TIMEOUT);
+
   test("the stack starts, answers healthz, and binds only loopback scratch ports", async () => {
     const s = await boot();
 

@@ -305,6 +305,84 @@ func TestSenderDomainsAreDistinctAndBounded(t *testing.T) {
 	}
 }
 
+// ArrivalTally is the second opinion /admin/accounting checks verify's
+// arithmetic against, so what it must not count is as load-bearing as what it
+// must: a reprocess row is not an arrival, and a row outside the window is not
+// in the window. Either mistake would make the cross-check disagree with a
+// correct report and turn the console's "balanced" into noise.
+func TestArrivalTallyCountsArrivalsInTheWindowAndNothingElse(t *testing.T) {
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	alice, bob := insertUser(t, pool), insertUser(t, pool)
+	t0 := *now
+
+	row(t, d, alice, t0, 0x01, nil)                                                   // appended
+	row(t, d, bob, t0.Add(time.Minute), 0x02, func(r *Record) { markQuarantined(r) }) // quarantined
+	row(t, d, alice, t0.Add(-2*time.Hour), 0x03, nil)                                 // before the window
+	row(t, d, alice, t0.Add(2*time.Hour), 0x04, nil)                                  // after it
+	row(t, d, alice, t0.Add(2*time.Minute), 0x05, func(r *Record) {                   // not an arrival
+		r.Event = EventReprocess
+		r.Outcome = OutcomeSuperseded
+	})
+
+	got, err := d.ArrivalTally(bg, t0.Add(-time.Minute), t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rows != 2 || got.Named != 2 {
+		t.Fatalf("ArrivalTally = %+v, want 2 rows / 2 named "+
+			"(the reprocess row and the two outside the window are none of its business)", got)
+	}
+
+	// Half-open, like every other window in this package: `to` is excluded.
+	if got, err := d.ArrivalTally(bg, t0, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	} else if got.Rows != 1 {
+		t.Fatalf("[t0, t0+1m) tallied %+v, want the appended row only", got)
+	}
+
+	// Unbounded in both directions is every arrival ever, and still no
+	// reprocessing.
+	if got, err := d.ArrivalTally(bg, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	} else if got.Rows != 4 || got.Named != 4 {
+		t.Fatalf("unbounded ArrivalTally = %+v, want 4 arrivals", got)
+	}
+}
+
+// Rows > Named is the signal the console reads as "unbalanced": an arrival
+// carrying an outcome this build cannot place. It takes dropping the CHECK to
+// produce one, which is the point — the enum is what stops it happening on the
+// normal path, and this is the row a repair script or a half-deployed new
+// outcome value would leave behind.
+func TestArrivalTallySeparatesArrivalsItCannotName(t *testing.T) {
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	u := insertUser(t, pool)
+	t0 := *now
+	row(t, d, u, t0, 0x01, nil)
+
+	if _, err := pool.Exec(bg,
+		`ALTER TABLE parse_diagnostics DROP CONSTRAINT parse_diagnostics_outcome_matches_event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(bg, `INSERT INTO parse_diagnostics
+	  (user_id, event, ingest_id, received_at, sender_domain, dkim_result, arc_result,
+	   normalizer_version, matched, tier, body_size_bucket, structure_sig, outcome)
+	  VALUES ($1,'arrival',$2,$3,'','none','none',0,false,'none',0,'','superseded')`,
+		u, ingestID(0x02), t0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.ArrivalTally(bg, t0.Add(-time.Minute), t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rows != 2 || got.Named != 1 {
+		t.Fatalf("ArrivalTally = %+v, want 2 rows of which 1 is nameable", got)
+	}
+}
+
 func markQuarantined(r *Record) {
 	r.Outcome = OutcomeQuarantined
 	r.Matched = false
