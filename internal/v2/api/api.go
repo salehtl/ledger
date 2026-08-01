@@ -21,6 +21,10 @@
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
+//	POST /api/v1/push/tokens {token, platform, writer_id}          -> 204
+//	GET  /api/v1/push/tokens                                       -> {tokens:[...], max}
+//	DELETE /api/v1/push/tokens                                     -> 204
+//	DELETE /api/v1/push/tokens/{handle}                            -> 204
 //	POST /api/v1/account/challenge {}                              -> {nonce}
 //	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
 //	GET  /api/v1/relay/addresses                                   -> {addresses:[...], as_of}
@@ -224,6 +228,20 @@ const (
 	sampleRate    = 1.0 / 60.0 // 1/minute sustained
 	sampleBurst   = 60
 	sampleMaxKeys = 4096
+
+	// The push budget covers registration, both deletes and nothing else. It
+	// was the ONE session-authenticated write endpoint in this API with no
+	// limiter, which read as a decision and was not one: a single session could
+	// write unbounded 512-byte rows, each a permanent notification target.
+	//
+	// The burst is generous because the legitimate shape is bursty and rare — a
+	// client registers on launch, and a user tidying their device list deletes
+	// a few rows in a row — while the sustained rate is mean, because nothing
+	// legitimate registers a device once a minute forever. The row cap
+	// (evictPushTokensOverCap) bounds the damage; this bounds the churn.
+	pushRate    = 1.0 / 60.0 // 1/minute sustained
+	pushBurst   = 20
+	pushMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -329,6 +347,10 @@ type Server struct {
 	// caller who can spend an unlimited number of the cheap calls is not
 	// meaningfully limited on the expensive one.
 	SamplesPerUser *Limiter
+	// PushPerUser covers push-token registration and both deletes on ONE
+	// budget, for the reason the two above share: they are one flow, and a
+	// caller who can register without limit is not limited by a bounded delete.
+	PushPerUser *Limiter
 
 	// Reprocessor re-ingests the mail a sender confirmation releases, which is
 	// the only way held mail ever enters the integrity chains (§3.2:58). Nil
@@ -520,6 +542,9 @@ func (s *Server) Handler() http.Handler {
 	if s.AccountPerUser == nil {
 		s.AccountPerUser = NewLimiter(accountRate, accountBurst, accountMaxKeys, s.now)
 	}
+	if s.PushPerUser == nil {
+		s.PushPerUser = NewLimiter(pushRate, pushBurst, pushMaxKeys, s.now)
+	}
 	if s.RelayPerIP == nil {
 		s.RelayPerIP = NewLimiter(relayRate, relayBurst, relayMaxKeys, s.now)
 	}
@@ -557,7 +582,15 @@ func (s *Server) Handler() http.Handler {
 	// or not push is ENABLED: a deployment that turns push on should find its
 	// users' devices already registered rather than waiting for every client to
 	// launch again.
+	//
+	// The LIST route is not a convenience. Without it the delete route was
+	// unreachable to a user — it needs the exact token string, which only the
+	// device itself knows — so a phone that was stolen, signed out or handed on
+	// kept receiving a live "New transaction" per bank alert with nothing the
+	// user could do about it. See push.go and 00019_push_token_device_link.sql.
 	mux.HandleFunc("POST /api/v1/push/tokens", s.requireSession(s.handleRegisterPushToken))
+	mux.HandleFunc("GET /api/v1/push/tokens", s.requireSession(s.handleListPushTokens))
+	mux.HandleFunc("DELETE /api/v1/push/tokens", s.requireSession(s.handleDeleteAllPushTokens))
 	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
 	if s.Dict != nil {
 		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))

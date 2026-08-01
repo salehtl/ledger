@@ -567,6 +567,16 @@ func (w *Writers) Revoke(ctx context.Context, userID uuid.UUID, writerID string,
 	if err := appendKeyHistory(ctx, tx, userID, writerID, target.PubKey, EventRevoked, now); err != nil {
 		return err
 	}
+	// Retiring a device key and ending that device's notifications are one act.
+	// They were two before 00019, and the gap was the whole of it: a stolen
+	// phone whose key had been revoked went on receiving a real-time "New
+	// transaction" on its lock screen forever, because nothing in any
+	// revocation path touched push_tokens and no route existed that would even
+	// tell the user what to delete. Same transaction, so a crash between the
+	// two cannot leave the notifications running against a retired key.
+	if err := forgetPushTokens(ctx, tx, `user_id = $1 AND writer_id = $2`, userID, writerID); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("auth: revoke writer: commit: %w", err)
 	}

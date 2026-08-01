@@ -67,6 +67,38 @@ func tokenHash(token string) []byte {
 	return sum[:]
 }
 
+// SessionHash is tokenHash, exported for the one caller outside this package
+// that legitimately needs it: api's push-token registration stores which
+// session registered a device, so that signing that session out also stops its
+// notifications (00019_push_token_device_link.sql).
+//
+// It is a hash and not the token, which is the point — the API layer never
+// holds a persistable form of a credential, and a push_tokens row leaked to a
+// log or a backup names a session without being usable as one.
+func SessionHash(token string) []byte { return tokenHash(token) }
+
+// forgetPushTokens is the sweep both revocation paths in this file share.
+//
+// # Why auth writes a table that belongs to pushv2
+//
+// It is deliberate and it is not layering sloppiness: a revocation that stops a
+// device from WRITING but leaves it receiving a real-time "New transaction" on
+// its lock screen is not a revocation. Before 00019 that was exactly the
+// behaviour — a stolen phone kept the notification feed for the life of the
+// account and neither the user nor the operator had any way to stop it.
+//
+// It runs inside the caller's transaction so that the two facts commit
+// together. A sweep issued afterwards, as a second statement, would leave a
+// window where the key is retired and the notifications are not, and — worse —
+// a process that died in that window would leave it open permanently, with
+// nothing in the system that would ever notice.
+func forgetPushTokens(ctx context.Context, tx pgx.Tx, where string, args ...any) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM push_tokens WHERE `+where, args...); err != nil {
+		return fmt.Errorf("auth: forget push tokens: %w", err)
+	}
+	return nil
+}
+
 // Issue mints a session for userID and returns the bearer token. The token is
 // returned exactly once, to exactly one caller, and is never recoverable from
 // the database afterwards.
@@ -161,6 +193,14 @@ func (s *Sessions) Resolve(ctx context.Context, token string) (uuid.UUID, error)
 // session leaves the original revoked_at in place (the guard in the WHERE
 // clause), and revoking a token that was never issued is a no-op rather than
 // an error — the caller presenting it cannot be told whether it existed.
+//
+// It ALSO deletes every push token registered by that session, in the same
+// transaction. Signing a device out is one of the two ways a user disowns a
+// phone, and the notification feed has to end with the access — see
+// forgetPushTokens. Note the sweep is NOT guarded by `revoked_at IS NULL`:
+// re-revoking an already-revoked session must still clear any token that
+// somehow survived, because the failure this closes is a device that keeps
+// receiving after the user believes they stopped it.
 func (s *Sessions) Revoke(ctx context.Context, token string) error {
 	if s.Pool == nil {
 		return errors.New("auth: Sessions.Pool is nil")
@@ -168,11 +208,22 @@ func (s *Sessions) Revoke(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
-	_, err := s.Pool.Exec(ctx,
-		`UPDATE sessions SET revoked_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL`,
-		tokenHash(token), s.now())
+	hash := tokenHash(token)
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("auth: revoke session: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
+		`UPDATE sessions SET revoked_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL`,
+		hash, s.now()); err != nil {
 		return fmt.Errorf("auth: revoke session: %w", err)
+	}
+	if err := forgetPushTokens(ctx, tx, `session_hash = $1`, hash); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("auth: revoke session: commit: %w", err)
 	}
 	return nil
 }
@@ -182,6 +233,10 @@ func (s *Sessions) Revoke(ctx context.Context, token string) error {
 // ErrSessionRevoked instead of ErrSessionUnknown, which is the difference
 // between a log line that says "someone is using a revoked credential" and one
 // that says "someone typed garbage".
+//
+// Push tokens ARE deleted, not marked: "everywhere" has to include the
+// notifications, and there is no equivalent diagnostic value in keeping a
+// tombstone for a device that must stop being POSTed to.
 func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error {
 	if s.Pool == nil {
 		return errors.New("auth: Sessions.Pool is nil")
@@ -189,11 +244,21 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 	if userID == uuid.Nil {
 		return errors.New("auth: revoke all: user id is zero")
 	}
-	_, err := s.Pool.Exec(ctx,
-		`UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
-		userID, s.now())
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("auth: revoke all sessions for user %s: begin: %w", userID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
+		`UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID, s.now()); err != nil {
 		return fmt.Errorf("auth: revoke all sessions for user %s: %w", userID, err)
+	}
+	if err := forgetPushTokens(ctx, tx, `user_id = $1`, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("auth: revoke all sessions for user %s: commit: %w", userID, err)
 	}
 	return nil
 }

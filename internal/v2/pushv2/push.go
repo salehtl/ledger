@@ -23,6 +23,52 @@
 // checking for the absence of particular strings, because absence-checking only
 // catches the leaks somebody already thought of.
 //
+// # What the one rule does NOT cover: timing
+//
+// The rule above is about CONTENT, and content is only half of what leaves the
+// box on this path. The other half cannot be fixed by any payload rule and was
+// accepted deliberately (spec §2, §3.8 and Decision 4): the existence and the
+// timestamp of each request are themselves the signal.
+//
+// Concretely, per trusted append, Expo — and after it Apple's APNs or Google's
+// FCM — learns the precise moment a user received a bank transaction, this
+// deployment's source IP, and (when set) the Expo access token identifying the
+// project. It learns that for every user of this deployment. Frequency, time of
+// day and burstiness of somebody's spending are all recoverable from that
+// series without a single byte of the payload being read.
+//
+// A second consequence, worth naming because it is not obvious: the fan-out is
+// a tight sequential loop with no jitter, so a user's N devices are notified
+// within milliseconds of each other from one IP under one credential. That lets
+// Expo GROUP a user's devices even though no request names the user. Do not
+// "fix" this by delaying — §3.8 requires the notification be immediate, and
+// trading the product's whole value for a correlation Expo can also get from
+// the token registry is a bad trade. It is disclosed, not mitigated.
+//
+// # Dead tokens are not reaped, and that is a Phase 2 gap
+//
+// Expo's delivery model has two phases. The TICKET is the immediate answer to
+// the POST; the RECEIPT, fetched later from /push/getReceipts by ticket id, is
+// where APNs and FCM report that a device has gone away. This package reads the
+// ticket and discards its id, so it detects DeviceNotRegistered only in the
+// (rare) case Expo reports it immediately, and the ordinary uninstall — which
+// arrives in a receipt — is never seen. Nothing here reaps a token because its
+// app was deleted.
+//
+// That is stated rather than fixed because fixing it means persisting ticket
+// ids, a poller, and a taxonomy of Expo errors that cannot be verified against
+// anything but the real service — and no test in this repo has ever contacted
+// exp.host. Phase 2, which ships the client and turns push on, owns it.
+//
+// What it costs, now that the cost is bounded: an uninstalled app leaves a row
+// that is POSTed to on every transaction forever, wasting one request per
+// append. It is no longer a privacy problem, which is the part that mattered:
+// after 00019 a token is deleted when its device key is revoked, when its
+// session is revoked, when the user deletes it from the device list, when the
+// per-user cap evicts it, and when the account is purged. Uninstall is the one
+// disowning gesture that no longer has a server-side signal, and an uninstalled
+// app renders nothing.
+//
 // # Why this exists before there is an app to receive it
 //
 // cfg.Push.Enabled defaults to false, so what Phase 1 actually wires is
@@ -60,11 +106,20 @@ const Title = "New transaction"
 // operator can tell an APNs problem from an FCM one.
 var Platforms = []string{"ios", "android"}
 
-// maxDevicesPerUser bounds the fan-out of one Notify. A user with more
+// MaxDevicesPerUser bounds the fan-out of one Notify. A user with more
 // registered devices than this has a client bug or a token that is never
 // deleted, and neither is a reason to make one transaction cost an unbounded
 // number of outbound requests.
-const maxDevicesPerUser = 20
+//
+// It is exported because the API enforces the SAME cap at registration, with
+// the same ordering, so that the set of devices a registration keeps is exactly
+// the set this package would notify. Two independent constants would eventually
+// disagree, and the symptom of disagreement is a device that is stored and
+// never notified — silent, and indistinguishable from push being broken.
+//
+// Which devices the cap keeps is the part that had to be fixed rather than
+// tuned: see [Expo.Notify]'s ordering.
+const MaxDevicesPerUser = 20
 
 // deviceNotRegistered is the ONE Expo error that means a token will never work
 // again. Every other failure is transient as far as this package is concerned.
@@ -165,10 +220,29 @@ func (e *Expo) Notify(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+// fanoutOrder is the order devices are notified in, and the order the cap is
+// applied in. DESCENDING by registration time: the cap's casualty must always
+// be a device the user stopped using, never the one in their hand.
+//
+// It was ascending, and that was a real defect rather than an arbitrary choice.
+// With `ORDER BY created_at` and `LIMIT 20`, a user whose 21st device was their
+// current phone had that phone excluded from every notification — registration
+// still answered 204, the token sat in the table, and the feature was simply
+// off with nothing saying so. A stale row cannot be told from a live one by
+// this query, so the tiebreak has to be "most recently registered wins".
+//
+// api.handleRegisterPushToken evicts by the identical expression. If you change
+// one, change both; TestTheCapKeepsTheSameDevicesTheAPIKept is what notices.
+const fanoutOrder = `ORDER BY created_at DESC, token DESC`
+
 func (e *Expo) tokens(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	// LIMIT is the cap PLUS ONE, deliberately: it is the difference between
+	// "twenty devices" and "at least twenty-one devices", and the second is the
+	// one worth a log line. A cap that silently drops a user's devices is how
+	// I2 stayed invisible; this makes exceeding it an event.
 	rows, err := e.Pool.Query(ctx,
-		`SELECT token FROM push_tokens WHERE user_id = $1 ORDER BY created_at, token LIMIT $2`,
-		userID, maxDevicesPerUser)
+		`SELECT token FROM push_tokens WHERE user_id = $1 `+fanoutOrder+` LIMIT $2`,
+		userID, MaxDevicesPerUser+1)
 	if err != nil {
 		return nil, fmt.Errorf("pushv2: read push tokens: %w", err)
 	}
@@ -183,6 +257,14 @@ func (e *Expo) tokens(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pushv2: read push tokens: %w", err)
+	}
+	if len(out) > MaxDevicesPerUser {
+		// Registration is supposed to have evicted down to the cap already, so
+		// reaching here means the two enforcement points disagree or something
+		// wrote this table directly. Either way an operator should hear it.
+		e.logf("pushv2: user %s has more than %d registered devices; notifying the %d most recent only",
+			userID, MaxDevicesPerUser, MaxDevicesPerUser)
+		out = out[:MaxDevicesPerUser]
 	}
 	return out, nil
 }

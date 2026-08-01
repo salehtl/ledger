@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -499,5 +500,72 @@ func (c Config) validate() error {
 	if c.Auth.SessionTTL <= 0 {
 		return fmt.Errorf("auth.session_ttl must be positive")
 	}
+	if err := c.validatePush(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// pushHosts are the hosts push.expo_url may name. Expo's documented endpoints
+// are https://exp.host/--/api/v2/push/send and https://api.expo.dev/v2/push/send;
+// subdomains of expo.dev are admitted because that is where Expo has moved
+// endpoints before, and a deployment that cannot follow its provider is a
+// deployment whose operator edits this list under time pressure.
+var pushHosts = []string{"exp.host", "expo.dev"}
+
+// validatePush is the rail this config had for every other deployment
+// assumption and did not have for the one OUTBOUND path in the whole system.
+//
+// Two refusals, both in the spirit of the :8080 and loopback rails above:
+//
+//   - Enabled with no access token. Expo's push endpoint accepts
+//     unauthenticated POSTs unless the project opts into enhanced security, and
+//     the access token is what opts in. Without it, anyone who learns a user's
+//     Expo push token can POST an arbitrary title and body to that lock screen
+//     through Expo's public endpoint. This package's content-free guarantee
+//     bounds what THIS SERVER sends; it cannot bound what the channel can
+//     display, and the only thing that does is the credential. Silently
+//     accepting `enabled = true` with LEDGER_EXPO_ACCESS_TOKEN unset produced a
+//     deployment that looked configured and had opted into nothing.
+//
+//   - A non-https or unknown expo_url. It was accepted verbatim from TOML and
+//     used as the POST target, so `expo_url = "http://collector.example/x"`
+//     would ship the deployment's Bearer credential AND the exact timestamp of
+//     every user's every bank transaction, in cleartext, to whoever asked for
+//     it. The URL is checked whenever it is SET rather than only when push is
+//     enabled: a wrong value that sits inert in a file until somebody flips a
+//     boolean is the failure mode this whole function exists to refuse.
+func (c Config) validatePush() error {
+	if c.Push.Enabled && c.Push.AccessToken == "" {
+		return fmt.Errorf(
+			"push.enabled is true but LEDGER_EXPO_ACCESS_TOKEN is unset: Expo's push endpoint " +
+				"accepts unauthenticated sends unless the project's access token is presented, so " +
+				"without it anyone holding a user's push token can write to that lock screen. " +
+				"Set the token or set push.enabled = false")
+	}
+	if c.Push.ExpoURL == "" {
+		return nil // pushv2.DefaultEndpoint, which is https and is exp.host
+	}
+	u, err := url.Parse(c.Push.ExpoURL)
+	if err != nil {
+		return fmt.Errorf("push.expo_url %q is not a URL: %w", c.Push.ExpoURL, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf(
+			"refusing push.expo_url %q: this is the only request this server makes to a third "+
+				"party, and it carries the Expo access token plus the timing of every user's "+
+				"transactions. It must be https",
+			c.Push.ExpoURL)
+	}
+	host := u.Hostname()
+	for _, h := range pushHosts {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"refusing push.expo_url %q: %q is not an Expo host (want %s or a subdomain). Pointing "+
+			"this at another host sends the deployment's Bearer credential and every user's "+
+			"transaction timing there",
+		c.Push.ExpoURL, host, strings.Join(pushHosts, " / "))
 }

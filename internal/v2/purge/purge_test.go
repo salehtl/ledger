@@ -142,9 +142,22 @@ var seeders = map[string]seeder{
 		exec(t, pool, `INSERT INTO sender_allowlist (user_id, domain, scope, created_at)
 		               VALUES ($1, 'dib.ae', 'outer', now())`, u)
 	},
+	// A push token now names the device writer and the session that registered
+	// it (00019), so that revoking either stops the notifications. Both are
+	// seeded here rather than worked around: a row with no links is one the
+	// schema no longer admits, and seeding one would test a shape production
+	// cannot produce.
 	"public.push_tokens": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
-		exec(t, pool, `INSERT INTO push_tokens (user_id, token, platform)
-		               VALUES ($1, $2, 'ios')`, u, "ExponentPushToken["+u.String()+"]")
+		exec(t, pool, `INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
+		               VALUES ($1, 'push-device', 'device', $2, now())
+		               ON CONFLICT DO NOTHING`, u, randBytes(t, 32))
+		exec(t, pool, `INSERT INTO sessions (token_hash, user_id, expires_at)
+		               VALUES ($2, $1, now() + interval '1 day')
+		               ON CONFLICT DO NOTHING`, u, randBytes(t, 32))
+		exec(t, pool, `INSERT INTO push_tokens (user_id, token, platform, writer_id, session_hash)
+		               SELECT $1, $2, 'ios', 'push-device', token_hash
+		                 FROM sessions WHERE user_id = $1 LIMIT 1`,
+			u, "ExponentPushToken["+u.String()+"]")
 	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
