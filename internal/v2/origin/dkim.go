@@ -106,6 +106,36 @@ var ConsumedHeaders = []string{
 	"Content-Transfer-Encoding",
 }
 
+// DecodingHeaders are the [ConsumedHeaders] that decide how the signed body
+// BYTES become the text everything downstream reads. They are the ones whose
+// value an attacker holding a genuinely signed message can edit IN PLACE —
+// without duplicating anything, so nothing here or in [Coverage] can see it —
+// to make the same signed bytes decode into different text.
+//
+// Between them, these two choose the MIME leaf, the charset it is decoded
+// with, and the transfer decoding applied to it (go-message entity.go:39 and
+// entity.go:170, reached from norm.go:214). Nothing else in [ConsumedHeaders]
+// has that power:
+//
+//   - From is excluded because it is covered by construction. go-msgauth
+//     refuses a signature whose h= omits From before it checks anything else
+//     (dkim/verify.go:239-251), and a repeated From is refused outright, so a
+//     branch on From being uncovered is dead on every passing message.
+//   - Subject is excluded because it is not a decode input. It selects a
+//     template and feeds an extraction — which is a real thing to steer — but
+//     it cannot make the same body bytes render as different text, and it is
+//     covered by every signature in the corpus, so putting it here would buy
+//     nothing at the price of blurring what this list means.
+//
+// The list is deliberately short. Every name added to it sends every message
+// whose signer omits that name to the review queue, so widening it trades the
+// review queue's usefulness for coverage, and that trade is a product decision
+// rather than a verification one.
+var DecodingHeaders = []string{
+	"Content-Type",
+	"Content-Transfer-Encoding",
+}
+
 // Coverage records what the signatures that VERIFIED actually signed.
 //
 // # Why a verdict alone is not enough

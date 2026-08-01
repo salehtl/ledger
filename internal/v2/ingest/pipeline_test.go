@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -71,8 +72,45 @@ func (k *keyring) lookup() origin.LookupTXT {
 	}
 }
 
+// signedHeaders is the h= a well-behaved bank emits, and it is what
+// keyring.sign uses. It covers both origin.DecodingHeaders, so a message signed
+// with it is one whose decode is attributable to the signer and whose template
+// hit may therefore be auto-trusted.
+//
+// Content-Type and Content-Transfer-Encoding are here rather than left out
+// because leaving them out is the DIB shape, not the neutral one: a signer that
+// omits them hands whoever holds the bytes control of how they decode, and this
+// list is the baseline every test that is NOT about that should sign against.
+// Emirates NBD's Proofpoint signer names both, so this is a real bank's h= and
+// not a convenient one. signOmitting builds the other shape.
+var signedHeaders = []string{"From", "To", "Subject", "Date", "Content-Type", "Content-Transfer-Encoding"}
+
 // sign prepends a real DKIM-Signature for domain and publishes the key.
 func (k *keyring) sign(domain, selector string, raw []byte) []byte {
+	k.t.Helper()
+	return k.signCovering(domain, selector, raw, signedHeaders)
+}
+
+// signOmitting signs everything in signedHeaders EXCEPT the named fields, which
+// is how a bank whose h= leaves a decoding header out is modelled. Dubai
+// Islamic Bank omits Content-Type; Emirates NBD via Exchange omits
+// Content-Transfer-Encoding. Both are real and both are in
+// internal/v2/origin/testdata.
+func (k *keyring) signOmitting(domain, selector string, raw []byte, omit ...string) []byte {
+	k.t.Helper()
+	var keys []string
+	for _, h := range signedHeaders {
+		if !slices.ContainsFunc(omit, func(o string) bool { return strings.EqualFold(o, h) }) {
+			keys = append(keys, h)
+		}
+	}
+	if len(keys) == len(signedHeaders) {
+		k.t.Fatalf("signOmitting(%v) omitted nothing; signedHeaders is %v", omit, signedHeaders)
+	}
+	return k.signCovering(domain, selector, raw, keys)
+}
+
+func (k *keyring) signCovering(domain, selector string, raw []byte, headerKeys []string) []byte {
 	k.t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(&k.key.PublicKey)
 	if err != nil {
@@ -89,7 +127,7 @@ func (k *keyring) sign(domain, selector string, raw []byte) []byte {
 		Hash:                   crypto.SHA256,
 		HeaderCanonicalization: dkim.CanonicalizationRelaxed,
 		BodyCanonicalization:   dkim.CanonicalizationRelaxed,
-		HeaderKeys:             []string{"From", "To", "Subject", "Date"},
+		HeaderKeys:             headerKeys,
 	})
 	if err != nil {
 		k.t.Fatal(err)
@@ -1396,5 +1434,244 @@ func TestSimultaneousDeliveriesOfOneMessageAppendMoreThanOnce(t *testing.T) {
 	// apart under concurrency.
 	if got := len(r.rows()); got != 2*len(ops) {
 		t.Fatalf("op_log has %d rows for %d hot ops, want %d", got, len(ops), 2*len(ops))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unsigned decoding headers
+//
+// A signature covers the body BYTES. It does not cover Content-Type or
+// Content-Transfer-Encoding unless the signer named them in h=, and two of the
+// three real bank signers in internal/v2/origin/testdata leave one of them out.
+// Whoever holds a genuinely signed message can then rewrite the surviving field
+// IN PLACE — one occurrence, nothing duplicated, so the repeated-field refusal
+// in origin never sees it — and the signature still verifies over bytes the
+// normalizer now decodes differently.
+// ---------------------------------------------------------------------------
+
+// The DIB shape: h= omits Content-Type. The transaction is still extracted and
+// still appended — nothing is dropped — but it may not be auto-trusted, because
+// the text the template matched was selected by a header nobody signed.
+func TestATemplateHitWhoseDecodingHeaderIsUnsignedIsNotAutoTrusted(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	raw := r.keys.signOmitting("bank.example", "sel",
+		message("<alerts@bank.example>", "Transaction Alert", templateBody), "Content-Type")
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("quarantine holds %d items; this message is trusted and must be appended", got)
+	}
+	p := r.onlyPayload()
+	if p.Tier != diag.TierTemplate || p.Unparsed {
+		t.Fatalf("payload = %+v, want a template hit", p)
+	}
+	if p.AmountMinor != "25000" || p.MerchantRaw != "CARREFOUR HYPERMARKET" {
+		t.Fatalf("the extraction must be unchanged; got %s / %q", p.AmountMinor, p.MerchantRaw)
+	}
+	if !p.NeedsReview {
+		t.Error("needs_review = false; nothing signed Content-Type, so the decode is not the signer's")
+	}
+}
+
+// The other half, and the one that proves the gate is scoped: a bank that DOES
+// sign its decoding headers keeps auto-trust. Same body, same template, same
+// allowlist row — the only difference is the signer's h=.
+func TestATemplateHitWhoseDecodingHeadersAreSignedIsStillAutoTrusted(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	r.mustDeliver(r.trusted(templateBody), "alerts@bank.example")
+
+	p := r.onlyPayload()
+	if p.Tier != diag.TierTemplate || p.NeedsReview || p.Unparsed {
+		t.Fatalf("payload = %+v, want a trusted template hit", p)
+	}
+}
+
+// qpAmbiguousBody is one sequence of bytes that carries two different amounts
+// depending on how it is DECODED, and a template matches either way.
+//
+//	quoted-printable: "=31=30=30" is "100", so the first "Amount " line reads 100.00
+//	7bit/8bit:        "=31=30=30" is literal, no amount parses there, and the
+//	                  template's own regex walks on to the next "Amount " line
+//
+// The bytes are identical and are what the signature covers. Only the
+// Content-Transfer-Encoding header — which Emirates NBD's Exchange signer does
+// not sign — decides which of the two the ledger records. This is the wrong
+// amount at needs_review = false that the gate exists to prevent, and it is
+// synthetic on purpose: the production DIB and ENBD templates happen to gate on
+// literals that a mis-decode destroys, so on today's corpus the same edit only
+// breaks the match. "Happens to" is not a security property.
+const qpAmbiguousBody = "Purchase alert\n" +
+	"Amount =31=30=30.00\n" +
+	"Amount 900.00\n" +
+	"Date 05-06-2026\n" +
+	"Merchant:CARREFOUR HYPERMARKET\n" +
+	"Card 3701\n"
+
+func qpMessage(cte string) []byte {
+	return []byte("From: <alerts@bank.example>\r\n" +
+		"To: <u-abc@in.example.test>\r\n" +
+		"Subject: Transaction Alert\r\n" +
+		"Date: Sat, 01 Aug 2026 09:00:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: " + cte + "\r\n" +
+		"\r\n" + strings.ReplaceAll(qpAmbiguousBody, "\n", "\r\n"))
+}
+
+// The whole attack, end to end, against the real resolver and the real
+// normalizer: sign as the Exchange signer does, then rewrite the one unsigned
+// decoding header IN PLACE. The signature still passes, the sender is still
+// trusted, the template still matches — and the amount is different.
+func TestAnInPlaceEditOfAnUnsignedDecodingHeaderChangesTheAmount(t *testing.T) {
+	signed := func(r *rig) []byte {
+		return r.keys.signOmitting("bank.example", "sel", qpMessage("quoted-printable"),
+			"Content-Transfer-Encoding")
+	}
+
+	honest := newRig(t)
+	honest.allow("bank.example", origin.ScopeOuter)
+	honest.publish(bankTemplate())
+	honest.mustDeliver(signed(honest), "alerts@bank.example")
+	got := honest.onlyPayload()
+
+	attacked := newRig(t)
+	attacked.allow("bank.example", origin.ScopeOuter)
+	attacked.publish(bankTemplate())
+	raw := signed(attacked)
+	edited := bytes.Replace(raw,
+		[]byte("Content-Transfer-Encoding: quoted-printable"),
+		[]byte("Content-Transfer-Encoding: 7bit"), 1)
+	if bytes.Equal(edited, raw) {
+		t.Fatal("the header this test rewrites is not in the message")
+	}
+	attacked.mustDeliver(edited, "alerts@bank.example")
+
+	if n := attacked.heldCount(); n != 0 {
+		t.Fatalf("the edited message was quarantined (%d held); the premise of this test is that "+
+			"editing an UNSIGNED field leaves the signature verifying", n)
+	}
+	tampered := attacked.onlyPayload()
+
+	if got.AmountMinor != "10000" {
+		t.Errorf("honest amount = %s, want 10000 (the quoted-printable reading)", got.AmountMinor)
+	}
+	if tampered.AmountMinor != "90000" {
+		t.Errorf("tampered amount = %s, want 90000 (the 7bit reading)", tampered.AmountMinor)
+	}
+	if got.AmountMinor == tampered.AmountMinor {
+		t.Fatal("the edit changed nothing; this test proves nothing")
+	}
+	if tampered.Tier != diag.TierTemplate {
+		t.Fatalf("tampered tier = %s; the point is that the template still WINS", tampered.Tier)
+	}
+	if !tampered.NeedsReview {
+		t.Error("the tampered message is auto-trusted: a wrong amount entered the ledger silently")
+	}
+	if !got.NeedsReview {
+		t.Error("the honest message is auto-trusted, which cannot be right when the tampered one " +
+			"is byte-indistinguishable from it at the point of decision")
+	}
+}
+
+// And when the bank signs the field, the same edit is refused outright rather
+// than merely flagged — which is where the cost of the gate above comes from
+// and what would remove it: a signer that covers its decoding headers gets
+// cryptography instead of a review queue.
+func TestEditingASIGNEDDecodingHeaderIsRefused(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	raw := r.keys.sign("bank.example", "sel", qpMessage("quoted-printable"))
+	edited := bytes.Replace(raw,
+		[]byte("Content-Transfer-Encoding: quoted-printable"),
+		[]byte("Content-Transfer-Encoding: 7bit"), 1)
+	if bytes.Equal(edited, raw) {
+		t.Fatal("the header this test rewrites is not in the message")
+	}
+	r.mustDeliver(edited, "alerts@bank.example")
+
+	if got := r.rows(); len(got) != 0 {
+		t.Fatalf("op_log has %d rows; a broken signature must not reach it", len(got))
+	}
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("quarantine holds %d items, want the edited message", got)
+	}
+}
+
+// Reprocess re-runs the cascade and supersedes when the result differs —
+// needs_review is one of the fields it compares — so a reprocess that did not
+// see the same origin would quietly clear the flag the gate just set. That is
+// why parse takes the whole origin.Origin: there is no way to call it without
+// one. This asserts the outcome rather than the plumbing.
+func TestReprocessDoesNotClearTheUnsignedDecodingFlag(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(bankTemplate())
+	raw := r.keys.signOmitting("bank.example", "sel",
+		message("<alerts@bank.example>", "Transaction Alert", templateBody), "Content-Type")
+	r.mustDeliver(raw, "alerts@bank.example")
+	if p := r.onlyPayload(); !p.NeedsReview {
+		t.Fatalf("premise: the first delivery was auto-trusted: %+v", p)
+	}
+
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err != nil {
+		t.Fatalf("reprocess: %v", err)
+	}
+	if rep.Superseded != 0 {
+		t.Errorf("reprocess superseded %d ops; nothing changed, and a supersede here would be one "+
+			"that re-derived needs_review from an origin it did not consult", rep.Superseded)
+	}
+	for _, op := range r.hotOps() {
+		var p payload
+		if err := json.Unmarshal(op.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if !p.NeedsReview {
+			t.Errorf("op %s carries needs_review = false after a reprocess", op.Type)
+		}
+	}
+}
+
+// The other reconstruction. When a re-verification at promote time no longer
+// reproduces the arrival result — a rotated selector, an expired signature —
+// trustHeld falls back to the origin the quarantine row recorded, so that mail
+// the user confirmed is not stranded. That row records WHICH domain verified
+// and never WHAT the signature covered, so the fallback cannot answer this
+// question and its zero value would answer "all signed". The message is
+// promoted, and it is promoted for review.
+func TestPromotingMailWhoseKeyIsGoneDoesNotAutoTrustIt(t *testing.T) {
+	r := newRig(t)
+	r.publish(bankTemplate())
+	// Fully covered h=: at arrival this message is auto-trustable, so anything
+	// below is about the promote and not about the signer.
+	raw := r.trusted(templateBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("quarantine holds %d items, want the delivered message", got)
+	}
+
+	// The bank rotated its selector; the key that signed this message is gone,
+	// so nothing about how it decodes can be re-derived.
+	delete(r.keys.recs, "sel._domainkey.bank.example")
+
+	ids, err := r.q.Confirm(bg, r.user, "bank.example", origin.ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := r.p.Reprocess(bg, r.user, ids); err != nil {
+		t.Fatalf("reprocess: %v", err)
+	}
+
+	p := r.onlyPayload()
+	if p.Tier != diag.TierTemplate || p.Unparsed {
+		t.Fatalf("payload = %+v, want the promoted template hit", p)
+	}
+	if !p.NeedsReview {
+		t.Error("needs_review = false; the promote could not re-verify anything, so it cannot " +
+			"say the decode was the signer's")
 	}
 }
