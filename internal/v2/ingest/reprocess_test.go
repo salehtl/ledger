@@ -903,8 +903,26 @@ func TestConcurrentConfirmationsAppendTheMessageOnce(t *testing.T) {
 	if got := r.heldCount(); got != 0 {
 		t.Fatalf("the quarantine row survived the promotion (%d held)", got)
 	}
-	if got := len(r.reprocessDiags()); got != 1 {
-		t.Fatalf("%d reprocess diagnostics rows for one promotion", got)
+	// Exactly one row says the message was APPENDED. Not "exactly one row": a
+	// racer that arrives after the winner has already promoted finds nothing
+	// held, falls through to the STORED lane, re-parses the message it now
+	// finds in the cold stream, and — correctly — records an `unchanged`. That
+	// is wasted work and nothing else; the parse is identical, so nothing is
+	// appended and no supersede is written. A test that demanded one row total
+	// was asserting a scheduling order rather than a property, and it failed
+	// once in about twenty runs under load, which is the worst way to learn it.
+	var appendedRows, supersededRows int
+	for _, d := range r.reprocessDiags() {
+		switch d.Outcome {
+		case diag.OutcomeAppended:
+			appendedRows++
+		case diag.OutcomeSuperseded:
+			supersededRows++
+		}
+	}
+	if appendedRows != 1 || supersededRows != 0 {
+		t.Fatalf("%d appended and %d superseded reprocess rows for one promotion, want 1 and 0",
+			appendedRows, supersededRows)
 	}
 }
 

@@ -240,3 +240,17 @@ Mutation battery, run against the committed tree: **16/16 killed, 0 survivors**,
 plus the two race mutations — remove the promotion claim and defect 1
 reproduces 5/5; move the diagnostics row back after the promote and defect 2's
 retry appends a second copy.
+
+### One flake in this round's own test, found and fixed
+
+`TestConcurrentConfirmationsAppendTheMessageOnce` asserted *one* reprocess
+diagnostics row and failed about once in twenty runs under load
+(`2 reprocess diagnostics rows for one promotion`). The code was right and the
+assertion was wrong: a racer that arrives after the winner has already promoted
+finds nothing held, falls through to the STORED lane, re-parses the message it
+now finds in the cold stream and correctly records an `unchanged`. Nothing is
+appended and no supersede is written — it is wasted work and nothing else. The
+assertion now counts rows with `outcome='appended'` (exactly one) and
+`outcome='superseded'` (none), which is the property; the old one was pinning a
+scheduling order. Re-verified with seven concurrent full-package runs green,
+`-count=5 -race` green, and the no-claim mutation still reproducing 5/5.
