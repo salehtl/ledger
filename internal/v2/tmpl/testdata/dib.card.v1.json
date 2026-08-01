@@ -1,0 +1,46 @@
+{
+  "id": "dib.card.v1",
+  "version": 1,
+  "bank": "dib",
+  "normalizer_version": 1,
+  "match": {
+    "sender_domain": ["dib.ae"],
+    "body_contains": ["إشعار مشتريات"]
+  },
+  "default_currency": "AED",
+  "date_from": "body",
+  "extract": [
+    {
+      "field": "amount",
+      "type": "amount",
+      "source": "body",
+      "patterns": ["المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\\.[0-9]{2})"]
+    },
+    {
+      "field": "date",
+      "type": "date",
+      "source": "body",
+      "layouts": ["DD-MM-YYYY"],
+      "patterns": ["بتاريخ (?P<d>[0-9]{2}-[0-9]{2}-[0-9]{4})"]
+    },
+    {
+      "field": "merchant",
+      "type": "text",
+      "source": "body",
+      "patterns": ["الدفع الى\\n(?P<v>[^\\n]*)"]
+    },
+    {
+      "field": "last4",
+      "type": "last4",
+      "source": "body",
+      "patterns": ["رقم البطاقة\\n(?P<v>[^\\n]+)"]
+    },
+    {
+      "field": "direction",
+      "type": "const",
+      "source": "body",
+      "value": "debit"
+    }
+  ],
+  "required": ["amount", "direction", "date"]
+}
