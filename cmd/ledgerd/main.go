@@ -55,6 +55,7 @@ var modeHandlers = map[string]func(config.Config) error{
 	"relay":           runRelay,
 	"verify":          runVerify,
 	"seed-dictionary": runSeedDictionary,
+	"seed-templates":  runSeedTemplates,
 	"purge-user":      runPurgeUser,
 	"record-consent":  runRecordConsent,
 	"parse-rate":      runParseRate,
@@ -242,6 +243,14 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	log.Println("ledgerd serve: migrations applied")
+
+	// Immediately after the migrations and before anything can accept a
+	// message. A migrated database with no templates in it is not a working
+	// deployment — it is one that takes mail, stores it, and parses none of
+	// it — so the two steps belong together. Idempotent; see seedtemplates.go.
+	if err := logSeededTemplates(ctx, pool); err != nil {
+		return err
+	}
 
 	// A rotated LEDGER_DICT_HMAC_KEY silently breaks the merchant dictionary in
 	// two directions at once: the k threshold counts distinct HMACs, so one

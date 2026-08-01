@@ -54,7 +54,7 @@ import { Client, HardStopError, decodeWireRow } from "../../src/net/client";
 import { fileStore } from "../../src/store/store";
 import { STREAM_COLD, STREAM_HOT } from "../../src/wire/blob";
 import type { Violation } from "../../src/invariants/check";
-import { clientFor, corpusFixtures, repoPath, sendMail, startStack, stopStack, type Stack } from "./harness";
+import { clientFor, corpusFixtures, sendMail, startStack, stopStack, type Stack } from "./harness";
 
 const ADMIN_DSN = process.env["LEDGER_TEST_POSTGRES_URL"] ?? "";
 
@@ -195,9 +195,25 @@ const ENBD_V2 = {
   required: ["amount", "direction", "date"],
 };
 
-/** The two DIB seed templates, verbatim from the shipped files. */
-function seedTemplate(name: string): unknown {
-  return JSON.parse(readFileSync(repoPath("internal/v2/tmpl/seed", name), "utf8"));
+/**
+ * Asserts the server seeded a shipped bank template itself.
+ *
+ * This used to publish the file through the admin console, because nothing
+ * seeded it: `internal/v2/tmpl/seed` had no production caller, so a fresh
+ * `ledgerd` served with an empty templates table and this scenario had to
+ * hand-install the parsers it needed. `runServe` now applies the seed right
+ * after the migrations, so publishing here is a 409 (versions are immutable) —
+ * and, more to the point, hand-installing would go on hiding the defect. What
+ * this scenario needs from the DIB parsers is that they are LIVE, so that is
+ * what it now checks.
+ */
+async function expectSeeded(id: string): Promise<void> {
+  const { templates } = await s.admin<{
+    templates: { id: string; version: number; status: string }[];
+  }>("GET", "/admin/templates");
+  const live = templates.find((t) => t.id === id && t.status === "published");
+  expect(live, `${id} is not published; the server did not seed itself`).toBeDefined();
+  expect(live!.version).toBe(1);
 }
 
 async function publish(def: any): Promise<void> {
@@ -353,11 +369,18 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     windowFrom = new Date(Date.now() - 60_000).toISOString();
 
     // The parsers this scenario runs on. The ENBD one is deliberately drifted
-    // (see the block comment); the two DIB seeds are the shipped files, and
-    // they are what makes step 7's forwarded mail parse.
+    // (see the block comment) and is published here under its own id; the two
+    // DIB seeds are the shipped files the SERVER installs at startup, and they
+    // are what makes step 7's forwarded mail parse.
+    //
+    // Startup seeding also publishes the real enbd.transfer.v1 and
+    // enbd.alert.v1. That does not undo the drift this scenario depends on:
+    // the cascade takes templates in id order and `e2e.enbd.transfer` sorts
+    // before both, so the drifted parser still wins the ENBD messages and step
+    // 10's correction still has something to correct.
     await publish(ENBD_V1);
-    await publish(seedTemplate("dib.card.v1.json"));
-    await publish(seedTemplate("dib.account.v1.json"));
+    await expectSeeded("dib.card.v1");
+    await expectSeeded("dib.account.v1");
 
     inbox = await s.address(a);
     expect(inbox.endsWith(s.inboundSuffix)).toBe(true);

@@ -65,9 +65,11 @@ func TestEveryDispatchModeHasACase(t *testing.T) {
 func TestModesIsTheExactSetInOrder(t *testing.T) {
 	// "record-consent" joined the list with Task 34's fix pass: `purge-user
 	// --retention-due` reads a deadline that, until that command existed,
-	// nothing anywhere wrote.
+	// nothing anywhere wrote. "seed-templates" joined it for the same class of
+	// reason: the bank templates were written, corpus-validated and unreachable,
+	// so a freshly deployed ledgerd parsed nothing at all.
 	want := []string{
-		"serve", "relay", "verify", "seed-dictionary",
+		"serve", "relay", "verify", "seed-dictionary", "seed-templates",
 		"purge-user", "record-consent", "parse-rate",
 	}
 	got := Modes()
