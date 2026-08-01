@@ -1,0 +1,232 @@
+package origin
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+// Allowlist scopes. These are the values stored in sender_allowlist.scope,
+// whose migration ships with Task 27.
+const (
+	// ScopeInner trusts a bank behind a forwarder. It is honourable only for an
+	// [Origin] whose Attested is true.
+	ScopeInner = "inner"
+	// ScopeOuter trusts a domain that signed the message as we received it.
+	ScopeOuter = "outer"
+)
+
+// Allowlist reads the origins a user has confirmed from their quarantine lane.
+//
+// It is an interface so that this package — which sits on the inbound path and
+// must stay testable offline — does not depend on a database, and so that the
+// pipeline consumes one type whichever side implements it.
+//
+// The method name matches Task 27's *quarantine.Store.Allowlisted deliberately,
+// so that store satisfies this interface with no adapter. That store's single
+// query is the ONE read of sender_allowlist, and it must stay that way: the
+// carry-over across an address rotation that spec section 3.2:46 promises is a
+// property of the table being keyed by user, and a second query joining through
+// inbound_addresses would quietly drop it.
+type Allowlist interface {
+	// Allowlisted reports whether (userID, domain, scope) is present. An error
+	// is an error, never a false: see [Decide].
+	Allowlisted(ctx context.Context, userID uuid.UUID, domain, scope string) (bool, error)
+}
+
+// Decision is the answer to "may this message take the trusted lane?".
+type Decision struct {
+	// Trusted is the answer. False means quarantine.
+	Trusted bool
+	// Domain and Scope name the allowlist entry that matched, or "" and "".
+	Domain string
+	Scope  string
+	// Reason explains a refusal. Diagnostic text, never stored in a
+	// closed-enum column.
+	Reason string
+}
+
+// Decide applies a user's allowlist to a resolved origin.
+//
+// # The rule, and the bypass it exists to close
+//
+// Spec section 3.2: "The allowlist entry is the verified signing domain plus,
+// for forwarded mail, the inner origin — trusting the bank, not merely the
+// user's forwarder." Three properties carry that:
+//
+//  1. An unattested inner domain is never consulted. Without an attestation the
+//     only available source for "which bank is behind this forward" is the
+//     forwarded body's own From line, which is content, which anybody can
+//     write.
+//
+//  2. An unverified outer domain is never consulted. Origin.Outer carries the
+//     "unverified:" prefix precisely so an envelope claim cannot be compared
+//     against an allowlist as though it were evidence, and the prefixed form is
+//     not a hostname, so it can never accidentally equal a stored row.
+//
+//  3. A forwarder domain is never trusted as an OUTER origin, even if a row
+//     says so. Task 27's API refuses to create that row; this refuses to honour
+//     one, so a row that predates the check — or arrives by any other route —
+//     is inert rather than a standing bypass. Allowlisting gmail.com as an
+//     outer origin trusts every message anyone routes through the user's
+//     mailbox, which is the exact failure section 3.2 forbids.
+//
+// The scopes are not interchangeable in either direction. An outer entry does
+// not trust that domain as an inner origin, or "I trust what my bank sends me
+// directly" would silently become "I trust anyone who forwards me something my
+// bank signed once".
+//
+// # Errors
+//
+// A store error is returned, not swallowed into a refusal. Both produce the
+// quarantine lane, but only one of them is visible to an operator, and an
+// outage that renders as "the user has confirmed nothing" is an outage nobody
+// finds.
+func Decide(ctx context.Context, list Allowlist, userID uuid.UUID, o Origin) (Decision, error) {
+	if list == nil {
+		return Decision{Reason: "no allowlist configured"}, nil
+	}
+	refuse := func(format string, args ...any) (Decision, error) {
+		return Decision{Reason: sanitize(fmt.Sprintf(format, args...))}, nil
+	}
+
+	// The inner origin first: it is the more specific claim, and for forwarded
+	// mail it is the only one that names the bank.
+	var missedInner string
+	if o.Attested && o.Inner != "" {
+		ok, err := list.Allowlisted(ctx, userID, o.Inner, ScopeInner)
+		if err != nil {
+			return Decision{}, fmt.Errorf("origin: read allowlist: %w", err)
+		}
+		if ok {
+			return Decision{Trusted: true, Domain: o.Inner, Scope: ScopeInner}, nil
+		}
+		missedInner = fmt.Sprintf("inner origin %s is attested (%s) but not on the allowlist",
+			o.Inner, o.AttestedBy)
+	}
+
+	// Then the outer origin. Falling through rather than stopping at the inner
+	// miss matters: the outer check grants nothing an unattested message with
+	// the same Outer would not already get, so stopping here would leave an
+	// ATTESTED message with strictly fewer rights than an unattested one —
+	// which is backwards, and would break the user who allowlisted the relay
+	// their mail legitimately arrives through.
+	switch {
+	case o.Outer == "":
+		return refuse("nothing identifies the sender")
+	case strings.HasPrefix(o.Outer, unverifiedPrefix):
+		return refuse("%s; no signature verified, and %s is an envelope claim rather than evidence",
+			or(missedInner, "nothing is attested"), o.Outer)
+	case IsForwarderDomain(o.Outer):
+		// Deliberately checked before the query: the answer cannot depend on
+		// the row, so asking for it would be a database lookup any sender could
+		// trigger, for a result that is already decided.
+		return refuse("%s; %s is a forwarder, and trusting it as an outer origin would trust "+
+			"everything relayed through it. Confirm the inner origin instead.",
+			or(missedInner, "nothing is attested"), o.Outer)
+	}
+
+	ok, err := list.Allowlisted(ctx, userID, o.Outer, ScopeOuter)
+	if err != nil {
+		return Decision{}, fmt.Errorf("origin: read allowlist: %w", err)
+	}
+	if ok {
+		return Decision{Trusted: true, Domain: o.Outer, Scope: ScopeOuter}, nil
+	}
+	return refuse("%s; verified sender %s is not on the allowlist either",
+		or(missedInner, "nothing is attested"), o.Outer)
+}
+
+func or(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// ForwarderDomains are the domains a message may pass THROUGH. None of them may
+// ever be trusted as an outer origin (spec section 3.2:51), because doing so
+// trusts everything anyone relays through the user's mailbox.
+//
+// It is a superset of the list Task 27's brief names, and the additions are not
+// cosmetic. The brief lists the domains users have MAILBOXES at — gmail.com,
+// icloud.com — but Origin.Outer holds the domain that SIGNED or SEALED the
+// message, and Google seals as google.com, Microsoft as microsoft.com, Apple as
+// icloud.com. A list of mailbox domains would therefore have refused
+// "gmail.com" while cheerfully accepting "google.com", which is the same
+// bypass with a different spelling. Task 27 should consume this list rather
+// than declare its own; TestTheTwoListsAreDistinctAndNonEmpty holds the two in
+// the right relation.
+//
+// Matching is PERMISSIVE — a subdomain counts. Over-inclusion costs a user one
+// refused outer entry and nothing else; under-inclusion is the bypass.
+var ForwarderDomains = []string{
+	"apple.com",
+	"fastmail.com",
+	"gmail.com",
+	"google.com",
+	"googlemail.com",
+	"hotmail.com",
+	"icloud.com",
+	"live.com",
+	"mac.com",
+	"me.com",
+	"messagingengine.com",
+	"microsoft.com",
+	"outlook.com",
+	"proton.me",
+	"protonmail.ch",
+	"protonmail.com",
+	"yahoo.com",
+	"zoho.com",
+}
+
+// IsForwarderDomain reports whether d is, or is under, a known forwarder.
+func IsForwarderDomain(d string) bool {
+	d = normalizeDomain(d)
+	if d == "" {
+		return false
+	}
+	for _, f := range ForwarderDomains {
+		if d == f || strings.HasSuffix(d, "."+f) {
+			return true
+		}
+	}
+	return false
+}
+
+// TrustedSealers are the domains whose ARC-Authentication-Results this receiver
+// is willing to believe.
+//
+// RFC 8617 section 8.1 makes this a local decision and nothing else: a chain is
+// cryptographically valid regardless of who sealed it, so "pass" says the chain
+// was not tampered with, never that the sealer was honest. A chain an attacker
+// seals with their own key passes. This list is what turns "the chain is
+// intact" into "the first hop's report is worth reading" — and because any hop
+// may rewrite the body under its own ARC-Message-Signature, EVERY seal domain
+// in a chain must be on it, not just the first.
+//
+// Matching is EXACT — no subdomains, and no automatic promotion of anything on
+// [ForwarderDomains]. This list runs the opposite way round from that one: a
+// name wrongly present here can attest any bank it likes, so under-inclusion is
+// the safe error. The cost of a missing sealer is one forwarder falling back to
+// the direct-DKIM path, which is the load-bearing path anyway
+// (docs/superpowers/specs/v2-arc-spike.md, "Which path is load-bearing").
+//
+// These three are the only sealers observed across the 1,222 chains in the v1
+// corpus, and all 1,222 verify. Adding a fourth is a deliberate act that needs
+// its own evidence, not a convenience.
+var TrustedSealers = []string{
+	"google.com",
+	"icloud.com",
+	"microsoft.com",
+}
+
+// IsTrustedSealer reports whether an ARC-Seal domain is one this receiver
+// believes. Exact match; see [TrustedSealers].
+func IsTrustedSealer(d string) bool {
+	return slices.Contains(TrustedSealers, normalizeDomain(d))
+}
