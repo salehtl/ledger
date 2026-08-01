@@ -133,11 +133,39 @@ type Sample struct {
 	ReceivedAt   time.Time `json:"received_at"`
 }
 
-// SampleSource is Task 31's donated-sample corpus, as much of it as the publish
-// gate needs. Same reasoning as [Reprocessor]: an interface here, an adapter in
-// cmd/ledgerd when the package lands.
+// Cluster is one (sender domain, layout) group of the donated queue: §3.5's
+// "14 users hitting an untemplated FAB credit-card format" view. It is built
+// entirely out of counts and a digest, so the queue surface can be read without
+// reading anybody's mail.
+type Cluster struct {
+	SenderDomain string    `json:"sender_domain"`
+	StructureSig string    `json:"structure_sig"`
+	UserCount    int       `json:"user_count"`
+	SampleCount  int       `json:"sample_count"`
+	DonatedCount int       `json:"donated_count"`
+	FirstSeen    time.Time `json:"first_seen"`
+}
+
+// SampleSource is Task 31's donated-sample corpus, as much of it as the console
+// needs. Same reasoning as [Reprocessor]: an interface here, an adapter in
+// cmd/ledgerd where the packages meet.
+//
+// Note what is NOT on it: nothing that returns a body. ForSender does — it has
+// to, the gate replays over bytes — but every HANDLER in this package turns
+// those bytes into match results before they reach a response, and
+// TestNoConsoleRouteReturnsADonatedBody pins that. The console's job is to know
+// whether a parser works, not to read the mail it works on.
 type SampleSource interface {
 	ForSender(ctx context.Context, domain string) ([]Sample, error)
+	// Clusters is the queue view, ordered by how many PEOPLE hit each format.
+	Clusters(ctx context.Context) ([]Cluster, error)
+	// Retire deletes one sample, reporting whether there was one to delete.
+	//
+	// It is the escape hatch publishTemplate's absolute refusal depends on.
+	// There is no force flag on a publish, on purpose, so an operator who
+	// genuinely means to stop parsing a format has to say which mail they are
+	// dropping — one message at a time, on the record.
+	Retire(ctx context.Context, id uuid.UUID) (bool, error)
 }
 
 // Handler is the console.
@@ -211,6 +239,10 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	mux.HandleFunc("POST /admin/waitlist", guard(h.recordWaitlist))
 	if h.Quarantine != nil {
 		mux.HandleFunc("GET /admin/quarantine", guard(h.quarantine))
+	}
+	if h.Samples != nil {
+		mux.HandleFunc("GET /admin/samples", guard(h.sampleClusters))
+		mux.HandleFunc("DELETE /admin/samples/{id}", guard(h.retireSample))
 	}
 	if h.Dict != nil {
 		d := &DictHandler{Dict: h.Dict, Token: h.Token, Logf: h.Logf}
@@ -656,6 +688,65 @@ func replay(d tmpl.Definition, samples []Sample) ([]sampleResult, int, error) {
 		results = append(results, res)
 	}
 	return results, matched, nil
+}
+
+// ---------------------------------------------------------------------------
+// the donated-sample queue
+// ---------------------------------------------------------------------------
+
+// sampleClusters is §3.1's "donated-sample queue" surface: which untemplated
+// format do the most people hit, and do we have a body to write a parser from.
+//
+// It returns counts and a layout digest. It cannot return content — Cluster has
+// no field for one — which is the point: deciding what to build next is a
+// question the operator can answer without reading anybody's mail, and the
+// surface should make that the easy path rather than the disciplined one.
+func (h *Handler) sampleClusters(w http.ResponseWriter, r *http.Request) {
+	clusters, err := h.Samples.Clusters(r.Context())
+	if err != nil {
+		h.logf("admin: cluster donated samples: %v", err)
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if clusters == nil {
+		clusters = []Cluster{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"clusters": clusters})
+}
+
+// retireSample drops one donated message from the corpus.
+//
+// This is the ONLY way past a regression refusal, and it is deliberately not a
+// flag on the publish: retiring names the specific mail that will stop being
+// parsed, one message at a time, and leaves the rest of the corpus gating the
+// publish as before. A --force would have skipped all of them at once, which is
+// the difference between a decision and a habit.
+//
+// It also DELETES the message, rather than marking it inactive. A donated
+// sample the gate no longer consults is a copy of a user's mail being retained
+// for no purpose, which is exactly what the retention promise exists to
+// prevent.
+func (h *Handler) retireSample(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "sample id must be a uuid")
+		return
+	}
+	existed, err := h.Samples.Retire(r.Context(), id)
+	if err != nil {
+		h.logf("admin: retire sample %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if !existed {
+		writeErr(w, http.StatusNotFound, "no such donated sample")
+		return
+	}
+	// Logged at operator volume: this is a deletion of a user's donated mail,
+	// and the reason the publish gate can be absolute is that the exception is
+	// visible.
+	h.logf("admin: RETIRED donated sample %s; it no longer gates any publish", id)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------

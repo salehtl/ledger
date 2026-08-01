@@ -67,10 +67,26 @@ when the messages enter the integrity chains. `Promote` then clears the rows.
 
 ### 3. `samples.Donate` pulling the raw body from the user's cold stream
 
-Task 31. The opt-in, content-bearing donation path: the server pulls the body
-from the user's own cold stream rather than accepting an upload, so a donation
-can never introduce content the user did not actually receive. Same cold read,
-same impossibility.
+`internal/v2/samples/samples.go`'s `coldBody` (Task 31). The opt-in,
+content-bearing donation path: the server pulls the body from the user's own
+cold stream rather than accepting an upload, so a donation can never introduce
+content the user did not actually receive. Same `blob.Sealer.Open` call, same
+impossibility after the cutover.
+
+Only that read is on this list. The rest of the package survives intact — the
+content-free `Report` path, `Clusters`, `ForSender`, the retention sweep and the
+`donated_samples` table itself — and so does the replay the admin console runs
+over the corpus, since a donated sample is stored decrypted in its own column
+rather than read back out of the op log.
+
+**What the cutover has to re-establish**, and it is not just the read: the
+property that a donation cannot introduce content the user never received is
+today a consequence of WHERE the bytes come from. When the client uploads the
+sample instead, that property has to be rebuilt deliberately — the server can
+check that the uploaded body hashes to an `ingest_id` it has an arrival record
+for, which is the same fact by a different route. Losing it silently would turn
+this table into an unauthenticated upload endpoint whose contents gate every
+template publish.
 
 ### 4. `ledgerd parse-rate` adjudication over unparsed cold bodies
 
