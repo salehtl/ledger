@@ -25,9 +25,11 @@ const (
 )
 
 // Row is one op_log row: a sealed blob plus the position it occupies. Seq is
-// assigned by the server and is the ONLY field a caller may not set — Append
-// rejects a row that arrives with one, because a caller that believes it can
-// choose its own seq has misunderstood the ordering guarantee.
+// assigned by the server and is the ONLY field a caller may not set —
+// appendRows rejects a row that arrives with one, because a caller that
+// believes it can choose its own seq has misunderstood the ordering guarantee.
+// (The ingest writer additionally does not choose its WriterCounter or hashes;
+// see [Appender.AppendIngest].)
 type Row struct {
 	UserID        uuid.UUID
 	Seq           int64  // server-assigned; zero on the way in, populated on reads
@@ -48,9 +50,14 @@ type Row struct {
 }
 
 // validate rejects a row that could never be stored, or that could be stored
-// and then never read back. It runs BEFORE the append transaction opens, so an
-// invalid batch cannot even reach the counter — a validation failure therefore
-// cannot leave a gap.
+// and then never read back.
+//
+// AppendClient runs it BEFORE the append transaction opens, so a client's
+// invalid batch cannot even reach the counter. appendTx runs it again after
+// prepare, because AppendIngest's rows are not complete until the server has
+// filled in the counter and hashes. Neither placement can leave a gap: a
+// rollback restores the counter, so a rejected batch consumes nothing either
+// way.
 func (r Row) validate() error {
 	switch {
 	case r.UserID == uuid.Nil:
@@ -91,14 +98,32 @@ func (r Row) validate() error {
 
 // Appender writes rows to the op log. It owns the one place a seq is ever
 // allocated.
+//
+// Its two public write paths are [Appender.AppendClient] (a device's own,
+// pre-chained blobs) and [Appender.AppendIngest] (the server's, chained here) —
+// see chain.go. There is deliberately no exported way to append without the
+// chain check.
 type Appender struct {
 	Pool *pgxpool.Pool
+	// Sealer frames the blobs AppendIngest authors. nil means
+	// blob.PlaintextSealer{}, which is Phase 1: plaintext, framed and padded.
+	// Phase 3 swaps this one field for a real HPKE sealer and nothing else in
+	// this package moves.
+	Sealer blob.Sealer
 }
 
 // EnsureSeqRow creates a user's counter row. It is called from auth.UpsertUser
 // INSIDE the user-creation transaction, so the row exists before that user's
-// first append and Append's own INSERT ... ON CONFLICT DO NOTHING never runs in
-// steady state.
+// first append and appendTx's own INSERT ... ON CONFLICT DO NOTHING is a no-op
+// in steady state.
+//
+// "No-op" is not the same as "free": an INSERT whose conflicting row is being
+// UPDATEd by an in-flight transaction must WAIT to learn whether that update
+// commits. So an append arriving during another append for the same user blocks
+// here, one statement before allocSeq, rather than at the counter itself. That
+// changes nothing about correctness — the same transaction is being waited on
+// either way — but it is worth knowing before writing a test that tries to
+// interleave two appends at a chosen point.
 //
 // It takes a pgx.Tx rather than a pool deliberately: a counter row created in a
 // separate transaction from the user could be committed while the user is not,
@@ -119,10 +144,15 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	return nil
 }
 
-// Append allocates a contiguous block of seqs for one user and writes rows in
-// the order given, returning the assigned seqs in that same order. Every row
+// appendRows allocates a contiguous block of seqs for one user and writes rows
+// in the order given, returning the assigned seqs in that same order. Every row
 // must carry the same UserID; rows MAY span streams, because the ingest writer
 // appends one hot and one cold row per message.
+//
+// It is unexported because every append must go through a chain check:
+// [Appender.AppendClient] verifies a device's chain, [Appender.AppendIngest]
+// computes the server's. prepare is what each of those supplies — see
+// [prepareFunc] and the ORDERING RULE on appendTx.
 //
 // # Gap-freeness
 //
@@ -155,16 +185,21 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 // # Ambiguous commit: an error does not always mean "not appended"
 //
 // If the context deadline expires (or the connection drops) during tx.Commit,
-// Append returns an error for an append that may in fact have COMMITTED — the
-// rows are present and next_seq has advanced, but the caller never learns its
-// seqs. Gap-freeness is unaffected; retry semantics are not.
+// appendRows returns an error for an append that may in fact have COMMITTED —
+// the rows are present and next_seq has advanced, but the caller never learns
+// its seqs. Gap-freeness is unaffected; retry semantics are not.
 //
 // This is why UNIQUE (user_id, writer_id, stream, writer_counter) is load
 // bearing beyond chain integrity: it makes the ambiguity DETECTABLE. A caller
 // that retries the same (writer_id, stream, writer_counter) after an error and
 // receives SQLSTATE 23505 on that constraint must read it as "already applied"
 // and resolve its seqs by reading the log back — NOT as a failure to retry
-// again, which would loop forever. Task 8's AppendClient owns that translation.
+// again, which would loop forever. [Appender.AppendClient] owns that
+// translation, in two layers: a retried batch whose counters sit at or below
+// the committed head is recognised as a replay and answered with the stored
+// seqs (which is why 23505 is not reached in the first place), and
+// [isPositionTaken] handles the constraint violation itself as the backstop.
+// See AppendClient's "Idempotent replay" section.
 //
 // # Accepted cost
 //
@@ -172,7 +207,7 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 // this one user's inbound SMTP for the duration of that write. It is bounded,
 // per-user, and cheaper than reconstructing gap-freeness elsewhere. This is a
 // deliberate trade, not an oversight — see the plan's Decision 3.
-func (a *Appender) Append(ctx context.Context, rows []Row) ([]int64, error) {
+func (a *Appender) appendRows(ctx context.Context, rows []Row, prepare prepareFunc) ([]int64, error) {
 	if len(rows) == 0 {
 		// Appending nothing must not touch the counter. Opening a transaction
 		// to allocate a zero-length block would take the lock for no reason.
@@ -186,8 +221,11 @@ func (a *Appender) Append(ctx context.Context, rows []Row) ([]int64, error) {
 			// such calls in opposite order would deadlock.
 			return nil, fmt.Errorf("oplog: append: row %d belongs to user %s, row 0 to %s", i, r.UserID, userID)
 		}
-		if err := r.validate(); err != nil {
-			return nil, fmt.Errorf("oplog: append: row %d: %w", i, err)
+		if r.Seq != 0 {
+			// Checked here as well as in validate() because prepare runs after
+			// the counter is taken, and a caller-chosen seq is the one field
+			// whose rejection must never depend on a hook.
+			return nil, fmt.Errorf("oplog: append: row %d: seq is server-assigned; leave it zero (got %d)", i, r.Seq)
 		}
 	}
 
@@ -216,7 +254,7 @@ func (a *Appender) Append(ctx context.Context, rows []Row) ([]int64, error) {
 		_ = tx.Rollback(rbCtx)
 	}()
 
-	seqs, err := a.appendTx(ctx, tx, userID, rows)
+	seqs, err := a.appendTx(ctx, tx, userID, rows, prepare)
 	if err != nil {
 		return nil, err
 	}
@@ -226,24 +264,57 @@ func (a *Appender) Append(ctx context.Context, rows []Row) ([]int64, error) {
 	return seqs, nil
 }
 
-// appendTx is the body of an append, minus the transaction management. Task 8
-// adds the per-(writer, stream) chain check between allocSeq and insertRows, so
-// seq allocation stays in exactly one place for every append path.
+// prepareFunc runs inside the append transaction, after allocSeq has taken the
+// user's counter lock and before any row is inserted. It is where the
+// per-(writer, stream) chain is verified (AppendClient) or computed
+// (AppendIngest).
 //
-// ORDERING RULE for anything added here: allocSeq must come FIRST, before any
-// read of a writer's chain head. Reading the head before taking the counter
-// lock lets two concurrent uploads from one writer both observe head=5 and race
-// for counter 6; the UNIQUE (user_id, writer_id, stream, writer_counter)
-// constraint would catch that, but as a constraint violation rather than a
-// chain break — the wrong error to hand a client, and detection where the
-// ordering could have made it impossible.
-func (a *Appender) appendTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rows []Row) ([]int64, error) {
+// It may fill in or check any field of rows in place, but it must NOT change
+// how many rows there are: the seq block is already reserved by the time it
+// runs, so dropping a row would burn a seq and leave a hole. Returning an error
+// aborts the whole append, which restores the counter and stores nothing.
+type prepareFunc func(ctx context.Context, tx pgx.Tx, rows []Row) error
+
+// appendTx is the body of an append, minus the transaction management. The
+// per-(writer, stream) chain check runs as prepare, between allocSeq and
+// insertRows, so seq allocation stays in exactly one place for every append
+// path.
+//
+// ORDERING RULE, and it is not a style preference: allocSeq comes FIRST, before
+// prepare and therefore before any read of a writer's chain head. Reading the
+// head before taking the counter lock lets two concurrent uploads from one
+// writer both observe head=5 and race for counter 6; the UNIQUE (user_id,
+// writer_id, stream, writer_counter) constraint would catch that, but as a
+// constraint violation rather than a chain break — the wrong error to hand a
+// client, and detection where the ordering could have made it impossible.
+//
+// Reversing these two statements is pinned twice.
+// TestTheChainCheckRunsAfterTheCounterLockIsTaken asserts the rule itself,
+// deterministically and on one connection: a prepare hook reads oplog_seq on
+// the append's own transaction and finds next_seq already advanced.
+// TestConcurrentDoubleAppendFromOneWriterIsACleanChainBreak asserts the
+// consequence: under the reversed order the loser's error is SQLSTATE 23505,
+// not ErrChainBreak.
+func (a *Appender) appendTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rows []Row, prepare prepareFunc) ([]int64, error) {
 	if err := EnsureSeqRow(ctx, tx, userID); err != nil {
 		return nil, err
 	}
 	start, err := allocSeq(ctx, tx, userID, len(rows))
 	if err != nil {
 		return nil, err
+	}
+	if prepare != nil {
+		if err := prepare(ctx, tx, rows); err != nil {
+			return nil, err
+		}
+	}
+	// Validated after prepare, because AppendIngest's rows are incomplete until
+	// then. A failure here still costs nothing: the rollback restores the
+	// counter, so an invalid batch leaves no hole either way.
+	for i, r := range rows {
+		if err := r.validate(); err != nil {
+			return nil, fmt.Errorf("oplog: append: row %d: %w", i, err)
+		}
 	}
 	seqs := make([]int64, len(rows))
 	for i := range rows {

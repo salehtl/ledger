@@ -88,6 +88,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"ledger/internal/v2/oplog"
 )
 
 // Writer kinds and the one reserved writer id. These strings are also the CHECK
@@ -101,7 +102,12 @@ const (
 	// IngestWriterID is the fixed writer id of every user's ingest writer. It
 	// is reserved: a client registering under it would be laundering its own
 	// ops into the provenance the UI labels "server-ingested".
-	IngestWriterID = "ingest"
+	//
+	// Defined as oplog's constant rather than repeating the literal: the same
+	// string is what oplog.AppendIngest writes into op_log.writer_id and into
+	// every ingest blob's AAD, and a drift between the two would enroll one
+	// writer while the log filled up under another.
+	IngestWriterID = oplog.IngestWriterID
 )
 
 // key_history event vocabulary, matching that table's CHECK constraint.
