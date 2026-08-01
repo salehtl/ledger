@@ -151,6 +151,57 @@ type WeekRate struct {
 	Rate   float64   `json:"rate"`
 }
 
+// UnattributedOperator stands in for a verdict recorded with no operator.
+// RecordVerdict accepts an empty operator on purpose — refusing the write would
+// push somebody toward editing the table by hand — so "nobody signed for this"
+// has to be a value the exit record can COUNT rather than an absence.
+const UnattributedOperator = "(unattributed)"
+
+// Adjudicator is one person and the live verdicts resting on their judgement.
+type Adjudicator struct {
+	Operator string `json:"operator"`
+	Verdicts int64  `json:"verdicts"`
+	// Last is the most recent of those verdicts.
+	Last time.Time `json:"last"`
+}
+
+// Revision is one verdict that replaced an earlier one for the same message.
+//
+// This is the answer the audit trail exists to give. The columns behind it were
+// written from the day they were added and read by nothing, so "who changed this
+// verdict, and when" had no answer even though the data was sitting in the
+// table.
+type Revision struct {
+	UserID   uuid.UUID `json:"user_id"`
+	IngestID []byte    `json:"ingest_id"`
+	From     string    `json:"from"`
+	To       string    `json:"to"`
+	Operator string    `json:"operator"`
+	At       time.Time `json:"at"`
+	// RaisesRate is the direction that matters to a reviewer: a revision that
+	// takes a message OUT of the denominator (transaction -> anything else) or
+	// puts a parsed one back in makes the gate easier to pass. It is not an
+	// accusation — a first pass over an unfamiliar bank SHOULD be revised — it
+	// is the subset worth reading first.
+	RaisesRate bool `json:"raises_rate"`
+}
+
+// RevisionLog is the readable half of the audit trail.
+type RevisionLog struct {
+	// Superseded counts verdicts that replaced an earlier one for the same
+	// message; Changed counts the subset that actually said something different.
+	Superseded int64 `json:"superseded"`
+	Changed    int64 `json:"changed"`
+	// Changes is every changed verdict, newest first, capped at
+	// maxReportedRevisions. Changed is the true total.
+	Changes []Revision `json:"changes,omitempty"`
+}
+
+// maxReportedRevisions bounds what a report carries. At alpha scale the cap is
+// never reached; it exists so a pathological history cannot make the report
+// unreadable or unbounded.
+const maxReportedRevisions = 200
+
 // ParseRateBlindSpots is what this number cannot see, carried on every report
 // for the same reason verify.Report carries [BlindSpots]: a bare percentage
 // overclaims, and this one is the sole evidence that will ever exist for §5's
@@ -296,6 +347,14 @@ type ParseRateReport struct {
 	// aggregate cannot express.
 	PerUser []UserRate `json:"per_user"`
 	Weeks   []WeekRate `json:"weeks,omitempty"`
+
+	// Adjudicators and Revisions are the audit trail behind the denominator:
+	// who stands behind the verdicts the number rests on, and which verdicts
+	// were changed after the fact, by whom. They are ON THE REPORT because the
+	// report is what gets pasted into the exit record — a fact reachable only
+	// from a function nobody calls is not evidence anybody will see.
+	Adjudicators []Adjudicator `json:"adjudicators,omitempty"`
+	Revisions    RevisionLog   `json:"revisions"`
 
 	// BlindSpots is what this number cannot see, carried on the report exactly
 	// as verify.Report carries its own.
@@ -606,14 +665,30 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 	for _, m := range msgs {
 		byID[key(m.pending.UserID, m.pending.IngestID)] = m
 	}
+	byOperator := map[string]*Adjudicator{}
 	for _, p := range want {
-		v, ok := verdicts[key(p.UserID, p.IngestID)]
+		a, ok := verdicts[key(p.UserID, p.IngestID)]
 		if !ok {
 			rep.Pending = append(rep.Pending, p)
 			continue
 		}
 		rep.Adjudicated++
-		switch v {
+		// Attributed to the operator of the LIVE verdict — the one the number
+		// actually rests on, not whoever judged it first.
+		who := a.operator
+		if who == "" {
+			who = UnattributedOperator
+		}
+		ad, ok := byOperator[who]
+		if !ok {
+			ad = &Adjudicator{Operator: who}
+			byOperator[who] = ad
+		}
+		ad.Verdicts++
+		if a.at.After(ad.Last) {
+			ad.Last = a.at
+		}
+		switch a.verdict {
 		case VerdictTransaction:
 			rep.Transaction++
 			count(byID[key(p.UserID, p.IngestID)], false)
@@ -622,6 +697,18 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 		default:
 			rep.Unreadable++
 			count(byID[key(p.UserID, p.IngestID)], false)
+		}
+	}
+
+	for _, ad := range byOperator {
+		rep.Adjudicators = append(rep.Adjudicators, *ad)
+	}
+	sort.Slice(rep.Adjudicators, func(i, j int) bool {
+		return rep.Adjudicators[i].Operator < rep.Adjudicators[j].Operator
+	})
+	if rep.Adjudicated > 0 {
+		if rep.Revisions, err = Revisions(ctx, pool, opts); err != nil {
+			return ParseRateReport{}, err
 		}
 	}
 
@@ -728,11 +815,24 @@ func ratio(parsed, misses int64) float64 {
 	return float64(parsed) / float64(den)
 }
 
-func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) (map[string]string, error) {
+// adjudication is one message's LIVE verdict, with who stands behind it.
+//
+// operator and adjudicated_at travel with the verdict rather than being fetched
+// separately, because every caller that cares about the verdict is a caller that
+// has to be able to say where it came from. They were write-only for a release:
+// 00018 justified the column as recording "by whom", and then nothing selected
+// it, so the audit existed in the table and in no answer anyone could get.
+type adjudication struct {
+	verdict  string
+	operator string
+	at       time.Time
+}
+
+func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) (map[string]adjudication, error) {
 	// DISTINCT ON takes the newest row per message: the table is append-only, so
 	// a revision is a new row and the live verdict is the highest id.
 	rows, err := pool.Query(ctx,
-		`SELECT DISTINCT ON (user_id, ingest_id) user_id, ingest_id, verdict
+		`SELECT DISTINCT ON (user_id, ingest_id) user_id, ingest_id, verdict, operator, adjudicated_at
 		   FROM parse_rate_adjudications
 		  WHERE ($1::uuid IS NULL OR user_id = $1)
 		  ORDER BY user_id, ingest_id, id DESC`, user)
@@ -740,15 +840,15 @@ func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOption
 		return nil, fmt.Errorf("verify: parse rate: adjudications: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]string{}
+	out := map[string]adjudication{}
 	for rows.Next() {
 		var u uuid.UUID
 		var id []byte
-		var v string
-		if err := rows.Scan(&u, &id, &v); err != nil {
+		var a adjudication
+		if err := rows.Scan(&u, &id, &a.verdict, &a.operator, &a.at); err != nil {
 			return nil, fmt.Errorf("verify: parse rate: adjudications: %w", err)
 		}
-		out[key(u, id)] = v
+		out[key(u, id)] = a
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("verify: parse rate: adjudications: %w", err)
@@ -931,28 +1031,83 @@ func ColdTexts(ctx context.Context, pool *pgxpool.Pool, sealer blob.Sealer,
 	return out, nil
 }
 
-// Revisions counts adjudications that superseded an earlier verdict for the same
-// message, and how many of those changed the answer.
+// Revisions is the readable audit trail: which verdicts were changed after the
+// fact, by whom, and when.
 //
-// This is the number the exit record needs in order to be read honestly: the
-// denominator rests on operator judgement, the operator is interested in the
-// outcome, and the append-only table makes revisions countable rather than
-// invisible. It is not an accusation — a first pass over an unfamiliar bank
-// SHOULD be revised — it is the context a reader needs to weigh the rate.
-func Revisions(ctx context.Context, pool *pgxpool.Pool) (superseded, changed int64, err error) {
+// The denominator of the ship gate rests on operator judgement, the operator is
+// interested in the outcome, and flipping six of ten verdicts was measured to
+// move the reported rate from 0.9000 (fail) to 0.9574 (pass). The append-only
+// table (00018) makes that visible; this function is what makes it ANSWERABLE.
+// Writing the columns closed half the finding — until this existed, nothing
+// could read who changed a verdict, so the audit lived in the table and in no
+// report.
+//
+// It is not an accusation. A first pass over an unfamiliar bank SHOULD be
+// revised, and a run with revisions is not a failed run. It is the context a
+// reader needs to weigh the number, which is why it travels on the report rather
+// than waiting to be asked for.
+func Revisions(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (RevisionLog, error) {
 	if pool == nil {
-		return 0, 0, errors.New("verify: pool is nil")
+		return RevisionLog{}, errors.New("verify: pool is nil")
 	}
-	err = pool.QueryRow(ctx, `
+	var user any
+	if opts.User != uuid.Nil {
+		user = opts.User
+	}
+	var log RevisionLog
+	if err := pool.QueryRow(ctx, `
 		WITH ordered AS (
-		  SELECT user_id, ingest_id, verdict,
+		  SELECT user_id, verdict,
 		         lag(verdict) OVER (PARTITION BY user_id, ingest_id ORDER BY id) AS prev
-		    FROM parse_rate_adjudications)
+		    FROM parse_rate_adjudications
+		   WHERE ($1::uuid IS NULL OR user_id = $1))
 		SELECT count(*) FILTER (WHERE prev IS NOT NULL),
 		       count(*) FILTER (WHERE prev IS NOT NULL AND prev <> verdict)
-		  FROM ordered`).Scan(&superseded, &changed)
-	if err != nil {
-		return 0, 0, fmt.Errorf("verify: adjudication revisions: %w", err)
+		  FROM ordered`, user).Scan(&log.Superseded, &log.Changed); err != nil {
+		return RevisionLog{}, fmt.Errorf("verify: adjudication revisions: %w", err)
 	}
-	return superseded, changed, nil
+	if log.Changed == 0 {
+		return log, nil
+	}
+
+	rows, err := pool.Query(ctx, `
+		WITH ordered AS (
+		  SELECT id, user_id, ingest_id, verdict, operator, adjudicated_at,
+		         lag(verdict) OVER (PARTITION BY user_id, ingest_id ORDER BY id) AS prev
+		    FROM parse_rate_adjudications
+		   WHERE ($1::uuid IS NULL OR user_id = $1))
+		SELECT user_id, ingest_id, prev, verdict, operator, adjudicated_at
+		  FROM ordered
+		 WHERE prev IS NOT NULL AND prev <> verdict
+		 ORDER BY adjudicated_at DESC, id DESC
+		 LIMIT $2`, user, maxReportedRevisions)
+	if err != nil {
+		return RevisionLog{}, fmt.Errorf("verify: adjudication revisions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r Revision
+		if err := rows.Scan(&r.UserID, &r.IngestID, &r.From, &r.To, &r.Operator, &r.At); err != nil {
+			return RevisionLog{}, fmt.Errorf("verify: adjudication revisions: %w", err)
+		}
+		if r.Operator == "" {
+			r.Operator = UnattributedOperator
+		}
+		r.RaisesRate = raisesRate(r.From, r.To)
+		log.Changes = append(log.Changes, r)
+	}
+	if err := rows.Err(); err != nil {
+		return RevisionLog{}, fmt.Errorf("verify: adjudication revisions: %w", err)
+	}
+	return log, nil
+}
+
+// raisesRate reports whether a verdict change made the gate easier to pass.
+//
+// 'transaction' and 'unreadable' both keep a message in the denominator;
+// 'non_transactional' removes it. So any move OFF a denominator verdict raises
+// the rate, and any move ONTO one lowers it.
+func raisesRate(from, to string) bool {
+	in := func(v string) bool { return v == VerdictTransaction || v == VerdictUnreadable }
+	return in(from) && !in(to)
 }

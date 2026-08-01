@@ -340,6 +340,30 @@ func printParseRate(rep verify.ParseRateReport, asJSON bool) {
 			w.From.UTC().Format("2006-01-02"), w.Parsed, w.Total, w.Rate*100)
 	}
 
+	// Who the denominator rests on, and what moved after the fact. Printed
+	// unconditionally when anything was adjudicated: this is the audit answer
+	// for a ship decision, and an operator should not have to know to ask.
+	for _, a := range rep.Adjudicators {
+		fmt.Printf("    adjudicated by %-20s %d verdict(s), last %s\n",
+			a.Operator, a.Verdicts, a.Last.UTC().Format(time.RFC3339))
+	}
+	if rev := rep.Revisions; rev.Superseded > 0 {
+		fmt.Printf("  verdicts revised         %d superseded, %d changed the answer\n",
+			rev.Superseded, rev.Changed)
+		for _, c := range rev.Changes {
+			flag := ""
+			if c.RaisesRate {
+				flag = "  <- RAISES the rate"
+			}
+			fmt.Printf("    %x  %s -> %s  by %s at %s%s\n",
+				c.IngestID[:6], c.From, c.To, c.Operator,
+				c.At.UTC().Format(time.RFC3339), flag)
+		}
+		if n := rev.Changed - int64(len(rev.Changes)); n > 0 {
+			fmt.Printf("    ... and %d more\n", n)
+		}
+	}
+
 	fmt.Printf("  exit gate (>= %.0f%%)       %v\n", verify.GateThreshold*100, rep.MeetsGate())
 	for _, why := range rep.Gate.Reasons {
 		fmt.Printf("    NOT MET: %s\n", why)
