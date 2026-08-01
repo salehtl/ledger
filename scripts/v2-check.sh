@@ -10,10 +10,14 @@
 # internal/v2/pgtest/pgtest.go — so `go test ./internal/v2/pg/` alone
 # continues to work with no setup).
 #
-# Grows over the course of Phase 1: client/ (bun) and conformance/ steps land
-# in later tasks (see Task 17 in
-# docs/superpowers/plans/2026-08-01-v2-phase1-backend.md) and get appended
-# here, not written from scratch.
+# Grows over the course of Phase 1. The client/ step below arrived with Task 10
+# rather than waiting for Task 17, because Task 10 shipped the TypeScript half
+# of the dual-executor contract and Tasks 11-13 are ALL TypeScript: without it
+# the gate cannot see a client-side regression at all. Measured, not assumed —
+# of five mutations used to test the conformance mechanism, two are caught only
+# by `bun test`. Task 17 owns the final shape of this script (it adds the
+# normalizer conformance runner and rewrites the closing line); it should absorb
+# this step, not rediscover it.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -51,4 +55,13 @@ export LEDGER_TEST_POSTGRES_URL
 go vet ./internal/v2/... ./cmd/ledgerd
 go test -count=1 ./internal/v2/... ./cmd/ledgerd
 
-echo "v2-check: OK (go)"
+# The TypeScript executor. `bun install` is not run here: a gate that mutates
+# the working tree to make itself pass is not a gate, so a missing
+# client/node_modules is a hard failure with the fix named.
+if [[ ! -d client/node_modules ]]; then
+	echo "v2-check: client/node_modules is missing; run (cd client && bun install)" >&2
+	exit 1
+fi
+(cd client && bun run typecheck && bun test)
+
+echo "v2-check: OK (go + client)"

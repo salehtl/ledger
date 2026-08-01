@@ -414,3 +414,123 @@ func TestKindOfRejectsNonBlobs(t *testing.T) {
 		}
 	}
 }
+
+// TestWireTimeAcceptsExactlyWhatTypeScriptAccepts pins the timestamp grammar
+// against the table of disagreements that motivated it. Every row here was
+// MEASURED against both runtimes, not assumed: time.Time's unmarshaller and
+// JavaScript's Date.parse are lenient in different directions, and a timestamp
+// either executor reads differently is a blob that lands in one log and not the
+// other. Since authored_at is the fork tiebreak, that is two devices
+// materialising different money.
+func TestWireTimeAcceptsExactlyWhatTypeScriptAccepts(t *testing.T) {
+	// Rejected here AND by the TypeScript parseInstantMs. The first two are the
+	// ones stock Go already refused and Date.parse silently ROLLED OVER —
+	// 2026-02-30 became March 2nd, an instant no legal reading produces.
+	for _, s := range []string{
+		"2026-06-05T24:00:00Z",      // hour 24: Date.parse rolls to the next day
+		"2026-02-30T10:00:00Z",      // Date.parse rolls to March 2nd
+		"2026-02-29T00:00:00Z",      // 2026 is not a leap year
+		"2026-13-05T10:00:00Z",      // month 13
+		"2026-06-05T10:60:00Z",      // minute 60
+		"2026-06-05T10:00:60Z",      // second 60 (no leap seconds)
+		"2026-06-05T10:00:00+24:00", // stock Go ACCEPTED this; Date.parse refuses it
+		"2026-06-05T10:00:00+24:60", // stock Go read this as -25h
+		"2026-06-05T10:00:00+00:60", // stock Go read this as -1h
+		"2026-06-05t10:00:00z",      // lowercase: Date.parse accepts, RFC3339 layout does not
+		"2026-06-05 10:00:00Z",      // space separator
+		"2026-06-05T10:00:00",       // no zone
+		"2026-06-05T10:00:00.Z",     // empty fraction
+		"2026-06-05",
+		"June 5 2026",
+		"",
+	} {
+		if _, err := parseWireTime(s); err == nil {
+			t.Errorf("parseWireTime(%q) must be refused: the TypeScript executor refuses it", s)
+		}
+	}
+
+	// Accepted by both, and at the same instant.
+	for _, tc := range []struct {
+		wire string
+		want time.Time
+	}{
+		{"2026-06-05T10:00:00Z", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)},
+		{"2026-06-05T10:00:00.5Z", time.Date(2026, 6, 5, 10, 0, 0, 5e8, time.UTC)},
+		{"2026-06-05T14:00:00.5+04:00", time.Date(2026, 6, 5, 10, 0, 0, 5e8, time.UTC)},
+		{"2026-06-05T10:00:00-00:00", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)},
+		{"2026-06-05T10:00:00+23:59", time.Date(2026, 6, 4, 10, 1, 0, 0, time.UTC)},
+		{"2024-02-29T00:00:00Z", time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)},
+		{"2000-02-29T00:00:00Z", time.Date(2000, 2, 29, 0, 0, 0, 0, time.UTC)}, // divisible by 400
+	} {
+		got, err := parseWireTime(tc.wire)
+		if err != nil {
+			t.Errorf("parseWireTime(%q): %v", tc.wire, err)
+			continue
+		}
+		if !got.Equal(tc.want) {
+			t.Errorf("parseWireTime(%q) = %v, want %v", tc.wire, got.UTC(), tc.want)
+		}
+	}
+}
+
+// TestDecodeRejectsOutOfRangeTimestampsInABlob checks the strictness is wired
+// into the DECODE path and not merely available as a helper.
+func TestDecodeRejectsOutOfRangeTimestampsInABlob(t *testing.T) {
+	for _, wire := range []string{"2026-02-30T10:00:00Z", "2026-06-05T24:00:00Z", "2026-06-05T10:00:00+24:00"} {
+		if _, err := DecodeBlob(timeProbeBlob(wire)); err == nil {
+			t.Errorf("an op carrying authored_at %q must not decode", wire)
+		} else if errors.Is(err, ErrUnknownNewerVersion) {
+			// A malformed timestamp is a set-aside, never the sync hard stop.
+			t.Errorf("authored_at %q must not be reported as an unknown newer version", wire)
+		}
+	}
+	body := func(receivedAt string) []byte {
+		return []byte(`{"v":1,"kind":"raw_body","ingest_id":"` + ingestID() +
+			`","received_at":"` + receivedAt + `","raw_base64":"aGk="}`)
+	}
+	if _, err := DecodeRawBody(body("2026-02-30T10:00:00Z")); err == nil {
+		t.Error("a cold record with a rolled-over received_at must not decode")
+	}
+	if _, err := DecodeRawBody(body("2026-06-05T10:00:00Z")); err != nil {
+		t.Errorf("a well-formed cold record must decode: %v", err)
+	}
+}
+
+// TestDecodeRawBodyValidatesItsPayload covers the gap that let a base64url
+// payload cross the executor boundary green: this decoder returned RawBase64 as
+// an unexamined string, so records the TypeScript side refused decoded happily
+// here — and the conformance fixtures only ever called this function.
+func TestDecodeRawBodyValidatesItsPayload(t *testing.T) {
+	body := func(raw string) []byte {
+		return []byte(`{"v":1,"kind":"raw_body","ingest_id":"` + ingestID() +
+			`","received_at":"2026-06-05T10:00:00Z","raw_base64":"` + raw + `"}`)
+	}
+	for _, raw := range []string{
+		"a GK=", // whitespace
+		"aGk",   // unpadded standard base64
+		"aG!=",  // outside the alphabet
+		"-_8=",  // base64URL, which StdEncoding must not accept
+		"not b64",
+	} {
+		if _, err := DecodeRawBody(body(raw)); err == nil {
+			t.Errorf("raw_base64 %q must be refused", raw)
+		}
+	}
+	r, err := DecodeRawBody(body("aGk="))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.RawBase64 != "aGk=" {
+		t.Fatalf("raw_base64 round trip lost data: %q", r.RawBase64)
+	}
+	// received_at is required: it used to be absent-tolerant, so a record with no
+	// timestamp at all decoded to the zero time and looked like 0001-01-01.
+	if _, err := DecodeRawBody([]byte(`{"v":1,"kind":"raw_body","ingest_id":"` + ingestID() +
+		`","raw_base64":"aGk="}`)); err == nil {
+		t.Error("a cold record with no received_at must be refused")
+	}
+	if _, err := DecodeRawBody([]byte(`{"v":1,"kind":"raw_body","ingest_id":"` + ingestID() +
+		`","received_at":"0001-01-01T00:00:00Z","raw_base64":"aGk="}`)); err == nil {
+		t.Error("a cold record with a zero received_at must be refused")
+	}
+}

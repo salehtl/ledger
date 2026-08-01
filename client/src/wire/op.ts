@@ -37,6 +37,15 @@
  * and what `TestTypeScriptSealedBlobsOpenInGo` checks in the direction a
  * Go-authored fixture set cannot.
  *
+ * **That safety rests on a usage property, not on this code.** The moment
+ * anything re-encodes an op it did not author — log compaction, a snapshot
+ * rewrite, a migration that re-serializes — byte-inequality stops being cosmetic
+ * and becomes a chain break, and which executor did the rewriting decides whose
+ * chain survives. Compaction is deferred (spec §3.3, where this caveat is
+ * recorded next to the deferral); undeferring it means first making op encoding
+ * byte-canonical across both languages. Do not add a "re-encode and re-upload"
+ * path here without reading that note.
+ *
  * The one place byte-identity IS claimed is {@link encodeCheckpointPayload},
  * whose fields are digits, hex and `[a-zA-Z0-9._-]` writer ids — nothing either
  * encoder escapes, and no timestamp.
@@ -216,9 +225,21 @@ export function parseDecimal(s: unknown): bigint {
  * accepts it. Allowing the lowercase spelling here would mean this executor
  * folding an op the other one sets aside — a divergence in the direction that
  * matters most, since a blob is either in the log for both or in neither.
+ *
+ * The shape is only half the check; see {@link parseInstantMs} for the ranges.
  */
 const RFC3339 =
-  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+  /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?(?:Z|([+-])([0-9]{2}):([0-9]{2}))$/;
+
+function daysInMonth(year: number, month: number): number {
+  // Gregorian, matching Go's daysIn: divisible by 4, except centuries, except
+  // those divisible by 400.
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+}
 
 /** Go's zero `time.Time`, which `Op.Validate` rejects. */
 const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
@@ -226,24 +247,74 @@ const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
 /**
  * Parses an `authored_at` / `received_at` string to epoch milliseconds.
  *
- * The RFC3339 shape is checked with a regex BEFORE `Date.parse` on purpose:
- * `Date.parse` accepts implementation-defined formats ("June 5 2026") that Go's
- * `time.Time` unmarshal rejects outright, so without the regex this executor
- * would accept blobs the other one sets aside.
+ * # Why this does not use `Date.parse` for the value
+ *
+ * `Date.parse` is lenient in ways `time.Parse(time.RFC3339, …)` is not, and the
+ * leniency is not symmetric. Measured against both runtimes:
+ *
+ * | wire                        | Go              | `Date.parse`            |
+ * |-----------------------------|-----------------|-------------------------|
+ * | `2026-06-05T24:00:00Z`      | reject          | **accept** → the 6th    |
+ * | `2026-02-30T10:00:00Z`      | reject          | **accept** → **Mar 2**  |
+ * | `2026-06-05t10:00:00z`      | reject          | **accept**              |
+ * | `2026-06-05T10:00:00+24:00` | accept (stock)  | reject                  |
+ *
+ * Every row is a blob that lands in one executor's log and not the other's, and
+ * the second row is worse than that — it folds at an instant no legal reading of
+ * the string produces. `authored_at` is the fork tiebreak, so a disagreement
+ * here is two devices materialising different money from the same log.
+ *
+ * So the components are range-checked explicitly and the instant is computed
+ * arithmetically. `Date.parse`'s rollover never gets a say. Go was tightened to
+ * match on the one row where it was the lenient side (`parseWireTime`), rather
+ * than this side mirroring a stdlib quirk that go.dev/issue/47353 plans to
+ * remove anyway.
  *
  * Sub-millisecond digits are TRUNCATED, not rounded — `…00.0015Z` is 1 ms, which
- * is what Go's `Truncate(time.Millisecond)` yields. V8 already truncates, and
- * `op.test.ts` pins that against the values Go generated into
- * `conformance/op/manifest.json` rather than trusting it.
+ * is what Go's `Truncate(time.Millisecond)` yields. Taking the first three
+ * fraction digits is truncation by construction, so this no longer depends on
+ * V8 happening to truncate too.
  */
 export function parseInstantMs(s: unknown): number {
-  if (typeof s !== "string" || !RFC3339.test(s)) {
+  if (typeof s !== "string") {
     throw new BlobDecodeError(`want an RFC3339 timestamp, got ${JSON.stringify(s)}`);
   }
-  const ms = Date.parse(s);
-  if (Number.isNaN(ms)) throw new BlobDecodeError(`unparseable timestamp ${JSON.stringify(s)}`);
-  if (ms === GO_ZERO_TIME_MS) throw new BlobDecodeError("timestamp is the zero time");
-  return ms;
+  const m = RFC3339.exec(s);
+  if (m === null) throw new BlobDecodeError(`want an RFC3339 timestamp, got ${JSON.stringify(s)}`);
+  const [, year, month, day, hour, minute, second, fraction, sign, offHour, offMinute] = m as unknown as string[];
+  const y = Number(year);
+  const mo = Number(month);
+  const d = Number(day);
+  const h = Number(hour);
+  const mi = Number(minute);
+  const sec = Number(second);
+  if (mo < 1 || mo > 12) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has month ${mo}`);
+  if (d < 1 || d > daysInMonth(y, mo)) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has day ${d}`);
+  // Hour 24 is the one Date.parse rolls into the next day. No leap seconds: Go
+  // refuses :60 and so must this.
+  if (h > 23) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has hour ${h}`);
+  if (mi > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has minute ${mi}`);
+  if (sec > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has second ${sec}`);
+
+  let offsetMinutes = 0;
+  if (sign !== undefined) {
+    const oh = Number(offHour);
+    const om = Number(offMinute);
+    if (oh > 23 || om > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has an out-of-range UTC offset`);
+    offsetMinutes = (sign === "-" ? -1 : 1) * (oh * 60 + om);
+  }
+
+  // First three fraction digits, right-padded: truncation, never rounding.
+  const ms = fraction === undefined ? 0 : Number((fraction + "000").slice(0, 3));
+
+  // Date.UTC maps years 0-99 onto 1900-1999, so the year is set explicitly.
+  const date = new Date(0);
+  date.setUTCFullYear(y, mo - 1, d);
+  date.setUTCHours(h, mi, sec, ms);
+  const epoch = date.getTime() - offsetMinutes * 60_000;
+  if (Number.isNaN(epoch)) throw new BlobDecodeError(`unparseable timestamp ${JSON.stringify(s)}`);
+  if (epoch === GO_ZERO_TIME_MS) throw new BlobDecodeError("timestamp is the zero time");
+  return epoch;
 }
 
 /**
@@ -269,20 +340,86 @@ function isSHA256Hex(s: unknown): s is string {
 // Blob bodies
 // ---------------------------------------------------------------------------
 
-function parseBody(bytes: Uint8Array, what: string): Record<string, unknown> {
+/**
+ * The literal source text of every number in a parsed document, filed by the
+ * object that holds it.
+ *
+ * `JSON.parse` destroys the distinction between `1` and `1.0`, and rounds
+ * anything past 2^53 before any code sees it — but Go's decoder sees the
+ * literal, so `{"v":1.0}` is refused there and was accepted here, and a
+ * `parent_version` of 2^53+1 arrived silently altered. The reviver's
+ * source-access parameter hands back the exact characters, which is the only way
+ * to make those two decisions the same on both sides.
+ *
+ * Filed by HOLDER rather than by key name so the strictness applies to the
+ * STRUCTURAL fields only. A blanket rule over every number in the document would
+ * reject a fractional number inside an op's `payload` — which Go accepts without
+ * looking, since payload is a json.RawMessage — and trade one divergence for a
+ * worse one.
+ */
+type NumberLiterals = WeakMap<object, Map<string, string>>;
+
+interface ParsedBody {
+  doc: Record<string, unknown>;
+  literals: NumberLiterals;
+}
+
+/** The reviver signature including the source-access context (ES2025). */
+type SourceReviver = (this: unknown, key: string, value: unknown, context?: { source?: string }) => unknown;
+
+function parseBody(bytes: Uint8Array, what: string): ParsedBody {
   // Non-fatal decoding, so invalid UTF-8 becomes U+FFFD rather than throwing —
   // which is what Go's encoding/json does with invalid UTF-8 inside a string.
   const text = new TextDecoder("utf-8").decode(bytes);
+  const literals: NumberLiterals = new WeakMap();
+  const reviver: SourceReviver = function (key, value, context) {
+    // `this` is the holder, and JSON.parse walks an already-built object, so the
+    // identity recorded here is the identity the caller ends up with.
+    if (typeof value === "number" && context?.source !== undefined && typeof this === "object" && this !== null) {
+      let m = literals.get(this);
+      if (m === undefined) {
+        m = new Map();
+        literals.set(this, m);
+      }
+      m.set(key, context.source);
+    }
+    return value;
+  };
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    doc = JSON.parse(text, reviver as (key: string, value: unknown) => unknown);
   } catch (e) {
     throw new BlobDecodeError(`${what}: ${(e as Error).message}`);
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
     throw new BlobDecodeError(`${what}: body is not a JSON object`);
   }
-  return doc as Record<string, unknown>;
+  return { doc: doc as Record<string, unknown>, literals };
+}
+
+/**
+ * Requires that a structural number was written as a plain integer literal.
+ *
+ * Go decodes `v` into an `int` and `parent_version` into an `*int64`, both of
+ * which refuse `1.0`, `1e0` and `1.5` outright. Returns quietly when the runtime
+ * does not support reviver source access, so this hardens the check where it can
+ * and never invents a rejection it cannot justify.
+ */
+function requireIntegerLiteral(literals: NumberLiterals, holder: object, key: string, what: string): void {
+  const source = literals.get(holder)?.get(key);
+  if (source === undefined) return;
+  if (!/^-?[0-9]+$/.test(source)) {
+    throw new BlobDecodeError(`${what}: ${key} is written as ${source}, which Go refuses as a non-integer literal`);
+  }
+  // The literal is exact here even when the parsed number is not, so this
+  // catches the 2^53 case without depending on how the rounding happened to go.
+  const exact = BigInt(source);
+  if (exact > BigInt(Number.MAX_SAFE_INTEGER) || exact < -BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new BlobDecodeError(
+      `${what}: ${key} is ${source}, outside the range a JSON number carries exactly — ` +
+        `Go's int64 can hold it and this executor cannot`,
+    );
+  }
 }
 
 /**
@@ -311,7 +448,7 @@ function readVersion(doc: Record<string, unknown>, what: string): number {
  * and every caller of both refuses anything else anyway.
  */
 export function kindOf(bytes: Uint8Array): BlobKind {
-  const kind = parseBody(bytes, "blob")["kind"];
+  const kind = parseBody(bytes, "blob").doc["kind"];
   if (kind === KIND_OPS || kind === KIND_RAW_BODY) return kind;
   if (kind === undefined || kind === "") throw new BlobDecodeError("blob has no kind");
   throw new BlobDecodeError(`blob kind is ${JSON.stringify(kind)}`);
@@ -327,7 +464,8 @@ export function kindOf(bytes: Uint8Array): BlobKind {
  * aside with a warning while the rest of the log proceeds.
  */
 export function decodeBlobOps(bytes: Uint8Array): Op[] {
-  const doc = parseBody(bytes, "op blob");
+  const { doc, literals } = parseBody(bytes, "op blob");
+  requireIntegerLiteral(literals, doc, "v", "op blob");
   readVersion(doc, "op blob");
   if (doc["kind"] !== KIND_OPS) {
     throw new BlobDecodeError(`blob kind is ${JSON.stringify(doc["kind"])}, not ${JSON.stringify(KIND_OPS)}`);
@@ -338,14 +476,18 @@ export function decodeBlobOps(bytes: Uint8Array): Op[] {
   // other executor reads happily.
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new BlobDecodeError("ops is not an array");
-  return raw.map((o, i) => decodeOp(o, i));
+  return raw.map((o, i) => decodeOp(o, i, literals));
 }
 
-function decodeOp(raw: unknown, i: number): Op {
+function decodeOp(raw: unknown, i: number, literals: NumberLiterals): Op {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new BlobDecodeError(`op ${i}: not a JSON object`);
   }
   const o = raw as Record<string, unknown>;
+  // Checked on the op object itself, so a `v` or `parent_version` inside the
+  // op's payload — which Go never parses — is left alone.
+  requireIntegerLiteral(literals, o, "v", `op ${i}`);
+  requireIntegerLiteral(literals, o, "parent_version", `op ${i}`);
   const v = o["v"];
   if (typeof v !== "number" || !Number.isInteger(v)) {
     throw new BlobDecodeError(`op ${i}: version is ${JSON.stringify(v)}`);
@@ -480,7 +622,8 @@ export function encodeBlobOps(ops: Op[]): Uint8Array {
  * that will not decode must be set aside rather than half-read.
  */
 export function decodeRawBody(bytes: Uint8Array): RawBodyRecord {
-  const doc = parseBody(bytes, "raw body");
+  const { doc, literals } = parseBody(bytes, "raw body");
+  requireIntegerLiteral(literals, doc, "v", "raw body");
   readVersion(doc, "raw body");
   if (doc["kind"] !== KIND_RAW_BODY) {
     throw new BlobDecodeError(`blob kind is ${JSON.stringify(doc["kind"])}, not ${JSON.stringify(KIND_RAW_BODY)}`);

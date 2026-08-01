@@ -21,10 +21,23 @@
 // What is deliberately NOT claimed is byte-identical JSON across the two
 // languages. Go trims trailing zeros from a timestamp ("…:00.5Z") where
 // JavaScript's toISOString always pads to three digits ("…:00.500Z"), and
-// nothing here depends on closing that gap: each blob is encoded exactly once,
-// by its author, and blob.Hash chains the bytes as stored, so the two encoders
-// never have to agree byte-for-byte. What they must agree on is the parsed
-// value, which is what the millisecond rule guarantees.
+// encoding/json escapes <, > and & as \uXXXX where JSON.stringify emits them
+// literally. Nothing here depends on closing that gap: each blob is encoded
+// exactly once, by its author, and blob.Hash chains the bytes as stored, so the
+// two encoders never have to agree byte-for-byte. What they must agree on is the
+// parsed value, which is what the millisecond rule guarantees.
+//
+// # That safety rests on a usage property, not on this code
+//
+// "Encoded exactly once, by its author" is true of the system as designed, not
+// enforced by anything here. THE MOMENT ANYTHING RE-ENCODES AN OP IT DID NOT
+// AUTHOR — log compaction, a snapshot rewrite, a migration that re-serializes —
+// byte-inequality stops being cosmetic and becomes a chain break, and which
+// executor did the rewriting decides whose chain survives. Compaction is
+// deferred (spec §3.3), and undeferring it means first making op encoding
+// byte-canonical across both languages, or re-chaining deliberately from the
+// rewrite point. Reprocess appends a new supersede op rather than rewriting one,
+// which is what keeps this true today.
 //
 // # Ordering: seq folds, authored_at only breaks ties
 //
@@ -60,9 +73,11 @@
 package oplog
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -138,6 +153,31 @@ type Op struct {
 	ParentVersion *int64          `json:"parent_version"`      // nil = create, or parent-free op
 	IngestID      string          `json:"ingest_id,omitempty"` // hex sha256 of the raw body
 	Payload       json.RawMessage `json:"payload"`
+}
+
+// UnmarshalJSON decodes an op, routing authored_at through [parseWireTime] so
+// that the two mandated executors accept exactly the same set of timestamps.
+// Without it, time.Time's lenient unmarshaller and JavaScript's Date.parse
+// disagree in three different directions — see parseWireTime.
+func (o *Op) UnmarshalJSON(b []byte) error {
+	type alias Op // sheds this method, so the rest of the op decodes normally
+	var raw struct {
+		*alias
+		// Shadows the embedded field. Outer fields sit at depth 0 and win over
+		// embedded ones at depth 1, so authored_at arrives here as its literal
+		// string and never reaches time.Time's unmarshaller at all.
+		AuthoredAt string `json:"authored_at"`
+	}
+	raw.alias = (*alias)(o)
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	t, err := parseWireTime(raw.AuthoredAt)
+	if err != nil {
+		return fmt.Errorf("authored_at: %w", err)
+	}
+	o.AuthoredAt = t
+	return nil
 }
 
 // Validate enforces the structural rules replay depends on. It deliberately
@@ -218,6 +258,59 @@ func (o Op) Validate() error {
 // the disagreement at the source rather than asking the TS port to compensate.
 func canonicalTime(t time.Time) time.Time {
 	return t.UTC().Truncate(time.Millisecond)
+}
+
+// rfc3339Shape is the timestamp grammar BOTH executors accept: 4-digit year,
+// mandatory uppercase T and Z (or a numeric offset), an optional non-empty
+// fraction.
+var rfc3339Shape = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$`)
+
+// parseWireTime parses a timestamp off the wire, accepting exactly what the
+// TypeScript executor accepts and nothing else.
+//
+// # Why this is not just time.Parse(time.RFC3339, s)
+//
+// time.Time's UnmarshalJSON is documented-lenient (go.dev/issue/47353 tracks
+// making it strict) and its leniency is not JavaScript's:
+//
+//	2026-06-05T24:00:00Z       Go rejects,  Date.parse ACCEPTS as the 6th, 00:00
+//	2026-02-30T10:00:00Z       Go rejects,  Date.parse ACCEPTS as MARCH 2nd
+//	2026-06-05T10:00:00+24:00  Go ACCEPTS,  Date.parse rejects
+//	2026-06-05T10:00:00+24:60  Go ACCEPTS as -25h, Date.parse rejects
+//
+// Every row is a blob that lands in one executor's log and not the other's, and
+// the second is worse than that: it folds at an instant no legal reading of the
+// string produces. Since authored_at is the fork tiebreak (see the package doc),
+// a disagreement here is two devices materialising different money.
+//
+// The fix is symmetric strictness rather than either side mirroring the other's
+// quirks. Go's date/time components are already range-checked by time.Parse; the
+// part it waves through is the ZONE, so that is what this adds. Choosing the
+// canonical RFC 3339 reading (offset hours 00-23, minutes 00-59) rather than
+// Go's current leniency also means that if the stdlib is tightened later it
+// converges on this rule instead of drifting away from it.
+//
+// Nothing legitimate is refused: both encoders always write UTC "Z", so an
+// offset at all can only come from a third implementation, and a timestamp that
+// will not parse sets its blob aside rather than hard-stopping sync.
+func parseWireTime(s string) (time.Time, error) {
+	if !rfc3339Shape.MatchString(s) {
+		return time.Time{}, fmt.Errorf("timestamp %q is not RFC3339", s)
+	}
+	if zone := s[len(s)-6:]; zone[0] == '+' || zone[0] == '-' {
+		// Indices are safe: the shape above fixes the zone at exactly ±hh:mm.
+		hh, mm := (zone[1]-'0')*10+(zone[2]-'0'), (zone[4]-'0')*10+(zone[5]-'0')
+		if hh > 23 || mm > 59 {
+			return time.Time{}, fmt.Errorf("timestamp %q has an out-of-range UTC offset", s)
+		}
+	}
+	// time.Parse range-checks month, day (leap years included), hour, minute and
+	// second, so 2026-02-30 and 24:00:00 are already refused here.
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("timestamp %q: %w", s, err)
+	}
+	return t, nil
 }
 
 func isSHA256Hex(s string) bool {
@@ -316,6 +409,26 @@ type RawBody struct {
 	RawBase64  string    `json:"raw_base64"`
 }
 
+// UnmarshalJSON decodes a cold record, routing received_at through
+// [parseWireTime] for the same reason [Op.UnmarshalJSON] does.
+func (r *RawBody) UnmarshalJSON(b []byte) error {
+	type alias RawBody
+	var raw struct {
+		*alias
+		ReceivedAt string `json:"received_at"`
+	}
+	raw.alias = (*alias)(r)
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	t, err := parseWireTime(raw.ReceivedAt)
+	if err != nil {
+		return fmt.Errorf("received_at: %w", err)
+	}
+	r.ReceivedAt = t
+	return nil
+}
+
 // EncodeRawBody encodes a cold-stream record.
 func EncodeRawBody(r RawBody) ([]byte, error) {
 	if r.V == 0 {
@@ -361,6 +474,29 @@ func DecodeRawBody(b []byte) (RawBody, error) {
 	}
 	if !isSHA256Hex(r.IngestID) {
 		return RawBody{}, fmt.Errorf("oplog: raw body has no usable ingest_id: %q", r.IngestID)
+	}
+	// EncodeRawBody refuses a zero received_at, so this decoder must too, or the
+	// two halves disagree about what a valid record is — and the TypeScript
+	// decoder already refused it (Op.Validate refuses a zero authored_at for the
+	// same reason on the hot side).
+	if r.ReceivedAt.IsZero() {
+		return RawBody{}, errors.New("oplog: raw body received_at is zero")
+	}
+	// The payload is validated here, not left to the consumer.
+	//
+	// This decoder used to return RawBase64 as an unexamined string, so a record
+	// whose payload was not base64 at all decoded cleanly and failed later,
+	// somewhere with no idea which blob it came from. It also meant the cold
+	// record's actual CONTENT crossed the executor boundary unchecked: the
+	// TypeScript side decodes raw_base64 into bytes, so it refused records this
+	// accepted — a base64url payload with no padding sailed through the
+	// conformance gate green.
+	//
+	// StdEncoding, strictly: this is the exact decoder EncodeRawBody's output
+	// requires, and accepting a looser dialect here is what let the two sides
+	// disagree in the first place.
+	if _, err := base64.StdEncoding.DecodeString(r.RawBase64); err != nil {
+		return RawBody{}, fmt.Errorf("oplog: raw body payload is not standard base64: %w", err)
 	}
 	return r, nil
 }

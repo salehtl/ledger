@@ -68,6 +68,43 @@
     {
       "wire": "2026-06-05T14:00:00.5+04:00",
       "expect_unix_ms": "1780653600500"
+    },
+    {
+      "wire": "2026-06-05T10:00:00-00:00",
+      "expect_unix_ms": "1780653600000"
+    },
+    {
+      "wire": "2026-06-05T10:00:00+23:59",
+      "expect_unix_ms": "1780567260000"
+    },
+    {
+      "wire": "2024-02-29T00:00:00Z",
+      "expect_unix_ms": "1709164800000"
+    },
+    {
+      "wire": "2000-02-29T00:00:00Z",
+      "expect_unix_ms": "951782400000"
     }
+  ],
+  "parent_version_overflow_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2NhdGVnb3JpemVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBQMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOjkwMDcxOTkyNTQ3NDA5OTMsInBheWxvYWQiOnsiY2F0ZWdvcnkiOiJncm9jZXJpZXMifX1dfQ==",
+  "parent_version_overflow": "9007199254740993",
+  "authored_at_rejects": [
+    "2026-06-05T24:00:00Z",
+    "2026-02-30T10:00:00Z",
+    "2026-02-29T00:00:00Z",
+    "2026-13-05T10:00:00Z",
+    "2026-06-05T10:60:00Z",
+    "2026-06-05T10:00:60Z",
+    "2026-06-05T10:00:00+24:00",
+    "2026-06-05T10:00:00+24:60",
+    "2026-06-05T10:00:00+00:60",
+    "2026-06-05t10:00:00z",
+    "2026-06-05 10:00:00Z",
+    "2026-06-05T10:00:00",
+    "2026-06-05T10:00:00.Z",
+    "0001-01-01T00:00:00Z",
+    "2026-06-05",
+    "June 5 2026",
+    ""
   ]
 }
