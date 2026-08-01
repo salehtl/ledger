@@ -1,0 +1,1084 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledger/internal/v2/auth"
+	"ledger/internal/v2/blob"
+	"ledger/internal/v2/config"
+	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/pgtest"
+)
+
+func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
+
+var bg = context.Background()
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+type fakeVerifier struct {
+	mu       sync.Mutex
+	calls    int
+	lastOpts auth.VerifyOpts
+	identity auth.Identity
+	err      error
+}
+
+func (f *fakeVerifier) Verify(_ context.Context, idToken string, opts auth.VerifyOpts) (auth.Identity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastOpts = opts
+	if f.err != nil {
+		return auth.Identity{}, f.err
+	}
+	id := f.identity
+	if id.Subject == "" {
+		id.Subject = "sub-" + idToken
+	}
+	if id.IdP == "" {
+		id.IdP = auth.IdPApple
+	}
+	return id, nil
+}
+
+func (f *fakeVerifier) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+type harness struct {
+	t     *testing.T
+	pool  *pgxpool.Pool
+	srv   *Server
+	h     http.Handler
+	apple *fakeVerifier
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	pool := pgtest.New(t)
+	apple := &fakeVerifier{}
+	srv := &Server{
+		Pool:      pool,
+		Sessions:  &auth.Sessions{Pool: pool, TTL: time.Hour},
+		Writers:   &auth.Writers{Pool: pool},
+		Appender:  &oplog.Appender{Pool: pool},
+		Verifiers: map[string]auth.Verifier{auth.IdPApple: apple},
+		Logf:      func(string, ...any) {},
+	}
+	return &harness{t: t, pool: pool, srv: srv, h: srv.Handler(), apple: apple}
+}
+
+func (h *harness) user(sub string) uuid.UUID {
+	h.t.Helper()
+	u, err := auth.UpsertUser(bg, h.pool, auth.Identity{IdP: auth.IdPApple, Subject: sub})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return u
+}
+
+func (h *harness) session(u uuid.UUID) string {
+	h.t.Helper()
+	tok, err := h.srv.Sessions.Issue(bg, u)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return tok
+}
+
+// writer enrolls a device writer through the real capability path (challenge +
+// signature), because a roster row planted by hand would not prove the upload
+// handler consults the roster the same way the rest of the system does.
+func (h *harness) writer(u uuid.UUID, id string) ed25519.PrivateKey {
+	h.t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	nonce, err := h.srv.Writers.Challenge(bg, u)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, auth.RegistrationMessage(nonce, id, pub))
+	if err := h.srv.Writers.Register(bg, u, id, pub, nonce, sig); err != nil {
+		h.t.Fatalf("register writer %s: %v", id, err)
+	}
+	return priv
+}
+
+func (h *harness) req(method, path, token string, body any) *httptest.ResponseRecorder {
+	h.t.Helper()
+	var r *http.Request
+	switch b := body.(type) {
+	case nil:
+		r = httptest.NewRequest(method, path, nil)
+	case []byte:
+		r = httptest.NewRequest(method, path, bytes.NewReader(b))
+		r.Header.Set("Content-Type", "application/json")
+	default:
+		raw, err := json.Marshal(b)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		r = httptest.NewRequest(method, path, bytes.NewReader(raw))
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	h.h.ServeHTTP(w, r)
+	return w
+}
+
+func decodeJSON[T any](t *testing.T, w *httptest.ResponseRecorder) T {
+	t.Helper()
+	var out T
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode %s: %v", w.Body.String(), err)
+	}
+	return out
+}
+
+func wantStatus(t *testing.T, w *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if w.Code != want {
+		t.Fatalf("status %d, want %d (body %s)", w.Code, want, w.Body.String())
+	}
+}
+
+// seedIngest appends n messages, each one hot blob plus one cold blob, so the
+// two streams interleave in the single per-user seq space.
+func (h *harness) seedIngest(u uuid.UUID, n int) {
+	h.t.Helper()
+	for i := 0; i < n; i++ {
+		if _, err := h.srv.Appender.AppendIngest(bg, u, []oplog.IngestBlob{
+			{Stream: blob.StreamHot, Plaintext: []byte(fmt.Sprintf(`{"hot":%d}`, i))},
+			{Stream: blob.StreamCold, Plaintext: []byte(fmt.Sprintf(`{"cold":%d}`, i))},
+		}); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+// sealUpload builds one wire blob for the upload endpoint, sealed at exactly
+// the position it declares.
+func sealUpload(t *testing.T, u uuid.UUID, writerID, stream string, counter int64, prev [32]byte, body string) (UploadBlob, [32]byte) {
+	t.Helper()
+	sealed, err := blob.PlaintextSealer{}.Seal(blob.Envelope{
+		UserID: u, Stream: stream, WriterID: writerID, WriterCounter: counter,
+	}, []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := blob.Hash(prev, sealed)
+	return UploadBlob{
+		WriterCounter: strconv.FormatInt(counter, 10),
+		PrevHash:      hex.EncodeToString(prev[:]),
+		BlobHash:      hex.EncodeToString(h[:]),
+		TypeFlag:      oplog.TypeFlagEdit,
+		SizeBucket:    sealed.SizeBucket,
+		Blob:          base64.StdEncoding.EncodeToString(sealed.Bytes),
+	}, h
+}
+
+func uploadChain(t *testing.T, u uuid.UUID, writerID string, start int64, prev [32]byte, n int) ([]UploadBlob, [32]byte) {
+	t.Helper()
+	out := make([]UploadBlob, 0, n)
+	for i := 0; i < n; i++ {
+		b, h := sealUpload(t, u, writerID, blob.StreamHot, start+int64(i), prev, fmt.Sprintf(`{"op":%d}`, start+int64(i)))
+		out = append(out, b)
+		prev = h
+	}
+	return out, prev
+}
+
+func countRows(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(bg, `SELECT count(*) FROM op_log WHERE user_id = $1`, u).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// ---------------------------------------------------------------------------
+// Pull
+// ---------------------------------------------------------------------------
+
+func TestSyncReturnsOnlyTheCallersRows(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.user("a"), h.user("b")
+	h.seedIngest(a, 2)
+	h.seedIngest(b, 3)
+
+	got := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot", h.session(a), nil))
+	if len(got.Rows) != 2 {
+		t.Fatalf("user a pulled %d hot rows, want 2", len(got.Rows))
+	}
+	bRows := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot", h.session(b), nil))
+	for _, ra := range got.Rows {
+		for _, rb := range bRows.Rows {
+			if ra.Seq == rb.Seq && ra.BlobHash == rb.BlobHash {
+				t.Fatal("user a and user b were served the same row")
+			}
+		}
+	}
+}
+
+func TestSyncIgnoresAUserIDSuppliedByTheCaller(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.user("a"), h.user("b")
+	h.seedIngest(b, 4)
+
+	// Every query is scoped by the RESOLVED session user. A user_id in the
+	// request must be inert, not authoritative.
+	got := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot&user_id="+b.String(), h.session(a), nil))
+	if len(got.Rows) != 0 {
+		t.Fatalf("a user_id query parameter pulled %d of another user's rows", len(got.Rows))
+	}
+}
+
+func TestHotOnlyPullIsCompleteForItsStream(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	h.seedIngest(u, 10)
+
+	got := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot&limit=100", h.session(u), nil))
+	if len(got.Rows) != 10 {
+		t.Fatalf("pulled %d hot rows, want 10", len(got.Rows))
+	}
+	if !got.Complete {
+		t.Fatal("a pull that returned the whole stream reported complete=false")
+	}
+	rows := make([]oplog.Row, len(got.Rows))
+	var last int64
+	sparse := false
+	for i, r := range got.Rows {
+		seq := mustInt(t, r.Seq)
+		if seq <= last {
+			t.Fatalf("row %d seq %d does not follow %d", i, seq, last)
+		}
+		if last != 0 && seq != last+1 {
+			sparse = true
+		}
+		last = seq
+		if r.Stream != blob.StreamHot {
+			t.Fatalf("row %d is on stream %q", i, r.Stream)
+		}
+		if got := mustInt(t, r.WriterCounter); got != int64(i+1) {
+			t.Fatalf("row %d has hot writer_counter %d, want %d", i, got, i+1)
+		}
+		rows[i] = wireToRow(t, r)
+	}
+	if !sparse {
+		t.Fatal("hot seqs came back contiguous; the interleaved fixture did not take")
+	}
+	// Sparse in the global seq space, contiguous and self-verifying in its own
+	// chain: that is the property a per-stream cursor rests on.
+	if err := oplog.VerifyChain(rows, 0, blob.ZeroHash); err != nil {
+		t.Fatalf("the hot rows must verify as one chain from genesis: %v", err)
+	}
+	if got.Next != got.Rows[len(got.Rows)-1].Seq {
+		t.Fatalf("next is %q, want the last seq %q", got.Next, got.Rows[len(got.Rows)-1].Seq)
+	}
+}
+
+func TestSyncCursorPagesWithoutGapsWithinAStream(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.seedIngest(u, 250)
+
+	var counters []int64
+	after := "0"
+	pages := 0
+	for {
+		got := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot&limit=100&after="+after, tok, nil))
+		pages++
+		for _, r := range got.Rows {
+			counters = append(counters, mustInt(t, r.WriterCounter))
+		}
+		if got.Complete {
+			break
+		}
+		if len(got.Rows) == 0 {
+			t.Fatal("an incomplete page returned no rows: the cursor cannot advance")
+		}
+		after = got.Next
+		if pages > 10 {
+			t.Fatal("paging did not terminate")
+		}
+	}
+	if len(counters) != 250 {
+		t.Fatalf("paged %d rows, want 250", len(counters))
+	}
+	for i, c := range counters {
+		if c != int64(i+1) {
+			t.Fatalf("counter %d is %d, want %d — the pages do not concatenate", i, c, i+1)
+		}
+	}
+}
+
+func TestHashListCoversEveryColdBlobAndMatchesTheStoredHashes(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.seedIngest(u, 8)
+
+	rows := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=cold&limit=100", tok, nil))
+	hashes := decodeJSON[HashesResponse](t, h.req("GET", "/api/v1/sync/hashes?stream=cold&limit=100", tok, nil))
+	if len(hashes.Hashes) != len(rows.Rows) {
+		t.Fatalf("%d cold hashes for %d cold rows", len(hashes.Hashes), len(rows.Rows))
+	}
+	prev := hex.EncodeToString(blob.ZeroHash[:])
+	for i, e := range hashes.Hashes {
+		if e.Seq != rows.Rows[i].Seq || e.BlobHash != rows.Rows[i].BlobHash {
+			t.Fatalf("hash %d does not match the stored row", i)
+		}
+		if e.PrevHash != prev {
+			t.Fatalf("hash %d links to %s, but the list is at %s", i, e.PrevHash, prev)
+		}
+		if e.WriterCounter != strconv.Itoa(i+1) {
+			t.Fatalf("hash %d has counter %s, want %d", i, e.WriterCounter, i+1)
+		}
+		prev = e.BlobHash
+	}
+	if !hashes.Complete {
+		t.Fatal("a hash list covering the whole stream reported complete=false")
+	}
+}
+
+func TestPullRejectsAnUnknownStream(t *testing.T) {
+	h := newHarness(t)
+	tok := h.session(h.user("u"))
+	wantStatus(t, h.req("GET", "/api/v1/sync?stream=warm", tok, nil), http.StatusBadRequest)
+	wantStatus(t, h.req("GET", "/api/v1/sync", tok, nil), http.StatusBadRequest)
+	wantStatus(t, h.req("GET", "/api/v1/sync/hashes?stream=", tok, nil), http.StatusBadRequest)
+}
+
+// ---------------------------------------------------------------------------
+// Upload
+// ---------------------------------------------------------------------------
+
+func TestUploadAppendsAndIsIdempotentOnResend(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.writer(u, "dev-a")
+
+	blobs, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 3)
+	body := UploadRequest{WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs}
+	w := h.req("POST", "/api/v1/sync", tok, body)
+	wantStatus(t, w, http.StatusOK)
+	first := decodeJSON[UploadResponse](t, w)
+	if len(first.Seqs) != 3 {
+		t.Fatalf("upload returned %d seqs, want 3", len(first.Seqs))
+	}
+
+	again := decodeJSON[UploadResponse](t, h.req("POST", "/api/v1/sync", tok, body))
+	if fmt.Sprint(again.Seqs) != fmt.Sprint(first.Seqs) {
+		t.Fatalf("a byte-identical resend returned %v, want the original %v", again.Seqs, first.Seqs)
+	}
+	if n := countRows(t, h.pool, u); n != 3 {
+		t.Fatalf("op_log holds %d rows after a resend, want 3", n)
+	}
+}
+
+func TestUploadRejectsAWriterIDTheCallerDoesNotOwn(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.user("a"), h.user("b")
+	h.writer(b, "dev-b")
+	blobs, _ := uploadChain(t, a, "dev-b", 1, blob.ZeroHash, 1)
+
+	w := h.req("POST", "/api/v1/sync", h.session(a), UploadRequest{
+		WriterID: "dev-b", Stream: blob.StreamHot, Blobs: blobs,
+	})
+	wantStatus(t, w, http.StatusForbidden)
+	if n := countRows(t, h.pool, a); n != 0 {
+		t.Fatalf("%d rows were appended for a writer the caller does not own", n)
+	}
+	if n := countRows(t, h.pool, b); n != 0 {
+		t.Fatalf("%d rows were appended into the OTHER user's log", n)
+	}
+}
+
+func TestUploadCannotWriteIntoAnotherUsersLog(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.user("a"), h.user("b")
+	h.writer(a, "dev-a")
+	h.writer(b, "dev-a") // same writer id, different account
+
+	// Blobs sealed for user b's AAD, submitted on user a's session. There is no
+	// user field on the wire, so the only way to aim at b is through the AAD —
+	// and the position check must refuse it.
+	blobs, _ := uploadChain(t, b, "dev-a", 1, blob.ZeroHash, 1)
+	w := h.req("POST", "/api/v1/sync", h.session(a), UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs,
+	})
+	wantStatus(t, w, http.StatusBadRequest)
+	if n := countRows(t, h.pool, b); n != 0 {
+		t.Fatalf("%d rows landed in the other user's log", n)
+	}
+	if n := countRows(t, h.pool, a); n != 0 {
+		t.Fatalf("%d rows landed under the caller with someone else's AAD", n)
+	}
+}
+
+func TestUploadRejectsIngestWriterID(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	blobs, _ := uploadChain(t, u, oplog.IngestWriterID, 1, blob.ZeroHash, 1)
+	w := h.req("POST", "/api/v1/sync", h.session(u), UploadRequest{
+		WriterID: oplog.IngestWriterID, Stream: blob.StreamHot, Blobs: blobs,
+	})
+	wantStatus(t, w, http.StatusForbidden)
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d rows were appended under the server's own writer", n)
+	}
+}
+
+func TestUploadRejectsARevokedWriter(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	priv := h.writer(u, "dev-a")
+
+	// A device retiring itself is the ordinary revocation flow: the target's
+	// own live key may authorize it.
+	nonce, err := h.srv.Writers.Challenge(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.srv.Writers.Revoke(bg, u, "dev-a", nonce, ed25519.Sign(priv, auth.RevocationMessage(nonce, "dev-a"))); err != nil {
+		t.Fatal(err)
+	}
+	blobs, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 1)
+	w := h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs,
+	})
+	wantStatus(t, w, http.StatusForbidden)
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d rows were appended by a revoked writer", n)
+	}
+}
+
+func TestUploadRejectsBlobWhoseAADDoesNotMatchTheRow(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	h.writer(u, "dev-a")
+
+	// Sealed for counter 5, submitted as counter 1. The bytes are well formed
+	// and the chain arithmetic is honest; only the position is a lie.
+	b, _ := sealUpload(t, u, "dev-a", blob.StreamHot, 5, blob.ZeroHash, `{"moved":true}`)
+	b.WriterCounter = "1"
+	w := h.req("POST", "/api/v1/sync", h.session(u), UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{b},
+	})
+	wantStatus(t, w, http.StatusBadRequest)
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d rows were stored at a position they were not sealed for", n)
+	}
+}
+
+func TestUploadRejectsOversizeAndBadBucket(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.writer(u, "dev-a")
+
+	good, _ := sealUpload(t, u, "dev-a", blob.StreamHot, 1, blob.ZeroHash, `{"op":1}`)
+
+	mismatched := good
+	mismatched.SizeBucket = good.SizeBucket * 2
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{mismatched},
+	}), http.StatusBadRequest)
+
+	notABucket := good
+	raw, _ := base64.StdEncoding.DecodeString(good.Blob)
+	notABucket.Blob = base64.StdEncoding.EncodeToString(raw[:len(raw)-1])
+	notABucket.SizeBucket = len(raw) - 1
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{notABucket},
+	}), http.StatusBadRequest)
+
+	oversize := good
+	big := make([]byte, blob.MaxBucket+1)
+	oversize.Blob = base64.StdEncoding.EncodeToString(big)
+	oversize.SizeBucket = len(big)
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{oversize},
+	}), http.StatusRequestEntityTooLarge)
+
+	// The framing version is frozen (blob's package doc: "Nothing else may
+	// move"), so a blob declaring another one is unopenable by every client
+	// that will ever read it. Storing it is permanent, silent loss — the log is
+	// append-only — so it is refused at the door rather than set aside later.
+	// An empty blob must be a clean 400, not a panic on raw[0].
+	empty := good
+	empty.Blob, empty.SizeBucket = "", 0
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{empty},
+	}), http.StatusBadRequest)
+
+	badVersion := good
+	raw2, _ := base64.StdEncoding.DecodeString(good.Blob)
+	raw2 = append([]byte(nil), raw2...)
+	raw2[0] = blob.Version + 1
+	badVersion.Blob = base64.StdEncoding.EncodeToString(raw2)
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{badVersion},
+	}), http.StatusBadRequest)
+
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d malformed rows were stored", n)
+	}
+}
+
+func TestUploadRejectsColdStreamFromAClient(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	h.writer(u, "dev-a")
+	b, _ := sealUpload(t, u, "dev-a", blob.StreamCold, 1, blob.ZeroHash, `{"raw":true}`)
+	w := h.req("POST", "/api/v1/sync", h.session(u), UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamCold, Blobs: []UploadBlob{b},
+	})
+	wantStatus(t, w, http.StatusBadRequest)
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d client-authored cold rows were stored (invariant I16)", n)
+	}
+}
+
+func TestUploadReportsAChainBreakAsAConflict(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.writer(u, "dev-a")
+
+	blobs, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 3)
+	// Skip counter 1: the batch starts above the stored head.
+	w := h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs[1:],
+	})
+	wantStatus(t, w, http.StatusConflict)
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d rows were appended past a chain break", n)
+	}
+}
+
+func TestUploadTellsAPartialResendToResendAboveTheHead(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.writer(u, "dev-a")
+
+	blobs, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 3)
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs[:2],
+	}), http.StatusOK)
+
+	// Counters 1..2 are applied; resending 2..3 straddles the head. The server
+	// refuses rather than trimming, and must say what the client should do.
+	w := h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs[1:],
+	})
+	wantStatus(t, w, http.StatusConflict)
+	if !bytes.Contains(w.Body.Bytes(), []byte("read the chain head and resend only the rows above it")) {
+		t.Fatalf("a straddling resend must quote the client contract verbatim, got %s", w.Body.String())
+	}
+	// And the documented remedy must work.
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: blobs[2:],
+	}), http.StatusOK)
+}
+
+func TestConcurrentUploadsFromOneWriterProduceOneWinner(t *testing.T) {
+	// pgxpool connects lazily, so an unwarmed race staggers its own racers and
+	// passes under implementations that do not actually serialise.
+	pool := pgtest.New(t)
+	warmPool(t, pool, 4)
+	apple := &fakeVerifier{}
+	srv := &Server{
+		Pool:      pool,
+		Sessions:  &auth.Sessions{Pool: pool, TTL: time.Hour},
+		Writers:   &auth.Writers{Pool: pool},
+		Appender:  &oplog.Appender{Pool: pool},
+		Verifiers: map[string]auth.Verifier{auth.IdPApple: apple},
+		Logf:      func(string, ...any) {},
+	}
+	h := &harness{t: t, pool: pool, srv: srv, h: srv.Handler(), apple: apple}
+
+	for round := 0; round < 5; round++ {
+		u := h.user(fmt.Sprintf("race-%d", round))
+		tok := h.session(u)
+		h.writer(u, "dev-a")
+		one, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 1)
+		two, _ := sealUpload(t, u, "dev-a", blob.StreamHot, 1, blob.ZeroHash, `{"other":true}`)
+
+		var wg sync.WaitGroup
+		codes := make([]int, 2)
+		start := make(chan struct{})
+		for i, body := range []UploadRequest{
+			{WriterID: "dev-a", Stream: blob.StreamHot, Blobs: one},
+			{WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{two}},
+		} {
+			wg.Add(1)
+			go func(i int, body UploadRequest) {
+				defer wg.Done()
+				<-start
+				codes[i] = h.req("POST", "/api/v1/sync", tok, body).Code
+			}(i, body)
+		}
+		close(start)
+		wg.Wait()
+
+		ok, conflict := 0, 0
+		for _, c := range codes {
+			switch c {
+			case http.StatusOK:
+				ok++
+			case http.StatusConflict:
+				conflict++
+			default:
+				t.Fatalf("round %d: unexpected status %d", round, c)
+			}
+		}
+		if ok != 1 || conflict != 1 {
+			t.Fatalf("round %d: %d ok / %d conflict, want exactly one of each (codes %v)", round, ok, conflict, codes)
+		}
+		if n := countRows(t, h.pool, u); n != 1 {
+			t.Fatalf("round %d: %d rows stored, want 1", round, n)
+		}
+	}
+}
+
+func warmPool(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	conns := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := pool.Acquire(bg)
+		if err != nil {
+			t.Fatalf("warm pool: %v", err)
+		}
+		if err := c.Ping(bg); err != nil {
+			t.Fatalf("warm pool ping: %v", err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Authentication and authorization
+// ---------------------------------------------------------------------------
+
+func TestEveryEndpointRefusesAnAbsentSession(t *testing.T) {
+	h := newHarness(t)
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/sync?stream=hot"},
+		{"GET", "/api/v1/sync/hashes?stream=hot"},
+		{"POST", "/api/v1/sync"},
+		{"GET", "/api/v1/writers"},
+		{"POST", "/api/v1/writers/challenge"},
+		{"POST", "/api/v1/writers/register"},
+	} {
+		w := h.req(c.method, c.path, "", nil)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without a session returned %d, want 401", c.method, c.path, w.Code)
+		}
+	}
+}
+
+func TestUnknownExpiredAndRevokedSessionsAreIndistinguishable(t *testing.T) {
+	pool := pgtest.New(t)
+	now := time.Now()
+	clock := func() time.Time { return now }
+	srv := &Server{
+		Pool:      pool,
+		Sessions:  &auth.Sessions{Pool: pool, TTL: time.Hour, Now: clock},
+		Writers:   &auth.Writers{Pool: pool, Now: clock},
+		Appender:  &oplog.Appender{Pool: pool},
+		Verifiers: map[string]auth.Verifier{},
+		Logf:      func(string, ...any) {},
+	}
+	h := &harness{t: t, pool: pool, srv: srv, h: srv.Handler()}
+	u := h.user("u")
+
+	expired := h.session(u)
+	revoked := h.session(u)
+	if err := srv.Sessions.Revoke(bg, revoked); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Hour) // kills `expired`; `revoked` is already dead
+	unknown := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+	type answer struct {
+		code    int
+		body    string
+		headers string
+	}
+	var got []answer
+	for _, tok := range []string{unknown, expired, revoked, "not-base64-at-all", ""} {
+		w := h.req("GET", "/api/v1/sync?stream=hot", tok, nil)
+		got = append(got, answer{w.Code, w.Body.String(), fmt.Sprint(w.Header())})
+	}
+	for i, a := range got {
+		if a.code != http.StatusUnauthorized {
+			t.Fatalf("case %d returned %d, want 401", i, a.code)
+		}
+		if a != got[0] {
+			t.Fatalf("case %d answered %+v; case 0 answered %+v — the difference is an oracle", i, a, got[0])
+		}
+	}
+}
+
+func TestABearerTokenAloneCannotRegisterAWriter(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := decodeJSON[ChallengeResponse](t, h.req("POST", "/api/v1/writers/challenge", tok, nil))
+
+	// A session buys a nonce and nothing else: without a signature from a key
+	// that may authorize the enrollment, registration must fail (spec §3.4).
+	w := h.req("POST", "/api/v1/writers/register", tok, RegisterRequest{
+		WriterID: "dev-a",
+		PubKey:   base64.StdEncoding.EncodeToString(pub),
+		Nonce:    nonce.Nonce,
+		Sig:      base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
+	})
+	wantStatus(t, w, http.StatusForbidden)
+	roster := decodeJSON[WritersResponse](t, h.req("GET", "/api/v1/writers", tok, nil))
+	if len(roster.Writers) != 0 {
+		t.Fatalf("a bare session enrolled %d writers", len(roster.Writers))
+	}
+}
+
+func TestWriterRegistrationFailuresDoNotDiscloseWhatExists(t *testing.T) {
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	priv := h.writer(u, "dev-a")
+	pubA := priv.Public().(ed25519.PublicKey)
+	pubNew, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	register := func(writerID string, pub ed25519.PublicKey, signer ed25519.PrivateKey) *httptest.ResponseRecorder {
+		n := decodeJSON[ChallengeResponse](t, h.req("POST", "/api/v1/writers/challenge", tok, nil))
+		raw, err := base64.StdEncoding.DecodeString(n.Nonce)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := ed25519.Sign(signer, auth.RegistrationMessage(raw, writerID, pub))
+		return h.req("POST", "/api/v1/writers/register", tok, RegisterRequest{
+			WriterID: writerID,
+			PubKey:   base64.StdEncoding.EncodeToString(pub),
+			Nonce:    n.Nonce,
+			Sig:      base64.StdEncoding.EncodeToString(sig),
+		})
+	}
+
+	// Three distinct server-side reasons: the writer id is taken, the key is
+	// already enrolled, and nothing authorized the request. The caller must not
+	// be able to tell them apart.
+	taken := register("dev-a", pubNew, priv)                 // auth.ErrWriterExists
+	keyTaken := register("dev-c", pubA, priv)                // auth.ErrKeyAlreadyEnrolled
+	unauthorized := register("dev-d", pubNew, mustNewKey(t)) // auth.ErrNotAuthorized
+
+	for i, w := range []*httptest.ResponseRecorder{taken, keyTaken, unauthorized} {
+		if w.Code != taken.Code || w.Body.String() != taken.Body.String() {
+			t.Fatalf("rejection %d answered %d %s; the first answered %d %s — the difference discloses which fact is true",
+				i, w.Code, w.Body.String(), taken.Code, taken.Body.String())
+		}
+	}
+	if taken.Code != http.StatusForbidden {
+		t.Fatalf("a rejected registration returned %d, want 403", taken.Code)
+	}
+}
+
+func mustNewKey(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
+}
+
+func TestRosterIsScopedToTheCaller(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.user("a"), h.user("b")
+	h.writer(a, "dev-a")
+	h.writer(b, "dev-b")
+
+	roster := decodeJSON[WritersResponse](t, h.req("GET", "/api/v1/writers", h.session(a), nil))
+	if len(roster.Writers) != 1 || roster.Writers[0].WriterID != "dev-a" {
+		t.Fatalf("roster for user a is %+v", roster.Writers)
+	}
+	if roster.Writers[0].PubKey == "" || roster.Writers[0].Kind != auth.KindDevice {
+		t.Fatalf("roster entry is missing its key material or kind: %+v", roster.Writers[0])
+	}
+	if roster.Writers[0].RevokedAt != nil {
+		t.Fatal("a live writer came back with a revoked_at")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sign-in exchange
+// ---------------------------------------------------------------------------
+
+func TestExchangeIssuesASessionForAVerifiedIdentity(t *testing.T) {
+	h := newHarness(t)
+	h.apple.identity = auth.Identity{IdP: auth.IdPApple, Subject: "sub-1"}
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	wantStatus(t, w, http.StatusOK)
+	got := decodeJSON[ExchangeResponse](t, w)
+	if got.SessionToken == "" || got.UserID == "" {
+		t.Fatalf("exchange returned %+v", got)
+	}
+	// The issued token must actually work.
+	wantStatus(t, h.req("GET", "/api/v1/sync?stream=hot", got.SessionToken, nil), http.StatusOK)
+}
+
+func TestExchangeRejectsEveryBadTokenWithOneIdentical401(t *testing.T) {
+	h := newHarness(t)
+	var answers []string
+	for _, err := range []error{auth.ErrSignature, auth.ErrExpired, auth.ErrAudience, auth.ErrIssuer, auth.ErrNoSubject} {
+		h.apple.err = err
+		w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%v returned %d, want 401", err, w.Code)
+		}
+		answers = append(answers, w.Body.String())
+	}
+	for i, a := range answers {
+		if a != answers[0] {
+			t.Fatalf("rejection %d answered %q, the first answered %q", i, a, answers[0])
+		}
+	}
+}
+
+func TestUnavailableIdPKeySetIsA503NotA401(t *testing.T) {
+	// A good token must never be reported as invalid because Apple is down:
+	// that sends the user to re-authenticate against a provider that will hand
+	// back another token we still cannot verify.
+	h := newHarness(t)
+	h.apple.err = fmt.Errorf("%w: apple", auth.ErrKeySetUnavailable)
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+}
+
+func TestExchangeRejectsAnUnknownIdP(t *testing.T) {
+	h := newHarness(t)
+	wantStatus(t, h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: "myspace", IDToken: "tok"}), http.StatusBadRequest)
+	if h.apple.count() != 0 {
+		t.Fatal("an unknown idp reached a verifier")
+	}
+}
+
+func TestIdPVerifiersAreReusedAcrossRequests(t *testing.T) {
+	// The JWKS fetch bound and the herd control that protects it are per
+	// verifier INSTANCE (auth.cachingKeySet). A handler that built its own
+	// verifier would silently restore the unauthenticated outbound amplifier
+	// auth already fixed, and this fake — which the server can only reach
+	// through the map built once at construction — would never be called.
+	h := newHarness(t)
+	for i := 0; i < 5; i++ {
+		h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: fmt.Sprintf("tok-%d", i)})
+	}
+	if got := h.apple.count(); got != 5 {
+		t.Fatalf("the process-wide apple verifier saw %d of 5 exchanges", got)
+	}
+}
+
+func TestNewServerBuildsOneVerifierPerProviderAtConstruction(t *testing.T) {
+	pool := pgtest.New(t)
+	srv, err := NewServer(config.Config{Auth: config.AuthConfig{
+		AppleClientIDs:  []string{"com.example.app"},
+		GoogleClientIDs: []string{"123.apps.googleusercontent.com"},
+		SessionTTL:      time.Hour,
+	}}, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apple, google := srv.Verifiers[auth.IdPApple], srv.Verifiers[auth.IdPGoogle]
+	if apple == nil || google == nil {
+		t.Fatalf("NewServer left a provider without a verifier: %+v", srv.Verifiers)
+	}
+	// Building the router (or serving) must not replace them: the JWKS cache,
+	// the attempt limit and the herd control all live on the instance.
+	srv.Handler()
+	srv.Handler()
+	if srv.Verifiers[auth.IdPApple] != apple || srv.Verifiers[auth.IdPGoogle] != google {
+		t.Fatal("a verifier was rebuilt after construction")
+	}
+}
+
+func TestPhase1DoesNotBindANonce(t *testing.T) {
+	// Recorded rather than implemented: the nonce claim is plaintext inside the
+	// token, so binding it only defeats replay when the expected value comes
+	// from server-side state created BEFORE the token existed. Phase 1 has no
+	// such store on the sign-in path, and a half-wired binding would look like
+	// a defence while being none.
+	h := newHarness(t)
+	h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	h.apple.mu.Lock()
+	defer h.apple.mu.Unlock()
+	if h.apple.lastOpts.Nonce != "" {
+		t.Fatalf("the exchange bound nonce %q; a client-supplied nonce is theatre", h.apple.lastOpts.Nonce)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rate limits
+// ---------------------------------------------------------------------------
+
+func TestSignInIsRateLimitedPerClient(t *testing.T) {
+	h := newHarness(t)
+	// No refill during the test: the burst is the whole budget.
+	h.srv.SignInPerIP = NewLimiter(0, 3, 128, time.Now)
+	h.h = h.srv.Handler()
+
+	allowed := 0
+	for i := 0; i < 20; i++ {
+		w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+		switch w.Code {
+		case http.StatusOK:
+			allowed++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("request %d returned %d", i, w.Code)
+		}
+	}
+	if allowed != 3 {
+		t.Fatalf("%d of 20 sign-ins were served, want exactly the burst of 3", allowed)
+	}
+	if h.apple.count() != 3 {
+		t.Fatalf("the verifier ran %d times; a rate-limited request must not reach the provider path", h.apple.count())
+	}
+}
+
+func TestChallengeMintingIsCappedPerUser(t *testing.T) {
+	h := newHarness(t)
+	h.srv.ChallengePerUser = NewLimiter(0, 4, 128, time.Now)
+	h.h = h.srv.Handler()
+	a, b := h.user("a"), h.user("b")
+	tokA, tokB := h.session(a), h.session(b)
+
+	allowed := 0
+	for i := 0; i < 30; i++ {
+		switch h.req("POST", "/api/v1/writers/challenge", tokA, nil).Code {
+		case http.StatusOK:
+			allowed++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("challenge %d returned an unexpected status", i)
+		}
+	}
+	if allowed != 4 {
+		t.Fatalf("one session minted %d challenges, want the cap of 4", allowed)
+	}
+	var stored int
+	if err := h.pool.QueryRow(bg, `SELECT count(*) FROM writer_challenges WHERE user_id = $1`, a).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 4 {
+		t.Fatalf("%d challenge rows were written despite the cap", stored)
+	}
+	// The cap is per user, not global: one account cannot lock another out.
+	wantStatus(t, h.req("POST", "/api/v1/writers/challenge", tokB, nil), http.StatusOK)
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+func TestUnknownAPIPathIs404JSON(t *testing.T) {
+	h := newHarness(t)
+	w := h.req("GET", "/api/v1/nope", h.session(h.user("u")), nil)
+	wantStatus(t, w, http.StatusNotFound)
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type %q, want application/json", ct)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("404 body is not JSON: %s", w.Body.String())
+	}
+}
+
+func TestWrongMethodIsNotSilentlyRouted(t *testing.T) {
+	h := newHarness(t)
+	tok := h.session(h.user("u"))
+	if w := h.req("DELETE", "/api/v1/sync", tok, nil); w.Code == http.StatusOK {
+		t.Fatal("DELETE /api/v1/sync was served")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func mustInt(t *testing.T, s string) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("%q is not a decimal integer: %v", s, err)
+	}
+	return n
+}
+
+func wireToRow(t *testing.T, r Row) oplog.Row {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(r.Blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh, err := hex.DecodeString(r.BlobHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph, err := hex.DecodeString(r.PrevHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return oplog.Row{
+		Seq:           mustInt(t, r.Seq),
+		Stream:        r.Stream,
+		WriterID:      r.WriterID,
+		WriterCounter: mustInt(t, r.WriterCounter),
+		TypeFlag:      r.TypeFlag,
+		Blob:          raw,
+		SizeBucket:    r.SizeBucket,
+		BlobHash:      bh,
+		PrevHash:      ph,
+	}
+}

@@ -131,6 +131,19 @@ var errBatchAlreadyApplied = errors.New("oplog: batch already applied")
 // the ordering rule would become untestable.
 var ErrPositionTaken = errors.New("oplog: chain position already held by different bytes")
 
+// ErrPartiallyApplied means the batch STRADDLES the committed head: some of its
+// rows are already stored and some are not. AppendClient refuses such a batch
+// rather than trimming it (see that method's "Idempotent replay" section), and
+// the remedy is the one this error states.
+//
+// It is deliberately NOT ErrChainBreak. A chain break is a sync hard stop with
+// a non-dismissable "your server may have tampered with your data" warning
+// (spec §3.3:68); a partial resend is a protocol mistake that costs nothing and
+// has a trivial fix. Naming it is what lets the HTTP layer answer with that fix
+// instead of an opaque 500 — the wording below is the client contract, quoted
+// verbatim in the api package's doc and in the response body.
+var ErrPartiallyApplied = errors.New("oplog: this batch is partly applied already: read the chain head and resend only the rows above it")
+
 // querier is the read surface shared by *pgxpool.Pool and pgx.Tx, so the head
 // read has ONE implementation whether it runs standalone or inside an append
 // transaction. Two implementations would be two places for the chain rule to
@@ -549,8 +562,8 @@ func appliedSeqs(ctx context.Context, q querier, userID uuid.UUID, writerID, str
 	for i, r := range rows {
 		s, ok := found[r.WriterCounter]
 		if !ok {
-			return nil, fmt.Errorf("oplog: (%s, %s) counter %d is not stored, but this batch also contains counters that are: "+
-				"read the chain head and resend only the rows above it", writerID, stream, r.WriterCounter)
+			return nil, fmt.Errorf("%w: (%s, %s) counter %d is not stored, but this batch also contains counters that are",
+				ErrPartiallyApplied, writerID, stream, r.WriterCounter)
 		}
 		if !bytes.Equal(s.hash, r.BlobHash) {
 			return nil, fmt.Errorf("%w: (%s, %s) counter %d already holds different bytes (stored %x, submitted %x)",
