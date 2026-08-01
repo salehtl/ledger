@@ -435,21 +435,27 @@ LEDGER_CORPUS_DB=$S/v2-corpus.db \
 ```
 
 It skips when `LEDGER_CORPUS_DB` is unset — most checkouts have no corpus — and
-fails when it is set but unusable, so a typo cannot silently disable it.
+fails when it is set but unusable. "Unusable" covers **content, not just the
+path**: a schema-valid database holding 0 rows once printed
+`corpus: 0 messages, D1_trim_set: 0, other: 0` and **passed**, which is exactly
+the silent self-disabling the path check exists to prevent. The gate now
+requires the snapshot to hold at least 90% of `recordedCorpusSize` (the count at
+the last recorded pass). `ingest_log` is append-only — nothing in the v1
+codebase deletes from it — so a smaller snapshot is truncated, stale or simply
+the wrong file. Verified: 0 rows and 10 rows both `FAIL`; 6,400 rows passes.
 
-**Recorded pass — 2026-08-01, 7,002 messages:**
+**Recorded pass — 2026-08-01, 7,004 messages:**
 
-> `corpus: 7002 messages, D1_trim_set: 4, D2_raw_fallback: 0, other: 0`
+> `corpus: 7004 messages, D1_trim_set: 4, D2_raw_fallback: 0, other: 0`
 > `detail: 4 text diffs, 0 subject diffs, 0 from diffs, 0 date diffs;`
 > `0 both-failed, 0 v2-salvaged-partial-walk; 6 messages carried a`
 > `forwarded Date value, 3 of those parsed`
 > `D1 ids: [2554 6853 6854 6859]`
 
-The corpus was 6,998 messages when Task 15 probed it and is 7,002 now; the live
-v1 instance keeps ingesting (the four new rows are DIB notifications, ids
-6999-7002, and none of them diverges). **Re-run against Task 15's own 6,998-row
-snapshot the gate reports the same four ids**, so the two measurements agree
-exactly on identical input:
+The corpus was 6,998 messages when Task 15 probed it and is 7,004 now; the live
+v1 instance keeps ingesting, and the new rows are DIB notifications that do not
+diverge. **Re-run against Task 15's own 6,998-row snapshot the gate reports the
+same four ids**, so the two measurements agree exactly on identical input:
 
 > `corpus: 6998 messages, D1_trim_set: 4, D2_raw_fallback: 0, other: 0`
 
@@ -464,39 +470,67 @@ clean: 0 differences.** Neither is redundant: making stage 10 keep the outer
 ### How a difference is classified
 
 `D1` is decided by **substitution, not canonicalisation and not an id
-allowlist**: the pipeline is re-run with v1's `strings.TrimSpace` in place of
-the explicit set, and the difference is `D1` only if that alone accounts for it.
-The substituted run uses **v2's own** `extract`, `stripHTML`, `collapseWith` and
-`unwrapForwardWith` — hence the `trimmer` parameter in the production code —
-so a defect in any other stage perturbs both sides and survives as `other`.
+allowlist**: the difference is `D1` only if swapping v1's `strings.TrimSpace`
+for the explicit set accounts for it on its own.
 
-This is load-bearing, and it is the reason `trimmer` exists. The gate was first
-written with a test-local re-implementation of the trim-bearing stages, and in
-that form it **passed** a mutation that deleted stage 6's entity decode and
-changed 6,808 of 7,002 messages — filing all 6,808 as "expected trim-set
-differences". Sharing the code with production is what makes the classification
-mean anything.
+Everything rests on *how* that swap is performed. `shadowV1Trim` calls
+`normalizeWith` — the function `Normalize` is itself a one-line wrapper around —
+passing `strings.TrimSpace` as the trimmer. **The shadow's entire divergence
+from production is one argument.** That is why `trimmer` and `normalizeWith`
+exist in `norm.go`.
 
-Mutation battery over the full corpus, after the fix:
+Anything the shadow *re-implements* instead of calling, the gate goes blind to:
+a defect the copy does not share leaves the shadow agreeing with v1, so the row
+is filed as an expected trim-set difference and the gate goes green. **The
+hazard is fractal — fixing it at one level moves it up one.** Both stages of
+that mistake were measured, not argued:
+
+- The gate's first version re-implemented the trim-bearing **stages**. It
+  **passed** a mutation deleting stage 6's entity decode that changed 6,808 of
+  7,002 messages, filing all 6,808 as expected.
+- Its second version fixed that but re-implemented the nine lines of
+  `normalizeWith` itself. It **passed** five one-line defects written there:
+  outer `Subject` for inner (56 messages), HTML strip applied to raw leaves
+  (50), pre-unwrap text stored as `Text` (7), outer `From` for inner (6), and
+  the forward-date wiring deleted (3).
+
+The `From` one is the sharpest warning: it is the *same defect* the battery
+already caught inside `unwrapForwardWith`, and it escaped purely by being
+expressed one line higher, outside what the shadow shared. "The shadow covers
+the stages" was not a smaller version of "the shadow covers the pipeline"; it
+was a different, false claim. If you find yourself copying a line of `norm.go`
+into the gate, you are re-opening the hole.
+
+Mutation battery, re-measured against the 7,004-message corpus on the current
+code. The counts drift upward as the corpus grows; what must not drift is which
+column each row is in:
 
 | mutation | caught | `other` |
 |---|---|---|
-| stage 6 — entity decode deleted | yes | 6813 |
-| stage 4 — `text/plain` preferred over `text/html` | yes | 17 |
+| stage 6 — entity decode deleted | yes | 6815 |
+| `Normalize` — outer `Subject` kept over the inner one | yes | 56 |
+| `Normalize` — HTML strip applied to a raw leaf | yes | 50 |
+| stage 4 — `text/plain` preferred over `text/html` | yes | 20 |
 | stage 10 — forward body loses its first line | yes | 6 |
 | stage 10 — outer `From` kept over the inner one | yes | 6 |
+| `Normalize` — outer `From` kept over the inner one | yes | 6 |
+| `Normalize` — pre-unwrap text stored as `Text` | yes | 6 |
+| `Normalize` — forward-date wiring deleted | yes | 3 |
 | stage 7 — U+00A0 dropped from the collapse | yes | 1 |
 | headers — RFC 2047 decoding disabled | yes | 1 |
 | stage 5 — `</div>` dropped from `blockTags` | no — **equivalent** | 0 |
 | stage 10 — the `15:04:05` layout dropped | no — **equivalent** | 0 |
+| headers — `bareAddress` loses `ParseAddressList` | no — **equivalent** | 0 |
+| stage 2 — walker keeps the **last** `text/html` leaf | no — **equivalent** | 0 |
 | stage 8 — U+200A **added** to the trim set | no — **by design** | 0 |
 
-The two equivalent mutants were verified, not assumed. The `blockTags` pass
-changes the final text of **zero** of the 7,002 messages — the generic tag rule
-already yields the same newline, so that list is inert on this corpus. And all
-three corpus forward-dates that parse use `Jan 2, 2006 at 3:04 PM`; the other
-three are the K2 shape neither implementation parses. Neither mutation changes
-any output, so no comparison against v1 could detect them.
+The four equivalent mutants were verified, not assumed: each changes **zero** of
+the 7,004 messages, so no comparison against v1 could detect them. The
+`blockTags` pass is inert because the generic tag rule already yields the same
+newline; all three corpus forward-dates that parse use `Jan 2, 2006 at 3:04 PM`
+(the other three are the K2 shape neither implementation parses); no corpus
+`From` needs the address-list path; and no corpus message carries a second
+`text/html` leaf.
 
 The last row is the gate's **one structural blind spot**: a gate whose expected
 divergence *is* the trim set cannot also police the trim set. That is
