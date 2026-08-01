@@ -94,6 +94,22 @@ type Result struct {
 // receivedAt is the mailbox arrival time, used as EmailDate whenever no inner
 // forwarded Date is recoverable.
 func Normalize(version int, raw []byte, receivedAt time.Time) (Result, error) {
+	return normalizeWith(version, raw, receivedAt, trimExplicit)
+}
+
+// normalizeWith is [Normalize] with the line trim as a parameter. See
+// [trimmer]: production always reaches it through [Normalize], and the ONLY
+// other caller is the corpus equivalence gate's substitution shadow.
+//
+// The composition below lives here rather than in the gate for the same reason
+// the stages take a trimmer at all. A shadow that re-implements this function
+// is blind to every defect expressed IN this function — picking the outer
+// Subject over the inner one, dropping the forward-date wiring, stripping HTML
+// off a raw leaf — because the re-implementation does not share the mistake and
+// so keeps agreeing with v1. Measured: five such one-line defects, changing up
+// to 56 messages each, all passed a gate whose shadow re-implemented these nine
+// lines. Keep the shadow calling this.
+func normalizeWith(version int, raw []byte, receivedAt time.Time, trim trimmer) (Result, error) {
 	if version != CurrentVersion {
 		return Result{}, fmt.Errorf("%w: %d (supported: %v)", ErrUnknownVersion, version, Versions())
 	}
@@ -108,10 +124,10 @@ func Normalize(version int, raw []byte, receivedAt time.Time) (Result, error) {
 	if part == PartHTML {
 		body = stripHTML(body)
 	}
-	text := collapse(body)
+	text := collapseWith(body, trim)
 
 	// Stage 10.
-	fwd := unwrapForward(from, subject, text)
+	fwd := unwrapForwardWith(from, subject, text, trim)
 
 	res := Result{
 		Text:       fwd.Body,
@@ -123,7 +139,7 @@ func Normalize(version int, raw []byte, receivedAt time.Time) (Result, error) {
 		EmailDate:  receivedAt,
 		DateSource: DateSourceReceived,
 	}
-	if t, derr := parseForwardDate(fwd.Date); derr == nil {
+	if t, derr := parseForwardDateWith(fwd.Date, trim); derr == nil {
 		res.EmailDate = t
 		res.DateSource = DateSourceForwardHeader
 	}
@@ -381,10 +397,10 @@ func trimExplicit(s string) string { return strings.Trim(s, trimCut) }
 // classified every one as a trim-set difference and passed.
 type trimmer func(string) string
 
-// collapse runs stages 6-9.
-func collapse(s string) string { return collapseWith(s, trimExplicit) }
-
-// collapseWith is stages 6-9 with the line trim as a parameter. See [trimmer].
+// collapseWith runs stages 6-9, with the line trim as a parameter. See
+// [trimmer]. There is no trimExplicit-bound wrapper because there is no caller
+// for one: [normalizeWith] is the only path in, and it always has a trimmer in
+// hand.
 func collapseWith(s string, trim trimmer) string {
 	s = entities.Replace(s)
 	s = wsRe.ReplaceAllString(s, " ")

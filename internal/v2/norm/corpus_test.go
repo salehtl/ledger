@@ -14,6 +14,24 @@ import (
 // maxShown caps how many findings keep their full before/after text.
 const maxShown = 20
 
+// recordedCorpusSize is the message count at the last recorded gate pass
+// (2026-08-01; docs/superpowers/specs/v2-normalizer-v1.md, section 9).
+//
+// v1's ingest_log is append-only — nothing in the v1 codebase deletes from it —
+// so a snapshot holding materially fewer rows is truncated, stale, or simply
+// the wrong file. Without this floor the gate is perfectly happy to "pass" a
+// schema-valid database with zero rows: it prints `corpus: 0 messages,
+// D1_trim_set: 0, other: 0` and goes green, which is precisely the silent
+// disabling the LEDGER_CORPUS_DB stat check further down exists to prevent. A
+// path can be wrong in more ways than not existing.
+//
+// It is a FLOOR, not an equality assertion: the live instance keeps ingesting,
+// so pinning the count would fail every week for the wrong reason. The 10%
+// band tolerates running against a slightly older snapshot while still
+// rejecting an empty one, a fixture database, or a different database that
+// happens to have an ingest_log. Bump it when re-baselining the recorded pass.
+const recordedCorpusSize = 7004
+
 // TestCorpusEquivalence is the normalizer equivalence GATE.
 //
 // It runs the full v1 pipeline — parse.BodyText, then parse.Unwrap, then
@@ -37,54 +55,72 @@ const maxShown = 20
 //
 // # How a difference is classified, and why that is the whole game
 //
-// D1 is decided by substitution: [shadowV1Trim] re-runs the pipeline with v1's
-// trim in place of v2's, and a difference is D1 only if the substitution alone
-// accounts for it. Everything turns on what "the pipeline" means there, and
-// there is exactly one correct answer — v2's own functions, with the trimmer
-// swapped and NOTHING else replaced.
+// D1 is decided by substitution: [shadowV1Trim] calls [normalizeWith] — the
+// function [Normalize] itself is a thin wrapper around — with v1's trim in
+// place of v2's, and a difference is D1 only if that swap alone accounts for
+// it. The shadow's entire divergence from production is one argument.
 //
-// The tempting alternative, re-implementing the trim-bearing stages inside this
-// test with strings.TrimSpace spliced in, is not a weaker version of the same
-// idea; it is the opposite of it. A test-local copy shares no code with the
-// stage it stands in for, so a defect introduced into the real stage appears on
-// neither side of the substitution: the shadow keeps matching v1, and the
-// defect is filed as "expected".
+// That last sentence is the whole design, and it was reached the hard way. Any
+// part of the pipeline the shadow RE-IMPLEMENTS rather than calls becomes
+// invisible to the gate: a defect the copy does not share leaves the shadow
+// agreeing with v1, so the row is filed as an expected trim-set difference and
+// the gate goes green. The hazard is fractal — fixing it at one level just
+// moves it up one. Both of these were measured, not argued:
 //
-// That is measured, not argued. This gate was first written with the
-// re-implementing shadow, and it PASSED both of these:
+//	shadow re-implemented the trim-bearing STAGES:
+//	  stage 6 entity decode deleted           6808/7002 changed -> PASS
+//	  stage 10 drops a forward's first line      3 changed      -> PASS
 //
-//	stage 6 entity decode deleted             6808/7002 messages changed
-//	                                          -> D1: 6808, other: 0, PASS
-//	stage 10 drops each forward's first line   3 forwards changed
-//	                                          -> D1: 7,    other: 0, PASS
+//	shadow re-implemented the 9 lines of normalizeWith:
+//	  Subject: fwd.Subject -> outer subject     56 changed      -> PASS
+//	  if part == PartHTML -> part != PartRaw    54 changed      -> PASS
+//	  Text: fwd.Body -> pre-unwrap text          7 changed      -> PASS
+//	  From: fwd.From -> outer from               6 changed      -> PASS
+//	  parseForwardDate wiring deleted            3 changed      -> PASS
 //
-// With the substitution done properly they report other: 6813 and other: 6.
-// This is why [trimmer] exists in norm.go, and why it must not be "simplified"
-// back into a local copy here. (6808 vs 6813 is not drift: the effective-From
-// comparison was added after those first runs and catches five more.)
+// The From one is the sharpest warning in that list: it is the SAME defect the
+// battery below catches when it is written inside unwrapForwardWith, and it
+// escaped purely by being expressed one line higher, outside what the shadow
+// shared. "The shadow covers the stages" was not a smaller version of "the
+// shadow covers the pipeline"; it was a different, false claim.
+//
+// All seven now report other: 6815 / 6 / 56 / 50 / 6 / 6 / 3.
+//
+// So: [trimmer] and [normalizeWith] exist for this test, and the rule is that
+// the shadow CALLS production and swaps one argument. If you find yourself
+// copying a line of norm.go into this file, you are re-opening the hole.
 //
 // # What this gate can and cannot see
 //
-// The full mutation battery, all against the 7002-message corpus:
+// The full mutation battery, re-measured against the 7004-message corpus on
+// this exact code (the counts drift upward as the live corpus grows; what must
+// not drift is which column each row is in):
 //
 //	mutation                                    caught  other
-//	stage 6  entity decode deleted              yes     6813
-//	stage 4  text/plain preferred over html     yes       17
+//	stage 6  entity decode deleted              yes     6815
+//	norm     outer Subject kept over the inner  yes       56
+//	norm     HTML strip applied to a raw leaf   yes       50
+//	stage 4  text/plain preferred over html     yes       20
 //	stage 10 forward body loses its first line  yes        6
 //	stage 10 outer From kept over the inner one yes        6
+//	norm     outer From kept over the inner one yes        6
+//	norm     pre-unwrap text stored as Text     yes        6
+//	norm     forward-date wiring deleted        yes        3
 //	stage 7  U+00A0 dropped from the collapse   yes        1
 //	hdr      RFC 2047 decoding disabled         yes        1
 //	stage 5  "</div>" dropped from blockTags    no         0   equivalent
 //	stage 10 the 15:04:05 layout dropped        no         0   equivalent
+//	hdr      bareAddress loses ParseAddressList no         0   equivalent
+//	stage 2  walker keeps the LAST html leaf    no         0   equivalent
 //	stage 8  U+200A ADDED to the trim set       no         0   by design
 //
-// The two "equivalent" rows are equivalent mutants, verified rather than
-// assumed: the blockTags pass changes the final text of ZERO of the 7002
-// messages (the generic tag rule already yields the same newline), and all
-// three corpus forward-dates that parse use "Jan 2, 2006 at 3:04 PM" — the
-// other three are the Apple Mail iOS shape that neither implementation parses.
-// Neither mutation alters any output, so no comparison against v1 could
-// possibly catch them.
+// The four "equivalent" rows are equivalent mutants, verified rather than
+// assumed — each changes 0 of the 7002 messages, so no comparison against v1
+// could possibly catch them. The blockTags pass is inert because the generic
+// tag rule already yields the same newline; all three corpus forward-dates that
+// parse use "Jan 2, 2006 at 3:04 PM" (the other three are the Apple Mail iOS
+// shape neither implementation parses); no corpus From needs the address-list
+// path; and no corpus message carries a second text/html leaf.
 //
 // The last row is this gate's one real blind spot, and it is structural: a gate
 // whose expected-divergence class IS the trim set cannot also police the trim
@@ -115,6 +151,20 @@ func TestCorpusEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+
+	// Check the size before the scan, so a wrong snapshot fails in
+	// milliseconds rather than after six seconds of comparing nothing.
+	available, err := db.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if floor := recordedCorpusSize / 10 * 9; available < floor {
+		t.Fatalf("corpus at %s holds %d messages; the last recorded gate pass saw %d "+
+			"and ingest_log is append-only, so anything below %d is a truncated or "+
+			"wrong snapshot rather than the corpus. Re-take it:\n"+
+			"  sudo sqlite3 /var/lib/ledger/ledger.db \".backup '<scratch>/v2-corpus.db'\"",
+			path, available, recordedCorpusSize, floor)
+	}
 
 	var (
 		total        int
@@ -182,7 +232,7 @@ func TestCorpusEquivalence(t *testing.T) {
 		)
 		need := func() shadowResult {
 			if !shadowRun {
-				shadow, shadowRun = shadowV1Trim(m.RawBody), true
+				shadow, shadowRun = shadowV1Trim(m.RawBody, m.ReceivedAt), true
 			}
 			return shadow
 		}
@@ -245,17 +295,19 @@ func TestCorpusEquivalence(t *testing.T) {
 		if !v1Date.equal(v2Date) {
 			dateDiffs++
 			s := need()
-			sDate := dateOutcome(parseForwardDateWith(s.fwdDate, v1Trim))
 			record(finding{
 				id: m.ID, kind: "date",
 				detail: fmt.Sprintf("v1 %s vs v2 %s (%s)", v1Date, v2Date, got.DateSource),
-				v1:     v1FwdDate, v2: s.fwdDate,
-			}, s.ok && v1Date.equal(sDate))
+				v1:     v1FwdDate, v2: got.EmailDate.Format(time.RFC3339),
+			}, s.ok && v1Date.equal(s.date))
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if total != available {
+		t.Fatalf("scanned %d messages but ingest_log holds %d", total, available)
 	}
 
 	// The headline, in the shape the plan asks for.
@@ -315,28 +367,42 @@ type shadowResult struct {
 	from    string
 	subject string
 	text    string
-	fwdDate string
+	date    outcome
 	ok      bool
 }
 
 // shadowV1Trim answers the only question the D1 classification is allowed to
 // ask: "had v2 used strings.TrimSpace, would it have agreed with v1?"
 //
-// Every stage is v2's own — extract (1-4), stripHTML (5), collapseWith (6-9),
-// unwrapForwardWith (10) — and the sole substitution is the trimmer. A defect
-// anywhere else therefore perturbs the shadow exactly as it perturbs the real
-// result, the shadow stops matching v1, and the row is reported as `other`
-// instead of being filed under the expected divergence.
-func shadowV1Trim(raw []byte) shadowResult {
-	body, part, _, subject, from, err := extract(raw)
+// It calls [normalizeWith] — the SAME function [Normalize] is a wrapper around
+// — with the trimmer swapped and nothing else changed. That is the whole
+// design. Anything this shadow re-implements instead of calling, it goes blind
+// to: a defect the copy does not share leaves the shadow agreeing with v1, so
+// the difference is filed as an expected trim-set divergence and the gate goes
+// green.
+//
+// This is not hypothetical, and it is not a hazard that stops at one level.
+// The first version of this gate re-implemented the trim-bearing STAGES, and
+// passed a mutation that deleted stage 6's entity decode and changed 6,808 of
+// 7,002 messages. The second version fixed that but re-implemented the nine
+// lines of [normalizeWith] itself, and passed five one-line defects expressed
+// there — outer Subject for inner (56 messages), outer From for inner (6),
+// forward-date wiring deleted (3), HTML strip applied to raw leaves (54),
+// pre-unwrap text stored (7) — including one that is the SAME defect the
+// battery already caught a level lower. Each fix shrank the shadow; this one
+// shrinks it to a single argument.
+func shadowV1Trim(raw []byte, receivedAt time.Time) shadowResult {
+	res, err := normalizeWith(CurrentVersion, raw, receivedAt, v1Trim)
 	if err != nil {
 		return shadowResult{}
 	}
-	if part == PartHTML {
-		body = stripHTML(body)
+	return shadowResult{
+		from:    res.From,
+		subject: res.Subject,
+		text:    res.Text,
+		date:    outcome{t: res.EmailDate, ok: res.DateSource == DateSourceForwardHeader},
+		ok:      true,
 	}
-	f := unwrapForwardWith(from, subject, collapseWith(body, v1Trim), v1Trim)
-	return shadowResult{from: f.From, subject: f.Subject, text: f.Body, fwdDate: f.Date, ok: true}
 }
 
 // outcome is "a forwarded date, or the absence of one", which is the only shape
