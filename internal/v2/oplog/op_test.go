@@ -283,6 +283,156 @@ func TestCheckpointHeadsAreSortedAndStreamed(t *testing.T) {
 	}
 }
 
+// TestDecodeTruncatesAuthoredAtToMilliseconds covers the half of the rule that
+// matters most: the encoder is not the only writer. Task 10's writer is
+// TypeScript, and a blob from anywhere can carry sub-millisecond precision that
+// a JS Date cannot represent — Go would read 1500ns where JS reads 0ms, the two
+// executors would disagree about whether two ops are an exact tie, and fork
+// resolution would hand the same log to different winners. Enforcing it on the
+// READ side is the only place it holds against a writer we do not control.
+func TestDecodeTruncatesAuthoredAtToMilliseconds(t *testing.T) {
+	for _, tc := range []struct {
+		wire string
+		want time.Time
+	}{
+		{"2026-06-05T10:00:00.0000015Z", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)},
+		{"2026-06-05T10:00:00.0015Z", time.Date(2026, 6, 5, 10, 0, 0, 1e6, time.UTC)},
+		{"2026-06-05T14:00:00.5+04:00", time.Date(2026, 6, 5, 10, 0, 0, 5e8, time.UTC)},
+	} {
+		b := []byte(`{"v":1,"kind":"ops","ops":[{"v":1,"type":"rate_set","op_id":"r",` +
+			`"authored_at":"` + tc.wire + `","parent_version":null,"payload":{}}]}`)
+		ops, err := DecodeBlob(b)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.wire, err)
+		}
+		got := ops[0].AuthoredAt
+		if !got.Equal(tc.want) {
+			// tc.want is exactly what Date.parse(wire) yields, to the millisecond.
+			t.Fatalf("decoded %s as %v, want %v — Go and JS must read the same instant",
+				tc.wire, got, tc.want)
+		}
+		if got.Nanosecond()%int(time.Millisecond) != 0 {
+			t.Fatalf("decoded %s with sub-millisecond precision a JS Date cannot hold: %v", tc.wire, got)
+		}
+	}
+}
+
+// TestGoldenOpBytes pins the literal wire encoding. TestEncodeDecodeRoundTrip
+// cannot: it passes through the same encoder in both directions, so a field
+// rename, an added omitempty, or parent_version moving between present-null and
+// absent would round-trip perfectly and silently break Task 10's mirror.
+func TestGoldenOpBytes(t *testing.T) {
+	causal := Op{
+		V:             1,
+		Type:          OpTxnCategorized,
+		OpID:          "01J000000000000000000000A1",
+		AuthoredAt:    time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		Entity:        &EntityRef{Kind: "txn", ID: "T1"},
+		ParentVersion: func() *int64 { v := int64(3); return &v }(),
+		Payload:       json.RawMessage(`{"category":"groceries"}`),
+	}
+	parentFree := Op{
+		V:          1,
+		Type:       OpRateSet,
+		OpID:       "01J000000000000000000000R1",
+		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		Payload:    json.RawMessage(`{"currency":"USD","rate_micro":"3672500"}`),
+	}
+
+	// A create carrying an ingest_id: the only op shape in which that field
+	// appears on the wire at all, so the golden has to include one or a rename
+	// of the tag goes unnoticed.
+	create := Op{
+		V:          1,
+		Type:       OpTxnIngested,
+		OpID:       "01J000000000000000000000I1",
+		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		Entity:     &EntityRef{Kind: "txn", ID: "T1"},
+		IngestID:   strings.Repeat("a", 64),
+		Payload:    json.RawMessage(`{"amount_minor":"25000","currency":"AED"}`),
+	}
+
+	got, err := EncodeBlob([]Op{create, causal, parentFree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"v":1,"kind":"ops","ops":[` +
+		`{"v":1,"type":"txn_ingested","op_id":"01J000000000000000000000I1",` +
+		`"authored_at":"2026-06-05T10:00:00Z","entity":{"kind":"txn","id":"T1"},` +
+		`"parent_version":null,"ingest_id":"` + strings.Repeat("a", 64) + `",` +
+		`"payload":{"amount_minor":"25000","currency":"AED"}},` +
+		`{"v":1,"type":"txn_categorized","op_id":"01J000000000000000000000A1",` +
+		`"authored_at":"2026-06-05T10:00:00Z","entity":{"kind":"txn","id":"T1"},` +
+		`"parent_version":3,"payload":{"category":"groceries"}},` +
+		`{"v":1,"type":"rate_set","op_id":"01J000000000000000000000R1",` +
+		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,` +
+		`"payload":{"currency":"USD","rate_micro":"3672500"}}]}`
+	if string(got) != want {
+		t.Fatalf("op wire encoding changed — Task 10's TypeScript mirror is written against these bytes:\n got %s\nwant %s", got, want)
+	}
+
+	// entity is omitted entirely on a parent-free op, but parent_version is
+	// PRESENT and null on both: a create and a parent-free op are distinguished
+	// by the type, never by the field's absence.
+	if strings.Count(string(got), `"parent_version"`) != 3 {
+		t.Fatalf("parent_version must be present on every op, null included: %s", got)
+	}
+	if strings.Count(string(got), `"ingest_id"`) != 1 {
+		t.Fatalf("ingest_id must appear on the ingest op and be omitted when empty: %s", got)
+	}
+}
+
+func TestGoldenRawBodyBytes(t *testing.T) {
+	got, err := EncodeRawBody(RawBody{
+		IngestID:   strings.Repeat("a", 64),
+		ReceivedAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		RawBase64:  "aGk=",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"v":1,"kind":"raw_body","ingest_id":"` + strings.Repeat("a", 64) +
+		`","received_at":"2026-06-05T10:00:00Z","raw_base64":"aGk="}`
+	if string(got) != want {
+		t.Fatalf("raw body wire encoding changed:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestValidateRejectsIngestIDOnNonIngestOps(t *testing.T) {
+	// ingest_id is omitempty, so an unchecked value rides into a frozen wire
+	// model and joins to nothing.
+	o := rateOp()
+	o.IngestID = "junk"
+	if err := o.Validate(); err == nil {
+		t.Fatal("rate_set carrying an ingest_id must be rejected")
+	}
+	o = txnOp()
+	o.Type = OpTxnCategorized
+	o.Payload = json.RawMessage(`{"category":"groceries"}`)
+	if err := o.Validate(); err == nil {
+		t.Fatal("txn_categorized carrying an ingest_id must be rejected")
+	}
+	o.IngestID = ""
+	if err := o.Validate(); err != nil {
+		t.Fatalf("txn_categorized without an ingest_id must validate: %v", err)
+	}
+}
+
+func TestDecodeRawBodyRejectsBadVersions(t *testing.T) {
+	for _, v := range []string{"0", "-5", "2"} {
+		b := []byte(`{"v":` + v + `,"kind":"raw_body","ingest_id":"` + ingestID() +
+			`","received_at":"2026-06-05T10:00:00Z","raw_base64":"aGk="}`)
+		if _, err := DecodeRawBody(b); err == nil {
+			t.Fatalf("raw body v%s must be rejected", v)
+		}
+	}
+	b := []byte(`{"v":2,"kind":"raw_body","ingest_id":"` + ingestID() +
+		`","received_at":"2026-06-05T10:00:00Z","raw_base64":"aGk="}`)
+	if _, err := DecodeRawBody(b); !errors.Is(err, ErrUnknownNewerVersion) {
+		t.Fatalf("a newer raw body must hard-stop like a newer op blob, got %v", err)
+	}
+}
+
 func TestKindOfRejectsNonBlobs(t *testing.T) {
 	for _, in := range []string{``, `[]`, `{"v":1}`, `not json`} {
 		if _, err := KindOf([]byte(in)); err == nil {

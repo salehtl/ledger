@@ -3,12 +3,18 @@ package blob
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"math"
 	"math/rand"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+
+	"ledger/internal/v2/oplog"
 )
 
 func env() Envelope {
@@ -322,11 +328,55 @@ func TestSealAndOpenAgreeOnTheSizeCap(t *testing.T) {
 		t.Fatal("a plaintext past the cap must be refused by Seal, not discovered at Open")
 	}
 
-	// A cold record base64s a max-size (1 MiB) email inside a JSON object, so
-	// the cap has to clear that or ingest stores blobs it can never read back.
-	const maxMail = 1 << 20
-	if want := maxMail*4/3 + 1024; MaxPlaintext < want {
-		t.Fatalf("MaxPlaintext = %d is under the %d bytes a base64'd max-size email needs", MaxPlaintext, want)
+}
+
+// TestWorstCaseColdMailFitsABucket is the assertion that matters for ingest,
+// and it deliberately does not check MaxPlaintext: the binding limit on a cold
+// blob is MaxBucket, on the COMPRESSED frame. So it builds the actual worst
+// case — an incompressible message at exactly the DATA cap, base64'd into a
+// real RawBody record, at the longest envelope ingest can produce — and
+// requires it to seal. An earlier version of this test asserted a MaxPlaintext
+// inequality instead; it passed while Seal was in fact refusing legal mail.
+func TestWorstCaseColdMailFitsABucket(t *testing.T) {
+	// MaxColdMail IS the DATA cap: config.validate rejects any
+	// mail.max_message_bytes above it, so proving the ceiling here proves it
+	// for every configuration that loads. (This file cannot import config —
+	// config imports blob for exactly this constant.)
+	raw := incompressible(MaxColdMail)
+	rec, err := oplog.EncodeRawBody(oplog.RawBody{
+		IngestID:   strings.Repeat("f", 64),
+		ReceivedAt: time.Now().UTC(),
+		RawBase64:  base64.StdEncoding.EncodeToString(raw),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The longest AAD the ingest writer can produce: the widest counter it will
+	// ever reach costs the most header bytes, which is the case most likely to
+	// tip a blob past its bucket.
+	e := Envelope{UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		Stream: StreamCold, WriterID: "ingest", WriterCounter: math.MaxInt64}
+
+	s := PlaintextSealer{}
+	sealed, err := s.Seal(e, rec)
+	if err != nil {
+		t.Fatalf("a message at the DATA cap (%d bytes, incompressible) must seal, "+
+			"or SMTP accepts mail ingest cannot store: %v", MaxColdMail, err)
+	}
+	if sealed.SizeBucket != MaxBucket {
+		t.Logf("worst-case cold blob landed in the %d KB bucket", sealed.SizeBucket>>10)
+	}
+	got, err := s.Open(e, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := oplog.DecodeRawBody(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.RawBase64 != base64.StdEncoding.EncodeToString(raw) {
+		t.Fatal("worst-case cold round trip lost the message")
 	}
 }
 
@@ -361,16 +411,34 @@ func TestHashChainsOverTheFramedBytes(t *testing.T) {
 
 func TestSealRejectsEnvelopesThatWouldForgeAnAAD(t *testing.T) {
 	// The AAD is "|"-joined, so a separator inside a field would let two
-	// different positions produce identical associated data.
+	// different positions produce identical associated data. A mistyped stream
+	// is just as unrecoverable: it is a valid, chain-distinct position that no
+	// other writer will ever reconcile with, baked into the AAD forever.
 	s := PlaintextSealer{}
-	for _, e := range []Envelope{
-		{UserID: env().UserID, Stream: "hot|dev-a", WriterID: "", WriterCounter: 7},
-		{UserID: env().UserID, Stream: "hot", WriterID: "dev|a", WriterCounter: 7},
-		{UserID: env().UserID, Stream: "", WriterID: "dev-a", WriterCounter: 7},
-		{UserID: env().UserID, Stream: "hot", WriterID: "dev-a", WriterCounter: -1},
+	for name, e := range map[string]Envelope{
+		"separator in stream": {UserID: env().UserID, Stream: "hot|dev-a", WriterID: "w", WriterCounter: 7},
+		"separator in writer": {UserID: env().UserID, Stream: StreamHot, WriterID: "dev|a", WriterCounter: 7},
+		"empty stream":        {UserID: env().UserID, Stream: "", WriterID: "dev-a", WriterCounter: 7},
+		"mistyped stream":     {UserID: env().UserID, Stream: "hott", WriterID: "dev-a", WriterCounter: 7},
+		"wrong-case stream":   {UserID: env().UserID, Stream: "HOT", WriterID: "dev-a", WriterCounter: 7},
+		"empty writer":        {UserID: env().UserID, Stream: StreamHot, WriterID: "", WriterCounter: 7},
+		"zero user":           {Stream: StreamHot, WriterID: "dev-a", WriterCounter: 7},
+		"negative counter":    {UserID: env().UserID, Stream: StreamHot, WriterID: "dev-a", WriterCounter: -1},
+		"zero counter":        {UserID: env().UserID, Stream: StreamHot, WriterID: "dev-a", WriterCounter: 0},
 	} {
 		if _, err := s.Seal(e, []byte("x")); err == nil {
-			t.Fatalf("expected %+v to be rejected", e)
+			t.Fatalf("%s: expected %+v to be rejected", name, e)
+		} else if !errors.Is(err, ErrInvalidEnvelope) {
+			t.Fatalf("%s: want ErrInvalidEnvelope, got %v", name, err)
+		}
+	}
+	// Both real streams must of course still work.
+	for _, stream := range []string{StreamHot, StreamCold} {
+		e := env()
+		e.Stream = stream
+		e.WriterCounter = 1
+		if _, err := s.Seal(e, []byte("x")); err != nil {
+			t.Fatalf("stream %q must seal: %v", stream, err)
 		}
 	}
 }
