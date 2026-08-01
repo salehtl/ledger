@@ -1463,6 +1463,12 @@ export function stateToJSON(s: State): unknown {
         last4: t.last4,
         category: t.category,
         needs_review: t.needs_review,
+        // Without these an unparsed row renders here as an ordinary zero-amount
+        // debit, which is the exact confusion Phase 2 Task 7 exists to remove —
+        // and this is the surface an operator inspects an alpha's log through.
+        unparsed: t.unparsed,
+        tier: t.tier,
+        parse_error: t.parse_error,
         provenance: t.provenance,
         amount_home_minor: t.amount_home_minor === null ? null : t.amount_home_minor.toString(10),
         splits: t.splits.map((p) => ({ category: p.category, amount_minor: p.amount_minor.toString(10) })),

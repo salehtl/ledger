@@ -7,7 +7,7 @@ import {
   type Op,
   type OpType,
 } from "../wire/op";
-import { emptyState, fingerprint, notWitnessed, serializeState, type State, type Txn } from "./state";
+import { countsTowardMoney, emptyState, fingerprint, notWitnessed, serializeState, utcDay, type State, type Txn } from "./state";
 import { ReplayOrderError, applyOp, fold, foldBlobs, type LogEntry, type PositionedBlob } from "./replay";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,9 @@ interface TxnFields {
   last4?: string;
   category?: string | null;
   needs_review?: boolean;
+  tier?: string;
+  unparsed?: boolean;
+  parse_error?: string | null;
 }
 
 function txnPayload(over: TxnFields): Record<string, unknown> {
@@ -57,7 +60,53 @@ function txnPayload(over: TxnFields): Record<string, unknown> {
   };
   if (over.category !== undefined) p["category"] = over.category;
   if (over.needs_review !== undefined) p["needs_review"] = over.needs_review;
+  // Left ABSENT unless a test asks for them, so the whole pre-existing suite
+  // keeps exercising the "a writer that omits these" path — which is what every
+  // client-authored op (CSV import, manual entry) actually looks like.
+  if (over.tier !== undefined) p["tier"] = over.tier;
+  if (over.unparsed !== undefined) p["unparsed"] = over.unparsed;
+  if (over.parse_error !== undefined) p["parse_error"] = over.parse_error;
   return p;
+}
+
+/**
+ * The payload `internal/v2/ingest/pipeline.go` appends when no tier resolved a
+ * message — `txnPayloadOf` with a zero-valued `tmpl.Extraction`.
+ *
+ * Transcribed from the Go struct field by field rather than paraphrased,
+ * `is_transfer` and `normalizer_version` included even though this executor
+ * reads neither: a builder that emitted a shape the pipeline never sends would
+ * make every test below a test of a payload nobody writes.
+ */
+function unparsedPayload(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    amount_minor: "0",
+    currency: "",
+    direction: "",
+    posted_at: "2026-06-05T09:00:00Z",
+    merchant_raw: "",
+    last4: "",
+    is_transfer: false,
+    tier: "none",
+    needs_review: true,
+    unparsed: true,
+    normalizer_version: 3,
+    ...over,
+  };
+}
+
+function unparsedIngest(
+  ingest: string,
+  txnId: string,
+  over: Record<string, unknown> = {},
+  writer = "ingest",
+  authoredAt = "2026-06-05T09:00:05Z",
+): Authored {
+  return mk("txn_ingested", writer, authoredAt, {
+    entity: { kind: "txn", id: txnId },
+    ingest_id: ingestID(ingest),
+    payload: unparsedPayload(over),
+  });
 }
 
 function mk(
@@ -623,6 +672,333 @@ test("the fingerprint day comes from the parsed instant, not the string", () => 
 });
 
 // ---------------------------------------------------------------------------
+// `unparsed` and the zero-amount shape (Phase 2 Task 7)
+//
+// The pipeline appends an op for a message no tier resolved (pipeline.go step 7:
+// "nothing matched — still appended, flagged unparsed"), because §2's drop policy
+// is what makes "my transactions stopped appearing" answerable. Before this task
+// the engine could not decode one: `positiveMoney`, `currencyOf` and `direction`
+// each threw on it, so the whole op became an `invalid_payload` anomaly and the
+// message was invisible to a review queue that has to show it.
+// ---------------------------------------------------------------------------
+
+test("a txn_ingested with unparsed:true materializes rather than becoming unreadable", () => {
+  const s = fold([at(1n, unparsedIngest("i1", "t1"))]);
+  const t = s.txns.get("t1");
+  expect(t).toBeDefined();
+  expect(kinds(s)).not.toContain("invalid_payload");
+  expect(t!.unparsed).toBe(true);
+  expect(t!.tier).toBe("none");
+  expect(t!.amount_minor).toBe(0n);
+  expect(t!.currency).toBe("");
+  expect(t!.direction).toBe("");
+  // The join to the cold-stream raw body: without it the review queue has an
+  // unreadable row and no way to show the user what arrived.
+  expect(t!.ingest_id).toBe(ingestID("i1"));
+});
+
+test("an unparsed txn is needs_review and excluded from bucket totals", () => {
+  // Three real transactions and two unparsed messages, folded together, then
+  // aggregated the way a budget screen has to: by currency, by direction, with a
+  // count. The bug this pins is not a wrong total — a zero-amount row adds zero,
+  // which is arithmetically invisible — it is a row that JOINS the money math at
+  // all: it lands in a currency bucket keyed "", in a direction bucket keyed "",
+  // and in the count of transactions the user is shown a total for.
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, ingested("i1", "t1", { amount_minor: "25000" })),
+    at(3n, unparsedIngest("u1", "t2")),
+    at(4n, ingested("i2", "t3", { amount_minor: "1000", direction: "credit" })),
+    at(5n, unparsedIngest("u2", "t4", { posted_at: "2026-06-07T09:00:00Z" })),
+    at(6n, ingested("i3", "t5", { amount_minor: "500" })),
+  ]);
+
+  const unparsedRows = live(s).filter((t) => t.unparsed);
+  expect(unparsedRows).toHaveLength(2);
+  for (const t of unparsedRows) {
+    expect(t.needs_review).toBe(true);
+    // No rate can ever reach currency "": `rate_set` refuses anything that is
+    // not three letters, so a pending row of currency "" waits forever.
+    expect(t.amount_home_minor).toBeNull();
+    expect(countsTowardMoney(t)).toBe(false);
+  }
+
+  const byCurrency = new Map<string, { count: number; total: bigint }>();
+  const byDirection = new Map<string, bigint>();
+  for (const t of live(s)) {
+    if (!countsTowardMoney(t)) continue;
+    const b = byCurrency.get(t.currency) ?? { count: 0, total: 0n };
+    byCurrency.set(t.currency, { count: b.count + 1, total: b.total + t.amount_minor });
+    byDirection.set(t.direction, (byDirection.get(t.direction) ?? 0n) + t.amount_minor);
+  }
+  expect([...byCurrency.keys()]).toEqual(["AED"]);
+  expect(byCurrency.get("AED")).toEqual({ count: 3, total: 26_500n });
+  expect([...byDirection.keys()].sort()).toEqual(["credit", "debit"]);
+  expect(byDirection.get("debit")).toBe(25_500n);
+
+  // And the engine's own aggregate index: the bucket FX drains never grows a ""
+  // key, because there is nothing there to convert.
+  expect(s.pendingByCurrency.has("")).toBe(false);
+  expect([...s.pendingByCurrency.keys()]).toEqual([]);
+});
+
+test("a zero-amount parsed txn is kept, and is NOT the same thing as unparsed", () => {
+  // The two are decided by DIFFERENT fields and neither may be inferred from the
+  // other, so both mismatched combinations are refused rather than guessed at.
+  //
+  // "kept" is the pipeline's word, and it keeps such a message as an UNPARSED op:
+  // `carriesMoney` in pipeline.go refuses a zero amount at both tiers precisely
+  // because "the wire model's amount_minor is a positive decimal that the replay
+  // engine refuses outright at zero". So the shape below is what a zero-amount
+  // bank alert (a decline, a reversal, a zero-value authorization) actually
+  // becomes on the wire, and the transaction survives — as a review item.
+  const s = fold([
+    // A writer claiming a parsed transaction of zero: refused, exactly as before
+    // this task. Zero is not money movement, and admitting it here would let a
+    // real row and an unparsed one become indistinguishable by amount alone.
+    at(1n, ingested("i1", "t1", { amount_minor: "0" })),
+    // The mirror: a writer claiming `unparsed` over real money, which would hide
+    // a genuine transaction from every total on the device.
+    at(2n, unparsedIngest("u1", "t2", { amount_minor: "25000", currency: "AED", direction: "debit" })),
+    // …and a writer claiming `unparsed` while naming a tier that produced it.
+    at(3n, unparsedIngest("u2", "t3", { tier: "template" })),
+    // The real thing: the message survives, carrying its own ingest id.
+    at(4n, unparsedIngest("u3", "t4")),
+  ]);
+  expect(s.txns.has("t1")).toBe(false);
+  expect(s.txns.has("t2")).toBe(false);
+  expect(s.txns.has("t3")).toBe(false);
+  expect(s.txns.get("t4")!.unparsed).toBe(true);
+  expect(kinds(s).filter((k) => k === "invalid_payload")).toHaveLength(3);
+  const details = s.anomalies.filter((a) => a.kind === "invalid_payload").map((a) => a.detail);
+  expect(details[0]).toContain("amount_minor");
+  expect(details[1]).toContain("unparsed");
+  expect(details[2]).toContain("tier");
+});
+
+test("every field of the unparsed shape is held to it, not just the amount", () => {
+  // One field per case, every other field left correct, so each rule is the ONLY
+  // thing that can refuse its case. A mutation run over this task's first draft
+  // is what forced this shape: a compound payload that broke three rules at once
+  // stayed red with any one of the three switched off, so three of these rules
+  // were unpinned while every test was green.
+  const cases: [Record<string, unknown>, string][] = [
+    [{ amount_minor: "25000" }, "amount_minor"],
+    [{ currency: "AED" }, "currency"],
+    [{ direction: "debit" }, "direction"],
+    [{ needs_review: false }, "needs_review"],
+    [{ tier: "template" }, "tier"],
+  ];
+  cases.forEach(([over, field], i) => {
+    const s = fold([at(1n, unparsedIngest(`u${i}`, `t${i}`, over))]);
+    expect(s.txns.size).toBe(0);
+    expect(kinds(s)).toEqual(["invalid_payload"]);
+    expect(s.anomalies[0]!.detail).toContain(field);
+  });
+});
+
+test("tier is decoded from a closed set, and an absent one is 'none' rather than a guess", () => {
+  // `tier: "none"` is NOT `unparsed` — it is also every client-authored op, which
+  // carries real money and names no extraction tier. So an absent tier must read
+  // as "none" and leave the row parsed; reading it as a tier that "probably"
+  // produced the row would attribute a CSV import to the template executor.
+  const s = fold([
+    at(1n, ingested("i1", "t1", { merchant_raw: "A" })), // no tier field at all
+    at(2n, ingested("i2", "t2", { merchant_raw: "B", tier: "heuristic" })),
+    at(3n, ingested("i3", "t3", { merchant_raw: "C", tier: "ai" })),
+  ]);
+  expect(s.txns.get("t1")!.tier).toBe("none");
+  expect(s.txns.get("t1")!.unparsed).toBe(false);
+  expect(countsTowardMoney(s.txns.get("t1")!)).toBe(true);
+  expect(s.txns.get("t2")!.tier).toBe("heuristic");
+  // Not in the set Go's `diag` declares, and there is no AI tier in v2 at all.
+  expect(s.txns.has("t3")).toBe(false);
+  expect(kinds(s)).toEqual(["invalid_payload"]);
+  expect(s.anomalies[0]!.detail).toContain("template|heuristic|none");
+});
+
+test("parse_error is a code, never message text, and only an unparsed row has one", () => {
+  // This field rides in the HOT stream, which the hot/cold split exists to keep
+  // email bodies out of. A reason that could carry a fragment of a body would put
+  // plaintext in the one lane designed not to hold it — so the shape is enforced
+  // rather than trusted, even though the Go pipeline emits no reason today.
+  const s = fold([
+    at(1n, unparsedIngest("u1", "t1", { parse_error: "no_template_matched" })),
+    at(2n, unparsedIngest("u2", "t2", { parse_error: "Dear customer, your card ending 3701 was charged" })),
+    at(3n, unparsedIngest("u3", "t3")),
+    at(4n, ingested("i4", "t4", { parse_error: "no_template_matched" })),
+  ]);
+  expect(s.txns.get("t1")!.parse_error).toBe("no_template_matched");
+  expect(s.txns.get("t3")!.parse_error).toBeNull();
+  expect(s.txns.has("t2")).toBe(false);
+  expect(s.txns.has("t4")).toBe(false);
+  const details = s.anomalies.filter((a) => a.kind === "invalid_payload").map((a) => a.detail);
+  expect(details).toHaveLength(2);
+  expect(details[0]).toContain("never message text");
+  expect(details[1]).toContain("not unparsed");
+});
+
+test("an unparsed txn can be superseded by a template fix and becomes parsed", () => {
+  // The exact case reprocessing exists for (Task 24): a template lands, the
+  // message is re-read, and the supersede must recompute FX fresh at its OWN
+  // position rather than inheriting anything from the row it retires.
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, unparsedIngest("i1", "t1")),
+    at(3n, rateSet("USD", "3672500")),
+    at(4n, superseded("i1", "t2", { amount_minor: "10000", currency: "USD", direction: "debit", tier: "template" })),
+  ]);
+  const before = s.txns.get("t1")!;
+  const after = s.txns.get("t2")!;
+
+  expect(before.unparsed).toBe(true);
+  expect(before.superseded_by).not.toBeNull();
+  expect(before.amount_home_minor).toBeNull();
+
+  expect(after.unparsed).toBe(false);
+  expect(after.tier).toBe("template");
+  expect(after.amount_minor).toBe(10_000n);
+  // Computed at seq 4, where USD's head rate is live — not inherited as null.
+  expect(after.amount_home_minor).toBe(36_725n);
+  expect(after.needs_review).toBe(true); // no category yet
+  expect([...s.liveByIngestID.keys()]).toEqual([ingestID("i1")]);
+  expect(s.liveByIngestID.get(ingestID("i1"))).toBe("t2");
+  expect(kinds(s)).not.toContain("possible_duplicate");
+});
+
+test("fingerprint() of an unparsed txn does not collide with every other unparsed txn", () => {
+  // `last4|amount|direction|merchant|day` is "" |0|""|""|day for every unparsed
+  // row, so without a guard every unparsed message on a given day becomes a
+  // "possible duplicate" of every other. Phase 1's exit run produced 18 such
+  // anomalies from a corpus of two distinct messages.
+  const s = fold([
+    at(1n, unparsedIngest("u1", "t1")),
+    at(2n, unparsedIngest("u2", "t2")),
+    at(3n, unparsedIngest("u3", "t3")),
+    at(4n, unparsedIngest("u4", "t4")),
+  ]);
+  expect(s.txns.size).toBe(4);
+  expect(kinds(s)).not.toContain("possible_duplicate");
+  for (const t of live(s)) expect(t.possible_duplicate_of).toBeNull();
+  const fps = live(s).map(fingerprint);
+  expect(new Set(fps).size).toBe(4);
+  // Every unparsed row occupies its own bucket, so the index cannot degenerate
+  // into one bucket per day holding the whole backlog.
+  expect([...s.byFingerprint.values()].every((ids) => ids.length === 1)).toBe(true);
+});
+
+test("an unparsed fingerprint cannot collide with a parsed one either", () => {
+  // Uniqueness among unparsed rows is only half of it: the two forms have to
+  // occupy disjoint namespaces, or a parsed row whose merchant happens to spell
+  // the guard becomes a duplicate of an unrelated unparsed message. They are
+  // separated structurally — the parsed form always contains exactly four
+  // unescaped `|` separators plus whatever a merchant carries, so any value with
+  // fewer than four can never be produced by it.
+  const s = fold([
+    at(1n, unparsedIngest("u1", "t1")),
+    at(2n, ingested("i2", "t2", { last4: "unparsed", merchant_raw: "", amount_minor: "1" })),
+    // A merchant that spells the whole unparsed form, separators and all.
+    at(3n, ingested("i3", "t3", { last4: "", merchant_raw: `unparsed|${ingestID("u1")}` })),
+  ]);
+  const fps = live(s).map(fingerprint);
+  expect(new Set(fps).size).toBe(3);
+  expect(kinds(s)).not.toContain("possible_duplicate");
+  expect(fingerprint(s.txns.get("t1")!).split("|")).toHaveLength(2);
+  for (const id of ["t2", "t3"]) {
+    expect(fingerprint(s.txns.get(id)!).split("|").length).toBeGreaterThanOrEqual(5);
+  }
+});
+
+test("an edit may not rewrite the parse tier, and cannot move an unparsed row into the money", () => {
+  // `unparsed`, `tier` and `parse_error` come from the PARSE, exactly as
+  // amount/currency/direction do, and the op that changes them is
+  // `txn_superseded`. Silently ignoring them — which is what a decoder that
+  // simply does not read a key does — would make a client's correction vanish
+  // with no trace, and §2 says nothing is ever silently dropped.
+  const s = fold([
+    at(1n, unparsedIngest("i1", "t1")),
+    at(2n, edited("t1", 1, { unparsed: false, tier: "template", merchant_raw: "CARREFOUR" })),
+    at(3n, edited("t1", 2, { amount_home_minor: "999" })),
+  ]);
+  const t = s.txns.get("t1")!;
+  expect(t.unparsed).toBe(true);
+  expect(t.tier).toBe("none");
+  expect(t.merchant_raw).toBe("CARREFOUR"); // the permitted half of the edit still lands
+  expect(t.amount_home_minor).toBeNull();
+  const rejects = s.anomalies.filter((a) => a.kind === "unsupported_edit_field").map((a) => a.detail);
+  expect(rejects).toHaveLength(2);
+  expect(rejects[0]).toContain("unparsed");
+  expect(rejects[0]).toContain("tier");
+  expect(rejects[1]).toContain("amount_home_minor");
+});
+
+test("editing an unparsed row's merchant does not move it out of its own fingerprint bucket", () => {
+  // The parsed form re-indexes when a fingerprint field changes; the unparsed
+  // form is keyed on the ingest id, which no edit can reach, so it stays unique
+  // for the life of the row. This is the property that keeps the review queue
+  // stable while a user edits rows in it.
+  const s = fold([
+    at(1n, unparsedIngest("u1", "t1")),
+    at(2n, unparsedIngest("u2", "t2")),
+    at(3n, edited("t1", 1, { merchant_raw: "SOMETHING", last4: "1234", posted_at: "2026-06-07T09:00:00Z" })),
+  ]);
+  expect(kinds(s)).not.toContain("possible_duplicate");
+  expect(new Set(live(s).map(fingerprint)).size).toBe(2);
+  expect([...s.byFingerprint.values()].every((ids) => ids.length === 1)).toBe(true);
+});
+
+test("a posted_at whose canonical form cannot be read back is refused, not folded into a crash", () => {
+  // `posted_at` is a four-digit year plus an offset up to ±23:59, so the wire
+  // grammar admits instants outside years 0000-9999. `canonicalTime` writes those
+  // in ISO expanded-year form ("+010000-01-01T…"), which `parseInstantMs` cannot
+  // read back — so `fingerprint`, which re-parsed the stored string, threw
+  // BlobDecodeError from inside `createTxn`. That is not a PayloadError, so it
+  // escaped `applyOp`'s catch and took down the whole fold: one legal message,
+  // and the device can never sync past it.
+  //
+  // Both ops below crashed the fold before this task. Now they are ordinary
+  // anomalies and the log either side of them keeps folding.
+  const s = fold([
+    at(1n, ingested("i1", "t1", { posted_at: "9999-12-31T23:59:59-23:59" })),
+    at(2n, ingested("i2", "t2", { posted_at: "0000-01-01T00:00:00+23:59" })),
+    at(3n, ingested("i3", "t3")),
+  ]);
+  expect([...s.txns.keys()]).toEqual(["t3"]);
+  expect(kinds(s)).toEqual(["invalid_payload", "invalid_payload"]);
+  for (const a of s.anomalies) expect(a.detail).toContain("outside the range this wire format can carry");
+});
+
+test("the fold survives an unreadable posted_at even when it is the only op", () => {
+  // The regression in its bluntest form: `fold` must return, not throw. A throw
+  // here does not degrade a screen — it strands a device, because every
+  // subsequent sync re-folds the same prefix and hits the same op.
+  expect(() => fold([at(1n, ingested("i1", "t1", { posted_at: "9999-12-31T23:59:59-23:59" }))])).not.toThrow();
+});
+
+test("utcDay agrees with the Date round trip it replaces, everywhere Date is trustworthy", () => {
+  // The replacement has to be exact, not merely reasonable: this value is inside
+  // the frozen cross-executor fingerprint, so a one-day disagreement anywhere in
+  // the representable range is two replicas showing different duplicate notices.
+  // Everything in years 0001-9999 is checked against the old expression.
+  const day = 86_400_000;
+  const cases: number[] = [
+    0, -1, 1, day - 1, -day, 951_782_400_000, 4_107_542_400_000, 1_780_711_200_000,
+    Date.UTC(2000, 1, 29), Date.UTC(1900, 1, 28), Date.UTC(2100, 2, 1), Date.UTC(1969, 11, 31, 23, 59, 59, 999),
+  ];
+  const next = rng(20260802);
+  for (let i = 0; i < 4000; i++) cases.push(Math.floor((next() * 2 - 1) * 250_000_000_000_000));
+  for (const ms of cases) {
+    const iso = new Date(ms).toISOString();
+    if (iso.startsWith("+") || iso.startsWith("-")) continue; // where Date stops being usable
+    expect(utcDay(ms)).toBe(iso.slice(0, 10));
+  }
+  // And past the point the old expression produced a truncated, unparseable
+  // string, it still produces a whole date.
+  expect(utcDay(253402387139000)).toBe("+010000-01-01");
+  expect(utcDay(-62167305540000)).toBe("-000001-12-31");
+});
+
+// ---------------------------------------------------------------------------
 // Rule 5 (brief) — splits must sum
 // ---------------------------------------------------------------------------
 
@@ -961,6 +1337,15 @@ test("the sample log actually exercises the interesting paths", () => {
   expect([...s.txns.values()].filter((t) => t.superseded_by !== null).length).toBeGreaterThan(3);
   expect([...s.txns.values()].filter((t) => t.splits.length > 0).length).toBeGreaterThan(3);
   expect([...s.txns.values()].filter((t) => t.possible_duplicate_of !== null).length).toBeGreaterThan(0);
+  // Unparsed rows are in here, on one day, and none of them is a duplicate of
+  // any other: the collapse this task closes would fire on exactly this shape.
+  const unparsedRows = [...s.txns.values()].filter((t) => t.unparsed);
+  expect(unparsedRows.length).toBe(4);
+  expect(unparsedRows.filter((t) => t.possible_duplicate_of !== null)).toHaveLength(0);
+  expect(unparsedRows.filter((t) => t.superseded_by !== null)).toHaveLength(1);
+  expect(new Set(unparsedRows.map(fingerprint)).size).toBe(4);
+  // No unparsed row waits on a currency, so no bucket keyed "" exists at all.
+  expect(s.pendingByCurrency.has("")).toBe(false);
   expect(new Set(kinds(s))).toEqual(
     new Set([
       "possible_duplicate",
@@ -1201,6 +1586,16 @@ function buildSampleLog(): LogEntry[] {
   const twin = { amount_minor: "31400", currency: "AED", merchant_raw: "TWIN", last4: "9999", posted_at: "2026-06-09T08:00:00Z" };
   emit(ingested("i-twin-a", "twin-a", twin, "ingest", tick()));
   emit(ingested("i-twin-b", "twin-b", { ...twin, posted_at: "2026-06-09T20:00:00Z" }, "ingest", tick())); // possible_duplicate
+
+  // Four unparsed messages on ONE day, which is the shape that collapses the
+  // fingerprint to a constant, plus one that a later template fix rescues. They
+  // are in the sample log rather than only in their own tests so that every
+  // determinism, chunk-stability and prefix-monotonicity proof above runs over
+  // them too — a fold that treated them specially would show up there.
+  for (let i = 0; i < 4; i++) {
+    emit(unparsedIngest(`u${i}`, `u${i}`, { posted_at: "2026-06-11T09:00:00Z" }, "ingest", tick()));
+  }
+  emit(superseded("u0", "u0-fixed", { amount_minor: "4200", currency: "USD", tier: "template" }, "ingest", tick()));
 
   const last = txns[txns.length - 1]!;
   emit(ingested(last.ingest, "dup-ingest", {}, "ingest", tick())); // duplicate_ingest

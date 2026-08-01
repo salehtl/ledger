@@ -10,6 +10,7 @@ import {
   rateSet,
   rateUnset,
   superseded,
+  unparsedIngest,
   FX_CONFORMANCE_DIR,
   type Authored,
   type FXCase,
@@ -505,7 +506,7 @@ test("the FX sample log actually exercises the interesting paths", () => {
   expect(txns.filter((t) => t.amount_home_minor !== null).length).toBeGreaterThan(40);
   expect(txns.filter((t) => t.amount_home_minor === null && t.superseded_by === null).length).toBeGreaterThan(2);
   expect(txns.filter((t) => t.superseded_by !== null).length).toBeGreaterThan(5);
-  expect(new Set(txns.map((t) => t.currency)).size).toBe(4);
+  expect(new Set(txns.filter((t) => !t.unparsed).map((t) => t.currency)).size).toBe(4);
   expect([...s.rates.values()].filter((r) => r === null).length).toBeGreaterThan(0); // a live unset
   expect(kinds(s)).toContain("rate_set_for_home_currency");
   // Every live row is either frozen or in the pending index, and no frozen row
@@ -513,8 +514,16 @@ test("the FX sample log actually exercises the interesting paths", () => {
   const indexed = new Set([...s.pendingByCurrency.values()].flatMap((ids) => [...ids]));
   for (const t of txns) {
     if (t.superseded_by !== null) expect(indexed.has(t.id)).toBe(false);
+    // An unparsed row is live with a null snapshot and still does not belong
+    // here: its currency is "", which no `rate_set` can name, so it would sit in
+    // a bucket nothing can ever drain.
+    else if (t.unparsed) expect(indexed.has(t.id)).toBe(false);
     else expect(indexed.has(t.id)).toBe(t.amount_home_minor === null);
   }
+  // The unparsed branch above is reached, and by more than one row: a branch no
+  // fixture exercises is an assertion about nothing.
+  expect(txns.filter((t) => t.unparsed && t.superseded_by === null)).toHaveLength(2);
+  expect(s.pendingByCurrency.has("")).toBe(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -686,5 +695,14 @@ function buildFXSampleLog(): LogEntry[] {
   emit(rateUnset("EUR"));
   ingest("EUR");
   ingest("GBP");
+  // Three unparsed messages, one BEFORE any of the rate traffic above would have
+  // reached them if they had a currency at all. They belong in an FX log
+  // precisely because they have no part in FX: the prefix-monotonicity and
+  // incremental-equality proofs above are what would catch a pending index that
+  // grew a "" bucket at some intermediate position and drained it later.
+  emit(unparsedIngest("u1", "u1"));
+  emit(unparsedIngest("u2", "u2"));
+  emit(unparsedIngest("u3", "u3"));
+  emit(superseded("u2", "u2-fixed", { currency: "USD", amount_minor: "7700" }));
   return out;
 }
