@@ -1,0 +1,115 @@
+{
+  "name": "pre-onboarding-rate-then-unset-then-onboarding",
+  "note": "The shape that carries BOTH halves of the pre-onboarding problem at once, and which no other case reaches: a rate for the currency that becomes home, a row frozen against it, that rate then unset, a second row left pending, and only then the onboarding op — which installs the identity, backfills the pending row and raises the anomaly. t1 keeps its 2.0 basis and t2 gets the identity, so the two-basis split the anomaly reports is visible in the snapshots themselves. The anomaly fires on a NULL head, which is why the guard keys on 'a rate head exists' rather than on 'a non-null rate head exists'.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "pre-onboarding-rate-then-unset-then-onboarding-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED",
+          "rate_micro": "2000000"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "pre-onboarding-rate-then-unset-then-onboarding-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_unset",
+        "op_id": "pre-onboarding-rate-then-unset-then-onboarding-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "4",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "pre-onboarding-rate-then-unset-then-onboarding-4",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t2"
+        },
+        "ingest_id": "420fce314175df402adbeae3cfbbb85665b72d8b9bc2346f463e32a82f64b114",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t2",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "5",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "pre-onboarding-rate-then-unset-then-onboarding-5",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000"
+    },
+    "snapshots": {
+      "t1": "20000",
+      "t2": "10000"
+    },
+    "pending": {},
+    "anomalies": [
+      {
+        "kind": "rate_set_before_home_currency",
+        "at_seq": "5"
+      }
+    ]
+  }
+}
