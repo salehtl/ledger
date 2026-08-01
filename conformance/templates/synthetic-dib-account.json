@@ -1,0 +1,287 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "dib.account.v1",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "dib.account.v1",
+    "version": 1,
+    "bank": "dib",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "dib.ae"
+      ],
+      "body_not_contains": [
+        "إشعار مشتريات"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "body",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})"
+        ]
+      },
+      {
+        "field": "date",
+        "type": "date",
+        "source": "body",
+        "layouts": [
+          "DD-MM-YYYY"
+        ],
+        "patterns": [
+          "بتاريخ (?P<d>[0-9]{2}-[0-9]{2}-[0-9]{4})"
+        ]
+      },
+      {
+        "field": "merchant",
+        "type": "text",
+        "source": "body",
+        "patterns": [
+          "المعاملة\\n(?P<v>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "last4",
+        "type": "last4",
+        "source": "body",
+        "patterns": [
+          "من حساب\\n(?P<v>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "credit",
+        "patterns": [
+          "إشعار إيداع"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit",
+        "patterns": [
+          "إشعار خصم",
+          "إشعار سحب"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit",
+        "patterns": [
+          "من الحساب"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "credit"
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit",
+        "patterns": [
+          "المعاملة\\n[^\\n]*DEBIT(?:\\n|$)"
+        ],
+        "override": true,
+        "why": "v1 dib.go:79-83 re-derives direction from the uppercased description suffix AFTER the four-way cascade has already set it; without override the cascade's value would win and the ported template could not reproduce v1."
+      },
+      {
+        "field": "is_transfer",
+        "type": "flag",
+        "source": "body",
+        "value": "true",
+        "flags": [
+          "i"
+        ],
+        "patterns": [
+          "المعاملة\\n[^\\n]*(?:TRNSFER|TRANSFER)"
+        ]
+      }
+    ],
+    "required": [
+      "amount",
+      "direction",
+      "date"
+    ]
+  },
+  "cases": [
+    {
+      "name": "dib.account.v1/deposit-whose-description-says-debit",
+      "source": "SYNTHETIC: the override entry: v1 dib.go:79-83 re-derives direction AFTER the four-way cascade",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYpdmK2K/Yp9i5Ctin2YTZhdio2YTYugpBRUQgMSwyNTAuNzUK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpTQUxBUlkgVFJOU0ZFUiBERUJJVArZhdmGINit2LPYp9ioCjAxMjM0NTY3ODk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "125075",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "SALARY TRNSFER DEBIT",
+        "last4": "6789",
+        "is_transfer": true,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/deposit-plain",
+      "source": "SYNTHETIC: without the DEBIT suffix the cascade's credit survives",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYpdmK2K/Yp9i5Ctin2YTZhdio2YTYugpBRUQgMSwyNTAuNzUK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpTQUxBUlkgVFJOU0ZFUgrZhdmGINit2LPYp9ioCjAxMjM0NTY3ODk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "125075",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "SALARY TRNSFER",
+        "last4": "6789",
+        "is_transfer": true,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/withdrawal",
+      "source": "SYNTHETIC: the second cascade entry, two patterns in one entry",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYs9it2KgK2KfZhNmF2KjZhNi6CkFFRCAxMDAuMDAK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpBVE0K2YXZhiDYrdiz2KfYqAowMTIzNDU2Nzg5",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "10000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "ATM",
+        "last4": "6789",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/debit-notice",
+      "source": "SYNTHETIC: the first of that entry's two patterns",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYrti12YUK2KfZhNmF2KjZhNi6CkFFRCAxMDAuMDAK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpGRUUK2YXZhiDYrdiz2KfYqAowMTIzNDU2Nzg5",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "10000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "FEE",
+        "last4": "6789",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/from-the-account",
+      "source": "SYNTHETIC: the third cascade entry",
+      "subject_base64": "",
+      "normalized_body_base64": "2YXZhiDYp9mE2K3Ys9in2KgK2KfZhNmF2KjZhNi6CkFFRCAxMDAuMDAK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpYCtmF2YYg2K3Ys9in2KgKMDEyMzQ1Njc4OQ==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "10000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "X",
+        "last4": "6789",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/unconditional-default",
+      "source": "SYNTHETIC: no cascade pattern matches: the pattern-less const entry is the default",
+      "subject_base64": "",
+      "normalized_body_base64": "2KfZhNmF2KjZhNi6CkFFRCAxMDAuMDAK2KjYqtin2LHZitiuIDA1LTA2LTIwMjYK2KfZhNmF2LnYp9mF2YTYqQpYCtmF2YYg2K3Ys9in2KgKMDEyMzQ1Njc4OQ==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "10000",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "X",
+        "last4": "6789",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/transfer-flag",
+      "source": "SYNTHETIC: is_transfer, and its i flag",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYpdmK2K/Yp9i5Ctin2YTZhdio2YTYugpBRUQgMS4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2YXYudin2YXZhNipCnNhbGFyeSB0cmFuc2ZlcgrZhdmGINit2LPYp9ioCjAxMjM0NTY3ODk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "salary transfer",
+        "last4": "6789",
+        "is_transfer": true,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/transfer-flag-misspelling",
+      "source": "SYNTHETIC: v1 anchors on TRNSFER as well; the bank writes both",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYpdmK2K/Yp9i5Ctin2YTZhdio2YTYugpBRUQgMS4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2YXYudin2YXZhNipClRSTlNGRVIgSU4K2YXZhiDYrdiz2KfYqAowMTIzNDU2Nzg5",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "TRNSFER IN",
+        "last4": "6789",
+        "is_transfer": true,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.account.v1/gated-out",
+      "source": "SYNTHETIC: body_not_contains excludes the card layout",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDI1MC4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2K/Zgdi5INin2YTZiQpDQVJSRUZPVVIgRFVCQUkK2LHZgtmFINin2YTYqNi32KfZgtipClhYWFgxMjM0",
+      "expect": {
+        "matched": false,
+        "error": "no_match",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 {
   "note": "Written by internal/v2/tmpl TestWriteDialectConformanceFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteDialectConformanceFixtures; do not hand-edit. Patterns are plain JSON strings because a human ports the validator from this file; probe inputs and captured text are base64 because they deliberately contain CR, U+2028, U+2029, U+00A0, U+000B and U+FEFF, which is the point of them. `rejected` pins validator parity: the TypeScript validator must reject each pattern with the same reason codes. `accepted` pins ENGINE parity, which is the stronger claim: for each pattern, what Go's RE2 matched and captured on every probe input, which JavaScript must reproduce exactly.",
   "spec": "docs/superpowers/specs/v2-template-format.md",
-  "schema_version": 1,
+  "schema_version": 2,
   "limits": {
     "max_pattern_runes": 512,
     "max_capture_groups": 8,
-    "max_bound_product": 64
+    "max_bound_product": 64,
+    "max_unbounded_per_branch": 1
   },
   "js_compile": "new RegExp(toJS(p), flags.join(\"\") + \"u\")",
   "go_compile": "regexp.Compile(flagsContain(\"i\") ? \"(?i)\"+p : p)",
@@ -131,7 +132,8 @@
       "js_pattern": "AED\\s+([0-9]+)",
       "flags": [],
       "codes": [
-        "escape_perl_space"
+        "escape_perl_space",
+        "multiple_unbounded_quantifiers"
       ],
       "js_syntax_error": false,
       "why": "Go \\s is [\\t\\n\\f\\r ]; JS \\s additionally matches \\v, U+00A0, U+FEFF and the Unicode space separators"
@@ -324,6 +326,17 @@
       ],
       "js_syntax_error": false,
       "why": "(a+)+ nesting turns bounded work exponential in a backtracking engine"
+    },
+    {
+      "code": "multiple_unbounded_quantifiers",
+      "pattern": "[0-9]+[0-9]+z",
+      "js_pattern": "[0-9]+[0-9]+z",
+      "flags": [],
+      "codes": [
+        "multiple_unbounded_quantifiers"
+      ],
+      "js_syntax_error": false,
+      "why": "the POLYNOMIAL backtracking shape: n^k for k unbounded quantifiers that can consume the same characters. MEASURED in Bun 1.3.14: [0-9]+[0-9]+z is 86 ms on 800 characters, [0-9]+[0-9]+[0-9]+[0-9]+z is 88,191 ms on 400, and separating them with a mandatory literal does not help ([^\\n]+X[^\\n]+Y is 31,680 ms on 8,000). Go's RE2 does not backtrack and is unaffected, so this is a CLIENT-side cost rule, not an engine divergence"
     },
     {
       "code": "bound_product_too_large",
@@ -809,8 +822,8 @@
     },
     {
       "name": "rewrite-of-escape_perl_space",
-      "pattern": "AED[ \\n]+[0-9]+",
-      "js_pattern": "AED[ \\n]+[0-9]+",
+      "pattern": "AED[ \\n]{1,4}([0-9]+)",
+      "js_pattern": "AED[ \\n]{1,4}([0-9]+)",
       "flags": [],
       "group_names": [],
       "probes": [
@@ -3321,6 +3334,135 @@
       ]
     },
     {
+      "name": "rewrite-of-multiple_unbounded_quantifiers",
+      "pattern": "[0-9]{2,}z",
+      "js_pattern": "[0-9]{2,}z",
+      "flags": [],
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
       "name": "rewrite-of-bound_product_too_large",
       "pattern": "((a{4}){4}){4}",
       "js_pattern": "((a{4}){4}){4}",
@@ -4358,8 +4500,8 @@
     },
     {
       "name": "seed-dib-amount",
-      "pattern": "المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\\.[0-9]{2})",
-      "js_pattern": "المبلغ\\n(?<ccy>[A-Z]{3} )?(?<amt>[0-9][0-9,]*\\.[0-9]{2})",
+      "pattern": "المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})",
+      "js_pattern": "المبلغ\\n(?<ccy>[A-Z]{3} )?(?<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})",
       "flags": [],
       "group_names": [
         "ccy",
@@ -5063,8 +5205,8 @@
     },
     {
       "name": "seed-enbd-alert-debit",
-      "pattern": "(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]*\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account",
-      "js_pattern": "(?<amt>(?:[A-Z]{3} )?[0-9][0-9,]*\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account",
+      "pattern": "(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account",
+      "js_pattern": "(?<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account",
       "flags": [
         "i"
       ],
@@ -5826,6 +5968,51 @@
       "go": "false",
       "js": "false",
       "note": "an AGREEMENT, recorded because Perl and Python disagree with both: neither Go nor JS matches $ before a trailing newline, which is what makes the m flag ban free"
+    },
+    {
+      "name": "cost: [0-9]+[0-9]+z",
+      "pattern": "[0-9]+[0-9]+z",
+      "flags": "u",
+      "input": "\"1\" x 800",
+      "go": "microseconds",
+      "js": "86 ms in Bun 1.3.14",
+      "note": "two unbounded quantifiers that consume the same characters is O(n^2) in a backtracking engine"
+    },
+    {
+      "name": "cost: [0-9]+[0-9]+[0-9]+[0-9]+z",
+      "pattern": "[0-9]+[0-9]+[0-9]+[0-9]+z",
+      "flags": "u",
+      "input": "\"1\" x 400",
+      "go": "microseconds",
+      "js": "88,191 ms in Bun 1.3.14",
+      "note": "88 SECONDS on a 400-character attacker-chosen input; this is the measurement the rule was written for"
+    },
+    {
+      "name": "cost: [^\\n]+X[^\\n]+Y",
+      "pattern": "[^\\n]+X[^\\n]+Y",
+      "flags": "u",
+      "input": "\"aX\" x 4000",
+      "go": "microseconds",
+      "js": "31,680 ms in Bun 1.3.14",
+      "note": "separating the two quantifiers with a MANDATORY literal does not make the shape cheap, it only changes which input triggers it — which is why the rule counts rather than looking for adjacency"
+    },
+    {
+      "name": "cost: [0-9]{1,64}[0-9]+z",
+      "pattern": "[0-9]{1,64}[0-9]+z",
+      "flags": "u",
+      "input": "\"1\" x 51200",
+      "go": "microseconds",
+      "js": "73,810 ms in Bun 1.3.14",
+      "note": "bounding one of the two is NOT the sanctioned rewrite: the bound becomes the constant. Collapsing them is: [0-9]+[0-9]+ is [0-9]{2,}"
+    },
+    {
+      "name": "cost: [0-9]+z (the residual)",
+      "pattern": "[0-9]+z",
+      "flags": "u",
+      "input": "\"1\" x 200000",
+      "go": "microseconds",
+      "js": "17,935 ms in Bun 1.3.14",
+      "note": "ONE unbounded quantifier is still quadratic, and the dialect allows it. What keeps the real templates cheap is their leading literal anchor: the DIB merchant anchor on a hostile 1 MB body is 1.9 ms. See TestKNOWNASingleUnboundedQuantifierIsStillQuadraticInJavaScript"
     },
     {
       "name": "bun: [a-z] with iu on U+212A",

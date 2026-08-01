@@ -1,0 +1,356 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "enbd.alert.v1",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "enbd.alert.v1",
+    "version": 1,
+    "bank": "enbd",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "emiratesnbd.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "email",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "flags": [
+          "i"
+        ],
+        "patterns": [
+          "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account"
+        ],
+        "on_match": {
+          "direction": "debit"
+        }
+      },
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "flags": [
+          "i"
+        ],
+        "patterns": [
+          "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:credited|deposited)[ \\n](?:in)?to your account"
+        ],
+        "on_match": {
+          "direction": "credit"
+        }
+      },
+      {
+        "field": "last4",
+        "type": "last4",
+        "source": "subject",
+        "flags": [
+          "i"
+        ],
+        "patterns": [
+          "account ending with (?P<v>[0-9]{4})"
+        ]
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "enbd.alert.v1/withdrawn",
+      "source": "SYNTHETIC: the debit phrasing v1's enbd_alert.go:25 anchors on",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDI1MCwwMDAuMDAgaGFzIGJlZW4gd2l0aGRyYXduIGZyb20geW91ciBhY2NvdW50IDA2N1hYWDE3WFhYMDEu",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/debited",
+      "source": "SYNTHETIC: the second debit verb in the same alternation",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDEyLjM0IGhhcyBiZWVuIGRlYml0ZWQgZnJvbSB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1234",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/credited",
+      "source": "SYNTHETIC: the credit branch, and on_match setting direction",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDQwMC4wMCBoYXMgYmVlbiBjcmVkaXRlZCB0byB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "40000",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/deposited-into",
+      "source": "SYNTHETIC: the optional (?:in)?to",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDQwMC4wMCBoYXMgYmVlbiBkZXBvc2l0ZWQgaW50byB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "40000",
+        "currency": "AED",
+        "direction": "credit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/case-folded",
+      "source": "SYNTHETIC: flags [\"i\"]: the whole line upper-cased",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "YWVkIDI1MCwwMDAuMDAgSEFTIEJFRU4gV0lUSERSQVdOIEZST00gWU9VUiBBQ0NPVU5UIDA2N1hYWDE3WFhYMDEu",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/newline-separated",
+      "source": "SYNTHETIC: the [ \\n] separators, which is why \\s is banned",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDI1MC4wMApoYXMgYmVlbgp3aXRoZHJhd24KZnJvbSB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/no-currency-prefix",
+      "source": "SYNTHETIC: the ccy group does not participate; default_currency applies",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "MjUwLjAwIGhhcyBiZWVuIHdpdGhkcmF3biBmcm9tIHlvdXIgYWNjb3VudCAwNjdYWFgxN1hYWDAxLg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/foreign-currency",
+      "source": "SYNTHETIC: the ccy group wins over default_currency",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "VVNEIDk5Ljk5IGhhcyBiZWVuIHdpdGhkcmF3biBmcm9tIHlvdXIgYWNjb3VudCAwNjdYWFgxN1hYWDAxLg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "9999",
+        "currency": "USD",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/no-subject",
+      "source": "SYNTHETIC: last4 is read from the subject and is not required",
+      "subject_base64": "",
+      "normalized_body_base64": "QUVEIDI1MC4wMCBoYXMgYmVlbiB3aXRoZHJhd24gZnJvbSB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/subject-without-last4",
+      "source": "SYNTHETIC: the last4 pattern does not match; the rest still extracts",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNl",
+      "normalized_body_base64": "QUVEIDI1MC4wMCBoYXMgYmVlbiB3aXRoZHJhd24gZnJvbSB5b3VyIGFjY291bnQu",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/neither-verb",
+      "source": "SYNTHETIC: no amount entry produces a value: the required-field gate fires",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDI1MC4wMCBoYXMgYmVlbiByZXNlcnZlZCBvbiB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/amount-without-decimals",
+      "source": "SYNTHETIC: conversion failure, not a zero amount",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDI1MCBoYXMgYmVlbiB3aXRoZHJhd24gZnJvbSB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/debit-then-credit",
+      "source": "SYNTHETIC: first entry wins: the debit entry runs first",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDEuMDAgaGFzIGJlZW4gd2l0aGRyYXduIGZyb20geW91ciBhY2NvdW50LgpBRUQgMi4wMCBoYXMgYmVlbiBjcmVkaXRlZCB0byB5b3VyIGFjY291bnQu",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/credit-then-debit",
+      "source": "SYNTHETIC: entry ORDER decides, not position in the body",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDIuMDAgaGFzIGJlZW4gY3JlZGl0ZWQgdG8geW91ciBhY2NvdW50LgpBRUQgMS4wMCBoYXMgYmVlbiB3aXRoZHJhd24gZnJvbSB5b3VyIGFjY291bnQu",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/amount-longer-than-the-bound",
+      "source": "SYNTHETIC: 33 digits before the point. The amount run is [0-9,]{0,24} rather than [0-9,]*, because unbounded it made this anchor quadratic (333,859 ms on a 1 MB body in Bun); pinned so the two executors agree on what the bound does rather than on what it was meant to do",
+      "subject_base64": "VHJhbnNhY3Rpb24gYWR2aWNlIGZvciB5b3VyIGFjY291bnQgZW5kaW5nIHdpdGggMzcwMQ==",
+      "normalized_body_base64": "QUVEIDEsMjM0LDU2Nyw4OTAsMTIzLDQ1Niw3ODksMDEyLDM0NS42NyBoYXMgYmVlbiB3aXRoZHJhd24gZnJvbSB5b3VyIGFjY291bnQgMDY3WFhYMTdYWFgwMS4=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "3701",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "enbd.alert.v1/transfer-advice-from-the-corpus",
+      "source": "SYNTHETIC: the shape all 62 real ENBD messages have; it must not match",
+      "subject_base64": "TG9jYWwgQmFuayBUcmFuc2Zlcg==",
+      "normalized_body_base64": "VHJhbnNhY3Rpb24gRGF0ZToKMjQvTm92LzIwMjQgMDg6MDMgUE0KRnJvbSBBY2NvdW50OgowNjcqKioxNyoqKjAxCkRlYml0IEFtb3VudDoKQUVEIDEwOCw1NjQuMDAK",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

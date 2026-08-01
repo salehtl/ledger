@@ -1,0 +1,179 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "synth.groups",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "synth.groups",
+    "version": 1,
+    "bank": "t",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "example.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "email",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "Amt: (?P<ccy>[A-Z]{3} )?(?P<amt>[^\\n]*)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      },
+      {
+        "field": "merchant",
+        "type": "text",
+        "source": "body",
+        "patterns": [
+          "To: (?P<v>[^\\n]*)"
+        ]
+      },
+      {
+        "field": "last4",
+        "type": "last4",
+        "source": "body",
+        "patterns": [
+          "Card: (?P<v>[^\\n]*)"
+        ]
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "synth.groups/none-empty",
+      "source": "SYNTHETIC: nothing to report",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRUQgMTAuMDAKVG86IFNIT1AKQ2FyZDogMTIzNAo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.groups/ccy-absent-is-not-empty",
+      "source": "SYNTHETIC: an optional group that did not PARTICIPATE has index -1 and is not an empty group",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiAxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.groups/merchant-empty",
+      "source": "SYNTHETIC: one label",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRUQgMTAuMDAKVG86IApDYXJkOiAxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": [
+          "merchant_v"
+        ]
+      }
+    },
+    {
+      "name": "synth.groups/two-empty",
+      "source": "SYNTHETIC: sorted and deduplicated, and qualified by FIELD so last4_v and merchant_v are distinguishable",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRUQgMTAuMDAKVG86IApDYXJkOiAK",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": [
+          "last4_v",
+          "merchant_v"
+        ]
+      }
+    },
+    {
+      "name": "synth.groups/three-empty",
+      "source": "SYNTHETIC: the amount group too; amt_ and v_ collide without the field qualifier",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAKVG86IApDYXJkOiAK",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": [
+          "amount_amt",
+          "last4_v",
+          "merchant_v"
+        ]
+      }
+    },
+    {
+      "name": "synth.groups/empty-survives-a-failed-match",
+      "source": "SYNTHETIC: EmptyGroups is meaningful on the error path; that is what diag stores",
+      "subject_base64": "",
+      "normalized_body_base64": "VG86IApDYXJkOiAK",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": [
+          "last4_v",
+          "merchant_v"
+        ]
+      }
+    }
+  ]
+}

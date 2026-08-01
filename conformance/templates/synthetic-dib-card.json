@@ -1,0 +1,202 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "dib.card.v1",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "dib.card.v1",
+    "version": 1,
+    "bank": "dib",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "dib.ae"
+      ],
+      "body_contains": [
+        "إشعار مشتريات"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "body",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})"
+        ]
+      },
+      {
+        "field": "date",
+        "type": "date",
+        "source": "body",
+        "layouts": [
+          "DD-MM-YYYY"
+        ],
+        "patterns": [
+          "بتاريخ (?P<d>[0-9]{2}-[0-9]{2}-[0-9]{4})"
+        ]
+      },
+      {
+        "field": "merchant",
+        "type": "text",
+        "source": "body",
+        "patterns": [
+          "الدفع الى\\n(?P<v>[^\\n]*)"
+        ]
+      },
+      {
+        "field": "last4",
+        "type": "last4",
+        "source": "body",
+        "patterns": [
+          "رقم البطاقة\\n(?P<v>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      }
+    ],
+    "required": [
+      "amount",
+      "direction",
+      "date"
+    ]
+  },
+  "cases": [
+    {
+      "name": "dib.card.v1/purchase",
+      "source": "SYNTHETIC: the shape 364 corpus cases have, stated once explicitly",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDI1MC4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2K/Zgdi5INin2YTZiQpDQVJSRUZPVVIgRFVCQUkK2LHZgtmFINin2YTYqNi32KfZgtipClhYWFgxMjM0",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "CARREFOUR DUBAI",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.card.v1/merchant-with-cr",
+      "source": "SYNTHETIC: [^\\n] must keep \\r in both engines",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDI1MC4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2K/Zgdi5INin2YTZiQpDQVJSRUZPVVINRFVCQUkK2LHZgtmFINin2YTYqNi32KfZgtipClhYWFgxMjM0",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "CARREFOUR\rDUBAI",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.card.v1/empty-merchant-line",
+      "source": "SYNTHETIC: the merchant group participates and captures nothing",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDI1MC4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2K/Zgdi5INin2YTZiQoK2LHZgtmFINin2YTYqNi32KfZgtipClhYWFgxMjM0",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": [
+          "merchant_v"
+        ]
+      }
+    },
+    {
+      "name": "dib.card.v1/gated-out",
+      "source": "SYNTHETIC: body_contains excludes the account layout",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDYpdmK2K/Yp9i5Ctin2YTZhdio2YTYugpBRUQgMS4wMArYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNg==",
+      "expect": {
+        "matched": false,
+        "error": "no_match",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.card.v1/no-date",
+      "source": "SYNTHETIC: date is required; this is what a bank format change looks like",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDI1MC4wMArYp9mE2K/Zgdi5INin2YTZiQpTSE9QCtix2YLZhSDYp9mE2KjYt9in2YLYqQpYWFhYMTIzNA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.card.v1/foreign-currency",
+      "source": "SYNTHETIC: the ccy group carries a non-default currency",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKVVNEIDI1LjAwCtio2KrYp9ix2YrYriAwNS0wNi0yMDI2Ctin2YTYr9mB2Lkg2KfZhNmJClNIT1AK2LHZgtmFINin2YTYqNi32KfZgtipClhYWFgxMjM0",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "2500",
+        "currency": "USD",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "dib.card.v1/amount-longer-than-the-bound",
+      "source": "SYNTHETIC: same bound as ENBD, but here the mandatory Arabic anchor means the engine cannot start mid-number, so bounded and unbounded reach the same answer by different routes",
+      "subject_base64": "",
+      "normalized_body_base64": "2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqgrYp9mE2YXYqNmE2LoKQUVEIDEsMjM0LDU2Nyw4OTAsMTIzLDQ1Niw3ODksMDEyLDM0NS42NwrYqNiq2KfYsdmK2K4gMDUtMDYtMjAyNgrYp9mE2K/Zgdi5INin2YTZiQpTSE9QCtix2YLZhSDYp9mE2KjYt9in2YLYqQpYWFhYMTIzNA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

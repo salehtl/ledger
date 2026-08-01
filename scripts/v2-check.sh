@@ -33,6 +33,15 @@
 #   LEDGER_CORPUS_DB=$S/corpus.db LEDGER_CROSSEXEC_OUT=$S/go-corpus.jsonl \
 #     go test ./internal/v2/norm/ -run TestWriteCrossExecutorCorpus -timeout 20m
 #   (cd client && bun run scripts/crossexec.ts $S/go-corpus.jsonl)
+#
+# Task 20 added the same pair for the TEMPLATE executor. The committed fixtures
+# (conformance/templates/) sample 500 messages per template out of 6,868; the
+# full run below is 13,798 (template, message) pairs and was zero-disagreement
+# when it landed:
+#
+#   LEDGER_CORPUS_DB=$S/corpus.db LEDGER_CROSSEXEC_OUT=$S/go-templates.jsonl \
+#     go test ./internal/v2/tmpl/ -run TestWriteCrossExecutorTemplates -timeout 20m
+#   (cd client && bun run scripts/crossexec-tmpl.ts $S/go-templates.jsonl)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
