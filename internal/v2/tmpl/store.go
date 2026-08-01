@@ -260,6 +260,43 @@ func (s *Store) Published(ctx context.Context) ([]Definition, error) {
 	return out, nil
 }
 
+// HighestVersions returns the highest stored version of every template id, in
+// ANY status, or an empty map for an empty table.
+//
+// It exists for the deploy-time seed (internal/v2/tmpl/seed.Apply), which has
+// to answer one question before it writes anything: is this template already
+// managed here, at this version or a later one? [Store.All] would answer it too,
+// but only by parsing every stored definition — so one retired template this
+// build can no longer read would make seeding a NEW bank's parser fail, which
+// is the opposite of what a deploy step should do. This reads the two columns
+// the question is actually about and nothing else.
+func (s *Store) HighestVersions(ctx context.Context) (map[string]int, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT id, max(version) FROM templates GROUP BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("tmpl: read stored template versions: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var (
+			id      string
+			version int
+		)
+		if err := rows.Scan(&id, &version); err != nil {
+			return nil, fmt.Errorf("tmpl: read stored template versions: %w", err)
+		}
+		out[id] = version
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tmpl: read stored template versions: %w", err)
+	}
+	return out, nil
+}
+
 // ForSenderDomain returns the live templates that accept mail signed by domain.
 //
 // domain must be the CRYPTOGRAPHICALLY VERIFIED signing domain from the

@@ -567,6 +567,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/writers/challenge", s.requireSession(s.handleChallenge))
 	mux.HandleFunc("POST /api/v1/writers/register", s.requireSession(s.handleRegister))
 	mux.HandleFunc("GET /api/v1/writers", s.requireSession(s.handleRoster))
+	// The roster answers "who can write now"; this answers "what has ever
+	// changed", which is the question §3.4's key substitution detection asks.
+	// See keyhistory.go — it was appended to on every registration and read by
+	// nothing for the whole of Phase 1.
+	mux.HandleFunc("GET /api/v1/key-history", s.requireSession(s.handleKeyHistory))
 	mux.HandleFunc("GET /api/v1/sync", s.requireSession(s.handlePull))
 	mux.HandleFunc("GET /api/v1/sync/hashes", s.requireSession(s.handleHashes))
 	mux.HandleFunc("POST /api/v1/sync", s.requireSession(s.handleUpload))

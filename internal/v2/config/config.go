@@ -207,7 +207,7 @@ type AuthConfig struct {
 // it cannot itself verify that main's dispatch table actually has an entry
 // for each of these — see the "cross-package coverage" note on
 // modeImplemented below for where that's actually checked.
-var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "purge-user", "record-consent", "parse-rate"}
+var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-templates", "purge-user", "record-consent", "parse-rate"}
 
 // modeImplemented is this package's own declared expectation of which modes
 // in modeOrder are meant to have a real dispatch entry in cmd/ledgerd.
@@ -233,6 +233,7 @@ var modeImplemented = map[string]bool{
 	"relay":           true,
 	"verify":          true,
 	"seed-dictionary": true,
+	"seed-templates":  true,
 	"purge-user":      true,
 	"record-consent":  true,
 	"parse-rate":      true,
