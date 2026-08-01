@@ -34,6 +34,7 @@ import (
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
+	"ledger/internal/v2/norm"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/pgtest"
 	"ledger/internal/v2/quarantine"
@@ -167,6 +168,53 @@ func (g *gate) donateReal(u uuid.UUID, raw []byte, domain string) {
 	if err := g.store.Donate(bg, samples.Sample{
 		UserID: u, IngestID: sum[:], Consent: "donate-sample-v1",
 	}); err != nil {
+		g.t.Fatal(err)
+	}
+}
+
+// reportReal is donateReal's content-free twin: the message reaches the cold
+// stream and leaves an arrival diagnostic, and the user files a STRUCTURAL
+// REPORT of it by ingest id. Nothing here plants a row either — since
+// 2026-08-01 samples.Report derives the bank and the layout fingerprint from
+// this server's own arrival record and refuses a caller that names them, so a
+// report can only exist for mail the account really received.
+func (g *gate) reportReal(u uuid.UUID, raw []byte, domain string) {
+	g.t.Helper()
+	sum := sha256.Sum256(raw)
+	cold, err := oplog.EncodeRawBody(oplog.RawBody{
+		IngestID:   hex.EncodeToString(sum[:]),
+		ReceivedAt: g.now,
+		RawBase64:  base64.StdEncoding.EncodeToString(raw),
+	})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	if _, err := g.app.AppendIngest(bg, u, []oplog.IngestBlob{
+		{Stream: blob.StreamCold, Plaintext: cold, CreatedAt: g.now},
+	}); err != nil {
+		g.t.Fatal(err)
+	}
+	sig := ""
+	if res, nerr := norm.Normalize(norm.CurrentVersion, raw, g.now); nerr == nil {
+		sig = diag.StructureSig(res.Text)
+	}
+	if err := g.diag.Record(bg, diag.Record{
+		UserID:            uuid.NullUUID{UUID: u, Valid: true},
+		Event:             diag.EventArrival,
+		IngestID:          sum[:],
+		ReceivedAt:        g.now,
+		SenderDomain:      domain,
+		DKIMResult:        diag.ResultPass,
+		ARCResult:         diag.ResultNone,
+		NormalizerVersion: 1,
+		Tier:              diag.TierNone,
+		BodySizeBucket:    1 << 10,
+		StructureSig:      sig,
+		Outcome:           diag.OutcomeAppended,
+	}); err != nil {
+		g.t.Fatal(err)
+	}
+	if err := g.store.Report(bg, samples.Sample{UserID: u, IngestID: sum[:]}); err != nil {
 		g.t.Fatal(err)
 	}
 }
@@ -546,21 +594,10 @@ func TestRetiringASampleThatIsNotThereIs404(t *testing.T) {
 func TestTheQueueClustersDemandByPeople(t *testing.T) {
 	g := newGate(t)
 	// Three users on one untemplated format, one user on another.
-	for i, sub := range []string{"alice", "bob", "carol"} {
-		u := g.user(sub)
-		if err := g.store.Report(bg, samples.Sample{
-			UserID: u, SenderDomain: "fab.ae",
-			StructureSig: diag.StructureSig("Amount: AED 0\nMerchant: A\n"),
-		}); err != nil {
-			t.Fatalf("%d: %v", i, err)
-		}
+	for _, sub := range []string{"alice", "bob", "carol"} {
+		g.reportReal(g.user(sub), rawMail("Amount: AED 250.00\nMerchant: STARBUCKS\nDate: 01/01/2026"), "fab.ae")
 	}
-	if err := g.store.Report(bg, samples.Sample{
-		UserID: g.user("dave"), SenderDomain: "testbank.test",
-		StructureSig: diag.StructureSig("You spent AED 0 at A on 0/0/0"),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	g.reportReal(g.user("dave"), rawMail("You spent AED 250.00 at STARBUCKS on 01/01/2026"), "testbank.test")
 
 	got := g.ok("GET", "/admin/samples", nil)
 	clusters, _ := got["clusters"].([]any)
