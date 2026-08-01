@@ -116,6 +116,26 @@ function clientFor(profile: string): Client {
   return new Client({ store: fileStore(join(scratch, "state"), profile), server: baseURL });
 }
 
+/**
+ * A logged-in client on its OWN account, with its own state file.
+ *
+ * Every test gets a fresh `dev:<name>` subject, which the server upserts into a
+ * distinct user. That is not tidiness: the first version of this suite shared
+ * one account and one profile across all eight tests, so each one silently
+ * depended on what the ones before it had left behind — running a single test
+ * with `-t` failed with an empty log, and a failure in the third cascaded into
+ * three more. A suite whose tests cannot be run alone is a suite that misleads
+ * exactly when someone is debugging it.
+ *
+ * Two devices on ONE account (the pairing test) is the one case that needs two
+ * profiles against the same subject, and it asks for that explicitly.
+ */
+async function accountFor(name: string, profile = name): Promise<Client> {
+  const c = clientFor(profile);
+  await c.login("apple", `dev:${name}`);
+  return c;
+}
+
 const hard = (v: { severity: string }[]): unknown[] => v.filter((x) => x.severity === "hard_stop");
 
 // `go build` plus initdb-warm Postgres take longer than bun's 5s default, so
@@ -178,8 +198,8 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("--dev-auth exchanges a dev token for a session, and rejects a real-looking one", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    const userID = await a.login("apple", "dev:alice");
+    const a = await accountFor("t1-devauth");
+    const userID = a.userId;
     expect(userID).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
     const res = await fetch(`${baseURL}/api/v1/auth/exchange`, {
@@ -192,16 +212,15 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("the state file holding the writer key is 0600", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    await a.login("apple", "dev:alice");
+    const a = await accountFor("t2-perms");
     await a.enroll("dev-a");
     expect(statSync(a.location).mode & 0o777).toBe(0o600);
   }, TIMEOUT);
 
   test("client-authored ops round-trip: emit, push, pull, replay, check", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    await a.login("apple", "dev:alice");
+    const a = await accountFor("t3-roundtrip");
+    await a.enroll("dev-a");
 
     a.emit({ type: "home_currency_set", payload: { currency: "AED" } });
     a.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
@@ -239,10 +258,14 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("a second device: peer enrolment, the checkpoint bootstrap, and two-way convergence", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    await a.login("apple", "dev:alice");
-    const b = clientFor("b");
-    expect(await b.login("apple", "dev:alice")).toBe(a.userId); // one account, two devices
+    const a = await accountFor("t4-pair", "t4a");
+    await a.enroll("dev-a");
+    a.emit({ type: "home_currency_set", payload: { currency: "AED" } });
+    await a.push();
+
+    // The one place two profiles share a subject: two devices, one account.
+    const b = clientFor("t4b");
+    expect(await b.login("apple", "dev:t4-pair")).toBe(a.userId);
 
     // dev-b generates its own key and never exports the private half; dev-a
     // signs the registration for it. A session token alone cannot do this.
@@ -297,8 +320,7 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("a writer whose key this device does not hold cannot be adopted", async () => {
     await ensureStack();
-    const rogue = clientFor("rogue");
-    await rogue.login("apple", "dev:alice");
+    const rogue = await accountFor("t5-rogue");
     // `ingest` is the server's own writer and its blobs carry the provenance
     // the UI labels "server-ingested"; the server refuses a device authoring
     // there (403). This device refuses one step earlier and for its own reason:
@@ -312,8 +334,7 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("pull-cold-hashes works against a cold stream that is empty", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    await a.login("apple", "dev:alice");
+    const a = await accountFor("t6-cold");
     const out = await a.pullColdHashes();
     // No mail has been ingested — the SMTP receiver is Task 24 — so there is
     // nothing to pin. It must be a clean no-op rather than an error, because
@@ -324,8 +345,13 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
 
   test("the checker's own input is what the chain verified, not a parallel source", async () => {
     await ensureStack();
-    const a = clientFor("a");
-    await a.login("apple", "dev:alice");
+    // Its own preconditions, rather than whatever an earlier test left behind.
+    const a = await accountFor("t7-checker");
+    await a.enroll("dev-a");
+    a.emit({ type: "home_currency_set", payload: { currency: "AED" } });
+    a.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    await a.push();
+
     const { state, ops } = a.materialize();
     // Every op the checker sees was decoded from a stored blob, so its op ids
     // are exactly the ids inside those blobs. Re-running checkAll by hand over
@@ -348,12 +374,9 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
     expect(byHand.map((v) => v.id)).toEqual((await a.checkOnline()).map((v) => v.id));
   }, TIMEOUT);
 
-  test("a hard stop is an error the CLI can exit 1 on, and it carries every violation", async () => {
-    await ensureStack();
-    const b = clientFor("b");
-    await b.login("apple", "dev:alice");
-    // Nothing is wrong with this account, so the shape is asserted rather than
-    // provoked: HardStopError is the type `cli` keys its exit code off.
+  test("a hard stop is an error the CLI can exit 1 on, and it carries every violation", () => {
+    // No stack: HardStopError is the type `cli` keys its exit code off, and its
+    // shape is a property of the class rather than of any server.
     const err = new HardStopError([{ id: "I2_writer_counters", severity: "hard_stop", detail: "x" }]);
     expect(err.violations).toHaveLength(1);
     expect(err.message).toContain("I2_writer_counters");

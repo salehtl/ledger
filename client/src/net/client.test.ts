@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 
-import { Client, HardStopError, decodeWireRow, registrationMessage } from "./client";
+import { Client, HardStopError, ROSTER_CHECKPOINT, decodeWireRow, registrationMessage } from "./client";
+import { INVARIANT_IDS } from "../invariants/check";
 import { memStore, type WireRow } from "../store/store";
 import { STREAM_COLD, STREAM_HOT, sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, chainKey } from "../wire/chain";
@@ -30,6 +31,8 @@ interface FakeRow {
 interface FakeOpts {
   /** Omit this counter of the ingest hot chain from every pull response. */
   dropWriterCounter?: bigint;
+  /** Answer the hash list with a cursor that never advances. */
+  stallHashCursor?: boolean;
   /** Writers the roster starts with. */
   writers?: { writer_id: string; kind: string; revoked_at: string | null }[];
 }
@@ -44,6 +47,17 @@ class FakeServer {
   writers: { writer_id: string; kind: string; revoked_at: string | null }[];
   /** Commit the next upload and then lose the answer, as a dropped connection does. */
   dropNextUploadResponse = false;
+  /**
+   * Seqs withheld from `GET /api/v1/sync` but NOT from the hash list.
+   *
+   * This is read-after-write lag, and it is what keeps a straddle reachable now
+   * that `push` pre-syncs: without it the pre-pull would discover the row the
+   * lost round committed and simply build the next batch above it. It applies
+   * to bodies only, which is deliberate — `readChainHead` reads the HASH LIST
+   * precisely so the resend path does not depend on the body pull having caught
+   * up, and this pins that.
+   */
+  readonly laggingSeqs = new Set<bigint>();
   private seq = 0n;
   private readonly server: ReturnType<typeof Bun.serve>;
   readonly url: string;
@@ -68,11 +82,18 @@ class FakeServer {
     return out;
   }
 
-  /** Appends a blob to a chain, sealing and chaining it honestly. */
-  append(writerId: string, stream: Stream, plaintext: Uint8Array): FakeRow {
+  /**
+   * Appends a blob to a chain, sealing and chaining it honestly.
+   *
+   * `sealAs` seals the blob for a DIFFERENT position than the one it is stored
+   * at, while still chaining it correctly — the one shape that gets past
+   * `verifyChain` (which hashes the bytes and never looks inside them) and has
+   * to be caught by the invariant checker instead.
+   */
+  append(writerId: string, stream: Stream, plaintext: Uint8Array, sealAs?: bigint): FakeRow {
     const prev = this.head(writerId, stream);
     const counter = prev.counter + 1n;
-    const blob = sealBlob({ userId: this.userId, stream, writerId, writerCounter: counter }, plaintext);
+    const blob = sealBlob({ userId: this.userId, stream, writerId, writerCounter: sealAs ?? counter }, plaintext);
     const row: FakeRow = {
       seq: ++this.seq,
       stream,
@@ -111,6 +132,11 @@ class FakeServer {
     );
   }
 
+  /** Rows a BODY pull may see: `visible` minus whatever is lagging. */
+  private visibleBodies(stream: Stream): FakeRow[] {
+    return this.visible(stream).filter((r) => !this.laggingSeqs.has(r.seq));
+  }
+
   private json(v: unknown, status = 200): Response {
     return new Response(JSON.stringify(v), { status, headers: { "Content-Type": "application/json" } });
   }
@@ -136,11 +162,11 @@ class FakeServer {
       const stream = (url.searchParams.get("stream") ?? "") as Stream;
       const after = BigInt(url.searchParams.get("after") ?? "0");
       const limit = Number(url.searchParams.get("limit") ?? "100");
-      const all = this.visible(stream).filter((r) => r.seq > after);
+      const all = this.visibleBodies(stream).filter((r) => r.seq > after);
       const page = all.slice(0, limit);
       const last = page[page.length - 1];
       const next = last === undefined ? after : last.seq;
-      const maxSeq = this.visible(stream).reduce((m, r) => (r.seq > m ? r.seq : m), 0n);
+      const maxSeq = this.visibleBodies(stream).reduce((m, r) => (r.seq > m ? r.seq : m), 0n);
       return this.json({ stream, rows: page.map((r) => this.wire(r)), next: next.toString(10), complete: next >= maxSeq });
     }
     if (req.method === "GET" && path === "/api/v1/sync/hashes") {
@@ -149,7 +175,7 @@ class FakeServer {
       const all = this.visible(stream).filter((r) => r.seq > after);
       const maxSeq = this.visible(stream).reduce((m, r) => (r.seq > m ? r.seq : m), 0n);
       const last = all[all.length - 1];
-      const next = last === undefined ? after : last.seq;
+      const next = this.opts.stallHashCursor === true ? after : last === undefined ? after : last.seq;
       return this.json({
         stream,
         hashes: all.map((r) => ({
@@ -160,7 +186,7 @@ class FakeServer {
           prev_hash: hex(r.prev_hash),
         })),
         next: next.toString(10),
-        complete: next >= maxSeq,
+        complete: this.opts.stallHashCursor === true ? false : next >= maxSeq,
       });
     }
     if (req.method === "POST" && path === "/api/v1/sync") return this.upload(req);
@@ -233,10 +259,15 @@ class FakeServer {
     }
     if (this.dropNextUploadResponse) {
       // The rows COMMITTED and the answer was lost — the one way a straddle is
-      // reachable against a server that appends atomically.
+      // reachable against a server that appends atomically. They also go
+      // lagging, so the client's next pre-sync does not simply discover them
+      // and build above them; see `laggingSeqs`.
       this.dropNextUploadResponse = false;
+      for (const q of seqs) this.laggingSeqs.add(BigInt(q));
       return this.json({ error: "internal" }, 500);
     }
+    // A successful append is where the lag resolves.
+    this.laggingSeqs.clear();
     return this.json({ seqs });
   }
 }
@@ -292,8 +323,19 @@ function incompressible(bytes: number): string {
 const undecodable = (): Uint8Array =>
   new TextEncoder().encode(JSON.stringify({ v: 1, kind: "ops", ops: [{ v: 1, op_id: "x", payload: {} }] }));
 
-/** Seeds `n` hot ingest blobs, optionally interleaving cold ones. */
+/**
+ * Seeds `n` hot ingest blobs, optionally interleaving cold ones.
+ *
+ * It also puts the ingest writer on the roster, because the real server does:
+ * `auth.Writers.EnsureIngestWriter` enrols it the first time it appends for an
+ * account. That matters here rather than being decoration — a checkpoint names
+ * one head per ROSTER writer, so a fixture whose roster omitted `ingest` would
+ * have no `ingest|hot` pair to get right or wrong.
+ */
 function seedIngest(srv: FakeServer, n: number, opts: { cold?: boolean; corruptAt?: bigint } = {}): void {
+  if (n > 0 && !srv.writers.some((w) => w.writer_id === INGEST)) {
+    srv.writers.push({ writer_id: INGEST, kind: "ingest", revoked_at: null });
+  }
   for (let i = 1; i <= n; i++) {
     const counter = BigInt(i);
     const code = CODES[(i - 1) % CODES.length];
@@ -487,15 +529,21 @@ describe("push", () => {
     expect(c.check(STREAM_HOT, srv.writers).filter((v) => v.severity === "hard_stop")).toHaveLength(0);
   });
 
-  test("a roster that has not changed does not produce a second checkpoint", async () => {
+  // The rule this REPLACED — "checkpoint only when the roster string changes" —
+  // meant exactly one checkpoint was ever written per account. The roster stops
+  // moving; the chains do not.
+  test("an unchanged roster still produces a checkpoint once the heads have moved", async () => {
     const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
     const c = await loggedIn(srv, "dev-a");
     c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
     await c.push();
     c.emit({ type: "rate_set", payload: { currency: "EUR", rate_micro: "3900000" } });
     const second = await c.push();
-    expect(second.checkpointed).toBe(false);
-    expect(second.ops).toBe(1);
+    expect(second.checkpointed).toBe(true);
+    expect(second.ops).toBe(2); // the rate_set plus the checkpoint
+    // …and it says something the first one could not: blob 1 of its own chain.
+    const own = c.state().checkpoints.find((h) => h.writer_id === "dev-a" && h.stream === STREAM_HOT);
+    expect(own?.counter).toBe(1n);
   });
 
   test("two enrolled device writers and no checkpoint is a hard stop", async () => {
@@ -635,5 +683,180 @@ describe("state", () => {
       expect(v.some((x) => x.id === "I2_writer_counters" && x.severity === "hard_stop")).toBe(true);
       expect(v.some((x) => x.id === "I14_forks_surfaced")).toBe(true); // never zero-suppressed
     }
+  });
+});
+
+describe("checkpoint", () => {
+  // The defect this whole section exists for: `checkpoint()` filled every
+  // (roster writer x stream) pair from `pinnedHead()`, which falls back to
+  // genesis for a chain the device has not looked at. A device that had pulled
+  // nothing therefore attested "every chain is empty" — which satisfies I11's
+  // coverage requirement while asserting NOTHING, and leaves a peer with no
+  // trusted head for the cold stream, where the raw email bodies are.
+  test("attests the real heads of chains this device did not author", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    seedIngest(srv, 5, { cold: true });
+    const c = await loggedIn(srv, "dev-a");
+
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    const report = await c.push();
+    expect(report.checkpointed).toBe(true);
+
+    const heads = new Map(c.state().checkpoints.map((h) => [`${h.writer_id}|${h.stream}`, h.counter]));
+    expect(heads.get("ingest|hot")).toBe(5n);
+    // The cold chain in particular: it is never pulled by a hot-only client, so
+    // it is the pair the naive implementation always got wrong.
+    expect(heads.get("ingest|cold")).toBe(5n);
+    // Its own chain is genuinely empty at the moment it attests: the blob
+    // carrying this very checkpoint is counter 1 and cannot attest itself.
+    expect(heads.get("dev-a|hot")).toBe(0n);
+    expect(heads.get("dev-a|cold")).toBe(0n);
+    expect(c.check(STREAM_HOT, srv.writers).filter((v) => v.severity === "hard_stop")).toHaveLength(0);
+  });
+
+  // Counter 0 must mean EMPTY, not UNKNOWN. Task 13's I11 now emits a notice
+  // when a checkpoint claims a chain is empty that the reader holds blobs on,
+  // and this pins which side of that line each chain falls on.
+  test("claims 0 only for the one chain it cannot possibly attest: its own", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    seedIngest(srv, 3, { cold: true });
+    const c = await loggedIn(srv, "dev-a");
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    await c.push();
+
+    const staleFor = (): string[] =>
+      c
+        .check(STREAM_HOT, srv.writers)
+        .filter((v) => v.id === "I11_roster_checkpoint" && v.detail.includes("claims that chain is empty"))
+        .map((v) => v.detail.replace(/^checkpoint head \((.*?)\).*$/, "$1"));
+
+    // The chains this device merely READS are attested for real. That is the
+    // defect: the naive implementation claimed 0 for every one of them.
+    expect(staleFor()).not.toContain("ingest|hot");
+    expect(staleFor()).not.toContain("ingest|cold");
+
+    // Its own hot chain is the exception, and it is not fixable: this
+    // checkpoint IS blob 1 of that chain, and a payload cannot contain the hash
+    // of the blob that carries it. So the first checkpoint a device writes
+    // necessarily claims 0 for itself.
+    expect(staleFor()).toContain("dev-a|hot");
+
+    // …and it clears itself on the next one, which attests blob 1 for real.
+    c.emit({ type: "rate_set", payload: { currency: "EUR", rate_micro: "3900000" } });
+    await c.push();
+    expect(staleFor()).toHaveLength(0);
+  });
+
+  // Gating re-checkpointing on the roster alone meant exactly ONE checkpoint
+  // was ever written: the roster string stops changing and the chains keep
+  // moving, so the log's only checkpoint went on claiming counter 0 forever.
+  test("keeps checkpointing as the chains advance, not only when the roster does", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const c = await loggedIn(srv, "dev-a");
+
+    for (let i = 0; i < 4; i++) {
+      c.emit({ type: "rate_set", payload: { currency: CODES[i]!, rate_micro: `${1_000_000 + i}` } });
+      await c.push();
+    }
+    const head = c.pinnedHead("dev-a", STREAM_HOT).counter;
+    expect(head).toBeGreaterThan(3n);
+    const claimed = c.state().checkpoints.find((h) => h.writer_id === "dev-a" && h.stream === STREAM_HOT);
+    // It necessarily lags by the blob it is riding in — a checkpoint cannot
+    // attest itself — but it TRACKS, which the roster-gated version did not.
+    expect(claimed?.counter).toBeGreaterThan(0n);
+    expect(head - (claimed?.counter ?? 0n)).toBeLessThanOrEqual(2n);
+  });
+
+  test("a push with nothing to say uploads nothing, checkpoint or not", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const c = await loggedIn(srv, "dev-a");
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    await c.push();
+    const after = srv.uploaded.length;
+    // Twice, because the churn this guards against needs a second round to
+    // show: the first no-op push would attest the previous checkpoint's own
+    // blob, move the head, and give the next one something to attest again.
+    expect((await c.push()).blobs).toBe(0);
+    expect((await c.push()).blobs).toBe(0);
+    expect(srv.uploaded.length).toBe(after);
+  });
+
+  // The deadlock the pre-sync would otherwise create: once dev-b is enrolled
+  // and unattested, EVERY device's pull hard-stops on I11 — including the one
+  // that has to write the healing checkpoint.
+  test("pushes through the I11 hard stop it is about to repair", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const c = await loggedIn(srv, "dev-a");
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    await c.push();
+
+    srv.writers.push({ writer_id: "dev-b", kind: "device", revoked_at: null });
+    // A plain pull is refused, which is the rule doing its job.
+    await expect(c.pull()).rejects.toThrow(/I11_roster_checkpoint/);
+    // A push is not, because writing the checkpoint is the repair.
+    const healing = await c.push();
+    expect(healing.checkpointed).toBe(true);
+    expect(c.state().checkpoints.map((h) => `${h.writer_id}|${h.stream}`).sort()).toEqual([
+      "dev-a|cold",
+      "dev-a|hot",
+      "dev-b|cold",
+      "dev-b|hot",
+    ]);
+    // …and the account syncs again afterwards.
+    await c.pull();
+  });
+
+  // A chain break during the pre-sync is NOT something a checkpoint repairs, so
+  // it must still stop the push dead.
+  test("does not push through a hard stop that a checkpoint cannot repair", async () => {
+    const srv = serve({ dropWriterCounter: 2n, writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    seedIngest(srv, 4);
+    const c = await loggedIn(srv, "dev-a");
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+    await expect(c.push()).rejects.toThrow(/I2_writer_counters/);
+    expect(srv.uploaded).toHaveLength(0);
+  });
+
+  test("the invariant id the push escape keys on is a real one", () => {
+    expect(INVARIANT_IDS).toContain(ROSTER_CHECKPOINT);
+  });
+});
+
+describe("guards", () => {
+  // Everything else that stops a pull is caught by verifyChain before the
+  // checker ever runs, so removing pull()'s own hard-stop throw failed almost
+  // nothing. This is the case that isolates it: a blob sealed for one position
+  // and stored at another chains PERFECTLY — verifyChain hashes the bytes and
+  // never looks inside them — and only I4 can see it.
+  test("a blob sealed for another position is refused by the checker, not the chain", async () => {
+    const srv = serve();
+    seedIngest(srv, 2);
+    srv.append(INGEST, STREAM_HOT, encodeBlobOps([rateSet("GBP", "4600000")]), 99n);
+    const c = await loggedIn(srv);
+
+    const err = await c.pull().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HardStopError);
+    expect((err as HardStopError).violations.some((v) => v.id === "I4_aad" && v.severity === "hard_stop")).toBe(true);
+    // No chain break was involved, so nothing was attributed from one.
+    expect((err as HardStopError).cause).toBeUndefined();
+    expect(c.cursor(STREAM_HOT)).toBe(0n);
+    expect(c.state().txns.size).toBe(0);
+  });
+
+  test("a hash list whose cursor never advances is refused rather than looped on", async () => {
+    const srv = serve({ stallHashCursor: true });
+    seedIngest(srv, 2, { cold: true });
+    const c = await loggedIn(srv);
+    await expect(c.pullColdHashes()).rejects.toThrow(/does not advance past/);
+  });
+
+  test("a peer public key of the wrong length is refused before it is enrolled", async () => {
+    const srv = serve();
+    const c = await loggedIn(srv);
+    await c.enroll("dev-a");
+    await expect(c.enroll("dev-b", { signWith: "dev-a", publicKey: new Uint8Array(31) })).rejects.toThrow(
+      /31 bytes, and Ed25519 keys are 32/,
+    );
+    expect(srv.writers.map((w) => w.writer_id)).toEqual(["dev-a"]);
   });
 });

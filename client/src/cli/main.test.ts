@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { parseArgs } from "./main";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { parseArgs, run } from "./main";
+import { emptyClientState, fileStore } from "../store/store";
 
 describe("parseArgs", () => {
   test("reads the command and its flags", () => {
@@ -55,5 +60,33 @@ describe("parseArgs", () => {
 
   test("no arguments at all is the help case, not a crash", () => {
     expect(parseArgs([]).command).toBe("");
+  });
+});
+
+describe("run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ledger-cli-"));
+
+  // The hazard the flag used to hide: pinning a HOT head from the hash list
+  // puts it ahead of the hot bodies, and `pull` verifies those against it — an
+  // unclearable chain break. The command is cold-only and says so.
+  test("pull-cold-hashes refuses --stream rather than accepting hot", async () => {
+    await expect(run(["pull-cold-hashes", "--stream", "hot", "--state-dir", dir])).rejects.toThrow(/cold-only/);
+    await expect(run(["pull-cold-hashes", "--stream", "cold", "--state-dir", dir])).rejects.toThrow(/cold-only/);
+  });
+
+  test("--parent is refused unless it is an exact non-negative integer", async () => {
+    for (const bad of ["2.5", "-1", "abc", "9007199254740993"]) {
+      await expect(
+        run(["emit", "--type", "txn_categorized", "--json", "{}", "--parent", bad, "--state-dir", dir]),
+      ).rejects.toThrow(/--parent/);
+    }
+  });
+
+  test("a state directory the client creates ignores itself", () => {
+    const own = join(dir, "nested");
+    const store = fileStore(own, "p");
+    store.save(emptyClientState("http://127.0.0.1:1"));
+    expect(readFileSync(join(own, ".gitignore"), "utf8")).toContain("*");
+    expect(statSync(join(own, "p.json")).mode & 0o777).toBe(0o600);
   });
 });

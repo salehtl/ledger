@@ -36,9 +36,14 @@
  * every save (mode on `open` applies only at creation), and written through a
  * temp file + rename so a crash cannot leave a truncated one. There is no
  * passphrase and no keychain: this is a scratch artifact for a test rig on a
- * single-operator box, and `client/.gitignore` keeps `.ledger-client/` out of
- * the repository. A product client must not reuse this — Phase 2's key belongs
- * in the platform keystore.
+ * single-operator box. A product client must not reuse this — Phase 2's key
+ * belongs in the platform keystore.
+ *
+ * `client/.gitignore` names the DEFAULT state directory, which covers nothing
+ * when `--state-dir` points somewhere else — and it takes any path. So the
+ * directory ignores itself: {@link fileStore} writes a `.gitignore` containing
+ * `*` beside the state file on every save, and a state directory created
+ * anywhere inside a working tree therefore cannot be committed by accident.
  */
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -122,6 +127,16 @@ export interface ClientState {
   authoredHead: Head | null;
   /** The roster, sorted, as of the last checkpoint this client wrote. */
   checkpointRoster: string[] | null;
+  /**
+   * The heads this client last attested, canonically rendered
+   * (`net/client.ts`'s `headsKey`).
+   *
+   * The roster alone is not enough to decide whether a new checkpoint is owed:
+   * the roster stops changing after the second device joins, while the chains
+   * keep advancing, so gating on it means exactly one checkpoint is ever
+   * written per account and it goes on claiming counter 0 forever.
+   */
+  checkpointHeads: string | null;
 }
 
 export function emptyClientState(server = ""): ClientState {
@@ -139,6 +154,7 @@ export function emptyClientState(server = ""): ClientState {
     pending: [],
     authoredHead: null,
     checkpointRoster: null,
+    checkpointHeads: null,
   };
 }
 
@@ -191,6 +207,16 @@ export function fileStore(dir: string, profile: string): Store {
     },
     save(state: ClientState): void {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      // The directory ignores ITSELF, because `client/.gitignore` can only name
+      // the default `.ledger-client/` and `--state-dir` takes any path — the
+      // manual runs in this task's own report used one. A state directory
+      // created anywhere inside a working tree therefore cannot be committed by
+      // accident, and what it holds is an Ed25519 private key and a session
+      // bearer token. Written every save rather than only on create, so a
+      // directory that predates this still gets one.
+      writeFileSync(join(dirname(path), ".gitignore"), "# ledger v2 client state: private keys and session tokens.\n*\n", {
+        mode: 0o600,
+      });
       const tmp = `${path}.tmp`;
       // mode on write applies only when the file is CREATED, so an existing
       // temp file from a crashed run would keep whatever mode it had. Removed
@@ -241,6 +267,7 @@ interface WireState {
   pending: Op[];
   authored_head: { counter: string; hash: string } | null;
   checkpoint_roster: string[] | null;
+  checkpoint_heads: string | null;
 }
 
 function encodeState(s: ClientState): WireState {
@@ -267,6 +294,7 @@ function encodeState(s: ClientState): WireState {
     authored_head:
       s.authoredHead === null ? null : { counter: s.authoredHead.counter.toString(10), hash: hex(s.authoredHead.hash) },
     checkpoint_roster: s.checkpointRoster,
+    checkpoint_heads: s.checkpointHeads,
   };
 }
 
@@ -312,6 +340,7 @@ export function decodeState(raw: unknown, where: string): ClientState {
       ? null
       : { counter: parseDecimal(d.authored_head.counter), hash: unhex(d.authored_head.hash, `${where}: authored head`) };
   out.checkpointRoster = Array.isArray(d.checkpoint_roster) ? d.checkpoint_roster : null;
+  out.checkpointHeads = typeof d.checkpoint_heads === "string" ? d.checkpoint_heads : null;
   return out;
 }
 

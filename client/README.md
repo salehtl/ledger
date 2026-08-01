@@ -15,10 +15,11 @@ app is a separate program, and it must not be built by growing this one.
 
 ```
 bun run cli login             --server <url> --idp apple|google --id-token <token>
+                              # or LEDGER_CLIENT_ID_TOKEN
 bun run cli enroll            --writer <id> [--sign-with <writer-id>]
                               [--pubkey <base64>] [--keygen-only]
 bun run cli pull              [--stream hot|cold] [--limit <n>]
-bun run cli pull-cold-hashes  [--stream hot|cold] [--limit <n>]
+bun run cli pull-cold-hashes  [--limit <n>]
 bun run cli replay
 bun run cli check             [--stream hot|cold] [--json]
 bun run cli emit              --type <op_type> --json '<payload>'
@@ -89,6 +90,14 @@ A cold body whose hash was never pinned is refused. Run `pull-cold-hashes`
 first; "I have no pin for this one" is exactly the answer a hostile server
 wants.
 
+**`pull-cold-hashes` is cold-only, and refuses `--stream`.** The endpoint serves
+`hot` too, and using it would be a trap: a hot head pinned from the hash list
+runs ahead of the hot *bodies*, and `pull` verifies those against the pinned
+head — so the next hot pull would raise a chain break the client could never
+clear. Cold is safe from the same move only because its bodies are checked
+against the pins rather than against the head. A future client that prunes hot
+blobs needs a separate pinned-head-for-hot before it can ask for hot hashes.
+
 Within a page the order is fixed: **verify → fold → check → persist.** The
 cursor, the rows and the new pinned heads are written together, and only after
 `checkAll` reports no `hard_stop`. A cursor persisted over an uncertified page
@@ -114,6 +123,22 @@ device enrolled after the last checkpoint is therefore checkpointed on its own
 first push, which is what makes `I11_roster_checkpoint`'s roster-race tolerance
 self-healing.
 
+`push` **syncs before it attests.** `pull` and `pull-cold-hashes` both run before
+anything is built, so a checkpoint claims heads that were verified moments ago.
+Building it first — which this client originally did — meant attesting
+`ingest|cold: 0` while the cold chain held every raw email on the account: a
+checkpoint that satisfies the coverage rule while asserting nothing at all.
+
+The one hard stop `push` proceeds over is `I11_roster_checkpoint`, because
+writing the checkpoint is the repair. Obeying it would deadlock the account:
+every device needs a checkpoint before it can sync, and none could sync in order
+to write one. Every other hard stop still stops the push dead.
+
+`push` also re-checkpoints whenever the heads it would attest have **moved**,
+not only when the roster string changes. Gating on the roster alone means
+exactly one checkpoint is ever written per account, and it goes on claiming
+`counter: 0` while the real heads climb.
+
 **A checkpoint names the roster, not the observed chains.** One head for every
 `(roster writer × stream)` pair, with `counter: 0` and the 64-zero genesis hash
 for a chain that holds no blobs. A checkpoint built from observed heads could
@@ -125,6 +150,14 @@ false, because `0 > observed` is never true.
 The counters come from **verified** heads only, never from this device's own
 upload record. Claiming a head that has not been pulled back would be true and
 would still hard-stop `I11` on this device's very next check.
+
+**One chain a checkpoint can never attest: its own carrier.** The checkpoint is
+itself a blob in its author's chain, and a payload cannot contain the hash of
+the blob carrying it — so a device's *first* checkpoint necessarily claims
+`counter: 0` for its own chain, and Task 13's "claims that chain is empty"
+notice fires once for it. The next checkpoint attests that blob for real and the
+notice clears. Do not try to fix this by having the payload name its own
+position; it is circular.
 
 **A landed checkpoint does not empty the notice list, and cannot.** The plan
 (Task 14 step 4) expects `0 hard stops, 1 notice` once a checkpoint exists, with
@@ -163,6 +196,18 @@ token, both in the clear. The directory is created `0700` and the file written
 There is no passphrase and no keychain: this is a scratch artifact for a test
 rig, `client/.gitignore` keeps `.ledger-client/` out of the repository, and a
 product client must put its key in the platform keystore instead.
+
+## What this suite does NOT cover
+
+The end-to-end round trip has **no concurrent authorship**: `forks` is `0` in
+every run. So neither "two devices materialize the same state *under
+concurrency*" nor "exactly one `ForkNotice` is surfaced" is tested here, and a
+green Task 14 must not be read as covering them. That is Task 38's scope (its
+step 9), and it is the half of spec §5's exit criterion this task cannot claim.
+
+What *is* covered end to end: two devices on one account converging on a
+**sequentially** authored log (byte-identical `serializeState`), the multi-device
+checkpoint bootstrap, peer enrolment, and the per-stream cursor model.
 
 ## Tests
 
