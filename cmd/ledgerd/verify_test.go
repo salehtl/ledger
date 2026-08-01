@@ -4,6 +4,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +102,38 @@ func TestAskVerdictLoopsOnNonsenseAndStopsAtEOF(t *testing.T) {
 	if got, err = askVerdict(bufio.NewReader(strings.NewReader("q\n"))); err != nil || got != "" {
 		t.Fatalf("askVerdict(q) = (%q, %v), want (\"\", nil)", got, err)
 	}
+	// n and u were accepted but never asserted, so nothing stopped them being
+	// wired to the wrong verdict — and n vs u is the difference between leaving
+	// the denominator and counting against the rate.
+	for _, tc := range []struct{ in, want string }{
+		{"n\n", verify.VerdictNonTransactional},
+		{"non_transactional\n", verify.VerdictNonTransactional},
+		{"u\n", verify.VerdictUnreadable},
+		{"unreadable\n", verify.VerdictUnreadable},
+		{"T\n", verify.VerdictTransaction},
+	} {
+		got, err := askVerdict(bufio.NewReader(strings.NewReader(tc.in)))
+		if err != nil || got != tc.want {
+			t.Errorf("askVerdict(%q) = (%q, %v), want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+// A body that could not be read counts AGAINST the rate. Recording it as
+// non-transactional would remove it from the denominator and raise the number,
+// which is the exact optimistic flip VerdictUnreadable exists to prevent.
+func TestAnUnreadableBodyIsNotQuietlyCalledNonTransactional(t *testing.T) {
+	got, isAuto := autoVerdict(false)
+	if !isAuto {
+		t.Fatal("a message whose body could not be fetched is not auto-judged, so the tool " +
+			"will ask for it forever")
+	}
+	if got != verify.VerdictUnreadable {
+		t.Fatalf("autoVerdict(no body) = %q, want %q", got, verify.VerdictUnreadable)
+	}
+	if _, isAuto := autoVerdict(true); isAuto {
+		t.Fatal("a message WITH a body was auto-judged instead of shown to the operator")
+	}
 }
 
 func TestClipBodyBoundsWhatIsPrinted(t *testing.T) {
@@ -135,5 +172,122 @@ func TestParseArgsCarriesTheVerifyFlags(t *testing.T) {
 	}
 	if got.purge.User != u {
 		t.Fatalf("--user reached verify but not purge: %+v", got.purge)
+	}
+}
+
+// TestVerifyDefaultWindowIsTwoWeeks pins the CONSTANT. verifyWindow takes the
+// span as a parameter, so every test of it passed its own value and the constant
+// itself was never read by anything — changing it to an hour broke nothing.
+// It is the default window of both operator commands, and for parse-rate it is
+// the difference between measuring the criterion and measuring an afternoon.
+func TestVerifyDefaultWindowIsTwoWeeks(t *testing.T) {
+	if verifyDefaultWindow != 14*24*time.Hour {
+		t.Fatalf("verifyDefaultWindow = %v, want 336h: spec §5's criterion is two "+
+			"consecutive weeks, and verify.MinimumWindow is the same span",
+			verifyDefaultWindow)
+	}
+	if verifyDefaultWindow != verify.MinimumWindow {
+		t.Fatalf("the default window (%v) and the gate's minimum window (%v) disagree, so "+
+			"the default invocation cannot satisfy the gate", verifyDefaultWindow, verify.MinimumWindow)
+	}
+}
+
+// TestPrintParseRateReportsTheRealGate. The printed gate line is what an
+// operator reads and pastes into the exit record, and it was not covered:
+// hardcoding it to `true` broke no test.
+func TestPrintParseRateReportsTheRealGate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rep  verify.ParseRateReport
+		want string
+	}{
+		{"a failing gate", verify.ParseRateReport{
+			HasRate: true, Rate: 0.5, LowerBound: 0.5,
+			Gate: verify.Gate{Passed: false, Reasons: []string{"the 95% lower bound is 0.5000"}},
+		}, "false"},
+		{"a passing gate", verify.ParseRateReport{
+			HasRate: true, Rate: 1, LowerBound: 1,
+			Gate: verify.Gate{Passed: true},
+		}, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() { printParseRate(tc.rep, false) })
+			if !strings.Contains(out, "exit gate (>= 95%)       "+tc.want) {
+				t.Fatalf("printed gate line does not say %q:\n%s", tc.want, out)
+			}
+			if tc.want == "false" && !strings.Contains(out, "NOT MET") {
+				t.Fatalf("a failing gate printed no reason:\n%s", out)
+			}
+		})
+	}
+}
+
+// The JSON form must carry the decision. A consumer reading this report picks
+// the obvious field, and before `gate` existed the obvious field was `rate` —
+// the point estimate, the one number that must never be the gate.
+func TestParseRateJSONCarriesTheGateDecision(t *testing.T) {
+	out := captureStdout(t, func() {
+		printParseRate(verify.ParseRateReport{
+			HasRate: true, Rate: 0.99, LowerBound: 0.80,
+			Gate: verify.Gate{Passed: false, Reasons: []string{"below threshold"}},
+		}, true)
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("--json did not emit JSON: %v\n%s", err, out)
+	}
+	gate, ok := got["gate"].(map[string]any)
+	if !ok {
+		t.Fatalf("--json has no `gate` object; keys: %v", keysOf(got))
+	}
+	if gate["passed"] != false {
+		t.Fatalf("gate.passed = %v, want false", gate["passed"])
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = io.Copy(&b, r)
+		done <- b.String()
+	}()
+	f()
+	w.Close()
+	os.Stdout = old
+	return <-done
+}
+
+func TestSanitizeOperatorKeepsTheAuditGrammar(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"Saleh", "saleh"},
+		{"saleh@icloud.com", "saleh@icloud.com"},
+		{"  root  ", "root"},
+		{"...leading", "leading"},
+		{"a b/c;d", "abcd"},
+		{"", ""},
+	} {
+		if got := sanitizeOperator(tc.in); got != tc.want {
+			t.Errorf("sanitizeOperator(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := sanitizeOperator(strings.Repeat("x", 200)); len(got) > 64 {
+		t.Errorf("sanitizeOperator did not bound length: %d", len(got))
 	}
 }

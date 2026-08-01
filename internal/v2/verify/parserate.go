@@ -36,6 +36,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,6 +65,133 @@ const (
 
 // Verdicts is the closed set, for a caller validating operator input.
 var Verdicts = []string{VerdictTransaction, VerdictNonTransactional, VerdictUnreadable}
+
+// Loss reasons: mail that ARRIVED for a real user in the window and never became
+// a transaction. Each is user-scoped, so each is attributable alpha mail.
+//
+// These used to leave through Excluded, which the gate never read — so a
+// normalizer that broke on one bank and cost the alpha 40 of 100 messages
+// reported a rate of 1.0000 and a green gate. They are now in the DENOMINATOR,
+// counted against the rate exactly as VerdictUnreadable is and for the same
+// reason: we cannot know whether a message we never read carried a transaction,
+// and the conservative reading is the only one that cannot flatter us.
+const (
+	// LossHeldUnconfirmed: still sitting in quarantine at the end of the
+	// window. Trust-on-first-use means this is normal for a new sender and a
+	// silent loss for one the user never confirms.
+	LossHeldUnconfirmed = "held_unconfirmed"
+	// LossHeldExpired: the hold expired and the body is gone. Announced (the
+	// user was warned) but still mail that produced no transaction.
+	LossHeldExpired = "held_expired"
+	// LossDiscardedDuplicate: refused as a redelivery of something this server
+	// does not have. verify.Accounting's A3_duplicate_of_nothing is the same
+	// fact from the accounting side; it is a loss here too, because the message
+	// arrived and produced no transaction.
+	//
+	// Note this is the ONLY way a duplicate reaches the report at all: a
+	// redelivery of a message we DO hold shares its ingest id, so it merges into
+	// that message's identity and is neither counted twice nor excluded by a
+	// rule. The exclusion is structural.
+	LossDiscardedDuplicate = "discarded_duplicate"
+	// LossUnresolved: an arrival that reached none of the terminal states this
+	// build knows. Should be unreachable; counted rather than dropped.
+	LossUnresolved = "unresolved"
+)
+
+// GateThreshold is spec §5's exit criterion. MinimumMessages and MinimumWindow
+// are what stop a green gate from being printed off nothing.
+const (
+	// MinimumWindow is the "two consecutive weeks" of the criterion, as a
+	// duration. Below it the criterion is not assertable at all — the exit
+	// record's own worked example was a TWO MINUTE window printing a green gate.
+	MinimumWindow = 14 * 24 * time.Hour
+	// MinimumMessages is the volume below which the number is not stable enough
+	// to ship on: at 100 messages a single one moves the rate by a point, and
+	// below about 20 one message cannot even move it across the 5% margin the
+	// threshold is expressed in.
+	MinimumMessages = 100
+	// MinimumUserMessages is the per-account volume at which a per-user rate is
+	// judged rather than merely reported. Below it a single failure would fail
+	// the whole gate on noise; above it, a broken account can no longer hide
+	// inside a healthy aggregate.
+	MinimumUserMessages = 20
+)
+
+// Gate is the ship decision and, when it is no, every reason it is no.
+//
+// Reasons are plural on purpose: an operator fixing one and re-running should
+// not discover the next one at the same cost, and an exit record should carry
+// the whole list.
+type Gate struct {
+	Passed  bool     `json:"passed"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// UserRate is one account's own number. Without these a single completely broken
+// alpha hides inside a healthy aggregate: four accounts at 130 clean messages
+// plus one at 27 failures and zero parses averages to 0.9506 and passed.
+type UserRate struct {
+	UserID uuid.UUID `json:"user_id"`
+	Parsed int64     `json:"parsed"`
+	Total  int64     `json:"total"`
+	Rate   float64   `json:"rate"`
+	// Judged is false for an account below MinimumUserMessages: reported, but
+	// not allowed to fail the gate on its own.
+	Judged bool `json:"judged"`
+}
+
+// WeekRate is one whole week of the window. The criterion is "two CONSECUTIVE
+// weeks", which a mean over the whole span does not express: 0.90 followed by
+// 1.00 averages to a pass and is not two weeks above the line.
+type WeekRate struct {
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+	Parsed int64     `json:"parsed"`
+	Total  int64     `json:"total"`
+	Rate   float64   `json:"rate"`
+}
+
+// ParseRateBlindSpots is what this number cannot see, carried on every report
+// for the same reason verify.Report carries [BlindSpots]: a bare percentage
+// overclaims, and this one is the sole evidence that will ever exist for §5's
+// ship gate.
+var ParseRateBlindSpots = []BlindSpot{
+	{
+		ID: "prediagnostic_refusals_are_not_in_the_denominator", Direction: Overcount,
+		Reason: "the tarpit, the connection caps, over-long lines, malformed paths and a " +
+			"declared SIZE over the cap are all refused before a recipient is resolved, so " +
+			"they leave NO user-scoped row and cannot reach Lost. Mail an alpha sent that was " +
+			"refused that way is invisible here, and its absence raises the rate. " +
+			"verify.Accounting's protocol_rejections is the only place it is counted at all, " +
+			"and that counter cannot say which account it belonged to.",
+	},
+	{
+		ID: "relay_spool_is_not_in_the_denominator", Direction: Overcount,
+		Reason: "mail sitting in an undrained backup-MX spool has no diagnostics row anywhere, " +
+			"so it is neither parsed nor lost here. Drain the relay before measuring.",
+	},
+	{
+		ID: "deleted_accounts_shrink_a_past_window", Direction: Overcount,
+		Reason: "parse_diagnostics cascades away with the account, and a purged account takes " +
+			"its FAILURES out of every past window with it. Two runs of the same window " +
+			"across a deletion are not comparable, and the later one reads better.",
+	},
+	{
+		ID: "heuristic_hits_count_as_parses", Direction: Overcount,
+		Reason: "the heuristic tier is always routed to review (Decision 16), so a heuristic " +
+			"hit is a GUESS the user must confirm, not a finished transaction. It is in the " +
+			"numerator because the criterion is about extraction coverage; ByTier prints the " +
+			"split so a reader can discount it.",
+	},
+	{
+		ID: "verdicts_are_interested_judgement", Direction: Overcount,
+		Reason: "the denominator rests on an operator deciding which unparsed messages were " +
+			"genuine transaction mail, and that operator wants the beta to ship. The table is " +
+			"append-only with the operator recorded (00018) so revisions are visible and " +
+			"countable, which bounds the problem without removing it. Revisions belongs in " +
+			"the exit record.",
+	},
+}
 
 // ParseRateCaveat is the sentence that must travel with the number. It is a
 // constant rather than prose in a report because the misreading it prevents —
@@ -125,13 +254,17 @@ type ParseRateReport struct {
 	Parsed int64            `json:"parsed"`
 	ByTier map[string]int64 `json:"by_tier"`
 
-	// Unparsed is the population needing judgement: appended arrivals at
-	// tier='none'.
+	// Unparsed is the population needing judgement: stored messages whose body
+	// we still hold and which no tier extracted a transaction from.
 	Unparsed int64 `json:"unparsed"`
-	// Excluded records the arrivals deliberately left out of the population and
-	// why, keyed by outcome. Reporting it is what makes the denominator
-	// auditable rather than a choice buried in a WHERE clause.
-	Excluded map[string]int64 `json:"excluded"`
+
+	// Lost is mail that arrived for a real account in the window and never
+	// became a transaction, keyed by why — the reject_reason where there is one,
+	// so no_text_part and normalize_error (our failures) are never collapsed
+	// into the sender's "rejected" bucket. Every one of these counts AGAINST the
+	// rate; see the loss constants.
+	Lost      map[string]int64 `json:"lost"`
+	LostTotal int64            `json:"lost_total"`
 
 	Adjudicated      int64 `json:"adjudicated"`
 	Transaction      int64 `json:"transaction"`
@@ -153,22 +286,73 @@ type ParseRateReport struct {
 	// exactly when the whole population was adjudicated (no sampling error).
 	LowerBound float64 `json:"lower_bound"`
 
+	// Gate is the ship decision. It is a FIELD and not only a method so that
+	// --json carries it: a consumer reading this report picks the obvious field,
+	// and until this existed the obvious field was `rate` — the point estimate,
+	// the one number that must never be the gate.
+	Gate Gate `json:"gate"`
+
+	// PerUser and Weeks are the two decompositions the criterion needs and an
+	// aggregate cannot express.
+	PerUser []UserRate `json:"per_user"`
+	Weeks   []WeekRate `json:"weeks,omitempty"`
+
+	// BlindSpots is what this number cannot see, carried on the report exactly
+	// as verify.Report carries its own.
+	BlindSpots []BlindSpot `json:"blind_spots"`
+
 	Caveat string `json:"caveat"`
 }
 
 // GateThreshold is spec §5's exit criterion.
 const GateThreshold = 0.95
 
-// MeetsGate reports whether the exit criterion is met. It tests the LOWER BOUND,
-// never the point estimate: a point estimate from a sample is not a gate.
-//
-// An EMPTY window fails it. [ratio] answers 1.0 for a zero denominator, which is
-// the right answer to "what fraction of nothing parsed" and the wrong answer to
-// "has the alpha met its exit criterion" — a two-week window with no mail in it
-// would otherwise report a green gate, which is the single most misleading thing
-// this instrument could do.
-func (r ParseRateReport) MeetsGate() bool {
-	return r.HasRate && r.Parsed+r.Unparsed > 0 && r.LowerBound >= GateThreshold
+// MeetsGate reports the ship decision. It reads the precomputed [Gate] so that
+// the method and the JSON field can never disagree.
+func (r ParseRateReport) MeetsGate() bool { return r.Gate.Passed }
+
+// decideGate is spec §5's criterion, in full, as a list of things that must all
+// hold. Each failure appends its own reason: an operator who fixes one and
+// re-runs should not pay the same round trip to discover the next.
+func (r *ParseRateReport) decideGate() {
+	var why []string
+	if !r.HasRate {
+		why = append(why, fmt.Sprintf("%d message(s) still need a verdict", len(r.Pending)))
+	}
+	if span := r.To.Sub(r.From); span < MinimumWindow {
+		why = append(why, fmt.Sprintf(
+			"the window is %s; the criterion is two consecutive weeks (%s)",
+			span.Round(time.Minute), MinimumWindow))
+	}
+	if total := r.Denominator(); total < MinimumMessages {
+		why = append(why, fmt.Sprintf(
+			"%d message(s) in the window is below the %d needed for the number to be stable",
+			total, MinimumMessages))
+	}
+	if r.HasRate && r.LowerBound < GateThreshold {
+		why = append(why, fmt.Sprintf("the 95%% lower bound is %.4f, below %.2f",
+			r.LowerBound, GateThreshold))
+	}
+	for _, pu := range r.PerUser {
+		if pu.Judged && pu.Rate < GateThreshold {
+			why = append(why, fmt.Sprintf("account %s parsed %.4f of its %d message(s)",
+				pu.UserID, pu.Rate, pu.Total))
+		}
+	}
+	for _, w := range r.Weeks {
+		if w.Rate < GateThreshold {
+			why = append(why, fmt.Sprintf("the week from %s parsed %.4f of its %d message(s)",
+				w.From.UTC().Format("2006-01-02"), w.Rate, w.Total))
+		}
+	}
+	r.Gate = Gate{Passed: len(why) == 0, Reasons: why}
+}
+
+// Denominator is every message the rate is computed over: what parsed, what an
+// operator judged a genuine miss, what could not be read, and what was lost
+// before the parser ever saw it.
+func (r ParseRateReport) Denominator() int64 {
+	return r.Parsed + r.Transaction + r.Unreadable + r.LostTotal
 }
 
 // messagesSQL folds every diagnostics row about one message into one row about
@@ -199,6 +383,32 @@ func (r ParseRateReport) MeetsGate() bool {
 // through Excluded['quarantined'] and never let them back in — so the rate was
 // computed over mail from senders that were ALREADY trusted, which is the mail
 // most likely to parse. The bias was invisible and in the flattering direction.
+//
+// # Why the fold-in is restricted, and a past window cannot improve
+//
+// The first version folded in EVERY row for the identity, unfiltered. That made
+// an already-measured window rise later: publish a template six weeks on,
+// reprocess, re-run the same --from/--to, and a 0.5000 week became 1.0000 — so
+// "two consecutive weeks above 95%" could be manufactured retroactively by
+// fixing parsers afterwards. Two filters close it, and they are exactly the
+// difference between the two kinds of reprocessing:
+//
+//   - outcome = 'appended' is a PROMOTION out of quarantine (reprocess.go's
+//     promoteHeld), the message entering the log for the first time. A later
+//     template fix writes 'superseded' or 'unchanged', which is a correction to
+//     a message that was already counted, and is excluded.
+//   - received_at < $2 keeps every input to the number inside the window being
+//     reported on, so re-running the same window is stable by construction
+//     rather than by luck about what has happened since.
+//
+// # The ORDER BY is load bearing
+//
+// ORDER BY ingest_id, which is SHA-256 of the body: independent of sender, time,
+// size and outcome, so the first N rows are a uniform random sample AND a stable
+// one. Ordering by received_at instead would draw the EARLIEST N, a
+// chronological sample the Wilson interval does not apply to. That mutation
+// survived the first test suite; TestParseRateSamplesUniformlyByIngestIDNot
+// Chronologically now pins it.
 const messagesSQL = `
 WITH win AS (
   SELECT DISTINCT user_id, ingest_id
@@ -206,18 +416,34 @@ WITH win AS (
    WHERE event = 'arrival' AND user_id IS NOT NULL
      AND received_at >= $1 AND received_at < $2
      AND ($3::uuid IS NULL OR user_id = $3)
+), agg AS (
+  SELECT d.user_id, d.ingest_id,
+         bool_or(d.outcome IN ('appended','superseded'))                          AS stored,
+         -- The fold-in, restricted. See the doc above.
+         max(CASE WHEN d.event = 'arrival'
+                    OR (d.event = 'reprocess' AND d.outcome = 'appended'
+                        AND d.received_at < $2)
+                  THEN CASE d.tier WHEN 'template' THEN 2 WHEN 'heuristic' THEN 1 ELSE 0 END
+                  ELSE 0 END)                                                     AS best_tier,
+         min(d.received_at)                                                       AS first_seen,
+         min(d.sender_domain)                                                     AS sender_domain,
+         min(d.structure_sig)                                                     AS structure_sig,
+         (array_agg(d.outcome ORDER BY d.received_at, d.id)
+            FILTER (WHERE d.event = 'arrival'))[1]                                AS arrival_outcome,
+         (array_agg(coalesce(d.reject_reason, '') ORDER BY d.received_at, d.id)
+            FILTER (WHERE d.event = 'arrival'))[1]                                AS reject_reason
+    FROM parse_diagnostics d JOIN win w ON w.user_id = d.user_id AND w.ingest_id = d.ingest_id
+   GROUP BY d.user_id, d.ingest_id
 )
-SELECT d.user_id, d.ingest_id,
-       bool_or(d.outcome IN ('appended','superseded'))                            AS stored,
-       max(CASE d.tier WHEN 'template' THEN 2 WHEN 'heuristic' THEN 1 ELSE 0 END) AS best_tier,
-       min(d.received_at)                                                         AS first_seen,
-       min(d.sender_domain)                                                       AS sender_domain,
-       min(d.structure_sig)                                                       AS structure_sig,
-       (array_agg(d.outcome ORDER BY d.received_at, d.id)
-          FILTER (WHERE d.event = 'arrival'))[1]                                  AS arrival_outcome
-  FROM parse_diagnostics d JOIN win w ON w.user_id = d.user_id AND w.ingest_id = d.ingest_id
- GROUP BY d.user_id, d.ingest_id
- ORDER BY d.ingest_id`
+SELECT a.user_id, a.ingest_id, a.stored, a.best_tier, a.first_seen,
+       a.sender_domain, a.structure_sig, a.arrival_outcome, a.reject_reason,
+       EXISTS (SELECT 1 FROM quarantine q
+                WHERE q.user_id = a.user_id AND q.ingest_id = a.ingest_id)        AS held_now,
+       EXISTS (SELECT 1 FROM quarantine_removals r
+                WHERE r.user_id = a.user_id AND r.ingest_id = a.ingest_id
+                  AND r.reason = 'expired')                                       AS expired
+  FROM agg a
+ ORDER BY a.ingest_id`
 
 // message is one email, however many rows it produced.
 type message struct {
@@ -225,6 +451,40 @@ type message struct {
 	stored   bool
 	bestTier int
 	outcome  string
+	reason   string
+	heldNow  bool
+	expired  bool
+}
+
+// loss classifies a message that never became a transaction, or "" when it is
+// not a loss at all.
+//
+// Order matters: the CURRENT state of the quarantine tables beats the arrival
+// outcome, because a message recorded as 'quarantined' in January may have been
+// promoted, expired or still be sitting there, and only the store knows which.
+func (m message) loss() string {
+	switch {
+	case m.stored:
+		return "" // in the log: parsed, or awaiting a verdict
+	case m.heldNow:
+		return LossHeldUnconfirmed
+	case m.expired:
+		return LossHeldExpired
+	case m.outcome == diag.OutcomeDuplicate:
+		// A duplicate of something stored never gets here: it shares the
+		// original's ingest id and merged into it. Reaching this line means the
+		// referent is in no store at all.
+		return LossDiscardedDuplicate
+	case m.reason != "":
+		// no_text_part and normalize_error are OUR failures and too_large is the
+		// sender's; keying by reason is what stops the three being reported as
+		// one anonymous "rejected".
+		return m.reason
+	case m.outcome == diag.OutcomeRejected || m.outcome == diag.OutcomeOverQuota:
+		return m.outcome
+	default:
+		return LossUnresolved
+	}
 }
 
 func messages(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) ([]message, error) {
@@ -239,9 +499,11 @@ func messages(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, us
 			m       message
 			sig     *string
 			outcome *string
+			reason  *string
 		)
 		if err := rows.Scan(&m.pending.UserID, &m.pending.IngestID, &m.stored, &m.bestTier,
-			&m.pending.ReceivedAt, &m.pending.SenderDomain, &sig, &outcome); err != nil {
+			&m.pending.ReceivedAt, &m.pending.SenderDomain, &sig, &outcome, &reason,
+			&m.heldNow, &m.expired); err != nil {
 			return nil, fmt.Errorf("verify: parse rate: %w", err)
 		}
 		if sig != nil {
@@ -249,6 +511,9 @@ func messages(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, us
 		}
 		if outcome != nil {
 			m.outcome = *outcome
+		}
+		if reason != nil {
+			m.reason = *reason
 		}
 		out = append(out, m)
 	}
@@ -265,33 +530,60 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 	}
 	rep := ParseRateReport{
 		From: opts.From, To: opts.To,
-		ByTier:   map[string]int64{diag.TierTemplate: 0, diag.TierHeuristic: 0},
-		Excluded: map[string]int64{},
-		Caveat:   ParseRateCaveat,
+		ByTier:     map[string]int64{diag.TierTemplate: 0, diag.TierHeuristic: 0},
+		Lost:       map[string]int64{},
+		BlindSpots: ParseRateBlindSpots,
+		Caveat:     ParseRateCaveat,
 	}
 	var user any
 	if opts.User != uuid.Nil {
 		user = opts.User
 	}
 
-	// --- one pass over messages, not rows -----------------------------------
 	msgs, err := messages(ctx, pool, opts, user)
 	if err != nil {
 		return ParseRateReport{}, err
 	}
+
+	// --- one pass over messages, not rows -----------------------------------
 	var pop []Pending
+	type bucket struct{ parsed, total int64 }
+	perUser := map[uuid.UUID]*bucket{}
+	perWeek := make([]bucket, weekCount(opts.From, opts.To))
+	// count attributes one message to the aggregate, to its account and to the
+	// week it arrived in, so the three decompositions cannot disagree.
+	count := func(m message, parsed bool) {
+		b, ok := perUser[m.pending.UserID]
+		if !ok {
+			b = &bucket{}
+			perUser[m.pending.UserID] = b
+		}
+		b.total++
+		if i := weekIndex(opts.From, m.pending.ReceivedAt, len(perWeek)); i >= 0 {
+			perWeek[i].total++
+			if parsed {
+				perWeek[i].parsed++
+			}
+		}
+		if parsed {
+			b.parsed++
+		}
+	}
 	for _, m := range msgs {
 		switch {
-		case !m.stored:
-			// Never reached the log: refused, still held, or a redelivery of
-			// something already counted. Not a parse failure — reported so the
-			// denominator is auditable rather than a choice in a WHERE clause.
-			rep.Excluded[clip(m.outcome)]++
-		case m.bestTier > 0:
+		case m.stored && m.bestTier > 0:
 			rep.Parsed++
 			rep.ByTier[tierName(m.bestTier)]++
-		default:
+			count(m, true)
+		case m.stored:
+			// In the log, no tier extracted anything: the adjudicable
+			// population. Its body is still readable, so an operator can judge
+			// whether it was transaction mail at all.
 			pop = append(pop, m.pending)
+		default:
+			rep.Lost[clip(m.loss())]++
+			rep.LostTotal++
+			count(m, false)
 		}
 	}
 	rep.Unparsed = int64(len(pop))
@@ -308,6 +600,12 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 	if sampling {
 		want = pop[:limit]
 	}
+	// Judged messages are attributed after the verdict is known, since a
+	// non-transactional one leaves the denominator entirely.
+	byID := map[string]message{}
+	for _, m := range msgs {
+		byID[key(m.pending.UserID, m.pending.IngestID)] = m
+	}
 	for _, p := range want {
 		v, ok := verdicts[key(p.UserID, p.IngestID)]
 		if !ok {
@@ -318,58 +616,126 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 		switch v {
 		case VerdictTransaction:
 			rep.Transaction++
+			count(byID[key(p.UserID, p.IngestID)], false)
 		case VerdictNonTransactional:
 			rep.NonTransactional++
 		default:
 			rep.Unreadable++
+			count(byID[key(p.UserID, p.IngestID)], false)
 		}
 	}
+
+	for u, b := range perUser {
+		rep.PerUser = append(rep.PerUser, UserRate{
+			UserID: u, Parsed: b.parsed, Total: b.total,
+			Rate:   ratio(b.parsed, b.total-b.parsed),
+			Judged: b.total >= MinimumUserMessages,
+		})
+	}
+	sort.Slice(rep.PerUser, func(i, j int) bool {
+		return rep.PerUser[i].UserID.String() < rep.PerUser[j].UserID.String()
+	})
+	// Weeks are only meaningful once the window is long enough for the
+	// criterion to be about them.
+	if opts.To.Sub(opts.From) >= MinimumWindow {
+		for i, b := range perWeek {
+			start := opts.From.Add(time.Duration(i) * 7 * 24 * time.Hour)
+			end := start.Add(7 * 24 * time.Hour)
+			if end.After(opts.To) {
+				end = opts.To
+			}
+			rep.Weeks = append(rep.Weeks, WeekRate{
+				From: start, To: end, Parsed: b.parsed, Total: b.total,
+				Rate: ratio(b.parsed, b.total-b.parsed),
+			})
+		}
+	}
+
 	if len(rep.Pending) > 0 {
+		rep.decideGate()
 		return rep, fmt.Errorf("%w: %d of %d unparsed message(s) still need a verdict",
 			ErrUnadjudicated, len(rep.Pending), len(want))
 	}
 
 	// --- the rate ------------------------------------------------------------
 	//
-	// misses = the unparsed arrivals that WERE transactions. Under full
-	// adjudication that is a count. Under sampling it is an estimate, and the
-	// bound below propagates the sampling error through to the rate.
+	// misses are every message that arrived and produced no transaction: the
+	// adjudicated genuine ones, the unreadable ones, and everything lost before
+	// the parser saw it.
 	hits := rep.Transaction + rep.Unreadable
 	rep.HasRate = true
 	rep.Sampled = sampling
 	if !sampling {
-		rep.Rate = ratio(rep.Parsed, hits)
+		rep.Rate = ratio(rep.Parsed, hits+rep.LostTotal)
 		rep.LowerBound = rep.Rate
+		rep.decideGate()
 		return rep, nil
 	}
 	n := rep.Adjudicated
-	rep.Rate = ratio(rep.Parsed, int64(math.Round(float64(rep.Unparsed)*float64(hits)/float64(n))))
+	est := int64(math.Round(float64(rep.Unparsed) * float64(hits) / float64(n)))
+	rep.Rate = ratio(rep.Parsed, est+rep.LostTotal)
 	// The rate falls as the number of missed transactions rises, so a LOWER
 	// bound on the rate comes from an UPPER bound on the proportion of unparsed
-	// mail that was a transaction. Wilson's interval is used because the normal
-	// approximation is badly wrong exactly where this lands: a handful of hits
-	// out of a small sample.
+	// mail that was a transaction. Wilson because the normal approximation is
+	// badly wrong exactly where this lands: a handful of hits in a small sample.
+	// Losses are not estimated — they are counted — so they enter the bound
+	// as a certainty.
 	_, qHi := Wilson(hits, n)
-	rep.LowerBound = float64(rep.Parsed) / (float64(rep.Parsed) + float64(rep.Unparsed)*qHi)
+	rep.LowerBound = float64(rep.Parsed) /
+		(float64(rep.Parsed) + float64(rep.Unparsed)*qHi + float64(rep.LostTotal))
+	rep.decideGate()
 	return rep, nil
 }
 
+// weekCount is how many whole-week buckets the window is divided into.
+func weekCount(from, to time.Time) int {
+	span := to.Sub(from)
+	if span <= 0 {
+		return 0
+	}
+	n := int(span / (7 * 24 * time.Hour))
+	if span%(7*24*time.Hour) != 0 {
+		n++
+	}
+	return n
+}
+
+// weekIndex is which bucket an instant falls in, or -1 when it is outside.
+func weekIndex(from, at time.Time, n int) int {
+	if n == 0 {
+		return -1
+	}
+	i := int(at.Sub(from) / (7 * 24 * time.Hour))
+	if i < 0 || i >= n {
+		return -1
+	}
+	return i
+}
+
+// ratio is parsed / (parsed + misses), and 0 over an empty denominator.
+//
+// It used to answer 1.0 for "no mail at all", defended as the right answer to
+// "what fraction of nothing parsed". It is not the right answer to anything an
+// operator reads off this tool: an empty window printed `rate 100.00%` beside
+// `gate false`, and the number is what gets copied into a report. Zero over
+// nothing is equally arbitrary and cannot be mistaken for success; the gate's
+// volume floor is what actually decides the case.
 func ratio(parsed, misses int64) float64 {
 	den := parsed + misses
 	if den == 0 {
-		// No mail at all is not a 0% parse rate; it is no measurement. Reporting
-		// 1.0 with Unparsed == 0 and Parsed == 0 is honest in the only way that
-		// matters: MeetsGate on an empty window is meaningless, and the operator
-		// sees Parsed == 0 right beside it.
-		return 1
+		return 0
 	}
 	return float64(parsed) / float64(den)
 }
 
 func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) (map[string]string, error) {
+	// DISTINCT ON takes the newest row per message: the table is append-only, so
+	// a revision is a new row and the live verdict is the highest id.
 	rows, err := pool.Query(ctx,
-		`SELECT user_id, ingest_id, verdict FROM parse_rate_adjudications
-		  WHERE ($1::uuid IS NULL OR user_id = $1)`, user)
+		`SELECT DISTINCT ON (user_id, ingest_id) user_id, ingest_id, verdict
+		   FROM parse_rate_adjudications
+		  WHERE ($1::uuid IS NULL OR user_id = $1)
+		  ORDER BY user_id, ingest_id, id DESC`, user)
 	if err != nil {
 		return nil, fmt.Errorf("verify: parse rate: adjudications: %w", err)
 	}
@@ -437,11 +803,20 @@ func clamp01(v float64) float64 {
 	}
 }
 
-// RecordVerdict writes one adjudication, overwriting an earlier one for the same
-// message. Re-adjudication is allowed on purpose: the first pass over an
-// unfamiliar bank's mail is exactly where a mistake is made, and a verdict that
-// could not be corrected would be a permanent error in the exit measurement.
-func RecordVerdict(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, ingestID []byte, verdict string) error {
+// RecordVerdict appends one adjudication. Re-adjudicating a message is allowed
+// and appends a SUPERSEDING row rather than overwriting: the first pass over an
+// unfamiliar bank's mail is exactly where a mistake is made, so a verdict that
+// could not be corrected would be a permanent error in the exit measurement —
+// but a verdict that could be corrected invisibly is worse. Flipping six of ten
+// verdicts was measured to move the reported rate from 0.9000 (fail) to 0.9574
+// (pass) leaving ten rows and no trace, and the person adjudicating is the
+// person who wants the beta to ship. See 00018_parse_rate_audit.sql.
+//
+// operator is recorded so the exit record can say who judged and how much was
+// revised. Empty is accepted — an unattributed verdict is a fact worth being
+// able to count rather than a reason to refuse the write.
+func RecordVerdict(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, ingestID []byte,
+	verdict, operator string) error {
 	if pool == nil {
 		return errors.New("verify: pool is nil")
 	}
@@ -460,15 +835,24 @@ func RecordVerdict(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, in
 		// that might have passed a line of somebody's mail.
 		return fmt.Errorf("verify: record verdict: verdict is not one of %v", Verdicts)
 	}
-	_, err := pool.Exec(ctx, `INSERT INTO parse_rate_adjudications (ingest_id, user_id, verdict, adjudicated_at)
-	  VALUES ($1, $2, $3, now())
-	  ON CONFLICT (ingest_id, user_id) DO UPDATE SET verdict = EXCLUDED.verdict, adjudicated_at = now()`,
-		ingestID, userID, verdict)
+	if !operatorRe.MatchString(operator) {
+		// Not echoed: the caller that got this wrong is the one that might have
+		// passed something read out of a message.
+		return errors.New("verify: record verdict: operator must be an identifier of at most 64 characters")
+	}
+	_, err := pool.Exec(ctx,
+		`INSERT INTO parse_rate_adjudications (ingest_id, user_id, verdict, operator, adjudicated_at)
+		 VALUES ($1, $2, $3, $4, now())`,
+		ingestID, userID, verdict, operator)
 	if err != nil {
 		return fmt.Errorf("verify: record verdict: %w", err)
 	}
 	return nil
 }
+
+// operatorRe mirrors the CHECK in 00018. Empty is allowed and means the operator
+// did not identify themselves, which the exit record should then say.
+var operatorRe = regexp.MustCompile(`^([a-z0-9][a-z0-9._@-]{0,63})?$`)
 
 // ---------------------------------------------------------------------------
 // ⚠ PHASE 1 ONLY BELOW THIS LINE
@@ -545,4 +929,30 @@ func ColdTexts(ctx context.Context, pool *pgxpool.Pool, sealer blob.Sealer,
 		}
 	}
 	return out, nil
+}
+
+// Revisions counts adjudications that superseded an earlier verdict for the same
+// message, and how many of those changed the answer.
+//
+// This is the number the exit record needs in order to be read honestly: the
+// denominator rests on operator judgement, the operator is interested in the
+// outcome, and the append-only table makes revisions countable rather than
+// invisible. It is not an accusation — a first pass over an unfamiliar bank
+// SHOULD be revised — it is the context a reader needs to weigh the rate.
+func Revisions(ctx context.Context, pool *pgxpool.Pool) (superseded, changed int64, err error) {
+	if pool == nil {
+		return 0, 0, errors.New("verify: pool is nil")
+	}
+	err = pool.QueryRow(ctx, `
+		WITH ordered AS (
+		  SELECT user_id, ingest_id, verdict,
+		         lag(verdict) OVER (PARTITION BY user_id, ingest_id ORDER BY id) AS prev
+		    FROM parse_rate_adjudications)
+		SELECT count(*) FILTER (WHERE prev IS NOT NULL),
+		       count(*) FILTER (WHERE prev IS NOT NULL AND prev <> verdict)
+		  FROM ordered`).Scan(&superseded, &changed)
+	if err != nil {
+		return 0, 0, fmt.Errorf("verify: adjudication revisions: %w", err)
+	}
+	return superseded, changed, nil
 }
