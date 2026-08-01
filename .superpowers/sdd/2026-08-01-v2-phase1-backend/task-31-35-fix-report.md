@@ -290,10 +290,28 @@ tree, with the tree verified byte-identical to the worktree afterwards.
 
 ## 8. Verification
 
+The shared worktree was red from concurrent sessions while this work was done,
+so the gate was run against a tree materialised from the commit itself
+(`git archive <sha> | tar -x`, with `client/node_modules` symlinked in — it is
+untracked, and the gate refuses to install it):
+
 ```
-go clean -testcache && bash scripts/v2-check.sh
+git archive dd3a782 | tar -x -C $V && ln -s .../client/node_modules $V/client/node_modules
+cd $V && go clean -testcache && bash scripts/v2-check.sh
+→ v2-check: OK (go + client + conformance)
 ```
 
-Run in a clean worktree at this commit, because the shared tree was red from
-concurrent sessions (`internal/v2/ingest/reprocess.go` mid-edit). See the commit
-message for the sha.
+Every `internal/v2/...` package, `cmd/ledgerd`, the client typecheck, `bun test`
+and the cross-executor conformance runners pass at **`dd3a782`**.
+
+The first attempt, at `69c36e6`, was green everywhere except
+`internal/v2/admin`'s `TestTheQueueClustersDemandByPeople`, which built its
+queue fixture by calling `samples.Report` with a bank name — the exact call C6
+removes. `dd3a782` is the follow-up: a **test-only** edit adding `reportReal`
+beside the existing `donateReal`, so the file's stated property ("nothing here
+plants a row") now holds for reports too. `internal/v2/admin` belongs to another
+session and nothing else in it was touched.
+
+Package-level runs during development used a scratch Postgres cluster
+(`internal/v2/pgtest/cmd/boot`); nothing in this work touched `:8080`, `:25` or
+`/var/lib/ledger`.
