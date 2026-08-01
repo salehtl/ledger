@@ -3,6 +3,7 @@ package oplog
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/pgtest"
@@ -281,7 +283,13 @@ func TestConcurrentMultiRowAppendsAllocateContiguousBlocks(t *testing.T) {
 	}
 	wg.Wait()
 
-	assertGapFree(t, pool, u, writers*batches*perBatch)
+	total := writers * batches * perBatch
+	assertGapFree(t, pool, u, total)
+	// Each returned block is contiguous, AND the blocks are pairwise disjoint
+	// and jointly cover 1..total. An overlap would trip the primary key anyway,
+	// so the disjointness half is belt-and-braces — but "every block is
+	// contiguous" alone is also satisfied by every block being [1,2,3].
+	seen := make(map[int64]int, total)
 	for _, blk := range blocks {
 		if len(blk) != perBatch {
 			t.Fatalf("block %v has %d seqs, want %d", blk, len(blk), perBatch)
@@ -290,6 +298,15 @@ func TestConcurrentMultiRowAppendsAllocateContiguousBlocks(t *testing.T) {
 			if s != blk[0]+int64(i) {
 				t.Fatalf("block %v is not contiguous", blk)
 			}
+			seen[s]++
+		}
+	}
+	if len(seen) != total {
+		t.Fatalf("the returned blocks cover %d distinct seqs, want %d", len(seen), total)
+	}
+	for s := int64(1); s <= int64(total); s++ {
+		if seen[s] != 1 {
+			t.Fatalf("seq %d was returned by %d blocks, want exactly 1", s, seen[s])
 		}
 	}
 }
@@ -719,27 +736,81 @@ func TestDatabaseConstraintsBackstopTheGoValidation(t *testing.T) {
 
 	ins := `INSERT INTO op_log (user_id, seq, stream, writer_id, writer_counter,
 		type_flag, blob, size_bucket, blob_hash, prev_hash)
-		VALUES ($1,$2,$3,$4,$5,$6,'\x00'::bytea,1024,'\x00'::bytea,'\x00'::bytea)`
-	cases := []struct {
-		name                 string
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
+
+	// The baseline is a REAL sealed row, so every case below is rejected for the
+	// one thing it mutates. An earlier version of this test used a one-byte blob
+	// for every case; once the blob and hash CHECKs existed, those rows would
+	// have been rejected for the wrong reason and the test would still have been
+	// green.
+	base, _ := mustSeal(t, u, "dev-b", blob.StreamHot, 1, blob.ZeroHash)
+	type row struct {
 		seq                  int64
 		stream, writer, flag string
 		counter              int64
+		blb, bhash, phash    []byte
+		bucket               int
+	}
+	valid := func() row {
+		return row{seq: 2, stream: blob.StreamHot, writer: "dev-b", flag: TypeFlagIngest,
+			counter: 1, blb: base.Blob, bhash: base.BlobHash, phash: base.PrevHash, bucket: base.SizeBucket}
+	}
+	exec := func(r row) error {
+		_, err := pool.Exec(bg, ins, u, r.seq, r.stream, r.writer, r.counter, r.flag,
+			r.blb, r.bucket, r.bhash, r.phash)
+		return err
+	}
+
+	cases := []struct {
+		name       string
+		mutate     func(*row)
+		constraint string
 	}{
-		{"duplicate seq", 1, blob.StreamHot, "dev-b", TypeFlagIngest, 1},
-		{"unknown stream", 2, "warm", "dev-b", TypeFlagIngest, 1},
-		{"unknown type flag", 2, blob.StreamHot, "dev-b", "ingested", 1},
-		{"duplicate (writer, stream, counter)", 2, blob.StreamHot, "dev-a", TypeFlagIngest, 1},
+		{"duplicate seq", func(r *row) { r.seq = 1 }, "op_log_pkey"},
+		{"unknown stream", func(r *row) { r.stream = "warm" }, "op_log_stream_check"},
+		{"unknown type flag", func(r *row) { r.flag = "ingested" }, "op_log_type_flag_check"},
+		{"duplicate (writer, stream, counter)", func(r *row) { r.writer = "dev-a" },
+			"op_log_user_id_writer_id_stream_writer_counter_key"},
+		{"blob shorter than its bucket", func(r *row) { r.blb = r.blb[:len(r.blb)-1] },
+			"op_log_blob_fills_bucket"},
+		{"size_bucket disagrees with the blob", func(r *row) { r.bucket = 4 << 10 },
+			"op_log_blob_fills_bucket"},
+		{"blob hash is not 32 bytes", func(r *row) { r.bhash = r.bhash[:31] },
+			"op_log_hashes_are_sha256"},
+		{"prev hash is not 32 bytes", func(r *row) { r.phash = append(r.phash, 0) },
+			"op_log_hashes_are_sha256"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := pool.Exec(bg, ins, u, c.seq, c.stream, c.writer, c.counter, c.flag); err == nil {
+			r := valid()
+			c.mutate(&r)
+			err := exec(r)
+			if err == nil {
 				t.Fatal("expected the database to reject this row")
+			}
+			// Assert WHICH constraint fired. Without this a row could be
+			// rejected for an unrelated reason and still read as coverage.
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) {
+				t.Fatalf("want a PgError, got %T: %v", err, err)
+			}
+			if pgErr.ConstraintName != c.constraint {
+				t.Fatalf("rejected by %q, want %q: %v", pgErr.ConstraintName, c.constraint, err)
 			}
 		})
 	}
+
+	// The unmutated baseline must be accepted, or every case above could be
+	// passing for a reason none of them names.
+	if err := exec(valid()); err != nil {
+		t.Fatalf("the baseline row must be accepted: %v", err)
+	}
 	// Same counter on the OTHER stream is legal: chains are per (writer, stream).
-	if _, err := pool.Exec(bg, ins, u, 2, blob.StreamCold, "dev-a", 1, TypeFlagIngest); err != nil {
+	cold, _ := mustSeal(t, u, "dev-a", blob.StreamCold, 1, blob.ZeroHash)
+	r := valid()
+	r.seq, r.stream, r.writer = 3, blob.StreamCold, "dev-a"
+	r.blb, r.bhash, r.phash, r.bucket = cold.Blob, cold.BlobHash, cold.PrevHash, cold.SizeBucket
+	if err := exec(r); err != nil {
 		t.Fatalf("the cold chain must be able to reuse counter 1: %v", err)
 	}
 }
@@ -799,4 +870,69 @@ func TestACorruptedCounterFailsLoudlyRatherThanOverwritingHistory(t *testing.T) 
 	}
 	// The two original rows are untouched and still contiguous.
 	assertGapFree(t, pool, u, 2)
+}
+
+func TestAppendPinsReadCommittedRegardlessOfTheDatabaseDefault(t *testing.T) {
+	// default_transaction_isolation is settable per database, per role and by a
+	// pooler's startup parameters. Under `repeatable read` the counter UPDATE
+	// raises serialization failures instead of blocking and re-evaluating, so
+	// concurrent appends fail en masse — an availability failure that depends on
+	// configuration nothing in this repo controls. Append must pin its own
+	// isolation level rather than inherit one.
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	a := &Appender{Pool: pool}
+
+	var dbName string
+	if err := pool.QueryRow(bg, `SELECT current_database()`).Scan(&dbName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(bg,
+		`ALTER DATABASE `+dbName+` SET default_transaction_isolation = 'repeatable read'`); err != nil {
+		t.Fatal(err)
+	}
+	// The setting is applied at session start, so existing pooled connections
+	// still carry the old default until they are replaced.
+	pool.Reset()
+
+	// Vacuity guard: prove the default really changed, i.e. that an UNPINNED
+	// transaction on this pool would not be read committed. Without this the
+	// test could pass against a database whose default never moved.
+	tx, err := pool.Begin(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var iso string
+	if err := tx.QueryRow(bg, `SHOW transaction_isolation`).Scan(&iso); err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Rollback(bg)
+	if iso != "repeatable read" {
+		t.Fatalf("unpinned transaction_isolation = %q; the test premise does not hold", iso)
+	}
+
+	const writers, perWriter = 6, 10
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			id := fmt.Sprintf("dev-%d", w)
+			prev := blob.ZeroHash
+			for c := 1; c <= perWriter; c++ {
+				r, h, err := sealRow(u, id, blob.StreamHot, int64(c), prev)
+				if err != nil {
+					t.Errorf("%s counter %d: seal: %v", id, c, err)
+					return
+				}
+				prev = h
+				if _, err := a.Append(bg, []Row{r}); err != nil {
+					t.Errorf("%s counter %d: append: %v", id, c, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	assertGapFree(t, pool, u, writers*perWriter)
 }

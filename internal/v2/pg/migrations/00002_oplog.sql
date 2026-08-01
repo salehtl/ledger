@@ -38,7 +38,19 @@ CREATE TABLE op_log (
   PRIMARY KEY (user_id, seq),
   -- Chains are per (writer_id, stream) — Decision 13. The uniqueness key must
   -- include the stream or two independent chains would collide on counter 1.
-  UNIQUE (user_id, writer_id, stream, writer_counter)
+  UNIQUE (user_id, writer_id, stream, writer_counter),
+  -- oplog.Row.validate rejects all three of these before an append opens a
+  -- transaction. They are restated here because a hand-written INSERT, a repair
+  -- script or a future task's own SQL is exactly the caller that bypasses that
+  -- validation — and a row failing either invariant can be STORED and then
+  -- never opened: blob.Open refuses bytes whose length is not a size bucket,
+  -- and a chain hash that is not 32 bytes cannot be a SHA-256.
+  --
+  -- Named rather than left to Postgres's op_log_check/op_log_check1 numbering,
+  -- so a violation names the invariant it broke and a test can assert on it.
+  CONSTRAINT op_log_blob_fills_bucket CHECK (octet_length(blob) = size_bucket),
+  CONSTRAINT op_log_hashes_are_sha256 CHECK (
+    octet_length(blob_hash) = 32 AND octet_length(prev_hash) = 32)
 );
 CREATE INDEX op_log_stream_idx ON op_log (user_id, stream, seq);
 

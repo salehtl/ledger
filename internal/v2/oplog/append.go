@@ -39,7 +39,12 @@ type Row struct {
 	SizeBucket    int
 	BlobHash      []byte // 32 bytes: blob.Hash(prev, sealed)
 	PrevHash      []byte // 32 bytes: the previous blob hash in this (writer, stream) chain
-	CreatedAt     time.Time
+	// CreatedAt is caller-supplied (ingest sets the received time) and defaults
+	// to now() only when left zero. It is therefore NOT monotone with seq, and
+	// ordering the log by it instead of by seq is subtly wrong — replay folds by
+	// seq, and nothing else is a total order. Treat it as a diagnostic
+	// timestamp, never as a position.
+	CreatedAt time.Time
 }
 
 // validate rejects a row that could never be stored, or that could be stored
@@ -133,8 +138,33 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 //     restores the counter, so a failed append consumes nothing. nextval()
 //     burns its value permanently and a watermark then has to reconstruct which
 //     values were lost versus merely slow.
+//   - The no-DUPLICATE half of that argument rests on READ COMMITTED
+//     specifically: a blocked UPDATE re-evaluates `next_seq + $n` against the
+//     row version the winner committed (EvalPlanQual), rather than against the
+//     stale version it first read. That is why the isolation level is pinned
+//     below instead of inherited — see BeginTx.
+//   - A crash cannot punch a hole either. The counter update and the row
+//     inserts are one transaction, so one commit record covers both; commit-LSN
+//     order equals commit order equals seq order, and recovery replays a WAL
+//     PREFIX. A crash can therefore only truncate the tail of the log, never
+//     remove something from its middle. That holds under synchronous_commit=off
+//     too, which loses a suffix of commits, not an interior one.
 //
 // Do NOT replace this with a sequence plus a published watermark.
+//
+// # Ambiguous commit: an error does not always mean "not appended"
+//
+// If the context deadline expires (or the connection drops) during tx.Commit,
+// Append returns an error for an append that may in fact have COMMITTED — the
+// rows are present and next_seq has advanced, but the caller never learns its
+// seqs. Gap-freeness is unaffected; retry semantics are not.
+//
+// This is why UNIQUE (user_id, writer_id, stream, writer_counter) is load
+// bearing beyond chain integrity: it makes the ambiguity DETECTABLE. A caller
+// that retries the same (writer_id, stream, writer_counter) after an error and
+// receives SQLSTATE 23505 on that constraint must read it as "already applied"
+// and resolve its seqs by reading the log back — NOT as a failure to retry
+// again, which would loop forever. Task 8's AppendClient owns that translation.
 //
 // # Accepted cost
 //
@@ -161,7 +191,15 @@ func (a *Appender) Append(ctx context.Context, rows []Row) ([]int64, error) {
 		}
 	}
 
-	tx, err := a.Pool.Begin(ctx)
+	// Pinned, not inherited. default_transaction_isolation is settable per
+	// database, per role and by a pooler's startup parameters, so a plain
+	// Begin() runs at whatever a DBA last configured. Measured under
+	// `repeatable read`: 41 of 60 concurrent appends failed with SQLSTATE 40001,
+	// the first from EnsureSeqRow — the statement that does nothing in steady
+	// state. No holes appeared (a serialization failure is a rollback, and a
+	// rollback restores the counter), so that is an availability failure rather
+	// than corruption; it is still a silent, config-dependent one.
+	tx, err := a.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("oplog: append: begin: %w", err)
 	}
