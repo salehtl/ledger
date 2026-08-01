@@ -322,37 +322,11 @@ func TestDecodeTruncatesAuthoredAtToMilliseconds(t *testing.T) {
 // rename, an added omitempty, or parent_version moving between present-null and
 // absent would round-trip perfectly and silently break Task 10's mirror.
 func TestGoldenOpBytes(t *testing.T) {
-	causal := Op{
-		V:             1,
-		Type:          OpTxnCategorized,
-		OpID:          "01J000000000000000000000A1",
-		AuthoredAt:    time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
-		Entity:        &EntityRef{Kind: "txn", ID: "T1"},
-		ParentVersion: func() *int64 { v := int64(3); return &v }(),
-		Payload:       json.RawMessage(`{"category":"groceries"}`),
-	}
-	parentFree := Op{
-		V:          1,
-		Type:       OpRateSet,
-		OpID:       "01J000000000000000000000R1",
-		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
-		Payload:    json.RawMessage(`{"currency":"USD","rate_micro":"3672500"}`),
-	}
-
-	// A create carrying an ingest_id: the only op shape in which that field
-	// appears on the wire at all, so the golden has to include one or a rename
-	// of the tag goes unnoticed.
-	create := Op{
-		V:          1,
-		Type:       OpTxnIngested,
-		OpID:       "01J000000000000000000000I1",
-		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
-		Entity:     &EntityRef{Kind: "txn", ID: "T1"},
-		IngestID:   strings.Repeat("a", 64),
-		Payload:    json.RawMessage(`{"amount_minor":"25000","currency":"AED"}`),
-	}
-
-	got, err := EncodeBlob([]Op{create, causal, parentFree})
+	// The op set lives in conformance_test.go's goldenOps, because these exact
+	// three ops are also the plaintext of the hot conformance fixture the
+	// TypeScript executor reads. One literal, or the fixture and the golden can
+	// drift apart while both keep passing.
+	got, err := EncodeBlob(goldenOps())
 	if err != nil {
 		t.Fatal(err)
 	}

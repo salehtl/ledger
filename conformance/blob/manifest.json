@@ -1,0 +1,74 @@
+{
+  "note": "Sealed by internal/v2/oplog TestWriteConformanceFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1; do not hand-edit. Both executors open these bytes; the framing is frozen (see internal/v2/blob).",
+  "buckets": [
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    524288,
+    1048576
+  ],
+  "nonce_size": 12,
+  "tag_size": 16,
+  "zero_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chain_steps": [
+    {
+      "fill_byte": "ab",
+      "length": 1024,
+      "expect_hash": "b972e78fb27a0866f41fd72ab4687e18aed94a66c8e32314ac654e8247c3e3d3"
+    },
+    {
+      "fill_byte": "cd",
+      "length": 1024,
+      "expect_hash": "1eb123521be8de11640db812996ae32d973f6ed53d3eff1f3e080fa377761eb4"
+    }
+  ],
+  "fixtures": [
+    {
+      "file": "hot-dev-a-7.bin",
+      "note": "a hot op blob: the golden op JSON of TestGoldenOpBytes, sealed at (dev-a, hot, 7)",
+      "kind": "ops",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "hot",
+        "writer_id": "dev-a",
+        "writer_counter": "7"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|hot|dev-a|7",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2luZ2VzdGVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBJMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOm51bGwsImluZ2VzdF9pZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwYXlsb2FkIjp7ImFtb3VudF9taW5vciI6IjI1MDAwIiwiY3VycmVuY3kiOiJBRUQifX0seyJ2IjoxLCJ0eXBlIjoidHhuX2NhdGVnb3JpemVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBBMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOjMsInBheWxvYWQiOnsiY2F0ZWdvcnkiOiJncm9jZXJpZXMifX0seyJ2IjoxLCJ0eXBlIjoicmF0ZV9zZXQiLCJvcF9pZCI6IjAxSjAwMDAwMDAwMDAwMDAwMDAwMDAwMFIxIiwiYXV0aG9yZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInBhcmVudF92ZXJzaW9uIjpudWxsLCJwYXlsb2FkIjp7ImN1cnJlbmN5IjoiVVNEIiwicmF0ZV9taWNybyI6IjM2NzI1MDAifX1dfQ==",
+      "expect_pre_pad_length": 355
+    },
+    {
+      "file": "cold-ingest-3.bin",
+      "note": "a cold raw-body blob: invariant I16 says this stream never carries ops",
+      "kind": "raw_body",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "cold",
+        "writer_id": "ingest",
+        "writer_counter": "3"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|cold|ingest|3",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoicmF3X2JvZHkiLCJpbmdlc3RfaWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicmVjZWl2ZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInJhd19iYXNlNjQiOiJhR2s9In0=",
+      "expect_pre_pad_length": 199
+    },
+    {
+      "file": "hot-dev-a-8-bucket-edge.bin",
+      "note": "a blob framed to exactly one byte under the 1 KiB bucket: one padding byte, so an off-by-one in any offset is fatal",
+      "kind": "",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "hot",
+        "writer_id": "dev-a",
+        "writer_counter": "8"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|hot|dev-a|8",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "r1Vw9aGBC3r3jK9LxwpmDw31HkK6+R1N5bIyjeDoPfzNJmIVTm12srK5LnDAysPM9TT5t061uJgZ7FCQg9AKUM0EpHVEmOBttaE8XzcfHwT/bSRw8kqpvYhlQOXc539w1WiKUtVaAuxK6l7B6t//4cng7mpN2+I3f5gybULfyXWABfAtQ/oG59BYX7ZMlh1X4xiyehRchXvNOmvbQT/3/F3uTdYP+NC6mQD+kekODc9l8FcNQsQx9yfQMA3XDcQxFKxXfNsu9tmGB4tAVMyYk6mhShbbsNjze4kWfB8arN+j6424n8USPM/UlYUFnykrxAocDVULhg8k+E77R2D78kwOBxgy1SdpSt6le1DdeyFkwqR8ApQNzyb6B8RNbSIqWSRRNRalmTQ17EokBhAwSsp9Ss8fLeXOaBKoxDYQxuaNhfhGckBiipSBmya+4m46mygEM0xjSC3qzsjWSrTh5wtQALc6U/CRbJPGj0uba6ivWhCXhjSuTyI34fP74yT60nqNmo04x6N8kiRQp6GWHxOKv6JfXaPfK5coIHFfpa4fXtxvHvsWXUWmVHmNS6qlDjtNJBgpE671EQoVWA66rXax/xpssbI3OGR+sepA2PFLA3KF5FchSqszWHT+tuee5mxXAUphVgYa5mmAnsXXNeSE6Pz9VA4RDJsE+EwLRQSZjpB7+7NPccZrbcbED+mMptLVopdVvFoEgkw2CCph0aNIYhpSdwmn06ce7Bjee7KBoBr5fwb+RjyH0N5cQ391W8Z0ccGJ14x2Rh3KthQaczvas3mdHWngxBkRnJLoKz0bjQED46jZzovaO/9xIlvktbsYgwRmrpT1FzIbfsxvlCKiZO5jvIJqbfd4gApiyo9wM9UPFMfHOOziO1BfK/PE6F9EC4ZdcF4wxOUGNf+4iAygOzxU8pTetXe4ALvZbel6QuOJI2j4JpKCAgFKbKlaPY2EbfJQiNqAAYZj7flrHK7SuCRf3IrMRe2lGrx9B+YSwl8Fyt0VefNHTwvx9r3GsW7+NOgQ2PeRRD76JRn+ppmFfLi8v5P2n27qQWN1MzNWH2J7QhMljciGNJi7mwfJBMPGWnjBo2vKMpFU0d7SExIJ/jvDSX5HN2372d8GAKF8YzhMhfhZZxlW2CieWgvoQvKKRgOfiU06AXnQkIUbp5XvCBrhKM9U7k5JbTRTJE0deWj/yZXWpJUHFmj0qVe+",
+      "expect_pre_pad_length": 1023
+    }
+  ]
+}

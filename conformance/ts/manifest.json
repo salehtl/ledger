@@ -1,0 +1,64 @@
+{
+  "note": "Sealed by client/scripts/gen-fixtures.ts. Regenerate with `cd client && bun run gen-fixtures`; do not hand-edit. Go opens these bytes in oplog.TestTypeScriptSealedBlobsOpenInGo.",
+  "buckets": [
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    524288,
+    1048576
+  ],
+  "nonce_size": 12,
+  "tag_size": 16,
+  "max_bucket": 1048576,
+  "zero_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chain_steps": [],
+  "fixtures": [
+    {
+      "file": "ts-hot-dev-a-7.bin",
+      "note": "the golden op set, encoded and sealed by the TypeScript executor",
+      "kind": "ops",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "hot",
+        "writer_id": "dev-a",
+        "writer_counter": "7"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|hot|dev-a|7",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2luZ2VzdGVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBJMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMC4wMDBaIiwiZW50aXR5Ijp7ImtpbmQiOiJ0eG4iLCJpZCI6IlQxIn0sInBhcmVudF92ZXJzaW9uIjpudWxsLCJpbmdlc3RfaWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicGF5bG9hZCI6eyJhbW91bnRfbWlub3IiOiIyNTAwMCIsImN1cnJlbmN5IjoiQUVEIn19LHsidiI6MSwidHlwZSI6InR4bl9jYXRlZ29yaXplZCIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwQTEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDAuMDAwWiIsImVudGl0eSI6eyJraW5kIjoidHhuIiwiaWQiOiJUMSJ9LCJwYXJlbnRfdmVyc2lvbiI6MywicGF5bG9hZCI6eyJjYXRlZ29yeSI6Imdyb2NlcmllcyJ9fSx7InYiOjEsInR5cGUiOiJyYXRlX3NldCIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwUjEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDAuMDAwWiIsInBhcmVudF92ZXJzaW9uIjpudWxsLCJwYXlsb2FkIjp7ImN1cnJlbmN5IjoiVVNEIiwicmF0ZV9taWNybyI6IjM2NzI1MDAifX1dfQ==",
+      "expect_pre_pad_length": 353
+    },
+    {
+      "file": "ts-hot-dev-a-9-escapes.bin",
+      "note": "a payload holding every character Go escapes and JSON.stringify does not, plus non-ASCII",
+      "kind": "ops",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "hot",
+        "writer_id": "dev-a",
+        "writer_counter": "9"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|hot|dev-a|9",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2VkaXRlZCIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwRTEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDAuMDAwWiIsImVudGl0eSI6eyJraW5kIjoidHhuIiwiaWQiOiJUMSJ9LCJwYXJlbnRfdmVyc2lvbiI6MSwicGF5bG9hZCI6eyJtZXJjaGFudF9yYXciOiLZg9in2LHZgdmI2LEiLCJub3RlIjoiU21pdGggJiBTb25zIDxmbGFnZ2VkPiDigKggc2Vjb25kIGxpbmUg4oCpIGVuZCIsImFtb3VudF9taW5vciI6IjkwMDcxOTkyNTQ3NDA5OTMifX1dfQ==",
+      "expect_pre_pad_length": 342
+    },
+    {
+      "file": "ts-cold-ingest-3.bin",
+      "note": "a cold raw-body record, encoded and sealed by the TypeScript executor",
+      "kind": "raw_body",
+      "envelope": {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "stream": "cold",
+        "writer_id": "ingest",
+        "writer_counter": "3"
+      },
+      "expect_aad": "11111111-1111-1111-1111-111111111111|cold|ingest|3",
+      "expect_bucket": 1024,
+      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoicmF3X2JvZHkiLCJpbmdlc3RfaWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicmVjZWl2ZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwLjAwMFoiLCJyYXdfYmFzZTY0IjoiUm5KdmJUb2dZbUZ1YTBCbGVHRnRjR3hsTG1GbERRcFRkV0pxWldOME9pQndkWEpqYUdGelpRMEtEUXBvYVE9PSJ9",
+      "expect_pre_pad_length": 254
+    }
+  ]
+}

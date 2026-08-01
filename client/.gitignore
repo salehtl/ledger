@@ -1,0 +1,4 @@
+node_modules/
+# Local client state written by the CLI (Task 14): cursors, pinned heads, keys.
+.ledger-client/
+*.tsbuildinfo
