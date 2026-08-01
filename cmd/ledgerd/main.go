@@ -23,9 +23,14 @@ import (
 	"ledger/internal/v2/corpus"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/dict"
+	"ledger/internal/v2/ingest"
+	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/origin"
 	"ledger/internal/v2/pg"
+	"ledger/internal/v2/pushv2"
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/smtpd"
+	"ledger/internal/v2/tmpl"
 )
 
 // modeHandlers is the single dispatch table main() uses — the real switch,
@@ -181,25 +186,27 @@ func runServe(cfg config.Config) error {
 		log.Println("ledgerd serve: *** --dev-auth: \"dev:<subject>\" is accepted as an identity and EVERY real " +
 			"Apple/Google token is rejected. TEST ONLY. ***")
 	}
+	// The TXT resolver every DKIM and ARC check runs through. Real DNS, with a
+	// per-lookup deadline and a bounded cache — banks send in bursts and every
+	// message in a burst asks for the same selector — unless the operator
+	// pointed the process at a recording.
+	lookupTXT := origin.NewCachingLookup(
+		origin.ResolverLookup(nil, origin.DefaultLookupTimeout), origin.CacheOptions{})
 	if cfg.Server.DNSFixtures != "" {
 		// Loaded and validated HERE, at startup, so a wrong path or a malformed
 		// recording fails the process rather than surfacing later as a DKIM
 		// failure that looks like a crypto bug.
 		//
-		// STILL NOT WIRED, and deliberately so. Task 24 landed the receiver
-		// below, but nothing in this process VERIFIES a signature yet — that is
-		// Task 25 — so there is still nothing for a TXT resolver to serve.
-		// internal/v2/smtpd hands Task 25's work the raw message and inspects no
-		// header itself, so this fixture lookup reaches its consumer when that
-		// task adds one, not before. Until then the flag's only effect is the
-		// validation and the count below — which is exactly what it should be,
-		// rather than a lookup handed to nothing while reading as implemented.
-		_, n, err := arc.FixtureLookup(cfg.Server.DNSFixtures)
+		// It REPLACES the resolver rather than joining it, and it is not cached:
+		// a fixture file is already an in-memory map, and a cache in front of it
+		// would only make a test's expectations depend on lookup order.
+		fixtures, n, err := arc.FixtureLookup(cfg.Server.DNSFixtures)
 		if err != nil {
 			return fmt.Errorf("dns fixtures: %w", err)
 		}
-		log.Printf("ledgerd serve: *** --dns-fixtures: %d recorded TXT name(s) loaded from %s; DKIM/ARC will use "+
-			"them instead of DNS once Task 25 lands verification. TEST ONLY. ***", n, cfg.Server.DNSFixtures)
+		lookupTXT = fixtures
+		log.Printf("ledgerd serve: *** --dns-fixtures: %d recorded TXT name(s) loaded from %s; DKIM/ARC use "+
+			"them instead of DNS. TEST ONLY. ***", n, cfg.Server.DNSFixtures)
 	}
 
 	syncAPI, err := api.NewServer(cfg, pool)
@@ -233,22 +240,38 @@ func runServe(cfg config.Config) error {
 		IdleTimeout:  2 * time.Minute,
 	}
 
+	// The ingest pipeline (Task 29): the seam where an accepted message becomes
+	// op-log entries, or a quarantine hold. It replaces the deferHandler this
+	// function mounted between Tasks 24 and 29, which answered every message
+	// with a 451 so the sender would keep it.
+	//
+	// pusher is Disabled unless the operator turned push on. The Expo client and
+	// its content-free contract exist either way (pushv2), and the ONE call site
+	// is inside the pipeline, on a hot-stream append.
+	var pusher ingest.Pusher = pushv2.Disabled{}
+	if cfg.Push.Enabled {
+		pusher = &pushv2.Expo{Pool: pool, AccessToken: cfg.Push.AccessToken, Endpoint: cfg.Push.ExpoURL}
+		log.Println("ledgerd serve: content-free push is ENABLED")
+	}
+	pipeline := &ingest.Pipeline{
+		Pool:       pool,
+		Templates:  &tmpl.Store{Pool: pool},
+		Origin:     ingest.NewResolver(lookupTXT),
+		Trust:      syncAPI.Quarantine,
+		Appender:   &oplog.Appender{Pool: pool},
+		Diag:       &diag.Diag{Pool: pool},
+		Quarantine: syncAPI.Quarantine,
+		Push:       pusher,
+		Now:        time.Now,
+	}
+
 	// The inbound SMTP receiver (Task 24). It is the most exposed surface in the
 	// system — public, unauthenticated port 25 — so it is built here, once,
 	// with the same pool everything else uses.
-	//
-	// Its Handler is Task 29's ingest path, which does not exist yet, so what is
-	// mounted is deferHandler: every accepted message is answered with a
-	// TEMPORARY failure and the sending MTA retries. That is deliberate and it
-	// is the ONLY safe placeholder. A handler that returned nil would have the
-	// receiver answer 250 — "I have taken responsibility for this message" — to
-	// mail it then discards, which is the silent drop spec §2 forbids, and the
-	// sender would never retry it. Retries last ~1-3 days, so the port can be
-	// live and hardened before the pipeline behind it is finished.
 	mail := smtpd.New(
 		cfg.Mail,
 		&addresses.Addresses{Pool: pool, Suffix: cfg.InboundSuffix()},
-		deferHandler{},
+		pipeline,
 		&diag.Diag{Pool: pool},
 		time.Now,
 	)
@@ -288,8 +311,8 @@ func runServe(cfg config.Config) error {
 	}()
 	smtpErrc := make(chan error, 1)
 	go func() {
-		log.Printf("ledgerd serve: smtp receiver listening on %s for %s (DKIM/ARC verification is Task 25; "+
-			"the ingest handler is Task 29, so accepted mail is DEFERRED with a 451 and retried by the sender)",
+		log.Printf("ledgerd serve: smtp receiver listening on %s for %s (DKIM/ARC verified; "+
+			"trusted mail is appended, everything else is quarantined)",
 			mailLn.Addr(), cfg.InboundSuffix())
 		smtpErrc <- mail.Serve(mailLn)
 	}()
@@ -372,14 +395,6 @@ func startQuarantineSweep(ctx context.Context, q *quarantine.Store) <-chan struc
 		}
 	}()
 	return done
-}
-
-// deferHandler is the Task 29 seam. See the comment at its use in runServe for
-// why the placeholder must FAIL rather than succeed.
-type deferHandler struct{}
-
-func (deferHandler) Deliver(ctx context.Context, d smtpd.Delivery) error {
-	return errors.New("ingest pipeline not implemented yet (Task 29)")
 }
 
 // runRelay will start the SMTP receiver in relay mode: a durable local spool

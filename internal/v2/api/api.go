@@ -395,6 +395,13 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/v1/quarantine", s.requireSession(s.handleQuarantine))
 		mux.HandleFunc("POST /api/v1/quarantine/confirm", s.requireSession(s.handleConfirmSender))
 	}
+	// Push token registration is mounted unconditionally, unlike the two blocks
+	// above. It needs nothing but the pool, and the routes have to work whether
+	// or not push is ENABLED: a deployment that turns push on should find its
+	// users' devices already registered rather than waiting for every client to
+	// launch again.
+	mux.HandleFunc("POST /api/v1/push/tokens", s.requireSession(s.handleRegisterPushToken))
+	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
 	if s.Dict != nil {
 		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))
 	}
