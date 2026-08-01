@@ -57,13 +57,22 @@ and a structure digest) and survives the cutover intact.
 ### 2. `quarantine.Confirm` → `Reprocess` — re-ingest of held mail
 
 `internal/v2/quarantine/quarantine.go`'s `Held` and `Promote` (Task 27), driven
-by `ingest.Pipeline.reprocessHeld` (Task 30).
+by `ingest.Pipeline.reprocessHeld` (Task 30) and reached from
+`POST /api/v1/quarantine/confirm` (Task 38, `api.Server.Reprocessor`).
 
 Quarantined mail is **not** in the cold stream — it was never appended — so its
 raw body lives in `quarantine.blob`, plaintext in Phase 1. Confirming a sender
-returns the ingest ids of everything held from that origin; reprocess reads
-those bodies, re-runs steps 4–7 and appends the results, and *that append* is
-when the messages enter the integrity chains. `Promote` then clears the rows.
+returns the ingest ids of everything held from that origin **and re-ingests
+them in the same request**: reprocess reads those bodies, re-runs steps 4–7 and
+appends the results, and *that append* is when the messages enter the integrity
+chains. `Promote` then clears the rows.
+
+The two halves are one request rather than two on purpose. Between Tasks 27 and
+38 the confirmation allowlisted the origin and *reported* the eligible ids with
+nothing consuming them, so a client that did not make a second call the API
+never described left the mail the user had just vouched for held until it
+expired — announced, per §2, but gone. Phase 3 keeps the shape and moves the
+work: the server returns the held **ciphertext** and the device re-parses it.
 
 ### 3. `samples.Donate` pulling the raw body from the user's cold stream
 

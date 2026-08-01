@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -463,5 +465,150 @@ func TestQuarantineBlobPageIsBoundedByBytesNotRows(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Fatalf("byte-bounded paging saw %d of %d items", len(seen), n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation re-ingests what it releases
+// ---------------------------------------------------------------------------
+
+// fakeReprocessor records what it was asked to re-ingest.
+type fakeReprocessor struct {
+	calls [][][]byte
+	rep   Report
+	err   error
+}
+
+func (f *fakeReprocessor) Reprocess(_ context.Context, _ uuid.UUID, ids [][]byte) (Report, error) {
+	f.calls = append(f.calls, ids)
+	rep := f.rep
+	rep.Examined = len(ids)
+	return rep, f.err
+}
+
+// TestConfirmSenderReIngestsTheMailItReleases is the seam spec §3.2:58 needs
+// and the one Task 38 step 7 found missing.
+//
+// Confirming a sender is the ONLY way held mail ever enters the integrity
+// chains. A confirmation that merely allowlisted the domain and reported the
+// eligible ids left the mail the user had just vouched for sitting in
+// quarantine until it EXPIRED — a drop, announced but a drop — for every client
+// that did not know to make a second call nothing in the API described.
+func TestConfirmSenderReIngestsTheMailItReleases(t *testing.T) {
+	h := newQHarness(t)
+	fake := &fakeReprocessor{rep: Report{Appended: 2}}
+	h.srv.Reprocessor = fake
+	h.h = h.srv.Handler()
+	u := h.user("alice")
+	session := h.session(u)
+	a := h.hold(t, u, "a", nil)
+	b := h.hold(t, u, "b", nil)
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[ConfirmSenderResponse](t, rec)
+	if out.Reingest == nil {
+		t.Fatal("confirming a sender must report what it re-ingested")
+	}
+	if out.Reingest.Appended != 2 || out.Reingest.Examined != 2 {
+		t.Fatalf("reingest report = %+v", out.Reingest)
+	}
+	if out.Reingest.Remaining != 0 {
+		t.Fatalf("nothing was left over, but remaining = %d", out.Reingest.Remaining)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("%d reprocess calls, want 1", len(fake.calls))
+	}
+	got := map[string]bool{}
+	for _, id := range fake.calls[0] {
+		got[hex.EncodeToString(id)] = true
+	}
+	for _, want := range []quarantine.Item{a, b} {
+		if !got[hex.EncodeToString(want.IngestID)] {
+			t.Fatalf("the re-ingest was not asked about %x", want.IngestID)
+		}
+	}
+}
+
+// A deployment with no reprocessor configured must still confirm. The field is
+// nil in every unit test in this package and in any build where server-side
+// reprocessing is off; a 500 there would make the sender-trust flow depend on a
+// Phase-1-only component.
+func TestConfirmSenderWithoutAReprocessorStillAllowlists(t *testing.T) {
+	h := newQHarness(t)
+	u := h.user("alice")
+	session := h.session(u)
+	h.hold(t, u, "a", nil)
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if out := decodeJSON[ConfirmSenderResponse](t, rec); out.Reingest != nil {
+		t.Fatalf("no reprocessor is configured, so nothing was re-ingested: %+v", out.Reingest)
+	}
+	ok, err := h.q.Allowlisted(bg, u, "dib.ae", quarantine.ScopeOuter)
+	if err != nil || !ok {
+		t.Fatalf("the origin was not allowlisted: %v %v", ok, err)
+	}
+}
+
+// A re-ingest that fails is not a failed confirmation. The allowlist row is
+// committed and the mail is still held, so the honest answer is 200 with the
+// partial counts and `incomplete` set — never a 500 that tells the user their
+// bank was not trusted when it was.
+func TestConfirmSenderReportsAPartialReIngestRatherThanFailing(t *testing.T) {
+	h := newQHarness(t)
+	h.srv.Reprocessor = &fakeReprocessor{rep: Report{Appended: 1}, err: errors.New("cold stream unreadable")}
+	h.h = h.srv.Handler()
+	u := h.user("alice")
+	session := h.session(u)
+	h.hold(t, u, "a", nil)
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a failed re-ingest must not undo a successful confirmation: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[ConfirmSenderResponse](t, rec)
+	if out.Reingest == nil || !out.Reingest.Incomplete {
+		t.Fatalf("the failure must be visible in the response: %+v", out.Reingest)
+	}
+	if out.Reingest.Appended != 1 {
+		t.Fatalf("the partial counts must survive: %+v", out.Reingest)
+	}
+}
+
+// The batch is bounded, and what did not fit is REPORTED. ingest.Reprocess
+// refuses more than 500 ids outright, so an unbounded call would fail entirely
+// on an account with a big backlog; silently truncating instead would strand
+// the remainder with nothing anywhere saying so.
+func TestConfirmSenderBoundsOneReIngestAndReportsTheRemainder(t *testing.T) {
+	h := newQHarness(t)
+	fake := &fakeReprocessor{}
+	h.srv.Reprocessor = fake
+	h.srv.MaxReingestPerConfirm = 2
+	h.h = h.srv.Handler()
+	u := h.user("alice")
+	session := h.session(u)
+	for i := 0; i < 5; i++ {
+		h.hold(t, u, string(rune('a'+i)), nil)
+	}
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[ConfirmSenderResponse](t, rec)
+	if len(fake.calls) != 1 || len(fake.calls[0]) != 2 {
+		t.Fatalf("one bounded batch expected, got %v", fake.calls)
+	}
+	if out.Reingest == nil || out.Reingest.Remaining != 3 {
+		t.Fatalf("the remainder must be reported so the caller knows to confirm again: %+v", out.Reingest)
 	}
 }
