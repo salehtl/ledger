@@ -90,9 +90,13 @@ func main() {
 // runServe opens the Postgres pool, applies every embedded migration, and
 // serves the sync API until SIGINT/SIGTERM.
 //
-// Plain HTTP on purpose: TLS/autocert is deployment Task D4, and until then
-// this listener is reached only over Tailscale. The SMTP receiver (Task 24) and
-// the Tailscale-bound admin listener (Task 32) mount onto this same startup
+// Plain HTTP on purpose: TLS/autocert is deployment Task D4. Everything this
+// listener carries is sensitive — a session bearer token on every request, the
+// user's whole op log in the responses — so "it is only reached over Tailscale"
+// cannot be left as a comment: config.validate REFUSES a non-loopback
+// http_listen, and the default is loopback, until the change that adds TLS
+// lifts that rail deliberately. The SMTP receiver (Task 24) and the
+// Tailscale-bound admin listener (Task 32) mount onto this same startup
 // sequence as their tasks land.
 //
 // The api.Server — and with it the two IdP verifiers — is built ONCE here,
@@ -127,12 +131,23 @@ func runServe(cfg config.Config) error {
 		// public-facing in every deployment that matters, so the timeout is not
 		// optional.
 		ReadHeaderTimeout: 10 * time.Second,
-		// No WriteTimeout: a cold-stream page can legitimately carry megabytes
-		// to a slow mobile connection, and a write deadline that fires mid-body
-		// truncates the response rather than failing it cleanly. IdleTimeout
-		// plus ReadHeaderTimeout bound the cheap abuses; a slow reader is
-		// bounded by the response byte budget instead.
-		IdleTimeout: 2 * time.Minute,
+		// WriteTimeout is generous, but it is NOT optional, which an earlier
+		// version of this file got wrong.
+		//
+		// The API marshals each response into one buffer, so a max-size pull
+		// holds its blobs, their base64 expansion and the marshalled JSON at
+		// once — around 15 MB per in-flight request at the current page budget.
+		// A client that sends a request and then stops reading pins all of that
+		// for as long as the connection lives, and IdleTimeout does not apply
+		// mid-response. The per-page byte budget bounds ONE response; it says
+		// nothing about how many can be stalled simultaneously, which is the
+		// number that runs a box out of memory.
+		//
+		// Five minutes for a ~12 MB worst-case body is a floor of ~40 KB/s,
+		// well under any link a phone syncs on, so a legitimate slow reader is
+		// never cut off.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 
 	errc := make(chan error, 1)

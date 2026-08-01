@@ -144,8 +144,19 @@ type WritersResponse struct {
 // It is the only unauthenticated endpoint, which is why it is rate limited
 // twice: per client address, and globally as the backstop for a caller
 // distributed across addresses.
+//
+// # The order of the two checks is load bearing
+//
+// Per-IP FIRST, and a global token is spent only by a request that already
+// passed it. The other order — which this handler shipped with — spends the
+// shared budget on requests the per-IP limiter is about to refuse anyway, so
+// one host makes 40 attempts, is served its own burst of 3, and drains the
+// global bucket with the other 37. At a real clock a single host sustaining
+// the global refill rate then holds EVERY other client at 429 indefinitely:
+// one source, no forged tokens, total sign-in outage. That is precisely the
+// trade Limiter's doc says it refuses to make, undone by a `||`.
 func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
-	if !s.SignInGlobal.Allow("") || !s.SignInPerIP.Allow(clientKey(r)) {
+	if !s.SignInPerIP.Allow(clientKey(r)) || !s.SignInGlobal.Allow("") {
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
 		return
 	}
@@ -181,6 +192,18 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// check reads as a defence in every later review and is none.
 	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{})
 	if err != nil {
+		if errors.Is(err, auth.ErrNotConfigured) {
+			// Checked BEFORE the collapse below, even though it wraps
+			// ErrTokenRejected. It means this deployment has no client ids for
+			// the provider, so no token can be recognized as ours — a fact
+			// about the server, not the credential. Answering 401 would be the
+			// same confusion ErrKeySetUnavailable's 503 exists to remove: the
+			// user is told their perfectly good token is invalid and sent to
+			// fetch another one that will fail identically.
+			s.logf("api: exchange: %v", err)
+			writeErr(w, http.StatusServiceUnavailable, "unavailable", "identity provider is not configured")
+			return
+		}
 		if errors.Is(err, auth.ErrKeySetUnavailable) {
 			// NOT a 401. The token said nothing wrong; we could not reach the
 			// provider's keys. Telling a user with a perfectly good token that
@@ -251,6 +274,15 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request, userID 
 // not prove key possession whether a writer id is taken or a public key is
 // already enrolled. Neither is theirs to learn.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	// Capping challenge minting bounds SUCCESSFUL registrations, and nothing
+	// else: a failed attempt consumes no challenge budget — a replayed nonce is
+	// refused by consumeChallenge, which costs two database round trips before
+	// any signature work — so attempts need their own cap. It is per user
+	// rather than per address so one account cannot spend another's.
+	if !s.RegisterPerUser.Allow(userID.String()) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many registration attempts; try again shortly")
+		return
+	}
 	var req RegisterRequest
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
@@ -330,7 +362,7 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request, userID uuid.
 		return
 	}
 
-	rows, err := oplog.Read(r.Context(), s.Pool, userID, stream, after, limit, pullByteBudget)
+	rows, err := oplog.Read(r.Context(), s.Pool, userID, stream, after, limit, s.PullByteBudget)
 	if err != nil {
 		s.logf("api: pull %s for %s: %v", stream, userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
@@ -493,6 +525,37 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, userID uui
 			return
 		}
 		rows = append(rows, row)
+	}
+
+	// The batch's INTERNAL consistency is checked here, before the append, so
+	// that its failure is answered as what it is: a client-side arithmetic
+	// error.
+	//
+	// oplog.AppendClient runs this same check before it opens a transaction and
+	// reports failure as ErrChainBreak — correct for that package, wrong at this
+	// layer, because a chain break is spec §3.3:68's non-dismissable "your
+	// server may have tampered with your data" hard stop. Nothing the server
+	// did can make the blobs in one request fail to link to each other: they
+	// arrived together, in this request, from the client that authored them. A
+	// client bug must never tell a user their operator may have tampered with
+	// their log.
+	//
+	// What is left for AppendClient's ErrChainBreak is the HEAD-relative
+	// case — the batch does not continue what is stored — which is genuinely
+	// ambiguous between "this client skipped" and "the server lost rows", and
+	// is the case the hard stop exists for.
+	var claimedPrev [32]byte
+	copy(claimedPrev[:], rows[0].PrevHash)
+	if err := oplog.VerifyChain(rows, rows[0].WriterCounter-1, claimedPrev); err != nil {
+		// Deliberately NOT err.Error(): oplog's text says "writer hash chain
+		// break", which is the vocabulary of the hard stop this answer exists
+		// to avoid raising.
+		s.logf("api: upload for %s: batch is not internally chained: %v", userID, err)
+		writeErr(w, http.StatusBadRequest, "bad_request",
+			"the blobs in this batch do not chain to each other: counters must be consecutive, "+
+				"each prev_hash must be the previous blob_hash, and each blob_hash must be "+
+				"SHA256(prev_hash || blob)")
+		return
 	}
 
 	seqs, err := s.Appender.AppendClient(r.Context(), userID, req.WriterID, req.Stream, rows)
