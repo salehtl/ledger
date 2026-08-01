@@ -1,0 +1,360 @@
+{
+  "note": "Written by internal/v2/norm TestWriteNormalizerFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 LEDGER_CORPUS_DB=/scratch/corpus.db; do not hand-edit. Every case is real mail from the operator's own v1 corpus; the four cases marked DERIVED are real messages mutated in one named way, because the corpus contains no natural sample of the shape. Nothing is redacted: this is a private repository.",
+  "spec": "docs/superpowers/specs/v2-normalizer-v1.md",
+  "normalizer_version": 1,
+  "encoding": "expect_text, expect_subject and expect_from are base64 of the exact UTF-8 bytes. A JSON string cannot round-trip the raw fallback's output, so the fixture holds bytes, not text.",
+  "cases": [
+    {
+      "file": "dib-arabic-01.json",
+      "name": "dib-arabic-01",
+      "source": "v1 corpus ingest_log id 9, verbatim",
+      "note": "DIB credit-card purchase notification, Arabic, text/html base64 utf-8 — the single most common shape in the corpus",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-02.json",
+      "name": "dib-arabic-02",
+      "source": "v1 corpus ingest_log id 10, verbatim",
+      "note": "as dib-arabic-01, a different merchant and amount",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-03.json",
+      "name": "dib-arabic-03",
+      "source": "v1 corpus ingest_log id 11, verbatim",
+      "note": "as dib-arabic-01, third sample",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-04.json",
+      "name": "dib-arabic-04",
+      "source": "v1 corpus ingest_log id 13, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-05.json",
+      "name": "dib-arabic-05",
+      "source": "v1 corpus ingest_log id 15, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-06.json",
+      "name": "dib-arabic-06",
+      "source": "v1 corpus ingest_log id 17, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-07.json",
+      "name": "dib-arabic-07",
+      "source": "v1 corpus ingest_log id 2542, verbatim",
+      "note": "sent from dib.mail@dib.ae rather than DIB.notification@dib.ae",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-windows1256-01.json",
+      "name": "dib-windows1256-01",
+      "source": "v1 corpus ingest_log id 2695, verbatim",
+      "note": "declared charset=windows-1256; the bytes are NOT valid UTF-8 and must be converted, not replaced",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-windows1256-02.json",
+      "name": "dib-windows1256-02",
+      "source": "v1 corpus ingest_log id 2728, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-windows1256-03.json",
+      "name": "dib-windows1256-03",
+      "source": "v1 corpus ingest_log id 2882, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-windows1256-04.json",
+      "name": "dib-windows1256-04",
+      "source": "v1 corpus ingest_log id 2915, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-windows1256-05.json",
+      "name": "dib-windows1256-05",
+      "source": "v1 corpus ingest_log id 3038, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "enbd-local-transfer-01.json",
+      "name": "enbd-local-transfer-01",
+      "source": "v1 corpus ingest_log id 2422, verbatim",
+      "note": "Emirates NBD online-banking transfer advice, quoted-printable",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "enbd-local-transfer-02.json",
+      "name": "enbd-local-transfer-02",
+      "source": "v1 corpus ingest_log id 2423, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "enbd-telegraphic-transfer.json",
+      "name": "enbd-telegraphic-transfer",
+      "source": "v1 corpus ingest_log id 2434, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "google-quoted-printable-01.json",
+      "name": "google-quoted-printable-01",
+      "source": "v1 corpus ingest_log id 1, verbatim",
+      "note": "quoted-printable body with soft line breaks",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "google-quoted-printable-02.json",
+      "name": "google-quoted-printable-02",
+      "source": "v1 corpus ingest_log id 2, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "google-notice.json",
+      "name": "google-notice",
+      "source": "v1 corpus ingest_log id 8, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "us-ascii-plain.json",
+      "name": "us-ascii-plain",
+      "source": "v1 corpus ingest_log id 6, verbatim",
+      "note": "the corpus's ONLY us-ascii part. It is pure ASCII, so the ianaindex/WHATWG disagreement over us-ascii (see the spec) is invisible here",
+      "expect_part": "plain",
+      "expect_charset": "us-ascii",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "quoted-forward-recovers-no-headers.json",
+      "name": "quoted-forward-recovers-no-headers",
+      "source": "v1 corpus ingest_log id 2484, verbatim",
+      "note": "the shape 50 of the corpus's 56 forwards have: the marker line is unquoted but every header line is '\u003e'-quoted, so Forwarded is true and NOTHING is recovered. v1 behaves identically",
+      "expect_part": "plain",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "apple-forward-feff-line.json",
+      "name": "apple-forward-feff-line",
+      "source": "v1 corpus ingest_log id 2554, verbatim",
+      "note": "THE trim divergence. The line after the forwarded header block is a lone U+FEFF: v1's strings.TrimSpace keeps it, the explicit set drops it. Also carries the Apple-Mail iOS 12-hour-with-seconds date the four closed layouts cannot parse, so DateSource is 'received'",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "apple-forward-dib-01.json",
+      "name": "apple-forward-dib-01",
+      "source": "v1 corpus ingest_log id 6850, verbatim",
+      "note": "Apple Mail value-on-the-next-line header layout, with multipart/related nested inside multipart/alternative; the inner Date parses",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "forward_header"
+    },
+    {
+      "file": "apple-forward-feff-line-2.json",
+      "name": "apple-forward-feff-line-2",
+      "source": "v1 corpus ingest_log id 6853, verbatim",
+      "note": "second of the three U+FEFF messages",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "apple-forward-dib-02.json",
+      "name": "apple-forward-dib-02",
+      "source": "v1 corpus ingest_log id 6855, verbatim",
+      "note": "nested multipart/related, inner date parses",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "forward_header"
+    },
+    {
+      "file": "hair-space-lines-survive.json",
+      "name": "hair-space-lines-survive",
+      "source": "v1 corpus ingest_log id 6859, verbatim",
+      "note": "THE OTHER DIRECTION of the trim divergence. This body has lines made only of U+200A HAIR SPACE. Go's strings.TrimSpace empties them and v1 drops them; the explicit set does not contain U+200A, so v2 keeps them. It is the only corpus message of its kind, and without it the suite would pin the U+FEFF direction only",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "apple-forward-enbd-alert.json",
+      "name": "apple-forward-enbd-alert",
+      "source": "v1 corpus ingest_log id 6973, verbatim",
+      "note": "DECISION 14 IN ONE MESSAGE. An Apple-Mail forward of an Emirates NBD 'Transaction advice'. The account last4 lives ONLY in the subject, and only in the INNER subject: the outer envelope subject is 'Fwd: ...'. Its Subject header is also the corpus's only multi-word RFC 2047 case",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "forward_header"
+    },
+    {
+      "file": "dib-arabic-08.json",
+      "name": "dib-arabic-08",
+      "source": "v1 corpus ingest_log id 2425, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-09.json",
+      "name": "dib-arabic-09",
+      "source": "v1 corpus ingest_log id 3102, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-10.json",
+      "name": "dib-arabic-10",
+      "source": "v1 corpus ingest_log id 3230, verbatim",
+      "expect_part": "html",
+      "expect_charset": "windows-1256",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-11.json",
+      "name": "dib-arabic-11",
+      "source": "v1 corpus ingest_log id 5000, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-12.json",
+      "name": "dib-arabic-12",
+      "source": "v1 corpus ingest_log id 6000, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-13.json",
+      "name": "dib-arabic-13",
+      "source": "v1 corpus ingest_log id 6852, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "dib-arabic-14.json",
+      "name": "dib-arabic-14",
+      "source": "v1 corpus ingest_log id 6867, verbatim",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "mislabelled-utf8-actually-windows-1256.json",
+      "name": "mislabelled-utf8-actually-windows-1256",
+      "source": "v1 corpus ingest_log id 2695, DERIVED",
+      "note": "DERIVED from corpus id 2695 by rewriting charset=windows-1256 to charset=utf-8 and nothing else. The corpus contains no message whose charset declaration is wrong, so this shape has to be constructed — and it is the ONLY test of stage 3's U+FFFD placement against real bank bytes.",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "broken-mime-raw-fallback.json",
+      "name": "broken-mime-raw-fallback",
+      "source": "v1 corpus ingest_log id 9, DERIVED",
+      "note": "DERIVED from corpus id 9 by prepending one malformed header line, which makes go-message fail at the first line and forces the stage-1 raw fallback. The corpus contains no message that fails to parse (0 of 6998), so the fallback v2 adds over v1 has no natural sample.",
+      "expect_part": "raw",
+      "expect_charset": "",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "base64-continuation-indent.json",
+      "name": "base64-continuation-indent",
+      "source": "v1 corpus ingest_log id 9, DERIVED",
+      "note": "DERIVED from corpus id 9 by indenting one line of the base64 payload with two spaces. No corpus base64 payload contains embedded whitespace, but RFC 2045 permits it; both executors must skip it rather than fail the leaf. Text must be byte-identical to dib-arabic-01.",
+      "expect_part": "html",
+      "expect_charset": "utf-8",
+      "expect_forwarded": false,
+      "expect_date_source": "received"
+    },
+    {
+      "file": "gmail-forward-1.json",
+      "name": "gmail-forward-1",
+      "source": "v1 corpus ingest_log id 6973, DERIVED",
+      "note": "DERIVED. The corpus contains ZERO Gmail forwards — all 56 forwards are Apple Mail — even though Gmail forwarding is the primary onboarding path (spec 3.2). This fixture rebuilds corpus id 6973's real ENBD alert body under Gmail's dashed marker and same-line header layout. WARNING: the ARC header set is copied verbatim from a real message and DOES NOT VERIFY over this body. It is here only so the normalizer walks a realistic header block; it must never be used as an ARC fixture.",
+      "expect_part": "plain",
+      "expect_charset": "utf-8",
+      "expect_forwarded": true,
+      "expect_date_source": "forward_header"
+    }
+  ]
+}
