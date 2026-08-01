@@ -103,13 +103,19 @@ session_ttl       = "720h"        # 30 days; opaque server-side session lifetime
 #   ledgerd serve --dns-fixtures <path/to/dns.json>
 #       Loads a recorded TXT map (arc.FixtureLookup) so DKIM/ARC verification is
 #       deterministic and offline; a name that is not in the recording answers
-#       "no key" and never falls through to a resolver. Today `serve` LOADS and
-#       VALIDATES the file and nothing consumes it: there is no SMTP receiver
-#       (Task 24) and no DKIM/ARC verification (Task 25) in this process yet.
-#       Those tasks take an arc.LookupTXT and this is where it comes from.
+#       "no key" and never falls through to a resolver. `serve` loads and
+#       validates the file at startup, then wires it into ingest.NewResolver as
+#       the TXT lookup the SMTP receiver (Task 24) and its DKIM/ARC
+#       verification (Task 25) run every inbound message through — REPLACING
+#       live DNS rather than joining it, so a deployment left pointed at a
+#       stale recording verifies against frozen keys instead of falling
+#       through to the real resolver.
 
-# --- Consumed by later Phase 1 tasks; inert today. ---
+# --- Consumed today: the merchant dictionary (Task 33). ---
 #
 # Secret, never stored anywhere in this file: LEDGER_DICT_HMAC_KEY — keys the
-# merchant-dictionary submitter HMAC (Task 33). It is a cryptographic key,
-# not a setting, and has no TOML representation at all.
+# merchant-dictionary submitter HMAC. Reading GET /api/v1/dictionary needs no
+# key at all, so a deployment with this unset still distributes the
+# operator's seeded rules; every WRITE (dict.ErrNoKey) and the moderation
+# console refuse until it is set. It is a cryptographic key, not a setting,
+# and has no TOML representation at all.
