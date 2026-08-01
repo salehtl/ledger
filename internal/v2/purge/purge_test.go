@@ -114,6 +114,14 @@ var seeders = map[string]seeder{
 		  VALUES ($1, 'arrival', $2, now(), 'dib.ae', 'pass', 'none', 1, false, 'none', 1024, '', 'quarantined')`,
 			u, randBytes(t, 32))
 	},
+	// An operator's judgement about one person's unparsed mail. It is
+	// user-scoped in the schema precisely so it is discovered here and leaves
+	// with the account — an adjudication that outlived the user would be a
+	// record about somebody who asked to be forgotten.
+	"parse_rate_adjudications": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO parse_rate_adjudications (ingest_id, user_id, verdict)
+		               VALUES ($2, $1, 'transaction')`, u, randBytes(t, 32))
+	},
 	"quarantine": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO quarantine
 		  (user_id, ingest_id, received_at, expires_at, outer_domain, dkim, arc, size_bucket, blob)

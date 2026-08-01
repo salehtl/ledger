@@ -54,6 +54,13 @@ type Config struct {
 	// nowhere else. A TOML key or an environment variable here would be a
 	// standing instruction to destroy an account, sitting in a file.
 	Purge PurgeArgs `toml:"-"`
+
+	// Verify carries the arguments of `ledgerd verify` and `ledgerd
+	// parse-rate`. Command-line only, for a plainer reason than Purge's: these
+	// are measurements over a window an operator names when they run them, and
+	// a window pinned in a config file would silently answer a question nobody
+	// asked.
+	Verify VerifyArgs `toml:"-"`
 }
 
 // PurgeArgs is the `purge-user` mode's command line.
@@ -68,6 +75,33 @@ type PurgeArgs struct {
 	RetentionDue bool
 	// DryRun reports what would be deleted and deletes nothing.
 	DryRun bool
+}
+
+// VerifyArgs is the command line shared by `verify` and `parse-rate`.
+//
+// From and To are kept as STRINGS rather than parsed here: config.Load runs
+// before the mode is known, and a malformed --from must be reported by the
+// command that reads it, naming the format it wanted, rather than failing the
+// whole binary's configuration load with a message about a flag the mode does
+// not use.
+type VerifyArgs struct {
+	// User scopes either command to one account. Empty means every account.
+	// It is the same --user flag purge-user takes; a second spelling of "which
+	// account" would be a second thing to get wrong.
+	User string
+	// From and To bound the window, as RFC3339 instants. Empty means the
+	// command's own default.
+	From, To string
+	// Sample is `parse-rate --sample`: the population size above which a
+	// uniform sample is drawn instead of adjudicating everything. Zero means
+	// verify.DefaultSample.
+	Sample int
+	// Adjudicate turns `parse-rate` from a report into the interactive pass
+	// that READS COLD BODIES. ⚠ PHASE 1 ONLY — it is opt-in precisely so that
+	// reading a user's mail is never a side effect of asking for a number.
+	Adjudicate bool
+	// JSON emits machine-readable output instead of the operator's text report.
+	JSON bool
 }
 
 // ServerConfig controls the HTTP/admin listeners and the Postgres DSN.

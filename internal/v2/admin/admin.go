@@ -859,36 +859,9 @@ func (h *Handler) diagnostics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// accounting is spec §2's "every email accounted for" report.
-func (h *Handler) accounting(w http.ResponseWriter, r *http.Request) {
-	from, to, ok := h.window(w, r)
-	if !ok {
-		return
-	}
-	// Accounting ECHOES its window in the report, so unbounded is not an option
-	// here: a report that says "from 0001-01-01" is a report nobody can compare
-	// against another one.
-	if to.IsZero() {
-		to = time.Now()
-	}
-	if from.IsZero() {
-		from = to.Add(-defaultWindow)
-	}
-	acc, err := h.Diag.Accounting(r.Context(), from, to)
-	if err != nil {
-		h.logf("admin: accounting: %v", err)
-		writeErr(w, http.StatusInternalServerError, "internal")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"from": acc.From, "to": acc.To,
-		"inbound_total": acc.InboundTotal,
-		"arrival":       acc.Arrival,
-		"reprocess":     acc.Reprocess,
-		"rejections":    acc.Rejections,
-		"unaccounted":   acc.Unaccounted,
-	})
-}
+// accounting lives in accounting.go: it is the one console route whose
+// arithmetic is shared with an operator subcommand, and keeping it beside that
+// note is worth more than keeping the handlers in one file.
 
 // ---------------------------------------------------------------------------
 // quarantine
