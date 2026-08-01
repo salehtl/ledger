@@ -30,13 +30,9 @@
 package admin
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"io"
-	"log"
 	"net/http"
-	"strings"
 
 	"ledger/internal/v2/dict"
 )
@@ -57,11 +53,7 @@ type DictHandler struct {
 }
 
 func (h *DictHandler) logf(format string, args ...any) {
-	if h.Logf != nil {
-		h.Logf(format, args...)
-		return
-	}
-	log.Printf(format, args...)
+	logfOr(h.Logf, format, args...)
 }
 
 // Routes mounts the dictionary console on mux.
@@ -88,31 +80,12 @@ func (h *DictHandler) Routes(mux *http.ServeMux) error {
 
 // requireToken compares the bearer credential in constant time.
 //
-// Every rejection is the identical 401 — no header, wrong scheme, wrong token —
-// because a response that distinguishes them is an oracle. The reason goes to
-// the operator log.
+// It delegates to the package-level [requireToken] in admin.go, which is the
+// ONE implementation of this gate — the dictionary console and the rest of the
+// console must not be able to disagree about what a valid operator credential
+// is, and two copies of a comparison is how they eventually would.
 func (h *DictHandler) requireToken(next http.HandlerFunc) http.HandlerFunc {
-	want := []byte(h.Token)
-	return func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		const scheme = "bearer "
-		if len(auth) <= len(scheme) || !strings.EqualFold(auth[:len(scheme)], scheme) {
-			h.logf("admin: %s %s: no bearer token", r.Method, r.URL.Path)
-			unauthorized(w)
-			return
-		}
-		got := []byte(strings.TrimSpace(auth[len(scheme):]))
-		// ConstantTimeCompare returns 0 for differing lengths without
-		// comparing, so the length check is not itself the timing signal —
-		// but it is why the call cannot be relied on to hide the length. That
-		// is acceptable for a fixed operator token and worth writing down.
-		if subtle.ConstantTimeCompare(got, want) != 1 {
-			h.logf("admin: %s %s: token mismatch", r.Method, r.URL.Path)
-			unauthorized(w)
-			return
-		}
-		next(w, r)
-	}
+	return requireToken(h.Token, h.Logf, next)
 }
 
 // ---------------------------------------------------------------------------
@@ -196,19 +169,10 @@ func (h *DictHandler) approveSeed(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------------------
 
+// decodeBody is [decodeBodyN] at this handler's cap. Nothing here carries more
+// than a merchant pattern and a short note.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		writeErr(w, http.StatusBadRequest, "body is not valid JSON for this endpoint")
-		return false
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "body carries more than one JSON value")
-		return false
-	}
-	return true
+	return decodeBodyN(w, r, maxBodyBytes, dst)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

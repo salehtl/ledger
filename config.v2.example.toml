@@ -41,13 +41,21 @@ http_listen  = "127.0.0.1:8443"   # API + sync listener (LEDGER_HTTP_LISTEN). LO
                                   # responses. Task D4 is the change that lifts this — it adds autocert to runServe
                                   # so the process terminates TLS itself on the public domain, and that same change
                                   # moves this to ":443".
-admin_listen = "127.0.0.1:8079"   # admin API bind address (LEDGER_ADMIN_LISTEN). Today validate() only refuses a
-                                   # literal ":8080" suffix (v1's port); Task 32 adds the real restriction to
-                                   # loopback/tailnet-only (100.64.0.0/10) addresses, so e.g. "0.0.0.0:8079" is
-                                   # NOT rejected yet even though it will be once that task lands.
+admin_listen = "127.0.0.1:8079"   # admin console bind address (LEDGER_ADMIN_LISTEN). TAILNET-ONLY, and enforced:
+                                  # config.CheckAdminBind accepts ONLY a loopback address or one in Tailscale's
+                                  # 100.64.0.0/10 (`tailscale ip -4`), and refuses everything else — ":8079",
+                                  # "0.0.0.0:8079", a LAN address and a public one all fail at startup. It is
+                                  # checked twice, in validate() and again in runServe immediately before
+                                  # net.Listen. Unlike http_listen's rail this one is NOT lifted by Task D4:
+                                  # spec §3.1 keeps the console off the internet permanently, because it
+                                  # publishes parsers and merchant mappings to every device in the beta and
+                                  # reads diagnostics across all users. The binding is the control; the bearer
+                                  # token below stops an accident inside the tailnet, not an attacker outside it.
 dsn          = ""                 # Postgres DSN (LEDGER_PG_DSN) — required; never :8080, never /var/lib/ledger
 # Secret, never stored here: LEDGER_ADMIN_TOKEN — static bearer token for the
-# admin API, compared with subtle.ConstantTimeCompare.
+# admin console, compared with subtle.ConstantTimeCompare. When it is UNSET the
+# console is not served at all (ledgerd logs a warning and starts everything
+# else); it is never served unauthenticated.
 
 [relay]
 enabled     = false               # whether this primary mounts the relay-facing API

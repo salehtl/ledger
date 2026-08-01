@@ -387,6 +387,15 @@ func (c Config) validate() error {
 	if c.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen must not be empty")
 	}
+	// The admin rail, and the sibling of the http_listen one above. It is
+	// STRICTER: http_listen is loopback-only until Task D4 gives it real TLS and
+	// then moves to the public internet, whereas the admin console never becomes
+	// public at all — spec §3.1 keeps it tailnet-only for the life of the
+	// system, because the binding is what stops an attacker who has the bearer
+	// token. See CheckAdminBind for the full reasoning.
+	if err := CheckAdminBind(c.Server.AdminListen); err != nil {
+		return err
+	}
 	if c.Mail.SMTPListen == "" {
 		return fmt.Errorf("mail.smtp_listen must not be empty")
 	}
