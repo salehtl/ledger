@@ -3,13 +3,20 @@ package origin
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +24,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	dkimlib "github.com/emersion/go-msgauth/dkim"
 
 	"ledger/internal/v2/arc"
 )
@@ -340,8 +349,21 @@ func TestBodyLengthTagIsRefused(t *testing.T) {
 	if got.DKIM != SigFail {
 		t.Fatalf("VerifyDKIM = %+v, want fail for an l= signature", got)
 	}
-	if !strings.Contains(got.Err, "l=") {
-		t.Fatalf("Err = %q, want the l= tag to be named", got.Err)
+	// The assertion is not that it failed but that it failed for THIS layer's
+	// reason, which is the only part of the outcome this file owns. Two other
+	// things would sink this message on their own: splicing a tag into a
+	// signature invalidates it, because the DKIM-Signature field is itself
+	// signed with b= blanked; and go-msgauth refuses l= before it checks the
+	// body hash (dkim/verify.go:352). A genuinely valid l= signature cannot be
+	// built against this library at all — its signer will not emit the tag
+	// (sign.go:200) — so the policy here is belt to the library's braces, and
+	// the braces are what a future upgrade might quietly remove.
+	if !strings.Contains(got.Err, "l= body-length tag, which is not accepted") {
+		t.Fatalf("Err = %q, want this layer's refusal", got.Err)
+	}
+	if strings.Contains(got.Err, "insecure body length tag") {
+		t.Fatalf("Err = %q is go-msgauth's wording: this layer's refusal must be "+
+			"decided before the library's verdict is read", got.Err)
 	}
 }
 
@@ -413,16 +435,24 @@ func TestAPassingDomainAlwaysSignedFrom(t *testing.T) {
 	}
 }
 
+// The counts here are LITERAL rather than maxSignatures+n. Written in terms of
+// the constant, mutating the constant mutates the assertion with it and the
+// limit is pinned at nothing at all; TestTheBoundsArePinnedAtTheirValues holds
+// the constant itself.
 func TestTooManySignaturesIsRefused(t *testing.T) {
-	raw := mustRead(t, "enbd-proofpoint-p.eml")
-	extra := bytes.Repeat([]byte("DKIM-Signature: v=1; a=rsa-sha256; b=AA==; bh=AA==; d=x.example; h=from; s=s\r\n"), maxSignatures+1)
+	raw := mustRead(t, "enbd-proofpoint-p.eml") // carries one real signature
+	extra := bytes.Repeat([]byte("DKIM-Signature: v=1; a=rsa-sha256; b=AA==; bh=AA==; d=x.example; h=from; s=s\r\n"), 9)
 	raw = append(extra, raw...)
 	got := VerifyDKIM(context.Background(), raw, recordedLookup(t))
 	if got.DKIM != SigFail {
 		t.Fatalf("VerifyDKIM = %+v, want fail", got)
 	}
-	if !strings.Contains(got.Err, "signatures") {
-		t.Fatalf("Err = %q, want the signature count to be named", got.Err)
+	// Not merely the word "signatures": go-msgauth's own ErrTooManySignatures
+	// contains that too, so a substring assertion on it passes whether this
+	// layer's refusal exists or not. The count and the limit are this layer's.
+	const want = "carries 10 DKIM signatures, over the limit of 8"
+	if !strings.Contains(got.Err, want) {
+		t.Fatalf("Err = %q, want %q", got.Err, want)
 	}
 }
 
@@ -840,4 +870,519 @@ func signatureExpiry(t *testing.T, raw []byte) (bool, time.Time) {
 		t.Fatalf("x=%q is not a timestamp: %v", x, err)
 	}
 	return true, time.Unix(secs, 0).UTC()
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: WHAT a signature signed, not merely THAT a domain signed.
+//
+// A DKIM signature covers the bottom-most occurrence of a repeated field (RFC
+// 6376 section 5.4.2). Every reader downstream of this package takes the
+// TOP-most: norm.go:165 for Subject, norm.go:214 for Content-Type, and
+// go-message's entity.go:39 for Content-Transfer-Encoding all call a Get that
+// returns the first field in the file. Prepending a copy of a signed field
+// therefore leaves the signature verifying over one document while the rest of
+// the pipeline reads another — the confused deputy this package exists to
+// prevent, which singleFrom closed for From alone.
+// ---------------------------------------------------------------------------
+
+// The exact injection an adversarial review landed on the repo's own passing
+// fixture: one prepended line turns a 250.00 transfer alert into a 250,000.00
+// one, with DKIM still reporting pass for emiratesnbd.com.
+func TestAPrependedSubjectIsRefused(t *testing.T) {
+	raw := mustRead(t, "enbd-proofpoint-p.eml")
+	inj := append([]byte("Subject: AED 250,000.00 debited from your account\r\n"), raw...)
+
+	if got := VerifyDKIM(context.Background(), raw, recordedLookup(t)); got.DKIM != SigPass {
+		t.Fatalf("the untampered fixture must still pass, got %+v", got)
+	}
+	got := VerifyDKIM(context.Background(), inj, recordedLookup(t))
+	if got.DKIM == SigPass {
+		t.Fatalf("VerifyDKIM = %+v; a prepended Subject leaves the signature verifying over "+
+			"the bottom-most field while norm reads the top-most one", got)
+	}
+	if !strings.Contains(strings.ToLower(got.Err), "subject") {
+		t.Fatalf("Err = %q, want the repeated field named", got.Err)
+	}
+}
+
+// The same shape against DIB, whose h= omits Content-Type altogether: the
+// prepended field is not signed at all, and it decides how the signed body is
+// decoded.
+func TestAPrependedContentTypeIsRefused(t *testing.T) {
+	raw := mustRead(t, "dib-dkim-unexpired.eml")
+	inj := append([]byte("Content-Type: text/plain; charset=\"utf-8\"\r\n"), raw...)
+
+	if got := VerifyDKIM(context.Background(), raw, recordedLookup(t)); got.DKIM != SigPass {
+		t.Fatalf("the untampered fixture must still pass, got %+v", got)
+	}
+	got := VerifyDKIM(context.Background(), inj, recordedLookup(t))
+	if got.DKIM == SigPass {
+		t.Fatalf("VerifyDKIM = %+v; a prepended Content-Type re-decodes the signed body", got)
+	}
+	if !strings.Contains(strings.ToLower(got.Err), "content-type") {
+		t.Fatalf("Err = %q, want the repeated field named", got.Err)
+	}
+}
+
+// Every field RFC 5322 section 3.6 and RFC 2045 permit at most once, on both
+// banks. Whether the field is in h= or not is irrelevant to the refusal: what
+// makes it fatal is that two readers of the same bytes disagree about which
+// occurrence is the message's.
+// The fields are read off each fixture rather than listed here: prepending a
+// field the message does not already carry is not a duplicate, and asserting a
+// refusal for one would be asserting the wrong rule.
+func TestARepeatedSingletonFieldIsRefusedOnEveryFixture(t *testing.T) {
+	for _, fixture := range loadManifest(t).Fixtures {
+		raw := mustRead(t, fixture.File)
+		if got := VerifyDKIM(context.Background(), raw, recordedLookup(t)); got.DKIM != SigPass {
+			t.Fatalf("%s: the untampered fixture must pass, got %+v", fixture.File, got)
+		}
+		h, _, err := arc.ReadHeader(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var exercised int
+		for name := range singletonFields {
+			fields := h.Get(name)
+			if len(fields) == 0 {
+				continue
+			}
+			exercised++
+			t.Run(fixture.File+"/"+name, func(t *testing.T) {
+				// The attacker's copy is a different value from the signed one:
+				// an identical duplicate would prove nothing about which
+				// occurrence a reader took.
+				inj := append([]byte(strings.TrimSpace(fields[0].Name)+": injected\r\n"), raw...)
+				got := VerifyDKIM(context.Background(), inj, recordedLookup(t))
+				if got.DKIM == SigPass {
+					t.Fatalf("VerifyDKIM = %+v, a prepended %s must not leave the message trusted",
+						got, name)
+				}
+				if got.Err == "" {
+					t.Fatal("a refusal with no reason")
+				}
+				if got.Coverage.Covers(name) {
+					t.Fatalf("Coverage still claims %s is covered: %+v", name, got.Coverage)
+				}
+			})
+		}
+		if exercised < 5 {
+			t.Errorf("%s: only %d singleton fields exercised; this test has stopped testing",
+				fixture.File, exercised)
+		}
+	}
+}
+
+// The refusal must be scoped to fields that may legitimately appear only once.
+// Trace and authentication fields repeat on every relayed message in the corpus
+// — the fixtures carry up to 8 Received and 6 Authentication-Results — and a
+// rule that refused those would refuse all forwarded mail, which is the traffic
+// this receiver exists to read.
+func TestLegitimatelyRepeatedFieldsAreNotRefused(t *testing.T) {
+	raw := mustRead(t, "enbd-proofpoint-p.eml")
+	for _, f := range []string{
+		"Received: from evil.example by mx.example; Mon, 1 Jan 2001 00:00:00 +0000",
+		"Authentication-Results: mx.example; dkim=pass header.d=dib.ae",
+		"Received-SPF: pass (evil.example)",
+		"X-Something: repeated",
+		"DKIM-Signature: v=1; a=rsa-sha256; b=AA==; bh=AA==; d=x.example; h=from; s=s",
+	} {
+		t.Run(strings.SplitN(f, ":", 2)[0], func(t *testing.T) {
+			inj := append([]byte(f+"\r\n"), raw...)
+			if got := VerifyDKIM(context.Background(), inj, recordedLookup(t)); got.DKIM != SigPass {
+				t.Fatalf("VerifyDKIM = %+v; %q may repeat and must not cost the message its verdict",
+					got, strings.SplitN(f, ":", 2)[0])
+			}
+		})
+	}
+}
+
+// The question a downstream reader has to be able to ask.
+func TestCoverageAnswersWhatWasSigned(t *testing.T) {
+	// h=content-transfer-encoding:content-type:date:from:message-id:mime-version:subject:to
+	enbd := VerifyDKIM(context.Background(), mustRead(t, "enbd-proofpoint-p.eml"), recordedLookup(t))
+	if enbd.DKIM != SigPass {
+		t.Fatalf("%+v", enbd)
+	}
+	for _, name := range []string{"Subject", "From", "Content-Type", "Content-Transfer-Encoding", "Date", "To"} {
+		if !enbd.Coverage.Covers(name) {
+			t.Errorf("ENBD: Covers(%q) = false, want true; it is in the signature's h=", name)
+		}
+	}
+	if enbd.Coverage.Covers("X-Not-Signed") {
+		t.Error("ENBD: Covers(X-Not-Signed) = true")
+	}
+	if u := enbd.Coverage.Uncovered(ConsumedHeaders...); len(u) != 0 {
+		t.Errorf("ENBD: Uncovered(consumed) = %v, want none", u)
+	}
+
+	// h=message-id:mime-version:from:to:reply-to:date:subject:content-transfer-encoding
+	// — Content-Type is absent, which is a fact about how Dubai Islamic Bank
+	// signs and not something this receiver can repair. It is asserted here so
+	// the gap is a recorded property rather than a surprise.
+	dib := VerifyDKIM(context.Background(), mustRead(t, "dib-dkim-unexpired.eml"), recordedLookup(t))
+	if dib.DKIM != SigPass {
+		t.Fatalf("%+v", dib)
+	}
+	for _, name := range []string{"Subject", "From", "Content-Transfer-Encoding"} {
+		if !dib.Coverage.Covers(name) {
+			t.Errorf("DIB: Covers(%q) = false, want true", name)
+		}
+	}
+	if dib.Coverage.Covers("Content-Type") {
+		t.Error("DIB: Covers(Content-Type) = true, but d=dib.ae does not sign it")
+	}
+	if u := dib.Coverage.Uncovered(ConsumedHeaders...); !slices.Equal(u, []string{"content-type"}) {
+		t.Errorf("DIB: Uncovered(consumed) = %v, want [content-type]", u)
+	}
+}
+
+// Coverage is a statement about signatures that VERIFIED. A signature that
+// failed proves nothing about the fields it claims to cover, and the zero
+// Verified — the value every non-pass verdict carries — must cover nothing.
+func TestCoverageComesOnlyFromPassingSignatures(t *testing.T) {
+	var zero Verified
+	if zero.Coverage.Covers("From") {
+		t.Error("the zero Verified covers From")
+	}
+	if u := zero.Coverage.Uncovered("From", "Subject"); !slices.Equal(u, []string{"from", "subject"}) {
+		t.Errorf("Uncovered = %v, want everything asked about", u)
+	}
+
+	// A forged signature naming a field nobody signed, alongside the real one.
+	forged := []byte("DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=dib.ae; " +
+		"h=from:x-evil-header; s=selector2; bh=HPQS/xHtokqk4T+5uu+KOGAd/3KQUpfp0eOLkQnMuis=; b=AA==\r\n")
+	raw := append(forged, mustRead(t, "enbd-proofpoint-p.eml")...)
+	got := VerifyDKIM(context.Background(), raw, recordedLookup(t))
+	if got.DKIM != SigPass {
+		t.Fatalf("VerifyDKIM = %+v, want pass from the real signature", got)
+	}
+	if got.Coverage.Covers("X-Evil-Header") {
+		t.Error("a signature that did not verify contributed its h= to Coverage")
+	}
+
+	tampered := mustReplace(t, mustRead(t, "enbd-proofpoint-p.eml"), "Subject:", "Subject: x")
+	if got := VerifyDKIM(context.Background(), tampered, recordedLookup(t)); got.Coverage.Covers("From") {
+		t.Errorf("a failed verification reported coverage: %+v", got)
+	}
+}
+
+// Oversigning is the signer-side defence RFC 6376 section 5.4.2 describes:
+// naming a field in h= more often than it occurs makes an added copy break the
+// signature. Coverage must read it correctly in both directions — the field is
+// covered, and the addition it defends against is fatal.
+func TestOversigningIsUnderstood(t *testing.T) {
+	s := newTestSigner(t)
+	msg := "From: bank <alerts@" + testSignerDomain + ">\r\n" +
+		"Subject: real\r\n" +
+		"\r\nbody\r\n"
+	signed := s.sign(t, []byte(msg), []string{"From", "From", "Subject", "Subject"})
+
+	got := VerifyDKIM(context.Background(), signed, s.lookup)
+	if got.DKIM != SigPass {
+		t.Fatalf("VerifyDKIM = %+v, want pass", got)
+	}
+	if !got.Coverage.Covers("Subject") || !got.Coverage.Covers("From") {
+		t.Fatalf("Coverage = %+v, an oversigned field is covered", got.Coverage)
+	}
+	inj := append([]byte("Subject: injected\r\n"), signed...)
+	if got := VerifyDKIM(context.Background(), inj, s.lookup); got.DKIM == SigPass {
+		t.Fatalf("VerifyDKIM = %+v, want fail", got)
+	}
+}
+
+// Covers is arithmetic, not a set membership test: a field named once in h= and
+// carried twice by the message is signed at the bottom and unsigned at the top,
+// so the value a reader takes is not the value the signature committed to.
+//
+// It has to be pinned on a field that may legitimately repeat, because the
+// refusal above means a repeated SINGLETON never reaches this code at all —
+// which would leave the arithmetic asserted by nothing. Received is the field
+// that actually behaves this way in the wild: signers cover the bottom-most one
+// and every later hop prepends another.
+func TestCoverageCountsOccurrencesRatherThanNames(t *testing.T) {
+	s := newTestSigner(t)
+	msg := func(n int) []byte {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "Received: from hop%d.example by mx.example\r\n", i)
+		}
+		b.WriteString("From: bank <alerts@" + testSignerDomain + ">\r\nSubject: real\r\n\r\nbody\r\n")
+		return []byte(b.String())
+	}
+
+	// Signed once, carried twice: the top one is the attacker's.
+	got := VerifyDKIM(context.Background(), s.sign(t, msg(2), []string{"From", "Received"}), s.lookup)
+	if got.DKIM != SigPass {
+		t.Fatalf("VerifyDKIM = %+v, want pass", got)
+	}
+	if got.Coverage.Covers("Received") {
+		t.Error("Covers(Received) = true with 2 fields and one named in h=; " +
+			"a signature covers the bottom-most occurrence, not the one a reader takes")
+	}
+	if !got.Coverage.Covers("From") {
+		t.Error("Covers(From) = false; the same signature covers it once and it occurs once")
+	}
+
+	// Signed twice, carried twice: every occurrence is signed material.
+	got = VerifyDKIM(context.Background(),
+		s.sign(t, msg(2), []string{"From", "Received", "Received"}), s.lookup)
+	if got.DKIM != SigPass {
+		t.Fatalf("VerifyDKIM = %+v, want pass", got)
+	}
+	if !got.Coverage.Covers("Received") {
+		t.Errorf("Covers(Received) = false with both occurrences named in h=: %+v", got.Coverage)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bounds on folded headers — the quadratic both parsers share.
+// ---------------------------------------------------------------------------
+
+// go-msgauth accumulates a folded field with h[len(h)-1] += l + crlf
+// (dkim/header.go:32), which is quadratic in the number of continuation lines
+// — the number a sender chooses. Fixing arc.ReadHeader was half the path:
+// VerifyDKIM hands the same bytes to dkim.VerifyWithOptions immediately
+// afterwards. Measured through VerifyDKIM before this bound existed: 20,000
+// folds took 2.3s, 40,000 took 9.6s, 80,000 took 35.7s and 160,000 took 1m54s,
+// all inside a 60s delivery deadline a pure-CPU loop never checks.
+//
+// The assertion is on bytes allocated, not on elapsed time: allocation is
+// deterministic and load-independent, and quadratic concatenation shows up
+// there three orders of magnitude before a wall clock notices.
+func TestFoldedHeaderWorkIsBoundedThroughVerifyDKIM(t *testing.T) {
+	const maxAllocRatio = 100
+	lookup := recordedLookup(t)
+
+	for _, n := range []int{10_000, 40_000} {
+		raw := []byte("DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=x.example; s=s;\r\n" +
+			" h=from:subject; bh=AA==; b=AA==\r\n" +
+			"From: a@b.example\r\nSubject: s\r\nX-Fold: v" +
+			strings.Repeat("\r\n cccc", n) + "\r\n\r\nbody\r\n")
+
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		got := VerifyDKIM(context.Background(), raw, lookup)
+		runtime.ReadMemStats(&after)
+
+		if got.DKIM == SigPass {
+			t.Fatalf("n=%d: %+v", n, got)
+		}
+		if !strings.Contains(got.Err, "folded") && !strings.Contains(got.Err, "too large") {
+			t.Fatalf("n=%d: Err = %q, want the fold bound named", n, got.Err)
+		}
+		allocated := after.TotalAlloc - before.TotalAlloc
+		if ratio := float64(allocated) / float64(len(raw)); ratio > maxAllocRatio {
+			t.Fatalf("n=%d folds: VerifyDKIM over %d bytes allocated %d bytes (%.0fx the input, "+
+				"limit %dx); a folded header is being accumulated quadratically again",
+				n, len(raw), allocated, ratio, maxAllocRatio)
+		}
+	}
+}
+
+func TestAnOversizedHeaderBlockIsRefusedBeforeAnyParser(t *testing.T) {
+	raw := []byte("DKIM-Signature: v=1; a=rsa-sha256; d=x.example; s=s; h=from; bh=AA==; b=AA==\r\n" +
+		"From: a@b.example\r\nX-Big: " + strings.Repeat("x", maxHeaderBytes) + "\r\n\r\nbody\r\n")
+	got := VerifyDKIM(context.Background(), raw, recordedLookup(t))
+	if got.DKIM != SigFail {
+		t.Fatalf("VerifyDKIM = %+v, want fail", got)
+	}
+	if !strings.Contains(got.Err, "too large") {
+		t.Fatalf("Err = %q, want the size limit named", got.Err)
+	}
+}
+
+// The bound must sit far above real mail. The deepest folded field across the
+// seven fixtures is 23 continuation lines and the largest header block is 12.5
+// KB; every fixture must still verify.
+func TestTheFoldBoundsClearRealMailByAnOrderOfMagnitude(t *testing.T) {
+	for _, f := range loadManifest(t).Fixtures {
+		raw := mustRead(t, f.File)
+		h, _, err := arc.ReadHeader(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", f.File, err)
+		}
+		block := len(raw)
+		if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+			block = i + 2
+		}
+		if block*8 > maxHeaderBytes {
+			t.Errorf("%s: header block is %d bytes, less than 8x under the %d limit",
+				f.File, block, maxHeaderBytes)
+		}
+		for _, field := range h {
+			if lines := strings.Count(field.Raw, "\r\n") - 1; lines*8 > maxFieldLines {
+				t.Errorf("%s: %s folds %d lines, less than 8x under the %d limit",
+					f.File, field.Name, lines, maxFieldLines)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Limits, and the correspondence the strict split relies on.
+// ---------------------------------------------------------------------------
+
+// The bounds are pinned at their values, not merely at "whatever the constant
+// says". Every test that builds maxSignatures+1 signatures moves with the
+// constant, so mutating it mutates the assertion too, and all three limits
+// could be changed to anything at all with a green suite.
+func TestTheBoundsArePinnedAtTheirValues(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"maxSignatures", maxSignatures, 8},
+		{"maxSigFieldBytes", maxSigFieldBytes, 8192},
+		{"maxErrBytes", maxErrBytes, 2048},
+		{"maxHeaderBytes", maxHeaderBytes, 128 * 1024},
+		{"maxFieldLines", maxFieldLines, 512},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d; changing a bound is a deliberate act, "+
+				"so say so here and in the doc comment", c.name, c.got, c.want)
+		}
+	}
+}
+
+// A policy refusal is decided from the strict split and applied to
+// go-msgauth's verdict list by index. Nothing else in the suite has ever had
+// two signatures where one is refused and one is not, so the correspondence
+// between the two lists — the exact "verdict computed over one document,
+// applied to another" shape this file exists to prevent — was untested.
+func TestAPolicyRefusalFollowsItsOwnSignature(t *testing.T) {
+	real := mustRead(t, "enbd-proofpoint-p.eml")
+	// An l= signature is refused by policy before its verdict is read.
+	refusable := "DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=x.example; s=s; " +
+		"l=100; h=from:subject; bh=AA==; b=AA==\r\n"
+
+	t.Run("refused signature first", func(t *testing.T) {
+		got := VerifyDKIM(context.Background(), append([]byte(refusable), real...), recordedLookup(t))
+		if got.DKIM != SigPass || !slices.Equal(got.DKIMDomains, []string{"emiratesnbd.com"}) {
+			t.Fatalf("VerifyDKIM = %+v; the refusal belongs to signature 1, not to the real one", got)
+		}
+	})
+
+	t.Run("refused signature second", func(t *testing.T) {
+		// Appended at the foot of the header block, so it is the second
+		// DKIM-Signature the strict split finds rather than the first.
+		i := bytes.Index(real, []byte("\r\n\r\n"))
+		if i < 0 {
+			t.Fatal("fixture has no header/body boundary")
+		}
+		spliced := append(append(append([]byte{}, real[:i+2]...), []byte(refusable)...), real[i+2:]...)
+		got := VerifyDKIM(context.Background(), spliced, recordedLookup(t))
+		if got.DKIM != SigPass || !slices.Equal(got.DKIMDomains, []string{"emiratesnbd.com"}) {
+			t.Fatalf("VerifyDKIM = %+v; the refusal belongs to the l= signature wherever it sits", got)
+		}
+	})
+}
+
+// MaxVerifications is the library-side belt to this layer's braces. Lowering it
+// would silently stop verifying signatures the strict split found, which
+// surfaces as a parser disagreement rather than as a missing pass — so a
+// message carrying exactly the limit, with the only real signature last, pins
+// it.
+func TestEverySignatureUpToTheLimitIsVerified(t *testing.T) {
+	junk := bytes.Repeat([]byte("DKIM-Signature: v=1; a=rsa-sha256; b=AA==; bh=AA==; d=x.example; h=from; s=s\r\n"),
+		maxSignatures-1)
+	raw := append(junk, mustRead(t, "enbd-proofpoint-p.eml")...)
+	got := VerifyDKIM(context.Background(), raw, recordedLookup(t))
+	if got.DKIM != SigPass {
+		t.Fatalf("VerifyDKIM = %+v; the real signature sits below %d junk ones and must still be verified",
+			got, maxSignatures-1)
+	}
+}
+
+func TestNormalizeDomain(t *testing.T) {
+	for in, want := range map[string]string{
+		"dib.ae":            "dib.ae",
+		"DIB.AE":            "dib.ae",
+		"EmiratesNBD.com":   "emiratesnbd.com",
+		"dib.ae.":           "dib.ae",
+		"  dib.ae.  ":       "dib.ae",
+		"":                  "",
+		"MiXeD.CaSe.Sub.Ae": "mixed.case.sub.ae",
+	} {
+		if got := normalizeDomain(in); got != want {
+			t.Errorf("normalizeDomain(%q) = %q, want %q; a comparison a change of case "+
+				"or a root dot defeats is not a comparison", in, got, want)
+		}
+	}
+}
+
+// A context that is already done must not spend a lookup. The check is what
+// stops a cancelled delivery from continuing to resolve keys, and without it
+// the verdict would also be a permanent fail rather than a temperror.
+func TestACancelledContextIsTempFailAndAsksNothing(t *testing.T) {
+	var asked atomic.Int64
+	base := recordedLookup(t)
+	counting := func(ctx context.Context, name string) ([]string, error) {
+		asked.Add(1)
+		return base(ctx, name)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := VerifyDKIM(ctx, mustRead(t, "enbd-proofpoint-p.eml"), counting)
+	if got.DKIM != SigTempFail {
+		t.Fatalf("VerifyDKIM = %+v, want temperror on a cancelled context", got)
+	}
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("%d lookups on a cancelled context, want 0", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A signer this test owns, for the cases no recorded fixture can express.
+// ---------------------------------------------------------------------------
+
+const (
+	testSignerDomain   = "signer.test"
+	testSignerSelector = "s1"
+)
+
+type testSigner struct {
+	key    *rsa.PrivateKey
+	lookup LookupTXT
+}
+
+// newTestSigner mints a key, publishes it into a copy of the recording, and
+// returns a signer for messages the corpus does not contain. The recording is
+// still the whole world: the added record is one more name in the same map, and
+// nothing here reaches a resolver.
+func newTestSigner(t *testing.T) *testSigner {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := loadDNSMap(t)
+	dns[testSignerSelector+"._domainkey."+testSignerDomain] = []string{
+		"v=DKIM1; k=rsa; p=" + base64.StdEncoding.EncodeToString(der),
+	}
+	return &testSigner{key: key, lookup: staticTXT(dns)}
+}
+
+func (s *testSigner) sign(t *testing.T, msg []byte, headerKeys []string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	err := dkimlib.Sign(&b, bytes.NewReader(msg), &dkimlib.SignOptions{
+		Domain:                 testSignerDomain,
+		Selector:               testSignerSelector,
+		Signer:                 s.key,
+		Hash:                   crypto.SHA256,
+		HeaderCanonicalization: dkimlib.CanonicalizationRelaxed,
+		BodyCanonicalization:   dkimlib.CanonicalizationRelaxed,
+		HeaderKeys:             headerKeys,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

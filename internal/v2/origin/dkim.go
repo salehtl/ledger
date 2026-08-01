@@ -65,6 +65,11 @@ type Verified struct {
 	// something a caller has to re-derive.
 	DKIMDomains []string
 
+	// Coverage says WHAT the passing signatures signed, as opposed to merely
+	// that somebody signed. It is empty unless DKIM is SigPass, and an empty
+	// Coverage covers nothing — see [Coverage].
+	Coverage Coverage
+
 	// Err explains why DKIM is not SigPass. It is diagnostic text and never a
 	// trust input, and it must never be written to a closed-enum column.
 	//
@@ -81,11 +86,110 @@ type Verified struct {
 // one recorded-DNS fixture and one production resolver serve both verifiers.
 type LookupTXT = arc.LookupTXT
 
+// ConsumedHeaders are the header fields this pipeline reads out of a message
+// once it has been let through, in the form [Coverage.Covers] wants.
+//
+// The list is short because the reading is: norm takes Subject (norm.go:165)
+// and From (norm.go:166) through go-message's Get, and go-message chooses the
+// leaf, the charset and the transfer decoding from Content-Type (norm.go:214,
+// entity.go:170) and Content-Transfer-Encoding (entity.go:39). Subject is then
+// both an extraction source and a template SELECTOR (tmpl/def.go:47), so it
+// decides which template runs as well as what it produces.
+//
+// It is exported so a caller can ask [Coverage.Uncovered] what a message's
+// signatures failed to cover, and it is a var rather than prose so that the
+// question has one answer instead of one per caller.
+var ConsumedHeaders = []string{
+	"From",
+	"Subject",
+	"Content-Type",
+	"Content-Transfer-Encoding",
+}
+
+// Coverage records what the signatures that VERIFIED actually signed.
+//
+// # Why a verdict alone is not enough
+//
+// "d=emiratesnbd.com signed this" is not the same statement as "this Subject is
+// the bank's". A signature covers the fields named in its h=, and where a field
+// name repeats it covers the BOTTOM-most occurrence (RFC 6376 section 5.4.2) —
+// while go-message, net/mail and every reader downstream of this package take
+// the TOP-most. A signature can therefore verify over one document while the
+// pipeline acts on another, which is the confused deputy this package exists to
+// prevent and which [VerifyDKIM] previously closed for From alone.
+//
+// The zero Coverage covers nothing, which is the answer a caller should get
+// from any verdict that is not SigPass.
+type Coverage struct {
+	// signed is the highest number of times a field name appears in the h= of a
+	// signature that verified. Highest rather than summed: two signatures make
+	// two independent claims, and the stronger one is not weakened by the other.
+	signed map[string]int
+	// present is how often the field actually occurs in the message.
+	present map[string]int
+}
+
+// Covers reports whether every occurrence of a field is signed material — that
+// is, whether the value a reader takes off this message is one a passing
+// signature committed to.
+//
+// The test is that the signature named the field at least as many times as the
+// message carries it. That is exactly RFC 6376 section 5.4.2's arithmetic: a
+// verifier consumes occurrences from the bottom up, so h= naming a field n
+// times covers the bottom-most n, and anything above those n is unsigned text
+// that a later hop — or an attacker — added. It also gets oversigning right in
+// the other direction: a signer who names a field more often than it occurs
+// commits to its ABSENCE, so an added copy breaks the signature and the field
+// is covered even though it is not there.
+func (c Coverage) Covers(name string) bool {
+	n := fieldKey(name)
+	signed := c.signed[n]
+	return signed >= c.present[n] && signed >= 1
+}
+
+// Uncovered returns the given field names, folded, that [Coverage.Covers]
+// rejects. It returns them in the order asked, so a diagnostic reads the same
+// way twice.
+func (c Coverage) Uncovered(names ...string) []string {
+	var out []string
+	for _, n := range names {
+		if !c.Covers(n) {
+			out = append(out, fieldKey(n))
+		}
+	}
+	return out
+}
+
+func fieldKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 const (
 	// maxSignatures bounds the fan-out. go-msgauth hashes the body once per
 	// signature, in parallel, so an unbounded count is an unbounded amount of
 	// work bought with one message. Real mail carries one to three.
 	maxSignatures = 8
+
+	// maxHeaderBytes and maxFieldLines bound the folded-header work BEFORE
+	// either header parser runs.
+	//
+	// go-msgauth accumulates a folded field with h[len(h)-1] += l + crlf
+	// (dkim/header.go:32): every continuation line copies the whole field again,
+	// so one field costs bytes x lines and both terms are the sender's to
+	// choose. Measured through VerifyDKIM with no bound: 20,000 folds took 2.3s,
+	// 40,000 took 9.6s, 80,000 took 35.7s and 160,000 — inside the 1 MB a cold
+	// mail blob is allowed — took 1m54s, all of it inside a 60s delivery
+	// deadline that a pure-CPU loop never looks at. Fixing arc.ReadHeader's own
+	// quadratic did not touch this: VerifyDKIM hands the same bytes to
+	// dkim.VerifyWithOptions immediately afterwards.
+	//
+	// The product of the two is the bound that matters: 128 KB x 512 lines caps
+	// the accumulation at about 33 MB of copying, tens of milliseconds. Both
+	// clear real mail by an order of magnitude — across the seven fixtures the
+	// largest header block is 12.5 KB and the deepest folded field is 23 lines
+	// (TestTheFoldBoundsClearRealMailByAnOrderOfMagnitude holds that margin).
+	maxHeaderBytes = 128 * 1024
+	maxFieldLines  = 512
 
 	// maxSigFieldBytes bounds one DKIM-Signature field. A 4096-bit RSA
 	// signature with a long h= list runs to roughly 1.5 KB; 8 KB is generous
@@ -132,12 +236,23 @@ func VerifyDKIM(ctx context.Context, raw []byte, lookupTXT LookupTXT) Verified {
 		return Verified{DKIM: SigTempFail, Err: "no DNS resolver configured"}
 	}
 
+	// Bounded before either parser reads a byte of it: arc.ReadHeader is linear
+	// now, but go-msgauth's reader is not, and this function hands it the same
+	// bytes a few lines below.
+	if n := headerBlockLen(raw); n > maxHeaderBytes {
+		return failed("header block is %d bytes, too large (limit %d)", n, maxHeaderBytes)
+	}
+
 	h, _, err := arc.ReadHeader(raw)
 	if err != nil {
 		// Not "no signature": we cannot tell what this message says, and a
 		// bare LF specifically is an attack shape rather than an absence. Fail
 		// is the verdict that grants nothing and records that we saw something.
 		return failed("unreadable header: %v", err)
+	}
+	if name, lines := deepestFold(h); lines > maxFieldLines {
+		return failed("%s is folded across %d lines, too many (limit %d)",
+			clipFieldName(name), lines, maxFieldLines)
 	}
 
 	sigs := h.Get(dkimHeaderField)
@@ -146,6 +261,16 @@ func VerifyDKIM(ctx context.Context, raw []byte, lookupTXT LookupTXT) Verified {
 	}
 	if len(sigs) > maxSignatures {
 		return failed("message carries %d DKIM signatures, over the limit of %d", len(sigs), maxSignatures)
+	}
+	if name, n := repeatedSingleton(h); n > 1 {
+		// The whole message is refused, not one signature: the ambiguity is a
+		// property of the document. See [Coverage] — a signature covers the
+		// bottom-most occurrence and every reader downstream takes the top-most,
+		// so there is no reading of these bytes that this receiver could verify
+		// and the pipeline would then act on.
+		return failed("message carries %d %s fields; a signature covers only the bottom-most "+
+			"(RFC 6376 5.4.2) while every reader here takes the top-most, so no single value is "+
+			"attributable", n, name)
 	}
 
 	// Policy refusals, decided from the strict split so they cannot be dodged
@@ -196,6 +321,7 @@ func VerifyDKIM(ctx context.Context, raw []byte, lookupTXT LookupTXT) Verified {
 		domains  []string
 		reasons  []string
 		tempSeen bool
+		signed   = make(map[string]int)
 	)
 	for i, v := range verifs {
 		if reason := refused[i]; reason != "" {
@@ -215,6 +341,12 @@ func VerifyDKIM(ctx context.Context, raw []byte, lookupTXT LookupTXT) Verified {
 			if !slices.Contains(domains, d) {
 				domains = append(domains, d)
 			}
+			// Only a signature that VERIFIED contributes coverage. A failed one
+			// can name any field it likes in h= and has proved nothing about
+			// any of them.
+			for name, n := range tally(v.HeaderKeys) {
+				signed[name] = max(signed[name], n)
+			}
 			continue
 		}
 		if dkim.IsTempFail(v.Err) {
@@ -228,7 +360,11 @@ func VerifyDKIM(ctx context.Context, raw []byte, lookupTXT LookupTXT) Verified {
 		// A signature verified. Another one failing says nothing about this
 		// one — signatures are independent claims, and a forged extra
 		// signature must not be able to suppress a real one.
-		return Verified{DKIM: SigPass, DKIMDomains: domains}
+		return Verified{
+			DKIM:        SigPass,
+			DKIMDomains: domains,
+			Coverage:    Coverage{signed: signed, present: fieldCounts(h)},
+		}
 	case tempSeen:
 		return Verified{DKIM: SigTempFail, Err: sanitize(strings.Join(reasons, "; "))}
 	default:
@@ -245,6 +381,117 @@ func failed(format string, args ...any) Verified {
 func hasBodyLengthTag(f arc.Field) bool {
 	_, ok := arc.ParseTags(f.Value)["l"]
 	return ok
+}
+
+// headerBlockLen is the size of the header block, computed without parsing it.
+// A message with no blank line is all header.
+func headerBlockLen(raw []byte) int {
+	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+		return i + 2
+	}
+	return len(raw)
+}
+
+// deepestFold returns the field with the most continuation lines, and how many.
+func deepestFold(h arc.Header) (string, int) {
+	var worst string
+	var most int
+	for _, f := range h {
+		// Raw is Name + ":" + Value + CRLF, so one CRLF per line and the last
+		// one is the field's own terminator.
+		if n := strings.Count(f.Raw, crlf) - 1; n > most {
+			worst, most = f.Name, n
+		}
+	}
+	return worst, most
+}
+
+const crlf = "\r\n"
+
+// clipFieldName bounds a field name before it is interpolated into a
+// diagnostic. The name is the sender's text until something checks it, and
+// sanitize bounds the whole string but only after this one has been built.
+func clipFieldName(name string) string {
+	name = strings.TrimSpace(name)
+	const limit = 64
+	if len(name) > limit {
+		return name[:limit] + "..."
+	}
+	return name
+}
+
+// singletonFields are the header fields that may appear at most once: the
+// max-1 rows of RFC 5322 section 3.6, plus the MIME fields of RFC 2045 that
+// decide how a body is read.
+//
+// The list is a whitelist of what MUST NOT repeat rather than a check that
+// nothing repeats, because plenty of fields legitimately do. Every message that
+// has been relayed carries several Received, every one that has been
+// authenticated carries several Authentication-Results, and an ARC chain
+// carries one of each of its three fields per hop — the fixtures here run to 8
+// Received and 6 Authentication-Results. A rule that refused those would refuse
+// all forwarded mail, which is the traffic this receiver exists to read.
+//
+// Return-Path is included although RFC 5322 files it under trace: it is the
+// envelope sender inner.go falls back to when the SMTP layer did not give it
+// one, so a prepended copy changes which domain counts as the relaying hop.
+var singletonFields = map[string]string{
+	"date":                      "Date",
+	"from":                      "From",
+	"sender":                    "Sender",
+	"reply-to":                  "Reply-To",
+	"to":                        "To",
+	"cc":                        "Cc",
+	"bcc":                       "Bcc",
+	"message-id":                "Message-ID",
+	"in-reply-to":               "In-Reply-To",
+	"references":                "References",
+	"subject":                   "Subject",
+	"return-path":               "Return-Path",
+	"mime-version":              "MIME-Version",
+	"content-type":              "Content-Type",
+	"content-transfer-encoding": "Content-Transfer-Encoding",
+	"content-id":                "Content-ID",
+	"content-description":       "Content-Description",
+	"content-disposition":       "Content-Disposition",
+}
+
+// repeatedSingleton returns the first field that may appear at most once and
+// does not, with its count. The name returned is this package's spelling of it,
+// never the sender's, so nothing attacker-written reaches the diagnostic.
+func repeatedSingleton(h arc.Header) (string, int) {
+	counts := fieldCounts(h)
+	// Iterated over the header rather than over the map, so the field reported
+	// is the first one in the message and the message does not change between
+	// two runs on the same input.
+	for _, f := range h {
+		k := fieldKey(f.Name)
+		if canonical, ok := singletonFields[k]; ok && counts[k] > 1 {
+			return canonical, counts[k]
+		}
+	}
+	return "", 0
+}
+
+func fieldCounts(h arc.Header) map[string]int {
+	counts := make(map[string]int, len(h))
+	for _, f := range h {
+		counts[fieldKey(f.Name)]++
+	}
+	return counts
+}
+
+// tally counts an h= list, which may name a field more than once: RFC 6376
+// section 5.4.2's oversigning, where a signer commits to a field appearing no
+// more often than it did at signing time.
+func tally(names []string) map[string]int {
+	out := make(map[string]int, len(names))
+	for _, n := range names {
+		if k := fieldKey(n); k != "" {
+			out[k]++
+		}
+	}
+	return out
 }
 
 // normalizeDomain lowercases a d= and drops a trailing root dot.
