@@ -248,9 +248,54 @@ planting that row. I left the guard and did not write a test that plants the
 row, because such a test would assert a scenario production cannot produce.
 Score reported as 22/23 rather than rounded to 23/23.
 
+## Verification
+
+```
+go clean -testcache && bash scripts/v2-check.sh      # exit 0, captured directly
+v2-check: OK (go + client + conformance)
+27 Go packages ok; client 1985 pass / 0 fail / 0 skip
+```
+
+**The e2e actually ran, asserted rather than assumed.** The plan warns that
+"`exit.test.ts` green" is satisfiable by skipping, so: the bare `bun test` run
+(no `LEDGER_TEST_POSTGRES_URL`) reports **37 skip**, and the gate run reports
+**0 skip** with the pass count higher by exactly that many. Confirmed
+independently by running the e2e files alone against a booted cluster —
+`roundtrip.test.ts` 8 pass / 0 skip, `exit.test.ts` + `harness.test.ts` 32 pass
+/ 0 skip, with real `ledgerd` output in the log (the step-16
+`I11_roster_checkpoint/chain_withheld` detection and the `parse-rate` exit
+report). Every one of those accounts is created through the new gate: they mint
+a real code by running `ledgerd mint-invite`, so a broken CLI or a broken
+redemption fails them.
+
+`client/src/replay/fx.test.ts`'s known load-sensitive 5 s timeout did not fire
+in the gate run; its limit was not touched.
+
 ## Files changed
 
-SCORE_FILES
+26 files, +2458/−55, committed as `f0e5979` through a temporary `GIT_INDEX_FILE`
+seeded from HEAD, moved with a compare-and-swap `update-ref`, and read back with
+`git show --stat` before reporting.
+
+- **new**: `internal/v2/pg/migrations/00020_invite_codes.sql`,
+  `internal/v2/pg/migrations/00021_deleted_account_sessions.sql`,
+  `internal/v2/auth/invite.go`, and five test files
+  (`auth/invite_test.go`, `auth/deleted_account_test.go`, `api/invite_test.go`,
+  `api/deleted_account_test.go`, `api/rotation_reauth_test.go`,
+  `api/quarantine_limit_test.go`).
+- **changed**: `internal/v2/auth/session.go`, `internal/v2/purge/purge.go`,
+  `internal/v2/api/{api,sync,addresses,quarantine}.go`,
+  `internal/v2/api/{sync,account}_test.go`,
+  `internal/v2/config/config.go` + `config_test.go`, `cmd/ledgerd/main.go`,
+  `client/src/net/client.ts`, `client/test/e2e/{harness.ts,harness.test.ts,exit.test.ts,roundtrip.test.ts}`.
+
+**`client/src/net/client.ts` was staged as a reconstructed blob**, not as the
+working-tree file: it was `MM` in the shared index with another session's
+in-flight doc edit on top of their committed platform-seam work. The committed
+blob is HEAD's content with only my `login` hunk applied, so their unstaged edit
+is neither swept nor reverted. The same temp-index discipline is why this commit
+does not carry the `D client/src/platform{,.test}.ts` deletions another session
+had staged.
 
 ## Concerns
 
@@ -282,3 +327,10 @@ SCORE_FILES
    cannot open the beta without knowing it exists.
 7. **The `not_invited` 403 is a code oracle in principle.** 120 bits of entropy
    behind a 12/minute per-IP sign-in budget makes it uninteresting in practice.
+8. **The mutation battery edits shared source in a shared worktree.** Another
+   session's `go test ./internal/v2/... ./cmd/ledgerd` was seen running while
+   `addresses.go` was mutated, so that session may have read spurious `api`
+   failures. Nothing was left corrupted — every mutation is restored from a
+   `.mutbak` in a `finally`, and the tree was verified clean (`gofmt -l` empty,
+   `go build ./...` ok, no `.mutbak` remaining) before the final gate — but a
+   future battery here should announce itself or run against a scratch clone.
