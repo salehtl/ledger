@@ -2,6 +2,8 @@
 
 Single static binary + systemd + Tailscale HTTPS. No Node, no DB server.
 
+> This runbook covers **v1** (`ledger`). For the v2 multi-user beta (`ledgerd`) — subcommands, config rails, secrets, the admin console and troubleshooting — see [README-v2.md](README-v2.md).
+
 ## 1. Build the static binary (build machine)
 
 ```bash
