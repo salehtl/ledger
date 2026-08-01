@@ -252,3 +252,33 @@ test("verifyHashList proves the server committed to a sequence, not that the bod
   const real = chain("ingest", "cold", 3);
   expect(() => verifyFetchedRange(pinnedFrom(invented), real)).toThrow(ChainBreakError);
 });
+
+test("a row that names no writer fails loudly instead of skipping the check", () => {
+  // requireSameChain used to return quietly when the row carried neither field,
+  // so against a response type that omitted them the cross-chain splice
+  // detection simply did not run — the check was present and vacuous. Go cannot
+  // be bypassed that way because oplog.Row always carries both from its database
+  // columns, so the fields are required here too.
+  const rows = chain("dev-a", "hot", 2);
+  const stripped = rows.map((r) => ({ ...r, writer_id: "" }));
+  expect(() => verifyChain("dev-a|hot", stripped, genesis())).toThrow(ChainBreakError);
+
+  const undef = rows.map((r) => ({ ...r, writer_id: undefined as unknown as string }));
+  expect(() => verifyChain("dev-a|hot", undef, genesis())).toThrow(ChainBreakError);
+
+  // Same for the hash list, whose entries name a writer but not a stream.
+  const list = hashRows(rows).map((h) => ({ ...h, writer_id: "" }));
+  expect(() => verifyHashList("dev-a|hot", list, genesis())).toThrow(ChainBreakError);
+});
+
+test("the hash list's prev_hash linkage is always checked, never optional", () => {
+  // prev_hash was optional, which meant the linkage check silently did not run
+  // for a caller that dropped it — including the link from the first entry to
+  // the pinned head, which is the only thing tying the list to anything.
+  const rows = chain("ingest", "cold", 3);
+  const list = hashRows(rows);
+  expect(() => verifyHashList("ingest|cold", list, genesis())).not.toThrow();
+  const broken = [...list];
+  broken[0] = { ...broken[0]!, prev_hash: new Uint8Array(32).fill(9) };
+  expect(() => verifyHashList("ingest|cold", broken, genesis())).toThrow(ChainBreakError);
+});

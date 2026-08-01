@@ -36,6 +36,9 @@ const manifest: {
     ingest_id: string;
   }[];
   authored_at_cases: { wire: string; expect_unix_ms: string }[];
+  authored_at_rejects: string[];
+  parent_version_overflow_base64: string;
+  parent_version_overflow: string;
 } = await Bun.file(`${import.meta.dir}/../../../conformance/op/manifest.json`).json();
 
 const goldenOps = new Uint8Array(Buffer.from(manifest.golden_ops_base64, "base64"));
@@ -44,6 +47,11 @@ const goldenCheckpoint = new Uint8Array(Buffer.from(manifest.golden_checkpoint_b
 const utf8 = (b: Uint8Array) => new TextDecoder().decode(b);
 
 const ingestID = "a".repeat(64);
+
+/** The Go-authored blob manifest, read lazily so op.test.ts stays about ops. */
+function blobFixtures(): { fixtures: { file: string; expect_plaintext_base64: string }[] } {
+  return require(`${import.meta.dir}/../../../conformance/blob/manifest.json`);
+}
 
 function opsBlob(body: string): Uint8Array {
   return new TextEncoder().encode(body);
@@ -382,6 +390,20 @@ test("ingest_id is required on the two ingest ops and refused on every other", (
   ).not.toThrow();
 });
 
+test("the parent_version overflow blob Go accepts is refused here, from shared bytes", () => {
+  // Go encoded this blob and asserts IT decodes the value exactly; this side
+  // must refuse the same bytes. The asymmetry is a property of the frozen wire —
+  // parent_version is a raw JSON number, so an int64 above 2^53 is expressible
+  // in Go and already rounded by JSON.parse before this executor sees it — and
+  // pinning it from a shared artifact is what stops it being a claim in a
+  // comment.
+  expect(parseDecimal(manifest.parent_version_overflow)).toBe(9007199254740993n);
+  const blob = new Uint8Array(Buffer.from(manifest.parent_version_overflow_base64, "base64"));
+  expect(() => decodeBlobOps(blob)).toThrow(BlobDecodeError);
+  // And it is a set-aside, not the sync hard stop.
+  expect(() => decodeBlobOps(blob)).not.toThrow(UnknownNewerVersionError);
+});
+
 test("a parent_version past 2^53 is refused rather than silently rounded", () => {
   // The frozen wire carries parent_version as a raw JSON NUMBER, so Go's int64
   // can express a value this executor cannot. JSON.parse has already rounded it
@@ -406,4 +428,116 @@ test("encodeBlobOps refuses to write an op the log could never take back", () =>
   expect(() => encodeBlobOps([{ ...rateOp(), authored_at: "whenever" }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), payload: undefined }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), v: 2 }])).toThrow(UnknownNewerVersionError);
+});
+
+// ---------------------------------------------------------------------------
+// The timestamp grammar, as a SHARED table
+// ---------------------------------------------------------------------------
+
+test("every timestamp Go refuses is refused here too", () => {
+  // conformance/op/manifest.json carries this list, and Go asserts the same
+  // strings against its own decoder. Two hand-maintained lists would drift into
+  // exactly the bug they exist to prevent: one side quietly accepting what the
+  // other refuses.
+  expect(manifest.authored_at_rejects.length).toBeGreaterThan(10);
+  for (const wire of manifest.authored_at_rejects) {
+    const blob = opsBlob(
+      `{"v":1,"kind":"ops","ops":[{"v":1,"type":"rate_set","op_id":"R1",` +
+        `"authored_at":${JSON.stringify(wire)},"parent_version":null,"payload":{}}]}`,
+    );
+    expect(() => decodeBlobOps(blob)).toThrow(BlobDecodeError);
+  }
+});
+
+test("Date.parse's rollover never gets a say", () => {
+  // The two rows of the divergence table that were live bugs. The second is
+  // worse than an acceptance disagreement: Date.parse yields an instant in
+  // MARCH for a February date, so this executor would have folded the op at a
+  // moment no legal reading of the string produces — and authored_at is the
+  // fork tiebreak.
+  expect(new Date(Date.parse("2026-06-05T24:00:00Z")).toISOString()).toBe("2026-06-06T00:00:00.000Z");
+  expect(new Date(Date.parse("2026-02-30T10:00:00Z")).toISOString()).toBe("2026-03-02T10:00:00.000Z");
+  expect(() => canonicalTime("2026-06-05T24:00:00Z")).toThrow(BlobDecodeError);
+  expect(() => canonicalTime("2026-02-30T10:00:00Z")).toThrow(BlobDecodeError);
+
+  // Leap years are computed the Gregorian way, matching Go's daysIn.
+  expect(() => canonicalTime("2024-02-29T00:00:00Z")).not.toThrow(); // divisible by 4
+  expect(() => canonicalTime("2000-02-29T00:00:00Z")).not.toThrow(); // divisible by 400
+  expect(() => canonicalTime("1900-02-29T00:00:00Z")).toThrow(); // century, not by 400
+  expect(() => canonicalTime("2026-02-29T00:00:00Z")).toThrow();
+
+  // An offset is accepted up to ±23:59 and no further. Stock Go read +24:00 as
+  // a real offset and Date.parse refuses it, so both sides were tightened onto
+  // the canonical RFC 3339 reading instead of either mirroring the other.
+  expect(canonicalTime("2026-06-05T10:00:00+23:59")).toBe("2026-06-04T10:01:00.000Z");
+  expect(() => canonicalTime("2026-06-05T10:00:00+24:00")).toThrow(BlobDecodeError);
+  expect(() => canonicalTime("2026-06-05T10:00:00+00:60")).toThrow(BlobDecodeError);
+});
+
+// ---------------------------------------------------------------------------
+// Number LITERALS, which JSON.parse throws away
+// ---------------------------------------------------------------------------
+
+test("a non-integer literal in a structural field is refused, as Go refuses it", () => {
+  // Go decodes v into an int and parent_version into an *int64, both of which
+  // refuse 1.0 outright. JSON.parse destroys the distinction, so the check runs
+  // against the reviver's source text.
+  expect(JSON.parse(`{"v":1.0}`).v).toBe(1); // indistinguishable after parsing
+  expect(() => decodeBlobOps(opsBlob(`{"v":1.0,"kind":"ops","ops":[]}`))).toThrow(BlobDecodeError);
+  expect(() =>
+    decodeBlobOps(
+      opsBlob(
+        `{"v":1,"kind":"ops","ops":[{"v":1.0,"type":"rate_set","op_id":"R1",` +
+          `"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{}}]}`,
+      ),
+    ),
+  ).toThrow(BlobDecodeError);
+  expect(() =>
+    decodeBlobOps(
+      opsBlob(
+        `{"v":1,"kind":"ops","ops":[{"v":1,"type":"txn_categorized","op_id":"A1",` +
+          `"authored_at":"2026-06-05T10:00:00Z","entity":{"kind":"txn","id":"T1"},` +
+          `"parent_version":3.0,"payload":{}}]}`,
+      ),
+    ),
+  ).toThrow(BlobDecodeError);
+});
+
+test("the literal check is scoped to structural fields and leaves payloads alone", () => {
+  // Go never parses a payload — it is a json.RawMessage — so rejecting a
+  // fractional number inside one would trade this divergence for a worse one.
+  const ops = decodeBlobOps(
+    opsBlob(
+      `{"v":1,"kind":"ops","ops":[{"v":1,"type":"rate_set","op_id":"R1",` +
+        `"authored_at":"2026-06-05T10:00:00Z","parent_version":null,` +
+        `"payload":{"v":1.5,"parent_version":2.5,"ratio":0.25}}]}`,
+    ),
+  );
+  expect((ops[0]!.payload as { ratio: number }).ratio).toBe(0.25);
+  expect((ops[0]!.payload as { v: number }).v).toBe(1.5);
+});
+
+test("Go's escaped payload decodes back to the same strings here", () => {
+  // The Go->TypeScript direction of the escaping asymmetry. conformance/ts
+  // already proves Go reads what JSON.stringify emits literally; this proves
+  // this executor reads what Go's encoder escaped as \uXXXX. Without it the
+  // asymmetry was only ever exercised with Go as the reader.
+  const blobManifest = blobFixtures();
+  const f = blobManifest.fixtures.find((x) => x.file === "hot-dev-a-11-escapes.bin");
+  expect(f).toBeDefined();
+  const plaintext = new Uint8Array(Buffer.from(f!.expect_plaintext_base64, "base64"));
+
+  // Go really did escape them: the bytes contain no literal & or <.
+  const asText = utf8(plaintext);
+  expect(asText).toContain("\\u0026");
+  expect(asText).toContain("\\u003c");
+  expect(asText).toContain("\\u2028");
+  expect(asText).not.toContain("&");
+
+  const ops = decodeBlobOps(plaintext);
+  const payload = ops[0]!.payload as { merchant_raw: string; note: string; amount_minor: string };
+  expect(payload.merchant_raw).toBe("كارفور");
+  expect(payload.note).toBe("Smith & Sons <flagged> \u2028 second line \u2029 end");
+  expect(parseDecimal(payload.amount_minor)).toBe(25000n);
+  expect(ops[0]!.parent_version).toBe(1);
 });

@@ -89,25 +89,41 @@ export interface Head {
   hash: Uint8Array;
 }
 
-/** One op-log row, as pulled. Counters and seqs are bigint; a number would round. */
+/**
+ * One op-log row, as pulled. Counters and seqs are bigint; a number would round.
+ *
+ * `writer_id` and `stream` are REQUIRED, not optional. They started optional —
+ * "checked when the server sent them" — which quietly meant the cross-chain
+ * splice detection in {@link verifyChain} did not happen at all against a row
+ * type that omitted them. Go cannot be bypassed that way because `oplog.Row`
+ * always carries both from their database columns, and this is the mirror of
+ * that. `GET /api/v1/sync` returns both on every row, so Task 13's and Task 14's
+ * response types must keep populating them.
+ */
 export interface ChainRow {
   writer_counter: bigint;
   prev_hash: Uint8Array;
   blob_hash: Uint8Array;
   blob: Uint8Array;
-  /** Present in every server response; checked against the ChainKey when it is. */
-  writer_id?: string;
-  stream?: Stream;
+  writer_id: string;
+  stream: Stream;
 }
 
-/** One entry of the compact per-blob hash list (spec §3.3:72). */
+/**
+ * One entry of the compact per-blob hash list (spec §3.3:72).
+ *
+ * `prev_hash` and `writer_id` are required for the same reason as on
+ * {@link ChainRow}: `GET /api/v1/sync/hashes` returns both, and an optional
+ * field is a check that silently does not run. There is no `stream` — that
+ * endpoint is per-stream, so the stream is the caller's `ChainKey` and not the
+ * server's word.
+ */
 export interface HashRow {
   seq: bigint;
   writer_counter: bigint;
   blob_hash: Uint8Array;
-  /** The server sends it; when present the linkage is checked as well. */
-  prev_hash?: Uint8Array;
-  writer_id?: string;
+  prev_hash: Uint8Array;
+  writer_id: string;
 }
 
 /**
@@ -142,18 +158,26 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 /**
- * Checks that a row belongs to the chain being verified. The row's writer and
- * stream are optional in the type because not every response carries both — the
- * hash-list endpoint is per-stream, so its entries name only a writer — but
- * whichever the server DID send is checked: interleaving two writers with
- * continuous counters and honestly recomputed hashes passes every other check
- * here, and failing closed is the safe reading of an ambiguous input.
+ * Checks that a row belongs to the chain being verified.
+ *
+ * Interleaving two writers with continuous counters and honestly recomputed
+ * hashes passes every other check in {@link verifyChain}, so this is the only
+ * thing standing between a spliced response and a clean bill of health. A
+ * missing field is therefore an error rather than a skipped check — the version
+ * that treated absence as "nothing to compare" turned the whole detection off
+ * for any caller whose row type omitted them.
+ *
+ * `stream` is undefined for hash-list entries, whose endpoint is per-stream; the
+ * caller passes nothing and the stream half is simply not the server's to claim.
  */
-function requireSameChain(key: ChainKey, i: number, writerID?: string, stream?: string): void {
+function requireSameChain(key: ChainKey, i: number, writerID: string, stream?: string): void {
   const sep = key.indexOf("|");
   const wantWriter = key.slice(0, sep);
   const wantStream = key.slice(sep + 1);
-  if (writerID !== undefined && writerID !== wantWriter) {
+  if (typeof writerID !== "string" || writerID === "") {
+    throw new ChainBreakError(`row ${i} names no writer, so it cannot be attributed to the chain (${key})`);
+  }
+  if (writerID !== wantWriter) {
     throw new ChainBreakError(`row ${i} is from writer ${JSON.stringify(writerID)}, but the chain is (${key})`);
   }
   if (stream !== undefined && stream !== wantStream) {
@@ -256,7 +280,7 @@ export function verifyHashList(key: ChainKey, list: HashRow[], pinnedHead: Head)
     if (h.blob_hash.length !== 32) {
       throw new ChainBreakError(`(${key}) hash list entry ${i} has a ${h.blob_hash.length}-byte hash`);
     }
-    if (h.prev_hash !== undefined && !equalBytes(h.prev_hash, prev)) {
+    if (!equalBytes(h.prev_hash, prev)) {
       throw new ChainBreakError(
         `(${key}) hash list entry ${i} links to ${hex(h.prev_hash)}, but the chain is at ${hex(prev)}`,
       );

@@ -29,12 +29,12 @@ import {
   NONCE_SIZE,
   TAG_SIZE,
   aad,
+  openBlob,
   sealBlob,
   sealedRegion,
   type Envelope,
   type Stream,
 } from "../src/wire/blob";
-import { ZERO_HASH } from "../src/wire/chain";
 import { encodeBlobOps, encodeRawBody, type Op } from "../src/wire/op";
 
 export const TS_FIXTURE_DIR = `${import.meta.dir}/../../conformance/ts`;
@@ -137,6 +137,26 @@ function specs(): FixtureSpec[] {
         raw: new TextEncoder().encode("From: bank@example.ae\r\nSubject: purchase\r\n\r\nhi"),
       }),
     },
+    {
+      file: "ts-hot-dev-a-13-bucket-edge.bin",
+      note: "one byte under the 1 KiB bucket, sealed by TypeScript: an off-by-one in this executor's framing is fatal here and invisible everywhere else",
+      kind: "",
+      envelope: { userId: USER, stream: "hot" as Stream, writerId: "dev-a", writerCounter: 13n },
+      plaintext: bucketEdgePlaintext(
+        { userId: USER, stream: "hot" as Stream, writerId: "dev-a", writerCounter: 13n },
+        0,
+      ),
+    },
+    {
+      file: "ts-hot-dev-a-14-bucket-edge-4k.bin",
+      note: "the same, one rung up: nothing else in either fixture set crosses the boundary above bucket 0",
+      kind: "",
+      envelope: { userId: USER, stream: "hot" as Stream, writerId: "dev-a", writerCounter: 14n },
+      plaintext: bucketEdgePlaintext(
+        { userId: USER, stream: "hot" as Stream, writerId: "dev-a", writerCounter: 14n },
+        1,
+      ),
+    },
   ];
 }
 
@@ -145,6 +165,53 @@ function prePadLength(b: Uint8Array): number {
   const { start } = sealedRegion(b);
   const payloadLen = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(start);
   return start + 4 + payloadLen + TAG_SIZE;
+}
+
+/**
+ * n bytes gzip cannot shrink, derived from a hash chain so the value is
+ * identical on every machine and every run — a random source would make the
+ * committed fixtures churn and `assertFixturesAreFresh` useless.
+ */
+function incompressibleBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n + 32);
+  let off = 0;
+  for (let i = 0; off < n; i++) {
+    const ctr = new Uint8Array(8);
+    new DataView(ctr.buffer).setBigUint64(0, BigInt(i));
+    const h = new Bun.CryptoHasher("sha256");
+    h.update(ctr);
+    out.set(new Uint8Array(h.digest()), off);
+    off += 32;
+  }
+  return out.subarray(0, n);
+}
+
+/**
+ * A plaintext whose framed length lands exactly one byte under bucket
+ * `bucketIdx`, i.e. a blob with exactly one padding byte.
+ *
+ * The Go fixture set has had one of these from the start; the TypeScript set did
+ * not, so an off-by-one in THIS executor's `overhead()`/`bucketFor()` that only
+ * bites at a boundary was invisible to Go — and Go is the direction the server
+ * actually sees, since a device uploads blobs it sealed itself.
+ */
+function bucketEdgePlaintext(env: Envelope, bucketIdx: number): Uint8Array {
+  const bucket = BUCKETS[bucketIdx]!;
+  const target = bucket - 1;
+  for (let n = bucket - 200; n < bucket; n++) {
+    if (n < 1) continue;
+    const pt = incompressibleBytes(n);
+    let sealed: Uint8Array;
+    try {
+      sealed = sealBlob(env, pt);
+    } catch {
+      continue;
+    }
+    if (sealed.length < bucket) continue; // still fits a smaller rung
+    if (sealed.length > bucket) break; // overshot this rung
+    if (prePadLength(sealed) === target) return pt;
+  }
+  throw new Error(`no plaintext frames to exactly ${target} bytes (bucket ${bucket})`);
 }
 
 export interface BuiltFixture {
@@ -163,6 +230,14 @@ export function build(): Built {
   const files: BuiltFixture[] = [];
   const fixtures = specs().map((s) => {
     const bytes = sealBlob(s.envelope, s.plaintext);
+    // Re-open every fixture before writing it. Without this the generator will
+    // happily emit blobs it cannot itself read — under a deliberate
+    // little-endian mutation it wrote three of them, and the failure surfaced
+    // one layer later as a Go test, which is the wrong place to learn it.
+    const reopened = openBlob(s.envelope, bytes);
+    if (Buffer.compare(Buffer.from(reopened), Buffer.from(s.plaintext)) !== 0) {
+      throw new Error(`${s.file}: sealed bytes do not reopen to their own plaintext`);
+    }
     files.push({ file: s.file, bytes, plaintext: s.plaintext });
     return {
       file: s.file,
@@ -191,8 +266,9 @@ export function build(): Built {
         nonce_size: NONCE_SIZE,
         tag_size: TAG_SIZE,
         max_bucket: MAX_BUCKET,
-        zero_hash_hex: Buffer.from(ZERO_HASH).toString("hex"),
-        chain_steps: [],
+        // No chain_steps here: the chain golden vector belongs to the Go-authored
+        // manifest, which is where both executors read it from. An empty array
+        // in this one was dead weight that read like a missing check.
         fixtures,
       },
       null,

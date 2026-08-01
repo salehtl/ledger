@@ -164,6 +164,57 @@ type opManifest struct {
 	GoldenCheckpointBase64 string     `json:"golden_checkpoint_base64"`
 	ExpectOps              []opExpect `json:"expect_ops"`
 	AuthoredAtCases        []timeCase `json:"authored_at_cases"`
+	// ParentVersionOverflowBase64 is an op blob this executor accepts and the
+	// TypeScript one must REFUSE: parent_version is a raw JSON number on the
+	// frozen wire, so an int64 above 2^53 is expressible here and is already
+	// rounded by JSON.parse before any TypeScript code sees it. The asymmetry is
+	// a property of the format, not a bug in either port, so it is pinned as a
+	// shared artifact rather than asserted from an inline literal on one side.
+	ParentVersionOverflowBase64 string `json:"parent_version_overflow_base64"`
+	// ParentVersionOverflow is that same value as a decimal string, which is the
+	// only way this manifest can state it without being lossy itself.
+	ParentVersionOverflow string `json:"parent_version_overflow"`
+	// AuthoredAtRejects are timestamps BOTH executors must refuse. It is a
+	// shared artifact rather than two independent literals on purpose: the whole
+	// class of bug here is one side quietly accepting what the other refuses, and
+	// two hand-maintained lists drift into exactly that.
+	AuthoredAtRejects []string `json:"authored_at_rejects"`
+}
+
+// timeAcceptCases are timestamps both executors must read as the same instant.
+var timeAcceptCases = []string{
+	"2026-06-05T10:00:00Z",
+	"2026-06-05T10:00:00.1Z",
+	"2026-06-05T10:00:00.0015Z",    // truncates to 1ms, never rounds to 2
+	"2026-06-05T10:00:00.0000015Z", // finer than a JS Date can hold
+	"2026-06-05T14:00:00.5+04:00",
+	"2026-06-05T10:00:00-00:00",
+	"2026-06-05T10:00:00+23:59", // the largest offset both accept
+	"2024-02-29T00:00:00Z",      // a real leap day
+	"2000-02-29T00:00:00Z",      // divisible by 400
+}
+
+// timeRejectCases are timestamps both executors must refuse. Each was MEASURED
+// against both runtimes; the comments name which side was the lenient one
+// before this was pinned.
+var timeRejectCases = []string{
+	"2026-06-05T24:00:00Z",      // Date.parse rolled it to the next day
+	"2026-02-30T10:00:00Z",      // Date.parse rolled it to MARCH 2nd
+	"2026-02-29T00:00:00Z",      // 2026 is not a leap year
+	"2026-13-05T10:00:00Z",      // month 13
+	"2026-06-05T10:60:00Z",      // minute 60
+	"2026-06-05T10:00:60Z",      // second 60: no leap seconds
+	"2026-06-05T10:00:00+24:00", // stock Go accepted it; Date.parse refuses
+	"2026-06-05T10:00:00+24:60", // stock Go read it as -25h
+	"2026-06-05T10:00:00+00:60", // stock Go read it as -1h
+	"2026-06-05t10:00:00z",      // Date.parse accepts lowercase; RFC3339 layout does not
+	"2026-06-05 10:00:00Z",      // space separator
+	"2026-06-05T10:00:00",       // no zone
+	"2026-06-05T10:00:00.Z",     // empty fraction
+	"0001-01-01T00:00:00Z",      // Go's zero time
+	"2026-06-05",
+	"June 5 2026",
+	"",
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +260,15 @@ func goldenOps() []Op {
 			Payload:    json.RawMessage(`{"currency":"USD","rate_micro":"3672500"}`),
 		},
 	}
+}
+
+func mustEncodeBlob(t *testing.T, ops []Op) []byte {
+	t.Helper()
+	b, err := EncodeBlob(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func goldenRawBody() RawBody {
@@ -259,30 +319,61 @@ func prePadLength(t *testing.T, b []byte) int {
 }
 
 // bucketEdgePlaintext finds a plaintext whose framed length lands exactly one
-// byte under the smallest bucket, i.e. a blob with exactly one padding byte.
+// byte under bucket bucketIdx, i.e. a blob with exactly one padding byte.
 //
 // It is the fixture that catches an off-by-one anywhere in the offset math:
-// every other fixture has hundreds of bytes of slack, so a reader that
+// an ordinary fixture has hundreds of bytes of slack, so a reader that
 // miscounted the header by one would still find the payload.
-func bucketEdgePlaintext(t *testing.T, e blob.Envelope) []byte {
+//
+// gzip of incompressible input runs about len+18, and the framing overhead is
+// ~83, so the answer is near bucket-101; the window is wide enough to absorb
+// deflate's block accounting without scanning the whole bucket.
+func bucketEdgePlaintext(t *testing.T, e blob.Envelope, bucketIdx int) []byte {
 	t.Helper()
-	target := blob.Buckets[0] - 1
+	bucket := blob.Buckets[bucketIdx]
+	target := bucket - 1
 	var sealer blob.PlaintextSealer
-	for n := 700; n < blob.Buckets[0]; n++ {
+	for n := bucket - 200; n < bucket; n++ {
+		if n < 1 {
+			continue
+		}
 		pt := incompressibleBytes(n)
 		s, err := sealer.Seal(e, pt)
 		if err != nil {
 			continue
 		}
-		if s.SizeBucket != blob.Buckets[0] {
-			break
+		if s.SizeBucket < bucket {
+			continue // still fits a smaller rung
+		}
+		if s.SizeBucket > bucket {
+			break // overshot this rung entirely
 		}
 		if prePadLength(t, s.Bytes) == target {
 			return pt
 		}
 	}
-	t.Fatalf("no plaintext frames to exactly %d bytes", target)
+	t.Fatalf("no plaintext frames to exactly %d bytes (bucket %d)", target, bucket)
 	return nil
+}
+
+// escapeTrapOps is an op whose payload holds every character the two encoders
+// treat differently, in the Go->TypeScript direction. Go's encoding/json escapes
+// <, >, & and U+2028/U+2029 as \uXXXX; JSON.stringify emits them literally. The
+// TypeScript side has a mirror fixture; without this one the asymmetry was only
+// ever exercised in the direction where Go is the READER.
+func escapeTrapOps() []Op {
+	parent := int64(1)
+	return []Op{{
+		V:             SchemaVersion,
+		Type:          OpTxnEdited,
+		OpID:          "01J000000000000000000000G1",
+		AuthoredAt:    time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		Entity:        &EntityRef{Kind: "txn", ID: "T1"},
+		ParentVersion: &parent,
+		Payload: json.RawMessage(`{"merchant_raw":"كارفور",` +
+			`"note":"Smith & Sons <flagged> \u2028 second line \u2029 end",` +
+			`"amount_minor":"25000"}`),
+	}}
 }
 
 // TestWriteConformanceFixtures regenerates the committed fixtures. It is opt-in
@@ -317,6 +408,7 @@ func TestWriteConformanceFixtures(t *testing.T) {
 	}
 
 	edgeEnv := blob.Envelope{UserID: conformanceUser, Stream: blob.StreamHot, WriterID: "dev-a", WriterCounter: 8}
+	bigEdgeEnv := blob.Envelope{UserID: conformanceUser, Stream: blob.StreamHot, WriterID: "dev-a", WriterCounter: 12}
 	type spec struct {
 		file      string
 		note      string
@@ -346,10 +438,26 @@ func TestWriteConformanceFixtures(t *testing.T) {
 			env:       edgeEnv,
 			plaintext: nil, // filled in below; it depends on the envelope's AAD length
 		},
+		{
+			file:      "hot-dev-a-11-escapes.bin",
+			note:      "an op payload holding every character Go escapes and JSON.stringify does not, plus non-ASCII: the Go->TypeScript direction of that asymmetry",
+			kind:      KindOps,
+			env:       blob.Envelope{UserID: conformanceUser, Stream: blob.StreamHot, WriterID: "dev-a", WriterCounter: 11},
+			plaintext: mustEncodeBlob(t, escapeTrapOps()),
+		},
+		{
+			file:      "hot-dev-a-12-bucket-edge-4k.bin",
+			note:      "one byte under rung 1 of the ladder: without it every fixture sits in bucket 0 and no blob crosses the executor boundary on a higher rung",
+			kind:      "",
+			env:       bigEdgeEnv,
+			plaintext: nil, // filled in below
+		},
 	}
-	specs[2].plaintext = bucketEdgePlaintext(t, edgeEnv)
-	// The edge fixture is raw bytes rather than a record, so it has no kind.
+	// Both edge fixtures are raw bytes rather than records, so they carry no
+	// kind, and their plaintexts depend on their envelope's AAD length.
+	specs[2].plaintext = bucketEdgePlaintext(t, edgeEnv, 0)
 	specs[2].kind = ""
+	specs[4].plaintext = bucketEdgePlaintext(t, bigEdgeEnv, 1)
 
 	var sealer blob.PlaintextSealer
 	man := blobManifest{
@@ -439,16 +547,10 @@ func TestWriteConformanceFixtures(t *testing.T) {
 		}
 		opMan.ExpectOps = append(opMan.ExpectOps, e)
 	}
-	// The sub-millisecond and offset-timezone cases, decoded by this build.
+	// The sub-millisecond, offset and leap-year cases, decoded by this build.
 	// TestDecodeTruncatesAuthoredAtToMilliseconds asserts the same rule against
 	// Go literals; here the answers are handed to the other executor.
-	for _, wire := range []string{
-		"2026-06-05T10:00:00Z",
-		"2026-06-05T10:00:00.1Z",
-		"2026-06-05T10:00:00.0015Z",
-		"2026-06-05T10:00:00.0000015Z",
-		"2026-06-05T14:00:00.5+04:00",
-	} {
+	for _, wire := range timeAcceptCases {
 		got, err := DecodeBlob(timeProbeBlob(wire))
 		if err != nil {
 			t.Fatalf("%s: %v", wire, err)
@@ -457,6 +559,30 @@ func TestWriteConformanceFixtures(t *testing.T) {
 			Wire:         wire,
 			ExpectUnixMs: strconv.FormatInt(got[0].AuthoredAt.UnixMilli(), 10),
 		})
+	}
+	// The parent_version asymmetry, encoded by this executor so the other can
+	// check it refuses exactly these bytes.
+	overflow := int64(1)<<53 + 1
+	overflowBlob, err := EncodeBlob([]Op{{
+		V:             SchemaVersion,
+		Type:          OpTxnCategorized,
+		OpID:          "01J000000000000000000000P1",
+		AuthoredAt:    time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		Entity:        &EntityRef{Kind: "txn", ID: "T1"},
+		ParentVersion: &overflow,
+		Payload:       json.RawMessage(`{"category":"groceries"}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opMan.ParentVersionOverflowBase64 = base64.StdEncoding.EncodeToString(overflowBlob)
+	opMan.ParentVersionOverflow = strconv.FormatInt(overflow, 10)
+
+	for _, wire := range timeRejectCases {
+		if _, err := DecodeBlob(timeProbeBlob(wire)); err == nil {
+			t.Fatalf("authored_at %q must be refused before it can be written as a reject case", wire)
+		}
+		opMan.AuthoredAtRejects = append(opMan.AuthoredAtRejects, wire)
 	}
 	writeJSONFixture(t, filepath.Join(opDir, "manifest.json"), opMan)
 }
@@ -563,8 +689,25 @@ func checkFixtures(t *testing.T, dir string) {
 					t.Fatal("an op blob must not decode as a raw body (invariant I16)")
 				}
 			case KindRawBody:
-				if _, err := DecodeRawBody(plaintext); err != nil {
+				rb, err := DecodeRawBody(plaintext)
+				if err != nil {
 					t.Fatalf("decode raw body: %v", err)
+				}
+				// The PAYLOAD is decoded, not just the record around it.
+				// DecodeRawBody used to hand back RawBase64 as an unexamined
+				// string, and this check only called DecodeRawBody — so the cold
+				// record's actual content never crossed the executor boundary at
+				// all, and a TypeScript encoder emitting unpadded base64url
+				// passed this gate green.
+				raw, err := base64.StdEncoding.DecodeString(rb.RawBase64)
+				if err != nil {
+					t.Fatalf("raw_base64 does not decode: %v", err)
+				}
+				if len(raw) == 0 {
+					t.Fatal("cold fixtures must carry a non-empty body, or this check proves nothing")
+				}
+				if got := base64.StdEncoding.EncodeToString(raw); got != rb.RawBase64 {
+					t.Fatalf("raw_base64 is not canonical standard base64:\n got %s\nwant %s", rb.RawBase64, got)
 				}
 				if _, err := DecodeBlob(plaintext); err == nil {
 					t.Fatal("a raw-body blob must not decode as ops (invariant I16)")
@@ -710,6 +853,32 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 		}
 		if ms := strconv.FormatInt(got[0].AuthoredAt.UnixMilli(), 10); ms != c.ExpectUnixMs {
 			t.Fatalf("%s decodes to %s ms, manifest says %s", c.Wire, ms, c.ExpectUnixMs)
+		}
+	}
+	// Go reads the overflow blob exactly; TypeScript must refuse it. Asserting
+	// the Go half here is what makes the TypeScript refusal meaningful rather
+	// than a test of a string nobody produces.
+	overflowBlob, err := base64.StdEncoding.DecodeString(man.ParentVersionOverflowBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overflowOps, err := DecodeBlob(overflowBlob)
+	if err != nil {
+		t.Fatalf("the parent_version overflow blob must decode HERE: %v", err)
+	}
+	if len(overflowOps) != 1 || overflowOps[0].ParentVersion == nil {
+		t.Fatal("the parent_version overflow blob lost its parent_version")
+	}
+	if got := strconv.FormatInt(*overflowOps[0].ParentVersion, 10); got != man.ParentVersionOverflow {
+		t.Fatalf("parent_version decoded as %s, manifest says %s", got, man.ParentVersionOverflow)
+	}
+
+	if len(man.AuthoredAtRejects) != len(timeRejectCases) {
+		t.Fatalf("the manifest lists %d reject cases, this build has %d", len(man.AuthoredAtRejects), len(timeRejectCases))
+	}
+	for _, wire := range man.AuthoredAtRejects {
+		if _, err := DecodeBlob(timeProbeBlob(wire)); err == nil {
+			t.Fatalf("authored_at %q must be refused: the manifest promises the TypeScript executor refuses it", wire)
 		}
 	}
 }
