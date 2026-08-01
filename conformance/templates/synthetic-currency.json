@@ -1,0 +1,223 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "synth.currency",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "synth.currency",
+    "version": 1,
+    "bank": "t",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "example.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "email",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "Amt: (?P<ccy>[^ \\n]{3} )?(?P<amt>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "synth.currency/absent",
+      "source": "SYNTHETIC: the group does not participate; default_currency applies",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiA1LjAw",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "500",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/upper",
+      "source": "SYNTHETIC: already upper case",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRUQgNS4wMA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "500",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/lower",
+      "source": "SYNTHETIC: a-z folds to A-Z",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBhZWQgNS4wMA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "500",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/mixed",
+      "source": "SYNTHETIC: and mixed",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBZWQgNS4wMA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "500",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/dotless-i",
+      "source": "SYNTHETIC: U+0131 upper-cases to \"I\" in JavaScript and NOT in Go; Go refuses the amount",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDEsWVkIDUuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/sharp-s",
+      "source": "SYNTHETIC: U+00DF upper-cases to \"SS\", which is four letters and fails either way",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDDn2VkIDUuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/micro-sign",
+      "source": "SYNTHETIC: U+00B5 upper-cases to Greek capital Mu in JavaScript, which is not [A-Z]",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDCtWVkIDUuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/turkish-dotted-capital",
+      "source": "SYNTHETIC: U+0130 is already upper case and is still not [A-Z]",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDEsEVEIDUuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/digit-in-code",
+      "source": "SYNTHETIC: a currency code is three LETTERS",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRTEgNS4wMA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.currency/four-letters",
+      "source": "SYNTHETIC: the group needs exactly three plus a space, so it does not participate",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBBRURYIDUuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

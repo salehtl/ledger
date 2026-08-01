@@ -1,0 +1,560 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "synth.dates",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "synth.dates",
+    "version": 1,
+    "bank": "t",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "example.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "body",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "Amt: (?P<amt>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      },
+      {
+        "field": "date",
+        "type": "date",
+        "source": "body",
+        "layouts": [
+          "DD-MM-YYYY",
+          "DD/Mon/YYYY hh:mm A",
+          "DD/Mon/YYYY"
+        ],
+        "patterns": [
+          "Date: (?P<d>[^\\n]+)"
+        ]
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "synth.dates/dd-mm-yyyy",
+      "source": "SYNTHETIC: layout 1, whole string",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1LTA2LTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/dd-mon-yyyy-hh-mm-a",
+      "source": "SYNTHETIC: layout 2, whole string",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDA0OjI1IFBN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T16:25:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/dd-mon-yyyy",
+      "source": "SYNTHETIC: layout 3, whole string",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/month-name-lowercase",
+      "source": "SYNTHETIC: month NAMES fold case in Go",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L2p1bi8yMDI2",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/month-name-uppercase",
+      "source": "SYNTHETIC: and upper too",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0pVTi8yMDI2",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/ampm-lowercase",
+      "source": "SYNTHETIC: the AM/PM marker does NOT fold; layout 3 catches it via the first token",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDA0OjI1IHBt",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/pm-noon",
+      "source": "SYNTHETIC: 12 PM stays 12",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDEyOjAwIFBN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T12:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/am-midnight",
+      "source": "SYNTHETIC: 12 AM is 0",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDEyOjAwIEFN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/hour-zero-pm",
+      "source": "SYNTHETIC: Go accepts hour 0 in a 12-hour layout; PM adds 12",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDAwOjMwIFBN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T12:30:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/hour-zero-am",
+      "source": "SYNTHETIC: and AM leaves it",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDAwOjMwIEFN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:30:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/hour-13-pm",
+      "source": "SYNTHETIC: out of range for a 12-hour layout; layout 3 parses the first token",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IDEzOjI1IFBN",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/single-digit-fields",
+      "source": "SYNTHETIC: numeric fields need exactly two digits",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDUtNi0yMDI2",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/two-digit-year",
+      "source": "SYNTHETIC: a two-digit year is not a year",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1LTA2LTI2",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/impossible-day",
+      "source": "SYNTHETIC: calendar ranges are checked; this is not 2 March",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDMxLTAyLTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/leap-day-valid",
+      "source": "SYNTHETIC: 2024 is a leap year",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDI5LTAyLTIwMjQ=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2024-02-29T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/leap-day-invalid",
+      "source": "SYNTHETIC: 2026 is not",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDI5LTAyLTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/day-zero",
+      "source": "SYNTHETIC: day 0 does not exist",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDAwLTA2LTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/month-thirteen",
+      "source": "SYNTHETIC: month 13 does not exist",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1LTEzLTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/trailing-text",
+      "source": "SYNTHETIC: trailing text is an error, which is why the first-token attempt exists",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1LTA2LTIwMjZleHRyYQ==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/first-token-fallback",
+      "source": "SYNTHETIC: v1's strings.Fields(s)[0], expressed as a layout attempt",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2IGdhcmJhZ2U=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/surrounded-by-spaces",
+      "source": "SYNTHETIC: trimmed with the executor's own cutset before parsing",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6ICAgMDUvSnVuLzIwMjYgIA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/surrounded-by-tab-and-cr",
+      "source": "SYNTHETIC: \\t and \\r are in the cutset",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IAkwNS0wNi0yMDI2DQ==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-06-05T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/surrounded-by-nbsp",
+      "source": "SYNTHETIC: U+00A0 is NOT in the cutset; JavaScript's trim() would remove it",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IMKgMDUtMDYtMjAyNsKg",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/surrounded-by-bom",
+      "source": "SYNTHETIC: U+FEFF is NOT in the cutset; JavaScript's trim() would remove it",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IO+7vzA1LTA2LTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/empty",
+      "source": "SYNTHETIC: no date; the template still matches because date is not required",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/iso-8601",
+      "source": "SYNTHETIC: a shape neither layout covers, and one Date.parse would happily accept",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDIwMjYtMDYtMDVUMDA6MDA6MDBa",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/us-order",
+      "source": "SYNTHETIC: 06-05-2026 is 6 May under DD-MM-YYYY, not 5 June",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA2LTA1LTIwMjY=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "2026-05-06T00:00:00Z",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.dates/tab-separated-first-token",
+      "source": "SYNTHETIC: the fallback splits on U+0020 only, so a tab is not a separator",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLjAwCkRhdGU6IDA1L0p1bi8yMDI2CWdhcmJhZ2U=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "100",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

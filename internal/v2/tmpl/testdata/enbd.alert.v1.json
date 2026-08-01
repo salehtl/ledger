@@ -15,7 +15,7 @@
       "source": "body",
       "flags": ["i"],
       "patterns": [
-        "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account"
+        "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:withdrawn|debited)[ \\n]from your account"
       ],
       "on_match": { "direction": "debit" }
     },
@@ -25,7 +25,7 @@
       "source": "body",
       "flags": ["i"],
       "patterns": [
-        "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\\.[0-9]{2})[ \\n]has been[ \\n](?:credited|deposited)[ \\n](?:in)?to your account"
+        "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:credited|deposited)[ \\n](?:in)?to your account"
       ],
       "on_match": { "direction": "credit" }
     },

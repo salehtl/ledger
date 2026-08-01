@@ -53,7 +53,7 @@ func dialectRules() []dialectRule {
 			divergence: "bounded cost"},
 		{code: ReasonTooManyCaptureGroups, reject: nine, accept: eight, rejectIsLong: true,
 			divergence: "bounded cost"},
-		{code: ReasonEscapePerlSpace, reject: `AED\s+([0-9]+)`, accept: `AED[ \n]+[0-9]+`,
+		{code: ReasonEscapePerlSpace, reject: `AED\s+([0-9]+)`, accept: `AED[ \n]{1,4}([0-9]+)`,
 			divergence: `Go \s is [\t\n\f\r ]; JS \s additionally matches \v, U+00A0, U+FEFF and the Unicode space separators`},
 		{code: ReasonEscapeWordBoundary, reject: `\bAED\b`, accept: `AED`,
 			divergence: `with the i flag JS's word set gains U+017F and U+212A, Go's does not: (?i)\bk vs /\bk/iu on U+212A is false in Go, true in JS`},
@@ -89,6 +89,12 @@ func dialectRules() []dialectRule {
 			divergence: "an unbounded quantifier on a group is the catastrophic-backtracking shape"},
 		{code: ReasonUnboundedInsideQuantifiedGroup, reject: `([0-9]+)?`, accept: `([0-9]{1,4})?`,
 			divergence: "(a+)+ nesting turns bounded work exponential in a backtracking engine"},
+		{code: ReasonMultipleUnboundedQuantifiers, reject: `[0-9]+[0-9]+z`, accept: `[0-9]{2,}z`,
+			divergence: "the POLYNOMIAL backtracking shape: n^k for k unbounded quantifiers that can consume " +
+				"the same characters. MEASURED in Bun 1.3.14: [0-9]+[0-9]+z is 86 ms on 800 characters, " +
+				"[0-9]+[0-9]+[0-9]+[0-9]+z is 88,191 ms on 400, and separating them with a mandatory literal " +
+				"does not help ([^\\n]+X[^\\n]+Y is 31,680 ms on 8,000). Go's RE2 does not backtrack and is " +
+				"unaffected, so this is a CLIENT-side cost rule, not an engine divergence"},
 		{code: ReasonBoundProductTooLarge, reject: `((a{4}){4}){5}`, accept: `((a{4}){4}){4}`,
 			divergence: "bounded match length"},
 		{code: ReasonMalformedRepetition, reject: `a{,3}`, accept: `a{0,3}`,
@@ -169,11 +175,11 @@ func TestValidatePatternRejectsTheDivergentAndUnsafeConstructs(t *testing.T) {
 // currency-prefix shape, which needs `?` applied to a group.
 func TestValidatePatternAcceptsTheSeedShapes(t *testing.T) {
 	for _, p := range []string{
-		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\.[0-9]{2})`,
+		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`,
 		`Debit Amount:\n(?P<amt>[^\n]+)`,
 		`account ending with (?P<v>[0-9]{4})`,
 		`بتاريخ (?P<d>[0-9]{2}-[0-9]{2}-[0-9]{4})`,
-		`(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]*\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`,
+		`(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`,
 	} {
 		if errs := ValidatePattern(p, nil); len(errs) != 0 {
 			t.Errorf("pattern %q rejected: %v", p, errs)
@@ -185,7 +191,7 @@ func TestValidatePatternAcceptsTheSeedShapes(t *testing.T) {
 // to `"flags":["i"]`) must also pass.
 func TestValidatePatternAcceptsTheSeedShapesUnderTheIFlag(t *testing.T) {
 	for _, p := range []string{
-		`(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]*\.[0-9]{2})[ \n]has been[ \n](?:credited|deposited)[ \n](?:in)?to your account`,
+		`(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:credited|deposited)[ \n](?:in)?to your account`,
 		`account ending with (?P<v>[0-9]{4})`,
 		`DEBIT$`,
 	} {
@@ -219,9 +225,68 @@ func TestUnboundedInsideAQuantifiedGroupIsRejectedAtEveryDepth(t *testing.T) {
 	}
 	// The same shapes are fine when the enclosing group is NOT quantified —
 	// which is what every seed amount anchor relies on.
-	for _, p := range []string{`([0-9]+)`, `(a|b*)`, `(?P<amt>[0-9][0-9,]*\.[0-9]{2})`} {
+	for _, p := range []string{`([0-9]+)`, `(a|b*)`, `(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`} {
 		if errs := ValidatePattern(p, nil); len(errs) != 0 {
 			t.Errorf("%q has no quantified group and must be accepted: %v", p, errs)
+		}
+	}
+}
+
+// The polynomial-backtracking rule, added in Task 20 to close a gap Task 19
+// MEASURED and pinned rather than fixed.
+//
+// Task 18's two nesting rules stop the EXPONENTIAL (a+)+ shape. They do not
+// stop the POLYNOMIAL one — several unbounded quantifiers that can consume the
+// same characters — which Go's RE2 is immune to and JavaScript is not. Measured
+// in Bun 1.3.14 with `new RegExp(p, "u").test(input)`:
+//
+//	[0-9]+[0-9]+z               "1"x800          86 ms
+//	[0-9]+[0-9]+[0-9]+z         "1"x800      17,274 ms
+//	[0-9]+[0-9]+[0-9]+[0-9]+z   "1"x400      88,191 ms
+//	[^\n]+X[^\n]+Y              "aX"x4000    31,680 ms
+//	[^\n]+X[^\n]+Y[^\n]+Z       "aXbY"x500   33,373 ms
+//
+// The last two are why the rule COUNTS unbounded quantifiers rather than
+// looking for adjacent ones: separating them with a mandatory literal does not
+// make the shape cheap, it only requires an input in which the separators
+// match. One per alternation branch is the bound, because a branch is the unit
+// the engine explores.
+func TestMultipleUnboundedQuantifiersInOneBranchAreRejected(t *testing.T) {
+	for _, p := range []string{
+		`[0-9]+[0-9]+z`,                  // adjacent, identical classes
+		`[0-9]+[0-9]+[0-9]+[0-9]+z`,      // the 88-second shape
+		`[^\n]+X[^\n]+Y`,                 // separated by a mandatory literal
+		`[^\n]+X[^\n]+Y[^\n]+Z`,          // and again
+		`(?P<v>[0-9]+)[0-9]+z`,           // one of them inside a capture group
+		`[0-9]+[a-z]*[0-9]+z`,            // three, one of them nullable
+		`(a+)(b+)`,                       // one per group, same branch
+		`(a+|b)c+`,                       // group's worst branch plus a sibling
+		`[0-9]{2,}[0-9]{3,}z`,            // {n,} is unbounded too
+		`[0-9]+[0-9a-z]+z`,               // overlapping, not identical
+		`(?:a+)(?:b+)`,                   // non-capturing changes nothing
+		`[0-9a-z]*[0-9]*[0-9a-z]*[0-9]*`, // four
+	} {
+		if !hasCode(ValidatePattern(p, nil), ReasonMultipleUnboundedQuantifiers) {
+			t.Errorf("%q has more than one unbounded quantifier in a branch and must be rejected: %v",
+				p, codesOf(ValidatePattern(p, nil)))
+		}
+	}
+
+	// One per BRANCH is the bound, not one per pattern: alternation branches are
+	// explored independently, so `a+|b+` costs what `a+` costs. Every seed anchor
+	// this corpus needs has exactly one.
+	for _, p := range []string{
+		`[0-9]{2,}z`,      // the sanctioned rewrite of [0-9]+[0-9]+z
+		`[0-9]+z|[a-z]+q`, // one per branch
+		`(a+|b+)c`,
+		`(?:[0-9]+|[a-z]+)X`,
+		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`,
+		`الدفع الى\n(?P<v>[^\n]+)`,
+		`المعاملة\n[^\n]*DEBIT(?:\n|$)`,
+		`[0-9]{1,64}[0-9]{1,64}z`, // bounded quantifiers do not count
+	} {
+		if errs := ValidatePattern(p, nil); len(errs) != 0 {
+			t.Errorf("%q has at most one unbounded quantifier per branch and must be accepted: %v", p, errs)
 		}
 	}
 }

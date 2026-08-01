@@ -1,0 +1,387 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "synth.text",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "synth.text",
+    "version": 1,
+    "bank": "t",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "example.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "email",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "patterns": [
+          "Amt: (?P<amt>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      },
+      {
+        "field": "merchant",
+        "type": "text",
+        "source": "body",
+        "patterns": [
+          "To: (?P<v>[^\\n]*)"
+        ]
+      },
+      {
+        "field": "last4",
+        "type": "last4",
+        "source": "body",
+        "patterns": [
+          "Card: (?P<v>[^\\n]*)"
+        ]
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "synth.text/ordinary",
+      "source": "SYNTHETIC: the happy path",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogQ0FSUkVGT1VSIERVQkFJCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "CARREFOUR DUBAI",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-all-digits",
+      "source": "SYNTHETIC: the LAST four, not the first",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiAxMjM0NTY3ODkwCg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "7890",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-two-digits",
+      "source": "SYNTHETIC: fewer than four is still a value",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiAxMgo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "12",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-one-digit",
+      "source": "SYNTHETIC: one digit is the minimum",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiA3Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "7",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-no-digits",
+      "source": "SYNTHETIC: no digits is a conversion failure, not an empty last4",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiBBQkNECg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-separated",
+      "source": "SYNTHETIC: non-digits are dropped wherever they are",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiAxLTItMy00LTUK",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "2345",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-arabic-indic",
+      "source": "SYNTHETIC: Arabic-Indic digits are not ASCII digits",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiDZodmi2aPZpAo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/card-empty",
+      "source": "SYNTHETIC: the group participated and captured nothing",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogU0hPUApDYXJkOiAK",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "SHOP",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": [
+          "last4_v"
+        ]
+      }
+    },
+    {
+      "name": "synth.text/merchant-empty",
+      "source": "SYNTHETIC: an empty capture is not a merchant; the field stays unset",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": [
+          "merchant_v"
+        ]
+      }
+    },
+    {
+      "name": "synth.text/merchant-spaces-only",
+      "source": "SYNTHETIC: trimmed to empty, so still not a merchant",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogICAgCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-cr-inside",
+      "source": "SYNTHETIC: [^\\n] includes \\r in BOTH engines, which a bare . does not",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogQ0FSUkVGT1VSDURVQkFJCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "CARREFOUR\rDUBAI",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-nbsp-around",
+      "source": "SYNTHETIC: U+00A0 is not trimmed, so it stays in the merchant",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzogwqBDQVJSRUZPVVLCoApDYXJkOiBYWFhYMTIzNAo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": " CARREFOUR ",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-arabic",
+      "source": "SYNTHETIC: the corpus is Arabic; rune counting must not be byte counting",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog2KjZgtin2YTYqSDYp9mE2KfYqtit2KfYrwpDYXJkOiBYWFhYMTIzNAo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "بقالة الاتحاد",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-512-runes",
+      "source": "SYNTHETIC: exactly at MaxCaptureRunes, in 2-byte runes",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhQpDYXJkOiBYWFhYMTIzNAo=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "مممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممممم",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-513-runes",
+      "source": "SYNTHETIC: one rune over: a conversion failure, not a truncated merchant",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmF2YXZhdmFCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-emoji",
+      "source": "SYNTHETIC: astral runes count as ONE, which is why [...s].length is the mirror of RuneCountInString",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog8J+PqiBTSE9QCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "🏪 SHOP",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-300-astral-runes",
+      "source": "SYNTHETIC: 300 runes and 600 UTF-16 units: a mirror counting s.length would refuse a merchant Go keeps",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+qCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪🏪",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.text/merchant-513-astral-runes",
+      "source": "SYNTHETIC: 513 runes is over the bound in BOTH counts; the pair above and below is what makes the unit unambiguous",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxMC4wMApUbzog8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+q8J+PqvCfj6rwn4+qCkNhcmQ6IFhYWFgxMjM0Cg==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "1000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "1234",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}

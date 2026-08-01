@@ -58,9 +58,10 @@ type dialectFixture struct {
 }
 
 type dialectLimits struct {
-	MaxPatternRunes  int `json:"max_pattern_runes"`
-	MaxCaptureGroups int `json:"max_capture_groups"`
-	MaxBoundProduct  int `json:"max_bound_product"`
+	MaxPatternRunes       int `json:"max_pattern_runes"`
+	MaxCaptureGroups      int `json:"max_capture_groups"`
+	MaxBoundProduct       int `json:"max_bound_product"`
+	MaxUnboundedPerBranch int `json:"max_unbounded_per_branch"`
 }
 
 type probeInput struct {
@@ -199,12 +200,16 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 			"TypeScript validator must reject each pattern with the same reason codes. `accepted` pins ENGINE " +
 			"parity, which is the stronger claim: for each pattern, what Go's RE2 matched and captured on every " +
 			"probe input, which JavaScript must reproduce exactly.",
-		Spec:          "docs/superpowers/specs/v2-template-format.md",
-		SchemaVersion: 1,
+		Spec: "docs/superpowers/specs/v2-template-format.md",
+		// 2: Task 20 added the multiple_unbounded_quantifiers rule and with it
+		// max_unbounded_per_branch, and rewrote the escape_perl_space row's
+		// sanctioned rewrite, which the new rule refused.
+		SchemaVersion: 2,
 		Limits: dialectLimits{
-			MaxPatternRunes:  MaxPatternRunes,
-			MaxCaptureGroups: MaxCaptureGroups,
-			MaxBoundProduct:  MaxBoundProduct,
+			MaxPatternRunes:       MaxPatternRunes,
+			MaxCaptureGroups:      MaxCaptureGroups,
+			MaxBoundProduct:       MaxBoundProduct,
+			MaxUnboundedPerBranch: MaxUnboundedPerBranch,
 		},
 		GoCompile: `regexp.Compile(flagsContain("i") ? "(?i)"+p : p)`,
 		JSCompile: `new RegExp(toJS(p), flags.join("") + "u")`,
@@ -245,11 +250,11 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 		pat   string
 		flags []string
 	}{
-		{"seed-dib-amount", `المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]*\.[0-9]{2})`, nil},
+		{"seed-dib-amount", `المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`, nil},
 		{"seed-dib-date", `بتاريخ (?P<d>[0-9]{2}-[0-9]{2}-[0-9]{4})`, nil},
 		{"seed-dib-merchant", `الدفع الى\n(?P<v>[^\n]+)`, nil},
 		{"seed-dib-card", `رقم البطاقة\n(?P<v>[^ \n]+)`, nil},
-		{"seed-enbd-alert-debit", `(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]*\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`, []string{"i"}},
+		{"seed-enbd-alert-debit", `(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`, []string{"i"}},
 		{"seed-enbd-alert-last4", `account ending with (?P<v>[0-9]{4})`, []string{"i"}},
 		{"seed-dib-direction-override", `DEBIT$`, []string{"i"}},
 		// Not a seed, but the adversarial ToJS shape: an ESCAPED paren followed
@@ -383,6 +388,29 @@ func measuredDivergences() []engineDivergence {
 		{Name: `^ and $ without m`, Pattern: `abc$`, Flags: "u", Input: `"abc\n"`, Go: "false", JS: "false",
 			Note: "an AGREEMENT, recorded because Perl and Python disagree with both: neither Go nor JS " +
 				"matches $ before a trailing newline, which is what makes the m flag ban free"},
+		// Not engine DIVERGENCES but engine COSTS: the same pattern on the same
+		// input, RE2 versus a backtracking engine. They are the evidence behind
+		// multiple_unbounded_quantifiers, and they belong here because the whole
+		// point of that rule is that Go alone cannot feel the harm.
+		{Name: `cost: [0-9]+[0-9]+z`, Pattern: `[0-9]+[0-9]+z`, Flags: "u", Input: `"1" x 800`,
+			Go: "microseconds", JS: "86 ms in Bun 1.3.14",
+			Note: "two unbounded quantifiers that consume the same characters is O(n^2) in a backtracking engine"},
+		{Name: `cost: [0-9]+[0-9]+[0-9]+[0-9]+z`, Pattern: `[0-9]+[0-9]+[0-9]+[0-9]+z`, Flags: "u", Input: `"1" x 400`,
+			Go: "microseconds", JS: "88,191 ms in Bun 1.3.14",
+			Note: "88 SECONDS on a 400-character attacker-chosen input; this is the measurement the rule was written for"},
+		{Name: `cost: [^\n]+X[^\n]+Y`, Pattern: `[^\n]+X[^\n]+Y`, Flags: "u", Input: `"aX" x 4000`,
+			Go: "microseconds", JS: "31,680 ms in Bun 1.3.14",
+			Note: "separating the two quantifiers with a MANDATORY literal does not make the shape cheap, " +
+				"it only changes which input triggers it — which is why the rule counts rather than looking for adjacency"},
+		{Name: `cost: [0-9]{1,64}[0-9]+z`, Pattern: `[0-9]{1,64}[0-9]+z`, Flags: "u", Input: `"1" x 51200`,
+			Go: "microseconds", JS: "73,810 ms in Bun 1.3.14",
+			Note: "bounding one of the two is NOT the sanctioned rewrite: the bound becomes the constant. " +
+				"Collapsing them is: [0-9]+[0-9]+ is [0-9]{2,}"},
+		{Name: `cost: [0-9]+z (the residual)`, Pattern: `[0-9]+z`, Flags: "u", Input: `"1" x 200000`,
+			Go: "microseconds", JS: "17,935 ms in Bun 1.3.14",
+			Note: "ONE unbounded quantifier is still quadratic, and the dialect allows it. What keeps the real " +
+				"templates cheap is their leading literal anchor: the DIB merchant anchor on a hostile 1 MB body " +
+				"is 1.9 ms. See TestKNOWNASingleUnboundedQuantifierIsStillQuadraticInJavaScript"},
 		{Name: `bun: [a-z] with iu on U+212A`, Pattern: `[a-z]`, Flags: "iu", Input: "U+212A",
 			Go: "true", JS: "true in V8 and WebKit, FALSE in Bun 1.3.14",
 			Note: "A BUN BUG, not a dialect issue: Go, V8 and WebKit 26.5 all match, so the shipping client " +

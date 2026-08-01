@@ -796,11 +796,18 @@ func TestAnEnormousCaptureIsAConversionFailureRatherThanAMerchant(t *testing.T) 
 }
 
 func TestExecuteIsLinearOnInputsThatWouldReDoSABacktrackingEngine(t *testing.T) {
-	// Every pattern here passes the dialect gate. Under a backtracking engine
-	// the third one takes ~88 SECONDS on 400 characters (measured, Bun 1.3.14,
-	// 2026-08-01); Go's RE2 has no backtracking, so the server cannot be hung
-	// by mail chosen to maximise match cost. See
-	// TestKNOWNTheDialectDoesNotStopPolynomialBacktrackingInJavaScript.
+	// DEFENCE IN DEPTH, and the two halves are separate claims.
+	//
+	// Every pattern here is now REFUSED by the dialect (Task 20's
+	// multiple_unbounded_quantifiers rule), which is what protects the
+	// TypeScript executor — under a backtracking engine the third one takes ~88
+	// SECONDS on 400 characters. But the dialect is a publish-time gate, and a
+	// gate can be bypassed by a bug, a hand-edited row or a future rule change.
+	// Go's RE2 has no backtracking at all, so the SERVER cannot be hung by mail
+	// chosen to maximise match cost even by a pattern that should never have
+	// been stored. That is the property asserted below, and it is asserted on
+	// the shapes the dialect refuses precisely because those are the ones where
+	// the two engines' costs diverge.
 	for _, p := range []string{
 		`(?P<v>[0-9]+)[0-9]+z`,
 		`(?P<v>[0-9]+)[0-9]+[0-9]+z`,
@@ -808,10 +815,15 @@ func TestExecuteIsLinearOnInputsThatWouldReDoSABacktrackingEngine(t *testing.T) 
 		`(?P<v>[^\n]+)[^\n]+[^\n]+[^\n]+X`,
 		`(?P<v>[0-9a-z]*[0-9]*[0-9a-z]*[0-9]*)!`,
 	} {
-		if errs := ValidatePattern(p, nil); len(errs) != 0 {
-			t.Fatalf("fixture drift: %q is no longer dialect-legal (%v); pick another shape", p, errs)
+		if !hasCode(ValidatePattern(p, nil), ReasonMultipleUnboundedQuantifiers) {
+			t.Errorf("%q is the polynomial shape and the dialect must refuse it: %v",
+				p, codesOf(ValidatePattern(p, nil)))
 		}
-		d := mustDef(t, fmt.Sprintf(`{
+		// ParseDefinition + Compile rather than mustDef: the definition is
+		// deliberately one the publish gate would reject, and the point is that
+		// the executor survives it anyway. Compile is what the ingest path calls
+		// on an already-stored template, so this is the real path.
+		d, err := ParseDefinition([]byte(fmt.Sprintf(`{
 		  "id":"redos","version":1,"bank":"t","normalizer_version":1,
 		  "match":{"sender_domain":["example.com"]},
 		  "default_currency":"AED","date_from":"email",
@@ -820,7 +832,10 @@ func TestExecuteIsLinearOnInputsThatWouldReDoSABacktrackingEngine(t *testing.T) 
 		    {"field":"direction","type":"const","source":"body","value":"debit"},
 		    {"field":"merchant","type":"text","source":"body","patterns":[%q]}
 		  ],
-		  "required":["amount","direction"]}`, p))
+		  "required":["amount","direction"]}`, p)))
+		if err != nil {
+			t.Fatalf("%q: %v", p, err)
+		}
 		body := "A: 1.00\n" + strings.Repeat("1", 50_000)
 		start := time.Now()
 		if _, err := Execute(d, "", body); err != nil {
@@ -832,31 +847,56 @@ func TestExecuteIsLinearOnInputsThatWouldReDoSABacktrackingEngine(t *testing.T) 
 	}
 }
 
-func TestKNOWNTheDialectDoesNotStopPolynomialBacktrackingInJavaScript(t *testing.T) {
-	// MEASURED 2026-08-01, Bun 1.3.14, `new RegExp(p, "u").test("1".repeat(n))`:
+func TestKNOWNASingleUnboundedQuantifierIsStillQuadraticInJavaScript(t *testing.T) {
+	// The successor to Task 19's
+	// TestKNOWNTheDialectDoesNotStopPolynomialBacktrackingInJavaScript, which
+	// Task 20 deleted by closing the gap it pinned. This is the part that is
+	// still open, stated with the numbers rather than left to be rediscovered.
 	//
-	//   [0-9]+[0-9]+z                  n=800      86 ms
-	//   [0-9]+[0-9]+[0-9]+z            n=800  17,460 ms
-	//   [0-9]+[0-9]+[0-9]+[0-9]+z      n=400  88,191 ms
+	// MEASURED 2026-08-01, Bun 1.3.14, `new RegExp(p, "u").test(input)`:
 	//
-	// The dialect (Task 18) bans UNBOUNDED quantifiers on a GROUP and inside a
-	// quantified group, which stops the exponential (a+)+ shape. It does not ban
-	// ADJACENT unbounded quantifiers on character classes, which is the
-	// polynomial shape, and the numbers above are what that costs on the phone
-	// the client runs on — the exact harm the dialect exists to prevent.
+	//   [0-9]+z                      "1"x50,000        1,162 ms
+	//   [0-9]+z                      "1"x100,000       4,459 ms
+	//   [0-9]+z                      "1"x200,000      17,935 ms
 	//
-	// Go's RE2 is unaffected, so this is a CLIENT-side gap, not a server one:
-	// TestExecuteIsLinearOnInputsThatWouldReDoSABacktrackingEngine covers the
-	// server. It is pinned here rather than left to be discovered because Task
-	// 20 writes the mirrored TypeScript validator and is where the rule belongs;
-	// this test fails the moment the dialect closes the gap, which is the signal
-	// to delete it.
-	for _, p := range []string{
-		`[0-9]+[0-9]+z`,
-		`[0-9]+[0-9]+[0-9]+[0-9]+z`,
-	} {
+	// One unbounded quantifier is quadratic in a backtracking engine when the
+	// match FAILS, because every start position is retried. MaxBodyBytes is
+	// 2,000,000, so the dialect does not by itself bound what a template costs
+	// on the phone.
+	//
+	// What bounds it is a property of the PUBLISHED TEMPLATES rather than of the
+	// dialect, and there are two ways to have it: a mandatory literal prefix, so
+	// the engine's prefix scan discards almost every start position, or a
+	// bounded run, so each start position is cheap. Measured on the same build,
+	// against a hostile 1 MB body:
+	//
+	//   الدفع الى\n([^\n]+)                                    1.8 ms   literal prefix
+	//   المبلغ\n(?:[A-Z]{3} )?([0-9][0-9,]{0,24}\.[0-9]{2})      3.5 ms   literal prefix
+	//   ([0-9][0-9,]*\.[0-9]{2})[ \n]has been[ \n]…       333,859 ms   NEITHER
+	//   ([0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n]…      15.6 ms   bounded run
+	//
+	// The third row is the ENBD alert anchor as v1 wrote it, and Task 20 found
+	// it by timing the seeds in the client engine rather than by reasoning about
+	// them. Its first mandatory atom is [0-9], so the engine tries every digit
+	// in the body. The seed templates now use the fourth row's bounded run;
+	// {0,24} covers every amount an int64 can hold and all 13,798 corpus rows
+	// extract identically before and after.
+	//
+	// Banning an anchorless pattern is NOT the fix: `DEBIT$` is a seed and has
+	// no leading literal at all, and a rule shaped "must start with a literal"
+	// would make the ENBD amount anchor — which starts with an optional currency
+	// group — inexpressible, which is the exact defect the dialect's
+	// accept/reject table exists to prevent. The bound lives where it can be
+	// measured instead: client/src/tmpl/cost.test.ts times every published
+	// template against ten hostile bodies.
+	//
+	// This test asserts only the part Go can assert: that the shape is still
+	// dialect-LEGAL, so the note above is about a pattern that can really be
+	// published. It fails the day someone bans it, which is the signal to
+	// rewrite this note.
+	for _, p := range []string{`[0-9]+z`, `[^\n]+X`, `DEBIT$`} {
 		if errs := ValidatePattern(p, nil); len(errs) != 0 {
-			t.Fatalf("the dialect now rejects %q (%v) — delete this test and its note", p, errs)
+			t.Fatalf("the dialect now rejects %q (%v) — rewrite this note", p, errs)
 		}
 	}
 }

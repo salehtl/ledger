@@ -163,7 +163,7 @@ match U+212A (Kelvin sign) while Go's `(?i)k` **does**; with `/k/iu` both match.
 Without `u`, case folding, code-point semantics and escape validity all differ.
 With it, both engines fold identically, quantifiers count code points rather
 than UTF-16 units, and every escape this dialect bans becomes a hard
-`SyntaxError` — a second, free layer of enforcement for 15 of the 29 rules.
+`SyntaxError` — a second, free layer of enforcement for 15 of the 30 rules.
 
 ### The rule table
 
@@ -178,7 +178,7 @@ alternative.
 | `empty_pattern` | `` | `a` | an empty pattern matches everything |
 | `pattern_too_long` | 513 runes | 512 runes | bounded cost (counted in **runes**, so Arabic anchors get the same limit in both languages) |
 | `too_many_capture_groups` | 9 groups | 8 groups | bounded cost |
-| `escape_perl_space` | `AED\s+([0-9]+)` | `AED[ \n]+[0-9]+` | Go's `\s` is `[\t\n\f\r ]`; JS's also matches **`\v`**, U+00A0, U+FEFF and the Unicode space separators. `\v` is ASCII, so this needs no exotic input |
+| `escape_perl_space` | `AED\s+([0-9]+)` | `AED[ \n]{1,4}([0-9]+)` | Go's `\s` is `[\t\n\f\r ]`; JS's also matches **`\v`**, U+00A0, U+FEFF and the Unicode space separators. `\v` is ASCII, so this needs no exotic input |
 | `escape_word_boundary` | `\bAED\b` | `AED` | with `i` set, JS's word set gains U+017F and U+212A and Go's does not: `(?i)\bk` vs `/\bk/iu` on U+212A is false in Go, true in JS. Also meaningless around Arabic, which this corpus is |
 | `escape_unicode_class` | `\p{Arabic}` | `[\x41-\x5a]` | Go accepts `\p{Arabic}` and rejects `\p{Script=Arabic}`; JS under `u` does the exact opposite |
 | `escape_unicode_codepoint` | `\x{0623}` | `\x41` | `\x{...}` is a `SyntaxError` in JS; `\u{...}` does not compile in Go |
@@ -196,6 +196,7 @@ alternative.
 | `bare_dot` | `Debit Amount:\n(.+)` | `Debit Amount:\n([^\n]+)` | Go's `.` matches `\r`, U+2028 and U+2029; JS's does not. `(.+)` appears in five of the six v1 seed anchors, so this rule is load-bearing |
 | `group_unbounded_quantifier` | `(ab)+c` | `(ab)?c`, `(ab){2,3}c` | an unbounded quantifier on a group is the catastrophic-backtracking shape |
 | `unbounded_inside_quantified_group` | `([0-9]+)?` | `([0-9]{1,4})?` | the `(a+)+` nesting that turns bounded work exponential |
+| `multiple_unbounded_quantifiers` | `[0-9]+[0-9]+z` | `[0-9]{2,}z` | the **polynomial** backtracking shape: `n^k` for `k` unbounded quantifiers that can consume the same characters. At most one per alternation branch. Measured in Bun 1.3.14: 86 ms on 800 characters for two, **88,191 ms on 400** for four, and 31,680 ms on 8,000 for `[^\n]+X[^\n]+Y`, which separates them with a mandatory literal. RE2 does not backtrack, so this is a client-side **cost** rule, not an engine divergence |
 | `bound_product_too_large` | `((a{4}){4}){5}` | `((a{4}){4}){4}` | the product of `{n,m}` upper bounds along any nesting path is capped at 64 |
 | `malformed_repetition` | `a{,3}` | `a{0,3}` | Go reads `a{,3}` as five literal characters; JS under `u` makes it a `SyntaxError`. A literal brace must be `\{` |
 | `empty_character_class` | `[]` | `[a]` | Go rejects `[]`; JS under `u` reads it as a class that never matches |
@@ -223,9 +224,77 @@ positions.
 
 Everything else is allowed: literals, character classes, `\d \w \n \t \r \f \v
 \\ \. \( \)` and the other whitelisted escapes, `\xHH`, anchors, alternation,
-non-greedy suffixes, and quantifiers on single characters or classes.
+non-greedy suffixes, and **one** unbounded quantifier per alternation branch on
+a single character or class.
 
-### How the two nesting rules are decided
+### The polynomial rule, and what it does not cover
+
+The two nesting rules above stop the *exponential* `(a+)+` shape. Task 19
+measured that they do not stop the *polynomial* one — several unbounded
+quantifiers in a row that can all consume the same characters — and pinned the
+gap with a `KNOWN` test rather than closing it, because a new ban needs a
+reason code, a spec row and a sanctioned rewrite. Task 20 closed it. Measured
+in Bun 1.3.14, `new RegExp(p, "u").test(input)`:
+
+| pattern | input | Bun | Go RE2 |
+|---|---|---|---|
+| `[0-9]+[0-9]+z` | `"1"×800` | 86 ms | µs |
+| `[0-9]+[0-9]+[0-9]+z` | `"1"×800` | 17,274 ms | µs |
+| `[0-9]+[0-9]+[0-9]+[0-9]+z` | `"1"×400` | **88,191 ms** | µs |
+| `[^\n]+X[^\n]+Y` | `"aX"×4000` | 31,680 ms | µs |
+| `[^\n]+X[^\n]+Y[^\n]+Z` | `"aXbY"×500` | 33,373 ms | µs |
+
+The last two rows are why the rule **counts** unbounded quantifiers instead of
+looking for adjacent ones: a mandatory literal between them does not make the
+shape cheap, it only decides which input triggers it. The bound is per
+*alternation branch*, because a backtracking engine explores one branch at a
+time — `[0-9]+z|[a-z]+q` costs what `[0-9]+z` costs. Every seed anchor in this
+corpus has exactly one, and two adjacent ones always collapse:
+`[0-9]+[0-9]+` **is** `[0-9]{2,}`.
+
+Binding one of the two instead of collapsing them is not a fix and the rule
+does not accept it: `[0-9]{1,64}[0-9]+z` is still quadratic, with the bound as
+its constant — 73,810 ms on 51,200 characters.
+
+**What is still not bounded** is the cost of the one remaining unbounded
+quantifier, which is quadratic in any backtracking engine whenever the match
+fails: `[0-9]+z` took 17,935 ms on 200,000 digits. `MaxBodyBytes` is 2,000,000,
+so the dialect alone does not make a template cheap.
+
+What does is a property of the **templates**, and there are two ways to have it:
+a mandatory literal prefix, so the engine's prefix scan discards almost every
+start position, or a bounded run, so each start position is cheap.
+
+The ENBD alert anchor as v1 wrote it had **neither**, and Task 20 found it by
+timing the seed templates in the client engine rather than by reasoning about
+them:
+
+| anchor | hostile 1 MB body | Bun | Go RE2 |
+|---|---|---|---|
+| `الدفع الى\n(?P<v>[^\n]+)` | `"الدفع الى\n"+"x"×1,000,000` | 1.8 ms | µs |
+| `المبلغ\n…(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})` | `"المبلغ\n"+"1,"×500,000` | 3.5 ms | µs |
+| `(?P<amt>…[0-9][0-9,]*\.[0-9]{2})[ \n]has been…` | `"AED "+"1,"×500,000` | **333,859 ms** | µs |
+| the same, with `[0-9,]{0,24}` | the same body | 15.6 ms | µs |
+
+The third row's first mandatory atom is `[0-9]`, so the engine tries every digit
+in the body and the unbounded run backtracks at each one. The fix is the fourth
+row: `{0,24}` covers every amount an `int64` can hold — 2^63-1 minor units is
+`92,233,720,368,547,758.07`, 22 characters before the point — and a longer one
+is a conversion failure either way. All 13,798 (template, corpus message) pairs
+produce **byte-identical** extractions before and after, so the bound costs
+nothing on real mail.
+
+The dialect cannot express "must have a literal prefix": `DEBIT$` is a seed with
+no leading literal at all, and the ENBD amount anchor begins with an optional
+currency group, so such a rule would make a shipping seed inexpressible — the
+exact defect the accept/reject table exists to prevent. The bound is therefore
+enforced where it can be measured rather than in the validator:
+`client/src/tmpl/cost.test.ts` times every published template against ten
+hostile bodies with a 2-second budget against a measured 20 ms, and
+`TestKNOWNASingleUnboundedQuantifierIsStillQuadraticInJavaScript` records why
+that file has to exist.
+
+### How the three nesting rules are decided
 
 The validator is a hand-written scanner over the pattern's runes, tracking
 character-class state (so `[.]` and `\.` are not mistaken for a bare `.`) and a
@@ -237,6 +306,10 @@ stack of group frames. Each frame carries:
   A group's own quantifier multiplies it on the way out, so
   `((a{4}){4}){4}` is exactly 64 and passes while `{5}` at the top is 80 and
   does not.
+- `branchUnbounded` / `maxUnbounded` — how many unbounded quantifiers the
+  current branch holds, and the worst branch seen so far. A `|` ends a branch;
+  a closing `)` adds the group's *worst* branch to the enclosing one, so
+  `(a+|b+)c` counts one and `(a+|b)c+` counts two.
 
 Offsets in errors are **rune indices**, so the TypeScript mirror can reproduce
 them from `[...p]` with no knowledge of UTF-8.
@@ -307,7 +380,7 @@ every accepted pattern the fixture records what **Go's engine actually did** on
 a hostile probe corpus: matched or not, the full match, and every named group,
 as base64 of the exact bytes. `client/src/tmpl/agreement.test.ts` re-runs all
 of it through `new RegExp(js_pattern, flags + "u")` and demands the same answer
-— 1,100 assertions over 37 accepted patterns × 20 inputs.
+— over 38 accepted patterns × 20 inputs.
 
 The probe corpus contains CR, U+2028, U+2029, U+00A0, U+000B, U+FEFF, the
 Kelvin sign and long s **on purpose**: those are the characters each banned

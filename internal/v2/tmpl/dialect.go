@@ -29,6 +29,43 @@ package tmpl
 // and `(X){n,m}` are allowed: they are bounded, cannot backtrack
 // catastrophically, and the corpus needs them.
 //
+// Those two rules stop the EXPONENTIAL shape. They do not stop the POLYNOMIAL
+// one, and Task 19 measured what that costs before Task 20 closed it: two
+// unbounded quantifiers in one branch is O(n^2) work, three is O(n^3), and
+// `[0-9]+[0-9]+[0-9]+[0-9]+z` spent 88 SECONDS on a 400-character input in Bun
+// 1.3.14 while Go's RE2 finished it in microseconds. Separating them with a
+// mandatory literal does not help — `[^\n]+X[^\n]+Y` took 31.7 s on 8,000
+// characters of "aX" — it only changes which input triggers it. Hence
+// MaxUnboundedPerBranch: at most ONE unbounded quantifier along any one
+// concatenation path, counted per alternation branch because that is the unit
+// a backtracking engine explores. Every seed anchor in this corpus has exactly
+// one, and two adjacent ones always collapse: `[0-9]+[0-9]+` is `[0-9]{2,}`.
+//
+// What this does NOT bound is the cost of the one quantifier it still allows,
+// which is quadratic in a backtracking engine whenever the match fails:
+// `[0-9]+z` on 200,000 digits took 17.9 s in Bun. Whether a real template is
+// cheap is therefore a property of the TEMPLATE, not of the dialect, and there
+// are two ways to have it — a mandatory literal prefix, so the engine's prefix
+// scan discards almost every start position, or a bounded run, so each start
+// position is cheap.
+//
+// That distinction is not theoretical. The DIB anchors have the first property
+// (the merchant anchor against a hostile 1 MB body is 1.9 ms). The ENBD alert
+// anchor as v1 wrote it had NEITHER: its first mandatory atom is `[0-9]`, so
+// the engine tries every digit in the body, and its `[0-9,]*` backtracked the
+// whole remaining run at each one — 333,859 ms on a 1 MB body, on the user's
+// phone, from one message that RE2 finishes in microseconds. Task 20 found it
+// only by timing the seeds in the client engine, and fixed it by bounding the
+// run to `[0-9,]{0,24}`, which covers every amount an int64 can hold and
+// produces byte-identical extractions across all 13,798 corpus rows.
+//
+// The dialect cannot express "must have a literal prefix" without making that
+// ENBD anchor inexpressible, which is the defect the accept/reject table exists
+// to prevent. So the bound is enforced where it can be measured:
+// client/src/tmpl/cost.test.ts times every published template against hostile
+// bodies, and TestKNOWNASingleUnboundedQuantifierIsStillQuadraticInJavaScript
+// records why that file has to exist.
+//
 // The validator is a hand-written scanner over the pattern rather than a regex
 // over a regex, because it must track character-class and escape state (so
 // `[.]` and `\.` are not mistaken for a bare `.`) and group nesting with each
@@ -56,6 +93,9 @@ const (
 	// MaxBoundProduct bounds the product of {n,m} upper bounds along any one
 	// nesting path, and with it the maximum length a match can have.
 	MaxBoundProduct = 64
+	// MaxUnboundedPerBranch bounds how many unbounded quantifiers may appear in
+	// one alternation branch. See the polynomial-backtracking note above.
+	MaxUnboundedPerBranch = 1
 )
 
 // Reason codes. These are the contract with the TypeScript mirror (Task 20),
@@ -84,6 +124,7 @@ const (
 	ReasonBareDot                        = "bare_dot"
 	ReasonGroupUnboundedQuantifier       = "group_unbounded_quantifier"
 	ReasonUnboundedInsideQuantifiedGroup = "unbounded_inside_quantified_group"
+	ReasonMultipleUnboundedQuantifiers   = "multiple_unbounded_quantifiers"
 	ReasonBoundProductTooLarge           = "bound_product_too_large"
 	ReasonMalformedRepetition            = "malformed_repetition"
 	ReasonEmptyCharClass                 = "empty_character_class"
@@ -107,7 +148,7 @@ func AllReasonCodes() []string {
 		ReasonNamedGroupJSSyntax, ReasonUnsupportedGroup, ReasonInvalidGroupName,
 		ReasonDuplicateGroupName, ReasonUnbalancedParen, ReasonBareDot,
 		ReasonGroupUnboundedQuantifier, ReasonUnboundedInsideQuantifiedGroup,
-		ReasonBoundProductTooLarge, ReasonMalformedRepetition, ReasonEmptyCharClass,
+		ReasonMultipleUnboundedQuantifiers, ReasonBoundProductTooLarge, ReasonMalformedRepetition, ReasonEmptyCharClass,
 		ReasonUnterminatedCharClass, ReasonClassLiteralBracket, ReasonFlagNotAllowed,
 		ReasonDuplicateFlag, ReasonNotCompilable,
 	}
@@ -244,9 +285,9 @@ func ToJS(p string) string {
 // the scanner
 // ---------------------------------------------------------------------------
 
-// frame is one group's accumulated state. hasUnbounded and best both propagate
-// to the parent when the group closes, which is what lets the two nesting
-// rules be decided in a single left-to-right pass.
+// frame is one group's accumulated state. hasUnbounded, best and the unbounded
+// count all propagate to the parent when the group closes, which is what lets
+// the three nesting rules be decided in a single left-to-right pass.
 type frame struct {
 	// hasUnbounded records that a *, + or {n,} appears somewhere inside this
 	// group at any depth. Quantifying such a group is the (a+)+ shape.
@@ -254,6 +295,30 @@ type frame struct {
 	// best is the largest product of {n,m} upper bounds along any path inside
 	// this group. A group's own quantifier multiplies it on the way out.
 	best int
+	// branchUnbounded counts the unbounded quantifiers in the alternation
+	// branch currently being scanned, including those contributed by nested
+	// groups that have already closed.
+	branchUnbounded int
+	// maxUnbounded is the largest branchUnbounded of any branch that has
+	// already ended at a '|'. worstBranch combines the two.
+	maxUnbounded int
+}
+
+// worstBranch is the number of unbounded quantifiers in this group's most
+// expensive alternation branch, including the branch still being scanned.
+// Branches are independent — a backtracking engine explores one at a time — so
+// `a+|b+` costs what `a+` costs and counts as one, not two.
+func (f *frame) worstBranch() int {
+	if f.branchUnbounded > f.maxUnbounded {
+		return f.branchUnbounded
+	}
+	return f.maxUnbounded
+}
+
+// endBranch closes the branch at a '|'.
+func (f *frame) endBranch() {
+	f.maxUnbounded = f.worstBranch()
+	f.branchUnbounded = 0
 }
 
 type patternScanner struct {
@@ -349,7 +414,10 @@ func (v *patternScanner) scan() {
 		case c == '{':
 			v.add(i, ReasonMalformedRepetition, `a literal '{' must be written \{`)
 			i++
-		case c == '|' || c == '^' || c == '$':
+		case c == '|':
+			v.top().endBranch()
+			i++
+		case c == '^' || c == '$':
 			i++
 		default:
 			i = v.quantify(i+1, atomSimple, nil)
@@ -403,6 +471,27 @@ func (v *patternScanner) quantify(next int, kind atomKind, child *frame) int {
 	}
 	if childUnbounded {
 		cur.hasUnbounded = true
+	}
+
+	// The polynomial-backtracking bound. The atom contributes its own unbounded
+	// quantifier plus, for a group, that group's most expensive branch — so
+	// `(a+|b+)c+` counts two and `(a+|b+)c` counts one.
+	added := 0
+	if q.present && q.unbounded {
+		added++
+	}
+	if child != nil {
+		added += child.worstBranch()
+	}
+	if added > 0 {
+		cur.branchUnbounded += added
+		if cur.branchUnbounded > MaxUnboundedPerBranch {
+			v.addOnce(next, ReasonMultipleUnboundedQuantifiers,
+				fmt.Sprintf("more than %d unbounded quantifier in one alternation branch: that is the "+
+					"POLYNOMIAL backtracking shape (n^k for k of them), which RE2 is immune to and "+
+					"JavaScript is not. Collapse them — [0-9]+[0-9]+ is [0-9]{2,} — or bound all but one with {n,m}",
+					MaxUnboundedPerBranch))
+		}
 	}
 
 	prod := childBest

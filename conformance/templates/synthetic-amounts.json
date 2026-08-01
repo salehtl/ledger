@@ -1,0 +1,442 @@
+{
+  "note": "Written by internal/v2/tmpl TestWriteSyntheticTemplateFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteSyntheticTemplateFixtures (no corpus needed); do not hand-edit. These are the input classes the real corpus contains NONE of — the ENBD alert format, empty capture groups, and malformed conversions. `expect` is LITERAL Go executor output: if a case's name says one thing and Go does another, the fixture records what Go does and the TypeScript executor must reproduce THAT.",
+  "spec": "docs/superpowers/specs/v2-template-format.md",
+  "schema_version": 1,
+  "template": "synth.amounts",
+  "kind": "synthetic",
+  "normalizer_version": 1,
+  "definition": {
+    "id": "synth.amounts",
+    "version": 1,
+    "bank": "t",
+    "normalizer_version": 1,
+    "match": {
+      "sender_domain": [
+        "example.com"
+      ]
+    },
+    "default_currency": "AED",
+    "date_from": "email",
+    "extract": [
+      {
+        "field": "amount",
+        "type": "amount",
+        "source": "body",
+        "flags": [
+          "i"
+        ],
+        "patterns": [
+          "Amt: (?P<ccy>[a-z]{3} )?(?P<amt>[^\\n]+)"
+        ]
+      },
+      {
+        "field": "direction",
+        "type": "const",
+        "source": "body",
+        "value": "debit"
+      }
+    ],
+    "required": [
+      "amount",
+      "direction"
+    ]
+  },
+  "cases": [
+    {
+      "name": "synth.amounts/plain",
+      "source": "SYNTHETIC: the ordinary case",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAyNTAuMDA=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/grouped",
+      "source": "SYNTHETIC: commas are removed before the shape check",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLDI1MC43NQ==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "125075",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/zero",
+      "source": "SYNTHETIC: 0.00 is a VALUE; Currency is what says an amount was extracted",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAwLjAw",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "0",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/many-commas",
+      "source": "SYNTHETIC: comma placement is not validated, only removed",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAxLDIsMy4wMA==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "12300",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/leading-comma-removed",
+      "source": "SYNTHETIC: a leading comma leaves a valid shape",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAsMjUwLjAw",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/no-decimals",
+      "source": "SYNTHETIC: the shape needs exactly two",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAyNTA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/one-decimal",
+      "source": "SYNTHETIC: one is not two",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAyNTAuMA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/three-decimals",
+      "source": "SYNTHETIC: three is not two",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAyNTAuMDAw",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/negative",
+      "source": "SYNTHETIC: amounts are positive; direction carries the sign",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAtMjUwLjAw",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/plus-signed",
+      "source": "SYNTHETIC: a sign of either kind fails the shape",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiArMjUwLjAw",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/int64-max",
+      "source": "SYNTHETIC: 92233720368547758.07 is exactly 2^63-1 minor units",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiA5MjIzMzcyMDM2ODU0Nzc1OC4wNw==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "9223372036854775807",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/int64-overflow",
+      "source": "SYNTHETIC: one fils more does not fit an int64, and is not an amount",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiA5MjIzMzcyMDM2ODU0Nzc1OC4wOA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/huge",
+      "source": "SYNTHETIC: far past any integer a double could hold exactly",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiA5OTk5OTk5OTk5OTk5OTk5OTk5OTkuOTk=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/spaces-around",
+      "source": "SYNTHETIC: trimmed with the executor's own cutset",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiAgIDI1MC4wMCAg",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/vertical-tab-around",
+      "source": "SYNTHETIC: U+000B is in the cutset in both languages",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiALMjUwLjAwCw==",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "25000",
+        "currency": "AED",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/nbsp-around",
+      "source": "SYNTHETIC: U+00A0 is NOT; JavaScript's trim() would remove it and change the answer",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDCoDI1MC4wMA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/bom-around",
+      "source": "SYNTHETIC: U+FEFF is NOT either",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDvu78yNTAuMDA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/currency-uppercase",
+      "source": "SYNTHETIC: the ccy group, upper case",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBVU0QgOTkuOTk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "9999",
+        "currency": "USD",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/currency-lowercase",
+      "source": "SYNTHETIC: flags [\"i\"] lets it match; asciiUpper normalizes it",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiB1c2QgOTkuOTk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "9999",
+        "currency": "USD",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/currency-mixed",
+      "source": "SYNTHETIC: mixed case folds to upper",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiBVc2QgOTkuOTk=",
+      "expect": {
+        "matched": true,
+        "error": "",
+        "amount_minor": "9999",
+        "currency": "USD",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/arabic-indic-digits",
+      "source": "SYNTHETIC: U+0660-U+0669 are digits to Unicode and not to this executor",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiDZotml2aAu2aDZoA==",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    },
+    {
+      "name": "synth.amounts/empty-capture",
+      "source": "SYNTHETIC: the group matched nothing; the entry falls through",
+      "subject_base64": "",
+      "normalized_body_base64": "QW10OiA=",
+      "expect": {
+        "matched": false,
+        "error": "missing_field",
+        "amount_minor": "0",
+        "currency": "",
+        "direction": "debit",
+        "posted_at": "",
+        "merchant": "",
+        "last4": "",
+        "is_transfer": false,
+        "empty_groups": []
+      }
+    }
+  ]
+}
