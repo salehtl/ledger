@@ -319,16 +319,22 @@ func (c Config) validate() error {
 	// request, and the user's entire op log in the responses — so binding it to
 	// anything but loopback puts all of that on the wire in the clear.
 	//
-	// "It is only ever reached over Tailscale" is a deployment assumption, and
-	// an assumption nothing enforces is one a hurried `LEDGER_HTTP_LISTEN=:443`
-	// silently breaks with no visible symptom. This is the hard rail, in the
-	// same spirit as the :8080 refusal above. Task D4 lifts it deliberately, on
-	// the day the same change adds TLS.
+	// A deployment assumption that nothing enforces is one a hurried
+	// `LEDGER_HTTP_LISTEN=:443` silently breaks with no visible symptom. This
+	// is the hard rail, in the same spirit as the :8080 refusal above.
+	//
+	// Task D4 is the change that lifts it, and it does so by adding autocert to
+	// cmd/ledgerd's runServe: the process terminates TLS ITSELF on the public
+	// domain. That matters for anyone reading this message — v2 is multi-user
+	// with external alpha testers, so unlike v1 it is not behind a tailnet, and
+	// there is no reverse proxy in the plan to hide behind either. The remedy
+	// is real TLS in this process, not a tunnel around it.
 	if !isLoopbackListen(c.Server.HTTPListen) {
 		return fmt.Errorf(
-			"refusing to bind server.http_listen to %q: this listener is plain HTTP until "+
-				"TLS lands (deployment Task D4), and it carries session tokens and the whole "+
-				"op log — bind loopback (e.g. 127.0.0.1:8443) and front it with tailscale serve",
+			"refusing to bind server.http_listen to %q: this listener is plain HTTP and carries "+
+				"session tokens and the whole op log. Bind loopback (e.g. 127.0.0.1:8443) until "+
+				"deployment Task D4 adds autocert to runServe, which terminates TLS in-process on "+
+				"the public domain and is the change that lifts this rail",
 			c.Server.HTTPListen)
 	}
 	if c.Server.AdminListen == "" {

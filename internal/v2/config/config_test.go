@@ -317,6 +317,39 @@ dsn = "postgres:///x"
 	}
 }
 
+func TestTheShippedExampleConfigActuallyLoads(t *testing.T) {
+	// config.v2.example.toml is the documented starting point for a deploy —
+	// copy it to /etc/ledger-v2/config.toml and fill in the secrets. Nothing
+	// loaded it, so every validation rule added after it was written could
+	// invalidate it silently and the first person to find out would be someone
+	// following the runbook into a fatal startup error.
+	//
+	// This test is deliberately Load(), not a hand-built Config: Load is what
+	// rejects an unrecognized or misspelled key, so a key renamed in this
+	// package without being renamed in the example fails here too.
+	const path = "../../../config.v2.example.toml"
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the plan mandates this file exist: %v", err)
+	}
+	// The two values the example deliberately leaves empty because they are
+	// per-deployment: the domain is not chosen yet (plan task D1) and the DSN
+	// carries a password, so it is env-only in practice.
+	t.Setenv("LEDGER_MAIL_DOMAIN", "example.test")
+	t.Setenv("LEDGER_PG_DSN", "postgres:///ledger_v2")
+	// Neutralise any ambient overrides so this asserts the FILE's contents.
+	for _, k := range []string{"LEDGER_HTTP_LISTEN", "LEDGER_ADMIN_LISTEN", "LEDGER_SMTP_LISTEN"} {
+		t.Setenv(k, "")
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("the shipped example config does not load: %v", err)
+	}
+	if !isLoopbackListen(cfg.Server.HTTPListen) {
+		t.Fatalf("example http_listen = %q, which validate() only accepts by accident", cfg.Server.HTTPListen)
+	}
+}
+
 func TestRefusesToServeCleartextOnANonLoopbackAddress(t *testing.T) {
 	// ledgerd serves plain HTTP until deployment Task D4 lands TLS, and session
 	// bearer tokens plus the whole op log travel over it. "It is only reached

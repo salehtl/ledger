@@ -90,14 +90,19 @@ func main() {
 // runServe opens the Postgres pool, applies every embedded migration, and
 // serves the sync API until SIGINT/SIGTERM.
 //
-// Plain HTTP on purpose: TLS/autocert is deployment Task D4. Everything this
-// listener carries is sensitive — a session bearer token on every request, the
-// user's whole op log in the responses — so "it is only reached over Tailscale"
-// cannot be left as a comment: config.validate REFUSES a non-loopback
-// http_listen, and the default is loopback, until the change that adds TLS
-// lifts that rail deliberately. The SMTP receiver (Task 24) and the
-// Tailscale-bound admin listener (Task 32) mount onto this same startup
-// sequence as their tasks land.
+// Plain HTTP on purpose: TLS is deployment Task D4, which adds autocert HERE,
+// to this function, so the process terminates TLS itself on the public domain
+// (v2 is multi-user with external testers — unlike v1 it is not behind a
+// tailnet, and the plan puts no proxy in front of it).
+//
+// Everything this listener carries is sensitive — a session bearer token on
+// every request, the user's whole op log in the responses — so until that
+// change lands the restriction is enforced rather than assumed:
+// config.validate refuses a non-loopback http_listen and the default is
+// loopback. Lifting that rail is part of the same commit that adds autocert.
+//
+// The SMTP receiver (Task 24) and the Tailscale-bound admin listener (Task 32)
+// mount onto this same startup sequence as their tasks land.
 //
 // The api.Server — and with it the two IdP verifiers — is built ONCE here,
 // before the listener starts. That is load bearing rather than stylistic: every

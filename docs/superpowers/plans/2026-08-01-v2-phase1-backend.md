@@ -791,7 +791,13 @@ func (c Config) validate() error {
 }
 ```
 
-Defaults: `HTTPListen: ":443"`, `AdminListen: "127.0.0.1:8079"`, `SMTPListen: ":25"`, `MaxMessageBytes: 1 << 20`, `PerAddressDaily: 50`, `InvalidRcptBurst: 5`, `TarpitBase: 2 * time.Second`, `SessionTTL: 30 * 24 * time.Hour`.
+Defaults: `HTTPListen: "127.0.0.1:8443"`, `AdminListen: "127.0.0.1:8079"`, `SMTPListen: ":25"`, `MaxMessageBytes: blob.MaxColdMail`, `PerAddressDaily: 50`, `InvalidRcptBurst: 5`, `TarpitBase: 2 * time.Second`, `SessionTTL: 30 * 24 * time.Hour`.
+
+> **Amended during Task 9.** Two of these drifted from what the code enforces, and `config.v2.example.toml` had drifted with them:
+> - `HTTPListen` is **loopback**, not `:443`, and `validate()` *refuses* a non-loopback value. `runServe` serves plain HTTP, and this listener carries a session bearer token on every request plus the user's whole op log; **Task D4** is the change that adds autocert to `runServe` (TLS terminated in-process on the public domain — there is no proxy and no tailnet in front of v2) and lifts the rail in the same commit.
+> - `MaxMessageBytes` defaults to `blob.MaxColdMail` (1,000,000), **not** `1 << 20`. A message is stored base64'd inside a JSON cold record, so incompressible mail reaches gzip already inflated 4/3 and a message in the top fraction of a percent of the 1 MiB range frames past the largest size bucket.
+>
+> `config.TestTheShippedExampleConfigActuallyLoads` now loads `config.v2.example.toml` through `Load()`, so this class of drift between the plan text, the example file and the validator cannot recur silently.
 
 - [ ] **Step 4: Run the tests**
 
