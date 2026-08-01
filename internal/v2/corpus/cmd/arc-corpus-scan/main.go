@@ -17,12 +17,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"sort"
 	"sync"
 	"time"
@@ -167,21 +165,14 @@ func resolver(dnsFile string) (arc.LookupTXT, func() int) {
 	cache := map[string][]string{}
 
 	if dnsFile != "" {
-		b, err := os.ReadFile(dnsFile)
+		// arc.FixtureLookup, not a second reader of the same file: `ledgerd
+		// serve --dns-fixtures` loads the identical recording, and two loaders
+		// would be two chances to disagree about what "not recorded" means.
+		lookup, n, err := arc.FixtureLookup(dnsFile)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := json.Unmarshal(b, &cache); err != nil {
-			log.Fatal(err)
-		}
-		return func(_ context.Context, name string) ([]string, error) {
-				if v, ok := cache[name]; ok {
-					return v, nil
-				}
-				return nil, arc.ErrNoKey
-			}, func() int {
-				return len(cache)
-			}
+		return lookup, func() int { return n }
 	}
 
 	lookup := func(ctx context.Context, name string) ([]string, error) {

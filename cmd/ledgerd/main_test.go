@@ -107,3 +107,49 @@ func TestNonServeHandlersStubImmediatelyWithNoIO(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Argument parsing (Task 14)
+// ---------------------------------------------------------------------------
+
+// main() strips the mode from os.Args before flag.Parse, which is exactly the
+// kind of hand-rolled step that breaks silently when a flag is added. parseArgs
+// is that step, extracted so it can be exercised without a process.
+func TestParseArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		mode        string
+		cfgPath     string
+		devAuth     bool
+		dnsFixtures string
+		wantErr     bool
+	}{
+		{name: "no arguments defaults to serve", args: nil, mode: "serve"},
+		{name: "a bare mode", args: []string{"verify"}, mode: "verify"},
+		{name: "flags only, no mode", args: []string{"-config", "/etc/x.toml"}, mode: "serve", cfgPath: "/etc/x.toml"},
+		{
+			name: "the exit test's own invocation",
+			args: []string{"serve", "--dev-auth", "--dns-fixtures", "testdata/dns.json"},
+			mode: "serve", devAuth: true, dnsFixtures: "testdata/dns.json",
+		},
+		{name: "mode after flags is not a mode", args: []string{"-config", "x", "serve"}, wantErr: true},
+		{name: "an unknown flag", args: []string{"serve", "--nope"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseArgs(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseArgs(%q) = %+v, want an error", tc.args, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseArgs(%q) = %v", tc.args, err)
+			}
+			if got.mode != tc.mode || got.configPath != tc.cfgPath || got.devAuth != tc.devAuth || got.dnsFixtures != tc.dnsFixtures {
+				t.Fatalf("parseArgs(%q) = %+v, want {%q %q %v %q}", tc.args, got, tc.mode, tc.cfgPath, tc.devAuth, tc.dnsFixtures)
+			}
+		})
+	}
+}

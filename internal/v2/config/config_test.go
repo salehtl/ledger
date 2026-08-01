@@ -460,3 +460,75 @@ func TestValidateRejectsDSNPointingAtV1DataDir(t *testing.T) {
 		t.Fatal("expected validate() to refuse a dsn touching /var/lib/ledger")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The two test-only server flags (Task 14)
+// ---------------------------------------------------------------------------
+
+// EnableTestOnly is the ONE place both flags are turned on, and it refuses
+// both unless the HTTP listener is loopback.
+//
+// Today validate() already refuses a non-loopback http_listen for every
+// config, so this rail is implied — and that is exactly why it is written
+// separately rather than leaned on. Deployment Task D4 lifts the general rail
+// (it adds autocert and moves the listener to :443); on that day this check is
+// the only thing standing between a production deployment and an accepted
+// "dev:anyone" token.
+func TestEnableTestOnlyRefusesANonLoopbackListener(t *testing.T) {
+	cfg := Config{Server: ServerConfig{HTTPListen: "0.0.0.0:8443"}}
+	if err := cfg.EnableTestOnly(true, ""); err == nil {
+		t.Fatal("EnableTestOnly on 0.0.0.0 returned no error")
+	}
+	if cfg.DevAuth {
+		t.Fatal("EnableTestOnly left DevAuth set after refusing")
+	}
+	cfg = Config{Server: ServerConfig{HTTPListen: ":8443"}}
+	if err := cfg.EnableTestOnly(false, "some/path.json"); err == nil {
+		t.Fatal("EnableTestOnly with dns fixtures on a wildcard listener returned no error")
+	}
+}
+
+func TestEnableTestOnlyAcceptsLoopback(t *testing.T) {
+	cfg := Config{Server: ServerConfig{HTTPListen: "127.0.0.1:8091"}}
+	if err := cfg.EnableTestOnly(true, "dns.json"); err != nil {
+		t.Fatalf("EnableTestOnly on loopback = %v", err)
+	}
+	if !cfg.DevAuth || cfg.Server.DNSFixtures != "dns.json" {
+		t.Fatalf("EnableTestOnly did not apply: %+v", cfg.Server)
+	}
+}
+
+// Neither flag has a TOML key: they are test-only switches, and a config file
+// able to set them would make "is this deployment accepting dev tokens" a
+// question about a file on disk rather than about the command line.
+func TestTestOnlyFlagsHaveNoTOMLKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\ndev_auth = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearV2Env(t)
+	t.Setenv("LEDGER_MAIL_DOMAIN", "example.test")
+	t.Setenv("LEDGER_PG_DSN", "postgres:///x")
+	if _, err := Load(path); err == nil {
+		t.Fatal("a config file setting dev_auth was accepted")
+	}
+}
+
+// Nothing may turn dev auth on by default: a zero Config is what every
+// non-serve mode and every test constructs.
+func TestDevAuthIsOffByDefault(t *testing.T) {
+	if defaults().DevAuth {
+		t.Fatal("defaults() has DevAuth set")
+	}
+	clearV2Env(t)
+	t.Setenv("LEDGER_MAIL_DOMAIN", "example.test")
+	t.Setenv("LEDGER_PG_DSN", "postgres:///x")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DevAuth || cfg.Server.DNSFixtures != "" {
+		t.Fatalf("Load() enabled a test-only flag: %+v", cfg.Server)
+	}
+}

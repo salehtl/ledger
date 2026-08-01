@@ -58,6 +58,14 @@ go test -count=1 ./internal/v2/... ./cmd/ledgerd
 # The TypeScript executor. `bun install` is not run here: a gate that mutates
 # the working tree to make itself pass is not a gate, so a missing
 # client/node_modules is a hard failure with the fix named.
+#
+# LEDGER_TEST_POSTGRES_URL is exported above and the subshell inherits it, which
+# is what makes client/test/e2e/roundtrip.test.ts RUN here — it creates a
+# scratch database in the cluster this script booted, compiles cmd/ledgerd, and
+# drives the headless client against the real server over a socket. That file
+# skips itself when the variable is unset, so a bare `bun test` stays fast and
+# needs no Postgres while the gate exercises the round trip every time. Task 14
+# added it; do not "simplify" it into an unconditional skip.
 if [[ ! -d client/node_modules ]]; then
 	echo "v2-check: client/node_modules is missing; run (cd client && bun install)" >&2
 	exit 1

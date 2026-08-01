@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ledger/internal/v2/api"
+	"ledger/internal/v2/arc"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/pg"
 )
@@ -59,28 +60,69 @@ func checkModeHandlers() {
 	}
 }
 
+// args is everything the command line carries: the dispatch mode, which is
+// positional and stripped before flag parsing, plus the flags themselves.
+type args struct {
+	mode       string
+	configPath string
+	// devAuth and dnsFixtures are TEST-ONLY switches. They have no TOML key
+	// and no environment override on purpose — see config.EnableTestOnly,
+	// which refuses both off a loopback listener.
+	devAuth     bool
+	dnsFixtures string
+}
+
+// parseArgs strips the leading mode and parses the flags.
+//
+// Extracted from main() so it can be tested: the mode is positional and
+// FIRST — `ledgerd serve --dev-auth`, never `ledgerd --dev-auth serve` — which
+// is a hand-rolled rule that no flag package enforces and that breaks silently
+// the moment a flag is added. A mode appearing after a flag is refused rather
+// than ignored, because ignoring it would run `serve` while the operator asked
+// for something else.
+func parseArgs(argv []string) (args, error) {
+	out := args{mode: "serve"}
+	rest := argv
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		out.mode = rest[0]
+		rest = rest[1:]
+	}
+	fs := flag.NewFlagSet("ledgerd", flag.ContinueOnError)
+	fs.StringVar(&out.configPath, "config", "", "path to config.toml")
+	fs.BoolVar(&out.devAuth, "dev-auth", false,
+		"TEST ONLY: accept \"dev:<subject>\" as an ID token and reject every real one (loopback listener only)")
+	fs.StringVar(&out.dnsFixtures, "dns-fixtures", "",
+		"TEST ONLY: path to a recorded dns.json served as the DKIM/ARC TXT resolver (loopback listener only)")
+	if err := fs.Parse(rest); err != nil {
+		return args{}, err
+	}
+	if n := fs.NArg(); n > 0 {
+		return args{}, fmt.Errorf("unexpected argument %q: the mode comes first (%s)", fs.Arg(0), strings.Join(config.Modes(), "|"))
+	}
+	return out, nil
+}
+
 func main() {
 	checkModeHandlers()
 
-	mode := "serve"
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		mode = os.Args[1]
-		os.Args = append(os.Args[:1], os.Args[2:]...)
+	a, err := parseArgs(os.Args[1:])
+	if err != nil {
+		log.Fatalf("arguments: %v", err)
 	}
-	var cfgPath string
-	flag.StringVar(&cfgPath, "config", "", "path to config.toml")
-	flag.Parse()
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.Load(a.configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	cfg.Mode = mode
+	cfg.Mode = a.mode
+	if err := cfg.EnableTestOnly(a.devAuth, a.dnsFixtures); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 
-	if handler, ok := modeHandlers[mode]; ok {
+	if handler, ok := modeHandlers[a.mode]; ok {
 		err = handler(cfg)
 	} else {
-		err = fmt.Errorf("unknown mode %q (%s)", mode, strings.Join(config.Modes(), "|"))
+		err = fmt.Errorf("unknown mode %q (%s)", a.mode, strings.Join(config.Modes(), "|"))
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -123,6 +165,34 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	log.Println("ledgerd serve: migrations applied")
+
+	if cfg.DevAuth {
+		// Loud, every start, at the top of the log. The flag is only reachable
+		// on a loopback listener (config.EnableTestOnly), and this is the second
+		// thing that makes leaving it on impossible to miss.
+		log.Println("ledgerd serve: *** --dev-auth: \"dev:<subject>\" is accepted as an identity and EVERY real " +
+			"Apple/Google token is rejected. TEST ONLY. ***")
+	}
+	if cfg.Server.DNSFixtures != "" {
+		// Loaded and validated HERE, at startup, so a wrong path or a malformed
+		// recording fails the process rather than surfacing later as a DKIM
+		// failure that looks like a crypto bug.
+		//
+		// NOT YET WIRED, and deliberately so: `serve` has no SMTP receiver
+		// (Task 24) and no DKIM/ARC verification (Task 25), so there is nothing
+		// in this process for a TXT resolver to serve. The seam those tasks
+		// consume is arc.FixtureLookup; the receiver they build takes an
+		// arc.LookupTXT, and this config field is where it comes from. Until
+		// then the flag's only effect is the validation and the count below —
+		// which is exactly what it should be, rather than a lookup handed to
+		// nothing while reading as implemented.
+		_, n, err := arc.FixtureLookup(cfg.Server.DNSFixtures)
+		if err != nil {
+			return fmt.Errorf("dns fixtures: %w", err)
+		}
+		log.Printf("ledgerd serve: *** --dns-fixtures: %d recorded TXT name(s) loaded from %s; DKIM/ARC will use "+
+			"them instead of DNS once Task 24/25 land the receiver. TEST ONLY. ***", n, cfg.Server.DNSFixtures)
+	}
 
 	syncAPI, err := api.NewServer(cfg, pool)
 	if err != nil {
