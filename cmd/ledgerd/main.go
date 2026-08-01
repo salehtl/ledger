@@ -16,7 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"ledger/internal/v2/addresses"
+	"ledger/internal/v2/admin"
 	"ledger/internal/v2/api"
 	"ledger/internal/v2/arc"
 	"ledger/internal/v2/config"
@@ -155,9 +158,10 @@ func main() {
 // config.validate refuses a non-loopback http_listen and the default is
 // loopback. Lifting that rail is part of the same commit that adds autocert.
 //
-// The SMTP receiver (Task 24) is mounted here too, on the same pool; the
-// Tailscale-bound admin listener (Task 32) joins this startup sequence when its
-// task lands.
+// The SMTP receiver (Task 24) is mounted here too, on the same pool, and so is
+// the Tailscale-bound admin console (Task 32) — on its OWN listener, never on
+// the one above. The first thing this function does is refuse a public
+// admin_listen; see adminHandler and config.CheckAdminBind.
 //
 // The api.Server — and with it the two IdP verifiers — is built ONCE here,
 // before the listener starts. That is load bearing rather than stylistic: every
@@ -165,6 +169,17 @@ func main() {
 // verifier instance, so a verifier constructed per request would restore the
 // unauthenticated outbound amplifier those exist to remove.
 func runServe(cfg config.Config) error {
+	// FIRST, before any I/O at all. config.validate already refuses a public
+	// admin_listen, so a process started through config.Load cannot reach this —
+	// which is exactly why it is repeated: a Config assembled in code walks past
+	// Load entirely, and spec §3.1's "admin stays tailnet-only" must not depend
+	// on which constructor the caller happened to use. It is placed above
+	// pg.Open so the refusal is the FIRST thing the operator sees rather than a
+	// message after a connection attempt.
+	if err := config.CheckAdminBind(cfg.Server.AdminListen); err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -287,6 +302,31 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("smtp listen %s: %w", cfg.Mail.SMTPListen, err)
 	}
 
+	// The admin console (Task 32), on its own listener. adminHandler returns a
+	// nil handler when LEDGER_ADMIN_TOKEN is unset, and the console is then not
+	// served AT ALL — see there for why that is the right failure rather than
+	// either an open console or a refusal to boot.
+	adminSrv, err := adminServer(cfg, pool)
+	if err != nil {
+		return err
+	}
+	var adminLn net.Listener
+	if adminSrv != nil {
+		// Bound here for the same reason mailLn is: a bind failure is a startup
+		// error the operator should see immediately, and Shutdown closes the
+		// listener it was handed.
+		//
+		// The bind is checked a THIRD time, immediately before net.Listen, so
+		// that no code added between the top of this function and this line can
+		// have changed the address in between.
+		if err := config.CheckAdminBind(cfg.Server.AdminListen); err != nil {
+			return err
+		}
+		if adminLn, err = net.Listen("tcp", cfg.Server.AdminListen); err != nil {
+			return fmt.Errorf("admin listen %s: %w", cfg.Server.AdminListen, err)
+		}
+	}
+
 	// The quarantine sweep (Task 27). It warns a client that held mail is about
 	// to expire and deletes only what it has already warned about, so spec §2's
 	// "nothing is dropped without a user-visible notice" holds even for an
@@ -316,15 +356,32 @@ func runServe(cfg config.Config) error {
 			mailLn.Addr(), cfg.InboundSuffix())
 		smtpErrc <- mail.Serve(mailLn)
 	}()
+	// Buffered and never closed, so the select below is correct whether or not
+	// the admin console is running: an unbuffered nil channel would block
+	// forever, which is what we want for "no admin listener", and a buffered one
+	// that nothing writes to does the same without a nil-channel special case.
+	adminErrc := make(chan error, 1)
+	if adminLn != nil {
+		go func() {
+			log.Printf("ledgerd serve: admin console listening on %s (TAILNET-ONLY; "+
+				"loopback or 100.64.0.0/10, enforced at bind)", adminLn.Addr())
+			if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				adminErrc <- err
+				return
+			}
+			adminErrc <- nil
+		}()
+	}
 
-	// Either listener dying is fatal, but neither may be abandoned: returning
-	// straight out of this select left the OTHER server running in a process on
-	// its way out — an HTTP listener with no receiver behind it, or a public
-	// port 25 with nothing left to shut it down.
+	// Any listener dying is fatal, but none may be abandoned: returning straight
+	// out of this select left the OTHERS running in a process on its way out —
+	// an HTTP listener with no receiver behind it, or a public port 25 with
+	// nothing left to shut it down.
 	var serveErr error
 	select {
 	case serveErr = <-errc:
 	case serveErr = <-smtpErrc:
+	case serveErr = <-adminErrc:
 	case <-ctx.Done():
 	}
 	log.Println("shutting down")
@@ -344,8 +401,99 @@ func runServe(cfg config.Config) error {
 	if err := srv.Shutdown(shutCtx); err != nil && serveErr == nil {
 		serveErr = fmt.Errorf("shutdown: %w", err)
 	}
+	if adminSrv != nil {
+		if err := adminSrv.Shutdown(shutCtx); err != nil && serveErr == nil {
+			serveErr = fmt.Errorf("admin shutdown: %w", err)
+		}
+	}
 	<-sweepDone
 	return serveErr
+}
+
+// adminServer builds the Tailscale-bound admin console, or returns (nil, nil)
+// when it must not be served.
+//
+// # No token means NO CONSOLE, not an open one and not a dead process
+//
+// admin.Handler.Routes refuses to mount without LEDGER_ADMIN_TOKEN, and there
+// were three possible responses to that. Mounting it open is out of the
+// question. Failing the whole process would take the sync API and the mail
+// receiver down with it — an operator who has not yet set an admin token would
+// find that forgetting a variable used for template authoring stopped users'
+// mail from being received, which is a far worse outcome than not having a
+// console. So the console is simply absent, and the log says so at WARNING
+// volume on every start.
+//
+// # Everything here shares the pool and nothing shares a route
+//
+// The console gets its own http.ServeMux. It is never merged with the sync
+// API's, and the two are handed to different net.Listeners, so there is no
+// composition of middleware or route ordering that could expose an /admin/ path
+// on the public listener — the public mux does not contain those patterns at
+// all. cmd/ledgerd's TestTheAdminConsoleIsNotMountedOnThePublicListener reads
+// both handlers and asserts it in both directions.
+func adminServer(cfg config.Config, pool *pgxpool.Pool) (*http.Server, error) {
+	if cfg.Server.AdminToken == "" {
+		log.Println("ledgerd serve: *** LEDGER_ADMIN_TOKEN is not set: the admin console " +
+			"(template authoring and publishing, the donated-sample queue, diagnostics, the " +
+			"waitlist and dictionary moderation) is NOT being served. Set it to enable them. ***")
+		return nil, nil
+	}
+	h, err := adminHandler(cfg, pool)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Server{
+		Handler: h,
+		// Same reasoning as the public listener's. The tailnet is not a trusted
+		// network in the sense that would make these optional — it is a smaller
+		// set of principals, not a set that cannot leak a goroutine.
+		ReadHeaderTimeout: 10 * time.Second,
+		// Generous: the operator's quarantine view can carry raw messages, and a
+		// diagnostics page can be large. This is not a public listener, so the
+		// stalled-reader arithmetic that sized the API's 5 minutes does not
+		// apply with the same force.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
+	}, nil
+}
+
+// adminHandler builds the console's router. Split from adminServer so a test
+// can read the routes without a listener or a timeout policy.
+//
+// Samples and Reprocessor are left nil: Task 31's donated-sample store and Task
+// 30's Pipeline.Reprocess do not exist yet. That is not a silent gap — the
+// endpoints that need them answer 503 with a reason, which is the difference
+// between "not built yet" and "found nothing", and admin.Handler.publishTemplate
+// refuses to publish rather than reporting an unrun regression gate as a clean
+// one. When those tasks land, the adapters go HERE.
+func adminHandler(cfg config.Config, pool *pgxpool.Pool) (http.Handler, error) {
+	h := &admin.Handler{
+		Templates: &tmpl.Store{Pool: pool},
+		Diag:      &diag.Diag{Pool: pool},
+		Waitlist:  &admin.Waitlist{Pool: pool},
+		Quarantine: &quarantine.Store{
+			Pool: pool, TTL: quarantine.DefaultTTL, WarnBefore: quarantine.DefaultWarnBefore,
+		},
+		Token: cfg.Server.AdminToken,
+	}
+	// The dictionary console needs no HMAC key — moderation reads and approves,
+	// it never writes a submitter pseudonym — so it is mounted whether or not
+	// LEDGER_DICT_HMAC_KEY is configured. A deployment that cannot accept
+	// submissions can still approve the operator's own seeded rules.
+	h.Dict = &dict.Dict{Pool: pool}
+	if cfg.DictHMACKey != "" {
+		key, err := dict.ParseKey(cfg.DictHMACKey)
+		if err != nil {
+			return nil, fmt.Errorf("admin console: %w", err)
+		}
+		h.Dict.HMACKey = key
+	}
+	mux := http.NewServeMux()
+	if err := h.Routes(mux); err != nil {
+		return nil, err
+	}
+	return mux, nil
 }
 
 // quarantineSweepInterval is how often held mail is checked for a due warning

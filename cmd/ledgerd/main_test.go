@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledger/internal/v2/api"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/quarantine"
 )
@@ -212,5 +217,122 @@ func TestQuarantineSweepSurvivesAFailureAndStopsOnShutdown(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "quarantine sweep") {
 		t.Fatalf("a failed sweep must be loud, not swallowed: %q", logged.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The admin listener (Task 32)
+// ---------------------------------------------------------------------------
+
+// runServe refuses a public admin bind BEFORE it opens Postgres.
+//
+// config.validate already refuses one, so a process started through Load can
+// never reach this. That is exactly why it is here: a Config assembled in code
+// — which every test does, and which a future subcommand might — would
+// otherwise walk straight past the one rail spec §3.1 depends on. The zero DSN
+// below is the proof that no I/O happened first: a handler that reached pg.Open
+// would fail with a connection error naming the DSN, not with this message.
+func TestRunServeRefusesAPublicAdminBind(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:8079", ":8079", "178.104.132.41:8079", "192.168.1.10:8079"} {
+		err := runServe(config.Config{
+			Server: config.ServerConfig{HTTPListen: "127.0.0.1:8443", AdminListen: addr},
+		})
+		if err == nil {
+			t.Fatalf("runServe started with admin_listen %q (spec §3.1: tailnet-only)", addr)
+		}
+		if !strings.Contains(err.Error(), "admin_listen") {
+			t.Fatalf("admin_listen %q was refused for the wrong reason: %v", addr, err)
+		}
+	}
+}
+
+// And the accepted shapes get past the bind check — they fail later, on the
+// empty DSN, which is what proves the rail let them through rather than that it
+// was never consulted.
+func TestRunServeAcceptsLoopbackAndTailnetAdminBinds(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8079", "100.100.215.38:8079", "[::1]:8079"} {
+		err := runServe(config.Config{
+			Server: config.ServerConfig{HTTPListen: "127.0.0.1:8443", AdminListen: addr},
+		})
+		if err != nil && strings.Contains(err.Error(), "admin_listen") {
+			t.Fatalf("runServe refused %q: %v", addr, err)
+		}
+	}
+}
+
+// The admin console never appears on the listener users reach. This reads the
+// two handlers main() actually builds rather than trusting the wiring by
+// inspection: every /admin/ path must be absent from the public mux, and every
+// /api/ path absent from the admin one.
+func TestTheAdminConsoleIsNotMountedOnThePublicListener(t *testing.T) {
+	pub, adm := publicAndAdminHandlers(t)
+	for _, p := range []string{
+		"/admin/templates", "/admin/dictionary", "/admin/diagnostics",
+		"/admin/waitlist", "/admin/quarantine", "/admin/accounting",
+	} {
+		rec := httptest.NewRecorder()
+		pub.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("the PUBLIC listener answered %s with %d; it must not exist there", p, rec.Code)
+		}
+	}
+	for _, p := range []string{"/api/v1/sync", "/api/v1/writers", "/api/v1/dictionary"} {
+		rec := httptest.NewRecorder()
+		adm.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("the ADMIN listener answered %s with %d; the user API must not exist there", p, rec.Code)
+		}
+	}
+}
+
+// publicAndAdminHandlers builds both routers over a pool that is never
+// connected.
+//
+// pgxpool.New does not dial: connections are opened lazily on first use, so a
+// DSN pointing at a closed port is enough to build every store and mount every
+// route. That is the whole point — this test is about which PATTERNS exist on
+// which mux, a question that has no database in it, and answering it against a
+// real cluster would make a routing regression depend on Postgres being up.
+func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(),
+		"postgres://ledger@127.0.0.1:1/ledger_v2_unreachable?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("build pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			HTTPListen: "127.0.0.1:8443", AdminListen: "127.0.0.1:8079",
+			AdminToken: "operator-token-for-tests",
+		},
+		Mail: config.MailConfig{Domain: "example.test"},
+		Auth: config.AuthConfig{SessionTTL: time.Hour},
+	}
+	srv, err := api.NewServer(cfg, pool)
+	if err != nil {
+		t.Fatalf("api.NewServer: %v", err)
+	}
+	adminH, err = adminHandler(cfg, pool)
+	if err != nil {
+		t.Fatalf("adminHandler: %v", err)
+	}
+	return srv.Handler(), adminH
+}
+
+// A deployment with no LEDGER_ADMIN_TOKEN serves NO console rather than an open
+// one — and, just as deliberately, rather than refusing to boot: taking the
+// sync API and the mail receiver down because a template-authoring credential
+// is unset would be a far worse outcome than having no console.
+func TestNoAdminTokenMeansNoConsoleRatherThanAnOpenOne(t *testing.T) {
+	srv, err := adminServer(config.Config{
+		Server: config.ServerConfig{AdminListen: "127.0.0.1:8079"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("adminServer: %v", err)
+	}
+	if srv != nil {
+		t.Fatal("an admin console was built with no LEDGER_ADMIN_TOKEN")
 	}
 }
