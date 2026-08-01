@@ -202,7 +202,7 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 // first sign-in.
 //
 // The user row and its oplog_seq counter row are created in ONE transaction.
-// That is a requirement, not tidiness: oplog.Append documents its
+// That is a requirement, not tidiness: oplog.Appender documents its
 // `INSERT ... ON CONFLICT DO NOTHING` on oplog_seq as dead code in steady
 // state precisely because the counter row already exists by the time a user
 // can append anything. A user committed without its counter row would make
@@ -223,7 +223,7 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 	}
 	hash := SubjectHash(id.IdP, id.Subject)
 
-	// Pinned rather than inherited, for the same reason oplog.Append pins it:
+	// Pinned rather than inherited, for the same reason the oplog appender pins it:
 	// default_transaction_isolation is settable per database, per role and by
 	// a pooler, and the insert-then-select below relies on READ COMMITTED
 	// taking a fresh snapshot for the second statement. Under REPEATABLE READ

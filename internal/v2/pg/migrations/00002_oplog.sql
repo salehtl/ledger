@@ -6,11 +6,11 @@
 -- seq below N is committed. A rolled-back append restores the counter and
 -- leaves no hole, where nextval() would burn the value permanently and a
 -- watermark would then have to reconstruct what happened. See
--- oplog.Appender.Append for the full argument; do not "optimize" this into a
+-- oplog.Appender.appendRows for the full argument; do not "optimize" this into a
 -- sequence.
 --
 -- Pre-created with the user (oplog.EnsureSeqRow, called inside
--- auth.UpsertUser's transaction), so Append's INSERT ... ON CONFLICT DO
+-- auth.UpsertUser's transaction), so the appender's INSERT ... ON CONFLICT DO
 -- NOTHING is belt-and-braces rather than a live race in steady state.
 CREATE TABLE oplog_seq (
   user_id  uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

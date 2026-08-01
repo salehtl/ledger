@@ -1,6 +1,7 @@
 package oplog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -92,6 +93,35 @@ func (r Row) validate() error {
 	}
 	if r.SizeBucket != len(r.Blob) {
 		return fmt.Errorf("size_bucket is %d but the blob is %d bytes", r.SizeBucket, len(r.Blob))
+	}
+
+	// The blob must have been sealed FOR the position it is about to occupy.
+	//
+	// Nothing else on the write path checks this. The hash chain does not: a
+	// blob sealed at counter 7, or for a different user entirely, chains
+	// perfectly well at counter 1 — SHA256 does not care what the bytes mean.
+	// Without this check such a row is stored, verifies, and is only caught
+	// later on a device, by blob.Open, as a set-aside WARNING (blob.ErrSetAside)
+	// rather than anything anyone acts on. blob's package doc advertises exactly
+	// this move-detection as a property of the format ("a blob cannot be moved
+	// to another position, stream, writer or user without the move being
+	// detected"); this is where the server makes good on it.
+	//
+	// The server can do this with no key, in Phase 1 and Phase 3 alike, because
+	// the AAD is cleartext framing outside the sealed region. bytes.Equal rather
+	// than a constant-time compare on purpose: both sides are public framing the
+	// caller already supplied, so there is no secret for a timing side channel
+	// to leak. blob.Open's constant-time compare is about matching the shape of
+	// the AEAD that replaces it, which is a different concern.
+	aad, err := blob.EmbeddedAAD(r.Blob)
+	if err != nil {
+		return fmt.Errorf("blob framing is unreadable: %w", err)
+	}
+	want := blob.Envelope{
+		UserID: r.UserID, Stream: r.Stream, WriterID: r.WriterID, WriterCounter: r.WriterCounter,
+	}.AAD()
+	if !bytes.Equal(aad, want) {
+		return fmt.Errorf("blob was sealed for position %q but is being stored at %q", aad, want)
 	}
 	return nil
 }
@@ -200,6 +230,15 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 // seqs (which is why 23505 is not reached in the first place), and
 // [isPositionTaken] handles the constraint violation itself as the backstop.
 // See AppendClient's "Idempotent replay" section.
+//
+// [Appender.AppendIngest] is the caller that CANNOT implement this contract, and
+// the omission is deliberate rather than pending. It assigns the counters
+// itself, so a retry after an ambiguous commit picks the NEXT counter and
+// appends a second, perfectly well-chained copy — it never sees 23505 and there
+// is nothing here for it to detect. Ingest idempotency is by ingest identity
+// instead (spec §3.3:67): the pipeline looks up the ingest id before appending.
+// Do not "fix" this by making AppendIngest accept caller-supplied counters; that
+// reintroduces the AAD-versus-counter circularity AppendIngest exists to remove.
 //
 // # Accepted cost
 //

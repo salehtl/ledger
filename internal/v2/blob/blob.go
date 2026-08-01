@@ -299,6 +299,30 @@ func SealedRegion(b []byte) (start, end int, err error) {
 	return start, end, nil
 }
 
+// EmbeddedAAD returns the associated data a framed blob carries, read straight
+// out of the frame. It neither opens nor decrypts anything, because the AAD is
+// CLEARTEXT in the frame in both phases — see the wire format above, where it
+// sits ahead of the nonce and outside [SealedRegion].
+//
+// That is what makes it useful to the SERVER, which holds no key in Phase 3 and
+// must still be able to check that a blob a client submits was sealed for the
+// position it is being stored at. [PlaintextSealer.Open] performs the same
+// comparison for a READER; oplog.Row.validate performs it for a WRITER, which
+// is the earlier and more useful place to catch a blob at the wrong position
+// (before it is stored, rather than as a set-aside warning on a device
+// afterwards).
+//
+// The offsets are derived here, from the layout constants, so no caller has to
+// restate them — the same reason [SealedRegion] exists.
+func EmbeddedAAD(b []byte) ([]byte, error) {
+	start, _, err := SealedRegion(b)
+	if err != nil {
+		return nil, err
+	}
+	// SealedRegion has already bounds-checked everything this slices.
+	return b[versionSize+aadLenSize : start-NonceSize], nil
+}
+
 // Seal compresses plaintext, frames it and pads the result to a size bucket.
 func (PlaintextSealer) Seal(e Envelope, plaintext []byte) (Sealed, error) {
 	if err := e.Validate(); err != nil {
@@ -362,9 +386,13 @@ func (PlaintextSealer) Open(e Envelope, s Sealed) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// SealedRegion has already checked that the AAD, nonce, length and tag all
-	// fit, so this slice is in bounds for any blob it accepted.
-	aad := b[versionSize+aadLenSize : start-NonceSize]
+	// Derived by EmbeddedAAD rather than re-sliced here, so the offset exists
+	// in exactly one place and the reader's check and the writer's check
+	// (oplog.Row.validate) cannot drift apart.
+	aad, err := EmbeddedAAD(b)
+	if err != nil {
+		return nil, err
+	}
 	// Phase 3 hands this comparison to the AEAD. Until then it is a constant-time
 	// compare so the check has the same shape as the one that replaces it.
 	if subtle.ConstantTimeCompare(aad, e.AAD()) != 1 {

@@ -246,7 +246,7 @@ func TestIssueRejectsAnUnusableConfiguration(t *testing.T) {
 // UpsertUser
 // ---------------------------------------------------------------------------
 
-// oplog.Append's ON CONFLICT path is documented as dead code in steady state
+// the oplog appender's ON CONFLICT path is documented as dead code in steady state
 // because the counter row is created WITH the user. That claim is only true if
 // this function actually does it, in the same transaction.
 func TestUpsertUserCreatesTheUserAndItsOplogSeqRowTogether(t *testing.T) {

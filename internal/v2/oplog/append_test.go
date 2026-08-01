@@ -34,7 +34,7 @@ func (a *Appender) appendRaw(ctx context.Context, rows []Row) ([]int64, error) {
 
 // insertUser mirrors what auth.UpsertUser (Task 6) is required to do: the user
 // row and its oplog_seq row are created inside ONE transaction, so the seq row
-// always exists before the first append and Append's ON CONFLICT path is dead
+// always exists before the first append and appendTx's ON CONFLICT path is dead
 // code rather than a live concurrency hazard.
 func insertUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	t.Helper()
@@ -55,7 +55,7 @@ func insertUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 
 // insertUserBareUser creates a user WITHOUT its oplog_seq row, i.e. a user as it
 // would exist if it had been created before EnsureSeqRow landed. It exercises
-// Append's belt-and-braces INSERT ... ON CONFLICT DO NOTHING path.
+// appendTx's belt-and-braces INSERT ... ON CONFLICT DO NOTHING path.
 func insertUserWithoutSeqRow(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	t.Helper()
 	tx, err := pool.Begin(bg)
@@ -249,7 +249,7 @@ func TestConcurrentAppendsAreGapFreeAndCommitOrderMatchesSeqOrder(t *testing.T) 
 }
 
 func TestConcurrentMultiRowAppendsAllocateContiguousBlocks(t *testing.T) {
-	// A single Append must get a CONTIGUOUS block even while other appends for
+	// A single append must get a CONTIGUOUS block even while other appends for
 	// the same user are in flight — otherwise one message's hot and cold rows
 	// could be split by another writer's rows, and the block-allocation return
 	// value would be a lie.
@@ -733,7 +733,7 @@ func TestCallerSuppliedCreatedAtIsHonoured(t *testing.T) {
 	}
 }
 
-// The database is the backstop for anything that bypasses Append's own
+// The database is the backstop for anything that bypasses the appender's own
 // validation — a psql session, a future task's hand-written INSERT, a bug.
 func TestDatabaseConstraintsBackstopTheGoValidation(t *testing.T) {
 	pool := pgtest.New(t)
@@ -862,7 +862,7 @@ func TestAnAbandonedTransactionReturnsItsSeqs(t *testing.T) {
 }
 
 func TestACorruptedCounterFailsLoudlyRatherThanOverwritingHistory(t *testing.T) {
-	// Deleting the counter row is the one way to make Append propose a seq that
+	// Deleting the counter row is the one way to make an append propose a seq that
 	// already exists. The (user_id, seq) primary key must turn that into an
 	// error, never a silent overwrite of a committed op.
 	pool := pgtest.New(t)
@@ -886,7 +886,7 @@ func TestAppendPinsReadCommittedRegardlessOfTheDatabaseDefault(t *testing.T) {
 	// pooler's startup parameters. Under `repeatable read` the counter UPDATE
 	// raises serialization failures instead of blocking and re-evaluating, so
 	// concurrent appends fail en masse — an availability failure that depends on
-	// configuration nothing in this repo controls. Append must pin its own
+	// configuration nothing in this repo controls. appendRows must pin its own
 	// isolation level rather than inherit one.
 	pool := pgtest.New(t)
 	u := insertUser(t, pool)
