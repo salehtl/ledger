@@ -16,6 +16,12 @@
 //	GET  /api/v1/address                                           -> {address, created_at, rotates_from, grace_until}
 //	POST /api/v1/address/challenge {}                              -> {nonce}
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
+//	GET  /api/v1/quarantine?after=&after_id=&limit=&include_blob=  -> {items, removed, action_needed, ...}
+//	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids}
+//
+// The quarantine pair is a SEPARATE channel from sync, deliberately: held mail
+// is outside the op log and its chains until a sender is confirmed. See
+// quarantine.go.
 //
 // Every endpoint except the exchange requires `Authorization: Bearer <session
 // token>`. Every query is scoped by the user id RESOLVED from that token and
@@ -106,6 +112,7 @@ import (
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/quarantine"
 )
 
 // Request-shaping limits. They bound what one caller can make the server hold
@@ -193,6 +200,11 @@ type Server struct {
 	// will keep retrying.
 	Addresses *addresses.Addresses
 
+	// Quarantine owns the held-mail lane. Same rule as Addresses: nil means the
+	// routes are not mounted, because a deployment that receives no mail has
+	// nothing to quarantine.
+	Quarantine *quarantine.Store
+
 	// Verifiers maps an IdP name to its verifier, and it is built ONCE per
 	// process (NewServer), never per request.
 	//
@@ -213,6 +225,13 @@ type Server struct {
 	// budget, because they are two halves of one flow and a caller who can mint
 	// unlimited nonces can make unlimited attempts.
 	AddressPerUser *Limiter
+
+	// QuarantineByteBudget bounds the raw-message bytes one
+	// GET /api/v1/quarantine?include_blob=1 page may carry; 0 means
+	// quarantineBlobBudget. A field for the same reason PullByteBudget is one:
+	// a test must be able to truncate a page by BYTES without seeding
+	// megabytes.
+	QuarantineByteBudget int
 
 	// PullByteBudget bounds the blob bytes one page of GET /api/v1/sync may
 	// carry; 0 means pullByteBudget. It is a field rather than a constant so a
@@ -262,6 +281,15 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 			Suffix: cfg.InboundSuffix(),
 			Grace:  addresses.DefaultGrace,
 			Now:    now,
+		},
+		// The lane a device reads held mail from. The sweep that warns and
+		// expires runs in cmd/ledgerd on its own ticker; this store only reads
+		// and confirms, so two processes serving the API cannot double-warn.
+		Quarantine: &quarantine.Store{
+			Pool:       pool,
+			TTL:        quarantine.DefaultTTL,
+			WarnBefore: quarantine.DefaultWarnBefore,
+			Now:        now,
 		},
 		Now: now,
 	}
@@ -329,6 +357,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/v1/address", s.requireSession(s.handleAddress))
 		mux.HandleFunc("POST /api/v1/address/challenge", s.requireSession(s.handleAddressChallenge))
 		mux.HandleFunc("POST /api/v1/address/rotate", s.requireSession(s.handleAddressRotate))
+	}
+	if s.Quarantine != nil {
+		mux.HandleFunc("GET /api/v1/quarantine", s.requireSession(s.handleQuarantine))
+		mux.HandleFunc("POST /api/v1/quarantine/confirm", s.requireSession(s.handleConfirmSender))
 	}
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling

@@ -22,6 +22,7 @@ import (
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/pg"
+	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/smtpd"
 )
 
@@ -261,6 +262,19 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("smtp listen %s: %w", cfg.Mail.SMTPListen, err)
 	}
 
+	// The quarantine sweep (Task 27). It warns a client that held mail is about
+	// to expire and deletes only what it has already warned about, so spec §2's
+	// "nothing is dropped without a user-visible notice" holds even for an
+	// account nobody has synced in a month.
+	//
+	// Hourly, and started HERE rather than inside the store, because a store
+	// that ran its own timer would sweep once per process that happened to
+	// construct one — including every test. It runs once at startup too: a
+	// process that restarts every 59 minutes would otherwise never sweep at
+	// all, and the warnings the drop policy depends on would simply never go
+	// out.
+	sweepDone := startQuarantineSweep(ctx, syncAPI.Quarantine)
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
@@ -302,10 +316,60 @@ func runServe(cfg config.Config) error {
 	if err := srv.Shutdown(shutCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
+	<-sweepDone
 	if err := <-smtpErrc; err != nil {
 		return err
 	}
 	return <-errc
+}
+
+// quarantineSweepInterval is how often held mail is checked for a due warning
+// or a due expiry. An hour is far finer than the boundaries it enforces (a
+// 30-day TTL warned 7 days ahead), which is the point: the resolution of the
+// sweep must never be the thing that decides whether a warning went out in
+// time.
+const quarantineSweepInterval = time.Hour
+
+// startQuarantineSweep runs ExpireDue now and then on a ticker until ctx is
+// done, returning a channel that closes when it has stopped.
+//
+// A sweep error is logged and the loop CONTINUES, because one failed sweep is
+// a transient database problem and stopping would silently end every future
+// warning. The failure is safe in the direction that matters: nothing is
+// deleted that has not been warned about, so a sweep broken for a week DELAYS
+// expiries rather than dropping mail. What it costs instead is unbounded
+// growth, which is why the failure is logged loudly rather than swallowed.
+func startQuarantineSweep(ctx context.Context, q *quarantine.Store) <-chan struct{} {
+	done := make(chan struct{})
+	if q == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(quarantineSweepInterval)
+		defer tick.Stop()
+		for {
+			// Detached from ctx's cancellation but bounded on its own, so a
+			// shutdown signal arriving mid-sweep does not abort a transaction
+			// that is part-way through recording removals.
+			sweepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+			warned, deleted, err := q.ExpireDue(sweepCtx)
+			cancel()
+			switch {
+			case err != nil:
+				log.Printf("ledgerd serve: quarantine sweep: %v", err)
+			case warned > 0 || deleted > 0:
+				log.Printf("ledgerd serve: quarantine sweep: warned %d, expired %d", warned, deleted)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	return done
 }
 
 // deferHandler is the Task 29 seam. See the comment at its use in runServe for

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"ledger/internal/v2/config"
+	"ledger/internal/v2/quarantine"
 )
 
 // TestModeHandlersCoverConfigModesExactly is the real coverage the config
@@ -151,5 +155,42 @@ func TestParseArgs(t *testing.T) {
 				t.Fatalf("parseArgs(%q) = %+v, want {%q %q %v %q}", tc.args, got, tc.mode, tc.cfgPath, tc.devAuth, tc.dnsFixtures)
 			}
 		})
+	}
+}
+
+// TestQuarantineSweepSurvivesAFailureAndStopsOnShutdown covers the loop that
+// carries spec §2's drop policy in production.
+//
+// Two properties, both of which would otherwise only be observed in a month:
+// a sweep that ERRORS must not end the loop (the next hour's warnings still
+// have to go out), and the loop must stop when the process is shutting down
+// rather than outliving it. A nil store — the deployment that receives no mail
+// — must not start one at all.
+func TestQuarantineSweepSurvivesAFailureAndStopsOnShutdown(t *testing.T) {
+	select {
+	case <-startQuarantineSweep(context.Background(), nil):
+	case <-time.After(5 * time.Second):
+		t.Fatal("a nil quarantine store must not start a sweep")
+	}
+
+	var logged strings.Builder
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(restore)
+
+	// A store with no pool fails every sweep, which is what an unreachable
+	// database looks like from here.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startQuarantineSweep(ctx, &quarantine.Store{})
+	// Give the first iteration a moment to run and log before shutting down.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweep did not stop when the context was cancelled")
+	}
+	if !strings.Contains(logged.String(), "quarantine sweep") {
+		t.Fatalf("a failed sweep must be loud, not swallowed: %q", logged.String())
 	}
 }
