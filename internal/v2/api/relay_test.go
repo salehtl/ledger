@@ -163,7 +163,81 @@ func TestRelayRoutesAreNotMountedWithoutAToken(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s %s with no relay configured = %d, want 404", tc.method, tc.path, rec.Code)
 		}
+		// And it carries NO VERDICT. This 404 comes from the catch-all and means
+		// "this deployment is not serving the relay", which is a state of THIS
+		// box; a relay that read it as a judgement on the message would file its
+		// whole spool of already-accepted mail under rejected/ in one tick.
+		if got := rec.Header().Get(relayVerdictHeader); got != "" {
+			t.Fatalf("the unmounted-route 404 carries %s: %q — that is a verdict on a message, "+
+				"and this answer is about the server", relayVerdictHeader, got)
+		}
 	}
+}
+
+// The verdict marker is the only thing that authorises the relay to stop
+// retrying a message. This asserts it is on exactly the answers that are about
+// the MESSAGE, and on none of the answers that are about this server.
+func TestOnlyAPerMessageRefusalCarriesTheRelayVerdict(t *testing.T) {
+	raw := base64.StdEncoding.EncodeToString([]byte("x"))
+
+	t.Run("an unknown recipient is a verdict", func(t *testing.T) {
+		h := newRelayHarness(t)
+		rec := h.relayReq(http.MethodPost, relayDeliverPath, relayToken, map[string]any{
+			"local_part": "u-zzzzzzzzzzzzzzzzzzzzzzzzzz", "raw": raw,
+		})
+		if got := rec.Header().Get(relayVerdictHeader); got != relayVerdictReject {
+			t.Fatalf("%s = %q, want %q: without it the relay keeps retrying a message this "+
+				"server can never place", relayVerdictHeader, got, relayVerdictReject)
+		}
+	})
+
+	t.Run("a malformed request is a verdict", func(t *testing.T) {
+		h := newRelayHarness(t)
+		rec := h.relayReq(http.MethodPost, relayDeliverPath, relayToken, map[string]any{
+			"local_part": "", "raw": raw,
+		})
+		if got := rec.Header().Get(relayVerdictHeader); got != relayVerdictReject {
+			t.Fatalf("%s = %q on a malformed delivery", relayVerdictHeader, got)
+		}
+	})
+
+	t.Run("an oversize message is a verdict", func(t *testing.T) {
+		h := newRelayHarness(t)
+		h.srv.MaxMessageBytes = 1024
+		h.h = h.srv.Handler()
+		u := h.user("alice")
+		local := h.issue(u)
+		rec := h.relayReq(http.MethodPost, relayDeliverPath, relayToken, map[string]any{
+			"local_part": local, "raw": base64.StdEncoding.EncodeToString(make([]byte, 1025)),
+		})
+		if got := rec.Header().Get(relayVerdictHeader); got != relayVerdictReject {
+			t.Fatalf("%s = %q on an oversize message", relayVerdictHeader, got)
+		}
+	})
+
+	t.Run("a pipeline failure is NOT a verdict", func(t *testing.T) {
+		h := newRelayHarness(t)
+		u := h.user("alice")
+		local := h.issue(u)
+		h.mail.fail = context.DeadlineExceeded
+		rec := h.relayReq(http.MethodPost, relayDeliverPath, relayToken, map[string]any{
+			"local_part": local, "raw": raw,
+		})
+		if got := rec.Header().Get(relayVerdictHeader); got != "" {
+			t.Fatalf("a database blip answered %s: %q — the relay would discard the message",
+				relayVerdictHeader, got)
+		}
+	})
+
+	t.Run("a refused token is NOT a verdict", func(t *testing.T) {
+		h := newRelayHarness(t)
+		rec := h.relayReq(http.MethodPost, relayDeliverPath, "wrong-token", map[string]any{
+			"local_part": "u-aaaaaaaaaaaaaaaaaaaaaaaaaa", "raw": raw,
+		})
+		if got := rec.Header().Get(relayVerdictHeader); got != "" {
+			t.Fatalf("a 401 answered %s: %q", relayVerdictHeader, got)
+		}
+	})
 }
 
 // relay.enabled with no token is a startup error, not a server that 401s every
@@ -439,6 +513,17 @@ func TestTheRelayRoutesAreTheOnesTheRelayCalls(t *testing.T) {
 	}
 	if relay.SpoolHeader != relaySpoolHeader {
 		t.Fatalf("relay.SpoolHeader = %q, this server reads %q", relay.SpoolHeader, relaySpoolHeader)
+	}
+	// The verdict marker is a two-sided contract: the relay discards nothing
+	// without it, so a spelling that drifts on one side turns every genuine
+	// rejection into a spool that stalls for ever.
+	if relay.VerdictHeader != relayVerdictHeader {
+		t.Fatalf("relay.VerdictHeader = %q, this server sets %q",
+			relay.VerdictHeader, relayVerdictHeader)
+	}
+	if relay.VerdictReject != relayVerdictReject {
+		t.Fatalf("relay.VerdictReject = %q, this server sets %q",
+			relay.VerdictReject, relayVerdictReject)
 	}
 }
 

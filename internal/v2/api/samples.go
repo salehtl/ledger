@@ -3,8 +3,8 @@ package api
 // The donated-sample intake (spec §3.5), and the one place in this package
 // where the DEFAULT behaviour is the one that sends nothing.
 //
-//	POST /api/v1/samples/report {sender_domain, structure_sig} -> 204
-//	POST /api/v1/samples/donate {ingest_id, consent}           -> 204
+//	POST /api/v1/samples/report {ingest_id}           -> 204
+//	POST /api/v1/samples/donate {ingest_id, consent}  -> 204
 //
 // # Why there are two endpoints and not one flag
 //
@@ -15,6 +15,11 @@ package api
 // client — and no misreading of a flag on this side — can turn a default report
 // into a donation. The consent-bearing route is the one that has to be reached
 // deliberately.
+//
+// Both routes carry the same one identifier and differ in what the server then
+// does with it: /report stores a domain and a layout fingerprint it looks up
+// for itself, /donate additionally copies the message body out of the caller's
+// own cold stream and records the consent identifier that authorised it.
 //
 // # The donation carries an id, not a body
 //
@@ -43,17 +48,39 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
 	"ledger/internal/v2/samples"
 )
 
+// decodeIngestID reads the one identifier both routes carry, and writes the
+// refusal itself when it is not one.
+//
+// LOWER CASE is required rather than folded. hex.DecodeString accepts either,
+// and the two routes both document lower case; quietly accepting the other
+// spelling is how a client ends up holding two forms of one identifier and
+// comparing them somewhere this server cannot see. The value in the cold record
+// the client read it out of is already lower case (oplog.RawBody).
+func decodeIngestID(w http.ResponseWriter, s string) ([]byte, bool) {
+	id, err := hex.DecodeString(s)
+	if err != nil || len(id) != 32 || s != strings.ToLower(s) {
+		writeErr(w, http.StatusBadRequest, "bad_request",
+			"ingest_id must be a 64-character lower-case hex sha-256")
+		return nil, false
+	}
+	return id, true
+}
+
 // reportRequest is the DEFAULT path. Note what it cannot express: there is no
-// field here that can carry a byte of mail.
+// field here that can carry a byte of mail — and, since 2026-08-01, none that
+// can carry a BANK NAME either. It names one of the caller's own messages and
+// the server fills in both stored values from its own arrival record; see
+// samples.Samples.Report for why a request-supplied domain was a false statement
+// in the privacy page rather than merely a missing check.
 type reportRequest struct {
-	SenderDomain string `json:"sender_domain"`
-	StructureSig string `json:"structure_sig"`
+	IngestID string `json:"ingest_id"`
 }
 
 // handleReport serves POST /api/v1/samples/report.
@@ -66,15 +93,34 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request, userID uui
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
-	err := s.Samples.Report(r.Context(), samples.Sample{
-		UserID:       userID,
-		SenderDomain: req.SenderDomain,
-		StructureSig: req.StructureSig,
-	})
+	id, ok := decodeIngestID(w, req.IngestID)
+	if !ok {
+		return
+	}
+	err := s.Samples.Report(r.Context(), samples.Sample{UserID: userID, IngestID: id})
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
-	case errors.Is(err, samples.ErrInvalidSample):
+	case errors.Is(err, samples.ErrNotIngested):
+		// Same answer as /donate's, for the same reason: telling "not yours"
+		// apart from "no such message" would confirm the existence of another
+		// account's message to whoever guessed its id.
+		writeErr(w, http.StatusNotFound, "not_found",
+			"this account received no message with that ingest id")
+	case errors.Is(err, samples.ErrUnverifiedOrigin):
+		writeErr(w, http.StatusConflict, "unverified_origin",
+			"this message's sending domain was never cryptographically verified, "+
+				"so it cannot be used to build or gate a parser")
+	case errors.Is(err, samples.ErrNoRecordedStructure):
+		// Not the caller's fault and not a retry: this server could not read the
+		// message well enough to fingerprint its layout, so there is no cluster
+		// to report it into. Donating it is the path that still works, and the
+		// detail says so because that is the useful next step.
+		writeErr(w, http.StatusConflict, "no_structure",
+			"this server recorded no layout fingerprint for that message, so there is nothing "+
+				"to report; donating it is the way to get this format read")
+	case errors.Is(err, samples.ErrInvalidSample),
+		errors.Is(err, samples.ErrOriginNotCallerSupplied):
 		// The detail describes the caller's OWN submission and names no value,
 		// so it is safe to return and useful to a client author.
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -102,14 +148,12 @@ func (s *Server) handleDonate(w http.ResponseWriter, r *http.Request, userID uui
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
-	id, err := hex.DecodeString(req.IngestID)
-	if err != nil || len(id) != 32 {
-		writeErr(w, http.StatusBadRequest, "bad_request",
-			"ingest_id must be a 64-character lower-case hex sha-256")
+	id, ok := decodeIngestID(w, req.IngestID)
+	if !ok {
 		return
 	}
 
-	err = s.Samples.Donate(r.Context(), samples.Sample{
+	err := s.Samples.Donate(r.Context(), samples.Sample{
 		UserID:   userID,
 		IngestID: id,
 		Consent:  req.Consent,
@@ -120,6 +164,13 @@ func (s *Server) handleDonate(w http.ResponseWriter, r *http.Request, userID uui
 	case errors.Is(err, samples.ErrNoConsent):
 		writeErr(w, http.StatusBadRequest, "consent_required",
 			"a donation must name the consent text the user agreed to")
+	case errors.Is(err, samples.ErrUnknownConsent):
+		// Distinct from consent_required on purpose: this is a client shipping
+		// an identifier the server has no text for, which is a release-ordering
+		// bug in the client and not something the user can act on.
+		writeErr(w, http.StatusBadRequest, "unknown_consent",
+			"that consent identifier names no consent text this server knows; "+
+				"a donation may only attest to a text that has been versioned")
 	case errors.Is(err, samples.ErrNotIngested):
 		// Deliberately the same answer for "that is not your message" and "you
 		// have no stored body for it". Telling them apart would confirm the

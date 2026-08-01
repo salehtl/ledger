@@ -33,11 +33,24 @@
 // # ⚠ WHAT THE PHASE 1 SPOOL ACTUALLY CONTAINS
 //
 // PLAINTEXT EMAIL, on the relay's disk, for as long as the primary is
-// unreachable. That is the honest statement and spec §2 has to carry it. Phase
-// 1 is plaintext end to end (blob.PlaintextSealer), and the relay is not an
-// exception to that — every spooled `.eml` is the message exactly as the bank
-// sent it, and the `.json` beside it records `"sealed": false` so the phase is a
-// fact on disk rather than a claim in a document.
+// unreachable. That is the honest statement and spec §2 carries it: the
+// unencrypted-surface list in §2 now names this spool, the rejection lane and
+// `addresses.json` explicitly, and §2's first bullet no longer claims the relay
+// seals before spooling, because it does not. Phase 1 is plaintext end to end
+// (blob.PlaintextSealer), and the relay is not an exception to that — every
+// spooled `.eml` is the message exactly as the bank sent it, and the `.json`
+// beside it records `"sealed": false` so the phase is a fact on disk rather
+// than a claim in a document.
+//
+// Two consequences that belong here rather than in a document nobody greps:
+//
+//   - NO DATABASE PURGE REACHES THIS DIRECTORY. Account deletion (spec §3.10)
+//     runs against Postgres on the primary; a message of that user's sitting in
+//     this spool, or in `rejected/`, survives it. That is an open operator
+//     decision, recorded in docs/superpowers/NEEDS-SALEH.md §4, and it needs an
+//     answer before the relay carries real mail rather than after.
+//   - `rejected/` is never emptied by this package, so it accumulates plaintext
+//     for as long as the box lives.
 //
 // # What the relay CANNOT do, and why the spool format is what it is
 //
@@ -91,6 +104,15 @@
 // (there is nothing saying who it was for) nor deletes it (this package deletes
 // nothing it has not confirmed delivered). It is counted and reported instead.
 //
+// THE ORDER IS NOT AN IMPLEMENTATION DETAIL. Reversed, the same crash leaves a
+// commit record with no body: a message the sender WAS told 250 for, that no
+// retry can produce and that the drain can only set aside in `rejected/`
+// permanently. A correct order turns a crash into a recoverable orphan the
+// sender still holds; the wrong one turns it into a lost message. Because none
+// of this is observable from userspace after the fact, the two writes and the
+// directory fsync go through the [writeSpoolFile] / [syncSpoolDir] seam, and
+// durability_test.go asserts the sequence and the failure of each step.
+//
 // # Nothing is deleted that was not confirmed delivered
 //
 // [Relay.Drain] removes a spooled message only on a 2xx from the primary. Every
@@ -104,10 +126,19 @@
 //     the same reason 429 is, and the reason is not theoretical: a mistyped
 //     LEDGER_RELAY_TOKEN would otherwise sweep an entire spool into the
 //     rejection lane in one tick, which is a bulk silent drop wearing a 4xx.
-//   - any other 4xx is a per-message rejection — an unknown recipient, an
-//     oversize body — and moves the pair to `rejected/` together with a
-//     `.why.txt` recording the status and the primary's answer. Nothing in
-//     `rejected/` is ever deleted by this package.
+//   - 404, 405 and 501 mean the primary IS NOT SERVING these routes, which is a
+//     deployment state on the other box (see [VerdictHeader]) and says nothing
+//     about the message. Same treatment: keep everything, stop the pass, and say
+//     so in words that name the fix.
+//   - a per-message rejection — an unknown recipient, an oversize body — must be
+//     STATED by the primary in [VerdictHeader], not inferred from a status code.
+//     Only then does the pair move to `rejected/`, together with a `.why.txt`
+//     recording the status and the primary's answer. Nothing in `rejected/` is
+//     ever deleted by this package.
+//   - anything else — a 4xx nobody marked, a spool file that cannot be read
+//     right now — keeps that one message and carries on with the rest. A single
+//     unreadable file is not a reason to stop offering the messages behind it,
+//     and it is not evidence about any of them.
 //
 // # A spool that outlives the sender's retry budget
 //
@@ -167,6 +198,31 @@ import (
 const (
 	AddressesPath = "/api/v1/relay/addresses"
 	DeliverPath   = "/api/v1/relay/deliver"
+)
+
+// VerdictHeader is how the primary says "this MESSAGE is undeliverable" as
+// opposed to "I do not know what you are talking about".
+//
+//	X-Ledger-Relay-Verdict: reject
+//
+// It exists because a STATUS CODE cannot tell those apart. The primary mounts
+// the two relay routes only when it is configured for a relay at all
+// (api.relayRoutesMountable: a token, a mail handler and an address resolver,
+// every one of them a deployment state) and its catch-all answers 404
+// otherwise. Without a marker, that 404 is byte-identical to the 404 that means
+// "no such recipient" — so a missing environment variable on the OTHER box
+// would file an entire spool of already-accepted mail under rejected/ in one
+// tick, permanently, for messages whose senders were told 250 and will never
+// retry. That is not hypothetical: it is what this package did until
+// 2026-08-01.
+//
+// So [Relay.Drain] sets a message aside ONLY for an answer carrying this
+// header. Anything else keeps the bytes. The cost of the conservative direction
+// is a spool that stalls loudly against a misconfigured primary; the cost of the
+// other direction is destroyed mail.
+const (
+	VerdictHeader = "X-Ledger-Relay-Verdict"
+	VerdictReject = "reject"
 )
 
 // SpoolHeader carries the relay's own backlog on every address sync:
@@ -553,6 +609,26 @@ func (r *Relay) SyncAddresses(ctx context.Context) (int, error) {
 		// straight to the operator's log.
 		r.logf("relay: address sync dropped %d malformed address row(s) from the primary", dropped)
 	}
+	// An EMPTY map never replaces a working one. The staleness rule exists so
+	// that a replica we know may be out of date never answers a permanent 550 —
+	// but an empty map installed with a FRESH as_of walks straight past it and
+	// refuses every live address permanently, which is the failure that makes
+	// Gmail disable a forwarding rule. A primary can produce one without being
+	// compromised: an empty inbound_addresses, a half-applied migration, a
+	// restore from backup, a bad expires_at comparison. A first sync that is
+	// empty is a different thing entirely — there is nothing to lose and nobody
+	// to refuse — so only the replacement is refused.
+	if len(kept) == 0 {
+		if prev := r.snapshot(); prev != nil && len(prev.Addresses) > 0 {
+			r.logf("relay: the primary returned an EMPTY address map while this relay holds %d "+
+				"address(es). REFUSING it: installing it would answer a permanent 550 for every "+
+				"address this relay serves. The previous replica is untouched.",
+				len(prev.Addresses))
+			return 0, fmt.Errorf("relay: address sync: the primary returned an EMPTY address map "+
+				"and this relay holds %d address(es); the replica is unchanged",
+				len(prev.Addresses))
+		}
+	}
 	asOf := got.AsOf
 	if asOf.IsZero() {
 		asOf = r.now()
@@ -717,13 +793,15 @@ func (r *Relay) Deliver(ctx context.Context, d smtpd.Delivery) error {
 	// The body first, then the commit record, then the directory. See the
 	// package doc: reversing the first two would leave a crash looking like a
 	// message whose body was lost, rather than like one that never arrived.
-	if err := writeSynced(filepath.Join(r.SpoolDir, id+emlSuffix), d.Raw); err != nil {
+	// TestDeliverWritesTheBodyThenTheCommitRecordThenFsyncsTheDirectory pins the
+	// order itself, which is why these go through the seam.
+	if err := writeSpoolFile(filepath.Join(r.SpoolDir, id+emlSuffix), d.Raw); err != nil {
 		return err
 	}
-	if err := writeSynced(filepath.Join(r.SpoolDir, id+metaSuffix), rawMeta); err != nil {
+	if err := writeSpoolFile(filepath.Join(r.SpoolDir, id+metaSuffix), rawMeta); err != nil {
 		return err
 	}
-	return syncDir(r.SpoolDir)
+	return syncSpoolDir(r.SpoolDir)
 }
 
 // newSpoolID mints a time-ordered spool id.
@@ -760,10 +838,22 @@ type deliverRequest struct {
 // Drain offers every spooled message to the primary, oldest first.
 //
 // sent counts messages the primary accepted (and which are now gone from the
-// spool); failed counts per-message rejections moved to `rejected/`. A non-nil
-// error is a condition of the PRIMARY rather than of a message — it is
-// unreachable, it answered 5xx, it refused our token, it throttled us — and the
-// drain stops at that point with everything still spooled.
+// spool); failed counts per-message rejections moved to `rejected/`.
+//
+// A non-nil error means something went wrong, and it comes in two shapes that
+// the message count distinguishes:
+//
+//   - A WHOLE-PRIMARY condition — unreachable, 5xx, our token refused, throttled,
+//     or the relay routes simply not served — stops the pass at that point with
+//     everything still spooled. Replaying the same failure once per message
+//     would achieve nothing but load.
+//   - A LOCAL, per-message condition — this one file cannot be read right now —
+//     keeps that message and CONTINUES with the rest. It used to stop the whole
+//     pass, so one unreadable commit record blocked every message behind it
+//     indefinitely; the messages behind it are not implicated by it.
+//
+// Either way nothing is deleted and nothing is set aside: those need either a
+// 2xx or an explicit verdict from the primary ([VerdictHeader]).
 func (r *Relay) Drain(ctx context.Context) (sent int, failed int, err error) {
 	r.drainMu.Lock()
 	defer r.drainMu.Unlock()
@@ -790,6 +880,15 @@ func (r *Relay) Drain(ctx context.Context) (sent int, failed int, err error) {
 			failed++
 		case outcomeGone:
 			// Drained by something else between the listing and now.
+		case outcomeSkip:
+			// One file this pass could not handle. Report it, keep it, and go
+			// on to the messages behind it, which it says nothing about.
+			r.logf("relay: %s could not be read this pass and stays spooled: %v. "+
+				"Nothing has been discarded; the messages behind it are being offered normally.",
+				id, oerr)
+			if err == nil {
+				err = oerr
+			}
 		default: // outcomeRetry
 			err = oerr
 			// A whole-primary condition. Stop rather than replay the same
@@ -807,10 +906,14 @@ type outcome int
 const (
 	// outcomeRetry is the zero value on purpose: a path that forgets to set an
 	// outcome keeps the message rather than losing it.
+	// TestTheDefaultOutcomeKeepsTheMessage pins it.
 	outcomeRetry outcome = iota
 	outcomeSent
 	outcomeRejected
 	outcomeGone
+	// outcomeSkip also keeps the message, but says so about THIS message rather
+	// than about the primary, so the pass continues past it.
+	outcomeSkip
 )
 
 func (r *Relay) drainOne(ctx context.Context, id string) (outcome, error) {
@@ -824,15 +927,32 @@ func (r *Relay) drainOne(ctx context.Context, id string) (outcome, error) {
 		if os.IsNotExist(err) {
 			return outcomeGone, nil
 		}
-		return outcomeRetry, fmt.Errorf("relay: read %s: %w", metaPath, err)
+		// Any other read error is about THIS FILE — not about the primary and
+		// not about the messages behind it, which is what stopping the pass here
+		// used to say.
+		return outcomeSkip, fmt.Errorf("relay: read %s: %w", metaPath, err)
 	}
 	var meta spoolMeta
 	if err := json.Unmarshal(rawMeta, &meta); err != nil {
+		// A commit record that cannot be PARSED is different from one that
+		// cannot be read: the bytes are here and they do not say who the message
+		// was for, so no retry will ever place it.
 		return r.reject(id, 0, fmt.Sprintf("unreadable spool metadata: %v", err))
 	}
 	raw, err := os.ReadFile(emlPath)
-	if err != nil {
-		return r.reject(id, 0, fmt.Sprintf("the spooled body is unreadable: %v", err))
+	switch {
+	case os.IsNotExist(err):
+		// The promise exists and the message does not. Nothing can deliver this,
+		// so it is set aside loudly rather than retried for ever. (The write
+		// order in Deliver is chosen so that a crash cannot produce this state —
+		// see the package doc.)
+		return r.reject(id, 0, "the spooled body is missing; only its commit record is on disk")
+	case err != nil:
+		// EIO, EACCES, a full descriptor table: the bytes may be perfectly fine
+		// and nothing has proved otherwise. The commit record above is retried on
+		// exactly this class of error and the two halves of one pair must not be
+		// handled asymmetrically.
+		return outcomeSkip, fmt.Errorf("relay: read %s: %w", emlPath, err)
 	}
 	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != meta.SHA256 {
 		// A body that does not match its recorded digest is not this message.
@@ -878,6 +998,8 @@ func (r *Relay) drainOne(ctx context.Context, id string) (outcome, error) {
 			r.logf("relay: delivered %s but could not remove its body: %v", id, err)
 		}
 		return outcomeSent, nil
+	case rejectedByThePrimary(resp):
+		return r.reject(id, resp.StatusCode, strings.TrimSpace(string(answer)))
 	case retryableStatus(resp.StatusCode):
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			r.logf("relay: the primary REFUSED OUR TOKEN (%d). Nothing is being forwarded and "+
@@ -885,9 +1007,42 @@ func (r *Relay) drainOne(ctx context.Context, id string) (outcome, error) {
 		}
 		return outcomeRetry, fmt.Errorf("relay: forward %s: primary answered %d: %s",
 			id, resp.StatusCode, strings.TrimSpace(string(answer)))
+	case notServingTheRelay(resp.StatusCode):
+		// The route is not there. That is a state of the PRIMARY's deployment —
+		// no LEDGER_RELAY_TOKEN, no mail handler, no address resolver, a
+		// half-configured reverse proxy — and it says nothing whatever about the
+		// message being offered. Stop the pass and say so in the words the
+		// operator has to act on.
+		r.logf("relay: THE PRIMARY DOES NOT SERVE THE RELAY ENDPOINTS (%d from %s). Nothing is "+
+			"being forwarded and NOTHING HAS BEEN DISCARDED — every message stays spooled. "+
+			"Check LEDGER_RELAY_TOKEN and relay.enabled on the primary.",
+			resp.StatusCode, r.endpoint(DeliverPath))
+		return outcomeRetry, fmt.Errorf("relay: forward %s: the primary does not serve %s (%d)",
+			id, DeliverPath, resp.StatusCode)
 	default:
-		return r.reject(id, resp.StatusCode, strings.TrimSpace(string(answer)))
+		// A 4xx with no verdict on it. It may well be this message's fault, but
+		// nothing has SAID so, and the cost of guessing wrong is a message no
+		// sender will retry. Keep it and move on to the ones behind it.
+		r.logf("relay: the primary answered %d for %s with no %s: %s. The message is KEPT — a "+
+			"rejection has to be stated, not inferred.",
+			resp.StatusCode, id, VerdictHeader, strings.TrimSpace(string(answer)))
+		return outcomeSkip, fmt.Errorf("relay: forward %s: primary answered %d without a verdict",
+			id, resp.StatusCode)
 	}
+}
+
+// rejectedByThePrimary reports whether this answer is an explicit per-message
+// rejection: the primary said so in [VerdictHeader], on a status that describes
+// the message rather than itself.
+//
+// Both halves are required. The header alone cannot promote a 503 into a
+// verdict (a primary in trouble is not a primary making judgements), and the
+// status alone is exactly the inference that used to destroy spools.
+func rejectedByThePrimary(resp *http.Response) bool {
+	if resp.StatusCode < 400 || resp.StatusCode >= 500 || retryableStatus(resp.StatusCode) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(resp.Header.Get(VerdictHeader)), VerdictReject)
 }
 
 // retryableStatus reports whether a status describes the PRIMARY rather than the
@@ -900,6 +1055,18 @@ func retryableStatus(code int) bool {
 		return true
 	}
 	return code >= 500
+}
+
+// notServingTheRelay reports the statuses that mean "there is no such endpoint
+// here": an unmounted route, a method the mux does not route, a proxy that does
+// not know about this path. An ABSENT token produces 404 rather than the 401 an
+// empty one would, which is why the token carve-out above never covered this.
+func notServingTheRelay(code int) bool {
+	switch code {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	}
+	return false
 }
 
 // reject moves a message out of the live spool and into `rejected/`, together
@@ -967,7 +1134,13 @@ type Stats struct {
 	// Uncommitted is the number of message bodies with no commit record beside
 	// them: a crash mid-write, never acknowledged to the sender.
 	Uncommitted int
-	// Rejected is the number of files in the rejection lane.
+	// Rejected is the number of messages in the rejection lane.
+	//
+	// It counts the `.why.txt` records rather than the `.eml` bodies, because
+	// [Relay.reject] writes exactly one of those per rejection and a message can
+	// be set aside precisely BECAUSE its body is missing or unreadable — which
+	// is the case an .eml count cannot see, in the lane the operator is watching
+	// for messages nothing will ever retry.
 	Rejected int
 	// Oldest is the arrival instant of the oldest spooled message, zero when
 	// there are none.
@@ -1016,7 +1189,7 @@ func (r *Relay) Stats() (Stats, error) {
 		return Stats{}, fmt.Errorf("relay: read %s: %w", rejectedDir, err)
 	}
 	for _, e := range ents {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), emlSuffix) {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), rejectSuffix) {
 			st.Rejected++
 		}
 	}
@@ -1086,6 +1259,20 @@ func (r *Relay) endpoint(path string) string {
 // ---------------------------------------------------------------------------
 // Durable writes
 // ---------------------------------------------------------------------------
+
+// writeSpoolFile and syncSpoolDir are the durable-write seam, and they are
+// package variables for exactly one reason: the durability protocol is
+// otherwise unobservable from userspace, so no test could tell a correct
+// implementation from one that had dropped an fsync or swapped the order of the
+// two writes — and a mutation battery proved all three of those pass a suite
+// that only checks the files exist afterwards.
+//
+// Nothing in production reassigns them. durability_test.go substitutes them to
+// record the ORDER of the steps and to simulate a crash between them.
+var (
+	writeSpoolFile = writeSynced
+	syncSpoolDir   = syncDir
+)
 
 // writeSynced writes a file and fsyncs it before returning. The error is
 // reported rather than logged: every caller here is on the path that decides

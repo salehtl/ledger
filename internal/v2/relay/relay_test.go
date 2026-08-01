@@ -45,6 +45,10 @@ type primary struct {
 	// status is the answer to POST /deliver; 0 means 202.
 	status int
 	body   string
+	// verdict is the value of relay.VerdictHeader on the answer to /deliver.
+	// Empty means the header is absent, which is what EVERY answer that is not
+	// an explicit per-message rejection looks like.
+	verdict string
 	// delivered is every raw message body the relay has posted, in order.
 	delivered []string
 	// addrs is what GET /addresses answers with.
@@ -101,7 +105,7 @@ func (p *primary) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.mu.Lock()
-		status, body := p.status, p.body
+		status, body, verdict := p.status, p.body, p.verdict
 		// Recorded whatever the scripted answer is: a 5xx here models the
 		// primary having ACCEPTED the message and its answer being lost, which
 		// is the case that produces a redelivery.
@@ -109,6 +113,9 @@ func (p *primary) serve(w http.ResponseWriter, r *http.Request) {
 		p.mu.Unlock()
 		if status == 0 {
 			status = http.StatusAccepted
+		}
+		if verdict != "" {
+			w.Header().Set(VerdictHeader, verdict)
 		}
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
@@ -120,7 +127,16 @@ func (p *primary) serve(w http.ResponseWriter, r *http.Request) {
 func (p *primary) answer(status int, body string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.status, p.body = status, body
+	p.status, p.body, p.verdict = status, body, ""
+}
+
+// rejectWith is the primary saying, explicitly, "this MESSAGE is undeliverable"
+// — the only answer the drain is allowed to act on by setting a message aside.
+// See internal/v2/api's relayReject, which is what sets this in production.
+func (p *primary) rejectWith(status int, body string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.status, p.body, p.verdict = status, body, VerdictReject
 }
 
 func (p *primary) got() []string {
@@ -392,13 +408,15 @@ func TestDrainDeletesOnlyOnSuccess(t *testing.T) {
 		}
 	})
 
-	t.Run("a 4xx moves it to rejected with the response body", func(t *testing.T) {
+	t.Run("an explicit rejection moves it to rejected with the response body", func(t *testing.T) {
 		f := newFixture(t)
 		rcpt := f.address("u-aaaaaaaaaaaaaaaaaaaaaaaaaa")
 		if err := f.deliver(rcpt, "m3"); err != nil {
 			t.Fatal(err)
 		}
-		f.p.answer(http.StatusNotFound, `{"error":"not_found","detail":"no such recipient"}`)
+		// The VERDICT is what authorises this, not the 404: see
+		// TestOnlyAnExplicitVerdictFromThePrimaryRejectsAMessage.
+		f.p.rejectWith(http.StatusNotFound, `{"error":"not_found","detail":"no such recipient"}`)
 		sent, failed, err := f.r.Drain(bg)
 		if err != nil {
 			t.Fatalf("Drain = %v, want nil: a per-message rejection is not a drain failure", err)
@@ -466,8 +484,10 @@ func TestOurOwnFailuresNeverRejectAMessage(t *testing.T) {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			f := newFixture(t)
 			rcpt := f.address("u-aaaaaaaaaaaaaaaaaaaaaaaaaa")
-			if err := f.deliver(rcpt, "keep me"); err != nil {
-				t.Fatal(err)
+			for _, m := range []string{"keep me", "and me", "me too"} {
+				if err := f.deliver(rcpt, m); err != nil {
+					t.Fatal(err)
+				}
 			}
 			f.p.answer(status, "")
 			sent, failed, err := f.r.Drain(bg)
@@ -477,11 +497,25 @@ func TestOurOwnFailuresNeverRejectAMessage(t *testing.T) {
 			if sent != 0 || failed != 0 {
 				t.Fatalf("Drain = (%d,%d), want (0,0)", sent, failed)
 			}
-			if got := len(f.spooled()); got != 1 {
-				t.Fatalf("%d spooled after a %d, want the message kept", got, status)
+			if got := len(f.spooled()); got != 3 {
+				t.Fatalf("%d spooled after a %d, want all three messages kept", got, status)
 			}
 			if got := f.names(rejectedDir); len(got) != 0 {
 				t.Fatalf("a %d moved %v to rejected/", status, got)
+			}
+			// And the pass STOPS. All four of these describe the whole primary,
+			// so replaying the same failure once per spooled message is load
+			// with no possible outcome — on a recovery drain of a week's backlog
+			// against a throttling primary, it is also how a 429 becomes worse.
+			if got := len(f.p.got()); got != 1 {
+				t.Fatalf("the drain made %d delivery attempts against a %d, want it to stop at "+
+					"the first: this answer is about the primary, not about a message", got, status)
+			}
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				if !f.logged("REFUSED OUR TOKEN") {
+					t.Fatalf("a %d did not tell the operator to check LEDGER_RELAY_TOKEN; logs: %v",
+						status, f.logs)
+				}
 			}
 		})
 	}
