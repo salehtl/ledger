@@ -272,12 +272,69 @@ func IsForwarderDomain(d string) bool {
 // the direct-DKIM path, which is the load-bearing path anyway
 // (docs/superpowers/specs/v2-arc-spike.md, "Which path is load-bearing").
 //
-// These three are the only sealers observed across the 1,222 chains in the v1
-// corpus, and all 1,222 verify. Adding a fourth is a deliberate act that needs
-// its own evidence, not a convenience.
+// # What an entry must be evidenced for, and what it must not
+//
+// The question an entry answers is "who can seal under this name?", and that
+// has a hard answer: only whoever holds a key published under the domain's own
+// DNS. So an entry is safe when the domain is provably the provider's own
+// infrastructure — never registrable, never delegable to a customer — and it is
+// DANGEROUS in exactly one way: a sealer whose ARC-Authentication-Results is
+// copied from the inbound message rather than written from its own verification
+// hands an attestation to anyone with an account there. That is not
+// hypothetical; Wang & Wang (WWW '22, "Revisiting Email Forwarding Security
+// under the Authenticated Received Chain Protocol") measured a provider that
+// honours an unauthenticated party's ARC chain, so "reputable" is not the test
+// and is never the reason an entry is here.
+//
+// Being unsure costs a provider nothing catastrophic — see
+// TestAForwarderWeCannotBelieveStillLeavesTheBankConfirmable: a forward that
+// leaves the bank's own signature verifiable does not need this list at all,
+// because Outer is then the bank and the bank is confirmable at the outer
+// scope. This list is what rescues the forwards whose inner signature did NOT
+// survive, and only those.
+//
+// # The evidence, per entry
+//
+//   - google.com, icloud.com, microsoft.com — the only sealers observed across
+//     the 1,222 chains in the v1 corpus, and all 1,222 verify. icloud.com seals
+//     as s=arc-0513 under the authserv-id arc.icloud.com and google.com as
+//     s=arc-20260327, both readable in origin/testdata/gmail-forward-*.eml;
+//     microsoft.com as s=arcselector10001 in enbd-selector1.eml.
+//
+//   - messagingengine.com — Fastmail, added by this round. The corpus holds NO
+//     Fastmail sample (it is one operator's mailbox, and that operator is on
+//     iCloud), so the evidence is external and is recorded here rather than
+//     assumed: Fastmail's own documentation states "we seal messages with ARC"
+//     and "all outbound mail is DKIM signed with a messagingengine.com key";
+//     the WWW '22 measurement above names Fastmail among the providers that
+//     have adopted ARC; and a real Fastmail ARC set reads
+//     "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=messagingengine.com; s=fm3"
+//     over "ARC-Authentication-Results: i=1; mx6.messagingengine.com; ...".
+//     DNS confirms sole Fastmail control: fm3._domainkey.messagingengine.com is
+//     a live key in Fastmail's fmhosted.com infrastructure, and
+//     messagingengine.com and fastmail.com share nameservers, MX and DMARC rua.
+//     Fastmail's ARC implementation is its own open-source authentication
+//     milter, which computes the results it seals.
+//
+// # Deliberately NOT here, and why that is not a locked door
+//
+// proton.me, protonmail.ch and yahoo.com. No evidence could be found that
+// either provider seals anything: Proton's own ARC writing describes Proton as
+// a VALIDATOR ("we currently only accept messages that fail DMARC for a limited
+// set of parties that we trust to implement ARC correctly") and never as a
+// sealer, neither appears in the WWW '22 adopter list, and a public-code search
+// for an ARC-Seal bearing d=protonmail.ch or a Yahoo cv= seal returns nothing
+// while d=yahoo.com appears only as header.d inside somebody ELSE's report.
+// Naming them here would be inert at best and, if either turned out to seal the
+// way that paper's outlier does, a bank identity available to anyone with an
+// account. Their users are covered by the outer scope instead, which needs no
+// trust in the forwarder at all. zoho.com and pobox.com are ARC adopters per
+// that same paper and are likewise absent: pobox.com for want of a verified
+// sealing domain, zoho.com because it is the outlier the paper measured.
 var TrustedSealers = []string{
 	"google.com",
 	"icloud.com",
+	"messagingengine.com",
 	"microsoft.com",
 }
 

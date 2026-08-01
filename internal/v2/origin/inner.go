@@ -388,14 +388,30 @@ func alignedSigner(dk Verified, fromDomain string) string {
 // whose report this is; a sealer describing its own signature is describing
 // mail it originated, not mail it relayed.
 //
-// # What this costs
+// # What this costs, measured rather than feared
 //
-// A forwarder that does not seal a chain under google.com, icloud.com or
-// microsoft.com leaves its forwards unattested. They quarantine, visibly, and
-// the fix is one evidence-gated line in [TrustedSealers]. That is the safe
-// direction: the alternative bought coverage with a trust grant anyone could
-// mint. Spec section 3.2:47 onboards the alpha through a Gmail forwarding rule,
-// which seals as google.com.
+// A forwarder this receiver cannot believe leaves its forwards unattested. That
+// is narrower than it sounds, and the difference is the whole shape of the
+// non-hyperscaler surface:
+//
+//   - If the forward left the bank's own signature verifiable, nothing is lost
+//     that matters. [outerOrigin] names the BANK, because an aligned signature
+//     outranks any seal, so the user confirms their bank at the outer scope and
+//     the forwarder is never trusted with anything
+//     (TestAForwarderWeCannotBelieveStillLeavesTheBankConfirmable). Proton and
+//     Yahoo users live here, and no [TrustedSealers] entry is needed for them.
+//
+//   - If it did NOT, the seal is the only surviving statement about the bank,
+//     and an unbelieved seal leaves the forwarder itself as the sole candidate
+//     origin — which spec section 3.2:51 forbids confirming. That mail is
+//     unreleasable, and the only fix is an evidence-gated [TrustedSealers]
+//     entry (TestAForwarderThatBreaksTheSignatureAndSealsUnbelievablyIsNotReleasable
+//     pins the boundary, TestAFastmailForwardThatLostTheBanksSignatureFallsBackToARC
+//     the rescue).
+//
+// Under-inclusion is still the safe error: the alternative bought coverage with
+// a trust grant anyone could mint. Spec section 3.2:47 onboards the alpha
+// through a Gmail forwarding rule, which seals as google.com.
 func relayDomain(chain arc.ChainResult) string {
 	if chain.Status != arc.StatusPass || len(chain.SealDomains) == 0 || len(chain.AARValues) == 0 {
 		return ""
