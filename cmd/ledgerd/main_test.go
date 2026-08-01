@@ -103,28 +103,38 @@ func TestUnknownModeIsNotInTheDispatchTable(t *testing.T) {
 	}
 }
 
-// TestNonServeHandlersStubImmediatelyWithNoIO proves each non-"serve" entry
-// in modeHandlers is the function it looks like: calling it directly (as
-// main() would) returns the expected "not implemented yet" stub error, with
-// no network or database access — only "serve" does real I/O, and that path
-// is covered separately by manual verification against a live pgtest
-// cluster (see task-3-report.md) rather than a fast unit test, since it
-// necessarily depends on external process state a unit test shouldn't own.
-func TestNonServeHandlersStubImmediatelyWithNoIO(t *testing.T) {
-	// seed-dictionary and purge-user are no longer in this list: Tasks 33 and
-	// 34 implemented them, and the tests below carry the "returns immediately,
-	// with no I/O" half of this test's job for those modes. Task 36 took verify
-	// and parse-rate out for the same reason — see
-	// TestVerifyAndParseRateRefuseBadArgumentsBeforeTouchingPostgres.
-	for _, m := range []string{"relay"} {
-		h, ok := modeHandlers[m]
-		if !ok {
-			t.Fatalf("modeHandlers missing %q", m)
-		}
-		err := h(config.Config{})
-		if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-			t.Fatalf("modeHandlers[%q](zero config) = %v, want a \"not implemented yet\" stub error", m, err)
-		}
+// TestRunRelayRefusesBadArgumentsBeforeTouchingTheNetwork is what is left of
+// TestNonServeHandlersStubImmediatelyWithNoIO, whose list is now empty: every
+// mode is implemented. seed-dictionary and purge-user (Tasks 33/34), verify and
+// parse-rate (Task 36) and relay (Task 35) each carry their own half of that
+// test's job — "refuses immediately, against its arguments, with no I/O" — and
+// this is relay's.
+//
+// The zero config carries no mail domain, no spool directory, no primary URL and
+// no token, so a runRelay that reached net.Listen or an HTTP round trip would be
+// doing it against nothing the operator configured. It is also the mode with the
+// most to lose from starting half-configured: a relay that binds port 25 without
+// a usable spool answers 250 to mail it cannot keep.
+func TestRunRelayRefusesBadArgumentsBeforeTouchingTheNetwork(t *testing.T) {
+	err := runRelay(config.Config{})
+	if err == nil {
+		t.Fatal("runRelay accepted a zero config")
+	}
+	if !strings.Contains(err.Error(), "mail.domain") {
+		t.Fatalf("runRelay(zero config) = %v, want a refusal naming mail.domain", err)
+	}
+	for name, r := range map[string]config.RelayConfig{
+		"no spool dir":      {PrimaryURL: "https://primary.example.test", Token: "t"},
+		"no primary url":    {SpoolDir: t.TempDir(), Token: "t"},
+		"no token":          {SpoolDir: t.TempDir(), PrimaryURL: "https://primary.example.test"},
+		"cleartext primary": {SpoolDir: t.TempDir(), PrimaryURL: "http://primary.example.test", Token: "t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Config{Mail: config.MailConfig{Domain: "example.test"}, Relay: r}
+			if err := runRelay(cfg); err == nil {
+				t.Fatal("runRelay accepted an unusable relay configuration")
+			}
+		})
 	}
 }
 

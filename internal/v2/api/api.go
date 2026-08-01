@@ -23,6 +23,12 @@
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
 //	POST /api/v1/account/challenge {}                              -> {nonce}
 //	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
+//	GET  /api/v1/relay/addresses                                   -> {addresses:[...], as_of}
+//	POST /api/v1/relay/deliver     {local_part, ..., raw}          -> {ingest_id}
+//
+// The relay pair is the ONE exception to the session rule below: it is
+// authenticated by LEDGER_RELAY_TOKEN, not by a session, and it is not mounted
+// at all without one. See relay.go.
 //
 // The quarantine pair is a SEPARATE channel from sync, deliberately: held mail
 // is outside the op log and its chains until a sender is confirmed. See
@@ -126,6 +132,7 @@ import (
 	"ledger/internal/v2/purge"
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/samples"
+	"ledger/internal/v2/smtpd"
 )
 
 // Request-shaping limits. They bound what one caller can make the server hold
@@ -257,6 +264,26 @@ type Server struct {
 	// fills it in when a Server was built field-by-field.
 	Deletion *purge.Challenges
 
+	// RelayToken authenticates the BACKUP RELAY (spec §3.2,
+	// LEDGER_RELAY_TOKEN). Empty means the two /api/v1/relay routes are not
+	// mounted at all — same rule as the admin console, and for the same reason:
+	// an endpoint that exists only to answer 401 is one an attacker can still
+	// find. See relay.go.
+	RelayToken string
+
+	// Mail is where a relayed message is delivered: the SAME ingest pipeline
+	// the SMTP receiver hands directly-received mail to, so relayed mail is
+	// deduplicated by ingest id and is indistinguishable downstream.
+	//
+	// It is an interface (smtpd.Handler) rather than an *ingest.Pipeline so
+	// this package does not import half of v2 to serve one endpoint.
+	Mail smtpd.Handler
+
+	// MaxMessageBytes is the SMTP DATA cap, mirrored here so the relay's
+	// deliver endpoint refuses exactly what the receiver would. 0 means
+	// blob.MaxColdMail.
+	MaxMessageBytes int
+
 	// Samples is the donated-sample queue (§3.5). Nil means the two intake
 	// routes are not mounted, same rule as the blocks above.
 	//
@@ -292,6 +319,10 @@ type Server struct {
 	// one flow, and a caller who can mint unlimited nonces can make unlimited
 	// attempts.
 	AccountPerUser *Limiter
+	// RelayPerIP bounds the backup relay's two endpoints. Its budget is shaped
+	// for the relay's real traffic — a sync every few minutes and a recovery
+	// drain that is a burst — rather than for a user's.
+	RelayPerIP *Limiter
 	// SamplesPerUser covers the structural report and the donation on ONE
 	// budget. They are two halves of one flow — the client reports what it
 	// cannot parse and the user may then donate one of those messages — and a
@@ -400,6 +431,26 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 	} else {
 		s.Dict = &dict.Dict{Pool: pool, Now: now}
 	}
+	// The backup relay's shared secret (spec §3.2). relay.enabled asks for the
+	// two relay routes; without the token they cannot be served, and answering
+	// that with a warning would leave an operator believing they had a relay
+	// path when every forward would 401. It is a startup error instead.
+	if cfg.Relay.Enabled {
+		if cfg.Relay.Token == "" {
+			return nil, errors.New("api: NewServer: relay.enabled is set but LEDGER_RELAY_TOKEN is empty; " +
+				"the backup relay's endpoints cannot be authenticated without it")
+		}
+		s.RelayToken = cfg.Relay.Token
+	} else if cfg.Relay.Token != "" {
+		// The mirror image, and the quieter mistake: a token in the environment
+		// with relay.enabled left false. Nothing breaks on this box, and the
+		// relay's forwards 404 forever with the operator believing they have a
+		// backup MX, so it is said out loud at startup.
+		log.Println("api: LEDGER_RELAY_TOKEN is set but relay.enabled is false: the relay " +
+			"endpoints are NOT being served, and a backup relay pointed here would have " +
+			"every forward refused")
+	}
+	s.MaxMessageBytes = cfg.Mail.MaxMessageBytes
 	if cfg.DevAuth {
 		// TEST ONLY, and it REPLACES both verifiers rather than joining them.
 		// A process started with --dev-auth can therefore verify no real Apple
@@ -454,6 +505,9 @@ func (s *Server) Handler() http.Handler {
 	if s.AccountPerUser == nil {
 		s.AccountPerUser = NewLimiter(accountRate, accountBurst, accountMaxKeys, s.now)
 	}
+	if s.RelayPerIP == nil {
+		s.RelayPerIP = NewLimiter(relayRate, relayBurst, relayMaxKeys, s.now)
+	}
 	// Filled in rather than checked for nil at the route, because these two
 	// routes are the ones that must never be missing — see the Deletion field.
 	if s.Deletion == nil {
@@ -499,6 +553,21 @@ func (s *Server) Handler() http.Handler {
 	// server in which the route may be absent. See account.go.
 	mux.HandleFunc("POST /api/v1/account/challenge", s.requireSession(s.handleAccountChallenge))
 	mux.HandleFunc("DELETE /api/v1/account", s.requireSession(s.handleDeleteAccount))
+
+	// The backup relay's pair (spec §3.2). Gated on a bearer token that is NOT
+	// a session, and absent entirely without one — see relay.go.
+	switch {
+	case s.relayRoutesMountable():
+		mux.HandleFunc("GET "+relayAddressesPath, s.requireRelayToken(s.handleRelayAddresses))
+		mux.HandleFunc("POST "+relayDeliverPath, s.requireRelayToken(s.handleRelayDeliver))
+	case s.RelayToken != "" && s.Mail == nil:
+		// The operator configured a relay and this process has no ingest path
+		// to hand a forwarded message to. Loud, because the symptom otherwise
+		// is a relay whose spool grows forever against a 404.
+		logRelayNotMounted("a relay token is configured but no mail handler is wired in")
+	case s.RelayToken != "" && s.Addresses == nil:
+		logRelayNotMounted("a relay token is configured but no inbound-address store is wired in")
+	}
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling
 	// through to anything a later task mounts at "/" (a static client bundle,
