@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -172,6 +173,98 @@ func TestSignatureIsBoundToTheWriterIDAndKey(t *testing.T) {
 	}
 }
 
+// identityKey is the encoding of the Ed25519 identity point: a valid curve
+// point of order 1. forgedSig verifies under it for EVERY message, and needs no
+// private key at all — crypto/ed25519 does not reject either.
+var (
+	identityKey = func() ed25519.PublicKey {
+		k := make([]byte, ed25519.PublicKeySize)
+		k[0] = 1
+		return k
+	}()
+	forgedSig = func() []byte {
+		s := make([]byte, ed25519.SignatureSize)
+		s[0] = 1 // R = identity, S = 0
+		return s
+	}()
+)
+
+// ATTACK: enroll a small-order public key. The identity point accepts a
+// signature anyone can write down, for any message, so a writer holding one is
+// a writer that every session holder — not just the attacker who enrolled it —
+// can sign for. That defeats proof of key possession entirely.
+func TestSmallOrderPublicKeysAreRefused(t *testing.T) {
+	// The premise: the standard library really does accept this.
+	if !ed25519.Verify(identityKey, []byte("any message at all"), forgedSig) {
+		t.Fatal("premise broken: crypto/ed25519 no longer accepts the identity-point forgery")
+	}
+
+	pool := pgtest.New(t)
+	w := newWriters(pool, newClock())
+
+	t.Run("cannot bootstrap with one", func(t *testing.T) {
+		u := mustUpsert(t, pool, appleIdentity("sub-writer-small-boot"))
+		n := mustChallenge(t, w, u)
+		if err := w.Register(bgctx, u, "dev-evil", identityKey, n, forgedSig); !errors.Is(err, ErrKeyUnusable) {
+			t.Fatalf("bootstrap with the identity key: %v, want ErrKeyUnusable", err)
+		}
+		if countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u) != 0 {
+			t.Fatal("a small-order key was enrolled")
+		}
+		// Refused before the challenge is spent: this is a malformed request,
+		// not a failed authorization.
+		d := newDevice(t, "dev-a")
+		if err := w.Register(bgctx, u, d.id, d.pub, n, d.signEnrollment(n, d)); err != nil {
+			t.Fatalf("the refused key burned the challenge: %v", err)
+		}
+	})
+
+	t.Run("cannot be enrolled as a later writer", func(t *testing.T) {
+		u := mustUpsert(t, pool, appleIdentity("sub-writer-small-later"))
+		a := newDevice(t, "dev-a")
+		mustEnroll(t, w, u, a, a)
+		n := mustChallenge(t, w, u)
+		if err := w.Register(bgctx, u, "dev-evil", identityKey, n, a.signEnrollment(n, device{id: "dev-evil", pub: identityKey})); !errors.Is(err, ErrKeyUnusable) {
+			t.Fatalf("enrolling the identity key: %v, want ErrKeyUnusable", err)
+		}
+	})
+
+	// Defence in depth: a row that reached the roster some other way — a repair
+	// script, a restore from before this check existed — must not be able to
+	// authorize anything either.
+	t.Run("cannot authorize even if already in the roster", func(t *testing.T) {
+		u := mustUpsert(t, pool, appleIdentity("sub-writer-small-roster"))
+		if _, err := pool.Exec(bgctx,
+			`INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
+			 VALUES ($1,'dev-planted','device',$2,now())`, u, []byte(identityKey)); err != nil {
+			t.Fatal(err)
+		}
+		evil := newDevice(t, "dev-evil")
+		n := mustChallenge(t, w, u)
+		if err := w.Register(bgctx, u, evil.id, evil.pub, n, forgedSig); !errors.Is(err, ErrNotAuthorized) {
+			t.Fatalf("a planted small-order key authorized an enrollment: %v", err)
+		}
+		n2 := mustChallenge(t, w, u)
+		if err := w.Revoke(bgctx, u, "dev-planted", n2, forgedSig); !errors.Is(err, ErrNotAuthorized) {
+			t.Fatalf("a planted small-order key authorized a revocation: %v", err)
+		}
+	})
+
+	t.Run("a key that is not a curve point at all", func(t *testing.T) {
+		u := mustUpsert(t, pool, appleIdentity("sub-writer-notapoint"))
+		// y = 2 is not the y-coordinate of any point on edwards25519 — found by
+		// enumeration, because most 32-byte strings ARE valid points (0xFF*32,
+		// the obvious guess, decodes fine and has large order, so it is refused
+		// by the signature check rather than by the key screen).
+		notAPoint := make([]byte, ed25519.PublicKeySize)
+		notAPoint[0] = 2
+		n := mustChallenge(t, w, u)
+		if err := w.Register(bgctx, u, "dev-evil", notAPoint, n, forgedSig); !errors.Is(err, ErrKeyUnusable) {
+			t.Fatalf("a non-point public key: %v, want ErrKeyUnusable", err)
+		}
+	})
+}
+
 // RegistrationMessage is reimplemented by the client (Task 14). Pin its exact
 // bytes here so a drift in either implementation is a test failure and not a
 // mysterious rejection at enrollment time.
@@ -205,6 +298,25 @@ func TestRegistrationMessageEncodingIsPinnedAndUnambiguous(t *testing.T) {
 			t.Fatalf("writer ids %q and %q encode identically", other, id)
 		}
 		seen[enc] = id
+	}
+}
+
+// The two message types must be impossible to confuse, and that has to be a
+// property of the ENCODING rather than an accident of their shapes. Merely
+// checking that a revocation signature is refused as a registration is not
+// enough: a registration message is structurally longer, so those cross-replay
+// assertions still pass even with identical domain labels. Prefix-freeness is
+// what actually fails when the separation is removed.
+func TestSigningDomainsAreDistinctAndPrefixFree(t *testing.T) {
+	if registrationDomain == revocationDomain {
+		t.Fatal("the two signing domains are identical")
+	}
+	nonce := bytes.Repeat([]byte{0x11}, ChallengeNonceBytes)
+	pub := ed25519.PublicKey(bytes.Repeat([]byte{0x22}, ed25519.PublicKeySize))
+	reg := RegistrationMessage(nonce, "dev-a", pub)
+	rev := RevocationMessage(nonce, "dev-a")
+	if bytes.HasPrefix(reg, rev) || bytes.HasPrefix(rev, reg) {
+		t.Fatalf("one signing message is a prefix of the other:\nreg %x\nrev %x", reg, rev)
 	}
 }
 
@@ -262,49 +374,157 @@ func TestChallengeIsSingleUse(t *testing.T) {
 
 // ATTACK: race the same nonce from many connections at once, hoping the
 // test-and-set is a read followed by a write.
+//
+// Every racer requests a DISTINCT writer id with a DISTINCT key, all of them
+// authorized by the same already-enrolled device. That matters: an earlier
+// version of this test raced one identical registration, so a caller that got
+// past a broken consume was then refused by the writer-id primary key, and a
+// read-then-write consumeChallenge passed the whole suite. Here every attempt
+// is independently valid — writer id free, key free, signature good — so the
+// challenge is the ONLY thing that can reject the other eleven.
+const goroutines = 12
+
 func TestChallengeIsSingleUseUnderConcurrency(t *testing.T) {
 	pool := pgtest.New(t)
 	u := mustUpsert(t, pool, appleIdentity("sub-writer-race"))
 	w := newWriters(pool, newClock())
 
-	a := newDevice(t, "dev-a")
-	n := mustChallenge(t, w, u)
-	sig := a.signEnrollment(n, a)
+	authorizer := newDevice(t, "dev-a")
+	mustEnroll(t, w, u, authorizer, authorizer)
+	warmPool(t, pool, goroutines)
 
-	const goroutines = 12
-	errs := make([]error, goroutines)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			errs[i] = w.Register(bgctx, u, a.id, a.pub, n, sig)
-		}(i)
-	}
-	close(start)
-	wg.Wait()
+	// Several rounds, because one round of an unwarmed race proves nothing: a
+	// read-then-write consume has a window measured in one round trip, and a
+	// single staggered round misses it. Verified by mutation — a
+	// SELECT-then-UPDATE consume survives one round and fails here.
+	const rounds = 8
+	for round := 0; round < rounds; round++ {
+		racers := make([]device, goroutines)
+		for i := range racers {
+			racers[i] = newDevice(t, fmt.Sprintf("dev-r%d-%d", round, i))
+		}
+		n := mustChallenge(t, w, u)
 
-	won := 0
-	for i, err := range errs {
-		switch {
-		case err == nil:
-			won++
-		case errors.Is(err, ErrRegistrationRejected):
-			// The expected loser: challenge already consumed.
-		default:
-			t.Fatalf("goroutine %d failed for an unexpected reason: %v", i, err)
+		errs := make([]error, goroutines)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < goroutines; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				d := racers[i]
+				errs[i] = w.Register(bgctx, u, d.id, d.pub, n, authorizer.signEnrollment(n, d))
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		won := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, ErrChallengeUsed), errors.Is(err, ErrChallengeUnknown):
+				// The only acceptable loser: the challenge was already spent.
+			default:
+				t.Fatalf("round %d goroutine %d was rejected by something other than the challenge: %v", round, i, err)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d of %d concurrent redemptions of one nonce succeeded, want exactly 1", round, won, goroutines)
 		}
 	}
-	if won != 1 {
-		t.Fatalf("%d of %d concurrent registrations succeeded, want exactly 1", won, goroutines)
+
+	// The pre-enrolled authorizer plus exactly one winner per round.
+	if got := countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u); got != rounds+1 {
+		t.Fatalf("%d writer rows after the race, want %d", got, rounds+1)
 	}
-	if got := countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u); got != 1 {
-		t.Fatalf("%d writer rows after the race, want 1", got)
+	if got := countRows(t, pool, `SELECT count(*) FROM key_history WHERE user_id=$1`, u); got != rounds+1 {
+		t.Fatalf("%d key_history rows after the race, want %d", got, rounds+1)
 	}
-	if got := countRows(t, pool, `SELECT count(*) FROM key_history WHERE user_id=$1`, u); got != 1 {
-		t.Fatalf("%d key_history rows after the race, want 1", got)
+}
+
+// warmPool forces n connections to be established before a race starts.
+// pgxpool opens connections lazily, so without this the racing goroutines are
+// staggered by connection setup and a genuinely non-atomic operation can go
+// undetected.
+func warmPool(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	conns := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := pool.Acquire(bgctx)
+		if err != nil {
+			t.Fatalf("warm pool: %v", err)
+		}
+		if err := c.Ping(bgctx); err != nil {
+			t.Fatalf("warm pool ping: %v", err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
+	}
+}
+
+// ATTACK: two devices bootstrap the same fresh account at the same instant,
+// each with its own challenge, its own writer id and its own key — so nothing
+// downstream (challenge, primary key, unique key index) can reject either one.
+// The ONLY thing standing between this and two independent TOFU roots is the
+// user row lock in Register, which makes the "has this account ever enrolled a
+// device?" decision serial.
+func TestConcurrentBootstrapsCannotBothWin(t *testing.T) {
+	pool := pgtest.New(t)
+	w := newWriters(pool, newClock())
+	warmPool(t, pool, goroutines)
+
+	// A fresh account per round: a bootstrap window closes for good once it is
+	// spent, so rounds cannot share a user. Rounds (with a warmed pool) are
+	// what makes this catch anything — verified by mutation: dropping FOR
+	// UPDATE survives a single unwarmed round and fails here.
+	const rounds = 8
+	for round := 0; round < rounds; round++ {
+		u := mustUpsert(t, pool, appleIdentity(fmt.Sprintf("sub-writer-bootrace-%d", round)))
+		racers := make([]device, goroutines)
+		nonces := make([][]byte, goroutines)
+		for i := range racers {
+			racers[i] = newDevice(t, fmt.Sprintf("dev-boot%d", i))
+			nonces[i] = mustChallenge(t, w, u)
+		}
+
+		errs := make([]error, goroutines)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < goroutines; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				d := racers[i]
+				errs[i] = w.Register(bgctx, u, d.id, d.pub, nonces[i], d.signEnrollment(nonces[i], d))
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		won := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, ErrNotAuthorized):
+				// The expected loser: by the time it looked, the account had a
+				// device writer, so a self-signature was no longer enough.
+			default:
+				t.Fatalf("round %d goroutine %d was rejected for an unexpected reason: %v", round, i, err)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d of %d concurrent bootstraps succeeded, want exactly 1", round, won, goroutines)
+		}
+		if got := countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u); got != 1 {
+			t.Fatalf("round %d: %d writer rows, want 1: the account has more than one TOFU root", round, got)
+		}
 	}
 }
 
@@ -576,6 +796,8 @@ func TestKeyHistoryIsAppendOnly(t *testing.T) {
 
 	if _, err := pool.Exec(bgctx, `TRUNCATE key_history`); err == nil {
 		t.Fatal("key_history was truncated")
+	} else if !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("TRUNCATE was refused, but not by the append-only guard: %v", err)
 	}
 
 	var pub []byte
@@ -584,6 +806,87 @@ func TestKeyHistoryIsAppendOnly(t *testing.T) {
 	}
 	if !bytes.Equal(pub, a.pub) {
 		t.Fatal("the recorded public key changed")
+	}
+}
+
+// asRole runs one statement as another database role and returns its error.
+// SET LOCAL confines the change to the transaction, which is rolled back.
+func asRole(t *testing.T, pool *pgxpool.Pool, role, sql string) error {
+	t.Helper()
+	tx, err := pool.Begin(bgctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(bgctx) //nolint:errcheck // the statement under test may have aborted it
+	if _, err := tx.Exec(bgctx, `SET LOCAL ROLE `+role); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(bgctx, sql)
+	return err
+}
+
+// The append-only guard binds a role that can write rows but does not OWN the
+// table. That distinction is the whole deployment requirement: ALTER TABLE ...
+// DISABLE TRIGGER needs only ownership, so an application that migrates with
+// the same role it serves with can turn the guard off and rewrite the log. This
+// test pins both halves — what a correctly-separated runtime role gets, and
+// what the owner can still do — so the requirement is executable rather than a
+// sentence in a report.
+func TestKeyHistoryGuardBindsANonOwnerRuntimeRole(t *testing.T) {
+	pool := pgtest.New(t)
+	u := mustUpsert(t, pool, appleIdentity("sub-writer-role"))
+	w := newWriters(pool, newClock())
+	a := newDevice(t, "dev-a")
+	mustEnroll(t, w, u, a, a)
+
+	var db string
+	if err := pool.QueryRow(bgctx, `SELECT current_database()`).Scan(&db); err != nil {
+		t.Fatal(err)
+	}
+	// Roles are cluster-wide while databases are per-test, so the name is
+	// derived from the database to stay unique in the shared cluster that
+	// scripts/v2-check.sh boots.
+	role := "ledger_runtime_" + db
+	if _, err := pool.Exec(bgctx, `CREATE ROLE `+role+` NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Registered after pgtest.New's cleanup, so it runs BEFORE the database
+		// is dropped (t.Cleanup is LIFO) — the revoke needs the table to exist.
+		if _, err := pool.Exec(bgctx, `REVOKE ALL ON key_history FROM `+role); err != nil {
+			t.Errorf("revoke: %v", err)
+		}
+		if _, err := pool.Exec(bgctx, `DROP ROLE `+role); err != nil {
+			t.Errorf("drop role: %v", err)
+		}
+	})
+	if _, err := pool.Exec(bgctx,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON key_history TO `+role); err != nil {
+		t.Fatal(err)
+	}
+
+	// A non-owner with full DML is refused by the trigger...
+	err := asRole(t, pool, role, `UPDATE key_history SET pubkey = '\x00'::bytea`)
+	if err == nil || !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("non-owner UPDATE: %v, want the append-only guard", err)
+	}
+	// ...and cannot switch the trigger off, because that needs ownership.
+	err = asRole(t, pool, role, `ALTER TABLE key_history DISABLE TRIGGER key_history_no_rewrite`)
+	if err == nil || !strings.Contains(err.Error(), "must be owner") {
+		t.Fatalf("non-owner DISABLE TRIGGER: %v, want a must-be-owner error", err)
+	}
+
+	// The owner, however, CAN — which is exactly why the runtime role must not
+	// be the owner. Asserted rather than assumed, so the day someone finds a
+	// way to make the guard hold against its owner, this test says so.
+	if _, err := pool.Exec(bgctx, `ALTER TABLE key_history DISABLE TRIGGER key_history_no_rewrite`); err != nil {
+		t.Fatalf("owner could not disable the trigger: %v", err)
+	}
+	if _, err := pool.Exec(bgctx, `UPDATE key_history SET pubkey = '\x00'::bytea`); err != nil {
+		t.Fatalf("owner could not rewrite the log with the trigger off: %v", err)
+	}
+	if _, err := pool.Exec(bgctx, `ALTER TABLE key_history ENABLE TRIGGER key_history_no_rewrite`); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -803,6 +1106,36 @@ func TestRegisteringTheSameWriterOrKeyTwiceIsRefused(t *testing.T) {
 	n2 := mustChallenge(t, w, u)
 	if err := w.Register(bgctx, u, reused.id, reused.pub, n2, a.signEnrollment(n2, reused)); !errors.Is(err, ErrKeyAlreadyEnrolled) {
 		t.Fatalf("re-using an enrolled key under a new writer id: %v, want ErrKeyAlreadyEnrolled", err)
+	}
+}
+
+// ATTACK: probe the account with a session token and a junk signature, using
+// the error text as an oracle for which writer ids and which keys are enrolled.
+// Authorization has to be decided before any existence check reports back.
+func TestAuthorizationIsCheckedBeforeExistence(t *testing.T) {
+	pool := pgtest.New(t)
+	u := mustUpsert(t, pool, appleIdentity("sub-writer-oracle"))
+	w := newWriters(pool, newClock())
+
+	a := newDevice(t, "dev-a")
+	mustEnroll(t, w, u, a, a)
+	junk := make([]byte, ed25519.SignatureSize)
+
+	// dev-a exists; an unauthorized caller must not be told so.
+	n := mustChallenge(t, w, u)
+	probe := newDevice(t, "dev-probe")
+	if err := w.Register(bgctx, u, a.id, probe.pub, n, junk); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("probing an existing writer id: %v, want ErrNotAuthorized", err)
+	}
+	// dev-a's key is enrolled; same.
+	n2 := mustChallenge(t, w, u)
+	if err := w.Register(bgctx, u, "dev-probe", a.pub, n2, junk); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("probing an enrolled key: %v, want ErrNotAuthorized", err)
+	}
+	// With a good signature, the duplicate checks still report accurately.
+	n3 := mustChallenge(t, w, u)
+	if err := w.Register(bgctx, u, a.id, probe.pub, n3, a.signEnrollment(n3, device{id: a.id, pub: probe.pub})); !errors.Is(err, ErrWriterExists) {
+		t.Fatalf("authorized duplicate writer id: %v, want ErrWriterExists", err)
 	}
 }
 
