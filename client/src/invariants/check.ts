@@ -89,6 +89,7 @@
  * named fields of a re-fold instead.
  */
 
+import { platform } from "../platform";
 import { fold, type LogEntry } from "../replay/replay";
 import { entityKey, type State } from "../replay/state";
 import { BUCKETS, aad, embeddedAAD, openBlob, type Stream } from "../wire/blob";
@@ -267,8 +268,8 @@ const note = (id: string, detail: string): Violation => ({ id, severity: "notice
 /** A hard stop that names WHICH condition under its id was hit; see {@link Violation.kind}. */
 const hardKind = (id: string, kind: string, detail: string): Violation => ({ id, severity: "hard_stop", detail, kind });
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
-const text = (b: Uint8Array): string => new TextDecoder().decode(b);
+const hex = (b: Uint8Array): string => platform().toHex(b);
+const text = (b: Uint8Array): string => platform().utf8Decode(b);
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** Plain comparison: every value compared here is a public chain hash. */

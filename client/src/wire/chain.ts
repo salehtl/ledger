@@ -54,6 +54,7 @@
  * adversary.
  */
 
+import { platform } from "../platform";
 import type { Stream } from "./blob";
 
 /** The genesis of every chain: the prev-hash of writer_counter 1. */
@@ -64,10 +65,10 @@ export const ZERO_HASH: Uint8Array = new Uint8Array(32);
  * bytes, not the plaintext, so the chain covers the padding and the header too.
  */
 export function chainHash(prev: Uint8Array, blobBytes: Uint8Array): Uint8Array {
-  const h = new Bun.CryptoHasher("sha256");
-  h.update(prev);
-  h.update(blobBytes);
-  return new Uint8Array(h.digest());
+  const buf = new Uint8Array(prev.length + blobBytes.length);
+  buf.set(prev, 0);
+  buf.set(blobBytes, prev.length);
+  return platform().sha256(buf);
 }
 
 /**
@@ -155,7 +156,7 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+const hex = (b: Uint8Array) => platform().toHex(b);
 
 /**
  * Checks that a row belongs to the chain being verified.

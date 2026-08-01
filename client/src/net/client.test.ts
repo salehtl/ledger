@@ -651,6 +651,31 @@ describe("enroll", () => {
     ]);
     expect(Buffer.from(got)).toEqual(want);
   });
+
+  // A `WriterKey` is a JWK pair, so both halves are UNPADDED base64url — 43
+  // characters for 32 bytes, `-`/`_` and never `+`/`/` or `=`. This is the
+  // on-disk format of the one secret the client holds, and it was previously
+  // produced by `node:crypto`'s JWK export rather than by any code here; now
+  // that the platform seam mints it, nothing but this test pins the shape.
+  // A padded or standard-alphabet variant still round-trips through this
+  // module, so every other test stays green while the state file changes format
+  // under an already-enrolled device.
+  test("a minted writer key is stored as unpadded base64url, the JWK encoding", () => {
+    const store = memStore();
+    const c = new Client({ store, server: "http://127.0.0.1:1" });
+    const pub = c.ensureWriterKey("dev-a");
+    expect(pub).toHaveLength(32);
+
+    const k = store.load().writers.get("dev-a");
+    expect(k).toBeDefined();
+    expect(k!.x).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(k!.d).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(k!.x).toBe(Buffer.from(pub).toString("base64url"));
+    expect(k!.x).not.toBe(k!.d);
+
+    // And it is stable: asking again returns the same key rather than minting.
+    expect(Buffer.from(c.ensureWriterKey("dev-a"))).toEqual(Buffer.from(pub));
+  });
 });
 
 describe("state", () => {

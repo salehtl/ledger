@@ -14,6 +14,7 @@
  * where the server quietly passed text through.
  */
 
+import { platform } from "../platform";
 import { decodeSingleByte, decodeUTF8WHATWG, classifyCharset, classifyWordCharset } from "./charset.ts";
 import { UnsupportedCharsetError } from "./charset.ts";
 
@@ -797,7 +798,7 @@ export function decodeWords(raw: string): string {
     for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 0xff);
   };
   const pushUTF8 = (s: string) => {
-    for (const b of new TextEncoder().encode(s)) out.push(b);
+    for (const b of platform().utf8Encode(s)) out.push(b);
   };
 
   let header = v;
