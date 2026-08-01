@@ -1058,8 +1058,9 @@ const I11 = "I11_roster_checkpoint";
  *   - **no checkpoint, ≥ 2 live device writers** → `hard_stop`. With multiple
  *     devices enrolled the protection does not exist, and sync must not proceed
  *     as though it did.
- *   - **a checkpoint exists** → `hard_stop` if a live device writer is missing
- *     from it, or if a head claims a counter above what has been observed.
+ *   - **a checkpoint exists** → `hard_stop` if any live roster writer is missing
+ *     from it — `ingest` included, see the coverage loop — or if a head claims a
+ *     counter above what has been observed.
  *
  * # Two hard stops under one id, and why they must be told apart
  *
@@ -1134,7 +1135,8 @@ const I11 = "I11_roster_checkpoint";
 function checkRosterCheckpoint(i: CheckInput): Violation[] {
   const out: Violation[] = [];
   const roster = new Map(i.roster.map((w) => [w.writer_id, w]));
-  const liveDevices = i.roster.filter((w) => w.kind === WRITER_KIND_DEVICE && w.revoked_at === null);
+  const live = i.roster.filter((w) => w.revoked_at === null);
+  const liveDevices = live.filter((w) => w.kind === WRITER_KIND_DEVICE);
 
   // A writer appending blobs the roster has never heard of is the same class of
   // omission, catchable without a checkpoint. A notice, for the race above.
@@ -1170,14 +1172,26 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
   // Coverage is per (writer, STREAM), because a head that does not name a stream
   // is meaningless (Decision 13) and a checkpoint that named only `dev-b|cold`
   // would otherwise satisfy a hot pull.
+  //
+  // It runs over every LIVE roster writer and not over the device subset, and
+  // the writer that makes the difference is `ingest`. Every device chain is
+  // already covered by the device that owns it re-signing its own head; the
+  // ingest chain is written by the SERVER and is the one chain a user cannot
+  // re-derive from any device they hold — and it is where their bank mail
+  // lands. Excluding it left the single chain most needing tamper-evidence
+  // with none: a server that dropped the last N emails produced a chain that is
+  // still dense from 1, so I2 and I3 are both satisfied, and no checkpoint
+  // contradicted it. Covering it is what turns that into a `chain_withheld`
+  // hard stop below.
   const named = new Set(checkpoints.map((c) => `${c.writer_id}|${c.stream}`));
-  for (const w of liveDevices) {
+  for (const w of live) {
     if (!named.has(`${w.writer_id}|${i.stream}`)) {
+      const what = w.kind === WRITER_KIND_DEVICE ? "device writer" : `${w.kind} writer`;
       out.push(
         hardKind(
           I11,
           VIOLATION_ROSTER_COVERAGE,
-          `the latest writer_checkpoint names no ${i.stream} head for live device writer ${w.writer_id} — ` +
+          `the latest writer_checkpoint names no ${i.stream} head for live ${what} ${w.writer_id} — ` +
             `that writer's chain has no trusted head, so a truncation of it would verify. A writer that has ` +
             `authored nothing is named at counter 0 with the genesis hash; see CHECKPOINT_NAMES_THE_ROSTER`,
         ),
@@ -1240,9 +1254,30 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
   return out;
 }
 
-/** The highest counter this client has evidence of on one chain. */
+/**
+ * The highest counter this client has evidence of on one chain.
+ *
+ * Four sources, and the fourth is not optional. `pinnedBlobHashes` is the
+ * per-blob hash list a client pinned with `pull-cold-hashes`, and a pin at
+ * counter N IS evidence: that call verifies the list is contiguous and
+ * correctly chained from the pinned head BEFORE pinning any of it, so the
+ * server has committed to a blob at N whether or not the body was ever
+ * downloaded.
+ *
+ * Leaving it out was wrong in exactly the configuration spec §3.3:70 calls
+ * normal — cold bodies are a lazily-synced window, so "hashes pinned to the
+ * head, no bodies" is what a healthy device looks like — and a standalone `cli
+ * check` passes no pinned heads on purpose (it re-verifies from genesis; see
+ * {@link Client.check}). The two together made a device that had done precisely
+ * the right thing report `chain_withheld` about mail it had verified the hashes
+ * of itself. Counting the pins can only LOWER a hard stop that was never true;
+ * it can never hide a withholding, because a pin is something the server said.
+ */
 function observedHead(i: CheckInput, key: ChainKey): bigint {
   let best = i.pinnedHeads.get(key)?.counter ?? 0n;
+  for (const counter of i.pinnedBlobHashes.get(key)?.keys() ?? []) {
+    if (typeof counter === "bigint" && counter > best) best = counter;
+  }
   for (const r of i.rows) {
     if (safeChainKey(r.writer_id, r.stream) === key && typeof r.writer_counter === "bigint" && r.writer_counter > best) {
       best = r.writer_counter;

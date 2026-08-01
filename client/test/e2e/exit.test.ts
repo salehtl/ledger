@@ -50,7 +50,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { Client, decodeWireRow } from "../../src/net/client";
+import { Client, HardStopError, decodeWireRow } from "../../src/net/client";
 import { fileStore } from "../../src/store/store";
 import { STREAM_COLD, STREAM_HOT } from "../../src/wire/blob";
 import type { Violation } from "../../src/invariants/check";
@@ -265,6 +265,16 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
 
     const roster = await a.roster();
     expect(roster.filter((w) => w.kind === "device").map((w) => w.writer_id).sort()).toEqual(["dev-a", "dev-b"]);
+
+    // And the SERVER's own writer, before a single email has arrived. It is on
+    // the roster from the account's first sign-in, not from its first delivery,
+    // because a checkpoint names one head per roster writer and the first
+    // checkpoint has to be able to name `ingest` at counter 0 / genesis. While
+    // this was missing, no checkpoint said anything about the chain the user's
+    // mail lands on — see step 16.
+    const ingest = roster.find((w) => w.writer_id === "ingest");
+    expect(ingest?.kind).toBe("ingest");
+    expect(ingest?.revoked_at).toBeNull();
   }, TIMEOUT);
 
   // ------------------------------------------------------------------
@@ -303,6 +313,18 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     expect(heads.map((h) => `${h.writer_id}|${h.stream}`).sort()).toEqual(want);
     // eslint-disable-next-line no-console
     console.log("step 4 checkpoint:", heads.map((h) => `${h.writer_id}|${h.stream}=${h.counter}/${h.hash.slice(0, 8)}`).join(" "));
+
+    // Six pairs, not four: `ingest` is a roster writer like any other.
+    expect(want).toEqual([
+      "dev-a|cold", "dev-a|hot", "dev-b|cold", "dev-b|hot", "ingest|cold", "ingest|hot",
+    ]);
+    // Its chain is empty on a brand-new account — the COMMON case, not an edge
+    // one — so it is named at counter 0 with the genesis hash and asserts
+    // nothing false. This is what makes step 16's detection possible at all.
+    for (const h of heads.filter((x) => x.writer_id === "ingest")) {
+      expect(h.counter).toBe(0n);
+      expect(h.hash).toBe("0".repeat(64));
+    }
 
     // CHECKPOINT_NAMES_THE_ROSTER: dev-b has authored nothing, so it is named
     // at counter 0 with the genesis hash. A checkpoint built from OBSERVED
@@ -679,15 +701,12 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     const v = await a.checkOnline();
     expect(ids(v)).toContain("I14_forks_surfaced");
 
-    // Pinned because it is a real gap and not a flake: `GET /api/v1/writers`
-    // does not list the server's own `ingest` writer, so no checkpoint can name
-    // a head for the chain the user's MAIL lives on, and a truncation of it
-    // would verify against the checkpoint. I11 downgrades it to a notice
-    // ("the server served blobs from writer ingest, which its own roster does
-    // not list") because the roster is the server's own answer. Recorded here
-    // so a future roster change either clears this or is deliberate.
-    expect(v.some((x) => /roster does not list/.test(x.detail))).toBe(true);
-    expect((await a.roster()).some((w) => w.writer_id === "ingest")).toBe(false);
+    // The gap the first run of this test found, now closed and pinned from the
+    // other side: the roster lists the server's own writer, so every device's
+    // checkpoint covers the ingest chain and NOTHING reports an unlisted
+    // writer. Step 16 is the positive proof that the coverage does work.
+    expect(v.some((x) => /roster does not list/.test(x.detail))).toBe(false);
+    expect((await a.roster()).some((w) => w.writer_id === "ingest")).toBe(true);
 
     // The corpus is 10 byte-distinct copies of each of 2 real messages
     // (Task 37 §8.1), so the fingerprint heuristic fires 18 times. Notices,
@@ -767,6 +786,84 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     // traffic and is Task D6's.
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toMatch(/95/);
+  }, TIMEOUT);
+
+  // ------------------------------------------------------------------
+  // Step 16 — the ingest chain is tamper-evident, positively
+  // ------------------------------------------------------------------
+  //
+  // Every DEVICE chain is covered because the device that owns it re-signs its
+  // own head. The ingest chain is written by the server and is the one chain a
+  // user cannot re-derive from any device they hold — and it is where their
+  // bank mail lands. Covering it is the whole point of putting `ingest` on the
+  // roster; this step proves the cover actually catches something.
+  //
+  // The threat is deliberately the quiet one: not a corrupted blob, but a
+  // server that serves FEWER rows than it has. A truncated tail leaves a chain
+  // that is still dense from 1, so I2 (row contiguity) and I3 (hash chain) are
+  // both satisfied by what was served, and the materialized state looks
+  // entirely plausible — here it is 23 transactions with the step-10 supersede
+  // simply absent, which reads as "that correction never happened".
+  test("step 16: a truncated ingest chain behind a signed checkpoint is DETECTED", async () => {
+    // A fresh checkpoint, so the attestation names the head as it is now.
+    await a.checkpoint();
+    await a.push();
+    const attested = a.state().checkpoints.find((c) => c.writer_id === "ingest" && c.stream === STREAM_HOT)!;
+    expect(attested.counter).toBeGreaterThan(0n);
+
+    /** A client on this account whose server withholds ingest rows at/above `from`. */
+    const withholding = (profile: string, from: bigint | null): Client =>
+      new Client({
+        store: fileStore(join(s.dir, "state"), profile),
+        server: s.httpURL,
+        fetch: (async (input: any, init?: any) => {
+          const res = await fetch(input, init);
+          const url = typeof input === "string" ? input : String(input?.url ?? "");
+          if (from === null || !url.includes("/api/v1/sync?") || !url.includes("stream=hot")) return res;
+          const body = (await res.json()) as { rows?: { writer_id: string; writer_counter: string }[] };
+          body.rows = (body.rows ?? []).filter(
+            (r) => !(r.writer_id === "ingest" && BigInt(r.writer_counter) >= from),
+          );
+          return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        }) as typeof fetch,
+      });
+
+    // The control, first: an honest server and the same code path. Without it a
+    // hard stop below could be anything about a fresh profile.
+    const honest = withholding("dev-e-honest", null);
+    expect(await honest.login("apple", SUBJECT)).toBe(a.userId);
+    const clean = await honest.pull();
+    expect(hard(clean.violations)).toHaveLength(0);
+    expect(honest.pinnedHead("ingest", STREAM_HOT).counter).toBe(attested.counter);
+
+    // Now the same pull against a server withholding exactly the attested head.
+    const victim = withholding("dev-f-truncated", attested.counter);
+    expect(await victim.login("apple", SUBJECT)).toBe(a.userId);
+
+    let caught: HardStopError | undefined;
+    try {
+      await victim.pull();
+    } catch (err) {
+      caught = err as HardStopError;
+    }
+    expect(caught).toBeInstanceOf(HardStopError);
+
+    const stops = caught!.violations.filter((x) => x.severity === "hard_stop");
+    // eslint-disable-next-line no-console
+    console.log("step 16 detection:", stops.map((x) => `${x.id}/${x.kind ?? "-"}: ${x.detail}`).join(" | "));
+
+    const withheld = stops.find((x) => x.id === "I11_roster_checkpoint");
+    expect(withheld).toBeDefined();
+    expect(withheld!.kind).toBe("chain_withheld");
+    expect(withheld!.detail).toContain("ingest|hot");
+    expect(withheld!.detail).toContain(`claims counter ${attested.counter}`);
+
+    // I11 is the ONLY thing that saw it, which is the point: a truncated tail
+    // is dense, so row contiguity, the hash chain and the fold all accept it.
+    expect(stops.map((x) => x.id)).toEqual(["I11_roster_checkpoint"]);
+
+    // And a refused pull persists nothing: the victim keeps no half-truth.
+    expect(victim.cursor(STREAM_HOT)).toBe(0n);
   }, TIMEOUT);
 
   test("teardown: nothing is left running", async () => {

@@ -593,29 +593,44 @@ func (w *Writers) EnsureIngestWriter(ctx context.Context, userID uuid.UUID) (str
 	}
 	defer w.rollback(ctx, tx)
 
-	now := w.now()
-	var created bool
-	err = tx.QueryRow(ctx,
-		`INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
-		 VALUES ($1,$2,$3,NULL,$4)
-		 ON CONFLICT (user_id, writer_id) DO NOTHING
-		 RETURNING true`,
-		userID, IngestWriterID, KindIngest, now).Scan(&created)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Already present. Nothing was written, so the deferred rollback is the
-		// whole cleanup.
-		return IngestWriterID, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("auth: ensure ingest writer for user %s: %w", userID, err)
-	}
-	if err := appendKeyHistory(ctx, tx, userID, IngestWriterID, nil, EventRegistered, now); err != nil {
+	if err := ensureIngestWriterTx(ctx, tx, userID, w.now()); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("auth: ensure ingest writer: commit: %w", err)
 	}
 	return IngestWriterID, nil
+}
+
+// ensureIngestWriterTx is the statement pair, inside the caller's transaction.
+//
+// Split out so [UpsertUser] can run it in the SAME transaction that creates the
+// user and its oplog_seq row. That is where the real caller is: the writer has
+// to exist from the account's first moment, not from its first email, because a
+// checkpoint names one head per ROSTER writer and a brand-new account's first
+// checkpoint must already cover `ingest|hot` and `ingest|cold` at counter 0.
+// Creating it lazily on the first delivery would instead make every account's
+// first email an I11 coverage hard stop until some device happened to
+// checkpoint again — a hard stop on the most ordinary path there is.
+//
+// Idempotent: ON CONFLICT DO NOTHING, and the key-history entry is appended
+// only on the call that actually inserted. A duplicate entry on every sign-in
+// would be noise in precisely the log peer devices audit for key substitution.
+func ensureIngestWriterTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, now time.Time) error {
+	var created bool
+	err := tx.QueryRow(ctx,
+		`INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
+		 VALUES ($1,$2,$3,NULL,$4)
+		 ON CONFLICT (user_id, writer_id) DO NOTHING
+		 RETURNING true`,
+		userID, IngestWriterID, KindIngest, now).Scan(&created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // already present
+	}
+	if err != nil {
+		return fmt.Errorf("auth: ensure ingest writer for user %s: %w", userID, err)
+	}
+	return appendKeyHistory(ctx, tx, userID, IngestWriterID, nil, EventRegistered, now)
 }
 
 // Roster returns every writer of a user, revoked ones included. A peer device

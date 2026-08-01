@@ -208,7 +208,7 @@ func TestSmallOrderPublicKeysAreRefused(t *testing.T) {
 		if err := w.Register(bgctx, u, "dev-evil", identityKey, n, forgedSig); !errors.Is(err, ErrKeyUnusable) {
 			t.Fatalf("bootstrap with the identity key: %v, want ErrKeyUnusable", err)
 		}
-		if countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u) != 0 {
+		if countRows(t, pool, deviceWriterCount, u) != 0 {
 			t.Fatal("a small-order key was enrolled")
 		}
 		// Refused before the challenge is spent: this is a malformed request,
@@ -440,11 +440,11 @@ func TestChallengeIsSingleUseUnderConcurrency(t *testing.T) {
 	}
 
 	// The pre-enrolled authorizer plus exactly one winner per round.
-	if got := countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u); got != rounds+1 {
-		t.Fatalf("%d writer rows after the race, want %d", got, rounds+1)
+	if got := countRows(t, pool, deviceWriterCount, u); got != rounds+1 {
+		t.Fatalf("%d device writer rows after the race, want %d", got, rounds+1)
 	}
-	if got := countRows(t, pool, `SELECT count(*) FROM key_history WHERE user_id=$1`, u); got != rounds+1 {
-		t.Fatalf("%d key_history rows after the race, want %d", got, rounds+1)
+	if got := countRows(t, pool, deviceKeyHistoryCount, u, IngestWriterID); got != rounds+1 {
+		t.Fatalf("%d device key_history rows after the race, want %d", got, rounds+1)
 	}
 }
 
@@ -528,8 +528,8 @@ func TestConcurrentBootstrapsCannotBothWin(t *testing.T) {
 		if won != 1 {
 			t.Fatalf("round %d: %d of %d concurrent bootstraps succeeded, want exactly 1", round, won, goroutines)
 		}
-		if got := countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u); got != 1 {
-			t.Fatalf("round %d: %d writer rows, want 1: the account has more than one TOFU root", round, got)
+		if got := countRows(t, pool, deviceWriterCount, u); got != 1 {
+			t.Fatalf("round %d: %d device writer rows, want 1: the account has more than one TOFU root", round, got)
 		}
 	}
 }
@@ -550,7 +550,7 @@ func TestChallengeExpires(t *testing.T) {
 	if !errors.Is(err, ErrChallengeExpired) {
 		t.Fatalf("expired challenge: %v, want ErrChallengeExpired", err)
 	}
-	if countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, u) != 0 {
+	if countRows(t, pool, deviceWriterCount, u) != 0 {
 		t.Fatal("an expired challenge enrolled a writer")
 	}
 }
@@ -569,7 +569,7 @@ func TestChallengeIsBoundToTheUserItWasIssuedFor(t *testing.T) {
 	if !errors.Is(err, ErrChallengeUnknown) {
 		t.Fatalf("cross-user challenge: %v, want ErrChallengeUnknown", err)
 	}
-	if countRows(t, pool, `SELECT count(*) FROM writers WHERE user_id=$1`, alice) != 0 {
+	if countRows(t, pool, deviceWriterCount, alice) != 0 {
 		t.Fatal("a challenge issued for another user enrolled a writer")
 	}
 	// And it is still spendable by the user it was issued for: the rejected
@@ -601,8 +601,8 @@ func TestAnotherUsersEnrolledKeyCannotAuthorizeAWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roster) != 0 {
-		t.Fatalf("bob's roster has %d entries, want 0", len(roster))
+	if devices := onlyDevices(roster); len(devices) != 0 {
+		t.Fatalf("bob's roster has %d device entries, want 0: %+v", len(devices), devices)
 	}
 }
 
@@ -692,7 +692,7 @@ func TestRevocationRequiresAnEnrolledKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roster) != 2 || !roster[0].Live() || !roster[1].Live() {
+	if devices := onlyDevices(roster); len(devices) != 2 || !devices[0].Live() || !devices[1].Live() {
 		t.Fatalf("a writer was retired by a refused revocation: %+v", roster)
 	}
 
@@ -738,7 +738,8 @@ func TestRegistrationAppendsToKeyHistory(t *testing.T) {
 	mustEnroll(t, w, u, a, b)
 
 	rows, err := pool.Query(bgctx,
-		`SELECT writer_id, pubkey, event, at FROM key_history WHERE user_id=$1 ORDER BY id`, u)
+		`SELECT writer_id, pubkey, event, at FROM key_history WHERE user_id=$1 AND writer_id <> $2 ORDER BY id`,
+		u, IngestWriterID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +808,8 @@ func TestKeyHistoryIsAppendOnly(t *testing.T) {
 	}
 
 	var pub []byte
-	if err := pool.QueryRow(bgctx, `SELECT pubkey FROM key_history WHERE user_id=$1`, u).Scan(&pub); err != nil {
+	if err := pool.QueryRow(bgctx,
+		`SELECT pubkey FROM key_history WHERE user_id=$1 AND writer_id <> $2`, u, IngestWriterID).Scan(&pub); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(pub, a.pub) {
@@ -1120,8 +1122,11 @@ func TestRosterReportsEveryWriterWithItsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roster) != 2 {
-		t.Fatalf("%d roster entries, want 2", len(roster))
+	// Three, not two: every account's roster carries the server's own writer
+	// from its first sign-in (auth.UpsertUser), and a roster that omitted it is
+	// a roster no checkpoint can cover the ingest chain from.
+	if len(roster) != 3 {
+		t.Fatalf("%d roster entries, want 3 (dev-a, dev-b, ingest): %+v", len(roster), roster)
 	}
 	byID := map[string]Writer{}
 	for _, wr := range roster {
@@ -1264,4 +1269,23 @@ func TestWritersRejectsAnUnusableConfiguration(t *testing.T) {
 	if _, err := (&Writers{}).Roster(bgctx, uuid.New()); err == nil {
 		t.Fatal("a nil pool must be refused")
 	}
+}
+
+// Every account carries the server's own `ingest` writer from its first
+// sign-in, so a test about DEVICE enrolment counts device rows rather than all
+// of them. Scoped rather than off-by-one'd: "no device was enrolled" is what
+// these assertions mean, and a bumped constant would hide a real second row.
+const (
+	deviceWriterCount     = `SELECT count(*) FROM writers WHERE user_id=$1 AND kind='device'`
+	deviceKeyHistoryCount = `SELECT count(*) FROM key_history WHERE user_id=$1 AND writer_id <> $2`
+)
+
+func onlyDevices(roster []Writer) []Writer {
+	var out []Writer
+	for _, w := range roster {
+		if w.Kind == KindDevice {
+			out = append(out, w)
+		}
+	}
+	return out
 }

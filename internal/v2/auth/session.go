@@ -268,6 +268,30 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 	if err := oplog.EnsureSeqRow(ctx, tx, userID); err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: %w", err)
 	}
+	// The server's own writer, in the SAME transaction and for the same reason
+	// the counter row is: a roster that is missing a writer whose chain exists
+	// is a roster nothing can be checked against.
+	//
+	// Specifically — and this is the defect it fixes rather than a nicety — a
+	// device's `writer_checkpoint` names one head per ROSTER writer, so while
+	// `ingest` was absent from the roster no checkpoint said anything about the
+	// chain the user's MAIL lands on. That is the one chain a user cannot
+	// re-derive from any device they hold and the one written by the party the
+	// threat model declines to trust, and a server that dropped the last N
+	// emails left a chain still dense from 1: row contiguity and the hash chain
+	// both verify, and nothing contradicted it. With the writer on the roster,
+	// I11 covers `ingest` like any other and a truncation behind a signed
+	// checkpoint is a `chain_withheld` hard stop on the next device to sync.
+	//
+	// Here rather than on the ingest path because the EMPTY chain is the common
+	// case: an account exists long before its first email, and its first
+	// checkpoint has to be able to name `ingest` at counter 0 with the genesis
+	// hash. Creating it on first delivery instead would make every account's
+	// first email an I11 coverage hard stop until some device checkpointed
+	// again. Idempotent, so a returning user's sign-in writes nothing.
+	if err := ensureIngestWriterTx(ctx, tx, userID, time.Now().UTC()); err != nil {
+		return uuid.Nil, fmt.Errorf("auth: UpsertUser: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: commit: %w", err)
 	}
