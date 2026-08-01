@@ -431,6 +431,21 @@ func (r Record) validate() (Record, error) {
 // without notice" hole without opening a storage-amplification one.
 // [Diag.Accounting] reports the counts beside inbound_total.
 func (d *Diag) CountRejection(ctx context.Context, reason string) error {
+	return d.CountRejections(ctx, reason, 1)
+}
+
+// CountRejections adds n to the aggregated daily count in one statement.
+//
+// It exists for a caller that batches. Every row here is an upsert on a SINGLE
+// row per (day, reason), so one write per refusal makes that row the hottest
+// thing in the database under exactly the traffic this counter is meant to
+// survive — an unauthenticated flood on the open port. A caller that aggregates
+// in memory and flushes periodically turns thousands of contended upserts into
+// one, and needs a way to add more than 1 to do it.
+//
+// n <= 0 is a no-op rather than an error: a flush of an empty bucket is a
+// normal thing to ask for, and a decrement is not.
+func (d *Diag) CountRejections(ctx context.Context, reason string, n int64) error {
 	if err := d.check(); err != nil {
 		return err
 	}
@@ -440,10 +455,13 @@ func (d *Diag) CountRejection(ctx context.Context, reason string) error {
 		// passed an SMTP response line containing a recipient address.
 		return badf("reason is not one of %v", rejectReasons)
 	}
+	if n <= 0 {
+		return nil
+	}
 	_, err := d.Pool.Exec(ctx, `INSERT INTO smtp_rejections (day, reason, count)
-	  VALUES ($1::date, $2, 1)
-	  ON CONFLICT (day, reason) DO UPDATE SET count = smtp_rejections.count + 1`,
-		d.now().UTC().Format("2006-01-02"), reason)
+	  VALUES ($1::date, $2, $3)
+	  ON CONFLICT (day, reason) DO UPDATE SET count = smtp_rejections.count + $3`,
+		d.now().UTC().Format("2006-01-02"), reason, n)
 	if err != nil {
 		return sanitize("count rejection", err)
 	}

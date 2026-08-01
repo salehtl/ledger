@@ -232,6 +232,65 @@ func TestQuotaIsPerUserNotShared(t *testing.T) {
 	}
 }
 
+// A unit taken for a transaction that delivers nothing comes back. Without
+// this, `MAIL / RCPT / RSET` in a loop is a remote off switch for a stranger's
+// mail: their whole day's allowance, spent in milliseconds, by someone who sent
+// no message at all.
+func TestReleaseMessageReturnsTheUnit(t *testing.T) {
+	l := NewLimiter(LimiterConfig{Daily: 2, DailyWindow: 24 * time.Hour})
+	u := uuid.New()
+	for i := 0; i < 200; i++ {
+		if !l.AllowMessage(u) {
+			t.Fatalf("take %d refused; every one of these is released again", i)
+		}
+		l.ReleaseMessage(u)
+	}
+	// The allowance is untouched by 200 abandoned transactions.
+	if !l.AllowMessage(u) || !l.AllowMessage(u) {
+		t.Fatal("the full allowance must still be available")
+	}
+	if l.AllowMessage(u) {
+		t.Fatal("and no more than the allowance")
+	}
+}
+
+// Releasing more than was taken must not manufacture allowance. A reservation
+// can outlive a window roll, so the arithmetic has to clamp rather than trust
+// the caller.
+func TestReleaseMessageCannotGoNegative(t *testing.T) {
+	l := NewLimiter(LimiterConfig{Daily: 2, DailyWindow: 24 * time.Hour})
+	u := uuid.New()
+	for i := 0; i < 50; i++ {
+		l.ReleaseMessage(u)
+	}
+	if !l.AllowMessage(u) || !l.AllowMessage(u) {
+		t.Fatal("the allowance should be intact")
+	}
+	if l.AllowMessage(u) {
+		t.Fatal("fifty spurious releases bought extra allowance")
+	}
+}
+
+// A notice permit spent on a row that failed to write comes back, or a server
+// with a broken database burns all of them on rows that do not exist and then
+// reports "already told them" about a user who was never told anything.
+func TestReleaseNoticeReturnsThePermit(t *testing.T) {
+	l := NewLimiter(LimiterConfig{Notices: 2, DailyWindow: 24 * time.Hour})
+	u := uuid.New()
+	for i := 0; i < 100; i++ {
+		if !l.Notice(u, diag.RejectTooLarge) {
+			t.Fatalf("permit %d refused; every one of these is handed back", i)
+		}
+		l.ReleaseNotice(u, diag.RejectTooLarge)
+	}
+	if !l.Notice(u, diag.RejectTooLarge) || !l.Notice(u, diag.RejectTooLarge) {
+		t.Fatal("the full notice budget must still be available")
+	}
+	if l.Notice(u, diag.RejectTooLarge) {
+		t.Fatal("and no more than the budget")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Notice bounding
 // ---------------------------------------------------------------------------

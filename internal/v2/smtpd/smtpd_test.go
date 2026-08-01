@@ -1,6 +1,7 @@
 package smtpd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/netip"
 	"net/textproto"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -202,12 +204,39 @@ func newFixture(t *testing.T, cfg config.MailConfig, tweaks ...func(*Server)) *f
 	res.users[knownLocal] = uid
 	h := &recorder{}
 	d := &diag.Diag{Pool: pool}
-	srv, addr := start(t, cfg, res, h, d, tweaks...)
+	srv, addr := start(t, cfg, res, h, d, append([]func(*Server){withConnCaps(512, 512)}, tweaks...)...)
 	return &fixture{srv: srv, addr: addr, res: res, h: h, pool: pool, d: d, user: uid}
 }
 
 func withLimiter(cfg LimiterConfig) func(*Server) {
 	return func(s *Server) { s.limiter = NewLimiter(cfg) }
+}
+
+// withConnCaps sets the concurrency caps. newFixture raises them out of the way
+// by default: the test client holds every connection open until cleanup, and
+// every test in this file dials from 127.0.0.1, so the production per-source cap
+// of 4 would make unrelated tests fail for a reason that has nothing to do with
+// what they assert. The caps themselves are tested deliberately, with explicit
+// values, below.
+func withConnCaps(total, perSource int) func(*Server) {
+	return func(s *Server) { s.maxConns, s.maxConnsPerSource = total, perSource }
+}
+
+// withHighRefusalThreshold removes the tarpit and the disconnect from tests
+// whose subject is something else. Refusals are metered now — including
+// over-quota ones — so a test that provokes dozens of them would otherwise be
+// asserting the disconnect threshold by accident.
+// It keeps the configured daily allowance: NewLimiter fills a zero Daily with
+// its own default, so building a limiter from scratch silently discards
+// cfg.PerAddressDaily and hands every quota test an allowance of 50.
+func withHighRefusalThreshold() func(*Server) {
+	return func(s *Server) {
+		s.limiter = NewLimiter(LimiterConfig{
+			Burst: 1 << 20, Base: time.Millisecond, Max: time.Millisecond,
+			Window: time.Hour, Disconnect: 1 << 30,
+			Daily: s.cfg.PerAddressDaily,
+		})
+	}
 }
 
 func insertUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
@@ -311,6 +340,26 @@ func (c *client) data(body []byte) (int, string) {
 	return c.read()
 }
 
+// bdat sends one BDAT chunk and returns the response. The body is written
+// verbatim: BDAT counts bytes, so there is no dot-stuffing and no terminator.
+func (c *client) bdat(body []byte, last bool) (int, string) {
+	c.t.Helper()
+	arg := fmt.Sprintf("BDAT %d", len(body))
+	if last {
+		arg += " LAST"
+	}
+	if err := c.tp.PrintfLine("%s", arg); err != nil {
+		c.t.Fatalf("writing %q: %v", arg, err)
+	}
+	_ = c.nc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if len(body) > 0 {
+		if _, err := c.nc.Write(body); err != nil {
+			c.t.Fatalf("writing chunk: %v", err)
+		}
+	}
+	return c.read()
+}
+
 // mailOf builds a message body of EXACTLY n bytes as the server will see it.
 //
 // Three properties, each of which a first draft got wrong and each of which
@@ -386,6 +435,16 @@ func diagRows(t *testing.T, pool *pgxpool.Pool) []diagRow {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// flushed forces the buffered rejection counts out before they are read back.
+// The aggregate is batched in memory on purpose (see Server.countRejection), so
+// a test that queries the table without this is asking a question about timing.
+func flushed(t *testing.T, srv *Server) {
+	t.Helper()
+	if err := srv.flushRejections(bg); err != nil {
+		t.Fatalf("flushing rejection counts: %v", err)
+	}
 }
 
 func rejectionCount(t *testing.T, pool *pgxpool.Pool, reason string) int64 {
@@ -466,8 +525,19 @@ func TestEHLOOffersNoAuthAndAdvertisesTheLimits(t *testing.T) {
 	if strings.Contains(joined, "STARTTLS") {
 		t.Fatalf("EHLO advertises STARTTLS but no TLS config is wired: %q", joined)
 	}
-	if !strings.Contains(joined, "SIZE") {
-		t.Fatalf("EHLO must advertise SIZE so an oversized sender fails before transferring: %q", joined)
+	// SIZE is advertised WITHOUT a value, which under RFC 1870 means "the SIZE
+	// parameter is understood, no fixed maximum is declared". A SIZE with a
+	// number would mean go-smtp's own MaxMessageBytes is set again — and that
+	// setting is what made two oversize refusals bypass this package entirely.
+	// See New. The cap is still enforced, by session.Mail and session.Data.
+	if regexp.MustCompile(`SIZE [0-9]`).MatchString(joined) {
+		t.Fatalf("EHLO declares a SIZE limit, so the library's unaccounted size checks are back on: %q", joined)
+	}
+	// CHUNKING is advertised unconditionally by go-smtp and cannot be turned
+	// off, so BDAT is a reachable second body path whether we want it or not.
+	// It is pinned here so the tests below are visibly about a real surface.
+	if !strings.Contains(joined, "CHUNKING") {
+		t.Fatal("go-smtp no longer advertises CHUNKING; the BDAT tests below may be testing nothing")
 	}
 	if !strings.Contains(joined, "RCPTMAX=1") {
 		t.Fatalf("EHLO must advertise the single-recipient limit: %q", joined)
@@ -490,6 +560,7 @@ func TestUnknownRcptIncrementsTheAggregateCounterOnly(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c.mustCmd(550, "RCPT TO:<%s>", unknownRcpt(i))
 	}
+	flushed(t, f.srv)
 	if n := rejectionCount(t, f.pool, diag.RejectUnknownRcpt); n != 5 {
 		t.Fatalf("smtp_rejections[unknown_rcpt] = %d, want 5", n)
 	}
@@ -613,6 +684,7 @@ func TestDataOverTheCapIsRejected(t *testing.T) {
 	if r.senderDomain != diag.UnverifiedPrefix+"dib.ae" {
 		t.Fatalf("sender_domain = %q; an envelope domain is an assertion, and must be marked unverified", r.senderDomain)
 	}
+	flushed(t, f.srv)
 	if n := rejectionCount(t, f.pool, diag.RejectTooLarge); n != 1 {
 		t.Fatalf("smtp_rejections[too_large] = %d, want 1", n)
 	}
@@ -646,8 +718,14 @@ func TestDataExactlyAtTheCapIsAccepted(t *testing.T) {
 }
 
 // A declared SIZE over the cap is refused at MAIL FROM, before a byte of body
-// is transferred.
-func TestAnOversizedDeclaredSizeIsRefusedBeforeTheTransfer(t *testing.T) {
+// is transferred — AND the refusal is recorded.
+//
+// This was a silent drop. go-smtp answers the declared-size case itself at
+// conn.go:360, before the Mail callback, so the refusal reached neither
+// parse_diagnostics nor smtp_rejections while the identical message sent
+// WITHOUT the ESMTP SIZE parameter produced a user-scoped row. Gmail and
+// Postfix both send SIZE, which made the unaccounted path the likely one.
+func TestAnOversizedDeclaredSizeIsRefusedAndAccounted(t *testing.T) {
 	cfg := testMailConfig()
 	f := newFixture(t, cfg)
 	c := dial(t, f.addr)
@@ -655,6 +733,266 @@ func TestAnOversizedDeclaredSizeIsRefusedBeforeTheTransfer(t *testing.T) {
 	code, _ := c.cmd("MAIL FROM:<bank@dib.ae> SIZE=%d", cfg.MaxMessageBytes*100)
 	if code != 552 {
 		t.Fatalf("a declared SIZE far over the cap -> %d, want 552", code)
+	}
+	flushed(t, f.srv)
+	if n := rejectionCount(t, f.pool, diag.RejectTooLarge); n != 1 {
+		t.Fatalf("smtp_rejections[too_large] = %d, want 1: a refusal with no trace is a silent drop", n)
+	}
+	// NOT user-scoped, and that is deliberate rather than an omission: no
+	// recipient has been named yet, and deferring this refusal to RCPT so it
+	// could be scoped would answer 552 for an address that exists and 550 for
+	// one that does not — a free enumeration oracle.
+	if n := countDiagRows(t, f.pool); n != 0 {
+		t.Fatalf("%d user-scoped rows for a refusal made before any recipient was named", n)
+	}
+	// A declared size at exactly the cap is not oversized.
+	c2 := dial(t, f.addr)
+	c2.hello()
+	if code, _ := c2.cmd("MAIL FROM:<bank@dib.ae> SIZE=%d", cfg.MaxMessageBytes); code != 250 {
+		t.Fatalf("a declared SIZE exactly at the cap -> %d, want 250", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Attack 3b: BDAT, the second body path
+// ---------------------------------------------------------------------------
+
+// CHUNKING is advertised unconditionally by go-smtp and BDAT is dispatched
+// unconditionally, so this is a real, reachable way to hand the process a body.
+// It had no test at all, which is how the ceiling it disables went unnoticed.
+func TestBdatDeliversAMessage(t *testing.T) {
+	f := newFixture(t, testMailConfig())
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	body := mailOf(512)
+	if code, msg := c.bdat(body[:256], false); code != 250 {
+		t.Fatalf("first chunk -> %d %q", code, msg)
+	}
+	if code, msg := c.bdat(body[256:], true); code != 250 {
+		t.Fatalf("last chunk -> %d %q", code, msg)
+	}
+	got := f.h.deliveries()
+	if len(got) != 1 {
+		t.Fatalf("want one delivery, got %d", len(got))
+	}
+	if string(got[0].Raw) != string(body) {
+		t.Fatalf("delivered %d bytes, sent %d", len(got[0].Raw), len(body))
+	}
+}
+
+// THE REMOTE OOM. go-smtp sets its line limit to 0 — which means UNLIMITED —
+// for the duration of a BDAT chunk and restores it only on the error path and
+// on LAST, so after one successful non-last chunk the connection has no line
+// limit for the rest of its life. Measured before the guard existed: a single
+// 32 MiB line was buffered in full and answered 250, growing TotalAlloc by
+// 256 MiB. The precondition is one accepted recipient, i.e. one leaked address.
+//
+// The control half of this test is the point: the same probe on a connection
+// that has NOT used BDAT is refused by go-smtp's own limit, so a green result
+// here cannot come from the library still doing its job.
+func TestBdatCannotDisableTheLineCeiling(t *testing.T) {
+	f := newFixture(t, testMailConfig())
+	// Sized to isolate the LINE ceiling: over it, but comfortably under the
+	// per-transaction byte budget. A first draft used a probe larger than both,
+	// so the budget tripped first and the test passed with the line enforcement
+	// deleted — it was asserting the wrong guard. This precondition keeps it
+	// honest if either constant moves.
+	// TERMINATED with a CRLF, so the server has to answer rather than sit
+	// waiting for the rest of the line. An unterminated probe made this test
+	// pass against a deleted line ceiling, because the client's own read
+	// deadline expiring looks exactly like the server refusing.
+	probe := append(bytes.Repeat([]byte("a"), 2*guardMaxLine), '\r', '\n')
+	if int64(len(probe)) >= f.srv.transactionBudget() {
+		t.Fatalf("probe of %d bytes is not under the transaction budget of %d; "+
+			"this test would pass on the byte budget alone", len(probe), f.srv.transactionBudget())
+	}
+
+	// Control: no BDAT. go-smtp's own MaxLineLength refuses it.
+	ctl := dial(t, f.addr)
+	ctl.hello()
+	if _, err := ctl.nc.Write(probe); err != nil {
+		t.Fatal(err)
+	}
+	_ = ctl.nc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if code, _, err := ctl.tp.ReadResponse(0); err == nil && code/100 == 2 {
+		t.Fatalf("control: an unterminated %d-byte line was accepted: %d", len(probe), code)
+	}
+
+	// The real thing: one successful non-last chunk, then the same probe.
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	if code, msg := c.bdat([]byte("x"), false); code != 250 {
+		t.Fatalf("non-last chunk -> %d %q, want 250", code, msg)
+	}
+	if _, err := c.nc.Write(probe); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.nc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	code, msg, err := c.tp.ReadResponse(0)
+	if err != nil {
+		return // the server dropped us, which is the outcome asked for
+	}
+	// 421 is the guard: a read error inside go-smtp's command loop. A 5xx means
+	// the whole line WAS buffered and then parsed as a command — exactly the
+	// pre-fix behaviour, just with a tidy-looking reply on the end of it.
+	if code != 421 {
+		t.Fatalf("after a BDAT chunk a %d-byte line got %d %q; the line ceiling is "+
+			"not being enforced under the library", len(probe), code, msg)
+	}
+	if f.h.count() != 0 {
+		t.Fatal("nothing may have been delivered")
+	}
+}
+
+// The library's own BDAT size check reads its MaxMessageBytes, which is now
+// zero, so the cap on this path has to be — and is — the same one DATA uses,
+// with the same user-scoped accounting. Before this change the library answered
+// 552 at conn.go:1025 and wrote nothing anywhere.
+func TestBdatOverTheCapIsRejectedAndAccounted(t *testing.T) {
+	cfg := testMailConfig()
+	f := newFixture(t, cfg)
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	code, msg := c.bdat(mailOf(cfg.MaxMessageBytes+1), true)
+	if code != 552 {
+		t.Fatalf("an over-cap BDAT body -> %d %q, want 552", code, msg)
+	}
+	if f.h.count() != 0 {
+		t.Fatal("an oversized message must never reach the handler")
+	}
+	rows := diagRows(t, f.pool)
+	if len(rows) != 1 || rows[0].outcome != diag.OutcomeRejected {
+		t.Fatalf("want one rejected row scoped to the user, got %+v", rows)
+	}
+	if rows[0].rejectReason == nil || *rows[0].rejectReason != diag.RejectTooLarge {
+		t.Fatalf("reject_reason = %v", rows[0].rejectReason)
+	}
+	flushed(t, f.srv)
+	if n := rejectionCount(t, f.pool, diag.RejectTooLarge); n != 1 {
+		t.Fatalf("smtp_rejections[too_large] = %d, want 1", n)
+	}
+}
+
+// A BDAT body exactly at the cap is accepted, same as DATA.
+func TestBdatExactlyAtTheCapIsAccepted(t *testing.T) {
+	cfg := testMailConfig()
+	f := newFixture(t, cfg)
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	if code, msg := c.bdat(mailOf(cfg.MaxMessageBytes), true); code != 250 {
+		t.Fatalf("a BDAT body exactly at the cap -> %d %q, want 250", code, msg)
+	}
+	if got := f.h.deliveries(); len(got) != 1 || len(got[0].Raw) != cfg.MaxMessageBytes {
+		t.Fatalf("want one delivery of exactly %d bytes, got %+v", cfg.MaxMessageBytes, got)
+	}
+}
+
+// The byte budget bounds everything else one transaction can make the process
+// read, including the drain go-smtp performs after a refusal — which it runs
+// with its own limit explicitly disabled.
+func TestATransactionCannotExceedItsByteBudget(t *testing.T) {
+	cfg := testMailConfig()
+	f := newFixture(t, cfg)
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	if code, _ := c.cmd("DATA"); code != 354 {
+		t.Fatal("expected 354")
+	}
+	// Well-formed lines, so the line ceiling is not what stops this: far more
+	// bytes than one transaction is allowed to cost.
+	huge := mailOf(int(f.srv.transactionBudget()) + 64<<10)
+	_ = c.nc.SetWriteDeadline(time.Now().Add(20 * time.Second))
+	_, _ = c.nc.Write(huge)
+	_, _ = c.nc.Write([]byte("\r\n.\r\n"))
+
+	_ = c.nc.SetReadDeadline(time.Now().Add(15 * time.Second))
+	code, _, err := c.tp.ReadResponse(0)
+	if err == nil && code/100 == 2 {
+		t.Fatalf("a transaction %d bytes over its budget was accepted: %d", 64<<10, code)
+	}
+	if f.h.count() != 0 {
+		t.Fatal("nothing may be delivered")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Attack 3c: holding the process open
+// ---------------------------------------------------------------------------
+
+// go-smtp has no concurrency limit of any kind. Each connection holds a
+// goroutine, a read timeout, and potentially a whole buffered message.
+func TestTheTotalConnectionCapRefusesWith421(t *testing.T) {
+	f := newFixture(t, testMailConfig(), withConnCaps(3, 3))
+	var held []*client
+	for i := 0; i < 3; i++ {
+		held = append(held, dial(t, f.addr)) // each greets with 220 and stays open
+	}
+	nc, err := net.DialTimeout("tcp", f.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	_ = nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	code, _, err := textproto.NewConn(nc).ReadResponse(0)
+	if err != nil {
+		t.Fatalf("an over-cap connection should be told 421, not closed in silence: %v", err)
+	}
+	if code != 421 {
+		t.Fatalf("connection over the cap -> %d, want 421", code)
+	}
+	nc.Close()
+	// The listener is still serving — refusing must not take the server down,
+	// which returning an error from Accept would have done — and a slot freed by
+	// a closing connection is reusable.
+	held[0].nc.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.srv.liveConns() >= 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	dial(t, f.addr)
+}
+
+func TestThePerSourceConnectionCapRefusesWith421(t *testing.T) {
+	f := newFixture(t, testMailConfig(), withConnCaps(100, 2))
+	dial(t, f.addr)
+	dial(t, f.addr)
+	nc, err := net.DialTimeout("tcp", f.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	_ = nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	code, _, err := textproto.NewConn(nc).ReadResponse(0)
+	if err != nil || code != 421 {
+		t.Fatalf("a third connection from one source -> %d (%v), want 421", code, err)
+	}
+}
+
+// A closed connection returns its slot, or the caps are a one-way ratchet that
+// bricks the receiver after MaxConns lifetime connections.
+func TestClosingAConnectionReturnsItsSlot(t *testing.T) {
+	f := newFixture(t, testMailConfig(), withConnCaps(2, 2))
+	for i := 0; i < 6; i++ {
+		nc, err := net.DialTimeout("tcp", f.addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i, err)
+		}
+		_ = nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		code, _, err := textproto.NewConn(nc).ReadResponse(0)
+		if err != nil || code != 220 {
+			t.Fatalf("connection %d after %d closes -> %d (%v), want a 220 greeting", i, i, code, err)
+		}
+		nc.Close()
+		// The decrement happens as the server's connection goroutine unwinds.
+		deadline := time.Now().Add(5 * time.Second)
+		for f.srv.liveConns() > 0 && time.Now().Before(deadline) {
+			time.Sleep(2 * time.Millisecond)
+		}
 	}
 }
 
@@ -717,7 +1055,7 @@ func TestQuotaSurvivesRecipientCaseAndBracketVariation(t *testing.T) {
 	cfg := testMailConfig()
 	cfg.PerAddressDaily = 3
 	h := &recorder{}
-	_, srvAddr := start(t, cfg, addrs, h, &diag.Diag{Pool: pool})
+	_, srvAddr := start(t, cfg, addrs, h, &diag.Diag{Pool: pool}, withConnCaps(512, 512))
 
 	// Every one of these is the same mailbox after normalization.
 	variants := []string{
@@ -763,7 +1101,7 @@ func TestGraceAddressSharesTheUsersAllowance(t *testing.T) {
 	res.users[old] = uid
 	res.grace[old] = true
 	h := &recorder{}
-	_, srvAddr := start(t, cfg, res, h, &diag.Diag{Pool: pool})
+	_, srvAddr := start(t, cfg, res, h, &diag.Diag{Pool: pool}, withConnCaps(512, 512))
 
 	body := mailOf(256)
 	dial(t, srvAddr).send("bank@dib.ae", knownRcpt, body)
@@ -793,7 +1131,7 @@ func TestGraceAddressSharesTheUsersAllowance(t *testing.T) {
 func TestOverQuotaNoticesAreBoundedButEveryRefusalIsCounted(t *testing.T) {
 	cfg := testMailConfig()
 	cfg.PerAddressDaily = 1
-	f := newFixture(t, cfg)
+	f := newFixture(t, cfg, withHighRefusalThreshold())
 	c := dial(t, f.addr)
 	if code, _ := c.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
 		t.Fatal("the first message is inside the allowance")
@@ -811,8 +1149,124 @@ func TestOverQuotaNoticesAreBoundedButEveryRefusalIsCounted(t *testing.T) {
 	if len(rows) > DefaultNoticesPerWindow {
 		t.Fatalf("%d user-scoped rows from %d refusals; notices must be bounded", len(rows), attempts)
 	}
+	flushed(t, f.srv)
 	if n := rejectionCount(t, f.pool, diag.RejectOverQuota); n != attempts {
 		t.Fatalf("smtp_rejections[over_quota] = %d, want %d — every refusal is accounted for", n, attempts)
+	}
+}
+
+// The allowance is a limit on DELIVERED mail, not on attempts. Charging for an
+// abandoned transaction makes it a remote off switch: 50 MAIL/RCPT/RSET cycles
+// take a few milliseconds, send nothing, and leave the user's next real message
+// bouncing off a 452.
+func TestAbandonedTransactionsDoNotBurnTheAllowance(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 3
+	f := newFixture(t, cfg, withHighRefusalThreshold())
+	c := dial(t, f.addr)
+	c.hello()
+	for i := 0; i < 30; i++ { // ten times the day's allowance, in one connection
+		c.mustCmd(250, "MAIL FROM:<attacker@elsewhere.test>")
+		c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+		c.mustCmd(250, "RSET")
+	}
+	// The user's mail still arrives.
+	real := dial(t, f.addr)
+	if code, msg := real.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatalf("after 30 abandoned transactions the user's real message -> %d %q, want 250", code, msg)
+	}
+	if f.h.count() != 1 {
+		t.Fatalf("%d deliveries, want 1", f.h.count())
+	}
+}
+
+// The same hold, taken and never released: a connection that stops after RCPT.
+// Dropping it must return the unit rather than parking it until the read
+// timeout.
+func TestAHangUpAfterRcptReturnsTheUnit(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 1
+	f := newFixture(t, cfg, withHighRefusalThreshold())
+	c := dial(t, f.addr)
+	c.envelope("attacker@elsewhere.test")
+	c.mustCmd(250, "RCPT TO:<%s>", knownRcpt)
+	c.nc.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for f.srv.liveConns() > 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	real := dial(t, f.addr)
+	if code, _ := real.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatalf("a hung-up transaction parked the user's only unit, got %d", code)
+	}
+}
+
+// A message the server could not deliver has not been delivered, so it must not
+// cost the user a unit — otherwise every retry of a deferred message eats the
+// allowance, and runServe currently defers EVERY message until Task 29 lands.
+func TestADeferredMessageDoesNotBurnTheAllowance(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 2
+	f := newFixture(t, cfg, withHighRefusalThreshold())
+	f.h.fail(errors.New("ingest not implemented yet"))
+	for i := 0; i < 5; i++ {
+		c := dial(t, f.addr)
+		if code, _ := c.send("bank@dib.ae", knownRcpt, mailOf(256)); code/100 != 4 {
+			t.Fatalf("attempt %d -> %d, want a 4xx", i, code)
+		}
+	}
+	f.h.fail(nil)
+	c := dial(t, f.addr)
+	if code, msg := c.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatalf("once the handler recovered the retry -> %d %q, want 250", code, msg)
+	}
+}
+
+// An oversized message is a refusal, metered on the source, not a charge
+// against the recipient's mailbox.
+func TestAnOversizedMessageDoesNotBurnTheAllowance(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 2
+	f := newFixture(t, cfg, withHighRefusalThreshold())
+	for i := 0; i < 4; i++ {
+		c := dial(t, f.addr)
+		if code, _ := c.send("attacker@elsewhere.test", knownRcpt, mailOf(cfg.MaxMessageBytes+1)); code != 552 {
+			t.Fatalf("attempt %d -> %d, want 552", i, code)
+		}
+	}
+	c := dial(t, f.addr)
+	if code, msg := c.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatalf("four oversized uploads emptied the user's allowance: %d %q", code, msg)
+	}
+}
+
+// The over-quota branch is metered exactly like an unknown recipient. It used
+// to have no tarpit and no disconnect debt, and a database write per attempt:
+// 5,396 refusals per second down one socket, with the connection still open.
+func TestOverQuotaRefusalsAreMeteredAndEventuallyDropTheConnection(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 1
+	f := newFixture(t, cfg, withLimiter(LimiterConfig{
+		Burst: 1, Base: time.Millisecond, Max: 2 * time.Millisecond,
+		Window: time.Hour, Disconnect: 4, Daily: cfg.PerAddressDaily,
+	}))
+	c := dial(t, f.addr)
+	if code, _ := c.send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatal("the first message is inside the allowance")
+	}
+	// Every one of these is now a refusal on the per-source counter.
+	for i := 0; i < 3; i++ {
+		c.mustCmd(250, "MAIL FROM:<bank@dib.ae>")
+		c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+	}
+	c.mustCmd(250, "MAIL FROM:<bank@dib.ae>")
+	if code, _ := c.cmd("RCPT TO:<%s>", knownRcpt); code != 421 {
+		t.Fatalf("a fourth over-quota refusal -> %d, want 421: the branch is unmetered", code)
+	}
+	_ = c.nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.nc.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the connection survived the disconnect threshold")
 	}
 }
 
@@ -900,6 +1354,7 @@ func TestResolverInfrastructureFailureIsTemporaryAndDoesNotFeedTheTarpit(t *test
 	if code/100 != 4 {
 		t.Fatalf("a resolver outage -> %d, want a 4xx", code)
 	}
+	flushed(t, f.srv)
 	if n := rejectionCount(t, f.pool, diag.RejectUnknownRcpt); n != 0 {
 		t.Fatalf("an outage counted %d unknown recipients; it is not the sender's fault", n)
 	}
@@ -1027,7 +1482,7 @@ func TestASecondMessageOnOneConnectionIsCheckedAgain(t *testing.T) {
 func TestConcurrentConnectionsCannotExceedTheAllowance(t *testing.T) {
 	cfg := testMailConfig()
 	cfg.PerAddressDaily = 10
-	f := newFixture(t, cfg)
+	f := newFixture(t, cfg, withHighRefusalThreshold())
 	body := mailOf(256)
 	if code, _ := dial(t, f.addr).send("bank@dib.ae", knownRcpt, body); code != 250 {
 		t.Fatal("warm-up message rejected")
@@ -1134,11 +1589,15 @@ func TestShutdownForceClosesAnIdlePeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(bg, 500*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if err := f.srv.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
+	err := f.srv.Shutdown(ctx)
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("shutdown took %v waiting for an idle peer", elapsed)
+	}
+	// Reported, not swallowed. Returning nil whether or not connections had to
+	// be cut makes a forced shutdown indistinguishable from a clean one in the
+	// operator's log, and made the caller's error branch unreachable.
+	if err == nil {
+		t.Fatal("a shutdown that had to force connections closed must say so")
 	}
 	_ = c.nc.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.nc.Read(make([]byte, 1)); err == nil {

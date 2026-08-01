@@ -126,8 +126,25 @@ func (c LimiterConfig) withDefaults() LimiterConfig {
 // It is IN-MEMORY and bounded, and a restart resets it. That is acceptable
 // because it is a nuisance control, not a security boundary: the actual
 // boundary is that an unknown recipient is never accepted, and that the address
-// token carries 128 bits of entropy. This makes a sweep expensive; it does not
-// make one impossible, and nothing here is load bearing for confidentiality.
+// token carries 128 bits of entropy. Nothing here is load bearing for
+// confidentiality.
+//
+// # What the tarpit actually buys, measured
+//
+// Stated precisely, because the obvious claim is wrong. The delay is imposed on
+// ONE connection's goroutine, so a sweeper who opens several connections in
+// parallel pays the delays concurrently rather than in sequence: eight probes
+// over eight connections were measured at 10.0s against 12.7s serialized, and
+// with production settings a full budget costs about 30s in parallel against
+// about 330s in series. So the tarpit raises the cost of a sweep by a constant
+// factor bounded by how many connections the attacker can open — it does not
+// make a sweep expensive on its own.
+//
+// The thing that actually bounds a sweep is the pair of hard limits either side
+// of it: the Disconnect threshold, after which Blocked refuses that source
+// without so much as a database lookup for the rest of the window, and the
+// per-source connection cap in smtpd, which is what stops the parallelism that
+// would otherwise divide the delay away.
 //
 // # Order of checks
 //
@@ -165,12 +182,18 @@ func NewLimiter(cfg LimiterConfig) *Limiter {
 	}
 }
 
-// InvalidRcpt records one invalid recipient from ip and reports how long to
+// InvalidRcpt records one REFUSED recipient from ip and reports how long to
 // stall before replying, and whether to drop the connection instead.
 //
+// "Invalid" here means "one this server would not accept", which covers both a
+// recipient that does not exist and one whose owner is over their allowance.
+// Both are metered together on purpose: an unmetered refusal branch is a free
+// loop, and the over-quota branch was measured at 5,396 refusals per second
+// from a single socket while it had one.
+//
 // The delay is Base * 2^(n-Burst) capped at Max, where n is that source's
-// invalid-recipient count in the rolling window; the first Burst are free. Past
-// the disconnect threshold the delay is zero and disconnect is true — "drop it
+// refusal count in the rolling window; the first Burst are free. Past the
+// disconnect threshold the delay is zero and disconnect is true — "drop it
 // immediately" rather than "stall then drop", because at that point the
 // connection is worth nothing to us and the goroutine is better spent elsewhere.
 func (l *Limiter) InvalidRcpt(ip netip.Addr) (time.Duration, bool) {
@@ -224,6 +247,51 @@ func (l *Limiter) AllowMessage(userID uuid.UUID) bool {
 	}
 	st.msgs.add(now, l.cfg.DailyWindow)
 	return true
+}
+
+// ReleaseMessage returns a unit taken by AllowMessage for a message that was
+// never delivered.
+//
+// This is what stops the allowance from being a remote off switch for a user's
+// mail. The unit has to be taken at RCPT — checking at RCPT is the whole reason
+// an over-quota sender never gets to transfer a megabyte — but a transaction
+// that is then abandoned has cost the user nothing, and charging for it means
+// `MAIL / RCPT / RSET` in a loop burns a stranger's entire day in a few
+// milliseconds with no message ever sent. Every path that ends a transaction
+// without a delivery gives the unit back: RSET, a new MAIL, logout, a refused
+// or oversized body.
+//
+// The allowance therefore counts DELIVERED messages. Refusals are metered
+// separately, by the per-source counter InvalidRcpt drives — a nuisance control
+// belongs on the nuisance, not on the recipient's mailbox.
+func (l *Limiter) ReleaseMessage(userID uuid.UUID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.users.get(userID)
+	if !ok {
+		return
+	}
+	st.msgs.sub(l.cfg.Now(), l.cfg.DailyWindow)
+}
+
+// ReleaseNotice returns a permit taken by Notice for a diagnostics row that
+// then failed to be written.
+//
+// Without it the notice budget is spent by failures, and a server whose
+// database is down burns all 8 permits on rows that never landed — after which
+// Notice answers "already told them" for a user who was never told anything.
+// That is the exact input the receiver uses to decide whether a refusal left a
+// trace, so it has to mean what it says.
+func (l *Limiter) ReleaseNotice(userID uuid.UUID, reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.users.get(userID)
+	if !ok {
+		return
+	}
+	if c := st.notices[reason]; c != nil {
+		c.sub(l.cfg.Now(), l.cfg.DailyWindow)
+	}
 }
 
 // Notice reports whether this refusal should also write a USER-SCOPED
@@ -379,6 +447,21 @@ func (c *counter) add(now time.Time, window time.Duration) int64 {
 		c.cur++
 	}
 	return c.weighted(now, window)
+}
+
+// sub gives one event back. It exists for RESERVATIONS: a unit of an allowance
+// taken when a transaction starts and returned when that transaction turns out
+// not to have delivered anything. It clamps at zero rather than going negative,
+// because a reservation taken in one bucket can be released after the window
+// has rolled, and a negative count would hand out free allowance later.
+func (c *counter) sub(now time.Time, window time.Duration) {
+	c.roll(now, window)
+	switch {
+	case c.cur > 0:
+		c.cur--
+	case c.prev > 0:
+		c.prev--
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -292,11 +292,14 @@ func runServe(cfg config.Config) error {
 		smtpErrc <- mail.Serve(mailLn)
 	}()
 
+	// Either listener dying is fatal, but neither may be abandoned: returning
+	// straight out of this select left the OTHER server running in a process on
+	// its way out — an HTTP listener with no receiver behind it, or a public
+	// port 25 with nothing left to shut it down.
+	var serveErr error
 	select {
-	case err := <-errc:
-		return err
-	case err := <-smtpErrc:
-		return err
+	case serveErr = <-errc:
+	case serveErr = <-smtpErrc:
 	case <-ctx.Done():
 	}
 	log.Println("shutting down")
@@ -313,14 +316,11 @@ func runServe(cfg config.Config) error {
 		log.Printf("ledgerd serve: smtp shutdown: %v", err)
 	}
 	mailCancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	if err := srv.Shutdown(shutCtx); err != nil && serveErr == nil {
+		serveErr = fmt.Errorf("shutdown: %w", err)
 	}
 	<-sweepDone
-	if err := <-smtpErrc; err != nil {
-		return err
-	}
-	return <-errc
+	return serveErr
 }
 
 // quarantineSweepInterval is how often held mail is checked for a due warning

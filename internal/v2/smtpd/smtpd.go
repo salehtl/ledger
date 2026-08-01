@@ -19,27 +19,52 @@
 //     user" differently from "not our domain" would rebuild the enumeration
 //     oracle one layer up.
 //
-//  2. INVALID RECIPIENTS ARE TARPITTED, PER SOURCE. A refusal that costs the
-//     prober nothing is a free search over the address space. The delay
-//     doubles from TarpitBase after a small free burst, caps at 30s, and past
-//     20 in a rolling hour the connection is dropped with a 421. See [Limiter].
+//  2. EVERY REFUSED RECIPIENT IS METERED, PER SOURCE. A refusal that costs the
+//     prober nothing is a free search over the address space — and that is true
+//     of an over-quota refusal exactly as much as of an unknown one, so both go
+//     through the same counter. The delay doubles from TarpitBase after a small
+//     free burst, caps at 30s, and past 20 in a rolling hour the source is
+//     dropped with a 421 and refused thereafter without so much as a database
+//     lookup. Read [Limiter]'s doc for what the tarpit does and does NOT buy:
+//     parallel connections divide the delay, so it is the disconnect threshold
+//     and the per-source connection cap that actually bound a sweep.
 //
-//  3. DATA IS CAPPED, AND THE CAP COMES FROM CONFIG. cfg.MaxMessageBytes is
-//     clamped by config.validate to blob.MaxColdMail — the largest message that
-//     still fits a padding bucket once base64'd inside a JSON record. A
-//     hardcoded cap here would reproduce the "seals fine, permanently
-//     unopenable" failure from the other side: mail accepted over SMTP that the
-//     ingest path can then never store.
+//  3. THE SIZE CAP IS OURS, ON EVERY PATH INTO THE PROCESS. cfg.MaxMessageBytes
+//     is clamped by config.validate to blob.MaxColdMail — the largest message
+//     that still fits a padding bucket once base64'd inside a JSON record — and
+//     a hardcoded cap here would reproduce the "seals fine, permanently
+//     unopenable" failure from the other side. go-smtp's own size handling is
+//     switched OFF (see New) because it refuses without telling us, and its
+//     line limit is switched off BY THE LIBRARY mid-connection (see
+//     [guardConn]), so both ceilings are enforced under it, on the socket.
+//     There are two body paths, not one: DATA and BDAT.
 //
 //  4. A REFUSAL LEAVES A TRACE. Spec §2's drop policy is "nothing is dropped
 //     without a user-visible notice", and the Phase 1 exit test is "every
 //     inbound email accounted for". Refusals with a resolved recipient write a
-//     user-scoped diagnostics row; refusals without one (an unknown recipient
-//     has no user to scope to, and one row per attempt would let anyone flood
-//     the table from the open port) increment the aggregated counter instead.
-//     A refusal this receiver cannot record anywhere is downgraded to a
-//     TEMPORARY failure, so the sender retries and we get another chance,
-//     rather than being permanently refused with no trace.
+//     user-scoped diagnostics row; refusals without one (an unknown recipient,
+//     or an oversize declared before any recipient was named) increment the
+//     aggregated counter instead, because there is no user to scope a row to
+//     and one row per attempt would let anyone flood the table from the open
+//     port. A refusal this receiver cannot record is downgraded to a TEMPORARY
+//     failure, so the sender retries and we get another chance, rather than
+//     being permanently refused with no trace.
+//
+//  5. WHAT ONE PEER CAN MAKE US HOLD IS BOUNDED. Connections are capped in
+//     total and per source, each connection has a per-transaction byte budget,
+//     and each has a line ceiling. Without these the process is a remote OOM:
+//     go-smtp has no concurrency limit at all, and its per-connection line
+//     limit is disabled permanently by one successful non-last BDAT chunk.
+//
+// # The allowance counts DELIVERED messages
+//
+// The per-user unit is TAKEN at RCPT — an over-quota sender must not get to
+// transfer a megabyte first — and GIVEN BACK by every path that ends a
+// transaction without delivering: RSET, a new MAIL, logout, an oversized body,
+// a handler failure. Charging for an abandoned transaction turns the allowance
+// into a remote off switch for someone else's mail: `MAIL / RCPT / RSET` in a
+// loop burns a stranger's whole day in a few milliseconds without sending
+// anything, and their next real message bounces off a 452.
 //
 // # What this package deliberately does NOT do
 //
@@ -58,7 +83,7 @@
 //     the sending MTA retries — spec §3.2 counts on the ~1-3 days of retry that
 //     buys. Task 35's relay implements the spooling Handler.
 //
-// # One refusal this package cannot account for
+// # The refusals this package cannot account for
 //
 // go-smtp answers a syntactically invalid path (501), an over-long line (500)
 // and a second recipient (452) inside its own command loop, without consulting
@@ -67,6 +92,14 @@
 // and all three are answered before DATA, so no mail is silently discarded by
 // them. TestAnOverlongLineIsRefusedWithoutBufferingIt pins the behaviour so a
 // change in the library is visible.
+//
+// This list was longer, and the two that left it were real silent drops: an
+// oversize declared with the ESMTP SIZE parameter, and an oversize BDAT chunk,
+// were both refused 552 by the library with nothing written anywhere. Both are
+// now this package's own refusals. The lesson worth keeping is that the list is
+// a claim about a DEPENDENCY's behaviour, so it has to be re-derived from the
+// library's source rather than assumed stable — every entry above names the
+// exact reply so a change is visible in a test rather than in production.
 package smtpd
 
 import (
@@ -113,6 +146,45 @@ const (
 	deliverTimeout = 60 * time.Second
 	resolveTimeout = 10 * time.Second
 	diagTimeout    = 10 * time.Second
+
+	// guardMaxLine is the BACKSTOP line ceiling enforced by [guardConn], above
+	// go-smtp's own MaxLineLength so that in normal operation the library's
+	// tidier "500 Too long line" fires first and this never does.
+	//
+	// It is not belt-and-braces. go-smtp sets its own line limit to ZERO — which
+	// means UNLIMITED — for the duration of a BDAT chunk (conn.go:1074) and
+	// restores it only on the error path and on the LAST chunk, so after ONE
+	// successful non-last chunk the connection has no line limit at all for the
+	// rest of its life. CHUNKING is advertised unconditionally and BDAT is
+	// dispatched unconditionally, so that path is reachable by anyone holding a
+	// valid recipient. Measured before this guard existed: `BDAT 1` plus one
+	// byte, then a single 32 MiB line, was buffered in full and answered 250,
+	// growing the process's TotalAlloc by 256 MiB for that one line. There is no
+	// switch in the library for it and v0.24.0 is the latest release, so the
+	// ceiling has to live under the library, on the socket.
+	guardMaxLine = 2 * MaxLineLength
+
+	// transactionOverhead is the slack added to the per-transaction byte budget
+	// for command lines and dot-stuffing. Dot-stuffing expands a body by at most
+	// one byte per line, so the budget below is 2x the cap plus this.
+	transactionOverhead = 64 << 10
+
+	// MaxConns and MaxConnsPerSource bound concurrency. Neither go-smtp nor an
+	// unconfigured listener has any limit at all: 400 idle connections were
+	// accepted in a probe, each holding a 60s read timeout and each able to hold
+	// a whole message in one buffer. Sixty-four connections is orders of
+	// magnitude beyond a closed beta whose users receive single-digit messages a
+	// day, and it bounds worst-case buffered mail to roughly 64 MB.
+	//
+	// The per-source cap does double duty: it is also what stops a sweeper from
+	// dividing the tarpit away by running probes on parallel connections. See
+	// the Limiter doc for the measurement.
+	MaxConns          = 64
+	MaxConnsPerSource = 4
+
+	// rejectionFlushInterval is how often the in-memory rejection counts are
+	// written out. See [Server.countRejection].
+	rejectionFlushInterval = 2 * time.Second
 )
 
 // The wire responses. Each is a package-level value rather than a literal at
@@ -155,6 +227,22 @@ var (
 		EnhancedCode: smtp.EnhancedCode{4, 4, 5},
 		Message:      "too busy, try again later",
 	}
+)
+
+// tooManyConns is written in place of a greeting to a connection refused by the
+// concurrency caps. RFC 5321 §3.1 allows a 421 instead of the 220, and a
+// connection told "later" is retried; one closed in silence looks like a broken
+// server.
+var tooManyConns = []byte("421 4.7.0 too many connections, try again later\r\n")
+
+// The two limits [guardConn] enforces on the socket itself. They are plain
+// errors rather than SMTPErrors because they surface as READ failures inside
+// go-smtp's command loop, not as a session return value: the library answers
+// "421 Connection error" and closes, which is the right end for a connection
+// that has just tried to hand us an unbounded line.
+var (
+	errLineTooLong         = errors.New("smtpd: line over the guard ceiling")
+	errTransactionTooLarge = errors.New("smtpd: transaction over the byte budget")
 )
 
 // Delivery is one accepted message, handed to a [Handler] exactly as it
@@ -221,16 +309,31 @@ type Server struct {
 	done     chan struct{}
 	stopOnce sync.Once
 
+	// maxConns and maxConnsPerSource are fields rather than the constants
+	// directly so an in-package test can lower them before Serve starts.
+	maxConns          int
+	maxConnsPerSource int
+
 	mu   sync.Mutex
 	addr string
 	// ln is the listener Serve was handed, so Shutdown can close it itself.
 	ln net.Listener
 	// conns is every live connection, so Shutdown can force-close what is left
-	// when its window expires. go-smtp tracks connections too, but its Close —
-	// the only thing that would reach them — returns immediately once Shutdown
-	// has run, so after a graceful attempt the library offers no way to finish
-	// the job.
-	conns map[*trackedConn]struct{}
+	// when its window expires, and so the caps have something to count. go-smtp
+	// tracks connections too, but its Close — the only thing that would reach
+	// them — returns immediately once Shutdown has run, so after a graceful
+	// attempt the library offers no way to finish the job.
+	conns map[*guardConn]struct{}
+	// srcConns is the live connection count per source key. Entries are removed
+	// at zero, so it is bounded by the number of live connections.
+	srcConns map[netip.Addr]int
+
+	// rejections are the aggregate refusal counts waiting to be written. See
+	// countRejection.
+	rejections struct {
+		mu      sync.Mutex
+		pending map[string]int64
+	}
 }
 
 // New builds a receiver. cfg supplies the DATA cap, the daily allowance and the
@@ -247,7 +350,11 @@ func New(cfg config.MailConfig, res Resolver, h Handler, d *diag.Diag, now func(
 		diag:     d,
 		now:      now,
 		done:     make(chan struct{}),
-		conns:    map[*trackedConn]struct{}{},
+		conns:    map[*guardConn]struct{}{},
+		srcConns: map[netip.Addr]int{},
+
+		maxConns:          MaxConns,
+		maxConnsPerSource: MaxConnsPerSource,
 		limiter: NewLimiter(LimiterConfig{
 			Burst:  cfg.InvalidRcptBurst,
 			Base:   cfg.TarpitBase,
@@ -256,26 +363,38 @@ func New(cfg config.MailConfig, res Resolver, h Handler, d *diag.Diag, now func(
 			MaxIPs: DefaultMaxTrackedIPs,
 		}),
 	}
+	s.rejections.pending = map[string]int64{}
 	inner := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	inner.Domain = "in." + cfg.Domain
 	inner.MaxRecipients = MaxRecipients
 	inner.MaxLineLength = MaxLineLength
 	inner.ReadTimeout = ReadTimeout
 	inner.WriteTimeout = WriteTimeout
-	// One byte ABOVE the real cap, on purpose, and not the cap itself.
+	// ZERO — the library's size logic is switched OFF and this package owns
+	// every size refusal. That is not a simplification, it is the fix for two
+	// silent drops and an off-by-one:
 	//
-	// go-smtp's DATA reader refuses a message of exactly MaxMessageBytes: it
-	// hands out its last byte, then answers the next Read with ErrDataTooLarge
-	// because its budget has reached zero. Setting the library's limit to the
-	// real cap would therefore reject a message that is exactly at it — the
-	// value config.validate goes out of its way to keep acceptable. So the
-	// library's limit is the backstop at cap+1 and [session.Data] enforces the
-	// cap itself, which also lets the refusal carry a diagnostics row.
+	//   - A declared SIZE over the limit is answered 552 by go-smtp at
+	//     conn.go:360 BEFORE the Mail callback, and an over-cap BDAT chunk at
+	//     conn.go:1025, both without consulting the backend. Measured with the
+	//     library doing the check: an oversized message WITH the ESMTP SIZE
+	//     parameter left parse_diagnostics and smtp_rejections completely empty,
+	//     while the identical message without it produced a user-scoped row.
+	//     Gmail and Postfix both send SIZE, so the unaccounted path was the
+	//     likely one — a silent drop, against §2 and against this package's own
+	//     rule 4.
+	//   - Its DATA reader also refuses a message of EXACTLY MaxMessageBytes: it
+	//     hands out the last byte, then answers the next Read with
+	//     ErrDataTooLarge because its budget has reached zero. The cap is the
+	//     largest message config.validate deliberately keeps storable, so that
+	//     one is an off-by-one against the spec.
 	//
-	// The visible consequence is that the advertised SIZE is one byte high.
-	// That costs a client nothing: declaring exactly cap+1 gets past MAIL FROM
-	// and is refused at DATA instead.
-	inner.MaxMessageBytes = int64(cfg.MaxMessageBytes) + 1
+	// The cost is the EHLO SIZE advertisement, which go-smtp only emits when
+	// this is non-zero. It is close to free: the saving an advertisement buys is
+	// a sender declining to transfer a doomed message, and a sender that would
+	// check it also sends SIZE= on MAIL FROM, which [session.Mail] refuses at
+	// exactly the same point in the conversation — with a record of it.
+	inner.MaxMessageBytes = 0
 	// NO AUTH: the session type deliberately does not implement
 	// smtp.AuthSession, so no mechanism is advertised and none is accepted.
 	// AllowInsecureAuth stays false for the same reason.
@@ -322,54 +441,187 @@ func (s *Server) Serve(ln net.Listener) error {
 		return nil
 	default:
 	}
+	go s.flushLoop()
 	if err := s.inner.Serve(trackingListener{Listener: ln, srv: s}); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
 	}
 	return nil
 }
 
-// trackingListener records each accepted connection with the Server. Wrapping
-// the listener is the only seam available: go-smtp's own connection set is
-// unexported and unreachable after a graceful shutdown has run.
+// trackingListener applies the concurrency caps and wraps each accepted
+// connection in a [guardConn]. Wrapping the listener is the only seam
+// available: go-smtp has no concurrency limit of any kind, and its own
+// connection set is unexported and unreachable after a graceful shutdown.
 type trackingListener struct {
 	net.Listener
 	srv *Server
 }
 
+// Accept refuses over-cap connections in a LOOP rather than by returning an
+// error. That is load bearing: go-smtp's Serve treats a non-temporary Accept
+// error as fatal and stops the whole server, so returning one would let anyone
+// shut the receiver down by opening one connection too many.
 func (l trackingListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		gc, ok := l.srv.track(c)
+		if ok {
+			return gc, nil
+		}
+		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, _ = c.Write(tooManyConns)
+		_ = c.Close()
 	}
-	tc := &trackedConn{Conn: c, srv: l.srv}
-	l.srv.mu.Lock()
-	l.srv.conns[tc] = struct{}{}
-	l.srv.mu.Unlock()
-	return tc, nil
 }
 
-type trackedConn struct {
+// track admits a connection if it is inside both caps.
+//
+// Per-source first, then the global count — the same order every check in this
+// package uses, and for the same reason: spending the shared budget before the
+// per-caller check is what lets one host drain it and lock everyone else out.
+func (s *Server) track(c net.Conn) (*guardConn, bool) {
+	src := sourceKey(addrOf(c.RemoteAddr()))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.srcConns[src] >= s.maxConnsPerSource || len(s.conns) >= s.maxConns {
+		return nil, false
+	}
+	gc := &guardConn{
+		Conn:      c,
+		srv:       s,
+		src:       src,
+		remaining: s.transactionBudget(),
+	}
+	s.conns[gc] = struct{}{}
+	s.srcConns[src]++
+	return gc, true
+}
+
+// liveConns is the number of connections currently held. It exists so the caps
+// and the slot bookkeeping are assertions rather than claims.
+func (s *Server) liveConns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
+}
+
+func (s *Server) transactionBudget() int64 {
+	return 2*int64(s.cfg.MaxMessageBytes) + transactionOverhead
+}
+
+// guardConn is the receiver's own limit on what one connection may hand it,
+// enforced UNDER go-smtp on the socket, where nothing in the library can switch
+// it off.
+//
+// Two ceilings, one per failure it closes:
+//
+//   - A LINE ceiling, because go-smtp disables its own for the rest of the
+//     connection after a successful non-last BDAT chunk. See guardMaxLine for
+//     the measurement; without this a remote peer holding one valid recipient
+//     can make the process buffer an arbitrarily large single line.
+//   - A per-TRANSACTION byte budget, which bounds everything else a connection
+//     can make us read: the body itself, the drain go-smtp performs after a
+//     refusal (which it runs with its own limit explicitly disabled), a BDAT
+//     stream of any number of chunks, and a NOOP loop. It is reset by
+//     [session.Reset] at the start of each transaction, so a connection
+//     delivering several messages is not penalized for the earlier ones.
+//
+// A tripped guard is STICKY. The transaction reset deliberately does not clear
+// it: a peer that has already handed us something unbounded does not get to
+// clear the record by starting a new transaction.
+type guardConn struct {
 	net.Conn
 	srv *Server
+	src netip.Addr
+
+	mu        sync.Mutex
+	tripped   error
+	lineLen   int
+	remaining int64
+
+	closeOnce sync.Once
 }
 
-func (c *trackedConn) Close() error {
-	c.srv.mu.Lock()
-	delete(c.srv.conns, c)
-	c.srv.mu.Unlock()
+func (c *guardConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	tripped := c.tripped
+	c.mu.Unlock()
+	if tripped != nil {
+		return 0, tripped
+	}
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		if terr := c.account(p[:n]); terr != nil {
+			// The bytes just read are discarded along with the connection. Each
+			// Read is bounded by the caller's buffer (4 KB from textproto's
+			// bufio), so the ceiling is overshot by at most one buffer — which
+			// is the point: the check has to be on the byte stream, not on the
+			// assembled line, or the assembly is the thing that runs us out of
+			// memory.
+			return 0, terr
+		}
+	}
+	return n, err
+}
+
+func (c *guardConn) account(b []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.remaining -= int64(len(b))
+	if c.remaining < 0 {
+		c.tripped = errTransactionTooLarge
+		return c.tripped
+	}
+	for _, ch := range b {
+		if ch == '\n' {
+			c.lineLen = 0
+			continue
+		}
+		c.lineLen++
+		if c.lineLen > guardMaxLine {
+			c.tripped = errLineTooLong
+			return c.tripped
+		}
+	}
+	return nil
+}
+
+// newTransaction restores the byte budget for a fresh MAIL FROM.
+func (c *guardConn) newTransaction() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.remaining = c.srv.transactionBudget()
+	c.lineLen = 0
+}
+
+func (c *guardConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.srv.mu.Lock()
+		delete(c.srv.conns, c)
+		if n := c.srv.srcConns[c.src]; n <= 1 {
+			delete(c.srv.srcConns, c.src)
+		} else {
+			c.srv.srcConns[c.src] = n - 1
+		}
+		c.srv.mu.Unlock()
+	})
 	return c.Conn.Close()
 }
 
 // forceCloseConns drops every live connection and returns how many there were.
 // It closes the UNDERLYING conn rather than the wrapper, so it does not re-enter
-// the lock it is already done holding.
+// the lock it is already holding.
 func (s *Server) forceCloseConns() int {
 	s.mu.Lock()
-	live := make([]*trackedConn, 0, len(s.conns))
+	live := make([]*guardConn, 0, len(s.conns))
 	for c := range s.conns {
 		live = append(live, c)
 	}
-	s.conns = map[*trackedConn]struct{}{}
+	s.conns = map[*guardConn]struct{}{}
+	s.srcConns = map[netip.Addr]int{}
 	s.mu.Unlock()
 	for _, c := range live {
 		_ = c.Conn.Close()
@@ -417,12 +669,90 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if ln != nil {
 		_ = ln.Close()
 	}
-	if err := s.inner.Shutdown(ctx); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+	var forced error
+	// net.ErrClosed here is OUR OWN listener close above, reported back by the
+	// library closing the same socket a second time. It is not a failure and
+	// must not be reported as one, or every clean shutdown looks forced.
+	if err := s.inner.Shutdown(ctx); err != nil &&
+		!errors.Is(err, smtp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 		if n := s.forceCloseConns(); n > 0 {
 			log.Printf("smtpd: shutdown window expired with %d connection(s) still open; closed them", n)
 		}
+		// Reported, not swallowed. Returning nil unconditionally made the
+		// caller's "smtp shutdown failed" branch unreachable, which is a way of
+		// saying a forced shutdown looks exactly like a clean one in the log.
+		forced = err
 	}
-	return nil
+	// The counts still buffered belong to refusals that already happened. This
+	// is detached from ctx — which has usually just expired if we got here — so
+	// that a shutdown never turns an accounted refusal into an unaccounted one.
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), diagTimeout)
+	if err := s.flushRejections(fctx); err != nil {
+		log.Printf("smtpd: final rejection flush: %v", err)
+	}
+	fcancel()
+	return forced
+}
+
+// countRejection records one aggregate refusal IN MEMORY, to be written by
+// flushRejections.
+//
+// smtp_rejections has exactly one row per (day, reason), so a write per refusal
+// makes that row the hottest object in the database under precisely the traffic
+// it exists to measure — an unauthenticated flood on the open port. One
+// unmetered refusal branch was measured at 5,396 upserts per second from a
+// single socket. Batching turns that into one statement every couple of
+// seconds.
+//
+// The cost is honest and bounded: a crash loses up to rejectionFlushInterval of
+// counts. That is acceptable for THIS number and no other, because it is an
+// aggregate nuisance metric with no user attached. The thing §2's drop policy
+// actually turns on — whether a refusal left a user-visible notice — is the
+// synchronous diagnostics row, and accountRefusal decides its answer from that,
+// never from this counter.
+func (s *Server) countRejection(reason string) {
+	s.rejections.mu.Lock()
+	defer s.rejections.mu.Unlock()
+	s.rejections.pending[reason]++
+}
+
+// flushRejections writes the buffered counts. Counts that fail to write are put
+// BACK, so a transient database failure defers them rather than dropping them.
+func (s *Server) flushRejections(ctx context.Context) error {
+	s.rejections.mu.Lock()
+	pending := s.rejections.pending
+	s.rejections.pending = map[string]int64{}
+	s.rejections.mu.Unlock()
+
+	var firstErr error
+	for reason, n := range pending {
+		if err := s.diag.CountRejections(ctx, reason, n); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			s.rejections.mu.Lock()
+			s.rejections.pending[reason] += n
+			s.rejections.mu.Unlock()
+		}
+	}
+	return firstErr
+}
+
+func (s *Server) flushLoop() {
+	t := time.NewTicker(rejectionFlushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(context.Background(), diagTimeout)
+			if err := s.flushRejections(ctx); err != nil {
+				log.Printf("smtpd: flushing rejection counts: %v", err)
+			}
+			cancel()
+		}
+	}
 }
 
 // stall waits d, or returns early when the server is shutting down.
@@ -452,9 +782,10 @@ func opCtx(d time.Duration) (context.Context, context.CancelFunc) {
 // ---------------------------------------------------------------------------
 
 type session struct {
-	srv  *Server
-	conn *smtp.Conn
-	ip   netip.Addr
+	srv   *Server
+	conn  *smtp.Conn
+	guard *guardConn
+	ip    netip.Addr
 
 	// Per-message state, cleared by Reset.
 	from       string
@@ -463,10 +794,14 @@ type session struct {
 	userID     uuid.UUID
 	isGrace    bool
 	haveRcpt   bool
+	// reserved reports that a unit of userID's allowance is held for a message
+	// that has not been delivered yet. See [Limiter.ReleaseMessage].
+	reserved bool
 }
 
 func (s *Server) newSession(c *smtp.Conn) (smtp.Session, error) {
-	return &session{srv: s, conn: c, ip: remoteIP(c)}, nil
+	gc, _ := c.Conn().(*guardConn)
+	return &session{srv: s, conn: c, guard: gc, ip: remoteIP(c)}, nil
 }
 
 func remoteIP(c *smtp.Conn) netip.Addr {
@@ -474,7 +809,25 @@ func remoteIP(c *smtp.Conn) netip.Addr {
 	if nc == nil {
 		return netip.Addr{}
 	}
-	if ap, err := netip.ParseAddrPort(nc.RemoteAddr().String()); err == nil {
+	return addrOf(nc.RemoteAddr())
+}
+
+// addrOf extracts the IP from a net.Addr.
+//
+// It is the PEER's address, which is the right thing today and would be the
+// wrong thing the moment anything is put in front of this listener: a proxy, a
+// load balancer, or a tunnel makes every connection look like it comes from one
+// source, and every per-source control in this package — the tarpit, the
+// disconnect threshold, the connection caps — silently collapses to a single
+// key shared by the whole internet. There is no PROXY-protocol support here and
+// none should be added speculatively; if a proxy is ever introduced, parsing
+// its header MUST land in the same change, because the failure mode is a
+// receiver that reports every limit as working while enforcing none of them.
+func addrOf(a net.Addr) netip.Addr {
+	if a == nil {
+		return netip.Addr{}
+	}
+	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
 		return ap.Addr()
 	}
 	// A non-TCP listener (a unix socket in a test harness) has no IP. An
@@ -483,17 +836,56 @@ func remoteIP(c *smtp.Conn) netip.Addr {
 	return netip.Addr{}
 }
 
+// Reset ends the current transaction: it gives back an allowance unit held for
+// a message that was never delivered, and hands the connection a fresh byte
+// budget.
+//
+// go-smtp calls this on RSET, on a new MAIL, and after every DATA, so it is the
+// one place that reliably observes "that transaction is over".
 func (s *session) Reset() {
+	s.releaseReservation()
 	s.from, s.fromDomain, s.rcpt = "", "", ""
 	s.userID, s.isGrace, s.haveRcpt = uuid.Nil, false, false
+	if s.guard != nil {
+		s.guard.newTransaction()
+	}
 }
 
-func (s *session) Logout() error { return nil }
+// releaseReservation returns an unused allowance unit. It must run before
+// userID is cleared, which is why Reset calls it first.
+func (s *session) releaseReservation() {
+	if !s.reserved {
+		return
+	}
+	s.srv.limiter.ReleaseMessage(s.userID)
+	s.reserved = false
+}
+
+func (s *session) Logout() error {
+	// A connection that just goes away mid-transaction still gives the unit
+	// back. Without this, holding a socket open after RCPT would park a unit of
+	// a stranger's daily allowance for as long as the read timeout allows.
+	s.releaseReservation()
+	return nil
+}
 
 func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	s.Reset()
 	s.from = from
 	s.fromDomain = envelopeDomain(from)
+
+	// The declared-size refusal, which go-smtp used to answer for us without
+	// telling anyone. It is answered HERE, at MAIL FROM, and NOT deferred to
+	// RCPT where a user-scoped diagnostics row would be possible — because a
+	// refusal that lands after the recipient is known is a free enumeration
+	// oracle: send SIZE=huge, then probe addresses, and 552 means "this one
+	// exists" while 550 means "it does not". The aggregate counter is the
+	// honest record for a refusal whose recipient we deliberately never learned,
+	// exactly as it is for an unknown recipient.
+	if opts != nil && opts.Size > int64(s.srv.cfg.MaxMessageBytes) {
+		s.srv.countRejection(diag.RejectTooLarge)
+		return errTooLarge
+	}
 	return nil
 }
 
@@ -532,16 +924,39 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	}
 
 	if !s.srv.limiter.AllowMessage(userID) {
-		if !s.srv.accountRefusal(userID, s.fromDomain, diag.OutcomeOverQuota, diag.RejectOverQuota, nil) {
-			// Nothing recorded the refusal, so nothing would ever surface it.
-			// 451 makes the sender retry rather than leaving a silent drop.
-			return errTemporary
-		}
-		return errOverQuota
+		// METERED, exactly like an unknown recipient. An over-quota refusal is
+		// cheap to provoke and used to cost the prober nothing: the branch had
+		// no tarpit, no disconnect debt and a database write per attempt, and
+		// was measured at 5,396 refusals per second down one socket with the
+		// connection still open at the end.
+		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota, errOverQuota, nil)
 	}
 
 	s.rcpt, s.userID, s.isGrace, s.haveRcpt = to, userID, isGrace, true
+	// The unit is held, not yet spent. It is released by Reset or Logout if this
+	// transaction never delivers anything — see [Limiter.ReleaseMessage] for why
+	// charging for an abandoned transaction is a remote off switch.
+	s.reserved = true
 	return nil
+}
+
+// refuse meters, accounts for and answers a refusal that HAS a resolved
+// recipient. It is the shared path for over-quota and over-size, so neither can
+// drift into being the unmetered one.
+func (s *session) refuse(userID uuid.UUID, outcome, reason string, resp *smtp.SMTPError, ingestID []byte) error {
+	delay, disconnect := s.srv.limiter.InvalidRcpt(s.ip)
+	accounted := s.srv.accountRefusal(userID, s.fromDomain, outcome, reason, ingestID)
+	if disconnect {
+		return s.drop()
+	}
+	s.srv.stall(delay)
+	if !accounted {
+		// Nothing recorded it, so nothing would ever surface it. A temporary
+		// failure makes the sender retry and gives the notice another chance,
+		// rather than refusing permanently with no trace anywhere.
+		return errTemporary
+	}
+	return resp
 }
 
 // refuseRecipient tarpits and then answers the one rejection this server has.
@@ -597,11 +1012,14 @@ func (s *session) Data(r io.Reader) error {
 		// scope a notice to. ingestID hashes what we DID read: it is not the
 		// hash of the whole message (we deliberately never held it), and the
 		// comment on the field says so.
+		//
+		// The allowance unit is NOT spent: this message was not delivered, and
+		// go-smtp's post-DATA reset gives it back. Oversize senders are metered
+		// by refuse, on the per-source counter, where a nuisance control belongs
+		// — charging the recipient's mailbox for a stranger's oversized upload
+		// would let anyone empty a user's daily allowance from outside.
 		id := sha256.Sum256(raw)
-		if !s.srv.accountRefusal(s.userID, s.fromDomain, diag.OutcomeRejected, diag.RejectTooLarge, id[:]) {
-			return errTemporary
-		}
-		return errTooLarge
+		return s.refuse(s.userID, diag.OutcomeRejected, diag.RejectTooLarge, errTooLarge, id[:])
 	}
 
 	ctx, cancel := opCtx(deliverTimeout)
@@ -616,8 +1034,16 @@ func (s *session) Data(r io.Reader) error {
 		IsGrace:      s.isGrace,
 	}); err != nil {
 		log.Printf("smtpd: delivering a message for %v: %v", s.userID, err)
+		// The reservation stays held and is released by the post-DATA reset, so
+		// the retry this 4xx asks for does not cost the user a second unit. That
+		// matters right now: runServe mounts a handler that defers EVERY message
+		// until Task 29 lands, and without the release a day of retries would
+		// pin a real user at 452.
 		return errTemporary
 	}
+	// Delivered: the held unit is now spent, so the post-DATA reset must not
+	// give it back.
+	s.reserved = false
 	return nil
 }
 
@@ -636,23 +1062,25 @@ func (s *session) Data(r io.Reader) error {
 // amplification the aggregate exists to avoid — reachable by anyone who knows
 // one valid address.
 //
-// The return value is what keeps §2's drop policy honest. If neither record
-// landed, the caller must answer a TEMPORARY failure: a permanent refusal that
-// left no trace anywhere is precisely the silent drop the policy forbids, and a
-// retry gives the notice another chance.
+// The return value is what keeps §2's drop policy honest, and it is decided by
+// the NOTICE alone — never by the aggregate counter, which is buffered in
+// memory and therefore always "succeeds" at the moment it is asked. There are
+// exactly three cases:
+//
+//   - The diagnostics row was written. Accounted.
+//   - Notice refused a permit, which means a row for this user, reason and
+//     window ALREADY landed. Accounted: the user has been told, and repeating
+//     an identical notice tells them nothing.
+//   - The row was attempted and failed. NOT accounted, and the caller answers a
+//     temporary failure so the sender retries and the notice gets another
+//     chance. The permit is handed back on this path, or a database outage
+//     would burn all eight on rows that do not exist and the case above would
+//     then claim a user was told something they were never told.
 func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason string, ingestID []byte) bool {
-	accounted := false
-
-	ctx, cancel := opCtx(diagTimeout)
-	if err := s.diag.CountRejection(ctx, reason); err != nil {
-		log.Printf("smtpd: counting a %s rejection: %v", reason, err)
-	} else {
-		accounted = true
-	}
-	cancel()
+	s.countRejection(reason)
 
 	if !s.limiter.Notice(userID, reason) {
-		return accounted
+		return true
 	}
 	if ingestID == nil {
 		ingestID = attemptID(userID, s.now())
@@ -681,11 +1109,12 @@ func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason 
 		Outcome:        outcome,
 		RejectReason:   reason,
 	}
-	ctx, cancel = opCtx(diagTimeout)
+	ctx, cancel := opCtx(diagTimeout)
 	defer cancel()
 	if err := s.diag.Record(ctx, rec); err != nil {
 		log.Printf("smtpd: recording a %s refusal notice: %v", reason, err)
-		return accounted
+		s.limiter.ReleaseNotice(userID, reason)
+		return false
 	}
 	return true
 }
