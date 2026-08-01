@@ -103,7 +103,15 @@ import {
   type HashRow,
   type Head,
 } from "../wire/chain";
-import { KIND_RAW_BODY, SCHEMA_VERSION, compareUTF8, kindOf } from "../wire/op";
+import {
+  KIND_RAW_BODY,
+  SCHEMA_VERSION,
+  UnknownNewerVersionError,
+  compareUTF8,
+  decodeBlobOps,
+  decodeRawBody,
+  kindOf,
+} from "../wire/op";
 
 // ---------------------------------------------------------------------------
 // The inputs
@@ -275,6 +283,92 @@ function refold(input: CheckInput): Refold {
   }
 }
 
+/** Renders a leaf for a message. `bigint` has no JSON form, so it is explicit. */
+function show(v: unknown): string {
+  if (typeof v === "bigint") return `${v}`;
+  if (typeof v === "string") return JSON.stringify(v);
+  return String(v);
+}
+
+/** At most this many differences are listed before the message is summarised. */
+const DIFF_LIMIT = 8;
+
+/**
+ * Walks two values that ought to be equal and records every path where they are
+ * not, as `state` versus `log`.
+ *
+ * Deliberately structural rather than a serialized-string comparison: a single
+ * "these two states differ" line is useless for acting on, and the whole point
+ * of naming a path like `txns/t2/provenance` is that the reader knows at once
+ * whether the log or the state is the thing that moved.
+ */
+function diffValue(path: string, state: unknown, log: unknown, out: string[]): void {
+  if (out.length >= DIFF_LIMIT) return;
+
+  if (state instanceof Map || log instanceof Map) {
+    if (!(state instanceof Map) || !(log instanceof Map)) {
+      out.push(`${path}: one side is a Map and the other is not`);
+      return;
+    }
+    const keys = [...new Set([...state.keys(), ...log.keys()].map(String))].sort(compareUTF8);
+    for (const k of keys) {
+      if (!state.has(k)) out.push(`${path}/${k}: absent from the state, present in the op log`);
+      else if (!log.has(k)) out.push(`${path}/${k}: present in the state, absent from the op log`);
+      else diffValue(`${path}/${k}`, state.get(k), log.get(k), out);
+      if (out.length >= DIFF_LIMIT) return;
+    }
+    return;
+  }
+
+  if (state instanceof Set || log instanceof Set) {
+    if (!(state instanceof Set) || !(log instanceof Set)) {
+      out.push(`${path}: one side is a Set and the other is not`);
+      return;
+    }
+    const a = [...state].map(String).sort(compareUTF8).join(",");
+    const b = [...log].map(String).sort(compareUTF8).join(",");
+    if (a !== b) out.push(`${path}: state holds {${a}}, the op log gives {${b}}`);
+    return;
+  }
+
+  if (Array.isArray(state) || Array.isArray(log)) {
+    if (!Array.isArray(state) || !Array.isArray(log)) {
+      out.push(`${path}: one side is an array and the other is not`);
+      return;
+    }
+    if (state.length !== log.length) {
+      out.push(`${path}: the state has ${state.length} entr${state.length === 1 ? "y" : "ies"}, the op log gives ${log.length}`);
+      return;
+    }
+    for (let n = 0; n < state.length; n++) {
+      diffValue(`${path}/${n}`, state[n], log[n], out);
+      if (out.length >= DIFF_LIMIT) return;
+    }
+    return;
+  }
+
+  if (state !== null && log !== null && typeof state === "object" && typeof log === "object") {
+    const keys = [...new Set([...Object.keys(state), ...Object.keys(log)])].sort(compareUTF8);
+    for (const k of keys) {
+      diffValue(`${path}/${k}`, (state as Record<string, unknown>)[k], (log as Record<string, unknown>)[k], out);
+      if (out.length >= DIFF_LIMIT) return;
+    }
+    return;
+  }
+
+  if (state === log) return;
+  if (path.endsWith("/amount_home_minor")) {
+    // The FX hazard deserves its own sentence: the generic wording would not
+    // tell the reader that a snapshot is frozen at a POSITION.
+    out.push(
+      `${path}: the state holds ${show(state)} but re-folding from position 0 computes ${show(log)} — ` +
+        `a snapshot is frozen at its own log position, never at the final rate head`,
+    );
+    return;
+  }
+  out.push(`${path}: the state holds ${show(state)}, the op log gives ${show(log)}`);
+}
+
 // ---------------------------------------------------------------------------
 // I1 — the pulled stream's ordering
 // ---------------------------------------------------------------------------
@@ -302,7 +396,11 @@ function checkStreamOrder(i: CheckInput): Violation[] {
       out.push(hard(I1, `row ${n} has seq ${JSON.stringify(r.seq)}, which is not a bigint`));
       continue;
     }
-    if (typeof i.cursorBefore === "bigint" && r.seq <= i.cursorBefore) {
+    if (typeof i.cursorBefore !== "bigint") {
+      // Reported, not skipped. A mistyped cursor silently disables the "no row
+      // behind the cursor" check, which is the one that catches a rewind.
+      if (n === 0) out.push(hard(I1, `cursorBefore is ${JSON.stringify(i.cursorBefore)}, not a bigint, so no row can be checked against it`));
+    } else if (r.seq <= i.cursorBefore) {
       out.push(hard(I1, `row ${n} is at seq ${r.seq}, at or behind the cursor ${i.cursorBefore} this pull resumed from`));
     }
     if (previous !== null && r.seq <= previous) {
@@ -340,22 +438,33 @@ const I2 = "I2_writer_counters";
  * head: no gaps, no duplicates, no reordering. This is what detects a dropped
  * row (spec §3.3:65), which I1 deliberately does not.
  *
- * **Checked against the HASH LIST when one is present for that writer**, and
- * against the fetched rows otherwise. That distinction is what makes a 90-day
- * rolling cold window legal rather than a permanent violation: spec §3.3:70
- * makes cold bodies lazily synced, so their absence is by design, while §3.3:72's
- * compact hash list still proves the chain has no holes.
+ * # Which sequence is checked, and why it is never a choice between them
+ *
+ * The COLD stream is lazily synced behind a rolling window (spec §3.3:70), so
+ * its fetched bodies are legitimately sparse and only its hash list can prove
+ * the chain has no holes (§3.3:72). The HOT stream has no such excuse: a hot
+ * pull returns every row, so its rows must be contiguous on their own.
+ *
+ * So the two sequences are checked INDEPENDENTLY — the hash list whenever one is
+ * present, and the rows whenever the stream is hot — rather than one being
+ * selected in preference to the other. An earlier draft picked "hash list if
+ * present, else rows", which meant a hot pull that happened to carry a hash list
+ * silently switched off row-contiguity: a dropped hot row then produced no
+ * violation from any of the seventeen, because I3 does not link across an absent
+ * row and I9/I10 compare state against ops and never rows against ops. That is
+ * precisely the dropped-row detection §3.3:65 assigns to this invariant.
  */
 function checkWriterCounters(i: CheckInput): Violation[] {
   const out: Violation[] = [];
   const hashes = byWriter(i.hashList);
   const rows = byWriter(i.rows.filter((r) => r.stream === i.stream));
-  const writers = new Map<string, "hash list" | "rows">();
-  for (const w of hashes.keys()) writers.set(w, "hash list");
-  for (const w of rows.keys()) if (!writers.has(w)) writers.set(w, "rows");
 
-  for (const [w, source] of writers) {
-    const list: { writer_counter: bigint }[] = source === "hash list" ? hashes.get(w)! : rows.get(w)!;
+  const runs: { writer: string; source: string; list: { writer_counter: bigint }[] }[] = [];
+  for (const [w, list] of hashes) runs.push({ writer: w, source: "hash list", list });
+  // Hot rows are checked ALWAYS, hash list or not. Cold rows are a window.
+  if (i.stream === "hot") for (const [w, list] of rows) runs.push({ writer: w, source: "rows", list });
+
+  for (const { writer: w, source, list } of runs) {
     const key = safeChainKey(w, i.stream);
     if (key === null) {
       out.push(hard(I2, `a ${source} entry names writer ${JSON.stringify(w)}, which cannot be a chain key`));
@@ -489,31 +598,56 @@ function checkColdHashList(i: CheckInput): Violation[] {
     }
   }
 
-  if (i.stream !== "cold") return out;
-
-  // Everything pinned for this stream: an earlier session's persisted map, plus
-  // whatever this response committed to.
+  // Everything pinned for this stream. The persisted map is loaded FIRST and is
+  // authoritative: where this response's hash list disagrees with a hash the
+  // client already holds, the server has changed its mind about something it
+  // already committed to, and that disagreement is information rather than
+  // something to resolve in the server's favour. An earlier draft let the
+  // response overwrite the pin, which handed a re-serving server a free swap.
   const pinned = new Map<string, Uint8Array>();
   for (const [key, m] of i.pinnedBlobHashes) {
     const sep = typeof key === "string" ? key.indexOf("|") : -1;
     if (sep < 0 || key.slice(sep + 1) !== i.stream) continue;
     for (const [counter, hash] of m) pinned.set(`${key.slice(0, sep)}|${counter}`, hash);
   }
-  for (const h of i.hashList) pinned.set(`${h.writer_id}|${h.writer_counter}`, h.blob_hash);
+  for (const h of i.hashList) {
+    const at_ = `${h.writer_id}|${h.writer_counter}`;
+    const already = pinned.get(at_);
+    if (already === undefined) {
+      pinned.set(at_, h.blob_hash);
+      continue;
+    }
+    if (!equalBytes(already, h.blob_hash)) {
+      out.push(
+        hard(
+          I3B,
+          `the hash list now gives ${hex(h.blob_hash)} for ${at(h.writer_id, i.stream, h.writer_counter)}, but ` +
+            `${hex(already)} was already pinned for it — a server cannot change its mind about a hash it has ` +
+            `already handed over`,
+        ),
+      );
+    }
+    // The older pin stands, so a conflict cannot also launder the body below.
+  }
 
+  // The body check runs for ANY stream that has pins, so a hot pull carrying a
+  // hash list gets its bodies cross-checked too. Only COLD treats an unpinned
+  // body as a violation: a hot pull normally carries no hash list at all, and
+  // its bodies are covered by I2's row contiguity plus I3's chain instead.
   for (const r of i.rows) {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     const want = pinned.get(`${r.writer_id}|${r.writer_counter}`);
     if (want === undefined) {
+      if (i.stream !== "cold") continue;
       // "I have no pin for this one" is exactly the answer a hostile server
-      // wants, so an unpinned body is refused rather than accepted unverified.
+      // wants, so an unpinned cold body is refused rather than accepted unverified.
       out.push(hard(I3B, `a cold body arrived at ${where}, whose hash was never pinned, so nothing can check it`));
       continue;
     }
     if (!(r.blob instanceof Uint8Array) || !is32(r.prev_hash)) continue; // I3 reported it
     const got = chainHash(r.prev_hash, r.blob);
     if (!equalBytes(got, want)) {
-      out.push(hard(I3B, `the cold body at ${where} hashes to ${hex(got)}, but ${hex(want)} was pinned for it`));
+      out.push(hard(I3B, `the body at ${where} hashes to ${hex(got)}, but ${hex(want)} was pinned for it`));
     }
   }
   return out;
@@ -752,6 +886,11 @@ function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
   }
 
   if (r.state === null) return out; // I10 reports the re-fold failure
+  // BOTH directions. A one-directional refold→state walk misses an entity the
+  // state holds that the log never creates — which for a rule is missed
+  // entirely, since I10's existence check only covers transactions. It is also
+  // what makes "ops is the whole history" a checked precondition for an account
+  // that holds only rules, where I10 has no transactions to compare at all.
   for (const [key, head] of r.state.heads) {
     const have = i.state.heads.get(key);
     if (have === undefined) {
@@ -766,6 +905,17 @@ function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
       );
     }
   }
+  for (const [key, head] of i.state.heads) {
+    if (!r.state.heads.has(key)) {
+      out.push(
+        hard(
+          I9,
+          `${head.kind} ${head.id} is at version ${head.version} in the state, but no op in the log ever creates it — ` +
+            `a phantom entity, or an op log that is not the one this state was folded from`,
+        ),
+      );
+    }
+  }
   return out;
 }
 
@@ -776,49 +926,69 @@ function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
 const I10 = "I10_fx_prefix_monotone";
 
 /**
- * Re-folding every op from position 0 reproduces every `amount_home_minor` in
- * the state.
+ * Re-folding every op from position 0 reproduces the state — every
+ * `amount_home_minor`, and every other materialized field with it.
  *
- * This is the check that catches the FX hazard spec §3.7:134 names: freezing a
- * snapshot at the END of a fold, against the final rate head, agrees with the
- * correct answer on the final state of many logs and disagrees on every
- * intermediate one. A device that synced in ten chunks and one restoring from
- * scratch would then show different money.
+ * The FX snapshot is what the invariant is NAMED for, because it is the field
+ * with the subtle failure: freezing at the END of a fold, against the final rate
+ * head, agrees with the correct answer on the final state of many logs and
+ * disagrees on every intermediate one, so a device that synced in ten chunks and
+ * one restoring from scratch would show different money (spec §3.7:134).
+ *
+ * # Why the comparison is the whole state and not just that one field
+ *
+ * An earlier draft compared `amount_home_minor` and existence only, and
+ * therefore certified as clean a state whose `amount_minor`, `category`,
+ * `direction`, `splits`, `provenance`, `rates` or `homeCurrency` disagreed with
+ * its own op log — **including a reordered pair of concurrent ops that flips the
+ * fork winner**, which is the precise subject of the exit criterion. `provenance`
+ * is the sharpest of those: it is derived from the blob's `writer_id` rather than
+ * from any payload field expressly so that no writer can claim `ingest`
+ * provenance, and re-attributing an op in the `ops` list was silent.
+ *
+ * # The three fields deliberately excluded, and why they are not a hole
+ *
+ * `unreadable`, `cursors` and `appliedAtCursor` are DELIVERY bookkeeping, and
+ * the two folds legitimately disagree about them: a blob that was set aside is
+ * recorded in `state.unreadable` and advances `cursors.hot` while contributing
+ * no ops at all, so a re-fold of the ops cannot reproduce either. `unreadable`
+ * is I15's, `cursors` is the sync layer's, and `appliedAtCursor` is excluded from
+ * the convergence claim by `state.ts` itself. `heads` is excluded here only
+ * because I9 compares it, in both directions, with better messages.
  *
  * Compared BOTH ways, which is also what makes `ops` being the whole history a
- * checked precondition rather than a documented one: a caller that passes only
- * this page's ops gets a loud violation instead of a vacuous pass.
- *
- * It compares named fields rather than `serializeState`, on purpose. Two states
- * legitimately differ in fields the witness does compare — `unreadable` and the
- * cursor both move for a set-aside blob that contributes no ops — so a
- * whole-state comparison would fire on a correct log.
+ * checked precondition rather than a documented one.
  */
 function checkFXPrefixMonotone(i: CheckInput, r: Refold): Violation[] {
   if (r.state === null) {
     return [hard(I10, `the ops backing this state cannot be re-folded in the order given: ${r.error}`)];
   }
   const out: Violation[] = [];
-  for (const [id, t] of i.state.txns) {
-    const again = r.state.txns.get(id);
-    if (again === undefined) {
+  for (const id of i.state.txns.keys()) {
+    if (!r.state.txns.has(id)) {
       out.push(hard(I10, `${id} is in the state but re-folding the op log from position 0 never creates it`));
-      continue;
-    }
-    if (t.amount_home_minor !== again.amount_home_minor) {
-      out.push(
-        hard(
-          I10,
-          `${id} holds the home-currency snapshot ${String(t.amount_home_minor)}, but re-folding from position 0 ` +
-            `computes ${String(again.amount_home_minor)} — a snapshot must be frozen at its own log position, never at the final rate head`,
-        ),
-      );
     }
   }
   for (const id of r.state.txns.keys()) {
     if (!i.state.txns.has(id)) {
       out.push(hard(I10, `re-folding the op log from position 0 creates ${id}, which is not in the state`));
     }
+  }
+
+  // Every materialized field, both folds, one structural walk.
+  const diffs: string[] = [];
+  for (const [id, t] of i.state.txns) {
+    const again = r.state.txns.get(id);
+    if (again !== undefined) diffValue(`txns/${id}`, t, again, diffs);
+  }
+  for (const field of ["homeCurrency", "rates", "rules", "liveByIngestID", "byFingerprint", "pendingByCurrency", "checkpoints", "forks", "anomalies"] as const) {
+    diffValue(field, i.state[field], r.state[field], diffs);
+  }
+  for (const d of diffs.slice(0, DIFF_LIMIT)) {
+    out.push(hard(I10, `the state disagrees with a re-fold of its own op log at ${d}`));
+  }
+  if (diffs.length >= DIFF_LIMIT) {
+    out.push(hard(I10, `…and further disagreements between the state and a re-fold of its own op log beyond the first ${DIFF_LIMIT}`));
   }
   return out;
 }
@@ -860,19 +1030,36 @@ const I11 = "I11_roster_checkpoint";
  * first push. The first has no such repair, and hard-stopping every sync over a
  * roster that is one request stale would make the product unusable.
  *
- * # A bootstrap ordering dependency this creates, which Task 14 must handle
+ * # CHECKPOINT_NAMES_THE_ROSTER — a binding contract on Task 14's `checkpoint`
  *
- * "Two or more device writers and no checkpoint" is a hard stop, and
- * `Client.pull()` persists nothing over a hard stop — so a SECOND device cannot
- * finish its first sync until some device has written a checkpoint. That is not
- * a bug in the rule; it is the rule doing its job, because such an account has
- * no cross-check against a withheld writer. It is self-clearing, because `push`
- * emits a checkpoint whenever the roster it sees has changed, so enrolling a
- * second device makes the first one checkpoint on its next push (and Task 38
- * step 4 already sequences it that way). But it means enrolment and the first
- * checkpoint are ORDERED, and a client that enrols a device and immediately
- * pulls from it will hard-stop until the peer pushes. `check.test.ts` pins the
- * behaviour page by page so this cannot be rediscovered as a mystery.
+ * **A `writer_checkpoint` must name one head for every (roster writer × stream)
+ * pair, using counter 0 and the genesis hash for a chain that holds no blobs.**
+ * It must NOT name only the chains its author happens to have observed.
+ *
+ * This is not a preference; without it the invariant is unsatisfiable in the
+ * exit test's own configuration. A checkpoint built from observed heads can
+ * never name a writer that has authored nothing — it has no head to observe —
+ * so an enrolled-but-silent `dev-b` would hard-stop every sync forever, and no
+ * checkpoint any device could emit would clear it. Plan line 2284 (the notice is
+ * gone at step 4) and step 6 (zero hard stops on a pull before dev-b writes at
+ * step 9) both depend on the contract above. An earlier draft of this file
+ * claimed the case was "self-clearing because `push` checkpoints when the roster
+ * changes"; that reasoning is circular — a writer is only observable after it
+ * pushes, which is exactly what has not happened yet.
+ *
+ * `encodeCheckpointPayload` accepts `{counter: "0", hash: <64 zeros>}`, and this
+ * check treats it as satisfying coverage while asserting nothing false: `0 >
+ * observed` is never true, so a zero entry can hide no withheld rows.
+ *
+ * # The bootstrap ordering that REMAINS after the contract
+ *
+ * "Two or more device writers and no checkpoint at all" is still a hard stop,
+ * and `Client.pull()` persists nothing over a hard stop — so a second device
+ * cannot finish its first sync until *some* device has written *a* checkpoint.
+ * That is the rule doing its job: such an account has no cross-check against a
+ * withheld writer. Task 38 step 4 already sequences it correctly (dev-a
+ * checkpoints, then dev-b pulls). `check.test.ts` pins the behaviour page by
+ * page so it cannot be rediscovered as a mystery.
  *
  * # Counters are only compared where there is something to compare against
  *
@@ -918,14 +1105,18 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
     return out;
   }
 
-  const named = new Set(checkpoints.map((c) => c.writer_id));
+  // Coverage is per (writer, STREAM), because a head that does not name a stream
+  // is meaningless (Decision 13) and a checkpoint that named only `dev-b|cold`
+  // would otherwise satisfy a hot pull.
+  const named = new Set(checkpoints.map((c) => `${c.writer_id}|${c.stream}`));
   for (const w of liveDevices) {
-    if (!named.has(w.writer_id)) {
+    if (!named.has(`${w.writer_id}|${i.stream}`)) {
       out.push(
         hard(
           I11,
-          `the latest writer_checkpoint names no head for live device writer ${w.writer_id} — ` +
-            `that writer's chain has no trusted head, so a truncation of it would verify`,
+          `the latest writer_checkpoint names no ${i.stream} head for live device writer ${w.writer_id} — ` +
+            `that writer's chain has no trusted head, so a truncation of it would verify. A writer that has ` +
+            `authored nothing is named at counter 0 with the genesis hash; see CHECKPOINT_NAMES_THE_ROSTER`,
         ),
       );
     }
@@ -940,6 +1131,18 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
       out.push(hard(I11, `a checkpoint head names (${c.writer_id}, ${c.stream}), which cannot be a chain key`));
       continue;
     }
+    if (typeof c.counter !== "bigint") {
+      // Reported rather than skipped: a mistyped counter is a checkpoint that
+      // cannot be compared, and silently not comparing it is how the whole
+      // cross-check goes missing without anyone noticing.
+      out.push(hard(I11, `checkpoint head (${key}) has counter ${JSON.stringify(c.counter)}, which is not a bigint and cannot be compared`));
+      continue;
+    }
+    if (c.counter === 0n && !/^0{64}$/.test(c.hash)) {
+      // Counter 0 is the head of an EMPTY chain, whose hash is genesis by
+      // definition. Anything else is a head claiming to be nothing and something.
+      out.push(hard(I11, `checkpoint head (${key}) is at counter 0 but names hash ${c.hash}, not the genesis hash`));
+    }
     if (c.stream !== i.stream) {
       out.push(
         note(
@@ -951,7 +1154,7 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
       continue;
     }
     const observed = observedHead(i, key);
-    if (typeof c.counter === "bigint" && c.counter > observed) {
+    if (c.counter > observed) {
       out.push(
         hard(
           I11,
@@ -1054,14 +1257,22 @@ const I13 = "I13_supersede_has_origin";
  * A notice, not a hard stop: the supersede still materializes a visible row, and
  * the missing origin is recoverable by syncing the blob that carries it.
  */
-function checkSupersedeHasOrigin(i: CheckInput): Violation[] {
+function checkSupersedeHasOrigin(i: CheckInput, r: Refold): Violation[] {
   const out: Violation[] = [];
   const introduced = new Set<string>();
   for (const e of i.ops) {
     const op = e.op;
     if (op === undefined || op === null) continue;
     if (op.type === "txn_ingested") {
-      if (typeof op.ingest_id === "string") introduced.add(op.ingest_id);
+      // An op being PRESENT is not an op having applied: a `txn_ingested` refused
+      // as a duplicate_create or duplicate_ingest introduces nothing, and
+      // counting it would leave this check quiet exactly where the engine raises
+      // `supersede_without_origin`. The re-fold already says which creates took:
+      // the entity exists and carries this ingest id.
+      const id = op.entity?.id;
+      const applied =
+        r.state === null || (typeof id === "string" && r.state.txns.get(id)?.ingest_id === op.ingest_id);
+      if (typeof op.ingest_id === "string" && applied) introduced.add(op.ingest_id);
       continue;
     }
     if (op.type !== "txn_superseded") continue;
@@ -1146,6 +1357,7 @@ function checkForksSurfaced(i: CheckInput): Violation[] {
     );
   }
 
+  const opIDs = new Set(i.ops.map((e) => e.op?.op_id).filter((x): x is string => typeof x === "string"));
   for (const f of forks) {
     if (f.winner_op === f.loser_op) {
       out.push(
@@ -1158,6 +1370,30 @@ function checkForksSurfaced(i: CheckInput): Violation[] {
     }
     if (typeof f.at_seq !== "bigint") {
       out.push(note(I14, `the fork on ${f.entity.kind} ${f.entity.id} records at_seq ${JSON.stringify(f.at_seq)}, not a bigint`));
+    }
+    // A fork notice is identical on every replica precisely BECAUSE it names op
+    // ids rather than positions — which is only worth anything if those ids name
+    // ops that are actually in the log. The ops are in hand, so join them.
+    for (const [role, id] of [["winner", f.winner_op], ["loser", f.loser_op]] as const) {
+      if (!opIDs.has(id)) {
+        out.push(note(I14, `the fork on ${f.entity.kind} ${f.entity.id} names ${JSON.stringify(id)} as its ${role}, which is not an op in the log`));
+      }
+    }
+  }
+
+  for (const [n, a] of anomalies.entries()) {
+    if (typeof a.at_seq !== "bigint") {
+      out.push(note(I14, `anomaly ${n} (${a.kind}) records at_seq ${JSON.stringify(a.at_seq)}, not a bigint — it cannot be located in the log`));
+    }
+  }
+
+  // Referential existence only. Whether the two still SHARE a fingerprint is
+  // deliberately not asked (correction 7): the field is a snapshot, and the row
+  // it points at may since have been edited into another bucket. But it must at
+  // least point at a row, or the notice names nothing a user can look at.
+  for (const [id, t] of i.state.txns) {
+    if (typeof t.possible_duplicate_of === "string" && !i.state.txns.has(t.possible_duplicate_of)) {
+      out.push(note(I14, `${id} is flagged as a possible duplicate of ${t.possible_duplicate_of}, which is not a transaction in this state`));
     }
   }
 
@@ -1201,6 +1437,53 @@ const I15 = "I15_unreadable_set_aside";
 function checkUnreadableSetAside(i: CheckInput): Violation[] {
   const out: Violation[] = [];
   const list = i.state.unreadable;
+
+  // The FORWARD direction: every hot blob in this page that will not decode must
+  // be in `unreadable`. An earlier draft implemented only the converse — it
+  // validated records already present — so emptying `unreadable` on a state with
+  // a genuinely undecodable blob gave a clean run, and a blob the fold dropped
+  // silently was indistinguishable from one that decoded fine.
+  //
+  // Scoped to blobs that OPEN and then fail to decode, which is exactly the
+  // `foldBlobs` set-aside path. A blob that will not open never reaches the fold
+  // at all and is I4's or I5's finding, not a missing set-aside record.
+  const setAside = new Set(list.map((u) => `${u.writer_id}|${u.stream}|${u.writer_counter}|${u.seq}`));
+  if (i.stream === "hot") {
+    for (const r of i.rows) {
+      let plaintext: Uint8Array;
+      try {
+        plaintext = openBlob(
+          { userId: i.userId, stream: r.stream, writerId: r.writer_id, writerCounter: r.writer_counter },
+          r.blob,
+        );
+      } catch {
+        continue;
+      }
+      let reason: string;
+      try {
+        decodeBlobOps(plaintext);
+        continue; // it decodes, so nothing is owed
+      } catch (err) {
+        reason = msg(err);
+        if (err instanceof UnknownNewerVersionError) {
+          // Not a set-aside at all: an unknown newer version is one of the two
+          // conditions spec §3.3:68 reserves a HARD STOP for, and the ops it
+          // carries never reach `ops`, so I6 cannot see them either.
+          out.push(hard(I15, `the blob at ${at(r.writer_id, r.stream, r.writer_counter)} carries a newer schema version and must stop this sync: ${reason}`));
+          continue;
+        }
+      }
+      if (!setAside.has(`${r.writer_id}|${r.stream}|${r.writer_counter}|${r.seq}`)) {
+        out.push(
+          hard(
+            I15,
+            `the blob at ${at(r.writer_id, r.stream, r.writer_counter)} (seq ${String(r.seq)}) does not decode ` +
+              `(${reason}) and is not in state.unreadable — it was dropped silently instead of being set aside`,
+          ),
+        );
+      }
+    }
+  }
   if (list.length > 0) {
     const where = list.map((u) => `${at(u.writer_id, u.stream, u.writer_counter)} at seq ${String(u.seq)}`).join("; ");
     out.push(note(I15, `${list.length} blob(s) set aside and not folded: ${where}`));
@@ -1225,7 +1508,12 @@ function checkUnreadableSetAside(i: CheckInput): Violation[] {
       );
       continue;
     }
-    if (u.stream === "hot" && typeof i.state.cursors.hot === "bigint" && i.state.cursors.hot < u.seq) {
+    if (u.stream !== "hot") continue;
+    if (typeof i.state.cursors.hot !== "bigint") {
+      out.push(hard(I15, `state.cursors.hot is ${JSON.stringify(i.state.cursors.hot)}, not a bigint, so no set-aside blob can be checked against it`));
+      continue;
+    }
+    if (i.state.cursors.hot < u.seq) {
       out.push(
         hard(
           I15,
@@ -1293,6 +1581,16 @@ function checkColdCarriesNoOps(i: CheckInput): Violation[] {
             `cold blobs carry raw email bodies and nothing else, or a hot-only sync stops being a complete materialization`,
         ),
       );
+      continue;
+    }
+    // The label is not the record. `kindOf` reads one field, so a body that says
+    // `raw_body` and then carries something else entirely would pass a
+    // label-only check — and "it claimed to be a raw record and is not one" is
+    // exactly as unaccounted-for as an op list.
+    try {
+      decodeRawBody(plaintext);
+    } catch (err) {
+      out.push(hard(I16, `the cold blob at ${where} says it is a ${KIND_RAW_BODY} but does not decode as one: ${msg(err)}`));
     }
   }
   return out;

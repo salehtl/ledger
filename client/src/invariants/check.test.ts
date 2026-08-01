@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { foldBlobs, type LogEntry, type PositionedBlob } from "../replay/replay";
-import { emptyState, entityKey, serializeState, type State } from "../replay/state";
+import { emptyState, entityKey, fingerprint, serializeState, type State } from "../replay/state";
 import { openBlob, sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, chainKey, type ChainKey, type HashRow, type Head } from "../wire/chain";
 import {
@@ -248,24 +248,40 @@ function hotPlans(): Plan[] {
 /** A dev-a blob whose plaintext is not an op list at all. */
 const corruptPlan = (): Plan => ({ writer: "dev-a", plaintext: new TextEncoder().encode("not an op blob") });
 
-/** Names every chain head this client has observed, which is what a checkpoint is. */
-const checkpointPlan = (writer: string): Plan => ({
+/**
+ * A `writer_checkpoint` obeying the CHECKPOINT_NAMES_THE_ROSTER contract: one
+ * head for every writer on `names`, at its observed counter, and at **counter 0
+ * with the genesis hash** for a writer that has authored nothing.
+ *
+ * The "authored nothing" case is the whole reason the contract exists. A
+ * checkpoint built from observed chain heads can never mention an enrolled but
+ * silent device — it has no head to observe — so such a device would hard-stop
+ * every sync forever with no checkpoint able to clear it.
+ *
+ * `names` is passed rather than read from the input's roster so a test can model
+ * a checkpoint written BEFORE a later enrolment; `extra` appends literal heads a
+ * test wants to assert against.
+ */
+const checkpointPlan = (writer: string, names: Writer[], extra: CheckpointHead[] = []): Plan => ({
   writer,
-  opsFrom: (heads) =>
-    [
-      checkpointOp(
-        [...heads.entries()].map(([key, h]) => {
-          const sep = key.indexOf("|");
-          return {
-            writer_id: key.slice(0, sep),
-            stream: key.slice(sep + 1),
-            counter: `${h.counter}`,
-            hash: hex(h.hash),
-          };
-        }),
-      ),
-    ],
+  opsFrom: (heads) => [
+    checkpointOp([
+      ...names.map((w) => {
+        const h = heads.get(chainKey(w.writer_id, "hot"));
+        return {
+          writer_id: w.writer_id,
+          stream: "hot",
+          counter: `${h?.counter ?? 0n}`,
+          hash: h === undefined ? "0".repeat(64) : hex(h.hash),
+        };
+      }),
+      ...extra,
+    ]),
+  ],
 });
+
+/** The default roster, as a value tests can hand to {@link checkpointPlan}. */
+const defaultRoster = (): Writer[] => [ingestWriter(), device("dev-a")];
 
 function cleanInput(over: Partial<AssembleOpts> = {}): CheckInput {
   return assemble({ plans: hotPlans(), ...over });
@@ -686,7 +702,7 @@ test("I9 fires when a materialized entity's version disagrees with its head", ()
 
 test("I9 fires when a head sits at a version the op log never authored", () => {
   const input = cleanInput();
-  const head = input.state.heads.get("txn t2")!;
+  const head = input.state.heads.get(entityKey("txn", "t2"))!;
   head.version += 3;
   input.state.txns.get("t2")!.version = head.version;
   expect(stopIDs(checkAll(input))).toContain("I9_version_contiguity");
@@ -694,14 +710,14 @@ test("I9 fires when a head sits at a version the op log never authored", () => {
 
 test("I9 fires on a version below 1, because numbering starts at the create", () => {
   const input = cleanInput();
-  input.state.heads.get("txn t2")!.version = 0;
+  input.state.heads.get(entityKey("txn", "t2"))!.version = 0;
   input.state.txns.get("t2")!.version = 0;
   expect(stopIDs(checkAll(input))).toContain("I9_version_contiguity");
 });
 
 test("I9 fires when an entity is materialized with no head registered for it", () => {
   const input = cleanInput();
-  input.state.heads.delete("txn t2");
+  input.state.heads.delete(entityKey("txn", "t2"));
   expect(stopIDs(checkAll(input))).toContain("I9_version_contiguity");
 });
 
@@ -709,7 +725,7 @@ test("I9 does not flag the head a retired transaction keeps forever", () => {
   // `heads` is never pruned: a supersede does not end the predecessor's version
   // line, because an offline edit to the retired row still has to resolve.
   const input = cleanInput();
-  expect(input.state.heads.has("txn t1")).toBe(true);
+  expect(input.state.heads.has(entityKey("txn", "t1"))).toBe(true);
   expect(stopIDs(checkAll(input))).not.toContain("I9_version_contiguity");
 });
 
@@ -791,49 +807,124 @@ test("I11 counts only LIVE device writers when deciding whether a checkpoint is 
 });
 
 test("I11 stops being a notice once a checkpoint lands", () => {
-  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a")] });
+  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
   expect(input.state.checkpoints.length).toBeGreaterThan(0);
   expect(ids(checkAll(input))).not.toContain("I11_roster_checkpoint");
 });
 
+test("I11 clears for an enrolled writer that has never authored a blob", () => {
+  // **The exit test's own configuration** (plan Task 38 steps 2-4): dev-b is
+  // enrolled and has written nothing, and dev-a checkpoints. Under a checkpoint
+  // built from OBSERVED chain heads this hard-stopped permanently — dev-b has no
+  // head to observe, so no checkpoint any device could ever emit would name it,
+  // and plan line 2284 ("the notice is gone at step 4") was unreachable. The
+  // contract is that a checkpoint names the ROSTER, at counter 0 for a silent
+  // writer, which asserts nothing false because 0 can never exceed observed.
+  const roster = [ingestWriter(), device("dev-a"), device("dev-b")];
+  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", roster)], roster });
+  expect(input.state.checkpoints.find((c) => c.writer_id === "dev-b")).toEqual({
+    writer_id: "dev-b",
+    stream: "hot",
+    counter: 0n,
+    hash: "0".repeat(64),
+  });
+  expect(checkAll(input)).toEqual([{ id: "I14_forks_surfaced", severity: "notice", detail: "1 fork, 0 anomalies" }]);
+});
+
 test("I11 hard-stops when the checkpoint omits a live device writer", () => {
+  // The checkpoint was written before dev-b enrolled, so it names only dev-a.
   const input = cleanInput({
-    plans: [...hotPlans(), checkpointPlan("dev-a")],
+    plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())],
     roster: [ingestWriter(), device("dev-a"), device("dev-b")],
   });
   const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop");
   expect(v?.detail).toContain("dev-b");
 });
 
+test("I11 is not satisfied by a checkpoint head on a different stream", () => {
+  // Coverage is per (writer, stream): a head that does not name a stream is
+  // meaningless, so a cold-only entry must not discharge a hot pull.
+  const roster = [ingestWriter(), device("dev-a"), device("dev-b")];
+  const input = cleanInput({
+    plans: [
+      ...hotPlans(),
+      checkpointPlan("dev-a", defaultRoster(), [{ writer_id: "dev-b", stream: "cold", counter: "0", hash: "0".repeat(64) }]),
+    ],
+    roster,
+  });
+  const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop");
+  expect(v?.detail).toContain("no hot head for live device writer dev-b");
+});
+
+test("I11 hard-stops on a counter-0 checkpoint head whose hash is not genesis", () => {
+  // Counter 0 is the head of an EMPTY chain, so its hash is genesis by
+  // definition. Anything else is a head claiming to be nothing and something.
+  const roster = [ingestWriter(), device("dev-a"), device("dev-b")];
+  const input = cleanInput({
+    plans: [
+      ...hotPlans(),
+      checkpointPlan("dev-a", defaultRoster(), [{ writer_id: "dev-b", stream: "hot", counter: "0", hash: "a".repeat(64) }]),
+    ],
+    roster,
+  });
+  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.severity === "hard_stop" && v.detail.includes("genesis"))).toBe(true);
+});
+
 test("I11 fires when the server omits a writer from the roster", () => {
-  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a")] });
+  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
   input.roster = input.roster.filter((w) => w.writer_id !== "dev-a");
   expect(ids(checkAll(input))).toContain("I11_roster_checkpoint");
 });
 
-test("I11 hard-stops when a checkpoint head claims a counter no blob has reached", () => {
-  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a")] });
-  input.state.checkpoints[0]!.counter = 900n;
+test("I11 hard-stops when a checkpoint head claims a counter above the observed head", () => {
+  const roster = [ingestWriter(), device("dev-a"), device("dev-b")];
+  const input = cleanInput({
+    plans: [
+      { writer: "dev-b", ops: [rateSet("GBP", "4600000")] },
+      { writer: "dev-b", ops: [rateSet("JPY", "24000")] },
+      ...hotPlans(),
+      checkpointPlan("dev-a", defaultRoster(), [{ writer_id: "dev-b", stream: "hot", counter: "900", hash: "0".repeat(64) }]),
+    ],
+    roster,
+  });
   const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop");
-  expect(v?.detail).toContain("900");
+  expect(v?.detail).toContain("claims counter 900");
+  expect(v?.detail).toContain("is 2"); // two dev-b blobs really were served
 });
 
 test("I11 hard-stops when the server serves not one blob from a writer a checkpoint names", () => {
-  // Spec §3.4's actual attack: the whole of dev-b's chain withheld at bootstrap.
-  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a")], roster: [ingestWriter(), device("dev-a"), device("dev-b")] });
-  input.state.checkpoints.push({ writer_id: "dev-b", stream: "hot", counter: 4n, hash: "0".repeat(64) });
+  // Spec §3.4's actual attack: the whole of dev-b's chain withheld at bootstrap,
+  // while a peer's checkpoint proves those blobs existed.
+  const roster = [ingestWriter(), device("dev-a"), device("dev-b")];
+  const input = cleanInput({
+    plans: [
+      ...hotPlans(),
+      checkpointPlan("dev-a", defaultRoster(), [{ writer_id: "dev-b", stream: "hot", counter: "4", hash: "0".repeat(64) }]),
+    ],
+    roster,
+  });
   const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop" && x.detail.includes("dev-b"));
-  expect(v).toBeDefined();
+  expect(v?.detail).toContain("claims counter 4");
 });
 
 test("I11 does not hard-stop over a checkpoint head on a stream this pull did not cover", () => {
   // A hot-only pull cannot observe the cold chain, and §3.3:70 makes that the
   // normal mode. Hard-stopping here would break every hot-only sync.
-  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a")] });
-  input.state.checkpoints.push({ writer_id: "ingest", stream: "cold", counter: 77n, hash: "0".repeat(64) });
+  const input = cleanInput({
+    plans: [
+      ...hotPlans(),
+      checkpointPlan("dev-a", defaultRoster(), [{ writer_id: "ingest", stream: "cold", counter: "77", hash: "0".repeat(64) }]),
+    ],
+  });
   const vs = all(checkAll(input), "I11_roster_checkpoint");
   expect(vs.filter((v) => v.severity === "hard_stop")).toHaveLength(0);
   expect(vs.some((v) => v.severity === "notice" && v.detail.includes("cold"))).toBe(true);
+});
+
+test("I11 fires when a checkpoint counter is not a bigint", () => {
+  const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
+  (input.state.checkpoints[0] as unknown as { counter: string }).counter = "6";
+  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.detail.includes("not a bigint"))).toBe(true);
 });
 
 test("I11 notices a blob from a writer the roster does not list", () => {
@@ -968,11 +1059,20 @@ test("I14 does NOT require possible_duplicate_of to still share a fingerprint", 
   // It is a snapshot of the answer when the row was indexed, not a live claim:
   // the row it points at may since have been edited into another bucket, and
   // nothing re-walks the rows pointing at it.
-  const input = cleanInput();
-  const t2 = input.state.txns.get("t2")!;
-  t2.possible_duplicate_of = "t3";
-  input.state.anomalies.push({ kind: "possible_duplicate", detail: "t2 matches t3", at_seq: 4n });
-  expect(input.state.txns.get("t3")!.merchant_raw).not.toBe("nothing like t2");
+  //
+  // Built as a REAL log rather than by hand-setting the field, so the dangling
+  // pointer is the one the engine actually produces.
+  const twin = { amount_minor: "31400", currency: "AED", merchant_raw: "TWIN", last4: "9999", posted_at: "2026-06-09T08:00:00Z" };
+  const input = cleanInput({
+    plans: [
+      { writer: "ingest", ops: [ingested("ia", "ta", twin)] },
+      { writer: "ingest", ops: [ingested("ib", "tb", twin)] }, // flagged against ta
+      { writer: "dev-a", ops: [edited("ta", 1, { merchant_raw: "MOVED ELSEWHERE" })] }, // ta leaves the bucket
+    ],
+  });
+  const tb = input.state.txns.get("tb")!;
+  expect(tb.possible_duplicate_of).toBe("ta");
+  expect(fingerprint(input.state.txns.get("ta")!)).not.toBe(fingerprint(tb)); // the pointer now dangles
   expect(hardStops(checkAll(input))).toHaveLength(0);
 });
 
@@ -1122,16 +1222,39 @@ test("I11 fires on a checkpoint head that names no usable chain", () => {
   expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.detail.includes("cannot be a chain key"))).toBe(true);
 });
 
+/**
+ * A cold pull whose STATE was folded from a real hot log carrying a real
+ * `writer_checkpoint` that names the cold chain at `coldCounter`. Hand-setting
+ * `state.checkpoints` would make the state disagree with its own op log, which
+ * I10 now correctly refuses.
+ */
+function coldWithCheckpoint(coldCounter: string, have: bigint[], of: number): CheckInput {
+  const hot = assemble({
+    plans: [
+      {
+        writer: "dev-a",
+        ops: [
+          checkpointOp([
+            { writer_id: "ingest", stream: "cold", counter: coldCounter, hash: "0".repeat(64) },
+            { writer_id: "dev-a", stream: "hot", counter: "0", hash: "0".repeat(64) },
+          ]),
+        ],
+      },
+    ],
+  });
+  const cold = coldWindowInput(have, of);
+  cold.state = hot.state;
+  cold.ops = hot.ops;
+  cold.roster = [ingestWriter()];
+  return cold;
+}
+
 test("I11 counts a cold hash list as evidence of a chain head", () => {
   // The client fetched one body but pinned the whole list, so it HAS witnessed
   // counter 6 even though it holds no bytes for it. Reading only the fetched
   // bodies would hard-stop a correctly synced rolling window.
-  const input = coldWindowInput([1n], 6);
-  input.roster = [ingestWriter()];
-  input.state.checkpoints = [{ writer_id: "ingest", stream: "cold", counter: 6n, hash: "0".repeat(64) }];
-  expect(hardStops(checkAll(input))).toHaveLength(0);
-  input.state.checkpoints = [{ writer_id: "ingest", stream: "cold", counter: 7n, hash: "0".repeat(64) }];
-  expect(stopIDs(checkAll(input))).toContain("I11_roster_checkpoint");
+  expect(hardStops(checkAll(coldWithCheckpoint("6", [1n], 6)))).toHaveLength(0);
+  expect(stopIDs(checkAll(coldWithCheckpoint("7", [1n], 6)))).toContain("I11_roster_checkpoint");
 });
 
 test("I12 fires on a negative home-currency snapshot", () => {
@@ -1178,6 +1301,250 @@ test("I16 does not call a cold blob it cannot even open a smuggled op list", () 
   const vs = checkAll(input);
   expect(stopIDs(vs)).toContain("I4_aad");
   expect(stopIDs(vs)).not.toContain("I16_cold_carries_no_ops");
+});
+
+// ---------------------------------------------------------------------------
+// Holes found by review, each closed and pinned here
+// ---------------------------------------------------------------------------
+
+test("I2 still catches a dropped hot row when the response also carries a hash list", () => {
+  // A hash list must not switch off row contiguity. It did: the check picked one
+  // sequence or the other, so a hot pull carrying a hash list lost the dropped-
+  // row detection §3.3:65 assigns to I2 — and no other invariant covers it,
+  // because I3 does not link across an absent row and I9/I10 compare state
+  // against ops, never rows against ops.
+  const input = cleanInput();
+  input.hashList = input.rows.map((r) => ({
+    seq: r.seq,
+    writer_id: r.writer_id,
+    writer_counter: r.writer_counter,
+    prev_hash: r.prev_hash,
+    blob_hash: r.blob_hash,
+  }));
+  input.rows = input.rows.filter((r) => !(r.writer_id === "dev-a" && r.writer_counter === 3n));
+  expect(stopIDs(checkAll(input))).toContain("I2_writer_counters");
+});
+
+test("I3b cross-checks hot bodies against a hash list when the response carries one", () => {
+  const input = cleanInput();
+  input.hashList = input.rows.map((r) => ({
+    seq: r.seq,
+    writer_id: r.writer_id,
+    writer_counter: r.writer_counter,
+    prev_hash: r.prev_hash,
+    blob_hash: r.blob_hash,
+  }));
+  expect(hardStops(checkAll(input))).toHaveLength(0); // consistent: nothing fires
+  flipPadding(input.rows[2]!.blob);
+  input.rows[2]!.blob_hash = chainHash(input.rows[2]!.prev_hash, input.rows[2]!.blob); // re-chained, so I3 is happy
+  expect(stopIDs(checkAll(input))).toContain("I3b_cold_hash_list");
+});
+
+test("I3b fires when a new hash list contradicts a hash already pinned", () => {
+  // A server cannot change its mind about a hash it has already handed over.
+  // Letting the response overwrite the pin resolved the disagreement in the
+  // server's favour and handed it a free body swap.
+  const input = coldWindowInput([5n], 6);
+  const stale = new Map(input.hashList.map((h) => [h.writer_counter, h.blob_hash]));
+  stale.set(5n, new Uint8Array(32).fill(0xab)); // what the client pinned last time
+  input.pinnedBlobHashes.set(chainKey("ingest", "cold"), stale);
+  const vs = all(checkAll(input), "I3b_cold_hash_list");
+  expect(vs.some((v) => v.detail.includes("already pinned"))).toBe(true);
+  expect(vs.every((v) => v.severity === "hard_stop")).toBe(true);
+});
+
+test("I9 fires on a phantom rule the op log never creates", () => {
+  // Rules are the keyspace I10's existence check does not cover, so a
+  // one-directional refold->state walk missed this entirely.
+  const input = cleanInput();
+  input.state.rules.set("r-ghost", { pattern: "P", match: "contains", category: "c", priority: 1, version: 4 });
+  input.state.heads.set(entityKey("rule", "r-ghost"), {
+    kind: "rule",
+    id: "r-ghost",
+    version: 4,
+    op_id: "op-x",
+    writer_id: "dev-a",
+    authored_at_ms: 0,
+  });
+  expect(all(checkAll(input), "I9_version_contiguity").some((v) => v.detail.includes("r-ghost"))).toBe(true);
+});
+
+test("I9 refuses an empty op log against a state that holds rules", () => {
+  // With no transactions, I10 has nothing to compare, so "ops is the whole
+  // history" was a checked precondition only for accounts that have any.
+  const input = assemble({
+    plans: [{ writer: "dev-a", ops: [ruleAdded("r1", null, "dining")] }],
+  });
+  input.ops = [];
+  expect(stopIDs(checkAll(input))).toContain("I9_version_contiguity");
+});
+
+test("I10 compares every materialized field, not just the FX snapshot", () => {
+  // Each of these was individually certified clean when the comparison was
+  // amount_home_minor plus existence.
+  const cases: [string, (s: State) => void][] = [
+    ["amount_minor", (s) => void (s.txns.get("t2")!.amount_minor = 99n)],
+    ["category", (s) => void (s.txns.get("t2")!.category = "not what the log says")],
+    ["direction", (s) => void (s.txns.get("t2")!.direction = "credit")],
+    ["splits", (s) => s.txns.get("t1")!.splits.push({ category: "smuggled", amount_minor: 1n })],
+    ["provenance", (s) => void (s.txns.get("t2")!.provenance = "user")], // t2 is an ingest row
+    ["needs_review", (s) => void (s.txns.get("t2")!.needs_review = !s.txns.get("t2")!.needs_review)],
+    ["superseded_by", (s) => void (s.txns.get("t2")!.superseded_by = "op-nope")],
+    ["rates", (s) => s.rates.set("USD", 1n)],
+    ["homeCurrency", (s) => void (s.homeCurrency = "USD")],
+    ["rules", (s) => s.rules.set("r-x", { pattern: "P", match: "contains", category: "c", priority: 1, version: 1 })],
+    ["liveByIngestID", (s) => s.liveByIngestID.set(ingestID("nope"), "t2")],
+    ["anomalies", (s) => s.anomalies.push({ kind: "split_sum", detail: "invented", at_seq: 1n })],
+  ];
+  for (const [what, break_] of cases) {
+    const input = cleanInput();
+    break_(input.state);
+    expect([what, stopIDs(checkAll(input)).includes("I10_fx_prefix_monotone")]).toEqual([what, true]);
+  }
+});
+
+test("I10 catches a reordered pair of concurrent ops that flips the fork winner", () => {
+  // The precise subject of the exit criterion, and the case a field-blind
+  // comparison certified as clean.
+  //
+  // Note WHICH pair: two ops that tie on authored_at AND on writer_id, which is
+  // the one fork the engine resolves by upload order alone (both named tiebreaks
+  // are exhausted, so the incumbent stays). Reordering ops that differ on either
+  // tiebreak changes nothing — that is the convergence property working — so
+  // this exact-tie pair is the only reordering whose outcome actually moves.
+  const tie = "2026-06-05T15:00:00Z";
+  const input = cleanInput({
+    plans: [
+      { writer: "ingest", ops: [ingested("i1", "t1")] },
+      // One blob, one writer, one seq: two ops that are an exact tie.
+      { writer: "dev-a", ops: [categorized("t1", 1, "applied-first", tie), categorized("t1", 1, "applied-second", tie)] },
+    ],
+  });
+  expect(input.state.txns.get("t1")!.category).toBe("applied-first"); // the incumbent holds
+  expect(input.state.forks).toHaveLength(1);
+  [input.ops[1], input.ops[2]] = [input.ops[2]!, input.ops[1]!];
+  const vs = all(checkAll(input), "I10_fx_prefix_monotone");
+  expect(vs.some((v) => v.detail.includes("category"))).toBe(true);
+});
+
+test("I10 reports a state field whose container type is wrong", () => {
+  // The differ walks Maps, Sets and arrays structurally, so a field that has
+  // been replaced by the wrong kind of container has to be named rather than
+  // silently compared as an object.
+  const pending = assemble({
+    plans: [
+      { writer: "dev-a", ops: [homeCurrency("AED")] },
+      { writer: "ingest", ops: [ingested("i1", "t1", { currency: "EUR" })] }, // no EUR rate: stays pending
+    ],
+  });
+  expect(pending.state.pendingByCurrency.get("EUR")).toEqual(new Set(["t1"]));
+
+  const asMap = cleanInput();
+  (asMap.state as unknown as { rates: unknown }).rates = { USD: 3672500n };
+  expect(all(checkAll(asMap), "I10_fx_prefix_monotone").some((v) => v.detail.includes("is a Map and the other is not"))).toBe(true);
+
+  (pending.state.pendingByCurrency as unknown as Map<string, unknown>).set("EUR", ["t1"]);
+  expect(all(checkAll(pending), "I10_fx_prefix_monotone").some((v) => v.detail.includes("is a Set and the other is not"))).toBe(true);
+
+  const asArray = cleanInput();
+  (asArray.state.txns.get("t1") as unknown as { splits: unknown }).splits = { a: 1 };
+  expect(all(checkAll(asArray), "I10_fx_prefix_monotone").some((v) => v.detail.includes("is an array and the other is not"))).toBe(true);
+});
+
+test("I10 catches an op re-attributed to another writer", () => {
+  // Correction 1 exists so no writer can claim `ingest` provenance. Rewriting an
+  // op's writer_id in the ops list was silent, which reopened it from the side.
+  const input = cleanInput();
+  const edit = input.ops.find((e) => e.op.type === "txn_ingested")!;
+  edit.writer_id = "dev-a"; // the ingest row, re-attributed
+  expect(all(checkAll(input), "I10_fx_prefix_monotone").some((v) => v.detail.includes("provenance"))).toBe(true);
+});
+
+test("I13 does not count an ingest introduced by a REFUSED op as an origin", () => {
+  // `ingested` naming an entity that already exists is refused as a
+  // duplicate_create and introduces nothing, so a later supersede of its ingest
+  // id is an orphan — which is exactly what the engine says.
+  const input = cleanInput({
+    plans: [
+      { writer: "ingest", ops: [ingested("i1", "t1")] },
+      { writer: "ingest", ops: [ingested("i-never", "t1")] }, // duplicate_create: refused
+      { writer: "ingest", ops: [superseded("i-never", "t9", { merchant_raw: "ELSEWHERE", last4: "1234" })] },
+    ],
+  });
+  expect(input.state.anomalies.map((a) => a.kind)).toEqual(["duplicate_create", "supersede_without_origin"]);
+  expect(ids(checkAll(input))).toContain("I13_supersede_has_origin");
+});
+
+test("I14 fires on a fork naming an op that is not in the log", () => {
+  const input = cleanInput();
+  input.state.forks.push({ entity: { kind: "txn", id: "t2" }, winner_op: "op-nowhere", loser_op: "op-1", at_seq: 3n });
+  expect(all(checkAll(input), "I14_forks_surfaced").some((v) => v.detail.includes("op-nowhere"))).toBe(true);
+});
+
+test("I14 fires on an anomaly whose at_seq is not a bigint", () => {
+  const input = cleanInput();
+  input.state.anomalies.push({ kind: "split_sum", detail: "x", at_seq: 3 as unknown as bigint });
+  expect(all(checkAll(input), "I14_forks_surfaced").some((v) => v.detail.includes("at_seq"))).toBe(true);
+});
+
+test("I14 fires when possible_duplicate_of points at no transaction at all", () => {
+  // Weaker than the fingerprint claim correction 7 forbids, and still worth
+  // making: a notice naming a row that does not exist names nothing.
+  const input = cleanInput();
+  input.state.txns.get("t2")!.possible_duplicate_of = "t-nowhere";
+  expect(all(checkAll(input), "I14_forks_surfaced").some((v) => v.detail.includes("t-nowhere"))).toBe(true);
+});
+
+test("I15 fires when an undecodable blob is missing from state.unreadable", () => {
+  // The forward direction the invariant is actually worded as. Implementing only
+  // the converse meant emptying `unreadable` gave a clean run on a state with a
+  // blob the fold had dropped.
+  const plans = hotPlans();
+  plans.splice(4, 0, corruptPlan());
+  const input = cleanInput({ plans });
+  input.state.unreadable = [];
+  const v = all(checkAll(input), "I15_unreadable_set_aside").find((x) => x.severity === "hard_stop");
+  expect(v?.detail).toContain("dropped silently instead of being set aside");
+});
+
+test("I15 hard-stops on a blob carrying a newer schema version", () => {
+  // Its ops never reach `ops`, so I6 cannot see them; and it is not a set-aside
+  // either — an unknown newer version is one of the two conditions §3.3:68
+  // reserves a hard stop for.
+  const input = cleanInput();
+  const row = input.rows[1]!;
+  const body = new TextEncoder().encode(
+    JSON.stringify({ v: 1, kind: "ops", ops: [{ v: 99, type: "rate_set", op_id: "x", authored_at: "2026-06-01T00:00:00Z", parent_version: null, payload: {} }] }),
+  );
+  row.blob = sealBlob({ userId: USER, stream: "hot", writerId: row.writer_id, writerCounter: row.writer_counter }, body);
+  row.size_bucket = row.blob.length;
+  row.blob_hash = chainHash(row.prev_hash, row.blob);
+  expect(all(checkAll(input), "I15_unreadable_set_aside").some((v) => v.detail.includes("newer schema version"))).toBe(true);
+});
+
+test("I16 fires on a cold blob that says raw_body and is not one", () => {
+  // `kindOf` reads one field, so a label-only check passes anything that lies.
+  const plans = coldPlans(3);
+  plans[1] = {
+    writer: "ingest",
+    plaintext: new TextEncoder().encode(JSON.stringify({ v: 1, kind: "raw_body", ingest_id: "nope", received_at: "2026-06-05T09:00:00Z" })),
+  };
+  const input = assemble({ stream: "cold", plans });
+  expect(all(checkAll(input), "I16_cold_carries_no_ops").some((v) => v.detail.includes("does not decode as one"))).toBe(true);
+});
+
+test("I1 and I15 report a mistyped cursor rather than skipping the check", () => {
+  // A silent type guard disables a check without saying so, which is the same
+  // failure mode as a vacuous invariant.
+  const a = cleanInput();
+  (a as unknown as { cursorBefore: number }).cursorBefore = 0;
+  expect(all(checkAll(a), "I1_stream_cursor_monotone").some((v) => v.detail.includes("cursorBefore"))).toBe(true);
+
+  const plans = hotPlans();
+  plans.splice(4, 0, corruptPlan());
+  const b = cleanInput({ plans });
+  (b.state.cursors as unknown as { hot: number }).hot = 12;
+  expect(all(checkAll(b), "I15_unreadable_set_aside").some((v) => v.detail.includes("not a bigint"))).toBe(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -1297,7 +1664,7 @@ function hostilePlans(): Plan[] {
   out.push({ writer: "ingest", ops: [superseded("i-orphan", "orphan", {}, tick())] }); // supersede_without_origin
   out.push({ writer: "dev-a", ops: [rateSet("AED", "2000000", tick())] }); // rate_set_for_home_currency
   out.push(corruptPlan()); // set aside, and the cursor still advances past it
-  out.push(checkpointPlan("dev-a")); // last, so every writer has a head by now
+  out.push(checkpointPlan("dev-a", [ingestWriter(), device("dev-a"), device("dev-b"), device("dev-c")])); // last, so every writer is named
   return out;
 }
 
@@ -1478,8 +1845,17 @@ test("an op batch re-delivered at the same seq is quiet, and its anomaly is in t
   // foldBlobs and the raw fold/applyOp APIs deliberately disagree here: a blob
   // redelivered at a folded seq throws (a caller bug, loudly), while an op batch
   // redelivered at the cursor is idempotent. The checker must accept the second.
-  const input = cleanInput();
-  input.state.anomalies.push({ kind: "duplicate_delivery", detail: "op-1 was already applied", at_seq: 1n });
+  //
+  // Produced for real, by one blob carrying the same op twice — which is the
+  // only way the quiet path is reachable from bytes a server could serve.
+  const again = categorized("t1", 1, "dining");
+  const input = cleanInput({
+    plans: [
+      { writer: "ingest", ops: [ingested("i1", "t1")] },
+      { writer: "dev-a", ops: [again, again] },
+    ],
+  });
+  expect(input.state.anomalies.map((a) => a.kind)).toEqual(["duplicate_delivery"]);
   const vs = checkAll(input);
   expect(hardStops(vs)).toHaveLength(0);
   expect(find(vs, "I14_forks_surfaced")!.detail).toContain("duplicate_delivery");
