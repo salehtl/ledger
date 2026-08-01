@@ -381,11 +381,87 @@ with a **single U+0020** after trimming, then take the **first** `Subject:` and
 
 ## 9. Divergences from v1 — all measured, none accidental
 
-Measured over the full 6,998-message v1 corpus by
-`TestCorpusDivergenceFromV1IsOnlyTheTrimSet`:
+### The equivalence gate
 
-> `corpus 6998 messages: 0 v1 parse failures, 4 text differences
-> [2554 6853 6854 6859], 0 subject differences, 0 NOT explained by the trim set`
+`TestCorpusEquivalence` (`internal/v2/norm/corpus_test.go`) is the gate.
+Phase 1 does not ship without a recorded pass.
+
+```bash
+sudo sqlite3 /var/lib/ledger/ledger.db ".backup '$S/v2-corpus.db'"
+sudo chown "$(id -un)" "$S/v2-corpus.db"
+LEDGER_CORPUS_DB=$S/v2-corpus.db \
+  go test ./internal/v2/norm/ -run TestCorpusEquivalence -v -timeout 20m
+```
+
+It skips when `LEDGER_CORPUS_DB` is unset — most checkouts have no corpus — and
+fails when it is set but unusable, so a typo cannot silently disable it.
+
+**Recorded pass — 2026-08-01, 7,002 messages:**
+
+> `corpus: 7002 messages, D1_trim_set: 4, D2_raw_fallback: 0, other: 0`
+> `detail: 4 text diffs, 0 subject diffs, 0 from diffs, 0 date diffs;`
+> `0 both-failed, 0 v2-salvaged-partial-walk; 6 messages carried a`
+> `forwarded Date value, 3 of those parsed`
+> `D1 ids: [2554 6853 6854 6859]`
+
+The corpus was 6,998 messages when Task 15 probed it and is 7,002 now; the live
+v1 instance keeps ingesting (the four new rows are DIB notifications, ids
+6999-7002, and none of them diverges). **Re-run against Task 15's own 6,998-row
+snapshot the gate reports the same four ids**, so the two measurements agree
+exactly on identical input:
+
+> `corpus: 6998 messages, D1_trim_set: 4, D2_raw_fallback: 0, other: 0`
+
+The gate compares four things — body text, effective subject, effective `From`
+and the forwarded date folded into `EmailDate`/`DateSource`. The Task 15 probe
+compared the first two. **The `From` and date comparisons are new and both are
+clean: 0 differences.** Neither is redundant: making stage 10 keep the outer
+`From` produces `other: 6`, and the `From` compared here is the *effective* one
+(read out of the forwarded header block), which no other test covers —
+`TestCorpusHeaderExtractionMatchesV1` compares the message's own.
+
+### How a difference is classified
+
+`D1` is decided by **substitution, not canonicalisation and not an id
+allowlist**: the pipeline is re-run with v1's `strings.TrimSpace` in place of
+the explicit set, and the difference is `D1` only if that alone accounts for it.
+The substituted run uses **v2's own** `extract`, `stripHTML`, `collapseWith` and
+`unwrapForwardWith` — hence the `trimmer` parameter in the production code —
+so a defect in any other stage perturbs both sides and survives as `other`.
+
+This is load-bearing, and it is the reason `trimmer` exists. The gate was first
+written with a test-local re-implementation of the trim-bearing stages, and in
+that form it **passed** a mutation that deleted stage 6's entity decode and
+changed 6,808 of 7,002 messages — filing all 6,808 as "expected trim-set
+differences". Sharing the code with production is what makes the classification
+mean anything.
+
+Mutation battery over the full corpus, after the fix:
+
+| mutation | caught | `other` |
+|---|---|---|
+| stage 6 — entity decode deleted | yes | 6813 |
+| stage 4 — `text/plain` preferred over `text/html` | yes | 17 |
+| stage 10 — forward body loses its first line | yes | 6 |
+| stage 10 — outer `From` kept over the inner one | yes | 6 |
+| stage 7 — U+00A0 dropped from the collapse | yes | 1 |
+| headers — RFC 2047 decoding disabled | yes | 1 |
+| stage 5 — `</div>` dropped from `blockTags` | no — **equivalent** | 0 |
+| stage 10 — the `15:04:05` layout dropped | no — **equivalent** | 0 |
+| stage 8 — U+200A **added** to the trim set | no — **by design** | 0 |
+
+The two equivalent mutants were verified, not assumed. The `blockTags` pass
+changes the final text of **zero** of the 7,002 messages — the generic tag rule
+already yields the same newline, so that list is inert on this corpus. And all
+three corpus forward-dates that parse use `Jan 2, 2006 at 3:04 PM`; the other
+three are the K2 shape neither implementation parses. Neither mutation changes
+any output, so no comparison against v1 could detect them.
+
+The last row is the gate's **one structural blind spot**: a gate whose expected
+divergence *is* the trim set cannot also police the trim set. That is
+`TestNormalizeTrimsTheExplicitSetNotGoTrimSpace` and the
+`hair-space-lines-survive` fixture's job, and both fail on that mutation. Add
+trim-set coverage there, never here.
 
 ### D1 — The explicit trim set (4 messages, both directions)
 
@@ -405,6 +481,14 @@ v1 records nothing when MIME parsing fails; v2 records the raw body and still
 recovers `Subject`/`From`. **Zero** corpus messages fail to parse, so this
 contributes nothing to the numbers above — which is exactly why it needs the
 derived fixture `broken-mime-raw-fallback`.
+
+The same root cause — v2 refusing to throw away recoverable text — has a second
+manifestation the gate counts on its own line: a multipart tree that breaks
+*after* a usable text leaf was collected. v1 aborts the whole message; v2 keeps
+the leaf, so `PartUsed` is `html`/`plain` rather than `raw` and the row is not
+`D2`. **Zero** corpus messages reach it either (`0 v2-salvaged-partial-walk`),
+but it is counted separately rather than folded into `D2`, because the two have
+different observable results and merging them would hide one of them.
 
 ### D3 — WHATWG U+FFFD substitution (0 messages)
 
@@ -438,7 +522,11 @@ stripping the zone token still leaves `7:33:38 PM` unmatched and the
 transaction silently dates to the arrival time. **3 corpus messages** (2554,
 6853, 6854). Fix: add `2 January 2006 at 3:04:05 PM`.
 `TestParseForwardDateRejectsTheiPhoneSecondsWithAMPMShape` asserts the current,
-broken behaviour so the change cannot be made by accident.
+broken behaviour so the change cannot be made by accident. The equivalence gate
+independently confirms both halves of this: the corpus holds **6** forwarded
+Date values, **3** parse (all `Jan 2, 2006 at 3:04 PM`) and 3 do not, and v1 and
+v2 fail on **the same three** — `0 date diffs`. The defect is ported, not
+introduced.
 
 **K3 — no Gmail forward has ever been seen.** All 56 corpus forwards are Apple
 Mail. Gmail's same-line layout is implemented and tested, but **against a

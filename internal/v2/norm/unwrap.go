@@ -57,6 +57,13 @@ type forward struct {
 
 // unwrapForward runs stage 10 over the joined, normalized text.
 func unwrapForward(from, subject, body string) forward {
+	return unwrapForwardWith(from, subject, body, trimExplicit)
+}
+
+// unwrapForwardWith is stage 10 with the trim as a parameter. See [trimmer]:
+// production always passes trimExplicit, and only the corpus equivalence gate
+// passes anything else.
+func unwrapForwardWith(from, subject, body string, trim trimmer) forward {
 	lines := strings.Split(body, "\n")
 
 	marker := -1
@@ -90,14 +97,14 @@ func unwrapForward(from, subject, body string) forward {
 		}
 		sawHeader = true
 		label := strings.ToLower(m[1])
-		value := trimExplicit(m[2])
+		value := trim(m[2])
 		if value == "" { // Apple Mail: the value is on the next non-empty line
 			j := i + 1
-			for j < len(lines) && trimExplicit(lines[j]) == "" {
+			for j < len(lines) && trim(lines[j]) == "" {
 				j++
 			}
 			if j < len(lines) {
-				value = trimExplicit(lines[j])
+				value = trim(lines[j])
 				i = j
 			}
 		}
@@ -123,7 +130,7 @@ func unwrapForward(from, subject, body string) forward {
 		out.Subject = fwdSubjectRe.ReplaceAllString(subject, "")
 	}
 	if sawHeader && end < len(lines) {
-		out.Body = trimExplicit(strings.Join(lines[end:], "\n"))
+		out.Body = trim(strings.Join(lines[end:], "\n"))
 	}
 	return out
 }
@@ -154,12 +161,18 @@ var nbspReplacer = strings.NewReplacer("\u202f", " ", "\u00a0", " ")
 // parseForwardDate parses a forwarded-header Date value recovered by
 // unwrapForward. The returned time is naive, read as UTC.
 func parseForwardDate(s string) (time.Time, error) {
-	s = nbspReplacer.Replace(trimExplicit(s))
+	return parseForwardDateWith(s, trimExplicit)
+}
+
+// parseForwardDateWith is parseForwardDate with the trim as a parameter. See
+// [trimmer].
+func parseForwardDateWith(s string, trim trimmer) (time.Time, error) {
+	s = nbspReplacer.Replace(trim(s))
 	candidates := []string{s}
 	// Retry once with the final space-delimited token removed, which is how a
 	// trailing zone name ("GST", "GMT+4") is dropped.
 	if i := strings.LastIndex(s, " "); i > 0 {
-		candidates = append(candidates, trimExplicit(s[:i]))
+		candidates = append(candidates, trim(s[:i]))
 	}
 	for _, c := range candidates {
 		for _, layout := range fwdDateLayouts {
