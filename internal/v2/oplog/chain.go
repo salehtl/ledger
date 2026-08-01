@@ -42,21 +42,39 @@ import (
 //
 // # What these chains prove, and what they do NOT (spec §3.3(b))
 //
-//   - A CLIENT writer's chain is computed on the device, under a key the
-//     server does not hold. The server cannot forge it, so a server that drops
-//     or reorders that device's ops is detected — by that device, and at sync
-//     by the user's other devices. That is a real integrity claim about the
-//     operator.
+// Read the Phase 1 caveat below before quoting either of these.
+//
+//   - A CLIENT writer's chain is computed on the device, over blobs sealed
+//     under a key the server does not hold. ONCE THAT IS TRUE (Phase 3), the
+//     server cannot forge it, so a server that drops or reorders that device's
+//     ops is detected — by that device, and at sync by the user's other
+//     devices. That is a real integrity claim about the operator.
 //
 //   - The INGEST writer's chain is computed by the server, over material the
 //     server itself sealed. It proves storage and backup integrity — a blob
 //     silently altered or lost after the fact is detectable — and it proves
-//     NOTHING about operator honesty. A compromised server can fabricate a
-//     perfectly well-formed ingest chain of transactions that never happened.
-//     Nothing in this file narrows that gap, and no caller may present a valid
-//     ingest chain as evidence that the ingest history is genuine. It is why
-//     the ingest writer has no key (auth.KindIngest) and why the client UI
+//     NOTHING about operator honesty, in any phase. A compromised server can
+//     fabricate a perfectly well-formed ingest chain of transactions that never
+//     happened. Nothing in this file narrows that gap, and no caller may present
+//     a valid ingest chain as evidence that the ingest history is genuine. It is
+//     why the ingest writer has no key (auth.KindIngest) and why the client UI
 //     labels server-ingested provenance distinctly.
+//
+// # What Phase 1 does NOT claim
+//
+// Phase 1 blobs are PLAINTEXT with a zero tag (blob's "What Phase 1 does NOT
+// claim"). There is no DEK yet, so "the server cannot forge a client writer's
+// chain" is a property of the finished system and NOT of what ships today: as
+// built, the server could author a client writer's blobs and chain them
+// flawlessly, and nothing here would notice. The chains are still worth
+// building now, because their shape is what Phase 3 makes unforgeable and
+// because they already detect accidental loss and reordering in storage — but
+// a Phase 1 chain is evidence about mistakes, not about an adversary.
+//
+// What DOES hold in both phases: the chain is computed over the stored bytes,
+// so the formula never changes; and Row.validate binds every blob to the
+// position it is stored at, because the AAD is cleartext framing in both phases
+// (blob.EmbeddedAAD).
 //
 // # Where the roster check lives (deliberately not here)
 //
@@ -159,17 +177,32 @@ func headOf(ctx context.Context, q querier, userID uuid.UUID, writerID, stream s
 // blob.ZeroHash) to verify from genesis. Rows must be in counter order and all
 // from one (writer_id, stream).
 //
-// This is the CLIENT's check, and it is the whole point of the chains: it is
-// what turns "the server dropped op 4" and "the server served 3 before 2" from
-// silent data loss into a detected, hard-stopping fault. Every hash is
-// RECOMPUTED from the row's stored bytes rather than read from the row, so a
-// server that substitutes a blob cannot keep the chain intact by also editing
-// the hash column.
+// This is the CLIENT's check. Every hash is RECOMPUTED from the row's stored
+// bytes rather than read from the row, so a server that substitutes a blob
+// cannot keep the chain intact by also editing the hash column.
+//
+// # Exactly what it detects, and what it cannot
+//
+// It detects any break RELATIVE TO (fromCounter, fromHash): an op missing from
+// the middle, two ops served out of order, a substituted or edited blob, a
+// forged prev_hash, a run that does not continue the head it was verified
+// against, and rows from more than one (writer, stream) spliced together.
+//
+// It does NOT, by itself, detect a server that RE-CHAINS what it serves. A
+// truncation (a genuine 1..5 served as 1..3) verifies. A whole alternative
+// history, correctly chained from genesis, verifies. Both are caught only by
+// comparing the head this function ends at against a head the verifier already
+// trusts — which is what a persisted local head gives a returning device, what
+// spec §3.3(c)'s writer_checkpoint op gives a device auditing a PEER's chain,
+// and what plan invariant I11_roster_checkpoint enforces. Callers must not read
+// "VerifyChain passed" as "the server served me everything"; it means "what the
+// server served me is a consistent continuation of the head I gave it".
 //
 // Every failure wraps ErrChainBreak, including "these rows are not all from one
 // writer and stream" — a caller that mixed them has a bug, but a SERVER that
-// returned them has misbehaved, and failing closed is the safe reading of an
-// ambiguous input.
+// returned them has misbehaved (interleaving two writers with continuous
+// counters and honestly recomputed hashes passes every other check here), and
+// failing closed is the safe reading of an ambiguous input.
 func VerifyChain(rows []Row, fromCounter int64, fromHash [32]byte) error {
 	if len(rows) == 0 {
 		return nil
@@ -236,6 +269,20 @@ func (a *Appender) AppendClient(ctx context.Context, userID uuid.UUID, writerID,
 		// laundering its own ops into that provenance — the same reason
 		// auth.Writers.Register reserves the id.
 		return nil, fmt.Errorf("oplog: append client: %q is the server's own writer and is not client-writable", IngestWriterID)
+	}
+	if stream == blob.StreamCold {
+		// Invariant I16: the cold stream carries raw email bodies and never
+		// ops. Only the ingest writer produces those, so a client-authored cold
+		// row would be an op blob on the stream a hot-only client skips —
+		// exactly the thing that makes "hot-only sync is a COMPLETE
+		// materialization" false.
+		//
+		// The stream PARAMETER still exists rather than being assumed: it is
+		// what makes the position explicit in every AAD and lets a future
+		// client-side cold producer arrive without a signature change. This
+		// check is the thing that would then be revisited — deliberately, and
+		// together with I16.
+		return nil, fmt.Errorf("oplog: append client: the %q stream carries raw bodies from the ingest writer only (invariant I16)", blob.StreamCold)
 	}
 
 	// Copied, not mutated in place: a caller's slice is its own, and filling in
@@ -306,17 +353,29 @@ func (a *Appender) AppendClient(ctx context.Context, userID uuid.UUID, writerID,
 	}
 
 	seqs, err := a.appendRows(ctx, batch, prepare)
-	switch {
-	case errors.Is(err, errBatchAlreadyApplied):
+	if errors.Is(err, errBatchAlreadyApplied) {
 		return replayed, nil
+	}
+	return a.resolveAppendErr(ctx, userID, writerID, stream, batch, seqs, err)
+}
+
+// resolveAppendErr turns the outcome of appendRows into AppendClient's answer.
+//
+// It is a separate function so its SQLSTATE 23505 arm can be tested. That arm
+// is unreachable in a correct build — the head is read under the counter lock,
+// so a taken position is recognised as a replay before any INSERT, and
+// headOf returns max(writer_counter), so a position that passes the head check
+// cannot already exist. It is implemented anyway because the alternative is
+// handing a client a raw duplicate-key error it cannot act on (the
+// ambiguous-commit contract on appendRows names this SQLSTATE explicitly), and
+// because an edit that reverses the ordering rule must fail loudly rather than
+// corrupt anything. Splitting it out beat the alternative of a test-only hook
+// in the production path.
+func (a *Appender) resolveAppendErr(ctx context.Context, userID uuid.UUID, writerID, stream string, batch []Row, seqs []int64, err error) ([]int64, error) {
+	switch {
+	case err == nil:
+		return seqs, nil
 	case isPositionTaken(err):
-		// Unreachable while the ordering rule in appendTx holds: the head is
-		// read under the counter lock, so a taken position is seen as a replay
-		// above and never reaches the index. It is handled anyway because the
-		// alternative is handing a client a raw duplicate-key error it cannot
-		// act on — the ambiguous-commit contract on appendRows names this
-		// SQLSTATE explicitly — and because a future edit that reverses the
-		// ordering must fail loudly rather than corrupt anything.
 		applied, resolveErr := appliedSeqs(ctx, a.Pool, userID, writerID, stream, batch)
 		if resolveErr != nil {
 			// Deliberately NOT wrapped with %w: resolveErr may be
@@ -325,10 +384,9 @@ func (a *Appender) AppendClient(ctx context.Context, userID uuid.UUID, writerID,
 			return nil, fmt.Errorf("%w: (%s, %s): %v", ErrPositionTaken, writerID, stream, resolveErr)
 		}
 		return applied, nil
-	case err != nil:
+	default:
 		return nil, err
 	}
-	return seqs, nil
 }
 
 // IngestBlob is one blob the SERVER authors: its plaintext and the stream it

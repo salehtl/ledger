@@ -747,7 +747,7 @@ func (w *Writers) checkArgs(userID uuid.UUID, writerID string, nonce, sig []byte
 }
 
 // begin pins READ COMMITTED rather than inheriting it, for the same reason
-// oplog.Append and UpsertUser do: default_transaction_isolation is settable per
+// oplog.Appender and UpsertUser do: default_transaction_isolation is settable per
 // database, per role and by a pooler. Under REPEATABLE READ the `SELECT ... FOR
 // UPDATE` that serializes concurrent registrations would raise a serialization
 // failure instead of blocking, turning a routine concurrent enrollment into an

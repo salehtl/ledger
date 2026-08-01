@@ -395,6 +395,42 @@ func TestAADIsTheFrozenFieldSet(t *testing.T) {
 	}
 }
 
+// EmbeddedAAD is what lets a KEYLESS reader — the server, in Phase 3 — check
+// that a blob was sealed for the position it is being stored at, which is the
+// check oplog.Row.validate performs on every append.
+func TestEmbeddedAADIsReadableWithoutOpening(t *testing.T) {
+	s, err := PlaintextSealer{}.Seal(env(), []byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := EmbeddedAAD(s.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(env().AAD()) {
+		t.Fatalf("EmbeddedAAD = %q, want %q", got, env().AAD())
+	}
+	// A blob sealed at another position reports that other position, rather
+	// than whatever the caller hoped for.
+	other := env()
+	other.WriterCounter = 8
+	s2, err := PlaintextSealer{}.Seal(other, []byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := EmbeddedAAD(s2.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got2) == string(env().AAD()) {
+		t.Fatal("two different positions produced the same embedded AAD")
+	}
+	// Framing that cannot be parsed is an error, never a partial answer.
+	if _, err := EmbeddedAAD(s.Bytes[:2]); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("a truncated frame must be ErrMalformed, got %v", err)
+	}
+}
+
 func TestLargeBodyRoundTripsInAHigherBucket(t *testing.T) {
 	// The corpus's largest compressed body is ~314 KB, which is why the ladder
 	// goes past 64 KB (Decision 7).

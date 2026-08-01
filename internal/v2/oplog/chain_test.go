@@ -406,12 +406,12 @@ func TestClientAppendRejectsRowsThatDisagreeWithTheCall(t *testing.T) {
 	if _, err := a.AppendClient(bg, u, "dev-b", blob.StreamHot, rows); err == nil {
 		t.Fatal("a row naming another writer must be rejected, not silently rewritten")
 	}
-	if _, err := a.AppendClient(bg, u, "dev-a", blob.StreamCold, rows); err == nil {
-		t.Fatal("a row naming another stream must be rejected, not silently rewritten")
-	}
 	if _, err := a.AppendClient(bg, uuid.New(), "dev-a", blob.StreamHot, rows); err == nil {
 		t.Fatal("a row naming another user must be rejected")
 	}
+	// The row-versus-call STREAM disagreement is not asserted here: there are
+	// only two streams, so it can only be tested against cold, which
+	// TestClientAppendRejectsTheColdStream now refuses one check earlier.
 	assertGapFree(t, pool, u, 0)
 }
 
@@ -935,5 +935,197 @@ func TestAppliedLookupResolvesSeqsAndSpotsAFork(t *testing.T) {
 	}
 	if errors.Is(err, ErrChainBreak) {
 		t.Fatalf("an unstored counter is not a chain break: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Position binding: a blob must be sealed FOR the position it is stored at
+// ---------------------------------------------------------------------------
+
+// Every row here has a flawless chain — correct counter sequence, correct
+// prev_hash, correctly recomputed blob_hash. Only the AAD embedded in the frame
+// says otherwise, which is why the chain check alone is not enough and why
+// Row.validate compares it. Without that compare all three are stored, and a
+// device meets them as a set-aside WARNING (blob.ErrSetAside) rather than as
+// anything that stops a sync.
+func TestAppendClientRejectsABlobSealedForAnotherPosition(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	a := &Appender{Pool: pool}
+
+	// rechain re-links a row at counter 1 from genesis, so the ONLY thing wrong
+	// with it is where its bytes were sealed.
+	rechain := func(r Row) Row {
+		r.WriterCounter = 1
+		r.PrevHash = blob.ZeroHash[:]
+		h := blob.Hash(blob.ZeroHash, blob.Sealed{Bytes: r.Blob, SizeBucket: r.SizeBucket})
+		r.BlobHash = h[:]
+		return r
+	}
+
+	// One writer per case, so every case is an independent chain starting at
+	// counter 1. Sharing a writer would make the first case's stored row turn
+	// the rest into replay-detection tests, which pass whether or not the AAD
+	// is checked at all.
+	movedCounter, _ := sealBody(t, u, "dev-1", blob.StreamHot, 7, blob.ZeroHash, `{"moved":"counter"}`)
+	movedCounter = rechain(movedCounter)
+
+	movedUser, _ := sealBody(t, uuid.New(), "dev-2", blob.StreamHot, 1, blob.ZeroHash, `{"moved":"user"}`)
+	movedUser.UserID = u
+
+	movedStream, _ := sealBody(t, u, "dev-3", blob.StreamCold, 1, blob.ZeroHash, `{"moved":"stream"}`)
+	movedStream.Stream = blob.StreamHot
+
+	movedWriter, _ := sealBody(t, u, "dev-z", blob.StreamHot, 1, blob.ZeroHash, `{"moved":"writer"}`)
+	movedWriter.WriterID = "dev-4"
+
+	cases := []struct {
+		name, writer string
+		row          Row
+	}{
+		{"sealed at counter 7, stored at counter 1", "dev-1", movedCounter},
+		{"sealed for another user", "dev-2", movedUser},
+		{"sealed for the cold stream", "dev-3", movedStream},
+		{"sealed by another writer", "dev-4", movedWriter},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Premise: the chain itself is intact, so nothing but the AAD can
+			// catch this. Without this assertion the test could pass because
+			// the row was malformed in some other way.
+			if err := VerifyChain([]Row{c.row}, 0, blob.ZeroHash); err != nil {
+				t.Fatalf("premise broken — the chain must verify: %v", err)
+			}
+			if _, err := a.AppendClient(bg, u, c.writer, blob.StreamHot, []Row{c.row}); err == nil {
+				t.Fatal("a blob sealed for a different position must not be stored")
+			}
+		})
+	}
+	assertGapFree(t, pool, u, 0)
+	if got := nextSeqOf(t, pool, u); got != 1 {
+		t.Fatalf("next_seq = %d, want 1 — a rejected row burned a seq", got)
+	}
+
+	// The control: the same payload, sealed where it is actually stored.
+	ok, _ := sealBody(t, u, "dev-1", blob.StreamHot, 1, blob.ZeroHash, `{"moved":"counter"}`)
+	if _, err := a.AppendClient(bg, u, "dev-1", blob.StreamHot, []Row{ok}); err != nil {
+		t.Fatalf("a correctly sealed row must be accepted: %v", err)
+	}
+}
+
+// The server seals ingest blobs itself, so this can only fail if the sealer and
+// the row disagree about the position — which is the bug the client-side check
+// above exists to catch, asserted here for the path where the server is the
+// author.
+func TestIngestBlobsAreSealedForTheRowTheyAreStoredIn(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	a := &Appender{Pool: pool}
+	if _, err := a.AppendIngest(bg, u, []IngestBlob{
+		{Stream: blob.StreamHot, Plaintext: []byte(`{"op":0}`)},
+		{Stream: blob.StreamCold, Plaintext: []byte(`{"raw":0}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range []string{blob.StreamHot, blob.StreamCold} {
+		for _, r := range storedChain(t, pool, u, IngestWriterID, stream) {
+			aad, err := blob.EmbeddedAAD(r.Blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := blob.Envelope{UserID: u, Stream: r.Stream, WriterID: r.WriterID, WriterCounter: r.WriterCounter}.AAD()
+			if string(aad) != string(want) {
+				t.Fatalf("stored blob carries AAD %q, want %q", aad, want)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Splices, the cold stream, and the 23505 arm
+// ---------------------------------------------------------------------------
+
+// A server that interleaves two writers can keep the counters continuous and
+// recompute every hash honestly, so nothing but the (writer, stream) guard
+// notices. VerifyChain is exported for Task 9 to run over server-supplied rows,
+// which is exactly where this matters.
+func TestVerifyChainDetectsRowsSplicedFromTwoChains(t *testing.T) {
+	u := uuid.New()
+	base, head := chainFrom(t, u, "dev-a", blob.StreamHot, 1, blob.ZeroHash, 2)
+
+	twoWriters, _ := chainFrom(t, u, "dev-b", blob.StreamHot, 3, head, 2)
+	if err := VerifyChain(append(append([]Row{}, base...), twoWriters...), 0, blob.ZeroHash); !errors.Is(err, ErrChainBreak) {
+		t.Fatalf("two writers spliced into one chain must break, got %v", err)
+	}
+	twoStreams, _ := chainFrom(t, u, "dev-a", blob.StreamCold, 3, head, 2)
+	if err := VerifyChain(append(append([]Row{}, base...), twoStreams...), 0, blob.ZeroHash); !errors.Is(err, ErrChainBreak) {
+		t.Fatalf("two streams spliced into one chain must break, got %v", err)
+	}
+}
+
+func TestClientAppendRejectsTheColdStream(t *testing.T) {
+	// Invariant I16: cold carries raw bodies from the ingest writer, never ops.
+	// A client-authored cold row would put state on the stream a hot-only
+	// client skips.
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	a := &Appender{Pool: pool}
+	rows, _ := chainFrom(t, u, "dev-a", blob.StreamCold, 1, blob.ZeroHash, 1)
+	_, err := a.AppendClient(bg, u, "dev-a", blob.StreamCold, rows)
+	if err == nil {
+		t.Fatal("a client must not author cold-stream rows")
+	}
+	if errors.Is(err, ErrChainBreak) {
+		t.Fatalf("refusing the cold stream is a protocol rule, not a chain break: %v", err)
+	}
+	assertGapFree(t, pool, u, 0)
+}
+
+// The 23505 arm is unreachable in a correct build (see resolveAppendErr), so it
+// is driven directly with the same synthetic error the classifier test builds.
+// Without this the branch that honours the ambiguous-commit contract would ship
+// untested.
+func TestPositionTakenIsResolvedAgainstTheStoredRows(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	a := &Appender{Pool: pool}
+
+	rows, _ := chainFrom(t, u, "dev-a", blob.StreamHot, 1, blob.ZeroHash, 2)
+	seqs, err := a.AppendClient(bg, u, "dev-a", blob.StreamHot, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := fmt.Errorf("oplog: append: insert row 0 (seq 9): %w",
+		&pgconn.PgError{Code: uniqueViolation, ConstraintName: positionConstraint})
+
+	// Byte-identical rows: "already applied", answered with the stored seqs.
+	got, err := a.resolveAppendErr(bg, u, "dev-a", blob.StreamHot, rows, nil, dup)
+	if err != nil {
+		t.Fatalf("a duplicate position holding identical bytes must resolve: %v", err)
+	}
+	if !reflect.DeepEqual(got, seqs) {
+		t.Fatalf("resolved %v, want %v", got, seqs)
+	}
+
+	// Different bytes at a taken position: an invariant violation, NOT a chain
+	// break — a client must not be hard-stopped by a server-side bug.
+	forked := append([]Row(nil), rows...)
+	forked[1], _ = sealBody(t, u, "dev-a", blob.StreamHot, 2, blob.ZeroHash, `{"forked":true}`)
+	_, err = a.resolveAppendErr(bg, u, "dev-a", blob.StreamHot, forked, nil, dup)
+	if !errors.Is(err, ErrPositionTaken) {
+		t.Fatalf("want ErrPositionTaken, got %T: %v", err, err)
+	}
+	if errors.Is(err, ErrChainBreak) {
+		t.Fatalf("a server-side invariant violation must not be reported as a chain break: %v", err)
+	}
+
+	// Anything else passes through untouched, and a nil error returns the seqs
+	// it was handed.
+	boom := errors.New("boom")
+	if _, err := a.resolveAppendErr(bg, u, "dev-a", blob.StreamHot, rows, nil, boom); !errors.Is(err, boom) {
+		t.Fatalf("an unrelated error must pass through, got %v", err)
+	}
+	if got, err := a.resolveAppendErr(bg, u, "dev-a", blob.StreamHot, rows, seqs, nil); err != nil || !reflect.DeepEqual(got, seqs) {
+		t.Fatalf("a successful append must return its seqs: %v, %v", got, err)
 	}
 }
