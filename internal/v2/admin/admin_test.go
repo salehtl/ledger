@@ -69,12 +69,42 @@ var (
 	samplePurchase = rawMail("Purchase of AED 75.50 at CARREFOUR on 02/01/2026")
 )
 
-// fakeSamples stands in for Task 31's donated-sample store. The console is
-// built against the interface rather than the package because Task 31 has not
-// landed; see the SampleSource doc.
+// fakeSamples is a scriptable stand-in for the donated-sample store: it can be
+// made to FAIL, and it can hold a corpus with no database behind it, which is
+// what the refusal and routing tests in this file need.
+//
+// It is not the only thing the console is tested against. gate_test.go drives
+// these same endpoints with the REAL internal/v2/samples store over real
+// donated mail, because "the gate refuses a regression" is a claim about two
+// packages agreeing and a fake cannot make it.
 type fakeSamples struct {
 	byDomain map[string][]Sample
+	clusters []Cluster
+	retired  []uuid.UUID
 	err      error
+}
+
+func (f *fakeSamples) Clusters(context.Context) ([]Cluster, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.clusters, nil
+}
+
+func (f *fakeSamples) Retire(_ context.Context, id uuid.UUID) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	for _, list := range f.byDomain {
+		for i, s := range list {
+			if s.ID == id {
+				f.retired = append(f.retired, id)
+				f.byDomain[s.SenderDomain] = append(list[:i:i], list[i+1:]...)
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeSamples) ForSender(_ context.Context, domain string) ([]Sample, error) {
@@ -240,6 +270,8 @@ func adminRoutes() []struct {
 		{"GET", "/admin/diagnostics", nil},
 		{"GET", "/admin/accounting", nil},
 		{"GET", "/admin/quarantine?user=" + u, nil},
+		{"GET", "/admin/samples", nil},
+		{"DELETE", "/admin/samples/" + uuid.New().String(), nil},
 		{"GET", "/admin/waitlist", nil},
 		{"POST", "/admin/waitlist", map[string]any{"bank": "Mashreq"}},
 		{"GET", "/admin/dictionary", nil},

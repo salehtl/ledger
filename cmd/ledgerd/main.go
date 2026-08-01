@@ -33,6 +33,7 @@ import (
 	"ledger/internal/v2/pg"
 	"ledger/internal/v2/pushv2"
 	"ledger/internal/v2/quarantine"
+	"ledger/internal/v2/samples"
 	"ledger/internal/v2/smtpd"
 	"ledger/internal/v2/tmpl"
 )
@@ -341,6 +342,13 @@ func runServe(cfg config.Config) error {
 	// out.
 	sweepDone := startQuarantineSweep(ctx, syncAPI.Quarantine)
 
+	// The donated-sample retention sweep (Task 31). Spec §2 publishes a fixed
+	// window for the one table that holds a user's mail in the clear, and a
+	// published deletion date that nothing enforces is worse than no promise at
+	// all — so it is started here, beside the sweep whose absence would be
+	// noticed, rather than left to a cron nobody remembers to install.
+	sampleSweepDone := startSampleSweep(ctx, syncAPI.Samples)
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
@@ -408,6 +416,7 @@ func runServe(cfg config.Config) error {
 		}
 	}
 	<-sweepDone
+	<-sampleSweepDone
 	return serveErr
 }
 
@@ -468,11 +477,11 @@ func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor
 // here would be a second template cache and a second set of decisions about
 // what "the published set" means.
 //
-// Samples is left nil: Task 31's donated-sample store does not exist yet. That
-// is not a silent gap — /validate answers 503, and publishTemplate REFUSES
-// rather than reporting an unrun regression gate as a clean one, which is the
-// difference between "not built yet" and "found nothing". The adapter goes HERE
-// when that task lands.
+// Samples is the SAME store the public intake endpoints write into, wrapped by
+// sampleAdapter. It is what makes /validate and /publish run their regression
+// gate against real donated mail rather than answering 503 — and it must never
+// be left nil quietly: publishTemplate refuses outright without it, because
+// reporting an unrun gate as a clean one is how a gate stops being one.
 func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor) (http.Handler, error) {
 	h := &admin.Handler{
 		Templates: &tmpl.Store{Pool: pool},
@@ -481,6 +490,7 @@ func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocesso
 		Quarantine: &quarantine.Store{
 			Pool: pool, TTL: quarantine.DefaultTTL, WarnBefore: quarantine.DefaultWarnBefore,
 		},
+		Samples:     sampleAdapter{&samples.Samples{Pool: pool, Retention: samples.DefaultRetention}},
 		Reprocessor: reproc,
 		Token:       cfg.Server.AdminToken,
 	}
@@ -520,11 +530,55 @@ const quarantineSweepInterval = time.Hour
 // expiries rather than dropping mail. What it costs instead is unbounded
 // growth, which is why the failure is logged loudly rather than swallowed.
 func startQuarantineSweep(ctx context.Context, q *quarantine.Store) <-chan struct{} {
-	done := make(chan struct{})
 	if q == nil {
-		close(done)
-		return done
+		return closedChan()
 	}
+	return startSweep(ctx, "quarantine sweep", func(ctx context.Context) (string, error) {
+		warned, deleted, err := q.ExpireDue(ctx)
+		if err != nil || (warned == 0 && deleted == 0) {
+			return "", err
+		}
+		return fmt.Sprintf("warned %d, expired %d", warned, deleted), nil
+	})
+}
+
+// startSampleSweep enforces the donated-sample retention window
+// (samples.DefaultRetention, published in spec §2).
+//
+// It is a SEPARATE loop from the quarantine sweep rather than a second call
+// inside it, because the two failure modes are not the same and must not share
+// a fate: a quarantine sweep that dies stops warning people about mail that is
+// about to be deleted, while a sample sweep that dies keeps real mail on disk
+// past the date users were told it would be gone. Neither is allowed to be the
+// reason the other stopped running.
+//
+// Retention differs from quarantine's expiry in the one way that matters here:
+// there is no warning and no grace, because a donated sample is a duplicate of
+// mail already in the donor's own log. Deleting it takes nothing away from
+// them, so the only thing a delay would buy is a longer breach window.
+func startSampleSweep(ctx context.Context, s *samples.Samples) <-chan struct{} {
+	if s == nil {
+		return closedChan()
+	}
+	return startSweep(ctx, "donated-sample retention sweep", func(ctx context.Context) (string, error) {
+		n, err := s.ExpireDue(ctx)
+		if err != nil || n == 0 {
+			return "", err
+		}
+		return fmt.Sprintf("deleted %d expired donated sample(s)", n), nil
+	})
+}
+
+// startSweep runs one job now and then hourly until ctx is done, returning a
+// channel that closes when it has stopped. The job returns a line to log, or ""
+// for "nothing happened, say nothing".
+//
+// A sweep error is logged and the loop CONTINUES, because one failed sweep is a
+// transient database problem and stopping would silently end every future one.
+// What that costs is unbounded growth, which is why the failure is logged
+// loudly rather than swallowed.
+func startSweep(ctx context.Context, name string, run func(context.Context) (string, error)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		tick := time.NewTicker(quarantineSweepInterval)
@@ -534,13 +588,13 @@ func startQuarantineSweep(ctx context.Context, q *quarantine.Store) <-chan struc
 			// shutdown signal arriving mid-sweep does not abort a transaction
 			// that is part-way through recording removals.
 			sweepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-			warned, deleted, err := q.ExpireDue(sweepCtx)
+			msg, err := run(sweepCtx)
 			cancel()
 			switch {
 			case err != nil:
-				log.Printf("ledgerd serve: quarantine sweep: %v", err)
-			case warned > 0 || deleted > 0:
-				log.Printf("ledgerd serve: quarantine sweep: warned %d, expired %d", warned, deleted)
+				log.Printf("ledgerd serve: %s: %v", name, err)
+			case msg != "":
+				log.Printf("ledgerd serve: %s: %s", name, msg)
 			}
 			select {
 			case <-ctx.Done():
@@ -549,6 +603,12 @@ func startQuarantineSweep(ctx context.Context, q *quarantine.Store) <-chan struc
 			}
 		}
 	}()
+	return done
+}
+
+func closedChan() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
 	return done
 }
 
@@ -700,5 +760,65 @@ func toAdminReport(r ingest.Report) admin.Report {
 		Superseded: r.Superseded,
 		Unchanged:  r.Unchanged,
 		Failed:     r.Failed,
+	}
+}
+
+// sampleAdapter joins the donated-sample store to the admin console.
+//
+// Same shape and same reason as reprocessAdapter: admin declares an interface
+// rather than importing the package, so the two Sample types meet here. The
+// conversion is dull on purpose — a Raw or a ReceivedAt dropped in it would
+// mean the publish gate replaying an empty corpus and reporting every
+// regression as clean, which is the one failure mode of this whole feature that
+// looks exactly like success. TestTheSampleAdapterCarriesEveryField pins it.
+type sampleAdapter struct{ s *samples.Samples }
+
+func (a sampleAdapter) ForSender(ctx context.Context, domain string) ([]admin.Sample, error) {
+	got, err := a.s.ForSender(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]admin.Sample, 0, len(got))
+	for _, s := range got {
+		out = append(out, toAdminSample(s))
+	}
+	return out, nil
+}
+
+func (a sampleAdapter) Clusters(ctx context.Context) ([]admin.Cluster, error) {
+	got, err := a.s.Clusters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]admin.Cluster, 0, len(got))
+	for _, c := range got {
+		out = append(out, admin.Cluster{
+			SenderDomain: c.SenderDomain,
+			StructureSig: c.StructureSig,
+			UserCount:    c.UserCount,
+			SampleCount:  c.SampleCount,
+			DonatedCount: c.DonatedCount,
+			FirstSeen:    c.FirstSeen,
+		})
+	}
+	return out, nil
+}
+
+func (a sampleAdapter) Retire(ctx context.Context, id uuid.UUID) (bool, error) {
+	return a.s.Retire(ctx, id)
+}
+
+// toAdminSample carries every field admin.Sample has. It deliberately does NOT
+// carry the consent record: the console's job is to know whether a parser
+// works, and nothing it renders is a place to put the identifier of a text
+// somebody agreed to.
+func toAdminSample(s samples.Sample) admin.Sample {
+	return admin.Sample{
+		ID:           s.ID,
+		UserID:       s.UserID,
+		SenderDomain: s.SenderDomain,
+		StructureSig: s.StructureSig,
+		Raw:          s.Raw,
+		ReceivedAt:   s.ReceivedAt,
 	}
 }

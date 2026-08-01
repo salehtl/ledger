@@ -19,6 +19,8 @@
 //	GET  /api/v1/quarantine?after=&after_id=&limit=&include_blob=  -> {items, removed, action_needed, ...}
 //	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids}
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
+//	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
+//	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
 //
 // The quarantine pair is a SEPARATE channel from sync, deliberately: held mail
 // is outside the op log and its chains until a sender is confirmed. See
@@ -116,6 +118,7 @@ import (
 	"ledger/internal/v2/dict"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/quarantine"
+	"ledger/internal/v2/samples"
 )
 
 // Request-shaping limits. They bound what one caller can make the server hold
@@ -185,6 +188,17 @@ const (
 	addressRate    = 1.0 / 60.0 // 1/minute sustained
 	addressBurst   = 10
 	addressMaxKeys = 4096
+
+	// The sample budget is generous in BURST and mean in sustained rate,
+	// because that is the shape of the legitimate traffic: a template breaks,
+	// the client works through a backlog of unparsed mail and reports a
+	// fingerprint for each one, and then it is quiet for weeks. What it bounds
+	// is the other shape — a client looping — where every donation costs a
+	// LINEAR SCAN of that user's whole cold stream (samples.coldBody), which is
+	// far and away the most expensive thing a session can ask this API to do.
+	sampleRate    = 1.0 / 60.0 // 1/minute sustained
+	sampleBurst   = 60
+	sampleMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -218,6 +232,17 @@ type Server struct {
 	// here that can approve anything.
 	Dict *dict.Dict
 
+	// Samples is the donated-sample queue (§3.5). Nil means the two intake
+	// routes are not mounted, same rule as the blocks above.
+	//
+	// Only the WRITE side is reachable from this listener, which is the mirror
+	// image of Dict: a client may contribute a structural fingerprint or a
+	// consented sample, and there is no route here — none — that reads one back.
+	// The corpus is replayed by internal/v2/admin on the tailnet-bound
+	// listener, and even there it returns match results rather than bytes.
+	Samples *samples.Samples
+
+
 	// Verifiers maps an IdP name to its verifier, and it is built ONCE per
 	// process (NewServer), never per request.
 	//
@@ -238,6 +263,12 @@ type Server struct {
 	// budget, because they are two halves of one flow and a caller who can mint
 	// unlimited nonces can make unlimited attempts.
 	AddressPerUser *Limiter
+	// SamplesPerUser covers the structural report and the donation on ONE
+	// budget. They are two halves of one flow — the client reports what it
+	// cannot parse and the user may then donate one of those messages — and a
+	// caller who can spend an unlimited number of the cheap calls is not
+	// meaningfully limited on the expensive one.
+	SamplesPerUser *Limiter
 
 	// QuarantineByteBudget bounds the raw-message bytes one
 	// GET /api/v1/quarantine?include_blob=1 page may carry; 0 means
@@ -303,6 +334,17 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 			TTL:        quarantine.DefaultTTL,
 			WarnBefore: quarantine.DefaultWarnBefore,
 			Now:        now,
+		},
+		// The donated-sample queue needs nothing but the pool: the default
+		// path stores no content, and the consented path reads the body out of
+		// the user's own log. There is no key and no configuration that could
+		// be absent, so unlike Dict there is no deployment in which this is
+		// half-built — which matters, because a client whose report endpoint
+		// 404s has no way to tell an operator that its bank stopped parsing.
+		Samples: &samples.Samples{
+			Pool:      pool,
+			Retention: samples.DefaultRetention,
+			Now:       now,
 		},
 		Now: now,
 	}
@@ -374,6 +416,9 @@ func (s *Server) Handler() http.Handler {
 	if s.AddressPerUser == nil {
 		s.AddressPerUser = NewLimiter(addressRate, addressBurst, addressMaxKeys, s.now)
 	}
+	if s.SamplesPerUser == nil {
+		s.SamplesPerUser = NewLimiter(sampleRate, sampleBurst, sampleMaxKeys, s.now)
+	}
 	if s.PullByteBudget <= 0 {
 		s.PullByteBudget = pullByteBudget
 	}
@@ -404,6 +449,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
 	if s.Dict != nil {
 		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))
+	}
+	if s.Samples != nil {
+		mux.HandleFunc("POST /api/v1/samples/report", s.requireSession(s.handleReport))
+		mux.HandleFunc("POST /api/v1/samples/donate", s.requireSession(s.handleDonate))
 	}
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling

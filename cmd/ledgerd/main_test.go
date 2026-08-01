@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/admin"
@@ -17,6 +19,7 @@ import (
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/ingest"
 	"ledger/internal/v2/quarantine"
+	"ledger/internal/v2/samples"
 )
 
 // TestModeHandlersCoverConfigModesExactly is the real coverage the config
@@ -377,5 +380,47 @@ func TestTheReprocessAdapterCarriesEveryField(t *testing.T) {
 	// A zero in maps to a zero out, so the mapping cannot be hiding a constant.
 	if toAdminReport(ingest.Report{}) != (admin.Report{}) {
 		t.Fatal("toAdminReport does not map the zero report to the zero report")
+	}
+}
+
+// The same pin on the donated-sample adapter, and it matters more than the
+// report one: a Raw or a ReceivedAt dropped here means the publish gate replays
+// an EMPTY corpus and reports every regression as clean. That failure looks
+// exactly like success from the console, so nothing downstream would catch it.
+func TestTheSampleAdapterCarriesEveryField(t *testing.T) {
+	in := samples.Sample{
+		ID:           uuid.New(),
+		UserID:       uuid.New(),
+		SenderDomain: "alerts.testbank.test",
+		StructureSig: "0123456789abcdef0123456789abcdef",
+		IngestID:     bytes.Repeat([]byte{7}, 32),
+		Raw:          []byte("From: alerts@testbank.test\r\n\r\nYou spent AED 250.00"),
+		ReceivedAt:   time.Now().UTC().Truncate(time.Millisecond),
+		Consent:      "donate-sample-v1",
+		ConsentedAt:  time.Now().UTC().Truncate(time.Millisecond),
+		CreatedAt:    time.Now().UTC().Truncate(time.Millisecond),
+		ExpiresAt:    time.Now().UTC().Add(samples.DefaultRetention).Truncate(time.Millisecond),
+	}
+	got := toAdminSample(in)
+	want := admin.Sample{
+		ID: in.ID, UserID: in.UserID, SenderDomain: in.SenderDomain,
+		StructureSig: in.StructureSig, Raw: in.Raw, ReceivedAt: in.ReceivedAt,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("toAdminSample = %+v, want %+v", got, want)
+	}
+	// Every field admin.Sample declares must be carried. The reverse is NOT
+	// asserted: samples.Sample deliberately has more (the consent record, the
+	// retention dates), and the console is not a place any of those belong.
+	rt := reflect.TypeOf(want)
+	for i := 0; i < rt.NumField(); i++ {
+		f := reflect.ValueOf(got).Field(i)
+		if f.IsZero() {
+			t.Errorf("toAdminSample leaves admin.Sample.%s zero, so the console sees "+
+				"less of the corpus than exists", rt.Field(i).Name)
+		}
+	}
+	if !reflect.DeepEqual(toAdminSample(samples.Sample{}), admin.Sample{}) {
+		t.Fatal("toAdminSample does not map the zero sample to the zero sample")
 	}
 }
