@@ -1,6 +1,6 @@
 {
   "name": "identity-is-exact-past-2-53",
-  "note": "The identity rate is not a free pass: amount x 1000000 exceeds 2^53 for any amount past ~9e9, so a float64 executor loses the low digits of an ordinary home-currency row. 9007199254740 fils is 2^53 minor units, and the answer must be itself, digit for digit.",
+  "note": "A home-currency row large enough that amount x 1000000 (9007199254740000000) is past 2^53 and NOT exactly representable — float64 puts the product at ...739999744, low by 256 — and the answer must still be the amount itself, digit for digit. Note what this does NOT pin: the 256 is six orders of magnitude below the 1000000 divisor, so the quotient survives it and a float64 executor passes this case. No identity-rate case can be a float64 guard, because diverging needs a product error above 500000, i.e. a double spacing of 1e6, i.e. a product past 2^72 — far above the 2^63-1 an int64 executor can hold at all. Cases 13 and 17 are the float64 guards; this one pins exactness at scale and the int64 bound.",
   "schema_version": 1,
   "entries": [
     {

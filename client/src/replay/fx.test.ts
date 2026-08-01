@@ -14,7 +14,7 @@ import {
   type Authored,
   type FXCase,
 } from "../../scripts/gen-fx-conformance";
-import { encodeBlobOps } from "../wire/op";
+import { compareUTF8, encodeBlobOps } from "../wire/op";
 import { fold, foldBlobs, type LogEntry, type PositionedBlob } from "./replay";
 import { emptyState, serializeState, type State } from "./state";
 import { HOME_IDENTITY_MICRO, convert } from "./fx";
@@ -32,7 +32,11 @@ const snapshotsOf = (s: State): Record<string, string | null> => {
 
 const pendingOf = (s: State): Record<string, string[]> => {
   const out: Record<string, string[]> = {};
-  for (const [ccy, ids] of s.pendingByCurrency) out[ccy] = [...ids].sort();
+  // compareUTF8, not the default sort: the manifest promises the Go reader UTF-8
+  // BYTE order, and JavaScript's default compares UTF-16 code units — the two
+  // disagree for any id containing a character above U+FFFF. Ids are ASCII
+  // today, which is exactly why the wrong comparator here would never be caught.
+  for (const [ccy, ids] of s.pendingByCurrency) out[ccy] = [...ids].sort(compareUTF8);
   return out;
 };
 
@@ -256,6 +260,26 @@ test("a rate for the currency that later becomes home is an anomaly on that side
   expect(s.anomalies[0]!.at_seq).toBe(3n); // recorded at the onboarding op, which is where it is knowable
 });
 
+test("a pre-onboarding rate, an unset, and a row still pending at onboarding, in one log", () => {
+  // The combined shape. The earlier claim that no single log can carry both a
+  // pre-onboarding rate head and a home-currency row still pending at onboarding
+  // was wrong: an unset in between produces exactly that, and it is the case
+  // where the anomaly fires on a NULL head — which is why the guard keys on "a
+  // rate head exists" rather than on "a non-null rate head exists".
+  const s = fold([
+    at(1n, rateSet("AED", "2000000")),
+    at(2n, ingested("i1", "t1", { currency: "AED" })), // freezes at the 2.0 basis
+    at(3n, rateUnset("AED")), // AED is not home yet, so this is an ordinary unset
+    at(4n, ingested("i2", "t2", { currency: "AED" })), // pending: the head is null
+    at(5n, homeCurrency("AED")),
+  ]);
+  expect(snap(s, "t1")).toBe(20_000n); // kept, per §3.7's no-rewrite rule
+  expect(snap(s, "t2")).toBe(10_000n); // backfilled by the onboarding op
+  expect(pendingOf(s)).toEqual({});
+  expect(kinds(s)).toEqual(["rate_set_before_home_currency"]);
+  expect(s.anomalies[0]!.detail).toContain("unset"); // the head it names really was null
+});
+
 test("a rate for a foreign currency before onboarding is ordinary, not an anomaly", () => {
   // The guard must key on the currency being adopted as home, not on ordering.
   const s = fold([
@@ -356,6 +380,34 @@ test("a recompute edit carries the value, and a null re-arms the row for backfil
 
   fold([at(5n, edited("t1", 2, { amount_home_minor: null })), at(6n, rateSet("USD", "5000000"))], s);
   expect(snap(s, "t1")).toBe(50_000n);
+});
+
+test("an explicit null on a HOME-currency row re-arms a bucket nothing can ever drain", () => {
+  // Recorded rather than fixed, and pinned here so it is a decision. A carrying
+  // edit may null any row's snapshot (§3.7:137), including a home-currency one —
+  // and `pendingByCurrency[H]` is the one bucket no `rate_set` can drain, since
+  // a rate for the home currency is refused and `home_currency_set` is one-shot.
+  // The state is deterministic, visible, and repairable only by a later carrying
+  // edit. Raising an anomaly at the edit was considered and rejected: the edit is
+  // legal, the damage is self-inflicted and recoverable, and inventing an anomaly
+  // kind changes the frozen cross-executor vocabulary for it.
+  //
+  // Task 13 and any missing-rates UI must NOT read this as "the home currency
+  // needs a rate" — there is no rate to add, and offering one leads to an op that
+  // is itself an anomaly.
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, ingested("i1", "t1", { currency: "AED" })),
+    at(3n, edited("t1", 1, { amount_home_minor: null })),
+    at(4n, rateSet("AED", "2000000")), // refused, so it backfills nothing
+  ]);
+  expect(snap(s, "t1")).toBeNull();
+  expect(pendingOf(s)).toEqual({ AED: ["t1"] });
+  expect(kinds(s)).toEqual(["rate_set_for_home_currency"]);
+
+  fold([at(5n, edited("t1", 2, { amount_home_minor: "10000" }))], s);
+  expect(snap(s, "t1")).toBe(10_000n);
+  expect(pendingOf(s)).toEqual({});
 });
 
 test("an ordinary edit does not disturb a frozen snapshot", () => {

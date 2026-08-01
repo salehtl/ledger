@@ -476,7 +476,7 @@ function specs(): CaseSpec[] {
     {
       file: "14-identity-is-exact-past-2-53.json",
       name: "identity-is-exact-past-2-53",
-      note: "The identity rate is not a free pass: amount x 1000000 exceeds 2^53 for any amount past ~9e9, so a float64 executor loses the low digits of an ordinary home-currency row. 9007199254740 fils is 2^53 minor units, and the answer must be itself, digit for digit.",
+      note: "A home-currency row large enough that amount x 1000000 (9007199254740000000) is past 2^53 and NOT exactly representable — float64 puts the product at ...739999744, low by 256 — and the answer must still be the amount itself, digit for digit. Note what this does NOT pin: the 256 is six orders of magnitude below the 1000000 divisor, so the quotient survives it and a float64 executor passes this case. No identity-rate case can be a float64 guard, because diverging needs a product error above 500000, i.e. a double spacing of 1e6, i.e. a product past 2^72 — far above the 2^63-1 an int64 executor can hold at all. Cases 13 and 17 are the float64 guards; this one pins exactness at scale and the int64 bound.",
       build: () => ({
         entries: [
           at(1n, homeCurrency("AED")),
@@ -531,6 +531,46 @@ function specs(): CaseSpec[] {
         },
       }),
     },
+    {
+      file: "17-float-divergence-at-the-int64-ceiling.json",
+      name: "float-divergence-at-the-int64-ceiling",
+      note: "The second float64 guard, at the far end of the magnitude range from case 13: the product is 9223368456845499999, which leaves 3580008775808 of headroom below 2^63-1 even after the +500000 — so an int64 executor computes it exactly and one built on float64 rounds the product up by 417, crosses the half-up boundary and reports 9223368456846. This is the largest conversion this suite asks any executor to perform, and it is deliberately just inside the ceiling: one rung higher and the two mandated executors would be required to disagree.",
+      build: () => ({
+        entries: [
+          at(1n, homeCurrency("AED")),
+          at(2n, rateSet("USD", "3672501")),
+          at(3n, ingested("i1", "t1", { currency: "USD", amount_minor: "2511467922499" })),
+        ],
+        expect: {
+          home_currency: "AED",
+          rates: { AED: IDENTITY, USD: "3672501" },
+          snapshots: { t1: "9223368456845" },
+          pending: {},
+          anomalies: [],
+        },
+      }),
+    },
+    {
+      file: "18-pre-onboarding-rate-then-unset-then-onboarding.json",
+      name: "pre-onboarding-rate-then-unset-then-onboarding",
+      note: "The shape that carries BOTH halves of the pre-onboarding problem at once, and which no other case reaches: a rate for the currency that becomes home, a row frozen against it, that rate then unset, a second row left pending, and only then the onboarding op — which installs the identity, backfills the pending row and raises the anomaly. t1 keeps its 2.0 basis and t2 gets the identity, so the two-basis split the anomaly reports is visible in the snapshots themselves. The anomaly fires on a NULL head, which is why the guard keys on 'a rate head exists' rather than on 'a non-null rate head exists'.",
+      build: () => ({
+        entries: [
+          at(1n, rateSet("AED", "2000000")),
+          at(2n, ingested("i1", "t1", { currency: "AED" })),
+          at(3n, rateUnset("AED")),
+          at(4n, ingested("i2", "t2", { currency: "AED" })),
+          at(5n, homeCurrency("AED")),
+        ],
+        expect: {
+          home_currency: "AED",
+          rates: { AED: IDENTITY },
+          snapshots: { t1: "20000", t2: "10000" },
+          pending: {},
+          anomalies: [{ kind: "rate_set_before_home_currency", at_seq: "5" }],
+        },
+      }),
+    },
   ];
 }
 
@@ -560,7 +600,8 @@ const MANIFEST_NOTE =
   "Every case is a complete log: fold `entries` in seq order (entries sharing a seq are one blob, applied in array order) and compare against `expect`. " +
   "Every integer is a decimal string, including seq. null is a value: a null snapshot means no rate existed at or after that row's position, and a null rate head is a live rate_unset, which is not the same as a currency with no rate at all. " +
   "`snapshots` names every transaction the fold materializes, superseded rows included. `pending` lists still-unfrozen live ids sorted by UTF-8 bytes, because the engine holds them in a set and Go would hold them in a map. `anomalies` is in fold order. " +
-  "Every case keeps amount_minor x rate_micro below 2^63-1 so an int64 executor can consume it unchanged.";
+  "The home currency APPEARS IN `rates` carrying the identity 1000000, though spec §3.7:125 says it carries no rate row: the identity is materialized as a head so that head_rate(home, P) is one lookup rather than a special case at every call site. Every case encodes that literally, so an executor that keeps the identity implicit must add it before comparing. " +
+  "Every case keeps amount_minor x rate_micro (plus the +500000) below 2^63-1 so an int64 executor can consume it unchanged; case 17 sits deliberately close to that ceiling and is the largest conversion here.";
 
 function build(): { manifest: string; files: { file: string; text: string }[] } {
   const cases = buildCases();

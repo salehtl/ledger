@@ -48,6 +48,11 @@
  *   3. **The home currency carries the implicit identity rate**, 1.000000, and
  *      is un-unsettable by construction: `replay.ts` refuses `rate_set` and
  *      `rate_unset` aimed at it, in both directions across the onboarding op.
+ *      Spec §3.7:125 says the home currency "carries no rate row"; this
+ *      materializes it as one anyway, so `head_rate(home, P)` is a single lookup
+ *      instead of a special case at every call site. That is a representation
+ *      choice with a cross-executor consequence — the conformance cases encode
+ *      it literally in `rates` — so it is stated in the manifest too.
  *
  * # Money is BigInt, and the hazard is the intermediate
  *
