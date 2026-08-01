@@ -1496,3 +1496,90 @@ func equalBytes(a, b []byte) bool {
 func bytesContains(hay, needle []byte) bool {
 	return strings.Contains(string(hay), string(needle))
 }
+
+// ---------------------------------------------------------------------------
+// Freshness (VerifyOpts.MaxAge) — spec §3.4's re-authentication factor
+// ---------------------------------------------------------------------------
+
+// A token that is perfectly valid for a sign-in is NOT proof the user
+// authenticated just now. Account deletion needs the second property, and
+// MaxAge is the only thing that supplies it.
+func TestVerifierRefusesAStaleTokenWhenFreshnessIsRequired(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
+	// Still inside `exp` (an hour), well outside a five-minute freshness window.
+	c.advance(10 * time.Minute)
+
+	if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
+		t.Fatalf("without MaxAge the same token must still verify: %v", err)
+	}
+	mustRejectOpts(t, v, tok, VerifyOpts{MaxAge: 5 * time.Minute}, ErrStale)
+}
+
+func TestVerifierAcceptsAFreshTokenAndReportsItsIssueInstant(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	iat := c.now()
+	tok := mint(t, k.rsa1, nil, goodClaims(iat, nil))
+	c.advance(time.Minute)
+
+	id, err := v.Verify(bgctx, tok, VerifyOpts{MaxAge: 5 * time.Minute})
+	if err != nil {
+		t.Fatalf("verify a one-minute-old token with a five-minute window: %v", err)
+	}
+	if !id.IssuedAt.Equal(iat.Truncate(time.Second)) {
+		t.Fatalf("Identity.IssuedAt = %s, want %s", id.IssuedAt.UTC(), iat.UTC())
+	}
+}
+
+// A token that will not say when it was minted cannot be shown to be recent.
+// Without this it would pass every freshness check ever written.
+func TestVerifierRefusesATokenWithNoIssuedAtWhenFreshnessIsRequired(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"iat": nil}))
+	if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
+		t.Fatalf("a token with no iat must still verify for an ordinary sign-in: %v", err)
+	}
+	mustRejectOpts(t, v, tok, VerifyOpts{MaxAge: 5 * time.Minute}, ErrStale)
+}
+
+// Otherwise a five-minute window is widened to any length by writing a later
+// `iat`. The signature is what stops a forger; this is what stops the window
+// from being meaningless if one ever gets past it.
+func TestVerifierRefusesAFutureIssuedAtBeyondClockSkew(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{
+		"iat": c.now().Add(time.Hour).Unix(),
+		"exp": c.now().Add(2 * time.Hour).Unix(),
+	}))
+	mustRejectOpts(t, v, tok, VerifyOpts{MaxAge: 5 * time.Minute}, ErrStale)
+}
+
+// The dev verifier reports every token as issued now, so an endpoint gated on
+// freshness is reachable from the exit test. Pinned rather than assumed: it is
+// the one implementation that could silently fail a freshness gate.
+func TestDevVerifierReportsAFreshIssueInstant(t *testing.T) {
+	before := time.Now()
+	id, err := NewDevVerifier(IdPApple).Verify(bgctx, "dev:alice", VerifyOpts{MaxAge: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.IssuedAt.Before(before) {
+		t.Fatalf("dev IssuedAt = %s, want at or after %s", id.IssuedAt, before)
+	}
+}

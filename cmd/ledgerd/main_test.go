@@ -111,11 +111,10 @@ func TestUnknownModeIsNotInTheDispatchTable(t *testing.T) {
 // cluster (see task-3-report.md) rather than a fast unit test, since it
 // necessarily depends on external process state a unit test shouldn't own.
 func TestNonServeHandlersStubImmediatelyWithNoIO(t *testing.T) {
-	// seed-dictionary is no longer in this list: Task 33 implemented it, and
-	// TestSeedDictionaryRefusesWithoutACorpusBeforeTouchingPostgres below
-	// carries the "returns immediately, with no I/O" half of this test's job
-	// for that mode.
-	for _, m := range []string{"relay", "verify", "purge-user", "parse-rate"} {
+	// seed-dictionary and purge-user are no longer in this list: Tasks 33 and
+	// 34 implemented them, and the two tests below carry the "returns
+	// immediately, with no I/O" half of this test's job for those modes.
+	for _, m := range []string{"relay", "verify", "parse-rate"} {
 		h, ok := modeHandlers[m]
 		if !ok {
 			t.Fatalf("modeHandlers missing %q", m)
@@ -140,6 +139,37 @@ func TestSeedDictionaryRefusesWithoutACorpusBeforeTouchingPostgres(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "LEDGER_CORPUS_DB") {
 		t.Fatalf("error does not name the missing input: %v", err)
+	}
+}
+
+// purge-user is the most destructive command this binary has, so its arguments
+// are checked before it opens anything. The zero config carries an empty DSN,
+// so a handler that reached pg.Open would be connecting to whatever DSN
+// happened to be in the environment — while being asked to delete an account.
+func TestPurgeUserRefusesBadArgumentsBeforeTouchingPostgres(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		purge config.PurgeArgs
+		wants string
+	}{
+		{name: "nothing selected", purge: config.PurgeArgs{}, wants: "--user"},
+		{
+			name:  "both selected",
+			purge: config.PurgeArgs{User: uuid.NewString(), RetentionDue: true},
+			wants: "alternatives",
+		},
+		{name: "not a uuid", purge: config.PurgeArgs{User: "alice"}, wants: "not a uuid"},
+		{name: "the nil uuid", purge: config.PurgeArgs{User: uuid.Nil.String()}, wants: "nil uuid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := modeHandlers["purge-user"](config.Config{Purge: tc.purge})
+			if err == nil {
+				t.Fatal("purge-user accepted the arguments")
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("error does not explain the problem (%q): %v", tc.wants, err)
+			}
+		})
 	}
 }
 
@@ -186,6 +216,31 @@ func TestParseArgs(t *testing.T) {
 				t.Fatalf("parseArgs(%q) = %+v, want {%q %q %v %q}", tc.args, got, tc.mode, tc.cfgPath, tc.devAuth, tc.dnsFixtures)
 			}
 		})
+	}
+}
+
+// purge-user's flags go through the same FlagSet as everything else, which is
+// the only thing keeping "the mode comes first" from having a second, divergent
+// implementation. Pinned because the failure would be silent: an unparsed
+// --user is an empty --user, and the command would refuse with "nothing
+// selected" while the operator watched a UUID sit on their command line.
+func TestParseArgsCarriesThePurgeFlags(t *testing.T) {
+	u := uuid.NewString()
+	got, err := parseArgs([]string{"purge-user", "--user", u, "--dry-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.PurgeArgs{User: u, DryRun: true}
+	if got.mode != "purge-user" || got.purge != want {
+		t.Fatalf("parseArgs = {%q %+v}, want {purge-user %+v}", got.mode, got.purge, want)
+	}
+
+	got, err = parseArgs([]string{"purge-user", "--retention-due"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.purge.RetentionDue || got.purge.User != "" {
+		t.Fatalf("parseArgs = %+v, want only RetentionDue", got.purge)
 	}
 }
 

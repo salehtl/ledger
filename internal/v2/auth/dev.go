@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // devTokenPrefix is the whole grammar of a dev token: "dev:" followed by the
@@ -39,11 +40,27 @@ const devTokenPrefix = "dev:"
 // there is nothing to check them against. Anything reachable with a session
 // issued this way is reachable by anyone who can reach the listener — which is
 // why the loopback rail is not decorative.
+//
+// It reports every token as issued NOW, so [VerifyOpts.MaxAge] — spec §3.4's
+// freshness requirement — is satisfied rather than failed. That is the same
+// choice as everything above: a dev token proves nothing, and an endpoint
+// gated on freshness has to be reachable from the exit test at all.
 func NewDevVerifier(idp string) Verifier {
 	return devVerifier{idp: idp}
 }
 
-type devVerifier struct{ idp string }
+type devVerifier struct {
+	idp string
+	// now is for tests of this file only; nil means time.Now.
+	now func() time.Time
+}
+
+func (v devVerifier) clock() time.Time {
+	if v.now != nil {
+		return v.now()
+	}
+	return time.Now()
+}
 
 func (v devVerifier) Verify(_ context.Context, idToken string, _ VerifyOpts) (Identity, error) {
 	if !validIdP(v.idp) {
@@ -67,5 +84,5 @@ func (v devVerifier) Verify(_ context.Context, idToken string, _ VerifyOpts) (Id
 		// one that has to say so.
 		return Identity{}, fmt.Errorf("%w: a dev subject may not contain %q", ErrTokenRejected, "|")
 	}
-	return Identity{IdP: v.idp, Subject: subject}, nil
+	return Identity{IdP: v.idp, Subject: subject, IssuedAt: v.clock()}, nil
 }
