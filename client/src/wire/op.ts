@@ -60,6 +60,8 @@
  * be conflated — they are `oplog.ErrUnknownNewerVersion` and `blob.ErrSetAside`.
  */
 
+import { platform } from "../platform";
+
 /** The op schema this build understands. `blob.ts`'s VERSION versions the framing. */
 export const SCHEMA_VERSION = 1;
 
@@ -370,7 +372,7 @@ type SourceReviver = (this: unknown, key: string, value: unknown, context?: { so
 function parseBody(bytes: Uint8Array, what: string): ParsedBody {
   // Non-fatal decoding, so invalid UTF-8 becomes U+FFFD rather than throwing —
   // which is what Go's encoding/json does with invalid UTF-8 inside a string.
-  const text = new TextDecoder("utf-8").decode(bytes);
+  const text = platform().utf8Decode(bytes);
   const literals: NumberLiterals = new WeakMap();
   const reviver: SourceReviver = function (key, value, context) {
     // `this` is the holder, and JSON.parse walks an already-built object, so the
@@ -610,7 +612,7 @@ export function encodeBlobOps(ops: Op[]): Uint8Array {
     wire["payload"] = o.payload;
     return wire;
   });
-  return new TextEncoder().encode(JSON.stringify({ v: SCHEMA_VERSION, kind: KIND_OPS, ops: out }));
+  return platform().utf8Encode(JSON.stringify({ v: SCHEMA_VERSION, kind: KIND_OPS, ops: out }));
 }
 
 /**
@@ -645,13 +647,13 @@ export function encodeRawBody(r: RawBodyRecord): Uint8Array {
   if (!isSHA256Hex(r.ingest_id)) {
     throw new Error(`raw body needs a 64-hex-char ingest_id, got ${JSON.stringify(r.ingest_id)}`);
   }
-  return new TextEncoder().encode(
+  return platform().utf8Encode(
     JSON.stringify({
       v: SCHEMA_VERSION,
       kind: KIND_RAW_BODY,
       ingest_id: r.ingest_id,
       received_at: canonicalTime(r.received_at),
-      raw_base64: Buffer.from(r.raw).toString("base64"),
+      raw_base64: platform().toBase64(r.raw),
     }),
   );
 }
@@ -660,7 +662,10 @@ function decodeBase64Strict(s: unknown): Uint8Array {
   if (typeof s !== "string" || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) {
     throw new BlobDecodeError("raw_base64 is not standard base64");
   }
-  return new Uint8Array(Buffer.from(s, "base64"));
+  // The guard above is kept even though `platform().fromBase64` enforces the
+  // same rule: this one raises a `BlobDecodeError`, which sets one blob aside
+  // and lets sync continue, and the seam's `TypeError` would not.
+  return platform().fromBase64(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -702,8 +707,9 @@ export interface CheckpointPayload {
  * different winners.
  */
 export function compareUTF8(a: string, b: string): number {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
+  const p = platform();
+  const x = p.utf8Encode(a);
+  const y = p.utf8Encode(b);
   const n = Math.min(x.length, y.length);
   for (let i = 0; i < n; i++) {
     const d = x[i]! - y[i]!;

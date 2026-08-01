@@ -39,9 +39,9 @@
  * `wire/chain.ts` states this at length; do not quote a clean run as more.
  */
 
-import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-
 import { ulid } from "ulid";
+
+import { platform } from "../platform";
 
 import {
   VIOLATION_ROSTER_COVERAGE,
@@ -195,13 +195,13 @@ export const ROSTER_CHECKPOINT = "I11_roster_checkpoint";
 // Row decoding
 // ---------------------------------------------------------------------------
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
+const hex = (b: Uint8Array): string => platform().toHex(b);
 
 function unhex32(s: unknown, what: string): Uint8Array {
   if (typeof s !== "string" || !/^[0-9a-f]{64}$/.test(s)) {
     throw new ProtocolError(`${what} must be 64 lower-case hex characters, got ${JSON.stringify(s)}`);
   }
-  return new Uint8Array(Buffer.from(s, "hex"));
+  return platform().fromHex(s);
 }
 
 /**
@@ -209,12 +209,16 @@ function unhex32(s: unknown, what: string): Uint8Array {
  * outside the alphabet, so a corrupted body would come back short and plausible
  * — and a short blob is not a size bucket, which would be reported as a bucket
  * violation rather than as the transport problem it is.
+ *
+ * The guard is kept even though `platform().fromBase64` enforces the same rule:
+ * this one raises a `ProtocolError` naming the field, and the seam's `TypeError`
+ * would not.
  */
 export function unbase64(s: unknown, what: string): Uint8Array {
   if (typeof s !== "string" || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) {
     throw new ProtocolError(`${what} is not standard base64`);
   }
-  return new Uint8Array(Buffer.from(s, "base64"));
+  return platform().fromBase64(s);
 }
 
 function decodeStream(s: unknown, what: string): Stream {
@@ -608,9 +612,9 @@ export class Client {
     const sig = signBytes(signer, registrationMessage(nonceBytes, writerId, pub));
     await this.request<void>("POST", "/api/v1/writers/register", {
       writer_id: writerId,
-      pubkey: Buffer.from(pub).toString("base64"),
+      pubkey: platform().toBase64(pub),
       nonce,
-      sig: Buffer.from(sig).toString("base64"),
+      sig: platform().toBase64(sig),
     });
     // A device adopts a writer only when it holds that writer's key. Adopting a
     // peer's id would make this device author blobs it cannot sign for — and,
@@ -1207,7 +1211,7 @@ export class Client {
         blob_hash: hex(hash),
         type_flag: TYPE_FLAG_EDIT,
         size_bucket: bytes.length,
-        blob: Buffer.from(bytes).toString("base64"),
+        blob: platform().toBase64(bytes),
       },
     };
   }
@@ -1331,23 +1335,44 @@ function requireWriterID(id: string): void {
   }
 }
 
+/**
+ * A {@link WriterKey} is a JWK pair, so its halves are **base64url** while the
+ * seam speaks standard base64. Translating here rather than adding a
+ * `fromBase64url` to `Platform` keeps the seam at one encoding, and this is the
+ * only place in the client that meets the URL-safe alphabet.
+ *
+ * The stored form is not changed by the move to the seam: a state file written
+ * by the `node:crypto` build still loads, and one written here still loads under
+ * that build. `client.test.ts` pins the encoding.
+ */
+function b64urlToBytes(s: string): Uint8Array {
+  const std = s.replace(/-/g, "+").replace(/_/g, "/");
+  return platform().fromBase64(std + "=".repeat((4 - (std.length % 4)) % 4));
+}
+
+function bytesToB64url(b: Uint8Array): string {
+  return platform().toBase64(b).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 function newWriterKey(): WriterKey {
-  const { privateKey } = generateKeyPairSync("ed25519");
-  const jwk = privateKey.export({ format: "jwk" }) as { x?: string; d?: string };
-  if (typeof jwk.x !== "string" || typeof jwk.d !== "string") throw new Error("ed25519 key did not export as a JWK");
-  return { x: jwk.x, d: jwk.d };
+  const { priv, pub } = platform().ed25519GenerateKey();
+  return { x: bytesToB64url(pub), d: bytesToB64url(priv) };
 }
 
 export function publicKeyBytes(k: WriterKey): Uint8Array {
-  const pub = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: k.x }, format: "jwk" });
-  const jwk = pub.export({ format: "jwk" }) as { x?: string };
-  if (typeof jwk.x !== "string") throw new Error("ed25519 public key did not export as a JWK");
-  return new Uint8Array(Buffer.from(jwk.x, "base64url"));
+  // Read out of `x`, exactly as the `createPublicKey` round-trip this replaced
+  // did — it consulted `x` alone and never `d`. Deriving from the private half
+  // instead would additionally catch an x/d mismatch, which is a real
+  // improvement and a BEHAVIOUR CHANGE, so it does not belong in a seam
+  // conversion; a peer's key is stored public-half-only and would break.
+  // `createPublicKey` did enforce the 32-byte point, so that check stays.
+  const pub = b64urlToBytes(k.x);
+  if (pub.length !== 32) throw new Error(`ed25519 public key must be 32 bytes, got ${pub.length}`);
+  return pub;
 }
 
 function signBytes(k: WriterKey, message: Uint8Array): Uint8Array {
-  const priv = createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", x: k.x, d: k.d }, format: "jwk" });
-  return new Uint8Array(sign(null, message, priv));
+  return platform().ed25519Sign(b64urlToBytes(k.d), message);
 }
 
 /**
@@ -1361,8 +1386,9 @@ function signBytes(k: WriterKey, message: Uint8Array): Uint8Array {
  * enrolment signature authorizing a DIFFERENT one.
  */
 export function registrationMessage(nonce: Uint8Array, writerId: string, pub: Uint8Array): Uint8Array {
-  const id = new TextEncoder().encode(writerId);
-  const domain = new TextEncoder().encode(REGISTRATION_DOMAIN);
+  const p = platform();
+  const id = p.utf8Encode(writerId);
+  const domain = p.utf8Encode(REGISTRATION_DOMAIN);
   const out = new Uint8Array(domain.length + nonce.length + 1 + id.length + 1 + pub.length);
   let n = 0;
   out.set(domain, n);
@@ -1457,5 +1483,5 @@ export function stateToJSON(s: State): unknown {
 
 /** A fresh entity id for `cli emit --entity txn:new`. */
 export function newEntityID(): string {
-  return randomUUID();
+  return platform().randomUUID();
 }

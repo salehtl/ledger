@@ -44,7 +44,7 @@
  * `ErrInvalidEnvelope`.
  */
 
-import { gunzipSync, gzipSync } from "node:zlib";
+import { platform } from "../platform";
 import { BlobDecodeError, InvalidEnvelopeError } from "./op";
 
 /** The envelope version byte. It versions the FRAMING, not the ops inside. */
@@ -138,7 +138,7 @@ function aadBytes(e: Envelope): Uint8Array {
   // The counter is decimal, from a bigint, so it is exact at any magnitude —
   // Number(counter).toString() would start lying at 2^53 and produce an AAD no
   // other executor computes.
-  return new TextEncoder().encode(
+  return platform().utf8Encode(
     [e.userId.toLowerCase(), e.stream, e.writerId, e.writerCounter.toString(10)].join(AAD_SEPARATOR),
   );
 }
@@ -245,7 +245,7 @@ export function sealBlob(e: Envelope, plaintext: Uint8Array): Uint8Array {
     throw new RangeError(`plaintext is ${plaintext.length} bytes, cap is ${MAX_PLAINTEXT}`);
   }
   const ad = aadBytes(e);
-  const payload = gzipSync(plaintext, { level: 9 });
+  const payload = platform().gzip(plaintext);
   const bucket = bucketFor(overhead(ad.length) + payload.length);
 
   const out = new Uint8Array(bucket);
@@ -300,13 +300,20 @@ export function openBlob(e: Envelope, bytes: Uint8Array): Uint8Array {
  * `Bun.gunzipSync` — which the task brief suggested — has no cap, and a blob is
  * attacker-influenced: the 1 MiB top bucket can carry a gzip stream that
  * inflates to roughly a gigabyte, so an uncapped decompress is a remote OOM on
- * a phone. `node:zlib`'s `maxOutputLength` is the sync equivalent of the
- * `io.LimitReader(zr, MaxPlaintext+1)` Go uses, and Bun implements it natively.
+ * a phone. The seam's cap is the sync equivalent of the
+ * `io.LimitReader(zr, MaxPlaintext+1)` Go uses, and every implementation of it
+ * must enforce the bound DURING inflation, not after — see `platform.ts`.
+ *
+ * The two-stage shape is deliberate: the seam is asked for `MAX_PLAINTEXT + 1`
+ * so that a payload of exactly `MAX_PLAINTEXT + 1` inflates far enough to be
+ * *distinguishable* from one of exactly `MAX_PLAINTEXT`, and the length check
+ * below is what turns the extra byte into this module's own error message
+ * rather than the decompressor's.
  */
 function decompress(payload: Uint8Array): Uint8Array {
-  let out: Buffer;
+  let out: Uint8Array;
   try {
-    out = gunzipSync(payload, { maxOutputLength: MAX_PLAINTEXT + 1 });
+    out = platform().gunzip(payload, MAX_PLAINTEXT + 1);
   } catch (err) {
     throw new BlobDecodeError(`gzip: ${(err as Error).message}`);
   }

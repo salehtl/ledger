@@ -49,6 +49,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { platform } from "../platform";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 import { ZERO_HASH, type ChainKey, type Head } from "../wire/chain";
 import { parseDecimal, type Op } from "../wire/op";
@@ -243,13 +244,13 @@ export function fileStore(dir: string, profile: string): Store {
 // counter is a silently wrong chain.
 // ---------------------------------------------------------------------------
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
+const hex = (b: Uint8Array): string => platform().toHex(b);
 
 function unhex(s: unknown, what: string): Uint8Array {
   if (typeof s !== "string" || !/^([0-9a-f]{2})*$/.test(s)) {
     throw new Error(`${what} is not lower-case hex: ${JSON.stringify(s)}`);
   }
-  return new Uint8Array(Buffer.from(s, "hex"));
+  return platform().fromHex(s);
 }
 
 interface WireState {
