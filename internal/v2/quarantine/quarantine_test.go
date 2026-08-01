@@ -1,0 +1,845 @@
+package quarantine
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"go/parser"
+	"go/token"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledger/internal/v2/addresses"
+	"ledger/internal/v2/auth"
+	"ledger/internal/v2/pgtest"
+)
+
+func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
+
+var bg = context.Background()
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+func insertUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	u, err := auth.UpsertUser(bg, pool, auth.Identity{IdP: auth.IdPApple, Subject: "sub-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// newStore builds a Store on a frozen, µs-truncated clock. Postgres stores
+// timestamptz at microsecond precision, so a clock carrying nanoseconds makes
+// "exactly at the deadline" unrepresentable in the database and turns every
+// boundary assertion below into a sub-microsecond coin flip.
+func newStore(t *testing.T) (*Store, *time.Time, *pgxpool.Pool) {
+	t.Helper()
+	pool := pgtest.New(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	s := &Store{
+		Pool:       pool,
+		TTL:        DefaultTTL,
+		WarnBefore: DefaultWarnBefore,
+		Now:        func() time.Time { return now },
+	}
+	return s, &now, pool
+}
+
+func ingestID(seed string) []byte {
+	sum := sha256.Sum256([]byte(seed))
+	return sum[:]
+}
+
+// item is a plain, DKIM-verified arrival from a bank we do not yet trust.
+func item(u uuid.UUID, at time.Time, seed string) Item {
+	return Item{
+		UserID:      u,
+		IngestID:    ingestID(seed),
+		ReceivedAt:  at,
+		OuterDomain: "dib.ae",
+		DKIM:        ResultPass,
+		ARC:         ResultNone,
+		Blob:        []byte("From: alerts@dib.ae\r\nSubject: alert\r\n\r\n" + seed),
+	}
+}
+
+// forwarded is an arrival through the user's own mailbox whose inner origin the
+// bank's own surviving signature attests.
+func forwarded(u uuid.UUID, at time.Time, seed string) Item {
+	it := item(u, at, seed)
+	it.OuterDomain = "gmail.com"
+	it.InnerDomain = "dib.ae"
+	it.Attested = true
+	it.AttestedBy = AttestedByDirectDKIM
+	return it
+}
+
+func hold(t *testing.T, s *Store, it Item) Item {
+	t.Helper()
+	if err := s.Hold(bg, it); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	return it
+}
+
+func listAll(t *testing.T, s *Store, u uuid.UUID) []Item {
+	t.Helper()
+	items, err := s.List(bg, u, Cursor{}, 100, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return items
+}
+
+func countRows(t *testing.T, pool *pgxpool.Pool, table string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(bg, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// ---------------------------------------------------------------------------
+// The table is outside the op log
+// ---------------------------------------------------------------------------
+
+func TestQuarantineHasNoChainColumns(t *testing.T) {
+	_, _, pool := newStore(t)
+	var n int
+	if err := pool.QueryRow(bg, `SELECT count(*) FROM information_schema.columns
+	  WHERE table_name='quarantine' AND column_name IN ('seq','blob_hash','prev_hash','writer_counter')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("quarantine must stay outside the op log and its chains")
+	}
+}
+
+func TestHoldNeverWritesToTheOpLog(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	if n := countRows(t, pool, "op_log"); n != 0 {
+		t.Fatalf("holding a message appended %d op(s); quarantined mail enters the chains only on confirmation", n)
+	}
+}
+
+func TestHoldIsIdempotentForARedeliveredMessage(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "a")
+	hold(t, s, it)
+	// An SMTP retry is normal traffic, not a second message.
+	hold(t, s, it)
+	if got := len(listAll(t, s, u)); got != 1 {
+		t.Fatalf("a redelivered message is held %d times, want 1", got)
+	}
+}
+
+func TestHoldRefusesAnInnerOriginWithNoAttestation(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "a")
+	it.InnerDomain = "dib.ae" // claimed, with nothing behind it
+	if err := s.Hold(bg, it); !errors.Is(err, ErrInvalidItem) {
+		t.Fatalf("an unattested inner origin can only have come from body text; err = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The drop policy (spec §2): nothing is dropped without a user-visible notice
+// ---------------------------------------------------------------------------
+
+func TestExpiryWarnsBeforeDeleting(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	// Day 23 of 30: inside the 7-day warning window, nothing due.
+	*now = now.Add(23 * 24 * time.Hour)
+	warned, deleted, err := s.ExpireDue(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warned != 1 || deleted != 0 {
+		t.Fatalf("day 23: warned=%d deleted=%d, want 1 and 0", warned, deleted)
+	}
+	items := listAll(t, s, u)
+	if len(items) != 1 || items[0].WarnedAt == nil {
+		t.Fatalf("the client must be able to see the warning: %+v", items)
+	}
+
+	// Day 31: warned a full window ago, so it goes.
+	*now = now.Add(8 * 24 * time.Hour)
+	warned, deleted, err = s.ExpireDue(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warned != 0 || deleted != 1 {
+		t.Fatalf("day 31: warned=%d deleted=%d, want 0 and 1", warned, deleted)
+	}
+	if got := len(listAll(t, s, u)); got != 0 {
+		t.Fatalf("%d items survived expiry", got)
+	}
+}
+
+func TestUnwarnedItemIsNeverDeleted(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	// Received 40 days ago: already past its TTL and never warned, because
+	// nothing swept while it sat there.
+	hold(t, s, item(u, now.Add(-40*24*time.Hour), "a"))
+
+	warned, deleted, err := s.ExpireDue(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted %d unwarned item(s): a client that has not synced in a month must not be pruned out from under", deleted)
+	}
+	if warned != 1 {
+		t.Fatalf("warned=%d, want 1: an overdue item is warned, not dropped", warned)
+	}
+	if got := len(listAll(t, s, u)); got != 1 {
+		t.Fatalf("%d items left, want 1", got)
+	}
+}
+
+func TestALateWarningStillBuysTheFullWarningWindow(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, now.Add(-40*24*time.Hour), "a"))
+
+	if _, deleted, err := s.ExpireDue(bg); err != nil || deleted != 0 {
+		t.Fatalf("first sweep: deleted=%d err=%v", deleted, err)
+	}
+	// One hour later the item is past expires_at AND warned — but the warning
+	// has been visible for an hour, which is not the notice §2 promises.
+	*now = now.Add(time.Hour)
+	if _, deleted, err := s.ExpireDue(bg); err != nil || deleted != 0 {
+		t.Fatalf("an hour after a late warning: deleted=%d err=%v, want 0", deleted, err)
+	}
+	// A full warning window after the warning, it may go.
+	*now = now.Add(DefaultWarnBefore)
+	if _, deleted, err := s.ExpireDue(bg); err != nil || deleted != 1 {
+		t.Fatalf("a full window after a late warning: deleted=%d err=%v, want 1", deleted, err)
+	}
+}
+
+func TestWarningBoundaryIsExactlyWarnBeforeExpiry(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	received := *now
+	hold(t, s, item(u, received, "a"))
+
+	// One microsecond before the window opens.
+	*now = received.Add(DefaultTTL - DefaultWarnBefore - time.Microsecond)
+	if warned, _, err := s.ExpireDue(bg); err != nil || warned != 0 {
+		t.Fatalf("1µs early: warned=%d err=%v, want 0", warned, err)
+	}
+	// Exactly at it: inclusive.
+	*now = now.Add(time.Microsecond)
+	if warned, _, err := s.ExpireDue(bg); err != nil || warned != 1 {
+		t.Fatalf("at the boundary: warned=%d err=%v, want 1", warned, err)
+	}
+}
+
+func TestDeletionBoundaryIsExactlyTheExpiry(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	received := *now
+	hold(t, s, item(u, received, "a"))
+
+	// Warn on time, so deletion is governed by expires_at alone.
+	*now = received.Add(DefaultTTL - DefaultWarnBefore)
+	if warned, _, err := s.ExpireDue(bg); err != nil || warned != 1 {
+		t.Fatalf("warn: warned=%d err=%v", warned, err)
+	}
+	*now = received.Add(DefaultTTL - time.Microsecond)
+	if _, deleted, err := s.ExpireDue(bg); err != nil || deleted != 0 {
+		t.Fatalf("1µs early: deleted=%d err=%v, want 0", deleted, err)
+	}
+	*now = now.Add(time.Microsecond)
+	if _, deleted, err := s.ExpireDue(bg); err != nil || deleted != 1 {
+		t.Fatalf("at the expiry: deleted=%d err=%v, want 1", deleted, err)
+	}
+}
+
+func TestExpiryLeavesATraceTheUserCanRead(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := hold(t, s, item(u, *now, "a"))
+
+	*now = now.Add(23 * 24 * time.Hour)
+	if _, _, err := s.ExpireDue(bg); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(8 * 24 * time.Hour)
+	if _, _, err := s.ExpireDue(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	rem, err := s.Removals(bg, u, Cursor{}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rem) != 1 {
+		t.Fatalf("%d removal records, want 1: a deletion with no record is exactly the silent drop §2 forbids", len(rem))
+	}
+	switch {
+	case rem[0].Reason != ReasonExpired:
+		t.Fatalf("reason %q, want %q", rem[0].Reason, ReasonExpired)
+	case string(rem[0].IngestID) != string(it.IngestID):
+		t.Fatal("the record does not name the message that was removed")
+	case rem[0].WarnedAt == nil:
+		t.Fatal("an expiry record with no warning instant cannot prove the user was told")
+	case rem[0].OuterDomain != "dib.ae":
+		t.Fatalf("outer domain %q lost", rem[0].OuterDomain)
+	}
+}
+
+func TestTheDatabaseRefusesAnUntracedRemovalWhenGoIsBypassed(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	_, err := pool.Exec(bg, `DELETE FROM quarantine WHERE user_id = $1`, u)
+	if err == nil {
+		t.Fatal("a bare DELETE removed quarantined mail with no record of it")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "quarantine_removals") {
+		t.Fatalf("the refusal should name what is missing: %v", err)
+	}
+	if got := len(listAll(t, s, u)); got != 1 {
+		t.Fatalf("%d items left after the refused delete, want 1", got)
+	}
+}
+
+func TestTheDatabaseRefusesAnExpiryRecordWithNoWarning(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	_, err := pool.Exec(bg, `INSERT INTO quarantine_removals
+	  (id, quarantine_id, user_id, ingest_id, received_at, expires_at, warned_at, removed_at,
+	   reason, outer_domain, inner_domain, attested, size_bucket)
+	  SELECT gen_random_uuid(), id, user_id, ingest_id, received_at, expires_at, NULL, $2,
+	         'expired', outer_domain, inner_domain, attested, size_bucket
+	    FROM quarantine WHERE user_id = $1`, u, *now)
+	if err == nil {
+		t.Fatal("an 'expired' removal record with no warned_at was accepted: the promise is that expiry is warned first")
+	}
+}
+
+func TestAccountDeletionTakesQuarantineWithItWithoutTripping(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	hold(t, s, item(u, *now, "b"))
+
+	// §3.10's purge is a legitimate removal with no per-message notice: the
+	// account and everything in it is going, at the user's own request.
+	if _, err := pool.Exec(bg, `DELETE FROM users WHERE id = $1`, u); err != nil {
+		t.Fatalf("account deletion must not be blocked by the drop-policy trigger: %v", err)
+	}
+	if n := countRows(t, pool, "quarantine"); n != 0 {
+		t.Fatalf("%d quarantine rows survived account deletion", n)
+	}
+}
+
+func TestPromotionLeavesATraceToo(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := hold(t, s, item(u, *now, "a"))
+
+	n, err := s.Promote(bg, u, [][]byte{it.IngestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("promoted %d, want 1", n)
+	}
+	if got := len(listAll(t, s, u)); got != 0 {
+		t.Fatalf("%d items still held after promotion", got)
+	}
+	rem, err := s.Removals(bg, u, Cursor{}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rem) != 1 || rem[0].Reason != ReasonPromoted {
+		t.Fatalf("promotion must be recorded as a removal with its own reason: %+v", rem)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation
+// ---------------------------------------------------------------------------
+
+func TestConfirmReturnsEveryHeldIngestIDForThatOrigin(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	want := map[string]bool{}
+	for _, seed := range []string{"a", "b", "c"} {
+		it := hold(t, s, item(u, *now, seed))
+		want[string(it.IngestID)] = true
+	}
+	// A message from a different bank must not come along.
+	other := item(u, *now, "d")
+	other.OuterDomain = "emiratesnbd.com"
+	hold(t, s, other)
+
+	ids, err := s.Confirm(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("confirm returned %d ingest ids, want 3", len(ids))
+	}
+	for _, id := range ids {
+		if !want[string(id)] {
+			t.Fatal("confirm returned an ingest id from another origin")
+		}
+	}
+	ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeOuter)
+	if err != nil || !ok {
+		t.Fatalf("confirm did not write the allowlist row: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestConfirmRefusesAForwarderDomainAsOuter(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, forwarded(u, *now, "a"))
+
+	if _, err := s.Confirm(bg, u, "gmail.com", ScopeOuter); !errors.Is(err, ErrForwarderDomain) {
+		t.Fatalf("allowlisting a forwarder as an outer origin is exactly what §3.2:51 forbids; err = %v", err)
+	}
+	if ok, err := s.Allowlisted(bg, u, "gmail.com", ScopeOuter); err != nil || ok {
+		t.Fatal("the refused confirmation still wrote an allowlist row")
+	}
+	// The inner scope is the path the user is meant to take, and it works.
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeInner); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEveryForwarderIsRefusedAsOuter(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	for _, d := range Forwarders() {
+		it := forwarded(u, *now, d)
+		it.OuterDomain = d
+		hold(t, s, it)
+		if _, err := s.Confirm(bg, u, d, ScopeOuter); !errors.Is(err, ErrForwarderDomain) {
+			t.Fatalf("%s was accepted as an outer origin: %v", d, err)
+		}
+	}
+}
+
+func TestConfirmInnerRequiresAnAttestedItem(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	// A forward whose inner signature did not survive: the only thing naming
+	// the bank is body text, and body text is not evidence.
+	it := item(u, *now, "a")
+	it.OuterDomain = "gmail.com"
+	hold(t, s, it)
+
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeInner); !errors.Is(err, ErrNoAttestedOrigin) {
+		t.Fatalf("an inner origin with no attestation must not be trustable; err = %v", err)
+	}
+	if ok, _ := s.Allowlisted(bg, u, "dib.ae", ScopeInner); ok {
+		t.Fatal("the refused confirmation still wrote an allowlist row")
+	}
+
+	// The other half of the argument, and the reason Confirm's `AND attested`
+	// is a belt beside a brace rather than the only guard: a row naming an
+	// inner origin it cannot prove is UNSTORABLE, so there is no row for a
+	// confirmation to match even if the query forgot to ask. Bypassing Go
+	// entirely does not get one in.
+	if _, err := pool.Exec(bg, `UPDATE quarantine SET inner_domain = 'dib.ae' WHERE user_id = $1`, u); err == nil {
+		t.Fatal("an unattested inner origin was storable: its only possible source is body text")
+	}
+}
+
+func TestConfirmRefusesAnOuterDomainThatWasNeverVerified(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "a")
+	it.OuterDomain = UnverifiedPrefix + "dib.ae" // the envelope said so; nothing signed it
+	it.DKIM = ResultNone
+	hold(t, s, it)
+
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); !errors.Is(err, ErrNoVerifiedOrigin) {
+		t.Fatalf("§3.2:54: promotion requires a verified signature; err = %v", err)
+	}
+	// And the prefix itself is not a domain anybody may allowlist.
+	if _, err := s.Confirm(bg, u, UnverifiedPrefix+"dib.ae", ScopeOuter); !errors.Is(err, ErrInvalidDomain) {
+		t.Fatalf("the unverified marker must not be allowlistable; err = %v", err)
+	}
+}
+
+func TestConfirmIsScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	hold(t, s, item(a, *now, "a"))
+	hold(t, s, item(b, *now, "b"))
+
+	ids, err := s.Confirm(bg, a, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("confirm crossed the account boundary: %d ids", len(ids))
+	}
+	if ok, _ := s.Allowlisted(bg, b, "dib.ae", ScopeOuter); ok {
+		t.Fatal("one user's confirmation allowlisted the origin for another")
+	}
+}
+
+func TestConfirmIsIdempotent(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	first, err := s.Confirm(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Confirm(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirming twice must not fail: %v", err)
+	}
+	if len(first) != len(second) {
+		t.Fatalf("confirm is not idempotent: %d then %d ids", len(first), len(second))
+	}
+	if n := countRows(t, pool, "sender_allowlist"); n != 1 {
+		t.Fatalf("%d allowlist rows, want 1", n)
+	}
+}
+
+func TestConfirmRejectsAnUnknownScope(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", "either"); !errors.Is(err, ErrUnknownScope) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTheDatabaseRefusesAForwarderOuterAllowlistWhenGoIsBypassed(t *testing.T) {
+	_, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	_, err := pool.Exec(bg,
+		`INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,'gmail.com','outer',$2)`, u, *now)
+	if err == nil {
+		t.Fatal("a repair script could allowlist a forwarder as an outer origin")
+	}
+	// The inner scope is legitimate for the same domain: a user may genuinely
+	// bank with a domain we also see as a forwarder for someone else.
+	if _, err := pool.Exec(bg,
+		`INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,'gmail.com','inner',$2)`, u, *now); err != nil {
+		t.Fatalf("the constraint is too wide: %v", err)
+	}
+}
+
+// TestTheSQLForwarderListMatchesGo keeps the two copies of §3.2:51's closed
+// list from drifting. The Go list is the source; the CHECK constraint is the
+// backstop for everything that is not this package.
+func TestTheSQLForwarderListMatchesGo(t *testing.T) {
+	_, _, pool := newStore(t)
+	var def string
+	if err := pool.QueryRow(bg, `SELECT pg_get_constraintdef(oid) FROM pg_constraint
+	  WHERE conname = 'sender_allowlist_no_forwarder_as_outer'`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	quoted := regexp.MustCompile(`'([a-z0-9.-]+)'`)
+	var inSQL []string
+	for _, m := range quoted.FindAllStringSubmatch(def, -1) {
+		if m[1] != ScopeOuter {
+			inSQL = append(inSQL, m[1])
+		}
+	}
+	want := append([]string(nil), Forwarders()...)
+	sort.Strings(want)
+	sort.Strings(inSQL)
+	if strings.Join(want, ",") != strings.Join(inSQL, ",") {
+		t.Fatalf("SQL forwarder list %v does not match Go's %v", inSQL, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The trust carried across an address rotation (spec §3.2:46)
+// ---------------------------------------------------------------------------
+
+// TestTrustSurvivesTwoRotationsInsideTheGrace is the reason sender_allowlist is
+// keyed by USER and not by address.
+//
+// §3.2:46 promises that during the 7-day grace, mail arriving on a retired
+// address keeps the trusted status its origins earned. addresses.Predecessor
+// walks exactly ONE hop, so a user who rotates twice in a week has two live
+// grace windows and only the newest is reported — anything that resolved trust
+// by walking that link would silently demote the oldest address's senders to
+// quarantine. Keying the allowlist by user removes the walk entirely: there is
+// no chain to get wrong.
+func TestTrustSurvivesTwoRotationsInsideTheGrace(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	addr := &addresses.Addresses{
+		Pool:   pool,
+		Suffix: "@in.example.test",
+		Grace:  addresses.DefaultGrace,
+		Now:    func() time.Time { return *now },
+	}
+	first, err := addr.Issue(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold(t, s, item(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two rotations inside one grace window: three addresses, two of them
+	// retired and both still accepting.
+	*now = now.Add(24 * time.Hour)
+	if _, _, err := addr.Rotate(bg, u); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(24 * time.Hour)
+	if _, _, err := addr.Rotate(bg, u); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mail on the OLDEST address still resolves to the account...
+	owner, grace, err := addr.Resolve(bg, addr.Address(first))
+	if err != nil {
+		t.Fatalf("the oldest address is still inside its grace: %v", err)
+	}
+	if owner != u || !grace {
+		t.Fatalf("resolve returned owner=%s grace=%v", owner, grace)
+	}
+	// ...and the trust decision for it reads the same allowlist as any other.
+	ok, err := s.Allowlisted(bg, owner, "dib.ae", ScopeOuter)
+	if err != nil || !ok {
+		t.Fatalf("trust did not carry across two rotations: ok=%v err=%v", ok, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The sync channel
+// ---------------------------------------------------------------------------
+
+func TestListIsScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	hold(t, s, item(a, *now, "a"))
+	hold(t, s, item(b, *now, "b"))
+	if got := len(listAll(t, s, a)); got != 1 {
+		t.Fatalf("user A sees %d items, want 1", got)
+	}
+}
+
+// TestListDoesNotDropItemsThatShareAReceivedAt walks the page boundary with a
+// timestamp-only cursor, which is where a "WHERE received_at > $after" channel
+// loses mail: a batch that arrives in the same microsecond straddles the page.
+func TestListDoesNotDropItemsThatShareAReceivedAt(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	const n = 5
+	for i := 0; i < n; i++ {
+		hold(t, s, item(u, *now, fmt.Sprintf("same-%d", i)))
+	}
+
+	seen := map[string]bool{}
+	cur := Cursor{}
+	for page := 0; page < 10; page++ {
+		items, err := s.List(bg, u, cur, 2, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 0 {
+			break
+		}
+		for _, it := range items {
+			seen[string(it.IngestID)] = true
+		}
+		last := items[len(items)-1]
+		cur = Cursor{At: last.ReceivedAt, ID: last.ID}
+	}
+	if len(seen) != n {
+		t.Fatalf("paging saw %d of %d items that share a received_at", len(seen), n)
+	}
+}
+
+func TestListOmitsTheBlobUnlessAsked(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	items, err := s.List(bg, u, Cursor{}, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Blob != nil {
+		t.Fatalf("the default listing must not carry the message: %+v", items)
+	}
+	items, err = s.List(bg, u, Cursor{}, 10, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Gmail's own forward-verification mail quarantines like everything else,
+	// and onboarding reads the link out of it (§3.2:47).
+	if len(items) != 1 || !strings.Contains(string(items[0].Blob), "alerts@dib.ae") {
+		t.Fatalf("include-blob must return the raw message: %+v", items)
+	}
+}
+
+func TestCountsReportActionNeededAndTheWarnedSubset(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, now.Add(-25*24*time.Hour), "old"))
+	hold(t, s, item(u, *now, "new"))
+	if _, _, err := s.ExpireDue(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	held, warned, err := s.Counts(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every quarantined arrival is "action needed" (§3.2:56); the warned subset
+	// is the one with a deadline attached.
+	if held != 2 || warned != 1 {
+		t.Fatalf("held=%d warned=%d, want 2 and 1", held, warned)
+	}
+}
+
+func TestHeldReturnsTheRawBodiesForReingest(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := hold(t, s, item(u, *now, "a"))
+	hold(t, s, item(u, *now, "b"))
+
+	got, err := s.Held(bg, u, [][]byte{it.IngestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || string(got[0].Blob) != string(it.Blob) {
+		t.Fatalf("Held must return the exact raw message Task 30 re-ingests: %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Quarantine never pushes
+// ---------------------------------------------------------------------------
+
+// TestQuarantineHasNoPathToPush is a source-level check because that is the
+// level the promise lives at: §3.2:56 says quarantined blobs never trigger
+// push, and the only durable way to hold that is for this package to be unable
+// to reach a pusher at all.
+func TestQuarantineHasNoPathToPush(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range pkgs {
+		for name, file := range pkg.Files {
+			for _, imp := range file.Imports {
+				if strings.Contains(strings.ToLower(imp.Path.Value), "push") {
+					t.Fatalf("%s imports %s: quarantined mail must have no notification channel", name, imp.Path.Value)
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency
+// ---------------------------------------------------------------------------
+
+// TestConcurrentSweepsRemoveEachItemExactlyOnce runs several sweeps at once,
+// which is what a restart overlapping a running instance looks like.
+//
+// The pool is WARMED first. pgxpool opens connections lazily, so goroutines
+// that all start by acquiring a fresh connection serialize behind the dial and
+// never overlap — which has made two prior concurrency tests pass against
+// implementations that had no concurrency control at all.
+func TestConcurrentSweepsRemoveEachItemExactlyOnce(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	const items = 20
+	for i := 0; i < items; i++ {
+		hold(t, s, item(u, now.Add(-40*24*time.Hour), fmt.Sprintf("i%d", i)))
+	}
+	// Warn them all, then step past the point where they may go.
+	if _, _, err := s.ExpireDue(bg); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(DefaultWarnBefore)
+
+	const workers = 4
+	conns := make([]*pgxpool.Conn, 0, workers)
+	for i := 0; i < workers; i++ {
+		c, err := pool.Acquire(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
+	}
+
+	var (
+		mu      sync.Mutex
+		total   int
+		firstEr error
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+	)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, deleted, err := s.ExpireDue(bg)
+			mu.Lock()
+			defer mu.Unlock()
+			total += deleted
+			if err != nil && firstEr == nil {
+				firstEr = err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if firstEr != nil {
+		t.Fatal(firstEr)
+	}
+	if total != items {
+		t.Fatalf("concurrent sweeps reported %d deletions for %d items", total, items)
+	}
+	if n := countRows(t, pool, "quarantine_removals"); n != items {
+		t.Fatalf("%d removal records for %d deletions", n, items)
+	}
+	if n := countRows(t, pool, "quarantine"); n != 0 {
+		t.Fatalf("%d items left", n)
+	}
+}
