@@ -464,12 +464,15 @@ func parseLimit(r *http.Request, def, max int) (int, error) {
 // any caller pick their own key and defeat the limit entirely), which is why
 // Limiter bounds its key space.
 //
-// FOR TASK D4: if TLS is terminated by a reverse proxy rather than in this
-// process, every request arrives from the proxy and this degenerates to a
-// SINGLE key — the per-IP limiter silently becomes a second global one, and the
-// sign-in budget is shared by everybody again. Whoever wires that must either
-// terminate TLS in-process, use PROXY protocol, or trust a forwarded-for header
-// from that one hop specifically (and only from it).
+// FOR TASK D4: the plan terminates TLS IN THIS PROCESS (autocert in runServe on
+// the public domain), which keeps RemoteAddr the real client and this key
+// meaningful — so the correct action there is to change nothing here. It is
+// written down because the tempting alternative silently breaks it: put any
+// reverse proxy in front and every request arrives from that one hop, this
+// degenerates to a SINGLE key, the per-IP limiter quietly becomes a second
+// global one, and one client can starve the sign-in budget again with no error
+// anywhere. Anyone who does introduce a proxy owes PROXY protocol, or a
+// forwarded-for header trusted from that hop specifically and only from it.
 func clientKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

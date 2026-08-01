@@ -15,13 +15,23 @@
 # LEDGER_MAIL_DOMAIN once the domain is picked.
 domain             = ""
 smtp_listen        = ":25"        # SMTP receiver bind address (LEDGER_SMTP_LISTEN)
-max_message_bytes  = 1048576      # DATA cap in bytes; spec §3.2 caps it at 1 MB (1048576, matching validate()'s wording)
+max_message_bytes  = 1000000      # DATA cap in bytes. NOT 1 MiB: spec §3.2 says 1 MB, but the binding limit is
+                                  # blob.MaxColdMail (1,000,000) — a message is stored base64'd inside a JSON cold
+                                  # record, so incompressible mail reaches gzip already inflated 4/3 and a message in
+                                  # the top fraction of a percent of the 1 MiB range frames past the largest size
+                                  # bucket. validate() refuses anything larger, because accepting mail over SMTP that
+                                  # the ingest path then cannot store is the worst available failure.
 per_address_daily  = 50           # max accepted deliveries per inbound address per day
 invalid_rcpt_burst = 5            # invalid RCPTs from one IP before the tarpit engages
 tarpit_base        = "2s"         # base delay applied per invalid RCPT once tarpitting
 
 [server]
-http_listen  = ":443"             # HTTPS API + sync listener (LEDGER_HTTP_LISTEN)
+http_listen  = "127.0.0.1:8443"   # API + sync listener (LEDGER_HTTP_LISTEN). LOOPBACK, and validate() refuses
+                                  # anything else: ledgerd serves PLAIN HTTP today, and this listener carries a
+                                  # session bearer token on every request plus the user's whole op log in the
+                                  # responses. Task D4 is the change that lifts this — it adds autocert to runServe
+                                  # so the process terminates TLS itself on the public domain, and that same change
+                                  # moves this to ":443".
 admin_listen = "127.0.0.1:8079"   # admin API bind address (LEDGER_ADMIN_LISTEN). Today validate() only refuses a
                                    # literal ":8080" suffix (v1's port); Task 32 adds the real restriction to
                                    # loopback/tailnet-only (100.64.0.0/10) addresses, so e.g. "0.0.0.0:8079" is
