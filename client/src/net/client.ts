@@ -173,6 +173,17 @@ const MAX_UPLOAD_BLOBS = 8;
 /** `oplog.TypeFlagEdit` — the only type flag a device may submit. */
 const TYPE_FLAG_EDIT = "edit";
 
+/**
+ * The one invariant id this file names, because it is the one hard stop a push
+ * must be able to proceed over (see {@link Client.push}).
+ *
+ * `check.ts` keeps its ids private and exports only {@link INVARIANT_IDS}, so
+ * this is a literal — and `client.test.ts` asserts it is in that list, because a
+ * literal that silently stopped matching would turn the deadlock escape back off
+ * with every test still green.
+ */
+export const ROSTER_CHECKPOINT = "I11_roster_checkpoint";
+
 // ---------------------------------------------------------------------------
 // Row decoding
 // ---------------------------------------------------------------------------
@@ -192,7 +203,7 @@ function unhex32(s: unknown, what: string): Uint8Array {
  * — and a short blob is not a size bucket, which would be reported as a bucket
  * violation rather than as the transport problem it is.
  */
-function unbase64(s: unknown, what: string): Uint8Array {
+export function unbase64(s: unknown, what: string): Uint8Array {
   if (typeof s !== "string" || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) {
     throw new ProtocolError(`${what} is not standard base64`);
   }
@@ -573,6 +584,13 @@ export class Client {
       throw new Error(`enrolling ${JSON.stringify(writerId)} from its public key needs an already-enrolled signer`);
     }
     const pub = peer ? opts.publicKey! : this.ensureWriterKey(writerId);
+    if (pub.length !== 32) {
+      // `auth.checkPublicKey` refuses this too, but a 403 from the server names
+      // no reason (every registration rejection is the same answer, on purpose),
+      // so a mistyped key would present as "registration rejected" with nothing
+      // to act on. An Ed25519 public key is 32 bytes; anything else is a typo.
+      throw new Error(`the public key for ${JSON.stringify(writerId)} is ${pub.length} bytes, and Ed25519 keys are 32`);
+    }
     const signerID = opts.signWith ?? writerId;
     const signer = this.st.writers.get(signerID);
     if (signer === undefined) {
@@ -727,7 +745,7 @@ export class Client {
   }
 
   /**
-   * Refreshes the pinned per-blob hash list for one stream (spec §3.3:72).
+   * Refreshes the pinned per-blob hash list for the COLD stream (spec §3.3:72).
    *
    * This is how a client pins a chain whose bodies it has not downloaded. The
    * list alone proves nothing about those bodies — they are not here to hash —
@@ -739,12 +757,28 @@ export class Client {
    * if the server re-serves a counter with a different hash, the old pin stands
    * and the disagreement is surfaced (I3b) rather than resolved in the server's
    * favour.
+   *
+   * # Cold only, and not by accident
+   *
+   * The endpoint serves `hot` as well, and this deliberately refuses to use it.
+   * A hot head pinned from the hash list runs AHEAD of the hot bodies, and
+   * {@link pull} verifies hot bodies with `verifyChain` against the pinned head
+   * — so the next hot pull would arrive at counter N with the head already at
+   * M > N, raise a chain break, and the client would be permanently stuck with
+   * no way to clear it. Cold is safe from the same move only because its bodies
+   * are a lazily-synced window verified by `verifyFetchedRange` against these
+   * pins rather than against the head.
+   *
+   * A future client that PRUNES hot blobs would want hot hash lists, and it
+   * cannot simply pass a stream here: it owes a separate pinned-head-for-hot
+   * that `pull` does not treat as the body chain's head, exactly as cold has.
    */
-  async pullColdHashes(opts: { stream?: Stream; limit?: number } = {}): Promise<{ pinned: number; heads: Map<ChainKey, Head> }> {
-    const stream = opts.stream ?? STREAM_COLD;
+  async pullColdHashes(opts: { limit?: number } = {}): Promise<{ pinned: number; heads: Map<ChainKey, Head> }> {
+    const stream = STREAM_COLD;
     let pinned = 0;
     for (;;) {
-      const q = new URLSearchParams({ stream, after: this.st.hashCursors[stream].toString(10) });
+      const before = this.st.hashCursors[stream];
+      const q = new URLSearchParams({ stream, after: before.toString(10) });
       if (opts.limit !== undefined) q.set("limit", String(opts.limit));
       const res = await this.request<HashesResponse>("GET", `/api/v1/sync/hashes?${q.toString()}`);
       if (decodeStream(res.stream, "response stream") !== stream) {
@@ -752,6 +786,17 @@ export class Client {
       }
       const list = (res.hashes ?? []).map(decodeHashEntry);
       const next = parseDecimal(res.next);
+      // The loop's progress guarantee, and it has to be explicit here: unlike
+      // `pull`, nothing downstream re-checks this cursor, so a server answering
+      // `{hashes: [...], next: <unchanged>, complete: false}` would spin
+      // forever. `pull` is covered by I1, which refuses a `next` that is not the
+      // last row delivered.
+      if (list.length > 0 && next <= before) {
+        throw new ProtocolError(
+          `the hash list returned ${list.length} entr${list.length === 1 ? "y" : "ies"} but its next cursor ` +
+            `${next} does not advance past ${before}`,
+        );
+      }
 
       const heads = new Map<ChainKey, Head>();
       for (const [writerID, run] of groupHashes(list)) {
@@ -808,8 +853,8 @@ export class Client {
   }
 
   /**
-   * Emits a `writer_checkpoint` naming one head for EVERY (roster writer x
-   * stream) pair.
+   * Syncs far enough to know every chain's real head, then emits a
+   * `writer_checkpoint` naming one head for EVERY (roster writer x stream) pair.
    *
    * # CHECKPOINT_NAMES_THE_ROSTER
    *
@@ -823,16 +868,63 @@ export class Client {
    * which asserts nothing false — `0 > observed` is never true, so a zero entry
    * can hide no withheld rows.
    *
-   * # Only VERIFIED heads are claimed
+   * # Counter 0 must mean EMPTY, not merely UNKNOWN — and that is why this syncs
    *
-   * The counters come from the pinned heads — the ones this device verified
-   * itself — and never from its own upload record. A checkpoint that claimed a
-   * head this device has not pulled back would be true, and would still
-   * hard-stop `I11` on the very next `check` here, because the client's own
-   * `observedHead` would be lower. Claiming less is free; claiming more costs a
-   * false alarm on a correct log.
+   * The contract says counter 0 for a chain that **holds no blobs**. The first
+   * implementation used counter 0 for a chain **this device had not pinned**,
+   * which is a strictly wider set, and the difference is the whole value of the
+   * mechanism: a device that had only ever pulled hot would attest
+   * `ingest|cold: 0/genesis` while the cold chain held twenty raw email bodies,
+   * and a peer would then have NO trusted head for the stream the mail lives on.
+   * A truncation of it would verify. The checkpoint satisfied I11's coverage
+   * requirement while asserting nothing at all.
+   *
+   * So this learns the heads before it claims them, and each stream is learned
+   * by the mechanism that stream is verified with:
+   *
+   *   - **hot** by {@link pull}, which verifies the blobs themselves;
+   *   - **cold** by {@link pullColdHashes}, which verifies the per-blob hash
+   *     list from the pinned head — the cold bodies are a lazily-synced window
+   *     (spec §3.3:70) and the hash list is the only evidence there is.
+   *
+   * **Do not "optimise" this by pinning the HOT head from the hash list too.**
+   * `pull` verifies hot bodies with `verifyChain` against the pinned head, so a
+   * hot head pinned ahead of the bodies makes the next hot pull a chain break
+   * this client can never clear. `pullColdHashes` documents the same hazard.
+   *
+   * # What is still, unavoidably, a snapshot
+   *
+   * A checkpoint attests what its author had verified when it wrote it. Rows
+   * appended after that are legitimately absent from it, so a peer reading
+   * "claims 0, I see 20" cannot separate a stale checkpoint from a withheld
+   * chain — `CheckpointEntry` carries no position. Task 13 measured that and
+   * landed it as a NOTICE rather than a hard stop. Syncing first is what keeps
+   * that notice rare and meaningful instead of the normal case.
    */
-  checkpoint(roster: readonly Writer[]): Op {
+  async checkpoint(): Promise<Op> {
+    await this.pull();
+    await this.pullColdHashes();
+    return this.buildCheckpoint(await this.roster());
+  }
+
+  /**
+   * Builds the checkpoint from the heads this device has already verified.
+   *
+   * Split from {@link checkpoint} so {@link push} can do its own syncing once
+   * rather than twice; every caller owes it a preceding `pull` +
+   * `pullColdHashes`, or it will attest genesis for chains it simply has not
+   * looked at — which is the defect this split exists to make visible at the
+   * call site rather than hidden inside one method.
+   */
+  private buildCheckpoint(roster: readonly Writer[]): Op {
+    return this.emit({ type: "writer_checkpoint", payload: encodeCheckpointPayload(this.attestableHeads(roster)) });
+  }
+
+  /**
+   * The heads this device would attest right now: one per (roster writer x
+   * stream), from the pinned heads, genesis where a chain has none.
+   */
+  private attestableHeads(roster: readonly Writer[]): CheckpointHead[] {
     const heads: CheckpointHead[] = [];
     for (const w of roster) {
       for (const stream of [STREAM_HOT, STREAM_COLD] as const) {
@@ -840,7 +932,7 @@ export class Client {
         heads.push({ writer_id: w.writer_id, stream, counter: h.counter.toString(10), hash: hex(h.hash) });
       }
     }
-    return this.emit({ type: "writer_checkpoint", payload: encodeCheckpointPayload(heads) });
+    return heads;
   }
 
   /**
@@ -848,14 +940,54 @@ export class Client {
    * hot head, uploads them, and then syncs so they are folded at the positions
    * the server assigned.
    *
+   * # It SYNCS FIRST, and that ordering is the fix for a real defect
+   *
+   * `pull` + `pullColdHashes` run before anything is built, so the checkpoint
+   * this push may carry attests heads that were verified moments ago rather
+   * than genesis-because-nobody-looked. The first implementation built the
+   * checkpoint *before* the self-sync and therefore attested `dev-a|hot: 0`
+   * while its own next blob was counter 1, and `ingest|cold: 0` while the cold
+   * chain held every raw email on the account. See {@link checkpoint}.
+   *
+   * Syncing first also means the writer's own chain head is current, so a push
+   * that follows an interrupted one does not build a straddling batch in the
+   * first place.
+   *
+   * # The ONE hard stop the pre-sync must not obey
+   *
+   * `I11_roster_checkpoint` fires when a live device writer has no head in the
+   * latest checkpoint — and writing that checkpoint is precisely what this push
+   * is about to do. Obeying it would deadlock the whole account: every device
+   * needs a checkpoint before it can sync, and none can sync in order to write
+   * one. So {@link syncForAttestation} proceeds over an I11-only hard stop, and
+   * over nothing else — a chain break or an unknown newer version still stops
+   * everything, because neither is a condition a checkpoint repairs.
+   *
+   * The cost is honest and bounded: a pre-sync that was refused persisted
+   * nothing, so the healing checkpoint attests whatever heads this device had
+   * already verified. The upload clears I11, the self-sync then succeeds, and
+   * the heads-changed gate makes the NEXT push attest the fresh ones.
+   *
    * # The checkpoint it emits without being asked
    *
-   * Whenever the roster differs from the one this client last checkpointed
-   * against — including the first time, when there is no last one — a
-   * `writer_checkpoint` is appended to the batch. That is what makes
-   * `I11_roster_checkpoint`'s roster-race asymmetry self-healing: a device
-   * enrolled after the last checkpoint was written gets checkpointed on its own
-   * first push, with nobody having to remember to ask.
+   * A `writer_checkpoint` is appended whenever the heads this device would
+   * attest DIFFER from the ones it last attested — which covers a new writer on
+   * the roster, a peer's chain advancing, and its own. Gating on the roster
+   * alone (the first implementation) meant exactly one checkpoint was ever
+   * written per account: the roster string stopped changing, and the log's only
+   * checkpoint went on claiming `dev-a|hot: 0` while the real head climbed.
+   *
+   * A roster change additionally forces a checkpoint even with nothing pending,
+   * because that is the case a newly enrolled device is BLOCKED on — it cannot
+   * sync until some device attests it — and waiting for that device to happen
+   * to have something to say is not a mechanism.
+   *
+   * # Why this does not churn
+   *
+   * After a successful upload the recorded attestation is updated to include
+   * the blob just written, so a second `push` with nothing pending sees no
+   * difference and uploads nothing. Without that, every no-op push would attest
+   * the previous push's checkpoint and grow the log forever.
    *
    * # The self-sync at the end
    *
@@ -867,15 +999,21 @@ export class Client {
    * exactly what `I11` is looking for.
    */
   async push(): Promise<PushReport> {
+    // Every head this push may attest is learned HERE, by the mechanism that
+    // verifies its stream, before a single byte is built.
+    const blocked = await this.syncForAttestation();
+
     const roster = await this.roster();
     const ids = roster.map((w) => w.writer_id).sort(compareUTF8);
     const rosterChanged = this.st.checkpointRoster === null || !sameStrings(ids, this.st.checkpointRoster);
+    const attested = headsKey(this.attestableHeads(roster));
+    const headsChanged = this.st.checkpointHeads === null || this.st.checkpointHeads !== attested;
     // Skipped when the caller already asked for one: `cli checkpoint && cli
     // push` must not upload two identical checkpoints.
     const already = this.st.pending.some((o) => o.type === "writer_checkpoint");
     let checkpointed = false;
-    if (rosterChanged && !already) {
-      this.checkpoint(roster);
+    if ((headsChanged || blocked) && !already && (this.st.pending.length > 0 || rosterChanged || blocked)) {
+      this.buildCheckpoint(roster);
       checkpointed = true;
     }
     if (this.st.pending.length === 0) {
@@ -916,11 +1054,49 @@ export class Client {
     const last = blobs[blobs.length - 1];
     if (last !== undefined) this.st.authoredHead = { counter: last.counter, hash: last.hash };
     this.st.pending = [];
-    if (rosterChanged) this.st.checkpointRoster = ids;
+    this.st.checkpointRoster = ids;
+    // What was ACTUALLY attested, not what the log will look like afterwards.
+    // Recording the predicted post-upload heads instead — which an earlier
+    // draft did, to suppress churn — makes the gate compare against a fiction:
+    // the checkpoint in the log still says 0 for this device's own chain, the
+    // next push sees "no change", and the 0 is never upgraded. Churn is bounded
+    // by the `pending.length > 0` condition above, not by this.
+    if (checkpointed) this.st.checkpointHeads = attested;
     this.commit();
 
     await this.pull();
     return { blobs: blobs.length, ops: ops.length, seqs, checkpointed };
+  }
+
+  /**
+   * Syncs both streams so a checkpoint can attest real heads, and reports
+   * whether it was blocked by a missing checkpoint.
+   *
+   * `true` means the pre-sync hit an `I11_roster_checkpoint` hard stop — a live
+   * device writer has no trusted head — and the caller should write a
+   * checkpoint anyway, because that is the repair. Every other hard stop
+   * propagates: a chain break or an unknown newer schema version is not
+   * something a checkpoint fixes, and pushing over one would append to a log
+   * this device could not verify.
+   *
+   * `pull` persisted nothing over the refusal, so a `true` return also means
+   * the heads about to be attested are only as fresh as the last clean sync.
+   */
+  private async syncForAttestation(): Promise<boolean> {
+    let blocked = false;
+    try {
+      await this.pull();
+    } catch (err) {
+      if (!(err instanceof HardStopError)) throw err;
+      const stops = err.violations.filter((v) => v.severity === "hard_stop");
+      if (!stops.every((v) => v.id === ROSTER_CHECKPOINT)) throw err;
+      blocked = true;
+    }
+    // Not inside the try: the cold hash list is verified by `verifyHashList`
+    // and never runs the invariant checker, so it has no I11 to forgive and a
+    // failure here is a real chain break.
+    await this.pullColdHashes();
+    return blocked;
   }
 
   /**
@@ -1037,7 +1213,17 @@ export class Client {
           head = { counter: h.writer_counter, hash: h.blob_hash };
         }
       }
-      after = parseDecimal(res.next);
+      const next = parseDecimal(res.next);
+      // Same progress guarantee as pullColdHashes, and needed for the same
+      // reason: this loop is the recovery path for a failed upload, so a server
+      // that stalls it turns a retryable push into a hang.
+      if (list.length > 0 && next <= after) {
+        throw new ProtocolError(
+          `the ${stream} hash list returned ${list.length} entr${list.length === 1 ? "y" : "ies"} but its next ` +
+            `cursor ${next} does not advance past ${after}`,
+        );
+      }
+      after = next;
       if (res.complete === true || list.length === 0) return head;
     }
   }
@@ -1080,6 +1266,20 @@ function groupHashes(list: readonly HashRow[]): Map<string, HashRow[]> {
 
 function sameStrings(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * A comparable rendering of a set of checkpoint heads.
+ *
+ * It goes through {@link encodeCheckpointPayload} so the ordering is the
+ * canonical one, which is what makes "these are the heads I last attested" a
+ * comparison of MEANING rather than of the order they happened to be built in —
+ * a roster returned in a different order must not read as a change.
+ */
+function headsKey(heads: CheckpointHead[]): string {
+  return encodeCheckpointPayload(heads)
+    .heads.map((h) => `${h.writer_id}|${h.stream}|${h.counter}|${h.hash}`)
+    .join(",");
 }
 
 /**

@@ -4,6 +4,7 @@
  *
  * ```
  * cli login             --server <url> --idp apple|google --id-token <jwt>
+ *                       # or LEDGER_CLIENT_ID_TOKEN — argv is world-readable in `ps`
  * cli enroll            --writer <id> [--sign-with <other-writer-id>]
  *                       [--pubkey <b64>]   # enrol a PEER's key, signed by --sign-with
  *                       [--keygen-only]    # create this device's key, print its public half
@@ -37,7 +38,7 @@
  */
 
 import { INVARIANT_IDS, type Violation } from "../invariants/check";
-import { Client, HardStopError, newEntityID, stateToJSON, summarize } from "../net/client";
+import { Client, HardStopError, newEntityID, stateToJSON, summarize, unbase64 } from "../net/client";
 import { fileStore } from "../store/store";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 
@@ -154,10 +155,11 @@ function entity(args: Args): { kind: string; id: string } | undefined {
 const USAGE = `bun run cli <command> [flags]
 
   login             --server <url> --idp apple|google --id-token <token>
+                    (or LEDGER_CLIENT_ID_TOKEN, which stays out of the process table)
   enroll            --writer <id> [--sign-with <writer-id>] [--pubkey <base64>]
                     [--keygen-only]
   pull              [--stream hot|cold] [--limit <n>]
-  pull-cold-hashes  [--stream hot|cold] [--limit <n>]
+  pull-cold-hashes  [--limit <n>]
   replay
   check             [--stream hot|cold] [--json]
   emit              --type <op_type> --json '<json>' [--entity <kind>:<id>]
@@ -202,7 +204,13 @@ export async function run(argv: readonly string[]): Promise<number> {
 
   switch (args.command) {
     case "login": {
-      const userID = await client.login(req(args, "idp"), req(args, "id-token"));
+      // `--id-token` lands in the process table, where every user on the box can
+      // read it. Harmless for a `dev:` token and a real credential for a genuine
+      // JWT, so the environment is offered as the alternative and is preferred
+      // when both are present.
+      const fromEnv = process.env["LEDGER_CLIENT_ID_TOKEN"];
+      const token = fromEnv !== undefined && fromEnv !== "" ? fromEnv : req(args, "id-token");
+      const userID = await client.login(req(args, "idp"), token);
       console.log(`signed in as ${userID}; state in ${store.location}`);
       return 0;
     }
@@ -220,7 +228,11 @@ export async function run(argv: readonly string[]): Promise<number> {
       }
       await client.enroll(writer, {
         ...(signWith === undefined ? {} : { signWith }),
-        ...(pubkey === undefined ? {} : { publicKey: new Uint8Array(Buffer.from(pubkey, "base64")) }),
+        // Strict, like every other decode on this path. `Buffer.from(s,
+        // "base64")` ignores characters outside the alphabet, so a typo'd key
+        // comes back SHORT and plausible — and enrols a writer whose private
+        // half nobody holds, permanently, in an append-only roster.
+        ...(pubkey === undefined ? {} : { publicKey: unbase64(pubkey, "--pubkey") }),
       });
       const how =
         pubkey !== undefined
@@ -241,10 +253,16 @@ export async function run(argv: readonly string[]): Promise<number> {
       return printViolations(report.violations, args.bools.has("json"));
     }
     case "pull-cold-hashes": {
+      if (args.flags.has("stream")) {
+        throw new UsageError(
+          "pull-cold-hashes takes no --stream: it is cold-only. Pinning a HOT head from the hash list " +
+            "puts it ahead of the hot bodies, and the next `pull` verifies those against it — an unclearable " +
+            "chain break. See Client.pullColdHashes.",
+        );
+      }
       const l = limit(args);
-      const s = stream(args, STREAM_COLD);
-      const out = await client.pullColdHashes({ stream: s, ...(l === undefined ? {} : { limit: l }) });
-      console.log(`pinned ${out.pinned} new ${s} blob hash(es)`);
+      const out = await client.pullColdHashes({ ...(l === undefined ? {} : { limit: l }) });
+      console.log(`pinned ${out.pinned} new cold blob hash(es)`);
       for (const [key, head] of [...out.heads].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
         console.log(`  ${key} @ ${head.counter} ${Buffer.from(head.hash).toString("hex")}`);
       }
@@ -286,10 +304,13 @@ export async function run(argv: readonly string[]): Promise<number> {
       return 0;
     }
     case "checkpoint": {
-      const roster = await client.roster();
-      const op = client.checkpoint(roster);
-      const heads = (op.payload as { heads: unknown[] }).heads.length;
-      console.log(`pending writer_checkpoint ${op.op_id} over ${heads} (writer x stream) head(s)`);
+      // Syncs first: a checkpoint that attested genesis for every chain it had
+      // not happened to look at would satisfy I11's coverage while asserting
+      // nothing. See Client.checkpoint.
+      const op = await client.checkpoint();
+      const heads = (op.payload as { heads: { writer_id: string; stream: string; counter: string }[] }).heads;
+      console.log(`pending writer_checkpoint ${op.op_id} over ${heads.length} (writer x stream) head(s)`);
+      for (const h of heads) console.log(`  ${h.writer_id}|${h.stream} @ ${h.counter}`);
       return 0;
     }
     case "push": {
