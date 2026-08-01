@@ -55,12 +55,14 @@ package api
 // over a failed purge would be the worst possible outcome of this endpoint.
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/purge"
@@ -178,17 +180,40 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, use
 		writeDeletionRejected(w)
 		return
 	}
-	reauthed, err := auth.UpsertUser(r.Context(), s.Pool, id)
-	if err != nil {
-		s.logf("api: delete account %s: resolve re-auth identity: %v", userID, err)
+	// The binding is the load-bearing half: verifying a token and not checking
+	// WHO it names would accept any valid Apple or Google token from anyone as
+	// re-authentication for this session's account.
+	//
+	// It is a COMPARISON, never auth.UpsertUser. Upserting here — which an
+	// earlier version of this handler did, copying the rotation path — resolves
+	// the identity by CREATING it when the subject is unknown, so a caller
+	// holding one valid session plus any Apple or Google token could mint a
+	// `users` row on every rejected delete. A row-creation primitive on the
+	// endpoint whose entire job is destruction, reached on the path that
+	// answers 403. Each stray account then sits in the retention sweep's
+	// WithoutConsentRecord list for ever, because nobody ever signed anything
+	// for it.
+	//
+	// Comparing the subject hash needs no write at all: users.idp_sub_hash is
+	// exactly SubjectHash(idp, subject), and constant-time comparison keeps
+	// this from being an oracle for which hashes exist.
+	var want []byte
+	if err := s.Pool.QueryRow(r.Context(),
+		`SELECT idp_sub_hash FROM users WHERE id = $1 AND idp = $2`,
+		userID, id.IdP).Scan(&want); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The session's account does not exist under this provider — a
+			// deleted account with a live token, or a token from the other IdP.
+			s.logf("api: delete account %s: no %s identity for this account", userID, id.IdP)
+			writeDeletionRejected(w)
+			return
+		}
+		s.logf("api: delete account %s: read identity: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
-	if reauthed != userID {
-		// The binding is the load-bearing half: verifying a token and not
-		// checking who it names would accept any valid Apple or Google token
-		// from anyone as re-authentication for this session's account.
-		s.logf("api: delete account %s: re-auth names a different account (%s)", userID, reauthed)
+	if subtle.ConstantTimeCompare(want, auth.SubjectHash(id.IdP, id.Subject)) != 1 {
+		s.logf("api: delete account %s: re-auth names a different account", userID)
 		writeDeletionRejected(w)
 		return
 	}

@@ -207,6 +207,51 @@ func TestPurgeUserRefusesBadArgumentsBeforeTouchingPostgres(t *testing.T) {
 	}
 }
 
+// record-consent is what makes `purge-user --retention-due` mean anything: it
+// is the only thing that writes user_consent.retention_until. Its arguments are
+// checked before any I/O for the same reason purge-user's are — the row it
+// writes is a date on which an account gets deleted.
+func TestRecordConsentRefusesBadArgumentsBeforeTouchingPostgres(t *testing.T) {
+	valid := uuid.NewString()
+	for _, tc := range []struct {
+		name    string
+		consent config.ConsentArgs
+		wants   string
+	}{
+		{name: "no user", consent: config.ConsentArgs{Document: "d", RetentionUntil: "2027-01-01T00:00:00Z"}, wants: "--user"},
+		{name: "no document", consent: config.ConsentArgs{User: valid, RetentionUntil: "2027-01-01T00:00:00Z"}, wants: "--document"},
+		{name: "no deadline", consent: config.ConsentArgs{User: valid, Document: "d"}, wants: "--retention-until"},
+		{
+			name:    "deadline is not rfc3339",
+			consent: config.ConsentArgs{User: valid, Document: "d", RetentionUntil: "next tuesday"},
+			wants:   "RFC3339",
+		},
+		{
+			name: "deadline precedes the signature",
+			consent: config.ConsentArgs{
+				User: valid, Document: "d",
+				SignedAt: "2027-01-02T00:00:00Z", RetentionUntil: "2027-01-01T00:00:00Z",
+			},
+			wants: "not after the signature",
+		},
+		{
+			name:    "user is not a uuid",
+			consent: config.ConsentArgs{User: "alice", Document: "d", RetentionUntil: "2027-01-01T00:00:00Z"},
+			wants:   "not a uuid",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := modeHandlers["record-consent"](config.Config{Consent: tc.consent})
+			if err == nil {
+				t.Fatal("record-consent accepted the arguments")
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("error does not explain the problem (%q): %v", tc.wants, err)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing (Task 14)
 // ---------------------------------------------------------------------------
@@ -275,6 +320,27 @@ func TestParseArgsCarriesThePurgeFlags(t *testing.T) {
 	}
 	if !got.purge.RetentionDue || got.purge.User != "" {
 		t.Fatalf("parseArgs = %+v, want only RetentionDue", got.purge)
+	}
+
+	// record-consent shares --user with the modes above and adds three of its
+	// own. An unparsed --retention-until is an EMPTY one, which the handler then
+	// refuses as "required" while the operator watches the date sit on their
+	// command line.
+	got, err = parseArgs([]string{
+		"record-consent", "--user", u, "--document", "alpha-plaintext-v1",
+		"--retention-until", "2027-01-31T00:00:00Z", "--signed-at", "2026-08-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantConsent := config.ConsentArgs{
+		User:           u,
+		Document:       "alpha-plaintext-v1",
+		RetentionUntil: "2027-01-31T00:00:00Z",
+		SignedAt:       "2026-08-01T00:00:00Z",
+	}
+	if got.mode != "record-consent" || got.consent != wantConsent {
+		t.Fatalf("parseArgs = {%q %+v}, want {record-consent %+v}", got.mode, got.consent, wantConsent)
 	}
 }
 

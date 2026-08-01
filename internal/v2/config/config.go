@@ -61,6 +61,38 @@ type Config struct {
 	// a window pinned in a config file would silently answer a question nobody
 	// asked.
 	Verify VerifyArgs `toml:"-"`
+
+	// Consent carries `ledgerd record-consent`'s arguments. Command-line only,
+	// like the two above, and for Purge's reason inverted: what this writes is
+	// the deadline after which an account gets deleted, so a value sitting in a
+	// config file would be a destruction date nobody typed.
+	Consent ConsentArgs `toml:"-"`
+}
+
+// ConsentArgs is the `record-consent` mode's command line.
+//
+// It exists because a retention DEADLINE that only lives in a signed PDF is not
+// a deadline. `purge-user --retention-due` enforces user_consent.retention_until
+// (spec §5's plaintext-retention commitment), and until this command landed
+// nothing anywhere wrote that column — the enforcer had a table and no
+// populated input, so a sweep a century past every deadline purged nothing.
+//
+// Recording is an OPERATOR action and deliberately not automatic. The consent
+// it records is a document a person actually signed; a row written by the
+// sign-up path would be the server asserting a signature that never happened.
+type ConsentArgs struct {
+	// User is the account, as a UUID.
+	User string
+	// Document identifies the consent text that was signed, e.g.
+	// "alpha-plaintext-v1". Not the text: an identifier.
+	Document string
+	// RetentionUntil is the instant that account's plaintext must be gone, as
+	// an RFC3339 timestamp.
+	RetentionUntil string
+	// SignedAt is when they signed, as RFC3339. Empty means now.
+	SignedAt string
+	// Show lists the recorded deadlines and writes nothing.
+	Show bool
 }
 
 // PurgeArgs is the `purge-user` mode's command line.
@@ -174,7 +206,7 @@ type AuthConfig struct {
 // it cannot itself verify that main's dispatch table actually has an entry
 // for each of these — see the "cross-package coverage" note on
 // modeImplemented below for where that's actually checked.
-var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "purge-user", "parse-rate"}
+var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "purge-user", "record-consent", "parse-rate"}
 
 // modeImplemented is this package's own declared expectation of which modes
 // in modeOrder are meant to have a real dispatch entry in cmd/ledgerd.
@@ -201,6 +233,7 @@ var modeImplemented = map[string]bool{
 	"verify":          true,
 	"seed-dictionary": true,
 	"purge-user":      true,
+	"record-consent":  true,
 	"parse-rate":      true,
 }
 

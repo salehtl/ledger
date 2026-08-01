@@ -20,15 +20,27 @@
 // 1's backups contain plaintext. The consent document says so, and
 // EnforceRetention is what bounds how long that is true for a live account.
 //
-// # Why the table list is discovered and not written down
+// # Why the relation list is discovered and not written down
 //
 // A purge is only as good as its least-remembered table. This package asks the
-// database which tables carry a user_id, and iterates THAT — so a table added
-// by a later task is covered the moment it exists, and one that cannot be
+// database which relations carry a user_id, and iterates THAT — so a table
+// added by a later task is covered the moment it exists, and one that cannot be
 // covered automatically has to be classified by hand before any purge will run
 // at all (see Classify). The alternative — a hand-written list — fails silently
 // and stays wrong until someone notices rows for a deleted account, which is
 // exactly the day it matters.
+//
+// It asks pg_class, NOT information_schema, and that distinction is worth three
+// separate holes: information_schema does not list materialized views at all
+// (spec §5 plans to create one over op_log), a `table_schema = 'public'` filter
+// cannot see `archive.op_log_2026`, and information_schema is privilege-filtered
+// so the non-owner runtime role plan D5 mandates would simply not be shown a
+// relation it lacks rights on. Each of those was a relation that went unpurged
+// AND unreported while Purge returned success. See relationFilter.
+//
+// A materialized view cannot be deleted from, so the purge REFRESHES it once
+// the underlying rows are gone and then re-counts; a view that is still not
+// empty, or that the role may not refresh, refuses the whole purge.
 //
 // Two tables cannot be discovered and are named explicitly:
 //
@@ -73,7 +85,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"time"
 
@@ -86,40 +97,54 @@ import (
 	"ledger/internal/v2/dict"
 )
 
-// handledWithoutUserID names the tables that hold per-user rows under some key
-// OTHER than a user_id column, and that this package therefore has to purge by
-// hand. Being on this list is a claim that Purge deals with the table; a test
+// handledWithoutUserID names the relations that hold per-user rows under some
+// key OTHER than a user_id column, and that this package therefore has to purge
+// by hand. Being on this list is a claim that Purge deals with it; a test
 // asserts the claim for each entry.
+//
+// Names are SCHEMA-QUALIFIED, here and in notUserLinked. Unqualified names
+// would classify `archive.users` as "the account table, handled" — a snapshot
+// of every account, waved through by a list that was written about a different
+// object with the same last name.
 var handledWithoutUserID = []string{
 	// Keyed by HMAC-SHA256(server key, pattern || category || user_id).
 	// Purge calls dict.Dict.ForgetSubmitter.
-	"dict_submissions",
+	"public.dict_submissions",
 	// The account table itself: keyed by `id`, so schema discovery does not see
 	// it. It is deleted by name, and that one statement is what cascades
 	// everything else.
-	"users",
+	"public.users",
 }
 
-// notUserLinked names the tables that hold nothing attributable to one user, so
-// a purge correctly touches none of them. Every entry is a decision, not an
+// notUserLinked names the relations that hold nothing attributable to one user,
+// so a purge correctly touches none of them. Every entry is a decision, not an
 // omission.
 var notUserLinked = []string{
 	// Per-day counts of protocol-level refusals that never resolved a
 	// recipient. There is no user to scope a row to; a count is not a record
 	// of a person. See 00006_diagnostics.sql.
-	"smtp_rejections",
+	"public.smtp_rejections",
 	// Operator-published parse templates. Not authored by users and shared by
 	// all of them.
-	"templates",
-	// The global merchant dictionary. Entries are k-anonymous by construction
-	// (three distinct submitters before anything publishes) and carry no
-	// submitter identity; the identities live in dict_submissions, above.
-	"dict_entries",
+	"public.templates",
+	// The global merchant dictionary.
+	//
+	// The justification is NOT k-anonymity, and an earlier version of this
+	// comment claimed it was. k gates PUBLICATION, not storage: an entry sits
+	// in this table from its first submission with distinct_submitter_count = 1
+	// and published_at NULL, so a single user's "dr aisha clinic jumeirah"
+	// really is here, unpublished, and survives their deletion. What makes that
+	// acceptable is the thing purge actually does — ForgetSubmitter destroys
+	// the only link between the pattern and the person, leaving a merchant
+	// string attributable to nobody. See the concern in the Task 34 fix report
+	// about reaping (distinct_submitter_count = 0 AND published_at IS NULL),
+	// which would remove even the unattributable residue.
+	"public.dict_entries",
 	// Per-bank demand counters from onboarding. A bank name and a count, never
 	// linked to who asked. See 00012_waitlist.sql.
-	"waitlist",
+	"public.waitlist",
 	// goose's own migration ledger.
-	"goose_db_version",
+	"public.goose_db_version",
 }
 
 // Report is what a purge did, per table. It is returned even on the paths that
@@ -148,6 +173,14 @@ type Report struct {
 	// rows behind. The purge fixes its own case and reports the schema defect.
 	SweptWithoutCascade []string
 
+	// RefreshedViews names the materialized views the purge had to re-run
+	// because they still listed the deleted account. A matview cannot be
+	// deleted from, so this is the only way its copy of the user's rows goes
+	// away — and an entry here means a stored copy of user data exists that
+	// nothing else in the system knows about. Spec §5 contemplates one; it
+	// should still be looked at.
+	RefreshedViews []string
+
 	// WithoutConsentRecord is populated by EnforceRetention only: accounts with
 	// no consent row and therefore no recorded retention deadline. They are
 	// NOT purged — see EnforceRetention.
@@ -168,120 +201,239 @@ func (r Report) Total() int {
 // ErrIncomplete means the purge could not prove it removed everything, and
 // therefore removed nothing. It is deliberately not recoverable by retrying the
 // same call: the fix is a schema or configuration change.
-var ErrIncomplete = errors.New("purge: refused: cannot account for every table")
+//
+// # Blast radius, stated because fail-closed has one
+//
+// The refusal is GLOBAL, not per-account. One unclassified relation — a DBA's
+// `users_backup_20260801`, a matview somebody left behind — makes DELETE
+// /api/v1/account answer 500 for EVERY user, and that endpoint is required by
+// App Review 5.1.1(v). The reason is named only in the operator log; the
+// response deliberately does not carry it.
+//
+// That is still the right direction (the alternative is reporting a deletion
+// that did not happen), but it means a schema change nobody thought of as
+// risky can break account deletion for everyone, silently from the outside.
+// The operator-facing consequences:
+//
+//   - `ledgerd purge-user --dry-run` runs the same classification and is the
+//     cheapest way to find out. Run it after any schema change.
+//   - The fix is one line in handledWithoutUserID / notUserLinked, or a
+//     user_id column with ON DELETE CASCADE. It is not an emergency to reason
+//     about, but it IS an emergency to notice.
+var ErrIncomplete = errors.New("purge: refused: cannot account for every relation")
 
 // ---------------------------------------------------------------------------
 // Schema discovery
 // ---------------------------------------------------------------------------
 
-// safeIdent is the shape a table name must have before it is interpolated into
-// SQL. Discovery reads these out of information_schema, so they are already the
-// database's own names rather than anything a caller chose — this is the second
-// rail, not the first.
-var safeIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+// Relation is one object the purge has to account for: which schema it is in,
+// what it is called, and what KIND of thing it is.
+//
+// It is a struct rather than a "schema.name" string because the two are used
+// differently and mixing them up is a real bug: the display form goes into
+// messages and report keys, while the SQL form has to be quoted as TWO
+// identifiers. `pgx.Identifier{"archive.op_log"}.Sanitize()` produces
+// `"archive.op_log"` — one identifier with a dot in its name, which does not
+// exist — and the count that followed would silently fail rather than protect
+// anything.
+type Relation struct {
+	Schema string
+	Name   string
+	// Kind is pg_class.relkind: 'r' ordinary table, 'p' partitioned table,
+	// 'm' materialized view, 'f' foreign table.
+	Kind byte
+}
 
-// UserScopedTables returns every base table in the public schema carrying a
-// user_id column, sorted. This is the list Purge iterates.
-func UserScopedTables(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+// String is the display form, and the key Report.Rows uses.
+func (r Relation) String() string { return r.Schema + "." + r.Name }
+
+// SQL is the correctly quoted two-part identifier.
+func (r Relation) SQL() string { return pgx.Identifier{r.Schema, r.Name}.Sanitize() }
+
+// KindName spells relkind for an error message; an operator reading "relkind m"
+// learns nothing.
+func (r Relation) KindName() string {
+	switch r.Kind {
+	case 'r':
+		return "table"
+	case 'p':
+		return "partitioned table"
+	case 'm':
+		return "materialized view"
+	case 'f':
+		return "foreign table"
+	default:
+		return fmt.Sprintf("relkind %q", string(r.Kind))
+	}
+}
+
+// relationFilter is the WHERE clause both discovery queries share, and every
+// clause in it is load bearing. It replaced an information_schema query that
+// was blind in three separate ways, each of which let a relation holding a
+// deleted user's rows go unpurged AND unreported:
+//
+//   - information_schema.tables does not list MATERIALIZED VIEWS at all. Spec
+//     §5 explicitly contemplates one ("the existing PWA may additionally serve
+//     alphas via a temporary server-side materialized view"), so this is not a
+//     hypothetical object: a matview over op_log holds a COPY of the user's
+//     plaintext blobs, and the old query could not see it.
+//   - it was scoped to `public`, so a table in any other schema — an
+//     `archive.op_log_2026`, the obvious thing a DBA creates — was invisible.
+//   - information_schema is PRIVILEGE-FILTERED: it shows only relations the
+//     current role has some privilege on. Plan D5 runs ledgerd as a non-owner
+//     `ledger_runtime`, and `ledgerd purge-user` opens the same DSN, so a
+//     relation that role cannot touch was simply absent from a list whose whole
+//     job is to be exhaustive. pg_class is not filtered; a relation the role
+//     cannot read is now DISCOVERED, and the count against it fails loudly
+//     instead of being skipped silently.
+//
+// 'i', 'S', 'v', 'c', 't' are excluded because none of them stores rows a purge
+// could delete: indexes and sequences hold no user columns, a plain view is a
+// query over relations already in this list, and composite/TOAST types are not
+// relations a DELETE addresses. A partition (relispartition) is excluded too —
+// it IS storage, but deleting from its parent covers it, and listing both would
+// demand a classification for every partition anyone ever adds.
+const relationFilter = `
+	  cl.relkind IN ('r','p','m','f')
+	  AND NOT cl.relispartition
+	  AND ns.nspname NOT IN ('pg_catalog','information_schema')
+	  AND ns.nspname !~ '^pg_'`
+
+// UserScopedTables returns every relation carrying a user_id column, in any
+// schema, sorted. This is the list Purge iterates.
+//
+// The name says "Tables" and the return says Relation: a materialized view with
+// a user_id is exactly the case this function exists to stop being invisible,
+// and pretending it is a table in the return type would reintroduce the blind
+// spot at the type level.
+func UserScopedTables(ctx context.Context, pool *pgxpool.Pool) ([]Relation, error) {
 	if pool == nil {
 		return nil, errors.New("purge: pool is nil")
 	}
-	rows, err := pool.Query(ctx, `
-		SELECT c.table_name
-		  FROM information_schema.columns c
-		  JOIN information_schema.tables t
-		    ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-		 WHERE c.table_schema = 'public'
-		   AND c.column_name = 'user_id'
-		   AND t.table_type = 'BASE TABLE'
-		 ORDER BY c.table_name`)
+	return scanRelations(ctx, pool, `
+		SELECT ns.nspname, cl.relname, cl.relkind::text
+		  FROM pg_class cl
+		  JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+		  JOIN pg_attribute a ON a.attrelid = cl.oid
+		 WHERE`+relationFilter+`
+		   AND a.attname = 'user_id'
+		   AND a.attnum > 0
+		   AND NOT a.attisdropped
+		 ORDER BY ns.nspname, cl.relname`, "discover user-scoped relations")
+}
+
+// allRelations returns every relation a purge has to have an opinion about.
+func allRelations(ctx context.Context, pool *pgxpool.Pool) ([]Relation, error) {
+	return scanRelations(ctx, pool, `
+		SELECT ns.nspname, cl.relname, cl.relkind::text
+		  FROM pg_class cl
+		  JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+		 WHERE`+relationFilter+`
+		 ORDER BY ns.nspname, cl.relname`, "list relations")
+}
+
+func scanRelations(ctx context.Context, pool *pgxpool.Pool, sql, what string) ([]Relation, error) {
+	rows, err := pool.Query(ctx, sql)
 	if err != nil {
-		return nil, fmt.Errorf("purge: discover user-scoped tables: %w", err)
+		return nil, fmt.Errorf("purge: %s: %w", what, err)
 	}
 	defer rows.Close()
-	var out []string
+	var out []Relation
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("purge: discover user-scoped tables: %w", err)
+		var r Relation
+		var kind string
+		if err := rows.Scan(&r.Schema, &r.Name, &kind); err != nil {
+			return nil, fmt.Errorf("purge: %s: %w", what, err)
 		}
-		if !safeIdent.MatchString(name) {
-			return nil, fmt.Errorf("purge: refusing to touch table %q: not a plain identifier", name)
+		if kind == "" {
+			return nil, fmt.Errorf("purge: %s: %s.%s has an empty relkind", what, r.Schema, r.Name)
 		}
-		out = append(out, name)
+		r.Kind = kind[0]
+		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("purge: discover user-scoped tables: %w", err)
+		return nil, fmt.Errorf("purge: %s: %w", what, err)
 	}
+	// A name is never validated against a pattern and never interpolated raw;
+	// Relation.SQL quotes both parts, which is correct for every name Postgres
+	// permits — including one with a quote or a dot in it. A regex screen here
+	// would refuse legal names while adding nothing Sanitize does not already
+	// guarantee.
 	return out, nil
 }
 
-// Classification is every table in the database, sorted into what a purge does
-// with it.
+// Classification is every relation in the database, sorted into what a purge
+// does with it.
 type Classification struct {
-	// UserScoped carry a user_id column and are emptied by the cascade.
-	UserScoped []string
+	// UserScoped carry a user_id column and are emptied by the cascade (or,
+	// for the kinds nothing cascades into, by the explicit sweep).
+	UserScoped []Relation
 	// HandledWithoutUserID are purged by a hand-written step.
 	HandledWithoutUserID []string
 	// NotUserLinked hold nothing attributable to one user.
 	NotUserLinked []string
-	// Unclassified is the failure case: a table nobody has decided about. Purge
-	// refuses while this is non-empty, because the only honest thing to say
-	// about such a table is that a deleted user's rows might survive in it.
+	// Unclassified is the failure case: a relation nobody has decided about.
+	// Purge refuses while this is non-empty, because the only honest thing to
+	// say about such a relation is that a deleted user's rows might survive
+	// in it.
 	Unclassified []string
 }
 
-// Classify sorts every base table in the public schema.
+// Classify sorts every relation in every non-system schema.
 func Classify(ctx context.Context, pool *pgxpool.Pool) (Classification, error) {
+	if pool == nil {
+		return Classification{}, errors.New("purge: pool is nil")
+	}
 	scoped, err := UserScopedTables(ctx, pool)
 	if err != nil {
 		return Classification{}, err
 	}
-	rows, err := pool.Query(ctx, `
-		SELECT table_name FROM information_schema.tables
-		 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-		 ORDER BY table_name`)
+	all, err := allRelations(ctx, pool)
 	if err != nil {
-		return Classification{}, fmt.Errorf("purge: list tables: %w", err)
+		return Classification{}, err
 	}
-	defer rows.Close()
 	c := Classification{UserScoped: scoped}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return Classification{}, fmt.Errorf("purge: list tables: %w", err)
-		}
+	for _, r := range all {
+		name := r.String()
 		switch {
-		case slices.Contains(scoped, name):
+		case slices.ContainsFunc(scoped, func(s Relation) bool { return s.String() == name }):
 		case slices.Contains(handledWithoutUserID, name):
 			c.HandledWithoutUserID = append(c.HandledWithoutUserID, name)
 		case slices.Contains(notUserLinked, name):
 			c.NotUserLinked = append(c.NotUserLinked, name)
 		default:
-			c.Unclassified = append(c.Unclassified, name)
+			// The kind is named because it changes what the operator has to do:
+			// a stray TABLE gets a user_id or a line in notUserLinked, while a
+			// materialized VIEW usually wants dropping.
+			c.Unclassified = append(c.Unclassified, name+" ("+r.KindName()+")")
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return Classification{}, fmt.Errorf("purge: list tables: %w", err)
 	}
 	return c, nil
 }
 
-// cascadeActions maps a user-scoped table to the ON DELETE action of its
-// foreign key into users, as pg_constraint spells it: 'c' cascade, 'a' no
-// action, 'r' restrict, 'n' set null, 'd' set default. A table with a user_id
-// column and no foreign key at all is absent from the map.
-func cascadeActions(ctx context.Context, pool *pgxpool.Pool) (map[string]byte, error) {
+// cascadeActions maps a user-scoped relation to EVERY ON DELETE action of its
+// foreign keys into users, as pg_constraint spells them: 'c' cascade, 'a' no
+// action, 'r' restrict, 'n' set null, 'd' set default. A relation with a
+// user_id column and no foreign key at all is absent from the map.
+//
+// It is a slice per relation, not one action, because a relation may carry more
+// than one foreign key naming a user_id column (a composite key, or a second
+// column also called user_id in a later revision). Keeping only the last row
+// the scan happened to see would let a SET NULL hide behind a CASCADE — a
+// silent hole in a check that exists to close a silent hole.
+//
+// The schema is no longer pinned to `public`: a relation in any schema may
+// reference public.users.
+func cascadeActions(ctx context.Context, pool *pgxpool.Pool) (map[string][]byte, error) {
 	rows, err := pool.Query(ctx, `
 		-- confdeltype is Postgres's internal "char" type, which pgx will not
 		-- scan into a string; the cast is not cosmetic.
-		SELECT cl.relname, con.confdeltype::text
+		SELECT ns.nspname, cl.relname, con.confdeltype::text
 		  FROM pg_constraint con
 		  JOIN pg_class cl ON cl.oid = con.conrelid
 		  JOIN pg_namespace ns ON ns.oid = cl.relnamespace
 		 WHERE con.contype = 'f'
 		   AND con.confrelid = 'public.users'::regclass
-		   AND ns.nspname = 'public'
 		   AND EXISTS (
 		       SELECT 1 FROM pg_attribute a
 		        WHERE a.attrelid = con.conrelid
@@ -291,14 +443,15 @@ func cascadeActions(ctx context.Context, pool *pgxpool.Pool) (map[string]byte, e
 		return nil, fmt.Errorf("purge: read foreign-key actions: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]byte{}
+	out := map[string][]byte{}
 	for rows.Next() {
-		var name, action string
-		if err := rows.Scan(&name, &action); err != nil {
+		var schema, name, action string
+		if err := rows.Scan(&schema, &name, &action); err != nil {
 			return nil, fmt.Errorf("purge: read foreign-key actions: %w", err)
 		}
 		if action != "" {
-			out[name] = action[0]
+			key := schema + "." + name
+			out[key] = append(out[key], action[0])
 		}
 	}
 	return out, rows.Err()
@@ -323,26 +476,28 @@ var deleteActionNames = map[byte]string{
 //     exists at all. The rows SURVIVE with their user_id blanked, so every
 //     count in this file goes to zero and the purge would report complete
 //     success over a table that still holds the deleted user's data.
-func checkCascades(ctx context.Context, pool *pgxpool.Pool, tables []string) error {
+func checkCascades(ctx context.Context, pool *pgxpool.Pool, rels []Relation) error {
 	actions, err := cascadeActions(ctx, pool)
 	if err != nil {
 		return err
 	}
-	for _, tb := range tables {
-		a, ok := actions[tb]
-		if !ok || a == 'c' {
-			// No foreign key at all is handled by the explicit sweep, which
-			// reports it. Cascade is the correct case.
-			continue
+	for _, r := range rels {
+		for _, a := range actions[r.String()] {
+			// No foreign key at all leaves the loop body unentered; it is
+			// handled by the explicit sweep, which reports it. Cascade is the
+			// correct case.
+			if a == 'c' {
+				continue
+			}
+			name, known := deleteActionNames[a]
+			if !known {
+				name = fmt.Sprintf("confdeltype %q", string(a))
+			}
+			return fmt.Errorf("%w: %s.user_id references users ON DELETE %s, not CASCADE — "+
+				"deleting the account would %s", ErrIncomplete, r, name,
+				map[bool]string{true: "leave the rows behind with a blanked user_id",
+					false: "be refused by the foreign key"}[a == 'n' || a == 'd'])
 		}
-		name, known := deleteActionNames[a]
-		if !known {
-			name = fmt.Sprintf("confdeltype %q", string(a))
-		}
-		return fmt.Errorf("%w: %s.user_id references users ON DELETE %s, not CASCADE — "+
-			"deleting the account would %s", ErrIncomplete, tb, name,
-			map[bool]string{true: "leave the rows behind with a blanked user_id",
-				false: "be refused by the foreign key"}[a == 'n' || a == 'd'])
 	}
 	return nil
 }
@@ -385,13 +540,13 @@ func purgeUsers(ctx context.Context, pool *pgxpool.Pool, d *dict.Dict, users []u
 		return rep, nil
 	}
 
-	// Before anything is deleted: does this package know about every table?
+	// Before anything is deleted: does this package know about every relation?
 	c, err := Classify(ctx, pool)
 	if err != nil {
 		return rep, err
 	}
 	if len(c.Unclassified) != 0 {
-		return rep, fmt.Errorf("%w: unclassified tables %v — give them a user_id column, "+
+		return rep, fmt.Errorf("%w: unclassified relations %v — give them a user_id column, "+
 			"or classify them in internal/v2/purge", ErrIncomplete, c.Unclassified)
 	}
 
@@ -430,12 +585,12 @@ func purgeUsers(ctx context.Context, pool *pgxpool.Pool, d *dict.Dict, users []u
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Counted BEFORE the delete, because after it there is nothing to count.
-	for _, tb := range c.UserScoped {
-		n, err := countFor(ctx, tx, tb, users)
+	for _, r := range c.UserScoped {
+		n, err := countFor(ctx, tx, r, users)
 		if err != nil {
 			return rep, err
 		}
-		rep.Rows[tb] = n
+		rep.Rows[r.String()] = n
 	}
 
 	// The one statement that matters. Everything else cascades from it, which
@@ -452,44 +607,66 @@ func purgeUsers(ctx context.Context, pool *pgxpool.Pool, d *dict.Dict, users []u
 		return rep, fmt.Errorf("purge: delete users: %w", err)
 	}
 
-	// The sweep, for the one remaining shape checkCascades permits: a user_id
-	// column with no foreign key at all. Nothing cascades into it, so the rows
-	// are still here; they are deleted explicitly and the schema defect is
-	// reported rather than quietly covered for.
-	for _, tb := range c.UserScoped {
-		n, err := countFor(ctx, tx, tb, users)
+	// The sweep: everything the cascade did not reach.
+	//
+	// Two shapes get here. A TABLE with a user_id and no foreign key at all —
+	// nothing cascades into it, so its rows are still present and are deleted
+	// explicitly, with the schema defect reported rather than quietly covered
+	// for. And a MATERIALIZED VIEW, which cannot be deleted from at all: it is
+	// a stored copy of a query, so the only way to make the deleted user's rows
+	// go away is to re-run the query now that the underlying rows are gone.
+	// Both are then re-counted; a relation that is still not empty refuses the
+	// whole purge.
+	for _, r := range c.UserScoped {
+		n, err := countFor(ctx, tx, r, users)
 		if err != nil {
 			return rep, err
 		}
 		if n == 0 {
 			continue
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM `+pgx.Identifier{tb}.Sanitize()+` WHERE user_id = ANY($1)`, users); err != nil {
-			return rep, fmt.Errorf("purge: sweep %s: %w", tb, err)
+		if r.Kind == 'm' {
+			// REFRESH takes an ACCESS EXCLUSIVE lock and is refused to a
+			// non-owner, so this is where a matview a later task created
+			// without thinking becomes a loud failure instead of a copy of a
+			// deleted user's plaintext. That is the right direction: spec §5
+			// contemplates exactly one such view, and whoever creates it owns
+			// the obligation to let the purge reach it.
+			if _, err := tx.Exec(ctx, `REFRESH MATERIALIZED VIEW `+r.SQL()); err != nil {
+				return rep, fmt.Errorf("%w: materialized view %s holds %d rows for the purged "+
+					"accounts and could not be refreshed (%v) — a matview is a stored COPY, so "+
+					"the rows survive the cascade; drop it, or grant the purge role ownership",
+					ErrIncomplete, r, n, err)
+			}
+			rep.RefreshedViews = append(rep.RefreshedViews, r.String())
+		} else if _, err := tx.Exec(ctx,
+			`DELETE FROM `+r.SQL()+` WHERE user_id = ANY($1)`, users); err != nil {
+			return rep, fmt.Errorf("purge: sweep %s: %w", r, err)
+		} else {
+			rep.SweptWithoutCascade = append(rep.SweptWithoutCascade, r.String())
 		}
-		left, err := countFor(ctx, tx, tb, users)
+		left, err := countFor(ctx, tx, r, users)
 		if err != nil {
 			return rep, err
 		}
 		if left != 0 {
-			return rep, fmt.Errorf("%w: table %s still holds %d rows after an explicit delete",
-				ErrIncomplete, tb, left)
+			return rep, fmt.Errorf("%w: %s %s still holds %d rows after an explicit %s",
+				ErrIncomplete, r.KindName(), r, left,
+				map[bool]string{true: "refresh", false: "delete"}[r.Kind == 'm'])
 		}
-		rep.SweptWithoutCascade = append(rep.SweptWithoutCascade, tb)
 	}
 
 	// The proof, inside the transaction that would otherwise commit. Every
-	// discovered table, re-counted against the same rows that were just
+	// discovered relation, re-counted against the same rows that were just
 	// deleted. It cannot pass by omission: the list is the discovered one.
-	for _, tb := range c.UserScoped {
-		n, err := countFor(ctx, tx, tb, users)
+	for _, r := range c.UserScoped {
+		n, err := countFor(ctx, tx, r, users)
 		if err != nil {
 			return rep, err
 		}
 		if n != 0 {
-			return rep, fmt.Errorf("%w: table %s still holds %d rows for the purged accounts",
-				ErrIncomplete, tb, n)
+			return rep, fmt.Errorf("%w: %s %s still holds %d rows for the purged accounts",
+				ErrIncomplete, r.KindName(), r, n)
 		}
 	}
 	var left int
@@ -526,12 +703,16 @@ func scanUUIDRows(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]uu
 	return out, rows.Err()
 }
 
-func countFor(ctx context.Context, tx pgx.Tx, table string, users []uuid.UUID) (int, error) {
+func countFor(ctx context.Context, tx pgx.Tx, r Relation, users []uuid.UUID) (int, error) {
 	var n int
 	err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM `+pgx.Identifier{table}.Sanitize()+` WHERE user_id = ANY($1)`, users).Scan(&n)
+		`SELECT count(*) FROM `+r.SQL()+` WHERE user_id = ANY($1)`, users).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("purge: count %s: %w", table, err)
+		// A relation the role cannot read reaches here rather than being
+		// filtered out of discovery, which is the point of reading pg_class
+		// instead of information_schema: "I am not allowed to look" is an
+		// answer this package has to give out loud.
+		return 0, fmt.Errorf("purge: count %s: %w", r, err)
 	}
 	return n, nil
 }
@@ -547,6 +728,14 @@ func forgetSubmitter(ctx context.Context, pool *pgxpool.Pool, d *dict.Dict, user
 		}
 		return n, nil
 	}
+	// GLOBAL, not per-user, and it cannot be otherwise: without the key there is
+	// no way to ask "does this account have rows here" — that question IS the
+	// HMAC. So the only sound check is "nobody has any", and the consequence,
+	// stated rather than discovered: a deployment that LOST the key can delete
+	// no account at all while a single submission from anyone remains. That is
+	// fail-closed in the right direction (the alternative is a pseudonym
+	// outliving the account it belongs to) but it is a real operational trap,
+	// and the error names both ways out of it.
 	var n int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM dict_submissions`).Scan(&n); err != nil {
 		return 0, fmt.Errorf("purge: count dict_submissions: %w", err)
@@ -554,7 +743,11 @@ func forgetSubmitter(ctx context.Context, pool *pgxpool.Pool, d *dict.Dict, user
 	if n != 0 {
 		return 0, fmt.Errorf("%w: dict_submissions holds %d submitter identifiers and no "+
 			"LEDGER_DICT_HMAC_KEY is configured, so none of them can be matched to this account "+
-			"(configure the key and retry)", ErrIncomplete, n)
+			"— note this count is GLOBAL, because without the key one account's rows are "+
+			"indistinguishable from another's. Restore the key and retry; if it is lost for good, "+
+			"every identifier in that table is already unrecoverable and clearing it (or waiting "+
+			"for dict.ExpireStaleSubmissions) is the only way any account can be deleted again",
+			ErrIncomplete, n)
 	}
 	return 0, nil
 }

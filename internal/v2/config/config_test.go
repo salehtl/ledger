@@ -62,8 +62,14 @@ func TestEveryDispatchModeHasACase(t *testing.T) {
 	}
 }
 
-func TestModesIsTheExactSixInOrder(t *testing.T) {
-	want := []string{"serve", "relay", "verify", "seed-dictionary", "purge-user", "parse-rate"}
+func TestModesIsTheExactSetInOrder(t *testing.T) {
+	// "record-consent" joined the list with Task 34's fix pass: `purge-user
+	// --retention-due` reads a deadline that, until that command existed,
+	// nothing anywhere wrote.
+	want := []string{
+		"serve", "relay", "verify", "seed-dictionary",
+		"purge-user", "record-consent", "parse-rate",
+	}
 	got := Modes()
 	if len(got) != len(want) {
 		t.Fatalf("Modes() = %v, want %v", got, want)

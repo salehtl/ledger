@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/addresses"
@@ -57,6 +56,7 @@ var modeHandlers = map[string]func(config.Config) error{
 	"verify":          runVerify,
 	"seed-dictionary": runSeedDictionary,
 	"purge-user":      runPurgeUser,
+	"record-consent":  runRecordConsent,
 	"parse-rate":      runParseRate,
 }
 
@@ -99,7 +99,9 @@ type args struct {
 	// verify is the command line of `verify` and `parse-rate`, on the same
 	// terms.
 	verify config.VerifyArgs
-	// user backs the single --user flag. Three modes take "which account", and
+	// consent is `record-consent`'s, likewise.
+	consent config.ConsentArgs
+	// user backs the single --user flag. Four modes take "which account", and
 	// binding one flag into each of their argument structs after parsing is
 	// what keeps them from drifting into --user, --account and --uuid.
 	user string
@@ -127,11 +129,19 @@ func parseArgs(argv []string) (args, error) {
 	fs.StringVar(&out.dnsFixtures, "dns-fixtures", "",
 		"TEST ONLY: path to a recorded dns.json served as the DKIM/ARC TXT resolver (loopback listener only)")
 	fs.StringVar(&out.user, "user", "",
-		"purge-user|verify|parse-rate: the account to act on, as a UUID")
+		"purge-user|record-consent|verify|parse-rate: the account to act on, as a UUID")
 	fs.BoolVar(&out.purge.RetentionDue, "retention-due", false,
 		"purge-user: delete every account whose consent retention deadline has passed")
 	fs.BoolVar(&out.purge.DryRun, "dry-run", false,
 		"purge-user: report what would be deleted and delete nothing")
+	fs.StringVar(&out.consent.Document, "document", "",
+		"record-consent: identifier of the consent text that was signed, e.g. alpha-plaintext-v1")
+	fs.StringVar(&out.consent.RetentionUntil, "retention-until", "",
+		"record-consent: the instant this account's plaintext must be gone, as RFC3339")
+	fs.StringVar(&out.consent.SignedAt, "signed-at", "",
+		"record-consent: when they signed, as RFC3339 (default: now)")
+	fs.BoolVar(&out.consent.Show, "show", false,
+		"record-consent: list the recorded deadlines and write nothing")
 	fs.StringVar(&out.verify.From, "from", "",
 		"verify|parse-rate: window start, as an RFC3339 instant")
 	fs.StringVar(&out.verify.To, "to", "",
@@ -148,8 +158,8 @@ func parseArgs(argv []string) (args, error) {
 	if n := fs.NArg(); n > 0 {
 		return args{}, fmt.Errorf("unexpected argument %q: the mode comes first (%s)", fs.Arg(0), strings.Join(config.Modes(), "|"))
 	}
-	// One flag, three destinations. See args.user.
-	out.purge.User, out.verify.User = out.user, out.user
+	// One flag, four destinations. See args.user.
+	out.purge.User, out.verify.User, out.consent.User = out.user, out.user, out.user
 	return out, nil
 }
 
@@ -168,6 +178,7 @@ func main() {
 	cfg.Mode = a.mode
 	cfg.Purge = a.purge
 	cfg.Verify = a.verify
+	cfg.Consent = a.consent
 	if err := cfg.EnableTestOnly(a.devAuth, a.dnsFixtures); err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -1150,20 +1161,143 @@ func purgeDryRun(ctx context.Context, pool *pgxpool.Pool, target uuid.UUID, rete
 	total := 0
 	for _, u := range targets {
 		fmt.Printf("dry run: account %s\n", u)
-		for _, tb := range c.UserScoped {
+		for _, r := range c.UserScoped {
 			var n int
+			// r.SQL() quotes the schema and the name as two identifiers. A
+			// relation outside `public` is now discovered, so the preview has
+			// to be able to address one.
 			if err := pool.QueryRow(ctx,
-				`SELECT count(*) FROM `+pgx.Identifier{tb}.Sanitize()+` WHERE user_id = $1`, u).Scan(&n); err != nil {
-				return fmt.Errorf("ledgerd purge-user: count %s: %w", tb, err)
+				`SELECT count(*) FROM `+r.SQL()+` WHERE user_id = $1`, u).Scan(&n); err != nil {
+				return fmt.Errorf("ledgerd purge-user: count %s: %w", r, err)
 			}
 			if n > 0 {
-				fmt.Printf("  %-32s %d\n", tb, n)
+				fmt.Printf("  %-40s %d\n", r, n)
 			}
 			total += n
 		}
 	}
 	fmt.Printf("dry run: %d rows across %d account(s) would be deleted, plus their "+
 		"dictionary submitter identifiers. Nothing was deleted.\n", total, len(targets))
+	return nil
+}
+
+// runRecordConsent writes (or replaces) an account's signed-consent record, or
+// with --show lists what is on file. Spec §5, Task 34.
+//
+// It exists because the enforcer had no input. `purge-user --retention-due`
+// reads user_consent.retention_until, and until this command landed NOTHING
+// anywhere wrote that column: a sweep run a hundred years past every deadline
+// purged zero accounts and reported one as having no record. A retention
+// commitment with a table, an enforcer and no way to record a deadline is a
+// commitment in name only.
+//
+// Recording is deliberately manual. The row asserts that a specific person
+// signed a specific document on a specific date; a row written automatically by
+// the sign-up path would be the server asserting a signature nobody made.
+func runRecordConsent(cfg config.Config) error {
+	// Argument validation FIRST, before any I/O, on the same terms as
+	// purge-user: this command sets a date on which an account gets deleted.
+	var (
+		target                uuid.UUID
+		signedAt, retainUntil time.Time
+		err                   error
+	)
+	if !cfg.Consent.Show {
+		switch {
+		case cfg.Consent.User == "":
+			return errors.New("ledgerd record-consent: --user <uuid> is required (or --show to list what is on file)")
+		case cfg.Consent.Document == "":
+			return errors.New("ledgerd record-consent: --document <identifier> is required, e.g. " +
+				"--document alpha-plaintext-v1; it names the consent text that was signed")
+		case cfg.Consent.RetentionUntil == "":
+			return errors.New("ledgerd record-consent: --retention-until <RFC3339> is required; " +
+				"it is the instant this account's plaintext must be gone, and the whole point of the record")
+		}
+		if target, err = uuid.Parse(cfg.Consent.User); err != nil || target == uuid.Nil {
+			return fmt.Errorf("ledgerd record-consent: --user %q is not a uuid", cfg.Consent.User)
+		}
+		if retainUntil, err = time.Parse(time.RFC3339, cfg.Consent.RetentionUntil); err != nil {
+			return fmt.Errorf("ledgerd record-consent: --retention-until %q is not an RFC3339 instant "+
+				"(e.g. 2027-01-31T00:00:00Z)", cfg.Consent.RetentionUntil)
+		}
+		signedAt = time.Now()
+		if cfg.Consent.SignedAt != "" {
+			if signedAt, err = time.Parse(time.RFC3339, cfg.Consent.SignedAt); err != nil {
+				return fmt.Errorf("ledgerd record-consent: --signed-at %q is not an RFC3339 instant",
+					cfg.Consent.SignedAt)
+			}
+		}
+		if !retainUntil.After(signedAt) {
+			return fmt.Errorf("ledgerd record-consent: --retention-until %s is not after the signature %s",
+				retainUntil.UTC(), signedAt.UTC())
+		}
+	}
+
+	ctx := context.Background()
+	pool, err := pg.Open(ctx, cfg.Server.DSN)
+	if err != nil {
+		return fmt.Errorf("ledgerd record-consent: open postgres: %w", err)
+	}
+	defer pool.Close()
+	if err := pg.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("ledgerd record-consent: migrate: %w", err)
+	}
+
+	if cfg.Consent.Show {
+		return showConsent(ctx, pool)
+	}
+	if err := purge.RecordConsent(ctx, pool, target, cfg.Consent.Document, signedAt, retainUntil); err != nil {
+		return fmt.Errorf("ledgerd record-consent: %w", err)
+	}
+	fmt.Printf("recorded consent for %s: document %s, signed %s, plaintext retained until %s\n",
+		target, cfg.Consent.Document, signedAt.UTC().Format(time.RFC3339), retainUntil.UTC().Format(time.RFC3339))
+	fmt.Println("enforce with: ledgerd record-consent --show, then " +
+		"ledgerd purge-user --retention-due --dry-run")
+	return nil
+}
+
+// showConsent lists every account beside its deadline, including the ones with
+// no record at all — which are the interesting ones, since they are the
+// accounts the retention sweep will report and refuse to act on.
+func showConsent(ctx context.Context, pool *pgxpool.Pool) error {
+	rows, err := pool.Query(ctx, `
+		SELECT u.id, c.document, c.signed_at, c.retention_until
+		  FROM users u LEFT JOIN user_consent c ON c.user_id = u.id
+		 ORDER BY c.retention_until NULLS FIRST, u.id`)
+	if err != nil {
+		return fmt.Errorf("ledgerd record-consent: %w", err)
+	}
+	defer rows.Close()
+	missing, now := 0, time.Now()
+	for rows.Next() {
+		var (
+			id                  uuid.UUID
+			doc                 *string
+			signed, retainUntil *time.Time
+		)
+		if err := rows.Scan(&id, &doc, &signed, &retainUntil); err != nil {
+			return fmt.Errorf("ledgerd record-consent: %w", err)
+		}
+		if retainUntil == nil {
+			missing++
+			fmt.Printf("%s  NO CONSENT RECORD — the retention sweep will report and skip this account\n", id)
+			continue
+		}
+		state := "current"
+		if !retainUntil.After(now) {
+			state = "OVERDUE"
+		}
+		fmt.Printf("%s  %-24s signed %s  retained until %s  %s\n",
+			id, *doc, signed.UTC().Format(time.RFC3339),
+			retainUntil.UTC().Format(time.RFC3339), state)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("ledgerd record-consent: %w", err)
+	}
+	if missing > 0 {
+		fmt.Printf("\n%d account(s) have no consent record. Spec §5 admits alphas under signed "+
+			"consent with a retention limit; an account without one is outside that promise.\n", missing)
+	}
 	return nil
 }
 
@@ -1178,15 +1312,20 @@ func printPurgeReport(rep purge.Report) {
 	sort.Strings(tables)
 	for _, tb := range tables {
 		if rep.Rows[tb] > 0 {
-			fmt.Printf("  %-32s %d\n", tb, rep.Rows[tb])
+			fmt.Printf("  %-40s %d\n", tb, rep.Rows[tb])
 		}
 	}
 	if rep.DictSubmissions > 0 {
-		fmt.Printf("  %-32s %d\n", "dict_submissions", rep.DictSubmissions)
+		fmt.Printf("  %-40s %d\n", "dict_submissions", rep.DictSubmissions)
 	}
 	if len(rep.SweptWithoutCascade) > 0 {
 		fmt.Printf("WARNING: these tables needed an explicit sweep because their user_id "+
 			"foreign key is missing ON DELETE CASCADE: %v\n", rep.SweptWithoutCascade)
+	}
+	if len(rep.RefreshedViews) > 0 {
+		fmt.Printf("WARNING: these MATERIALIZED VIEWS held rows for the purged account and had "+
+			"to be refreshed: %v. A matview is a stored copy of user data that nothing else in "+
+			"the system tracks; check that it should exist at all.\n", rep.RefreshedViews)
 	}
 	if len(rep.WithoutConsentRecord) > 0 {
 		fmt.Printf("NOTE: %d account(s) have no consent record and therefore no retention "+

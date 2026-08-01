@@ -163,7 +163,43 @@ migrate-or-delete at Phase 3 cutover)". That deadline is not prose: Task 34
 gives it a row. `user_consent` (`00014_account_deletion.sql`) holds one record
 per alpha — which document they signed, when, and the instant their plaintext
 must be gone — and `ledgerd purge-user --retention-due` is what acts on it.
-Recording it is `purge.RecordConsent`; previewing it is the same command with
-`--dry-run`. The document's date and that column must be the same date, and an
-alpha admitted without the row is reported by every sweep
-(`Report.WithoutConsentRecord`) rather than silently exempt from the promise.
+Recording it is `ledgerd record-consent`; previewing the sweep is
+`ledgerd purge-user --retention-due --dry-run`. The document's date and that
+column must be the same date, and an alpha admitted without the row is reported
+by every sweep (`Report.WithoutConsentRecord`) rather than silently exempt from
+the promise.
+
+## Operating account deletion (for the deploy runbook)
+
+Three operational facts about `internal/v2/purge` that belong in the runbook the
+D-series tasks will write, recorded here so they are not rediscovered:
+
+1. **Admitting an alpha is two steps, not one.** Signing them in creates the
+   account; `ledgerd record-consent --user <uuid> --document alpha-plaintext-v1
+   --retention-until <RFC3339>` is what puts them inside §5's retention promise.
+   `ledgerd record-consent --show` lists every account beside its deadline and
+   names the ones with no record. An account with no record is never purged
+   automatically — it is reported, because "no deadline written down" and "the
+   write failed" look identical and only one survives being wrong.
+
+2. **The retention sweep is manual, deliberately.** `runServe` starts a sweep
+   for quarantine expiry and one for donated-sample retention, and none for
+   this: those delete a message, this deletes a person's account. Run
+   `purge-user --retention-due --dry-run` first; it runs the same
+   classification and the same due-list query as the real thing.
+
+3. **One unclassified relation breaks deletion for EVERYONE.** The purge
+   refuses if any relation in any non-system schema is unaccounted for — a
+   `users_backup_20260801`, a leftover materialized view — and `DELETE
+   /api/v1/account` then answers 500 for every user, with the reason only in
+   the operator log. That fail-closed direction is intended (the alternative is
+   reporting a deletion that did not happen) but the blast radius is total and
+   invisible from outside. **Run `ledgerd purge-user --dry-run` after any schema
+   change**, including ad-hoc ones; the fix is one line in the purge package's
+   `handledWithoutUserID` / `notUserLinked`, or a `user_id` column with `ON
+   DELETE CASCADE`.
+
+   Related: a deployment that loses `LEDGER_DICT_HMAC_KEY` also cannot delete
+   any account while any row remains in `dict_submissions`, because without the
+   key one account's pseudonyms are indistinguishable from another's and the
+   only sound check is that nobody has any.
