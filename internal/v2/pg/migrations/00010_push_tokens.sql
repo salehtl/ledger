@@ -24,9 +24,18 @@
 --
 -- The composite key costs the opposite case instead: a phone handed on to
 -- another person can hold two users' rows and receive both users' "New
--- transaction" pings until the first user's client deletes its own row. That is
--- noise, it is content-free, and it is recoverable by the user who still has
--- the device. A hijack is neither.
+-- transaction" pings until the first user's row is removed. That is noise, it
+-- is content-free, and it is recoverable. A hijack is neither.
+--
+-- CORRECTION (00019_push_token_device_link.sql). "Recoverable" was false when
+-- this file was written, and saying so here is what made it look considered.
+-- As shipped, the ONLY way to remove a row was to present the exact token
+-- string, no route existed that would tell a user what their tokens were, and
+-- neither key revocation nor sign-out touched this table — so the previous
+-- owner of a handed-on phone had no recovery at all, and neither did the victim
+-- of a stolen one. 00019 adds writer_id and session_hash, wires both revocation
+-- paths to delete by them, and adds GET /push/tokens plus a delete-all. Read it
+-- before trusting anything above about the lifecycle of a row here.
 CREATE TABLE push_tokens (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 

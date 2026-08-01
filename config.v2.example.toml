@@ -66,9 +66,16 @@ spool_dir   = ""                  # in relay mode: durable local spool directory
 
 [push]
 enabled  = false                  # Phase 1 default: no client exists yet, so push stays off
-expo_url = ""                     # Expo push endpoint
-# Secret, never stored here: LEDGER_EXPO_ACCESS_TOKEN — Expo's optional
-# enhanced-security push token.
+expo_url = ""                     # Expo push endpoint; "" means https://exp.host/--/api/v2/push/send
+# Secret, never stored here: LEDGER_EXPO_ACCESS_TOKEN — Expo's enhanced-security
+# push token. It is REQUIRED whenever enabled = true and the config load refuses
+# otherwise: Expo's send endpoint accepts unauthenticated POSTs until a project
+# opts into enhanced security, so without it anyone who learns a user's push
+# token can write to that user's lock screen through a public endpoint.
+#
+# expo_url is railed too — https only, and an Expo host. It is the only outbound
+# request this server makes, and it carries the access token plus the exact
+# timing of every user's transactions.
 
 [auth]
 apple_client_ids  = []            # Sign in with Apple client identifiers (not secret; LEDGER_APPLE_CLIENT_IDS, comma-separated)
