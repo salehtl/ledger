@@ -43,7 +43,14 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sig
 
 import { ulid } from "ulid";
 
-import { checkAll, type CheckInput, type SyncRow, type Violation, type Writer } from "../invariants/check";
+import {
+  VIOLATION_ROSTER_COVERAGE,
+  checkAll,
+  type CheckInput,
+  type SyncRow,
+  type Violation,
+  type Writer,
+} from "../invariants/check";
 import { fold, foldBlobs, type LogEntry } from "../replay/replay";
 import { emptyState, type State } from "../replay/state";
 import { MAX_BUCKET, STREAM_COLD, STREAM_HOT, openBlob, sealBlob, type Envelope, type Stream } from "../wire/blob";
@@ -959,9 +966,11 @@ export class Client {
    * latest checkpoint — and writing that checkpoint is precisely what this push
    * is about to do. Obeying it would deadlock the whole account: every device
    * needs a checkpoint before it can sync, and none can sync in order to write
-   * one. So {@link syncForAttestation} proceeds over an I11-only hard stop, and
-   * over nothing else — a chain break or an unknown newer version still stops
-   * everything, because neither is a condition a checkpoint repairs.
+   * one. So {@link syncForAttestation} proceeds over that ONE CONDITION —
+   * `VIOLATION_ROSTER_COVERAGE` — and over nothing else. Not even over I11's
+   * other hard stop: a checkpoint claiming a head this client has never seen
+   * means rows are being WITHHELD, and a device in that position has nothing
+   * trustworthy to attest.
    *
    * The cost is honest and bounded: a pre-sync that was refused persisted
    * nothing, so the healing checkpoint attests whatever heads this device had
@@ -1070,14 +1079,30 @@ export class Client {
 
   /**
    * Syncs both streams so a checkpoint can attest real heads, and reports
-   * whether it was blocked by a missing checkpoint.
+   * whether it was blocked by a checkpoint that does not cover the roster.
    *
-   * `true` means the pre-sync hit an `I11_roster_checkpoint` hard stop — a live
-   * device writer has no trusted head — and the caller should write a
-   * checkpoint anyway, because that is the repair. Every other hard stop
-   * propagates: a chain break or an unknown newer schema version is not
-   * something a checkpoint fixes, and pushing over one would append to a log
-   * this device could not verify.
+   * # The allow-list, and why it is an allow-list
+   *
+   * `true` means EVERY hard stop the pre-sync raised was
+   * {@link VIOLATION_ROSTER_COVERAGE} — a live device writer with no attested
+   * head — and the caller should write a checkpoint anyway, because that is the
+   * repair and refusing deadlocks an account whose every device needs a
+   * checkpoint before it can sync.
+   *
+   * Everything else propagates, and `I11_roster_checkpoint`'s OTHER hard stop is
+   * the one that matters: {@link VIOLATION_CHAIN_WITHHELD} means a checkpoint
+   * attests a head above anything this client has seen, i.e. the server is
+   * withholding rows a peer already witnessed. Matching on the ID alone — which
+   * this did — proceeded over that too, and the consequence was built end to
+   * end: a truncated peer chain, a third device that pushes over the stop, and
+   * a fresh checkpoint claiming genesis for every chain replaces the honest
+   * attestation, after which the truncation is only a notice. **A device being
+   * withheld from must author no checkpoint at all.**
+   *
+   * It is an ALLOW-list rather than a deny-list on purpose. A condition added
+   * to I11 later carries no kind, so it is un-escapable until someone
+   * deliberately marks it benign — the failure mode of forgetting is a refused
+   * push, not a laundered attack.
    *
    * `pull` persisted nothing over the refusal, so a `true` return also means
    * the heads about to be attested are only as fresh as the last clean sync.
@@ -1089,7 +1114,9 @@ export class Client {
     } catch (err) {
       if (!(err instanceof HardStopError)) throw err;
       const stops = err.violations.filter((v) => v.severity === "hard_stop");
-      if (!stops.every((v) => v.id === ROSTER_CHECKPOINT)) throw err;
+      const benign =
+        stops.length > 0 && stops.every((v) => v.id === ROSTER_CHECKPOINT && v.kind === VIOLATION_ROSTER_COVERAGE);
+      if (!benign) throw err;
       blocked = true;
     }
     // Not inside the try: the cold hash list is verified by `verifyHashList`

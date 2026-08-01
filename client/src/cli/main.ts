@@ -9,7 +9,7 @@
  *                       [--pubkey <b64>]   # enrol a PEER's key, signed by --sign-with
  *                       [--keygen-only]    # create this device's key, print its public half
  * cli pull              [--stream hot|cold] [--limit n]     # default: hot only
- * cli pull-cold-hashes  [--stream hot|cold] [--limit n]     # refresh the pinned head
+ * cli pull-cold-hashes  [--limit n]                        # cold only; refuses --stream
  * cli replay                                                # fold, print a summary
  * cli check             [--stream hot|cold] [--json]        # exit 1 on any hard stop
  * cli emit              --type <op_type> --json '<payload>'
@@ -183,8 +183,13 @@ function printViolations(violations: readonly Violation[], asJSON: boolean): num
     // Both lists are printed in full, always. A checker whose output is
     // suppressed when it is boring is a checker nobody can distinguish from a
     // broken one.
-    for (const v of stops) console.log(`  HARD STOP  ${v.id}: ${v.detail}`);
-    for (const v of notices) console.log(`  notice     ${v.id}: ${v.detail}`);
+    // The `kind` is printed where there is one, because a single id can cover
+    // conditions an operator must act on differently — I11's benign "the roster
+    // grew" and its adversarial "the server is withholding rows" are the same
+    // id and the same severity, and the whole of the difference is here.
+    const label = (v: Violation): string => (v.kind === undefined ? v.id : `${v.id} (${v.kind})`);
+    for (const v of stops) console.log(`  HARD STOP  ${label(v)}: ${v.detail}`);
+    for (const v of notices) console.log(`  notice     ${label(v)}: ${v.detail}`);
   }
   return stops.length === 0 ? 0 : 1;
 }

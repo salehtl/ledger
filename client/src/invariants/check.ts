@@ -121,7 +121,48 @@ export interface Violation {
   id: string;
   severity: "hard_stop" | "notice";
   detail: string;
+  /**
+   * Which CONDITION under this id was hit, where one invariant covers more than
+   * one and a caller has to act on them differently.
+   *
+   * Only `I11_roster_checkpoint` sets it today, and the reason is a hole that
+   * was built end to end before this field existed. I11 bundles a benign
+   * condition — "the roster has a live device writer this checkpoint does not
+   * name" — with an adversarial one — "the server is withholding rows a peer has
+   * already witnessed". Task 14's `push` must proceed over the first, because
+   * writing the checkpoint is the repair and refusing deadlocks the whole
+   * account; it must NEVER proceed over the second, because a device that is
+   * being withheld from has nothing trustworthy to attest, and a checkpoint it
+   * wrote would replace the honest one and launder the attack into a notice.
+   *
+   * **Absent means "not safe to proceed over".** The field is optional so that a
+   * condition added later is un-escapable by default: a caller allow-lists the
+   * kinds it knows are benign and treats everything else, kinded or not, as a
+   * stop. Do not invert that into a deny-list.
+   */
+  kind?: string;
 }
+
+/**
+ * `I11_roster_checkpoint`: the roster names a live device writer that the latest
+ * checkpoint does not cover (including "there is no checkpoint at all").
+ *
+ * Benign — it is reachable by an ordinary race, a device enrolled since the last
+ * checkpoint was written — and REPAIRABLE by writing a checkpoint, which is why
+ * it is the one hard stop a push may proceed over.
+ */
+export const VIOLATION_ROSTER_COVERAGE = "roster_coverage";
+
+/**
+ * `I11_roster_checkpoint`: a checkpoint attests a head above the highest blob
+ * this client has ever seen on that chain — the server is withholding rows a
+ * peer device already witnessed.
+ *
+ * Adversarial, and NOT repairable by this device: it cannot attest a chain it is
+ * being lied to about. Anything that treats I11 as one condition and proceeds
+ * will proceed over this too.
+ */
+export const VIOLATION_CHAIN_WITHHELD = "chain_withheld";
 
 /**
  * One op-log row as `GET /api/v1/sync` returns it, decoded.
@@ -223,6 +264,8 @@ export const ANOMALY_KINDS: ReadonlySet<string> = new Set([
 
 const hard = (id: string, detail: string): Violation => ({ id, severity: "hard_stop", detail });
 const note = (id: string, detail: string): Violation => ({ id, severity: "notice", detail });
+/** A hard stop that names WHICH condition under its id was hit; see {@link Violation.kind}. */
+const hardKind = (id: string, kind: string, detail: string): Violation => ({ id, severity: "hard_stop", detail, kind });
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 const text = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -1018,6 +1061,24 @@ const I11 = "I11_roster_checkpoint";
  *   - **a checkpoint exists** → `hard_stop` if a live device writer is missing
  *     from it, or if a head claims a counter above what has been observed.
  *
+ * # Two hard stops under one id, and why they must be told apart
+ *
+ * This check reports both "the roster names a live device writer the checkpoint
+ * does not cover" ({@link VIOLATION_ROSTER_COVERAGE}) and "a checkpoint attests
+ * a head above anything this client has seen" ({@link VIOLATION_CHAIN_WITHHELD}).
+ * They share an id because they are one property — a checkpoint that actually
+ * cross-checks the roster — but a CALLER must act on them oppositely, and the
+ * `kind` field exists because treating them as one built a real hole:
+ *
+ * Task 14's `push` proceeds over the coverage case, because writing the
+ * checkpoint IS the repair and refusing deadlocks an account whose every device
+ * needs a checkpoint before it can sync. Given only the id, it proceeded over
+ * the withholding case too — so a server that truncated a peer's chain could
+ * get a third device to overwrite the honest attestation with one claiming
+ * genesis, after which the truncation surfaced only as the notice below and
+ * nothing forced repair. A device being withheld from must author no checkpoint
+ * at all; it has nothing trustworthy to attest.
+ *
  * # Two severities that look inconsistent and are not
  *
  * "The roster omits a writer the checkpoint names" is a NOTICE, while "the
@@ -1088,8 +1149,9 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
     if (liveDevices.length >= 2) {
       const names = liveDevices.map((w) => w.writer_id).join(", ");
       out.push(
-        hard(
+        hardKind(
           I11,
+          VIOLATION_ROSTER_COVERAGE,
           `${liveDevices.length} device writers are enrolled (${names}) and no writer_checkpoint has been seen — ` +
             `nothing cross-checks one device's chain against another's, so a withheld writer would be invisible`,
         ),
@@ -1112,8 +1174,9 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
   for (const w of liveDevices) {
     if (!named.has(`${w.writer_id}|${i.stream}`)) {
       out.push(
-        hard(
+        hardKind(
           I11,
+          VIOLATION_ROSTER_COVERAGE,
           `the latest writer_checkpoint names no ${i.stream} head for live device writer ${w.writer_id} — ` +
             `that writer's chain has no trusted head, so a truncation of it would verify. A writer that has ` +
             `authored nothing is named at counter 0 with the genesis hash; see CHECKPOINT_NAMES_THE_ROSTER`,
@@ -1156,8 +1219,9 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
     const observed = observedHead(i, key);
     if (c.counter > observed) {
       out.push(
-        hard(
+        hardKind(
           I11,
+          VIOLATION_CHAIN_WITHHELD,
           `checkpoint head (${key}) claims counter ${c.counter}, but the highest blob this client has ever seen on ` +
             `that chain is ${observed} — the server is withholding rows a peer device has already witnessed`,
         ),

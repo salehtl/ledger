@@ -129,10 +129,28 @@ Building it first — which this client originally did — meant attesting
 `ingest|cold: 0` while the cold chain held every raw email on the account: a
 checkpoint that satisfies the coverage rule while asserting nothing at all.
 
-The one hard stop `push` proceeds over is `I11_roster_checkpoint`, because
-writing the checkpoint is the repair. Obeying it would deadlock the account:
-every device needs a checkpoint before it can sync, and none could sync in order
-to write one. Every other hard stop still stops the push dead.
+The one hard stop `push` proceeds over is **one condition of**
+`I11_roster_checkpoint`, not the whole id. I11 covers two things that need
+opposite responses, and they are told apart by the violation's `kind`:
+
+| kind | means | `push` |
+| --- | --- | --- |
+| `roster_coverage` | the roster names a live device writer this checkpoint does not | proceeds — writing the checkpoint is the repair |
+| `chain_withheld` | a checkpoint attests a head above anything this client has seen | **refuses** |
+
+Proceeding over the coverage case is necessary: every device needs a checkpoint
+before it can sync, and none could sync in order to write one, so obeying it
+deadlocks the account. Proceeding over the withholding case is a hole, and it was
+built end to end before the `kind` existed — a server truncates a peer's chain
+to a clean prefix (no chain break fires), a third device pushes over the stop,
+and the checkpoint it writes claims genesis for every chain and *replaces* the
+honest attestation, after which the truncation is only a notice. **A device being
+withheld from must author no checkpoint at all: it has nothing trustworthy to
+attest.**
+
+The test is an allow-list over *every* hard stop, so an unkinded condition added
+to I11 later is un-escapable until someone deliberately marks it benign. Every
+other hard stop still stops the push dead.
 
 `push` also re-checkpoints whenever the heads it would attest have **moved**,
 not only when the roster string changes. Gating on the roster alone means
