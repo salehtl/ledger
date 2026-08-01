@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/addresses"
@@ -306,7 +307,7 @@ func runServe(cfg config.Config) error {
 	// nil handler when LEDGER_ADMIN_TOKEN is unset, and the console is then not
 	// served AT ALL — see there for why that is the right failure rather than
 	// either an open console or a refusal to boot.
-	adminSrv, err := adminServer(cfg, pool)
+	adminSrv, err := adminServer(cfg, pool, reprocessAdapter{pipeline})
 	if err != nil {
 		return err
 	}
@@ -432,14 +433,14 @@ func runServe(cfg config.Config) error {
 // on the public listener — the public mux does not contain those patterns at
 // all. cmd/ledgerd's TestTheAdminConsoleIsNotMountedOnThePublicListener reads
 // both handlers and asserts it in both directions.
-func adminServer(cfg config.Config, pool *pgxpool.Pool) (*http.Server, error) {
+func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor) (*http.Server, error) {
 	if cfg.Server.AdminToken == "" {
 		log.Println("ledgerd serve: *** LEDGER_ADMIN_TOKEN is not set: the admin console " +
 			"(template authoring and publishing, the donated-sample queue, diagnostics, the " +
 			"waitlist and dictionary moderation) is NOT being served. Set it to enable them. ***")
 		return nil, nil
 	}
-	h, err := adminHandler(cfg, pool)
+	h, err := adminHandler(cfg, pool, reproc)
 	if err != nil {
 		return nil, err
 	}
@@ -461,13 +462,18 @@ func adminServer(cfg config.Config, pool *pgxpool.Pool) (*http.Server, error) {
 // adminHandler builds the console's router. Split from adminServer so a test
 // can read the routes without a listener or a timeout policy.
 //
-// Samples and Reprocessor are left nil: Task 31's donated-sample store and Task
-// 30's Pipeline.Reprocess do not exist yet. That is not a silent gap — the
-// endpoints that need them answer 503 with a reason, which is the difference
-// between "not built yet" and "found nothing", and admin.Handler.publishTemplate
-// refuses to publish rather than reporting an unrun regression gate as a clean
-// one. When those tasks land, the adapters go HERE.
-func adminHandler(cfg config.Config, pool *pgxpool.Pool) (http.Handler, error) {
+// reproc is the SAME ingest.Pipeline the SMTP receiver delivers into, wrapped by
+// reprocessAdapter — one pipeline per process, so a republish re-parses through
+// exactly the code path a live delivery takes. A second pipeline constructed
+// here would be a second template cache and a second set of decisions about
+// what "the published set" means.
+//
+// Samples is left nil: Task 31's donated-sample store does not exist yet. That
+// is not a silent gap — /validate answers 503, and publishTemplate REFUSES
+// rather than reporting an unrun regression gate as a clean one, which is the
+// difference between "not built yet" and "found nothing". The adapter goes HERE
+// when that task lands.
+func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor) (http.Handler, error) {
 	h := &admin.Handler{
 		Templates: &tmpl.Store{Pool: pool},
 		Diag:      &diag.Diag{Pool: pool},
@@ -475,7 +481,8 @@ func adminHandler(cfg config.Config, pool *pgxpool.Pool) (http.Handler, error) {
 		Quarantine: &quarantine.Store{
 			Pool: pool, TTL: quarantine.DefaultTTL, WarnBefore: quarantine.DefaultWarnBefore,
 		},
-		Token: cfg.Server.AdminToken,
+		Reprocessor: reproc,
+		Token:       cfg.Server.AdminToken,
 	}
 	// The dictionary console needs no HMAC key — moderation reads and approves,
 	// it never writes a submitter pseudonym — so it is mounted whether or not
@@ -667,4 +674,31 @@ func runPurgeUser(cfg config.Config) error {
 // the alpha's two-week exit criterion. PHASE 1 ONLY. Task 36.
 func runParseRate(cfg config.Config) error {
 	return errors.New("ledgerd parse-rate: not implemented yet (Task 36)")
+}
+
+// reprocessAdapter is the seam between ingest's Reprocess and the admin
+// console's. It exists so internal/v2/admin does not import internal/v2/ingest,
+// which would drag half of v2 into a package whose tests want a fake.
+//
+// ⚠ PHASE 1 ONLY, inherited from what it wraps: server-side reprocessing reads
+// cold bodies, and those are HPKE-sealed from Phase 3 onward. See Task 30's
+// v2-phase1-only-inventory.
+type reprocessAdapter struct{ p *ingest.Pipeline }
+
+func (a reprocessAdapter) Reprocess(ctx context.Context, userID uuid.UUID, ids [][]byte) (admin.Report, error) {
+	rep, err := a.p.Reprocess(ctx, userID, ids)
+	return toAdminReport(rep), err
+}
+
+// toAdminReport is the field-for-field mapping, extracted from the method so a
+// test can exercise it without a pipeline. Every field is carried; a report that
+// silently dropped one would under-count in the operator's own accounting.
+func toAdminReport(r ingest.Report) admin.Report {
+	return admin.Report{
+		Examined:   r.Examined,
+		Appended:   r.Appended,
+		Superseded: r.Superseded,
+		Unchanged:  r.Unchanged,
+		Failed:     r.Failed,
+	}
 }

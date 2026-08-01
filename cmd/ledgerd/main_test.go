@@ -5,14 +5,17 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ledger/internal/v2/admin"
 	"ledger/internal/v2/api"
 	"ledger/internal/v2/config"
+	"ledger/internal/v2/ingest"
 	"ledger/internal/v2/quarantine"
 )
 
@@ -314,7 +317,7 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 	if err != nil {
 		t.Fatalf("api.NewServer: %v", err)
 	}
-	adminH, err = adminHandler(cfg, pool)
+	adminH, err = adminHandler(cfg, pool, nil)
 	if err != nil {
 		t.Fatalf("adminHandler: %v", err)
 	}
@@ -328,11 +331,36 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 func TestNoAdminTokenMeansNoConsoleRatherThanAnOpenOne(t *testing.T) {
 	srv, err := adminServer(config.Config{
 		Server: config.ServerConfig{AdminListen: "127.0.0.1:8079"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("adminServer: %v", err)
 	}
 	if srv != nil {
 		t.Fatal("an admin console was built with no LEDGER_ADMIN_TOKEN")
+	}
+}
+
+// The adapter between ingest.Report and admin.Report carries EVERY field.
+//
+// They are separate types in separate packages on purpose — admin must not
+// import ingest — so nothing but this test connects them. The reflect check is
+// the half that matters: a field added to ingest.Report by a later task without
+// a line in toAdminReport would otherwise be silently dropped from the
+// operator's own accounting, which is the one number this console exists to
+// make trustworthy.
+func TestTheReprocessAdapterCarriesEveryField(t *testing.T) {
+	in := ingest.Report{Examined: 11, Appended: 2, Superseded: 3, Unchanged: 5, Failed: 1}
+	got := toAdminReport(in)
+	want := admin.Report{Examined: 11, Appended: 2, Superseded: 3, Unchanged: 5, Failed: 1}
+	if got != want {
+		t.Fatalf("toAdminReport(%+v) = %+v, want %+v", in, got, want)
+	}
+	if n, m := reflect.TypeOf(in).NumField(), reflect.TypeOf(got).NumField(); n != m {
+		t.Fatalf("ingest.Report has %d fields and admin.Report has %d: a field was added "+
+			"to one without a line in toAdminReport, and it is being dropped silently", n, m)
+	}
+	// A zero in maps to a zero out, so the mapping cannot be hiding a constant.
+	if toAdminReport(ingest.Report{}) != (admin.Report{}) {
+		t.Fatal("toAdminReport does not map the zero report to the zero report")
 	}
 }

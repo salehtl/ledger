@@ -87,10 +87,19 @@ const (
 	defaultWindow = 7 * 24 * time.Hour
 )
 
-// Report is the outcome of a reprocess run. It mirrors Task 30's
-// ingest.Pipeline Report field for field; see [Reprocessor].
+// Report is the outcome of a reprocess run. It mirrors ingest.Report field for
+// field — including Appended, which is not in the plan's four-field sketch and
+// has to be here: a republish can promote mail that was HELD in quarantine, and
+// that message entered the log for the first time rather than superseding
+// anything. Dropping the field in the adapter would leave every promoted
+// message unaccounted for in the operator's own report.
+//
+// cmd/ledgerd's TestTheReprocessAdapterCarriesEveryField pins the two shapes
+// together, because nothing else can: they are separate types in separate
+// packages, by design (see [Reprocessor]).
 type Report struct {
 	Examined   int `json:"examined"`
+	Appended   int `json:"appended"`
 	Superseded int `json:"superseded"`
 	Unchanged  int `json:"unchanged"`
 	Failed     int `json:"failed"`
@@ -98,12 +107,11 @@ type Report struct {
 
 // Reprocessor re-runs the parse over already-received mail.
 //
-// It is an interface, and this package defines its own, because Task 30's
-// ingest.Pipeline.Reprocess had not landed when the console was written. The
-// adapter in cmd/ledgerd is three lines and is where the two Report types meet;
-// that is a deliberate seam rather than an accident, because ingest imports
-// half of v2 and an admin console that could not be tested without a whole
-// pipeline would be a console nobody tested.
+// It is an interface, and this package defines its own rather than importing
+// ingest.Pipeline: ingest imports half of v2, and an admin console that could
+// not be tested without constructing a whole pipeline, a trust store and an
+// appender would be a console nobody tested. The adapter lives in cmd/ledgerd,
+// which is where the two Report types meet.
 //
 // ⚠ PHASE 1 ONLY, inherited from what it calls: server-side reprocessing reads
 // cold bodies, which are HPKE-sealed from Phase 3 onward. See Task 30's
@@ -557,6 +565,7 @@ func (h *Handler) reprocessTemplate(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out.Examined += rep.Examined
+		out.Appended += rep.Appended
 		out.Superseded += rep.Superseded
 		out.Unchanged += rep.Unchanged
 		out.Failed += rep.Failed
