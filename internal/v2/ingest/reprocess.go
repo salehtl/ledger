@@ -236,7 +236,7 @@ func (p *Pipeline) promoteHeld(ctx context.Context, userID uuid.UUID,
 		rep.Failed++
 		return nil
 	}
-	tr, err := p.parse(ctx, dec.Domain, res)
+	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
 	if err != nil {
 		return err
 	}
@@ -408,7 +408,7 @@ func (p *Pipeline) reprocessOne(ctx context.Context, userID uuid.UUID, ingestID,
 		rep.Failed++
 		return nil
 	}
-	tr, err := p.parse(ctx, dec.Domain, res)
+	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
 	if err != nil {
 		return err
 	}
