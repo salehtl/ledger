@@ -43,13 +43,17 @@ func (h *qHarness) hold(t *testing.T, u uuid.UUID, seed string, mut func(*quaran
 	t.Helper()
 	sum := sha256.Sum256([]byte(seed))
 	it := quarantine.Item{
-		UserID:      u,
-		IngestID:    sum[:],
-		ReceivedAt:  h.now,
-		OuterDomain: "dib.ae",
-		DKIM:        quarantine.ResultPass,
-		ARC:         quarantine.ResultNone,
-		Blob:        []byte("From: alerts@dib.ae\r\nSubject: AED 250.00 at CARREFOUR\r\n\r\nbody " + seed),
+		UserID:     u,
+		IngestID:   sum[:],
+		ReceivedAt: h.now,
+		// A distinctive envelope sender on every fixture: it is stored (Task
+		// 30 needs it to re-resolve the origin) and must never be rendered,
+		// because it is text the sender wrote.
+		EnvelopeFrom: "<bounce+ENVELOPEMARKER@relay.test>",
+		OuterDomain:  "dib.ae",
+		DKIM:         quarantine.ResultPass,
+		ARC:          quarantine.ResultNone,
+		Blob:         []byte("From: alerts@dib.ae\r\nSubject: AED 250.00 at CARREFOUR\r\n\r\nbody " + seed),
 	}
 	if mut != nil {
 		mut(&it)
@@ -87,7 +91,8 @@ func TestQuarantineListSurfacesAttestationStateRatherThanContent(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, leaked := range []string{"CARREFOUR", "250.00", "Subject", "subject", "body", "From:"} {
+	for _, leaked := range []string{"CARREFOUR", "250.00", "Subject", "subject", "body", "From:",
+		"ENVELOPEMARKER", "envelope_from"} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("the default listing carries message content (%q): %s", leaked, body)
 		}
