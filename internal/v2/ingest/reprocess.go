@@ -324,7 +324,7 @@ func (p *Pipeline) promoteHeld(ctx context.Context, userID uuid.UUID,
 		rep.Failed++
 		return nil
 	}
-	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
+	tr, err := p.parse(ctx, dec.Domain, res, o)
 	if err != nil {
 		return err
 	}
@@ -408,6 +408,13 @@ func (p *Pipeline) trustHeld(ctx context.Context, userID uuid.UUID,
 		p.logf("ingest: reprocess: re-verifying %s… did not reproduce its arrival result (%s); "+
 			"using the verification recorded when it arrived",
 			hex.EncodeToString(it.IngestID)[:12], dec.Reason)
+		// The quarantine row records which domain was verified, never WHAT that
+		// signature covered, so storedOrigin cannot answer this and its zero
+		// value would read as "everything was signed". The fresh resolve can
+		// answer it from the bytes alone — coverage needs no envelope — and on
+		// this branch the fresh verification did NOT reproduce the arrival
+		// result, so its answer is the conservative one.
+		stored.UnsignedDecoding = fresh.UnsignedDecoding
 		return stored, sdec, nil
 	}
 	return fresh, dec, nil
@@ -507,6 +514,17 @@ func (p *Pipeline) reprocessOne(ctx context.Context, userID uuid.UUID, ingestID,
 		rep.Failed++
 		return nil
 	}
+	// parse_diagnostics records the verdict and the domain, never what the
+	// signature COVERED, so the reconstruction above leaves UnsignedDecoding
+	// empty — which reads as "every decoding header was signed" and would let a
+	// republish supersede a flagged transaction with an auto-trusted one.
+	// (changedFields compares needs_review, so it really would.) It is
+	// re-derived from the bytes rather than stored: coverage is a property of
+	// the message and its signatures, it needs no envelope — which is what
+	// makes this resolve safe on a path that deliberately does not re-decide
+	// trust — and only this ONE field is read out of it. Everything the
+	// decision below rests on still comes from the recorded arrival.
+	o.UnsignedDecoding = p.Origin.Resolve(ctx, raw, "").UnsignedDecoding
 	dec, err := origin.Decide(ctx, p.Trust, userID, *o)
 	if err != nil {
 		return err
@@ -522,7 +540,7 @@ func (p *Pipeline) reprocessOne(ctx context.Context, userID uuid.UUID, ingestID,
 		rep.Failed++
 		return nil
 	}
-	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
+	tr, err := p.parse(ctx, dec.Domain, res, *o)
 	if err != nil {
 		return err
 	}

@@ -1386,3 +1386,103 @@ func (s *testSigner) sign(t *testing.T, msg []byte, headerKeys []string) []byte 
 	}
 	return b.Bytes()
 }
+
+// ---------------------------------------------------------------------------
+// DecodingHeaders — the subset of ConsumedHeaders that chooses the decode
+// ---------------------------------------------------------------------------
+
+// The set is pinned literally. Widening it is a product decision — every field
+// added here sends every message whose signer omits that field to the review
+// queue — so it must be made by editing this list and this test together,
+// never as a side effect of editing ConsumedHeaders.
+func TestDecodingHeadersArePinnedAndAreConsumed(t *testing.T) {
+	want := []string{"Content-Type", "Content-Transfer-Encoding"}
+	if !slices.Equal(DecodingHeaders, want) {
+		t.Errorf("DecodingHeaders = %v, want %v", DecodingHeaders, want)
+	}
+	for _, h := range DecodingHeaders {
+		if !slices.Contains(ConsumedHeaders, h) {
+			t.Errorf("DecodingHeaders names %q, which this pipeline does not consume", h)
+		}
+	}
+	// From is deliberately absent: go-msgauth refuses a signature whose h=
+	// omits From, and a repeated From is refused outright, so a passing
+	// signature always covers it and a branch on it would be dead.
+	// Subject is deliberately absent too: it selects a template and feeds an
+	// extraction, but it cannot make the same body bytes decode into different
+	// text, and it is covered by every signature in the corpus.
+	for _, h := range []string{"From", "Subject"} {
+		if slices.Contains(DecodingHeaders, h) {
+			t.Errorf("DecodingHeaders names %q; see the comment on the var", h)
+		}
+	}
+}
+
+// Origin.UnsignedDecoding is the carrier: it takes the coverage answer from
+// this package to the ingest pipeline, which is where the decision about it
+// belongs. Asserted per fixture because the answer differs per SIGNER, not per
+// bank — the two ENBD fixtures are signed by different systems and disagree.
+func TestResolveCarriesTheDecodingHeadersNoSignatureCovered(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want string
+	}{
+		// d=dib.ae h=...:content-transfer-encoding — Content-Type is absent.
+		{"dib-dkim-unexpired.eml", "content-type"},
+		// d=emiratesnbd.com via Proofpoint: h= names both.
+		{"enbd-proofpoint-p.eml", ""},
+		// d=emiratesnbd.com via Exchange: h= names Content-Type and not CTE.
+		{"enbd-selector1.eml", "content-transfer-encoding"},
+		// The forwards carry DIB's own signature, so they inherit its gap.
+		{"gmail-forward-1.eml", "content-type"},
+		{"gmail-forward-inner-dkim.eml", "content-type"},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			o := ResolveWithEnvelope(context.Background(), mustRead(t, tc.file), "", recordedLookup(t))
+			if o.UnsignedDecoding != tc.want {
+				t.Errorf("UnsignedDecoding = %q, want %q", o.UnsignedDecoding, tc.want)
+			}
+		})
+	}
+}
+
+// A message nothing verified has nothing covered. The pipeline quarantines it
+// on the trust decision long before this matters, but the field must not read
+// as "all clear" on the path where the verdict is not pass — a zero Coverage
+// covers nothing, and this asserts the carrier says so.
+func TestAnUnverifiedMessageHasEveryDecodingHeaderUnsigned(t *testing.T) {
+	raw := []byte("From: x@dib.ae\r\nSubject: hi\r\nContent-Type: text/plain\r\n\r\nbody\r\n")
+	o := ResolveWithEnvelope(context.Background(), raw, "mallory@evil.test", recordedLookup(t))
+	if o.DKIM == SigPass {
+		t.Fatalf("premise: unsigned message verified: %+v", o)
+	}
+	if want := "content-type, content-transfer-encoding"; o.UnsignedDecoding != want {
+		t.Errorf("UnsignedDecoding = %q, want %q", o.UnsignedDecoding, want)
+	}
+}
+
+// The load-bearing property, and the reason the gate downstream cannot be
+// conditional on tampering: editing an UNCOVERED field in place changes
+// nothing a verifier can see. Same verdict, same coverage, same carrier — so
+// the only honest signal is "this field was never signed", which is true of the
+// genuine message too.
+func TestAnInPlaceEditOfAnUncoveredFieldIsInvisibleToVerification(t *testing.T) {
+	raw := mustRead(t, "dib-dkim-unexpired.eml")
+	edited := mustReplace(t, raw,
+		`Content-Type: text/html; charset="utf-8"`,
+		`Content-Type: text/plain; charset="utf-8"`)
+
+	before := ResolveWithEnvelope(context.Background(), raw, "", recordedLookup(t))
+	after := ResolveWithEnvelope(context.Background(), edited, "", recordedLookup(t))
+
+	if before.DKIM != SigPass || after.DKIM != SigPass {
+		t.Fatalf("both must still pass: before=%s after=%s", before.DKIM, after.DKIM)
+	}
+	if before.Outer != after.Outer {
+		t.Errorf("Outer changed: %q -> %q", before.Outer, after.Outer)
+	}
+	if before.UnsignedDecoding != after.UnsignedDecoding {
+		t.Errorf("UnsignedDecoding changed: %q -> %q; if it ever does, the gate "+
+			"downstream can be narrowed to the tampered case", before.UnsignedDecoding, after.UnsignedDecoding)
+	}
+}

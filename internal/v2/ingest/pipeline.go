@@ -323,14 +323,22 @@ func (p *Pipeline) Deliver(ctx context.Context, d smtpd.Delivery) error {
 
 	// --- 5-7. The cascade ---------------------------------------------------
 	//
-	// o.Attested travels with the normalized text, not just with the trust
-	// decision: it is what says the forward norm may have unwrapped is a real
-	// one rather than two lines the sender typed. See parse.
+	// The whole Origin travels with the normalized text, not just the trust
+	// decision: o.Attested is what says the forward norm may have unwrapped is
+	// a real one rather than two lines the sender typed, and
+	// o.UnsignedDecoding is what says the text norm produced was chosen by
+	// headers nobody signed. Both deny auto-trust; neither denies the append.
+	// See parse.
 	if res.Forwarded && !o.Attested {
 		p.logf("ingest: user %s: the body of a message from %s claims to be a forward and nothing attests it; "+
 			"the extraction will be flagged for review", d.UserID, o.Outer)
 	}
-	tr, err := p.parse(ctx, dec.Domain, res, o.Attested)
+	if o.UnsignedDecoding != "" {
+		p.logf("ingest: user %s: no signature on the message from %s covers %s, so how its body decodes "+
+			"was not attributable to the signer; the extraction will be flagged for review",
+			d.UserID, o.Outer, o.UnsignedDecoding)
+	}
+	tr, err := p.parse(ctx, dec.Domain, res, o)
 	if err != nil {
 		return err
 	}
@@ -532,9 +540,13 @@ func carriesMoney(e tmpl.Extraction) bool { return e.AmountMinor > 0 }
 // the outer signing domain, or the attested inner origin for forwarded mail. It
 // is never an envelope claim, a From header, or norm.Result.From.
 //
-// attested is origin.Origin.Attested, and it decides whether a TEMPLATE hit may
-// be auto-trusted — see unattestedForward below.
-func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, attested bool) (tierResult, error) {
+// o is the resolved origin. It is taken whole rather than as the one flag this
+// used to need, because there are now two independent reasons a TEMPLATE hit
+// may not be auto-trusted and both come from here — see unattestedForward and
+// unsignedDecoding below. Passing the struct is what makes a third reason a
+// change to this function rather than to every call site, and what stops a call
+// site from quietly declining to pass one.
+func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, o origin.Origin) (tierResult, error) {
 	out := tierResult{tier: diag.TierNone, needsReview: true, unparsed: true}
 
 	// The body claims to be a forward and nothing cryptographic says it is.
@@ -567,7 +579,38 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, at
 	// review, because we genuinely cannot tell their forward from an injection.
 	// The load-bearing path is unaffected — forwarded bank mail in this corpus
 	// keeps a verifiable signature, so it is attested.
-	unattestedForward := res.Forwarded && !attested
+	unattestedForward := res.Forwarded && !o.Attested
+
+	// The headers that chose how the signed body decodes were not themselves
+	// signed.
+	//
+	// This is the same shape of defect as the forward above and it is closed
+	// the same way, softly. The signature covers the body BYTES; it does not
+	// cover Content-Type or Content-Transfer-Encoding unless the signer named
+	// them in h=, and the banks in this corpus do not all do so — Dubai Islamic
+	// Bank signs Content-Transfer-Encoding and not Content-Type; Emirates NBD
+	// via Exchange does the opposite. Whoever holds a genuinely signed message
+	// can therefore rewrite the surviving one IN PLACE — one field, one
+	// occurrence, nothing duplicated — and the signature still verifies over
+	// bytes the normalizer now reads as a different leaf, a different charset
+	// or a different transfer encoding. origin.Coverage is what sees that, and
+	// it cannot tell a rewritten field from the bank's own, because there is
+	// nothing to compare against: the field was never signed.
+	//
+	// So the response is not refusal. Refusing would quarantine every message
+	// from a bank that simply does not sign Content-Type, which is a total loss
+	// of function bought against a bounded integrity defect. What is denied is
+	// AUTO-TRUST: the transaction is extracted and appended exactly as before,
+	// and it lands in the review queue where a person looks at it. That is the
+	// mitigation §2 already names for this whole class — the review queue, not
+	// cryptography.
+	//
+	// The cost is real and it is not small: on a bank whose signer omits one of
+	// these fields, EVERY message needs review. That is the honest price of
+	// §3.2's "header fields are never trusted unverified" for a sender who
+	// leaves the decoder unsigned, and the lever for changing it is
+	// origin.DecodingHeaders, where the trade is documented.
+	unsignedDecoding := o.UnsignedDecoding != ""
 
 	defs, err := p.templatesFor(ctx, domain)
 	if err != nil {
@@ -602,7 +645,7 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, at
 			}
 			return tierResult{
 				tier: diag.TierTemplate, ext: ext,
-				needsReview: unattestedForward, unparsed: false,
+				needsReview: unattestedForward || unsignedDecoding, unparsed: false,
 				matched: true, templateID: def.ID, templateVersion: def.Version,
 				emptyGroups: ext.EmptyGroups,
 			}, nil

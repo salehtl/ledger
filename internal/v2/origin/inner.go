@@ -62,6 +62,30 @@ type Origin struct {
 	// only pass, fail and none.
 	DKIM, ARC SigResult
 
+	// UnsignedDecoding names the [DecodingHeaders] that no passing signature
+	// covered — folded, in the order of that list, comma-joined. It is empty
+	// when every one of them is signed material.
+	//
+	// A string rather than a slice for the same reason Reason is one: it is
+	// diagnostic text with a boolean question attached, and Origin is compared
+	// whole by == in this package's tests, which is what makes every field here
+	// automatically part of "the envelope cannot change the origin".
+	//
+	// It is NOT a trust input and never becomes one: a message reaches this
+	// field having already been decided on by [Decide]. It says something
+	// narrower and softer — that whoever handed us these bytes could have
+	// changed how they DECODE without breaking anything we verified, so the
+	// text a template matched is not entirely attributable to the signer. The
+	// ingest pipeline turns that into needs_review; see ingest.Pipeline.parse.
+	//
+	// It is populated on every path, including the ones that attest nothing: a
+	// zero [Coverage] covers nothing, so a message with no passing signature
+	// reports every name here rather than reading as all-clear.
+	//
+	// It needs no sanitizing: the names come from [DecodingHeaders], never from
+	// the message.
+	UnsignedDecoding string
+
 	// Reason explains why no inner origin was attested, or why the outer origin
 	// is unverified. It is diagnostic text — bounded, control-character free,
 	// and NEVER a trust input or a value for a closed-enum column. Empty when
@@ -164,6 +188,9 @@ func ResolveWithEnvelope(ctx context.Context, raw []byte, envelopeFrom string, l
 
 	dk := VerifyDKIM(ctx, raw, lookupTXT)
 	o.DKIM = dk.DKIM
+	// Set before any of the returns below, because every one of them produces
+	// an Origin somebody downstream reads.
+	o.UnsignedDecoding = strings.Join(dk.Coverage.Uncovered(DecodingHeaders...), ", ")
 
 	chain, chainErr := arc.Verify(ctx, raw, lookupTXT)
 	o.ARC = arcResult(chain.Status)
