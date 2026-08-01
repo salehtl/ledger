@@ -2283,7 +2283,11 @@ bun run cli enroll --writer dev-a
 bun run cli emit --type rate_set --json '{"currency":"USD","rate_micro":"3672500"}'
 bun run cli push && bun run cli pull && bun run cli checkpoint && bun run cli push && bun run cli check
 ```
-Expected: `check` prints `invariants: 17 checked, 0 hard stops, 1 notice` (the notice being `I11_roster_checkpoint`'s single-writer case before the checkpoint lands, and zero after) and exits 0.
+Expected: `check` prints `invariants: 17 checked, 0 hard stops, 2 notices` before the checkpoint lands — `I11_roster_checkpoint`'s single-writer case **and** `I14_forks_surfaced`, which reports unconditionally — and `0 hard stops, 1 notice` after, `I14` alone. Exits 0 throughout.
+
+**`I14` is not zero-suppressed and must not be made so.** "Forks and anomalies are surfaced, never zero-suppressed" is a property of the *report*, not a predicate over the state: an operator who only sees the line when it is non-empty cannot tell a clean sync from a broken reporting path. Task 13 implements it literally, so `0 forks, 0 anomalies` is a notice like any other. The first draft of this line expected one notice and zero after, which is only reachable by silencing the invariant.
+
+**`checkpoint` must name the ROSTER, not the observed chains (`CHECKPOINT_NAMES_THE_ROSTER`).** `Client.checkpoint()` emits one head for every (roster writer × stream) pair, using `counter: "0"` and the 64-zero genesis hash for a chain that holds no blobs. A checkpoint built only from *observed* heads can never name an enrolled writer that has authored nothing — it has no head to observe — so `dev-b` at step 2 below would hard-stop `I11` on every sync forever, with no checkpoint any device could emit able to clear it. A zero entry asserts nothing false, because `0 > observed` is never true.
 
 Add two test-only server flags in this task, both refused unless `LEDGER_HTTP_LISTEN` is a loopback address, and both documented in `config.v2.example.toml` as test-only:
 - `--dev-auth` — accepts `dev:<subject>` as an id token.
@@ -4452,7 +4456,9 @@ git commit -m "test(v2): end-to-end harness - scratch stack, SMTP client, multi-
 1. Boot the stack (Task 37) against a fresh migrated database, with `--dns-fixtures internal/v2/origin/testdata/dns.json` so DKIM verification is deterministic and offline.
 2. Create a user; enroll writer `dev-a`; enroll `dev-b` **signed by `dev-a`'s key** over `RegistrationMessage(nonce, "dev-b", pubB)`.
 3. `dev-a` emits `home_currency_set(AED)` and `rate_set(USD, 3672500)`; push; pull on `dev-b`.
-4. **Emit a writer checkpoint.** `dev-a` runs `cli checkpoint` and pushes; `dev-b` pulls. Assert the checkpoint op names a head for **every** `(writer_id, stream)` pair both writers have produced, and that `checkAll` on `dev-b` no longer reports the `I11_roster_checkpoint` notice. Without this step I11 passes vacuously and spec §5's "both chains + checkpoints" is green with the feature entirely absent — which is what the first draft did.
+4. **Emit a writer checkpoint.** `dev-a` runs `cli checkpoint` and pushes; `dev-b` pulls. Assert the checkpoint op names a head for **every `(roster writer × stream)` pair — not merely every pair a writer has produced** — and that `checkAll` on `dev-b` no longer reports the `I11_roster_checkpoint` notice. Without this step I11 passes vacuously and spec §5's "both chains + checkpoints" is green with the feature entirely absent — which is what the first draft did.
+
+   **`dev-b` has authored nothing at this point, and that is exactly why the pair set is the roster and not the observed chains.** A checkpoint built from observed heads cannot name `dev-b` — it has no head — so `I11` would hard-stop here and at step 6 forever, and no checkpoint any device could emit would clear it. `dev-b` is named at `counter: "0"` with the 64-zero genesis hash (see `CHECKPOINT_NAMES_THE_ROSTER` in `client/src/invariants/check.ts`). The earlier wording of this step made the exit criterion unreachable in its own configuration.
 5. Deliver **20** real corpus messages over SMTP from an allowlisted, DKIM-verifiable origin — `corpusFixtures("enbd-stable", 20)`, the no-`x=` set that cannot expire. Assert 20 hot ops and 20 cold ops appended, 0 quarantined, and that the **hot ingest counters are 1..20 and the cold ingest counters are also 1..20** (per-stream chains, Decision 13).
 6. **Hot-only pull.** `dev-b` runs `pull` with **no `--stream`**, i.e. hot only. Assert:
    - it receives exactly the 20 hot rows (plus the earlier client ops) and **zero cold bytes**;
