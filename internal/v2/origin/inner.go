@@ -83,16 +83,39 @@ func Resolve(ctx context.Context, raw []byte, lookupTXT LookupTXT) Origin {
 // MAIL FROM path — as the envelope sender. An empty envelopeFrom falls back to
 // the Return-Path header.
 //
+// # The envelope decides nothing
+//
+// envelopeFrom is used for exactly ONE thing: naming the sender in the
+// "unverified:" form of Outer when no signature identifies anybody. It can only
+// ever WEAKEN the result, never select a scope, because it is a string the
+// sender types and nothing verifies it (spec section 3.2 rules SPF out by
+// design: Gmail's forwarding rewrites the envelope).
+//
+// The first draft of this function asked the envelope whether a message had
+// been forwarded — "the signature does not align with the envelope, so somebody
+// must have relayed it". That made the sender the author of the trust decision:
+// the same dib-dkim-unexpired.eml bytes resolved to Outer=dib.ae/Attested=false
+// with an honest MAIL FROM and to Inner=dib.ae/Attested=true/direct_dkim with
+// MAIL FROM:<mallory@evil.test>, so anyone replaying one genuine bank message
+// could choose which allowlist scope it was checked against — and the inner
+// scope is the one every alpha confirms (spec section 3.2:47). It ended in a
+// needs_review = false transaction; see
+// ingest.TestTheEnvelopeCannotChooseTheTrustScope, which reproduces it end to
+// end. Nothing below reads envDomain except the unverified fallback.
+//
 // # The decision, in one place
 //
 // There are exactly three questions, asked in this order:
 //
-//  1. Did a domain that also RELAYED this message sign it? Then that domain is
-//     the outer origin and there is no forwarder to see behind.
-//  2. Did a domain OTHER than the relaying one sign this message, over the From
-//     address it also signed? Then that domain is the inner origin, proved
-//     directly. This is the load-bearing path: every forwarded message in the
-//     corpus keeps a verifiable d=dib.ae signature (see
+//  1. Which domain verifiably HANDED US this message — a hop that both signed
+//     these bytes and reported receiving them already signed by somebody else,
+//     or failing that the domain the message's own signature belongs to? That
+//     is the outer origin.
+//  2. Is there VERIFIED evidence that a relay handled it at all (see
+//     [relayDomain]), and did a domain other than that relay sign this message
+//     over the From address it also signed? Then that domain is the inner
+//     origin, proved directly. This is the load-bearing path: every forwarded
+//     message in the corpus keeps a verifiable d=dib.ae signature (see
 //     docs/superpowers/specs/v2-arc-spike.md).
 //  3. Failing that, does a complete ARC chain — sealed at EVERY hop by a domain
 //     on [TrustedSealers] — record that the first hop saw such a signature?
@@ -163,53 +186,43 @@ func ResolveWithEnvelope(ctx context.Context, raw []byte, envelopeFrom string, l
 		envDomain = envelopeDomain(firstValue(h, "Return-Path"))
 	}
 
-	// --- outer origin ------------------------------------------------------
+	// --- who handed us this message, and who verifiably relayed it ----------
 	//
-	// A signature by the domain that also relayed the message is the strongest
-	// statement available about who handed it to us. Failing that, the top ARC
-	// seal is a signature by the last hop over this exact message, which is the
-	// same claim one step weaker. Failing both, we have only the envelope, and
-	// it is marked as the assertion it is.
-	outerSig := alignedDomain(dk, envDomain)
-	switch {
-	case outerSig != "":
-		o.Outer = outerSig
-	case chain.Status == arc.StatusPass && len(chain.SealDomains) > 0:
-		if top := hostname(chain.SealDomains[len(chain.SealDomains)-1]); top != "" {
-			o.Outer = top
-		} else {
-			o.Outer = unverified(envDomain)
-		}
-	default:
-		o.Outer = unverified(envDomain)
-	}
+	// The From is read first because both answers are relative to it: a
+	// signature by the domain the From claims to be is the message's own
+	// identity, and a signature by anybody else is a hop. An unreadable or
+	// duplicated From leaves fromDomain empty, which makes every signer a hop —
+	// the conservative reading, and one that attests nothing because the branch
+	// below returns before any attestation.
+	from, fromErr := singleFrom(h)
+	relay := relayDomain(chain)
+	o.Outer = outerOrigin(dk, chain, relay, from.domain, envDomain)
 
 	// --- inner origin ------------------------------------------------------
 
-	from, fromErr := singleFrom(h)
 	if fromErr != "" {
 		o.Reason = sanitize(fromErr)
 		return o
 	}
-	if envDomain == "" {
-		o.Reason = "no envelope sender, so a relaying hop cannot be told apart from an originating one"
-		return o
-	}
 
 	// Path 1: the bank's own signature survived the forward.
-	if inner := innerDKIMDomain(dk, from.domain, envDomain); inner != "" {
+	if inner := innerDKIMDomain(dk, from.domain, relay); inner != "" {
 		o.Inner, o.InnerFrom, o.Attested, o.AttestedBy = inner, from.addr, true, AttestedByDKIM
 		return o
 	}
+	signer := alignedSigner(dk, from.domain)
 	switch {
 	case dk.DKIM != SigPass:
 		note("no DKIM signature verified (%s)", dk.DKIM)
-	case len(dk.DKIMDomains) == 1 && aligned(dk.DKIMDomains[0], envDomain):
-		note("the only verified signature (%s) belongs to the relaying domain itself",
-			clip(dk.DKIMDomains[0]))
-	default:
+	case signer == "":
 		note("no verified signature aligns with the From domain %s (verified: %s)",
 			clip(from.domain), clip(strings.Join(dk.DKIMDomains, ", ")))
+	case relay == "":
+		note("%s signed this message, but nothing verified says a relay handled it, "+
+			"so there is no forwarder to see behind", clip(signer))
+	default:
+		note("the signature that aligns with the From domain belongs to the relaying domain %s itself",
+			clip(relay))
 	}
 
 	// Path 2: ARC, which is a statement about the chain and only becomes a
@@ -258,15 +271,19 @@ func ResolveWithEnvelope(ctx context.Context, raw []byte, envelopeFrom string, l
 		o.Reason = sanitize(strings.Join(reasons, "; "))
 		return o
 	}
+	// relay is the top seal of this chain: every hop has just been checked
+	// against [TrustedSealers], so it is a domain no sender can impersonate.
+	// Requiring the claim not to align with it is what stops a chain from
+	// inventing a forwarder for mail its own sealer originated.
 	for _, d := range claimed {
-		if aligned(d, from.domain) && !aligned(d, envDomain) {
+		if aligned(d, from.domain) && relay != "" && !aligned(d, relay) && !IsForwarderDomain(d) {
 			o.Inner, o.InnerFrom, o.Attested, o.AttestedBy = d, from.addr, true, AttestedByARC
 			o.Reason = ""
 			return o
 		}
 	}
-	note("instance 1's ARC-Authentication-Results claims no passing DKIM aligned with %s",
-		clip(from.domain))
+	note("instance 1's ARC-Authentication-Results claims no passing DKIM aligned with %s "+
+		"and distinct from the relay", clip(from.domain))
 	o.Reason = sanitize(strings.Join(reasons, "; "))
 	return o
 }
@@ -286,46 +303,161 @@ func arcResult(status string) SigResult {
 	}
 }
 
-// innerDKIMDomain returns the verified signing domain of a message that was
-// relayed by somebody else, or "".
+// alignedSigner returns the verified signing domain that ALIGNS WITH THE From
+// ADDRESS IT SIGNED, or "". This is the message's own identity, and it rests on
+// cryptography alone: no header, envelope or body text can produce it.
 //
-// Two conditions, and dropping either one breaks the trust decision:
-//
-//   - The domain must ALIGN WITH THE From ADDRESS it signed. go-msgauth
-//     guarantees a passing signature covers From (Task 25), but covering it is
-//     not the same as belonging to it: an attacker signing their own message
-//     with their own key while writing "DIB Notification <alerts@dib.ae>" into
-//     From has a perfectly valid signature over a forged header. Requiring
-//     alignment makes the attested domain the one the From claims to be, which
-//     is the only reading under which "the bank signed this" means anything.
-//
-//   - The domain must NOT align with the envelope sender. If it does, the
-//     signer is also the relay: this is direct mail, the domain is the outer
-//     origin, and there is no forwarder to see behind.
-func innerDKIMDomain(dk Verified, fromDomain, envDomain string) string {
-	if dk.DKIM != SigPass || fromDomain == "" || envDomain == "" {
+// Alignment is what turns "a signature verified" into "the sender is who they
+// say they are". go-msgauth guarantees a passing signature covers From (Task
+// 25), but covering it is not the same as belonging to it: an attacker signing
+// their own message with their own key while writing "DIB Notification
+// <alerts@dib.ae>" into From has a perfectly valid signature over a forged
+// header. Requiring alignment makes the domain the one the From claims to be.
+func alignedSigner(dk Verified, fromDomain string) string {
+	if dk.DKIM != SigPass || fromDomain == "" {
 		return ""
 	}
 	for _, d := range dk.DKIMDomains {
-		if aligned(d, fromDomain) && !aligned(d, envDomain) && hostname(d) != "" {
-			return hostname(d)
+		if h := hostname(d); h != "" && aligned(h, fromDomain) {
+			return h
 		}
 	}
 	return ""
 }
 
-// alignedDomain returns the first verified signing domain that aligns with the
-// envelope sender, or "".
-func alignedDomain(dk Verified, envDomain string) string {
-	if dk.DKIM != SigPass || envDomain == "" {
+// relayDomain returns the domain that VERIFIABLY relayed this message, or "".
+//
+// This is the answer to "is there a forwarder to see behind?", and it is the
+// question the envelope used to be asked. It must be answered from evidence no
+// sender can manufacture, because a sender who can answer it chooses which
+// allowlist scope their message is checked against — see the note on
+// [ResolveWithEnvelope].
+//
+// # What counts, and why it is this and not something looser
+//
+// A complete ARC chain, sealed at EVERY hop by a domain on [TrustedSealers],
+// whose INSTANCE 1 REPORTS A PASSING DKIM SIGNATURE BY SOMEBODY OTHER THAN
+// ITSELF. In words: a hop we believe says it received a message that somebody
+// else had already signed, and then passed it on. That is what a forward is.
+//
+// Both halves are load-bearing, and both were learned from the corpus:
+//
+//   - Sealer trust. A chain the sender sealed with their own key verifies (RFC
+//     8617 section 8.1), so without it "relayed" is again something anyone can
+//     assert, this time by adding one header set to a captured bank message.
+//
+//   - The instance-1 report. enbd-selector1.eml is DIRECT bank mail that
+//     carries a one-hop microsoft.com chain, because Microsoft is Emirates
+//     NBD's own outbound provider — and Microsoft's own AAR says
+//     "dkim=none (message not signed)", because the emiratesnbd.com signature
+//     was added by that same gateway on the way out. A passing trusted chain by
+//     itself would therefore have read half of one bank's mail as forwarded and
+//     the other half as direct, splitting one sender across two allowlist
+//     scopes. The corpus states the difference outright: every forwarded
+//     fixture's instance 1 says "dkim=pass header.d=dib.ae" — the sealer saw the
+//     bank's signature — and the direct one says it saw none.
+//
+// The claim is compared against the seal of INSTANCE 1, because that is the hop
+// whose report this is; a sealer describing its own signature is describing
+// mail it originated, not mail it relayed.
+//
+// # What this costs
+//
+// A forwarder that does not seal a chain under google.com, icloud.com or
+// microsoft.com leaves its forwards unattested. They quarantine, visibly, and
+// the fix is one evidence-gated line in [TrustedSealers]. That is the safe
+// direction: the alternative bought coverage with a trust grant anyone could
+// mint. Spec section 3.2:47 onboards the alpha through a Gmail forwarding rule,
+// which seals as google.com.
+func relayDomain(chain arc.ChainResult) string {
+	if chain.Status != arc.StatusPass || len(chain.SealDomains) == 0 || len(chain.AARValues) == 0 {
 		return ""
 	}
-	for _, d := range dk.DKIMDomains {
-		if aligned(d, envDomain) {
-			return hostname(d)
+	if untrustedSealer(chain.SealDomains) >= 0 {
+		return ""
+	}
+	top := hostname(chain.SealDomains[len(chain.SealDomains)-1])
+	if top == "" {
+		return ""
+	}
+	claimed, _ := aarDKIMDomains(chain.AARValues[0])
+	first := hostname(chain.SealDomains[0])
+	for _, d := range claimed {
+		if !aligned(d, first) {
+			return top
 		}
 	}
 	return ""
+}
+
+// outerOrigin returns the verified domain that handed us this message, or the
+// envelope marked as the assertion it is.
+//
+// The order is strongest-claim-first and, deliberately, envelope-free:
+//
+//  1. The relay, when one is proved. That hop signed these exact bytes AND
+//     reported receiving them from somebody else, which is the most direct
+//     available statement of "I handed this to you".
+//  2. The message's own identity — the signature aligned with its From. Direct
+//     mail lands here, including mail whose sender's own gateway sealed a chain
+//     around it (enbd-selector1.eml): nobody relayed it, so the signer is also
+//     the sender.
+//  3. Any other passing signature: somebody signed this, and naming them is
+//     better than naming nobody.
+//  4. The top seal of a passing chain, trusted or not. An attacker's own seal
+//     names the attacker, which is true and useful, and [Decide] will not trust
+//     it without a row naming that domain.
+//  5. The envelope, prefixed. The prefix is what stops a claim from being
+//     compared against an allowlist as though it were evidence.
+func outerOrigin(dk Verified, chain arc.ChainResult, relay, fromDomain, envDomain string) string {
+	if relay != "" {
+		return relay
+	}
+	if dk.DKIM == SigPass {
+		if signer := alignedSigner(dk, fromDomain); signer != "" {
+			return signer
+		}
+		for _, d := range dk.DKIMDomains {
+			if h := hostname(d); h != "" {
+				return h
+			}
+		}
+	}
+	if chain.Status == arc.StatusPass && len(chain.SealDomains) > 0 {
+		if top := hostname(chain.SealDomains[len(chain.SealDomains)-1]); top != "" {
+			return top
+		}
+	}
+	return unverified(envDomain)
+}
+
+// innerDKIMDomain returns the verified signing domain of a message a relay
+// handed us, or "".
+//
+// Three conditions, and dropping any one of them breaks the trust decision:
+//
+//   - There must BE a relay ([relayDomain]), proved by a signature rather than
+//     asserted by the sender. Without this the sender picks the scope.
+//   - The signer must be the message's own identity ([alignedSigner]).
+//   - The signer must not BE the relay. If it is, the signer handed us its own
+//     mail: there is no forwarder to see behind, and reporting one would offer
+//     the user an "inner" confirmation for their outer origin.
+//
+// A forwarder is never an inner origin either. Spec section 3.2:51 forbids
+// trusting a domain everyone's mail passes through; the rule is about the
+// domain, not about the column it lands in, and a Gmail user's own signed mail
+// is otherwise "the identity behind a relay" the moment Google also seals it.
+func innerDKIMDomain(dk Verified, fromDomain, relay string) string {
+	d := alignedSigner(dk, fromDomain)
+	switch {
+	case d == "" || relay == "":
+		return ""
+	case aligned(d, relay):
+		return ""
+	case IsForwarderDomain(d):
+		return ""
+	}
+	return d
 }
 
 // untrustedSealer returns the index of the first seal domain that is not on

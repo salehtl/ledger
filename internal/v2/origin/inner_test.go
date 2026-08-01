@@ -90,6 +90,11 @@ func TestARCIsUsedOnlyWhenDirectInnerDKIMIsAbsent(t *testing.T) {
 	}
 }
 
+// Bank mail nothing verifiably relayed: the signature is the message's own
+// identity AND the domain that handed it to us, so there is no forwarder to see
+// behind. Both fixtures carry zero ARC sets (testdata/manifest.json), which is
+// what makes them the direct case — not the envelope, which is a string the
+// sender types.
 func TestAlignedSignatureIsOuterNotInner(t *testing.T) {
 	lookup := recordedLookup(t)
 	for file, want := range map[string]string{
@@ -105,21 +110,68 @@ func TestAlignedSignatureIsOuterNotInner(t *testing.T) {
 			if got.Attested || got.Inner != "" || got.AttestedBy != "" {
 				t.Fatalf("direct bank mail has no forwarder to see behind: %+v", got)
 			}
+			if got.Reason == "" {
+				t.Fatal("a refusal to attest must say why")
+			}
 		})
 	}
 }
 
-// enbd-selector1.eml carries a one-hop Microsoft ARC chain AND an
-// envelope-aligned bank signature. The aligned signature must win: reporting
-// microsoft.com as the outer origin of mail Emirates NBD sent us directly
-// would be wrong, and it is the ordering bug that makes it wrong.
-func TestEnvelopeAlignedSignatureBeatsTheARCSealForOuter(t *testing.T) {
-	got := Resolve(context.Background(), mustRead(t, "enbd-selector1.eml"), recordedLookup(t))
-	if got.ARC != SigPass {
-		t.Fatalf("fixture no longer carries a passing chain: %+v", got)
+// A SEALER IS NOT A FORWARDER. enbd-selector1.eml is direct bank mail carrying
+// a one-hop microsoft.com ARC chain, because Microsoft is Emirates NBD's own
+// outbound provider — and Microsoft's own instance-1 AAR says
+// "dkim=none (message not signed)", because the emiratesnbd.com signature was
+// added by that same gateway on the way out.
+//
+// This is the fixture that decides how "relayed" is defined. Treating any
+// passing trusted chain as a forwarder would read HALF of one bank's mail as
+// forwarded (this fixture) and half as direct (enbd-proofpoint-p.eml, zero ARC
+// sets), splitting one sender across two allowlist scopes and stranding
+// whichever half the user did not confirm — which is exactly what the Phase 1
+// exit test caught. The corpus states the difference outright, in a field the
+// seal authenticates, so that is what relayDomain reads.
+func TestASealerThatSawNoSignatureIsNotAForwarder(t *testing.T) {
+	raw := mustRead(t, "enbd-selector1.eml")
+	got := Resolve(context.Background(), raw, recordedLookup(t))
+	if got.ARC != SigPass || got.DKIM != SigPass {
+		t.Fatalf("fixture no longer carries both a passing chain and a passing signature: %+v", got)
+	}
+	// The premise, read out of the fixture rather than assumed: the sealer is
+	// trusted, and its report says it saw no signature.
+	chain := chainOf(t, raw, recordedLookup(t))
+	if untrustedSealer(chain.SealDomains) >= 0 {
+		t.Fatalf("premise gone: seals %v are no longer all trusted", chain.SealDomains)
+	}
+	if claimed, _ := aarDKIMDomains(chain.AARValues[0]); len(claimed) != 0 {
+		t.Fatalf("premise gone: instance 1 now claims %v; this fixture's point is that it claims none", claimed)
+	}
+	if got.Attested || got.Inner != "" {
+		t.Fatalf("a sender's own outbound gateway is not a forwarder: %+v", got)
 	}
 	if got.Outer != "emiratesnbd.com" {
-		t.Fatalf("Outer = %q, want the envelope-aligned signing domain", got.Outer)
+		t.Fatalf("Outer = %q, want the bank that signed it", got.Outer)
+	}
+}
+
+// The other side of the same rule, on the fixtures that ARE forwards: instance
+// 1 reports the bank's signature, so the top seal is a relay and the bank is
+// the inner origin.
+func TestAForwardIsASealerThatSawTheBanksSignature(t *testing.T) {
+	lookup := recordedLookup(t)
+	for _, f := range []string{
+		"gmail-forward-1.eml", "gmail-forward-2.eml",
+		"gmail-forward-3.eml", "gmail-forward-inner-dkim.eml",
+	} {
+		t.Run(f, func(t *testing.T) {
+			chain := chainOf(t, mustRead(t, f), lookup)
+			claimed, aarErr := aarDKIMDomains(chain.AARValues[0])
+			if !slices.Contains(claimed, "dib.ae") {
+				t.Fatalf("premise gone: instance 1 claims %v (%s)", claimed, aarErr)
+			}
+			if got := relayDomain(chain); got != "google.com" {
+				t.Fatalf("relayDomain = %q, want the top seal", got)
+			}
+		})
 	}
 }
 
@@ -214,6 +266,158 @@ func TestCallerSuppliedEnvelopeBeatsAForgedReturnPath(t *testing.T) {
 	got := ResolveWithEnvelope(context.Background(), raw, "mallory@evil.test", recordedLookup(t))
 	if got.Outer != "unverified:evil.test" {
 		t.Fatalf("Outer = %q, want the SMTP envelope rather than the header", got.Outer)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The envelope decides nothing
+// ---------------------------------------------------------------------------
+
+// envelopes are the shapes a sender can put in MAIL FROM, including the null
+// sender smtpd accepts unconditionally (smtpd.go:895) and which used to send
+// this function down its Return-Path fallback — a header the sender also typed.
+var envelopes = []string{
+	"",
+	"<>",
+	"bounce@dib.ae",
+	"mallory@evil.test",
+	"relay@gmail.com",
+	"postmaster@microsoft.com",
+	"no-at-sign",
+	"@",
+}
+
+// THE HOLE THIS ROUND EXISTS TO CLOSE. Same bytes, eight envelopes, one answer.
+//
+// The old rule inferred a forwarder from "the signature does not align with the
+// envelope", which handed the sender the question. Measured, on the committed
+// fixtures and the committed code:
+//
+//	dib-dkim-unexpired.eml  MAIL FROM=bounce@dib.ae     -> Outer=dib.ae  Attested=false
+//	dib-dkim-unexpired.eml  MAIL FROM=mallory@evil.test -> Inner=dib.ae  Attested=true (direct_dkim)
+//
+// With a dib.ae|inner row — which is what every alpha confirms, because spec
+// section 3.2:47 onboards them through a forwarding rule — the second is
+// trusted, the DIB template matches, and the transaction is written at
+// needs_review = false.
+//
+// Resolve is a pure function of the bytes for everything that decides trust.
+// The one thing the envelope may still do is NAME an unverified sender, and
+// that form carries a prefix Decide refuses.
+func TestTheEnvelopeCannotChooseTheScope(t *testing.T) {
+	lookup := recordedLookup(t)
+	for _, f := range fixtureFiles(t) {
+		t.Run(f, func(t *testing.T) {
+			raw := mustRead(t, f)
+			want := ResolveWithEnvelope(context.Background(), raw, envelopes[0], lookup)
+			if want.Outer == "" || strings.HasPrefix(want.Outer, diag.UnverifiedPrefix) {
+				t.Fatalf("premise gone: %s no longer has a verified outer origin (%+v)", f, want)
+			}
+			for _, env := range envelopes[1:] {
+				got := ResolveWithEnvelope(context.Background(), raw, env, lookup)
+				if got != want {
+					t.Fatalf("MAIL FROM %q changed the origin:\n got %+v\nwant %+v", env, got, want)
+				}
+			}
+		})
+	}
+}
+
+// The same property where it is actually spent: the allowlist decision. A user
+// who has confirmed one row must get the same answer for the same bytes however
+// the sender addresses the envelope — in BOTH directions, so an attacker can
+// neither promote direct mail into the inner lane nor demote a forward out of
+// it.
+func TestTheEnvelopeCannotChooseTheAllowlistScope(t *testing.T) {
+	lookup := recordedLookup(t)
+	rows := []string{
+		"dib.ae|inner", "dib.ae|outer", "emiratesnbd.com|inner", "emiratesnbd.com|outer",
+		"google.com|outer", "microsoft.com|outer", "icloud.com|inner",
+	}
+	for _, f := range fixtureFiles(t) {
+		raw := mustRead(t, f)
+		for _, row := range rows {
+			var first *Decision
+			for _, env := range envelopes {
+				o := ResolveWithEnvelope(context.Background(), raw, env, lookup)
+				got, err := Decide(context.Background(), allow(row), testUser, o)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if first == nil {
+					first = &got
+					continue
+				}
+				if got.Trusted != first.Trusted || got.Domain != first.Domain || got.Scope != first.Scope {
+					t.Fatalf("%s with %s: MAIL FROM %q changed the decision: %+v vs %+v",
+						f, row, env, got, *first)
+				}
+			}
+		}
+	}
+}
+
+// The direct case, stated as its own rule so that a change to the fixtures
+// cannot quietly remove it: bank mail nobody verifiably relayed has no inner
+// origin, whatever the envelope says.
+func TestDirectBankMailIsNeverAttestedHoweverTheEnvelopeIsAddressed(t *testing.T) {
+	lookup := recordedLookup(t)
+	for _, f := range []string{"dib-dkim-unexpired.eml", "enbd-proofpoint-p.eml", "enbd-selector1.eml"} {
+		for _, env := range envelopes {
+			got := ResolveWithEnvelope(context.Background(), mustRead(t, f), env, lookup)
+			if got.Attested || got.Inner != "" || got.AttestedBy != "" {
+				t.Fatalf("%s with MAIL FROM %q: %+v", f, env, got)
+			}
+		}
+	}
+}
+
+// A relay an attacker can BE is not evidence of a relay. Anyone may add an ARC
+// set sealed with their own key, or a DKIM signature for a domain they control,
+// so if either counted, "this message was forwarded" would again be something
+// the sender asserts — the same hole with two more headers.
+func TestASelfSealedChainDoesNotMakeDirectBankMailAForward(t *testing.T) {
+	raw := mustRead(t, "gmail-forward-inner-dkim.eml")
+	honest := Resolve(context.Background(), raw, recordedLookup(t))
+	if !honest.Attested {
+		t.Fatalf("premise gone: %+v", honest)
+	}
+
+	// The attacker's own key, over genuine direct bank mail.
+	k := newKeyring(t)
+	direct := mustRead(t, "dib-dkim-unexpired.eml")
+	signed := k.signDKIM("evil.test", "s1", direct)
+	lookup := mergedLookup(t, k.recs)
+
+	got := ResolveWithEnvelope(context.Background(), signed, "mallory@evil.test", lookup)
+	if got.Attested || got.Inner != "" {
+		t.Fatalf("an attacker's own signature manufactured a forwarder: %+v", got)
+	}
+	if got.DKIM != SigPass {
+		t.Fatalf("premise gone: the added signature must verify, DKIM = %q", got.DKIM)
+	}
+
+	// The same attack with an ARC set instead of a signature. This is the one
+	// that matters most: a chain an attacker seals with their own key returns
+	// "pass" (RFC 8617 section 8.1), so if a passing chain alone counted as
+	// relay evidence, one header set over a captured bank message would buy the
+	// inner lane — and the AAR inside it says whatever the attacker typed.
+	c := synthOver(t, direct, "DIB Notification <DIB.notification@dib.ae>")
+	c.seal(1, "evil.test", "arc-1", "evil.test; dkim=pass header.d=dib.ae")
+	sealed := c.build()
+	lookup = mergedLookup(t, c.recs)
+
+	got = ResolveWithEnvelope(context.Background(), sealed, "mallory@evil.test", lookup)
+	if got.ARC != SigPass || got.DKIM != SigPass {
+		t.Fatalf("premise gone: both must still verify: %+v", got)
+	}
+	if got.Attested || got.Inner != "" {
+		t.Fatalf("an attacker's own ARC seal manufactured a forwarder: %+v", got)
+	}
+	// The seal changed nothing at all: the same bytes without it resolve the
+	// same way, which is the property the whole round is about.
+	if bare := Resolve(context.Background(), direct, recordedLookup(t)); got.Outer != bare.Outer {
+		t.Fatalf("Outer = %q with an attacker's seal, %q without it", got.Outer, bare.Outer)
 	}
 }
 
@@ -335,11 +539,11 @@ func TestARCDoesNotInventAForwarderForDirectMail(t *testing.T) {
 	}
 }
 
-// "Forwarded" is a relationship between two domains, and with no envelope
-// sender there is no second domain to compare against — every signer looks
-// like it is behind a relay. Attesting on that basis invents a forwarder,
-// which is the direction that grants trust rather than withholding it.
-func TestARCWithoutAnEnvelopeSenderDoesNotAttest(t *testing.T) {
+// "Forwarded" is a relationship between two domains, and the second domain is
+// now the one that VERIFIABLY handled the message — a trusted ARC sealer, or a
+// forwarder's own signature. An absent envelope is therefore not a reason to
+// refuse: it was never the evidence.
+func TestARCWithoutAnEnvelopeSenderStillAttests(t *testing.T) {
 	c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "forwarder@icloud.com")
 	c.hdrs = slices.DeleteFunc(c.hdrs, func(f arc.Field) bool {
 		return strings.EqualFold(strings.TrimSpace(f.Name), "Return-Path")
@@ -347,14 +551,12 @@ func TestARCWithoutAnEnvelopeSenderDoesNotAttest(t *testing.T) {
 	c.seal(1, "icloud.com", "arc-test", "arc.icloud.com; dkim=pass header.d=dib.ae; spf=pass")
 	raw := c.build()
 
-	if got := Resolve(context.Background(), raw, c.dns()); got.Attested {
-		t.Fatalf("%+v", got)
-	}
-	// ...and with the envelope supplied, the very same message does attest, so
-	// the refusal above is about the missing envelope and nothing else.
-	got := ResolveWithEnvelope(context.Background(), raw, "forwarder@icloud.com", c.dns())
+	got := Resolve(context.Background(), raw, c.dns())
 	if !got.Attested || got.AttestedBy != AttestedByARC || got.Inner != "dib.ae" {
 		t.Fatalf("%+v", got)
+	}
+	if got.Outer != "icloud.com" {
+		t.Fatalf("Outer = %q, want the sealing hop even with no envelope at all", got.Outer)
 	}
 }
 
@@ -477,6 +679,128 @@ func TestSignatureThatDoesNotAlignWithFromIsNotAnInnerOrigin(t *testing.T) {
 	}
 }
 
+// A trusted sealer's AAR is an HONEST report, and honest reports routinely say
+// a signature did not verify: Gmail and iCloud write `dkim=fail header.d=<bank>`
+// and `dkim=permerror header.d=<bank>` into their own AARs whenever a forwarded
+// message's original signature no longer checks out. Reading anything but
+// `pass` as a claim therefore does not merely loosen a check — it turns the
+// sealer's "I could not verify this" into an attestation, which is a bank
+// identity available to anyone with an ordinary account at that forwarder and a
+// bogus DKIM-Signature header.
+func TestATrustedSealersHonestDKIMFailureIsNotAnAttestation(t *testing.T) {
+	for _, result := range []string{"fail", "permerror", "temperror", "neutral", "none", "policy"} {
+		t.Run(result, func(t *testing.T) {
+			c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "forwarder@icloud.com")
+			c.seal(1, "icloud.com", "arc-test",
+				"arc.icloud.com; dkim="+result+" header.d=dib.ae header.i=@dib.ae; spf=pass")
+			got := Resolve(context.Background(), c.build(), c.dns())
+
+			if got.ARC != SigPass {
+				t.Fatalf("premise gone: the chain must verify, ARC = %q", got.ARC)
+			}
+			if got.Attested || got.Inner != "" {
+				t.Fatalf("dkim=%s became an attestation: %+v", result, got)
+			}
+			if !strings.Contains(got.Reason, "no passing DKIM") {
+				t.Fatalf("Reason = %q", got.Reason)
+			}
+		})
+	}
+	// The positive control on the identical shape: only `pass` attests.
+	c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "forwarder@icloud.com")
+	c.seal(1, "icloud.com", "arc-test",
+		"arc.icloud.com; dkim=pass header.d=dib.ae header.i=@dib.ae; spf=pass")
+	if got := Resolve(context.Background(), c.build(), c.dns()); !got.Attested {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// [TrustedSealers] and [ForwarderDomains] run opposite ways round, and swapping
+// them at this call site widens ARC attestation from three exact domains to
+// eighteen domains AND their subdomains. Every other ARC test uses a domain on
+// both lists (icloud.com) or on neither (evil.test), so the swap is invisible
+// to them. yahoo.com is on exactly one.
+func TestAForwarderThatIsNotATrustedSealerCannotAttest(t *testing.T) {
+	if !IsForwarderDomain("yahoo.com") || IsTrustedSealer("yahoo.com") {
+		t.Fatal("premise gone: this test needs a domain that is a forwarder and NOT a sealer")
+	}
+	c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "forwarder@yahoo.com")
+	c.seal(1, "yahoo.com", "arc-1", "yahoo.com; dkim=pass header.d=dib.ae header.i=@dib.ae")
+	got := Resolve(context.Background(), c.build(), c.dns())
+
+	if got.ARC != SigPass {
+		t.Fatalf("premise gone: the chain must verify, ARC = %q", got.ARC)
+	}
+	if got.Attested || got.Inner != "" {
+		t.Fatalf("a forwarder we do not accept seals from attested a bank: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "yahoo.com") || !strings.Contains(got.Reason, "trusted ARC sealer") {
+		t.Fatalf("Reason = %q, want it to name the sealer we do not believe", got.Reason)
+	}
+}
+
+// Spec section 3.2:51 forbids trusting a domain everyone's mail passes through,
+// and the rule is about the DOMAIN, not about the column it lands in. Without
+// this, a Gmail user's own signed mail becomes "an identity behind a relay" the
+// moment any other forwarder handles it — so a gmail.com|inner row (which
+// nothing else refuses) would trust every message anyone sends from Gmail,
+// including the "Begin forwarded message" body that o.Attested tells the
+// pipeline to believe.
+func TestAForwarderIsNeverAnInnerOriginEither(t *testing.T) {
+	// The ARC path: a trusted sealer's honest AAR naming a forwarder.
+	c := newSynth(t, "A User <user@gmail.com>", "relay@icloud.com")
+	c.seal(1, "icloud.com", "arc-test", "arc.icloud.com; dkim=pass header.d=gmail.com; spf=pass")
+	if got := Resolve(context.Background(), c.build(), c.dns()); got.Attested {
+		t.Fatalf("a forwarder became an inner origin via ARC: %+v", got)
+	}
+
+	// The direct path: the forwarder's own aligned signature that really does
+	// verify here, behind a genuine relay hop.
+	k := newKeyring(t)
+	signed := k.signDKIM("gmail.com", "s1", []byte(
+		"From: A User <user@gmail.com>\r\n"+
+			"To: <u-abc@in.example.test>\r\n"+
+			"Subject: Fwd: Transaction Alert\r\n"+
+			"Date: Sat, 01 Aug 2026 09:00:00 +0000\r\n"+
+			"\r\n"+
+			"Begin forwarded message:\r\nFrom: alerts@dib.ae\r\n\r\nAED 99,999.00 at MALLORY\r\n"))
+	s := synthOver(t, signed, "user@gmail.com")
+	s.seal(1, "icloud.com", "s2", "arc.icloud.com; dkim=pass header.d=gmail.com")
+	raw := s.build()
+	lookup := staticTXT(mergeRecs(k.recs, s.recs))
+
+	if relayDomain(chainOf(t, raw, lookup)) == "" {
+		t.Fatal("premise gone: this test needs a verified relay, or it proves nothing")
+	}
+	got := ResolveWithEnvelope(context.Background(), raw, "relay@icloud.com", lookup)
+	if got.DKIM != SigPass || alignedSigner(VerifyDKIM(context.Background(), raw, lookup), "gmail.com") != "gmail.com" {
+		t.Fatalf("premise gone: the forwarder's own aligned signature must verify: %+v", got)
+	}
+	if got.Attested || got.Inner != "" {
+		t.Fatalf("a forwarder became an inner origin via its own signature: %+v", got)
+	}
+}
+
+func mergeRecs(a, b map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
+
+func chainOf(t *testing.T, raw []byte, lookup LookupTXT) arc.ChainResult {
+	t.Helper()
+	c, err := arc.Verify(context.Background(), raw, lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 // A tampered body fails the AMS, so the chain fails, so nothing is attested —
 // including by the AAR of an otherwise reputable sealer.
 func TestTamperedForwardIsNotAttestedByEitherPath(t *testing.T) {
@@ -575,7 +899,10 @@ func TestResolveNeverProducesAValueDiagWouldRefuse(t *testing.T) {
 		if !slices.Contains(arcOK, got.ARC) {
 			t.Errorf("%s: ARC = %q is not an arc_result", name, got.ARC)
 		}
-		if got.Inner != "" && !reHostname.MatchString(got.Inner) {
+		if got.Inner != "" && (!reHostname.MatchString(got.Inner) || len(got.Inner) > 253) {
+			// 253 is the other half of the CHECK at 00006_diagnostics.sql:108,
+			// and the grammar alone does not enforce it: reHostname permits
+			// unlimited labels, so hostname()'s length test is what bounds this.
 			t.Errorf("%s: Inner = %q is not a bounded hostname", name, got.Inner)
 		}
 		if got.Inner != "" && got.DKIM != SigPass && got.ARC != SigPass {
@@ -616,26 +943,136 @@ func TestResolveNeverProducesAValueDiagWouldRefuse(t *testing.T) {
 
 func TestHostileInputNeitherPanicsNorAttests(t *testing.T) {
 	lookup := recordedLookup(t)
-	done := make(chan struct{})
+	// Failures are collected and reported from the TEST goroutine. Calling
+	// t.Errorf from the worker means that if the watchdog below ever fires, the
+	// worker logs after the test has completed — which is a panic in the test
+	// runner rather than the failure message this is trying to produce.
+	done := make(chan []string, 1)
 	go func() {
-		defer close(done)
+		var bad []string
 		for name, raw := range hostileMessages() {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						t.Errorf("%s panicked: %v", name, r)
+						bad = append(bad, fmt.Sprintf("%s panicked: %v", name, r))
 					}
 				}()
 				if got := Resolve(context.Background(), raw, lookup); got.Attested {
-					t.Errorf("%s = %+v, hostile input must never attest", name, got)
+					bad = append(bad, fmt.Sprintf("%s = %+v, hostile input must never attest", name, got))
 				}
 			}()
 		}
+		done <- bad
 	}()
 	select {
-	case <-done:
+	case bad := <-done:
+		for _, s := range bad {
+			t.Error(s)
+		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("Resolve did not finish within 60s on hostile input")
+	}
+}
+
+// mergedLookup serves the recorded fixture DNS plus records a test generated.
+func mergedLookup(t *testing.T, extra map[string][]string) LookupTXT {
+	t.Helper()
+	recs := loadDNSMap(t)
+	for k, v := range extra {
+		recs[k] = v
+	}
+	return staticTXT(recs)
+}
+
+// ---------------------------------------------------------------------------
+// The small guards, each of which is a security property with no other test
+// ---------------------------------------------------------------------------
+
+// Alignment is DMARC's relaxed rule, and the dot is the whole rule: without it
+// "evildib.ae" ends with "dib.ae" and a lookalike registration aligns with the
+// bank it imitates.
+func TestAlignmentRequiresALabelBoundary(t *testing.T) {
+	for _, p := range [][2]string{
+		{"dib.ae", "dib.ae"},
+		{"mail.dib.ae", "dib.ae"},
+		{"dib.ae", "mail.dib.ae"},
+		{"DIB.AE", "dib.ae"},
+	} {
+		if !aligned(p[0], p[1]) {
+			t.Errorf("aligned(%q, %q) = false", p[0], p[1])
+		}
+	}
+	for _, p := range [][2]string{
+		{"evildib.ae", "dib.ae"},
+		{"dib.ae", "evildib.ae"},
+		{"dib.ae.evil.test", "evil.test.dib.ae"},
+		{"", "dib.ae"},
+		{"dib.ae", ""},
+	} {
+		if aligned(p[0], p[1]) {
+			t.Errorf("aligned(%q, %q) = true", p[0], p[1])
+		}
+	}
+}
+
+// arc_result is a CHECK-constrained column with three values and no temperror
+// rung, so an unrecognised status must land on the closed side. The comment
+// calls this a deliberate fail-closed default; today arc.Verify returns only
+// three statuses, so nothing else pins it.
+func TestAnUnknownChainStatusIsAFailure(t *testing.T) {
+	for status, want := range map[string]SigResult{
+		arc.StatusPass: SigPass,
+		arc.StatusNone: SigNone,
+		arc.StatusFail: SigFail,
+		"temperror":    SigFail,
+		"":             SigFail,
+		"pass ":        SigFail,
+	} {
+		if got := arcResult(status); got != want {
+			t.Errorf("arcResult(%q) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+// reHostname permits unlimited labels, so the 253-byte cap in hostname() —
+// not the grammar — is what keeps Inner inside the CHECK at
+// 00006_diagnostics.sql:108. A value that fails it costs the WHOLE diagnostics
+// row rather than one field.
+func TestHostnameIsBoundedAtTheLengthTheDatabaseEnforces(t *testing.T) {
+	long := strings.TrimSuffix(strings.Repeat("ab.", 100), ".") // 299 bytes, grammar-legal
+	if len(long) <= 253 || !reHostname.MatchString(long) {
+		t.Fatalf("premise gone: %d bytes, grammar match %v", len(long), reHostname.MatchString(long))
+	}
+	if got := hostname(long); got != "" {
+		t.Fatalf("hostname(<299 bytes>) = %q, want it refused", got)
+	}
+	ok := strings.TrimSuffix(strings.Repeat("ab.", 84), ".") // 251 bytes
+	if len(ok) > 253 {
+		t.Fatalf("premise gone: %d bytes", len(ok))
+	}
+	if got := hostname(ok); got != ok {
+		t.Fatalf("hostname(<251 bytes>) = %q, want it accepted", got)
+	}
+}
+
+// The two fields parsed out of a message are bounded BEFORE they reach
+// mail.ParseAddress and authres, and the bound is named in the refusal so a
+// message refused for size cannot be confused with one refused for content.
+func TestOversizedFieldsAreRefusedByTheirBound(t *testing.T) {
+	big := strings.Repeat("a", maxFromBytes+1)
+	raw := []byte("Return-Path: <bounce@dib.ae>\r\nFrom: <" + big + "@dib.ae>\r\n\r\nbody\r\n")
+	got := Resolve(context.Background(), raw, recordedLookup(t))
+	if !strings.Contains(got.Reason, "From field is") || !strings.Contains(got.Reason, "too large") {
+		t.Fatalf("Reason = %q, want the From bound to be what refused it", got.Reason)
+	}
+
+	// ...and the same for an ARC-Authentication-Results, which reaches authres.
+	_, aarErr := aarDKIMDomains("i=1; " + strings.Repeat("x", maxAARBytes))
+	if !strings.Contains(aarErr, "too large") {
+		t.Fatalf("aarDKIMDomains = %q, want the AAR bound to be what refused it", aarErr)
+	}
+	if _, ok := aarDKIMDomains("i=1; x; dkim=pass header.d=dib.ae"); ok != "" {
+		t.Fatalf("premise gone: a normal AAR no longer parses (%q)", ok)
 	}
 }
 
@@ -776,6 +1213,22 @@ func newSynth(t *testing.T, from, envelope string) *synth {
 		s.hdrs = append(s.hdrs, arc.Field{Name: kv[0], Value: kv[1], Raw: kv[0] + ":" + kv[1] + "\r\n"})
 	}
 	return s
+}
+
+// synthOver seals a chain over a REAL fixture rather than a message the test
+// wrote, so an attacker's ARC set can be added to genuine, still-verifying bank
+// mail exactly the way an attacker would add one. The fixture's own signature
+// survives: ARC fields are prepended and no DKIM h= names them.
+func synthOver(t *testing.T, raw []byte, wantFrom string) *synth {
+	t.Helper()
+	h, body, err := arc.ReadHeader(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := h.Get("From"); len(f) != 1 || !strings.Contains(f[0].Value, wantFrom) {
+		t.Fatalf("premise gone: fixture From is %v, want one field containing %q", f, wantFrom)
+	}
+	return &synth{keyring: newKeyring(t), hdrs: h, body: string(body)}
 }
 
 func (s *synth) sign(digest []byte) string {

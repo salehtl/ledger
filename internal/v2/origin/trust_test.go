@@ -3,6 +3,7 @@ package origin
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,14 +65,104 @@ func TestForwarderDomainIsNeverTrustedAsAnOuterOrigin(t *testing.T) {
 	for _, d := range []string{"gmail.com", "icloud.com", "mail.gmail.com"} {
 		t.Run(d, func(t *testing.T) {
 			o := Origin{Outer: d, DKIM: SigPass}
-			got := decide(t, allow(d+"|outer"), o)
+			list := allow(d + "|outer")
+			got := decide(t, list, o)
 			if got.Trusted {
 				t.Fatalf("allowlisting a forwarder as an outer origin trusts everything it relays: %+v", got)
 			}
 			if got.Reason == "" {
 				t.Fatal("a refusal must say why")
 			}
+			// The refusal is decided before the query, not after it: the answer
+			// cannot depend on the row, so asking for it would be a database
+			// lookup any sender could trigger for a result already decided.
+			if len(list.asks) != 0 {
+				t.Fatalf("queried the allowlist %v for a domain no row can rescue", list.asks)
+			}
 		})
+	}
+}
+
+// TestAnAttestationWithNoPassingVerificationIsNotTrusted is the measured half of
+// rule 4. Decide used to read the Attested bool and nothing else, so an Origin
+// built by any caller — including one rebuilt from a database row — could carry
+// an attestation that no verification supports and be trusted on the strength
+// of the word alone.
+func TestAnAttestationWithNoPassingVerificationIsNotTrusted(t *testing.T) {
+	for name, o := range map[string]Origin{
+		"nothing verified": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: AttestedByDKIM, DKIM: SigNone, ARC: SigNone},
+		"a word this package does not define": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: "handwritten", DKIM: SigFail, ARC: SigFail},
+		"a word this package does not define, over a passing signature": {Outer: "google.com",
+			Inner: "dib.ae", Attested: true, AttestedBy: "handwritten", DKIM: SigPass, ARC: SigPass},
+		"attested by DKIM, but DKIM failed": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: AttestedByDKIM, DKIM: SigFail, ARC: SigPass},
+		"attested by ARC, but ARC failed": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: AttestedByARC, DKIM: SigPass, ARC: SigFail},
+		"attested by nothing at all": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: "", DKIM: SigPass, ARC: SigPass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			list := allow("dib.ae|inner")
+			if got := decide(t, list, o); got.Trusted {
+				t.Fatalf("%+v", got)
+			}
+			if len(list.asks) != 0 {
+				t.Fatalf("queried the allowlist %v for an attestation nothing supports", list.asks)
+			}
+		})
+	}
+	// The positive control, so the refusals above cannot be a broken inner path.
+	ok := Origin{Outer: "google.com", Inner: "dib.ae", Attested: true,
+		AttestedBy: AttestedByDKIM, DKIM: SigPass, ARC: SigNone}
+	if got := decide(t, allow("dib.ae|inner"), ok); !got.Trusted {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// The same rule for the outer origin. "Verified" was true only by construction
+// inside Resolve, spelled as the absence of a prefix; here it is measured.
+func TestAnOuterOriginWithNoPassingVerificationIsNotTrusted(t *testing.T) {
+	list := allow("dib.ae|outer")
+	o := Origin{Outer: "dib.ae", DKIM: SigNone, ARC: SigNone}
+	if got := decide(t, list, o); got.Trusted {
+		t.Fatalf("a bare hostname is not a signature: %+v", got)
+	}
+	if len(list.asks) != 0 {
+		t.Fatalf("queried the allowlist %v for an origin nothing verified", list.asks)
+	}
+	for _, r := range []SigResult{SigFail, SigTempFail} {
+		if got := decide(t, allow("dib.ae|outer"), Origin{Outer: "dib.ae", DKIM: r, ARC: SigFail}); got.Trusted {
+			t.Fatalf("dkim=%s: %+v", r, got)
+		}
+	}
+	// An ARC pass alone is enough: it is a signature over these bytes by the
+	// hop that handed them over.
+	if got := decide(t, allow("dib.ae|outer"), Origin{Outer: "dib.ae", DKIM: SigFail, ARC: SigPass}); !got.Trusted {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// A nil allowlist must fail CLOSED. Pipeline.check makes this unreachable, and
+// an unreachable default that silently inverts is exactly how a missing
+// dependency becomes "trust everything".
+func TestANilAllowlistTrustsNothing(t *testing.T) {
+	for name, o := range map[string]Origin{
+		"verified outer": {Outer: "dib.ae", DKIM: SigPass},
+		"attested inner": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: AttestedByDKIM, DKIM: SigPass},
+	} {
+		got, err := Decide(context.Background(), nil, testUser, o)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Trusted {
+			t.Fatalf("%s: a missing allowlist trusted a sender: %+v", name, got)
+		}
+		if got.Reason == "" {
+			t.Fatalf("%s: a refusal must say why", name)
+		}
 	}
 }
 
@@ -89,9 +180,25 @@ func TestForwarderRefusalDoesNotReachTheInnerScope(t *testing.T) {
 func TestUnattestedInnerDomainIsNeverTrusted(t *testing.T) {
 	// The shape a bug would produce: a domain in Inner with Attested false.
 	// Decide must not take the field's word for it.
-	o := Origin{Outer: "unverified:icloud.com", Inner: "dib.ae", DKIM: SigNone, ARC: SigNone}
-	if got := decide(t, allow("dib.ae|inner"), o); got.Trusted {
-		t.Fatalf("an unattested inner origin is body text with extra steps: %+v", got)
+	for name, o := range map[string]Origin{
+		"nothing verified": {Outer: "unverified:icloud.com", Inner: "dib.ae",
+			DKIM: SigNone, ARC: SigNone},
+		// ...and the harder shape, where everything EXCEPT the bool says yes.
+		// Attested is the field diag and the pipeline key on, so a caller that
+		// left it false is a caller whose inner domain came from somewhere
+		// else.
+		"attested false beside a passing signature": {Outer: "google.com", Inner: "dib.ae",
+			AttestedBy: AttestedByDKIM, DKIM: SigPass, ARC: SigPass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			list := allow("dib.ae|inner")
+			if got := decide(t, list, o); got.Trusted {
+				t.Fatalf("an unattested inner origin is body text with extra steps: %+v", got)
+			}
+			if slices.Contains(list.asks, "dib.ae|inner") {
+				t.Fatalf("queried the inner scope %v for an origin nothing attested", list.asks)
+			}
+		})
 	}
 }
 
@@ -188,10 +295,35 @@ func TestNoEntryIsNotTrustedAndSaysSo(t *testing.T) {
 // reason the operator can never see.
 func TestAllowlistErrorIsReturnedNotSwallowed(t *testing.T) {
 	boom := errors.New("connection refused")
+	// BOTH queries, not just the outer one. The inner query runs first and
+	// returns first, so testing only an unattested origin leaves the half of
+	// this rule that forwarded mail actually travels through unasserted.
+	for name, o := range map[string]Origin{
+		"outer query": {Outer: "dib.ae", DKIM: SigPass},
+		"inner query": {Outer: "google.com", Inner: "dib.ae", Attested: true,
+			AttestedBy: AttestedByDKIM, DKIM: SigPass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			list := &fakeAllowlist{rows: map[string]bool{}, err: boom}
+			got, err := Decide(context.Background(), list, testUser, o)
+			if !errors.Is(err, boom) {
+				t.Fatalf("err = %v, want the store's error", err)
+			}
+			if got.Trusted {
+				t.Fatalf("an outage produced a decision: %+v", got)
+			}
+			if len(list.asks) == 0 {
+				t.Fatal("no query was issued, so this test cannot see a swallowed error")
+			}
+		})
+	}
+	// ...and the inner case really does fail on the INNER query, not on the
+	// outer one it would otherwise fall through to.
 	list := &fakeAllowlist{rows: map[string]bool{}, err: boom}
-	_, err := Decide(context.Background(), list, testUser, Origin{Outer: "dib.ae", DKIM: SigPass})
-	if !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want the store's error", err)
+	_, _ = Decide(context.Background(), list, testUser, Origin{Outer: "google.com", Inner: "dib.ae",
+		Attested: true, AttestedBy: AttestedByDKIM, DKIM: SigPass})
+	if len(list.asks) != 1 || list.asks[0] != "dib.ae|inner" {
+		t.Fatalf("asks = %v, want the inner query and nothing after it", list.asks)
 	}
 }
 
@@ -219,17 +351,50 @@ func TestEmptyOriginIsNotTrusted(t *testing.T) {
 // the two closed lists
 // ---------------------------------------------------------------------------
 
+// forwarderList is every domain spec section 3.2:51 must cover, written out
+// here rather than derived from ForwarderDomains — a test that iterates the
+// list it is checking cannot see an entry go missing, and three of them
+// (apple.com, messagingengine.com, protonmail.ch) could be deleted with the
+// whole suite still green. Each deletion reopens the bypass for that forwarder:
+// a user could then confirm it as an outer origin and trust everything anyone
+// relays through it.
+//
+// Additions are fine and expected; removals are the security event, so this
+// asserts containment rather than equality.
+var forwarderList = []string{
+	"apple.com",
+	"fastmail.com",
+	"gmail.com",
+	"google.com",
+	"googlemail.com",
+	"hotmail.com",
+	"icloud.com",
+	"live.com",
+	"mac.com",
+	"me.com",
+	"messagingengine.com",
+	"microsoft.com",
+	"outlook.com",
+	"proton.me",
+	"protonmail.ch",
+	"protonmail.com",
+	"yahoo.com",
+	"zoho.com",
+}
+
 // The forwarder list is matched PERMISSIVELY — a subdomain counts — because
 // being over-inclusive there only costs a user one refused outer entry, while
 // being under-inclusive hands over the bypass.
 func TestForwarderMatchingIsPermissive(t *testing.T) {
-	for _, d := range []string{
-		"gmail.com", "GMAIL.COM", "googlemail.com", "icloud.com", "me.com", "mac.com",
-		"outlook.com", "hotmail.com", "live.com", "yahoo.com", "proton.me",
-		"protonmail.com", "zoho.com", "fastmail.com", "mail.gmail.com",
-	} {
-		if !IsForwarderDomain(d) {
-			t.Errorf("IsForwarderDomain(%q) = false", d)
+	for _, d := range forwarderList {
+		if !slices.Contains(ForwarderDomains, d) {
+			t.Errorf("%q is no longer in ForwarderDomains; a user can now confirm it as an "+
+				"outer origin and trust everything relayed through it", d)
+		}
+		for _, form := range []string{d, strings.ToUpper(d), "mail." + d, "a.b." + d, d + "."} {
+			if !IsForwarderDomain(form) {
+				t.Errorf("IsForwarderDomain(%q) = false", form)
+			}
 		}
 	}
 	for _, d := range []string{"dib.ae", "emiratesnbd.com", "", "gmail.com.evil.test", "notgmail.com"} {
@@ -242,7 +407,14 @@ func TestForwarderMatchingIsPermissive(t *testing.T) {
 // The sealer list is matched STRICTLY — exact, no subdomains — because it runs
 // the other way round: a name wrongly on it can attest any bank it likes.
 func TestSealerTrustIsExactMatch(t *testing.T) {
-	for _, d := range []string{"google.com", "icloud.com", "microsoft.com", "GOOGLE.COM"} {
+	// Equality, not containment: this list is the opposite risk to the
+	// forwarder one, so a fourth entry is a deliberate act needing its own
+	// evidence and a missing entry is a forwarder losing its ARC fallback.
+	want := []string{"google.com", "icloud.com", "microsoft.com"}
+	if !slices.Equal(slices.Sorted(slices.Values(TrustedSealers)), want) {
+		t.Errorf("TrustedSealers = %v, want exactly %v", TrustedSealers, want)
+	}
+	for _, d := range append(slices.Clone(want), "GOOGLE.COM") {
 		if !IsTrustedSealer(d) {
 			t.Errorf("IsTrustedSealer(%q) = false", d)
 		}
@@ -251,6 +423,28 @@ func TestSealerTrustIsExactMatch(t *testing.T) {
 		if IsTrustedSealer(d) {
 			t.Errorf("IsTrustedSealer(%q) = true", d)
 		}
+	}
+}
+
+// The two lists are not interchangeable, and confusing them at a call site is
+// invisible to any test that only uses domains on both or on neither.
+// TestAForwarderThatIsNotATrustedSealerCannotAttest is the end-to-end half of
+// this; here is the property it rests on.
+func TestSomeForwardersAreNotTrustedSealers(t *testing.T) {
+	var both, forwarderOnly []string
+	for _, d := range ForwarderDomains {
+		if IsTrustedSealer(d) {
+			both = append(both, d)
+		} else {
+			forwarderOnly = append(forwarderOnly, d)
+		}
+	}
+	if len(forwarderOnly) == 0 {
+		t.Fatal("every forwarder is now a trusted sealer, so IsTrustedSealer and IsForwarderDomain " +
+			"can be swapped anywhere with no observable difference")
+	}
+	if len(both) == 0 {
+		t.Fatal("no forwarder seals, so the ARC path is unreachable for real mail")
 	}
 }
 

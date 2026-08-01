@@ -74,19 +74,36 @@ type Decision struct {
 //     outer origin trusts every message anyone routes through the user's
 //     mailbox, which is the exact failure section 3.2 forbids.
 //
+//  4. Every one of those is cross-checked against the SIGNATURE RESULTS, not
+//     against the strings that were derived from them. Decide is exported, it
+//     takes an Origin from any caller, and one of its three callers
+//     (ingest.recordedOrigin) rebuilds that Origin out of a database row a
+//     month later. Reading only Outer's prefix and the Attested bool made
+//     "verified" a property of how the value was spelled: Origin{Outer:
+//     "dib.ae"} with DKIM and ARC both none was trusted, and so was an
+//     attestation labelled with a word this package does not define. The
+//     verdicts are right there in the struct; refusing to look at them is what
+//     turns them into decoration.
+//
 // The scopes are not interchangeable in either direction. An outer entry does
 // not trust that domain as an inner origin, or "I trust what my bank sends me
 // directly" would silently become "I trust anyone who forwards me something my
-// bank signed once".
+// bank signed once". That separation is only real because [Resolve] decides
+// which scope a message lands in from signatures alone — see the note on
+// [ResolveWithEnvelope] about the envelope choosing the scope.
 //
 // # Errors
 //
-// A store error is returned, not swallowed into a refusal. Both produce the
-// quarantine lane, but only one of them is visible to an operator, and an
-// outage that renders as "the user has confirmed nothing" is an outage nobody
-// finds.
+// A store error is returned, not swallowed into a refusal — on BOTH queries.
+// Both produce the quarantine lane, but only one of them is visible to an
+// operator, and an outage that renders as "the user has confirmed nothing" is
+// an outage nobody finds.
 func Decide(ctx context.Context, list Allowlist, userID uuid.UUID, o Origin) (Decision, error) {
 	if list == nil {
+		// Fail CLOSED. Pipeline.check refuses to start without a Trust store, so
+		// this is unreachable today; the safe default is the entire point of the
+		// branch, and an unreachable branch that silently inverts is how a
+		// missing dependency becomes "trust everything".
 		return Decision{Reason: "no allowlist configured"}, nil
 	}
 	refuse := func(format string, args ...any) (Decision, error) {
@@ -96,7 +113,13 @@ func Decide(ctx context.Context, list Allowlist, userID uuid.UUID, o Origin) (De
 	// The inner origin first: it is the more specific claim, and for forwarded
 	// mail it is the only one that names the bank.
 	var missedInner string
-	if o.Attested && o.Inner != "" {
+	switch {
+	case !o.Attested || o.Inner == "":
+		// Nothing attested; the outer origin is all there is.
+	case !attestationRestsOnASignature(o):
+		missedInner = fmt.Sprintf("inner origin %s claims to be attested by %q, which no passing "+
+			"verification supports (dkim=%s, arc=%s)", o.Inner, o.AttestedBy, o.DKIM, o.ARC)
+	default:
 		ok, err := list.Allowlisted(ctx, userID, o.Inner, ScopeInner)
 		if err != nil {
 			return Decision{}, fmt.Errorf("origin: read allowlist: %w", err)
@@ -120,6 +143,13 @@ func Decide(ctx context.Context, list Allowlist, userID uuid.UUID, o Origin) (De
 	case strings.HasPrefix(o.Outer, unverifiedPrefix):
 		return refuse("%s; no signature verified, and %s is an envelope claim rather than evidence",
 			or(missedInner, "nothing is attested"), o.Outer)
+	case o.DKIM != SigPass && o.ARC != SigPass:
+		// The unverified: prefix is how Resolve spells this, and the prefix is
+		// checked above. This is the same question asked of the evidence
+		// instead of the spelling, for the Origins that did not come from
+		// Resolve — a hand-built struct, or one rebuilt from a diagnostics row.
+		return refuse("%s; %s is named as the sender but neither DKIM nor ARC verified "+
+			"(dkim=%s, arc=%s)", or(missedInner, "nothing is attested"), o.Outer, o.DKIM, o.ARC)
 	case IsForwarderDomain(o.Outer):
 		// Deliberately checked before the query: the answer cannot depend on
 		// the row, so asking for it would be a database lookup any sender could
@@ -138,6 +168,32 @@ func Decide(ctx context.Context, list Allowlist, userID uuid.UUID, o Origin) (De
 	}
 	return refuse("%s; verified sender %s is not on the allowlist either",
 		or(missedInner, "nothing is attested"), o.Outer)
+}
+
+// attestationRestsOnASignature reports whether an Origin's attestation names a
+// verification this package performs AND that verification passed.
+//
+// [Origin].AttestedBy is not a label: it says which of the two message-level
+// verdicts the inner origin was derived from, so it is checkable against that
+// verdict. A value this package does not define is refused outright rather than
+// treated as "some other attestation" — there is no other kind, and an unknown
+// word arriving here means a caller invented one.
+func attestationRestsOnASignature(o Origin) bool {
+	if !o.Attested {
+		// Repeated from the caller on purpose: these are two independent
+		// readings of "is this attested?", and either one alone closes the
+		// hole, which is exactly the arrangement where one of them quietly
+		// stops being reached.
+		return false
+	}
+	switch o.AttestedBy {
+	case AttestedByDKIM:
+		return o.DKIM == SigPass
+	case AttestedByARC:
+		return o.ARC == SigPass
+	default:
+		return false
+	}
 }
 
 func or(s, fallback string) string {
