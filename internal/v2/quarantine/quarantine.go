@@ -63,11 +63,21 @@ import (
 
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
+	"ledger/internal/v2/origin"
 )
+
+// Store answers the trust lane's one question about a user's allowlist.
+// Asserted here so the two cannot drift apart silently: origin.Decide consumes
+// this store directly, with no adapter.
+var _ origin.Allowlist = (*Store)(nil)
 
 const (
 	// DefaultTTL is spec §3.2:56's 30 days.
 	DefaultTTL = 30 * 24 * time.Hour
+	// MaxEnvelopeFrom bounds a stored return path. RFC 5321 §4.5.3.1.3 caps a
+	// reverse-path at 256 octets; this leaves room for the angle brackets and a
+	// long address without admitting anything body-shaped.
+	MaxEnvelopeFrom = 320
 	// DefaultWarnBefore is how long before expiry the client is warned. It
 	// matches the address grace window for the same reason that one is 7 days:
 	// it is the shortest window in which a person who checks their phone
@@ -78,9 +88,13 @@ const (
 // The two allowlist scopes. Outer is the signing domain of the message as we
 // received it; Inner is the bank behind a forwarder, and is only ever available
 // when an attestation proved it.
+//
+// Aliased from origin rather than declared again: these strings are a CHECK
+// constraint on one side and a trust decision on the other, and two spellings
+// of "outer" would mean rows this store writes that origin.Decide never reads.
 const (
-	ScopeOuter = "outer"
-	ScopeInner = "inner"
+	ScopeOuter = origin.ScopeOuter
+	ScopeInner = origin.ScopeInner
 )
 
 // Why a message left quarantine. Closed set, mirrored by a CHECK constraint.
@@ -146,30 +160,17 @@ var (
 	ErrNoAttestedOrigin = fmt.Errorf("%w: no held message attests it as an inner origin", ErrOriginUnproven)
 )
 
-// forwarders is §3.2:51's closed refusal list, and it is the source of the
-// sender_allowlist_no_forwarder_as_outer CHECK constraint.
-// TestTheSQLForwarderListMatchesGo keeps the two from drifting.
-var forwarders = []string{
-	"gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com",
-	"outlook.com", "hotmail.com", "live.com", "yahoo.com",
-	"proton.me", "protonmail.com", "zoho.com", "fastmail.com",
-}
-
-// Forwarders returns a copy of the refusal list. It is exported so the client's
-// "trust this sender" sheet can explain the refusal BEFORE the user taps, and
-// so the constraint test can compare the two copies.
-func Forwarders() []string { return append([]string(nil), forwarders...) }
-
-// IsForwarder reports whether d is a known mail provider rather than a bank.
-func IsForwarder(d string) bool {
-	d = strings.ToLower(strings.TrimSpace(d))
-	for _, f := range forwarders {
-		if d == f {
-			return true
-		}
-	}
-	return false
-}
+// §3.2:51's refusal list lives in origin.ForwarderDomains and is not copied
+// here. This package held its own for one commit, and the copy was wrong within
+// the day: it listed the domains users have MAILBOXES at (gmail.com,
+// icloud.com) while the value being guarded is the domain that SIGNED the
+// message, which for a Gmail forward is google.com. The constraint therefore
+// refused "gmail.com" and accepted "google.com" — the same bypass, spelled
+// differently, and durable because it was also a CHECK.
+//
+// origin owns the definition because origin is what decides trust with it.
+// Migration 00009's constraint mirrors that list and
+// TestTheSQLForwarderListMatchesOrigin fails if the two diverge.
 
 // reHostname mirrors the SQL grammar. It deliberately does not admit
 // UnverifiedPrefix.
@@ -194,6 +195,23 @@ type Item struct {
 	// WarnedAt is set by ExpireDue, WarnBefore ahead of expiry. It is read-only
 	// to callers of Hold.
 	WarnedAt *time.Time
+
+	// EnvelopeFrom is the SMTP return path exactly as it arrived at MAIL FROM,
+	// "" for a null sender.
+	//
+	// It is stored for ONE reason: origin.ResolveWithEnvelope needs it to tell
+	// a signature that is ALIGNED with the sender from a bank's signature that
+	// survived a forward, and the envelope is out of band — it is nowhere in
+	// Blob, so a row without it has destroyed it. When a sender is confirmed,
+	// Task 30 re-resolves these messages, and a re-resolve that saw an empty
+	// envelope could stop attesting an inner origin the first resolve attested:
+	// mail coming back LESS trusted than it arrived, for no reason a user could
+	// see.
+	//
+	// It is an assertion, never evidence, and nothing keys on it. The sync
+	// channel does not render it: §3.2:55 says the trust sheet shows verified
+	// domains, and this is text the sender wrote.
+	EnvelopeFrom string
 
 	// OuterDomain is the verified signing domain, or UnverifiedPrefix + the
 	// envelope domain. "" means no domain at all.
@@ -348,9 +366,9 @@ func (s *Store) dueForDeletion(expiresAt time.Time, warnedAt *time.Time, now tim
 // ---------------------------------------------------------------------------
 
 const holdSQL = `INSERT INTO quarantine
- (id, user_id, ingest_id, received_at, expires_at, outer_domain, inner_domain,
+ (id, user_id, ingest_id, received_at, expires_at, envelope_from, outer_domain, inner_domain,
   attested, attested_by, dkim, arc, size_bucket, blob)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
  ON CONFLICT (user_id, ingest_id) DO NOTHING`
 
 // Hold stores one message.
@@ -371,7 +389,7 @@ func (s *Store) Hold(ctx context.Context, it Item) error {
 	}
 	_, err = s.Pool.Exec(ctx, holdSQL,
 		it.ID, it.UserID, it.IngestID, it.ReceivedAt, it.ExpiresAt,
-		it.OuterDomain, nullText(it.InnerDomain),
+		it.EnvelopeFrom, it.OuterDomain, nullText(it.InnerDomain),
 		it.Attested, it.AttestedBy, it.DKIM, it.ARC, it.SizeBucket, it.Blob)
 	if err != nil {
 		return fmt.Errorf("quarantine: hold: %w", err)
@@ -400,6 +418,18 @@ func (s *Store) validate(it Item) (Item, error) {
 	}
 	if !it.ExpiresAt.After(it.ReceivedAt) {
 		return it, fmt.Errorf("%w: expires_at is not after received_at", ErrInvalidItem)
+	}
+
+	// Trimmed but NOT lower-cased: a local part is case-sensitive (RFC 5321
+	// §2.4), and this value exists to be handed back to the resolver exactly as
+	// it arrived. Control characters are refused because a return path carrying
+	// a newline is a forged log line, and because nothing legitimate has one.
+	it.EnvelopeFrom = strings.TrimSpace(it.EnvelopeFrom)
+	if len(it.EnvelopeFrom) > MaxEnvelopeFrom {
+		return it, fmt.Errorf("%w: envelope_from is %d bytes, cap is %d", ErrInvalidItem, len(it.EnvelopeFrom), MaxEnvelopeFrom)
+	}
+	if strings.ContainsFunc(it.EnvelopeFrom, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return it, fmt.Errorf("%w: envelope_from contains a control character", ErrInvalidItem)
 	}
 
 	it.OuterDomain = strings.ToLower(strings.TrimSpace(it.OuterDomain))
@@ -458,7 +488,7 @@ func (s *Store) validate(it Item) (Item, error) {
 // ---------------------------------------------------------------------------
 
 const itemColumns = `id, user_id, ingest_id, received_at, expires_at, warned_at,
- outer_domain, inner_domain, attested, attested_by, dkim, arc, size_bucket`
+ envelope_from, outer_domain, inner_domain, attested, attested_by, dkim, arc, size_bucket`
 
 // List returns one keyset page of a user's held mail, oldest first.
 //
@@ -592,7 +622,7 @@ func scanItem(rows pgx.Rows, withBlob bool) (Item, error) {
 		inner *string
 	)
 	dst := []any{&it.ID, &it.UserID, &it.IngestID, &it.ReceivedAt, &it.ExpiresAt, &it.WarnedAt,
-		&it.OuterDomain, &inner, &it.Attested, &it.AttestedBy, &it.DKIM, &it.ARC, &it.SizeBucket}
+		&it.EnvelopeFrom, &it.OuterDomain, &inner, &it.Attested, &it.AttestedBy, &it.DKIM, &it.ARC, &it.SizeBucket}
 	if withBlob {
 		dst = append(dst, &it.Blob)
 	}
@@ -648,7 +678,9 @@ func (s *Store) Confirm(ctx context.Context, userID uuid.UUID, domain, scope str
 	)
 	switch scope {
 	case ScopeOuter:
-		if IsForwarder(domain) {
+		// origin's predicate, not a local one, and permissive: mail.google.com
+		// is as much a forwarder as google.com.
+		if origin.IsForwarderDomain(domain) {
 			return nil, fmt.Errorf("%w: %s", ErrForwarderDomain, domain)
 		}
 		match = `outer_domain = $2`

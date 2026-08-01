@@ -20,6 +20,7 @@ import (
 
 	"ledger/internal/v2/addresses"
 	"ledger/internal/v2/auth"
+	"ledger/internal/v2/origin"
 	"ledger/internal/v2/pgtest"
 )
 
@@ -436,16 +437,77 @@ func TestConfirmRefusesAForwarderDomainAsOuter(t *testing.T) {
 	}
 }
 
-func TestEveryForwarderIsRefusedAsOuter(t *testing.T) {
+// TestNoForwarderCanBeConfirmedAsAnOuterOrigin walks the whole list, and its
+// subdomains, through BOTH gates.
+//
+// It exists because the first version of this package kept its own copy of the
+// list, and the copy was a list of the wrong thing: the domains users have
+// MAILBOXES at rather than the domains that SIGN their mail. It refused
+// "gmail.com" and accepted "google.com" — the same §3.2:51 bypass, spelled
+// differently, and durable because a CHECK constraint carried it. Reading the
+// list from origin is the fix; walking every entry of it here is what keeps the
+// fix honest.
+func TestNoForwarderCanBeConfirmedAsAnOuterOrigin(t *testing.T) {
 	s, now, pool := newStore(t)
 	u := insertUser(t, pool)
-	for _, d := range Forwarders() {
-		it := forwarded(u, *now, d)
-		it.OuterDomain = d
-		hold(t, s, it)
-		if _, err := s.Confirm(bg, u, d, ScopeOuter); !errors.Is(err, ErrForwarderDomain) {
-			t.Fatalf("%s was accepted as an outer origin: %v", d, err)
+	for _, d := range origin.ForwarderDomains {
+		for _, candidate := range []string{d, "mail." + d} {
+			// A held, attested message from that origin, so nothing but the
+			// forwarder rule can be what refuses the confirmation.
+			it := forwarded(u, *now, candidate)
+			it.OuterDomain = candidate
+			hold(t, s, it)
+
+			if _, err := s.Confirm(bg, u, candidate, ScopeOuter); !errors.Is(err, ErrForwarderDomain) {
+				t.Fatalf("%s was accepted as an outer origin: %v", candidate, err)
+			}
+			if ok, _ := s.Allowlisted(bg, u, candidate, ScopeOuter); ok {
+				t.Fatalf("%s reached the allowlist anyway", candidate)
+			}
+			// And the database refuses it too, so a row that bypasses this
+			// package is not a standing bypass either.
+			if _, err := pool.Exec(bg,
+				`INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,$2,'outer',$3)`,
+				u, candidate, *now); err == nil {
+				t.Fatalf("a repair script could allowlist %s as an outer origin", candidate)
+			}
 		}
+	}
+	// The control: a bank is not a forwarder, at either gate.
+	hold(t, s, item(u, *now, "bank"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatalf("the rule is too wide: %v", err)
+	}
+}
+
+// TestTheTrustLaneRefusesAForwarderOuterEntryToo is the belt to Confirm's
+// brace. origin.Decide never honours a forwarder as an outer origin whatever
+// the table says, so the two halves are asserted together here rather than each
+// assuming the other.
+func TestTheTrustLaneRefusesAForwarderOuterEntryToo(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "bank"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+
+	// A genuine bank entry is honoured...
+	d, err := origin.Decide(bg, s, u, origin.Origin{Outer: "dib.ae", DKIM: origin.SigPass})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Trusted || d.Scope != ScopeOuter {
+		t.Fatalf("a confirmed bank was not trusted: %+v", d)
+	}
+	// ...and a forwarder is not, even though this store is the thing being
+	// asked.
+	d, err = origin.Decide(bg, s, u, origin.Origin{Outer: "google.com", DKIM: origin.SigPass})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Trusted {
+		t.Fatalf("the trust lane trusted a forwarder as an outer origin: %+v", d)
 	}
 }
 
@@ -543,10 +605,15 @@ func TestConfirmRejectsAnUnknownScope(t *testing.T) {
 func TestTheDatabaseRefusesAForwarderOuterAllowlistWhenGoIsBypassed(t *testing.T) {
 	_, now, pool := newStore(t)
 	u := insertUser(t, pool)
-	_, err := pool.Exec(bg,
-		`INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,'gmail.com','outer',$2)`, u, *now)
-	if err == nil {
-		t.Fatal("a repair script could allowlist a forwarder as an outer origin")
+	// google.com, not gmail.com: this is the exact value origin.Origin.Outer
+	// holds for a Gmail forward, and the one the first version of this
+	// constraint accepted.
+	for _, d := range []string{"gmail.com", "google.com", "microsoft.com", "mail.google.com"} {
+		if _, err := pool.Exec(bg,
+			`INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,$2,'outer',$3)`,
+			u, d, *now); err == nil {
+			t.Fatalf("a repair script could allowlist %s as an outer origin", d)
+		}
 	}
 	// The inner scope is legitimate for the same domain: a user may genuinely
 	// bank with a domain we also see as a forwarder for someone else.
@@ -556,28 +623,29 @@ func TestTheDatabaseRefusesAForwarderOuterAllowlistWhenGoIsBypassed(t *testing.T
 	}
 }
 
-// TestTheSQLForwarderListMatchesGo keeps the two copies of §3.2:51's closed
-// list from drifting. The Go list is the source; the CHECK constraint is the
-// backstop for everything that is not this package.
-func TestTheSQLForwarderListMatchesGo(t *testing.T) {
+// TestTheSQLForwarderListMatchesOrigin keeps the CHECK constraint in step with
+// origin.ForwarderDomains, which is the single source. The behavioural test
+// above proves the constraint refuses today's list; this one fails the moment a
+// domain is added to Go without a migration, which is the drift that would
+// otherwise sit unnoticed until someone confirmed the new one.
+func TestTheSQLForwarderListMatchesOrigin(t *testing.T) {
 	_, _, pool := newStore(t)
 	var def string
 	if err := pool.QueryRow(bg, `SELECT pg_get_constraintdef(oid) FROM pg_constraint
 	  WHERE conname = 'sender_allowlist_no_forwarder_as_outer'`).Scan(&def); err != nil {
 		t.Fatal(err)
 	}
-	quoted := regexp.MustCompile(`'([a-z0-9.-]+)'`)
-	var inSQL []string
-	for _, m := range quoted.FindAllStringSubmatch(def, -1) {
-		if m[1] != ScopeOuter {
-			inSQL = append(inSQL, m[1])
-		}
+	// The constraint is a regex: (^|\.)(a\.com|b\.com|...)$
+	alt := regexp.MustCompile(`\(\^\|\\\.\)\(([^)]*)\)\$`).FindStringSubmatch(def)
+	if alt == nil {
+		t.Fatalf("could not read the forwarder alternation out of: %s", def)
 	}
-	want := append([]string(nil), Forwarders()...)
+	inSQL := strings.Split(strings.ReplaceAll(alt[1], `\.`, "."), "|")
+	want := append([]string(nil), origin.ForwarderDomains...)
 	sort.Strings(want)
 	sort.Strings(inSQL)
 	if strings.Join(want, ",") != strings.Join(inSQL, ",") {
-		t.Fatalf("SQL forwarder list %v does not match Go's %v", inSQL, want)
+		t.Fatalf("SQL forwarder list %v does not match origin.ForwarderDomains %v", inSQL, want)
 	}
 }
 
@@ -841,5 +909,60 @@ func TestConcurrentSweepsRemoveEachItemExactlyOnce(t *testing.T) {
 	}
 	if n := countRows(t, pool, "quarantine"); n != 0 {
 		t.Fatalf("%d items left", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The envelope sender
+// ---------------------------------------------------------------------------
+
+// TestTheEnvelopeSenderSurvivesForReingest is the reason the column exists. The
+// SMTP envelope arrives out of band and is nowhere in the stored message, so a
+// row that keeps only the blob has destroyed it — and origin.ResolveWithEnvelope
+// needs it to tell an ALIGNED signature from a bank's signature that survived a
+// forward. Without it, Task 30's re-ingest of confirmed mail could resolve the
+// same message as LESS trusted than when it arrived.
+func TestTheEnvelopeSenderSurvivesForReingest(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := forwarded(u, *now, "a")
+	it.EnvelopeFrom = "<bounce+xyz@googlemail.com>"
+	hold(t, s, it)
+
+	held, err := s.Held(bg, u, [][]byte{it.IngestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 || held[0].EnvelopeFrom != it.EnvelopeFrom {
+		t.Fatalf("the envelope sender did not survive: %+v", held)
+	}
+	// And a re-resolve gets the same envelope the first resolve saw.
+	if got := listAll(t, s, u); len(got) != 1 || got[0].EnvelopeFrom != it.EnvelopeFrom {
+		t.Fatalf("list dropped the envelope sender: %+v", got)
+	}
+}
+
+func TestANullSenderIsStorable(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	// A bounce arrives with MAIL FROM:<>, which smtpd reports as "". It is
+	// legitimate and must not be mistaken for a missing field.
+	hold(t, s, item(u, *now, "a"))
+	if got := listAll(t, s, u); len(got) != 1 || got[0].EnvelopeFrom != "" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestAForgedEnvelopeSenderCannotCarryALogLine(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "a")
+	it.EnvelopeFrom = "ok@dib.ae\r\nX-Forged: yes"
+	if err := s.Hold(bg, it); !errors.Is(err, ErrInvalidItem) {
+		t.Fatalf("a return path with a newline was accepted: %v", err)
+	}
+	it.EnvelopeFrom = "a@" + strings.Repeat("x", MaxEnvelopeFrom) + ".test"
+	if err := s.Hold(bg, it); !errors.Is(err, ErrInvalidItem) {
+		t.Fatalf("an oversize return path was accepted: %v", err)
 	}
 }
