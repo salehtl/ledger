@@ -390,10 +390,17 @@ func TestPrependedFromDoesNotBecomeTheInnerOrigin(t *testing.T) {
 	raw := append([]byte("From: DIB Notification <alerts@evil.test>\r\n"),
 		mustRead(t, "gmail-forward-inner-dkim.eml")...)
 
-	// The premise: this really does still pass both verifiers, and net/mail
-	// really is fooled. If either stops being true the test has lost its point.
-	if v := VerifyDKIM(context.Background(), raw, recordedLookup(t)); v.DKIM != SigPass {
-		t.Fatalf("premise gone: DKIM = %q", v.DKIM)
+	// The premise: net/mail really is fooled by the prepended line.
+	//
+	// VerifyDKIM used to be asserted to still return pass here, which was the
+	// honest description of it at the time: the signature does still verify,
+	// over the bottom-most From. It now refuses a message that carries two of
+	// any field RFC 5322 permits once, so the DKIM verdict is a refusal and
+	// singleFrom is no longer the only thing standing between a prepended
+	// header and an attestation. Both layers are asserted, because either one
+	// alone would close this and the other could then rot unnoticed.
+	if v := VerifyDKIM(context.Background(), raw, recordedLookup(t)); v.DKIM == SigPass {
+		t.Fatalf("a message with two From fields must not verify: %+v", v)
 	}
 	if m, err := mail.ReadMessage(bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)

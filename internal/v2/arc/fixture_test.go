@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -45,6 +47,59 @@ func TestFixtureLookupRefusesAnUnrecordedName(t *testing.T) {
 	}
 	if _, err := lookup(context.Background(), "nothing._domainkey.example.invalid"); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("lookup of an unrecorded name = %v, want ErrNoKey", err)
+	}
+}
+
+// The recording stands in for a resolver, so it has to answer the questions a
+// resolver would answer the same way. DNS labels are case-insensitive (RFC 4343)
+// and a trailing root dot names the same node, and go-msgauth builds its query
+// straight out of the signature's d= and s= with no folding of either — so
+// d=EmiratesNBD.com or d=emiratesnbd.com. resolve in production and used to miss
+// here, turning a verifiable message into a temperror for tests only. Divergence
+// was in the safe direction, but it meant every test in dkim_test.go ran against
+// different semantics from the ones that ship.
+func TestFixtureLookupMatchesNamesTheWayDNSDoes(t *testing.T) {
+	lookup, _, err := FixtureLookup(recordedDNS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := anyName(t, recordedDNS)
+	want, err := lookup(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []string{
+		strings.ToUpper(name),
+		strings.ToTitle(name),
+		name + ".",
+		strings.ToUpper(name) + ".",
+	} {
+		got, err := lookup(context.Background(), variant)
+		if err != nil {
+			t.Fatalf("lookup(%q) = %v, want the same answer as %q", variant, err, name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("lookup(%q) = %v, want %v", variant, got, want)
+		}
+	}
+}
+
+// A recording whose keys are written in mixed case must serve them too: the
+// file is generated from whatever d= the corpus messages carry.
+func TestFixtureLookupNormalizesTheRecordingItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.json")
+	if err := os.WriteFile(path, []byte(`{"S1._DomainKey.Example.COM.": ["v=DKIM1; p=AA"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookup, n, err := FixtureLookup(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("got %d records, want 1", n)
+	}
+	if _, err := lookup(context.Background(), "s1._domainkey.example.com"); err != nil {
+		t.Fatalf("lookup = %v, want the record", err)
 	}
 }
 
