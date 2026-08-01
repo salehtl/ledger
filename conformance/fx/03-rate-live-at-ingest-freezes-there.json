@@ -1,0 +1,72 @@
+{
+  "name": "rate-live-at-ingest-freezes-there",
+  "note": "The other side of the same rule: a rate that is already the head when the row arrives makes P = pos(T), so the row freezes at ingest rather than waiting for anything.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "rate-live-at-ingest-freezes-there-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "rate-live-at-ingest-freezes-there-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "USD",
+          "rate_micro": "3672500"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "rate-live-at-ingest-freezes-there-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000",
+      "USD": "3672500"
+    },
+    "snapshots": {
+      "t1": "36725"
+    },
+    "pending": {},
+    "anomalies": []
+  }
+}

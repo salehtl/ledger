@@ -1,0 +1,86 @@
+{
+  "name": "unknown-rate-null-snapshot",
+  "note": "A transaction whose currency has no rate is saved and shown in full with a null snapshot (§3.7:132). It is not dropped, not zeroed, and not guessed at. The two rows arrive in the order t2, t1 so that the pending list below is in SORTED order rather than arrival order — the one place this suite's ordering rule is load-bearing.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "unknown-rate-null-snapshot-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "unknown-rate-null-snapshot-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t2"
+        },
+        "ingest_id": "420fce314175df402adbeae3cfbbb85665b72d8b9bc2346f463e32a82f64b114",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t2",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "unknown-rate-null-snapshot-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000"
+    },
+    "snapshots": {
+      "t1": null,
+      "t2": null
+    },
+    "pending": {
+      "USD": [
+        "t1",
+        "t2"
+      ]
+    },
+    "anomalies": []
+  }
+}

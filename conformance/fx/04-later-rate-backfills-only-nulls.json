@@ -1,0 +1,137 @@
+{
+  "name": "later-rate-backfills-only-nulls",
+  "note": "A later rate_set backfills every still-null row of that currency and NOTHING else. t1 and t2 both freeze at the 3.6725 head; the 4.0 head at seq 5 reaches only t3, which is sequenced after it. An executor that re-froze at the final head would report 40000 for all three.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "later-rate-backfills-only-nulls-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "later-rate-backfills-only-nulls-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "later-rate-backfills-only-nulls-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "USD",
+          "rate_micro": "3672500"
+        }
+      }
+    },
+    {
+      "seq": "4",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "later-rate-backfills-only-nulls-4",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t2"
+        },
+        "ingest_id": "420fce314175df402adbeae3cfbbb85665b72d8b9bc2346f463e32a82f64b114",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t2",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "5",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "later-rate-backfills-only-nulls-5",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "USD",
+          "rate_micro": "4000000"
+        }
+      }
+    },
+    {
+      "seq": "6",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "later-rate-backfills-only-nulls-6",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t3"
+        },
+        "ingest_id": "9a83c6cb1126d93de4a30715b28f1f4b26b983c57fb39e6d826d7e893ae4ee74",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t3",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000",
+      "USD": "4000000"
+    },
+    "snapshots": {
+      "t1": "36725",
+      "t2": "36725",
+      "t3": "40000"
+    },
+    "pending": {},
+    "anomalies": []
+  }
+}

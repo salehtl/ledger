@@ -1,0 +1,88 @@
+{
+  "note": "Written by client/scripts/gen-fx-conformance.ts. Regenerate with `cd client && bun run gen-fx-conformance`; do not hand-edit. Every case is a complete log: fold `entries` in seq order (entries sharing a seq are one blob, applied in array order) and compare against `expect`. Every integer is a decimal string, including seq. null is a value: a null snapshot means no rate existed at or after that row's position, and a null rate head is a live rate_unset, which is not the same as a currency with no rate at all. `snapshots` names every transaction the fold materializes, superseded rows included. `pending` lists still-unfrozen live ids sorted by UTF-8 bytes, because the engine holds them in a set and Go would hold them in a map. `anomalies` is in fold order. Every case keeps amount_minor x rate_micro below 2^63-1 so an int64 executor can consume it unchanged.",
+  "schema_version": 1,
+  "conversion": "(amount_minor * rate_micro + 500000) / 1000000, truncating — half-up because amounts are positive",
+  "home_identity_micro": "1000000",
+  "cases": [
+    {
+      "file": "01-unknown-rate-null-snapshot.json",
+      "name": "unknown-rate-null-snapshot",
+      "note": "A transaction whose currency has no rate is saved and shown in full with a null snapshot (§3.7:132). It is not dropped, not zeroed, and not guessed at. The two rows arrive in the order t2, t1 so that the pending list below is in SORTED order rather than arrival order — the one place this suite's ordering rule is load-bearing."
+    },
+    {
+      "file": "02-home-currency-backfills-earlier-rows.json",
+      "name": "home-currency-backfills-earlier-rows",
+      "note": "P is the smallest position >= pos(T) at which a head rate exists, so a home-currency row ingested BEFORE onboarding freezes at the identity rate the onboarding op installs. Without the backfill it would stay null forever."
+    },
+    {
+      "file": "03-rate-live-at-ingest-freezes-there.json",
+      "name": "rate-live-at-ingest-freezes-there",
+      "note": "The other side of the same rule: a rate that is already the head when the row arrives makes P = pos(T), so the row freezes at ingest rather than waiting for anything."
+    },
+    {
+      "file": "04-later-rate-backfills-only-nulls.json",
+      "name": "later-rate-backfills-only-nulls",
+      "note": "A later rate_set backfills every still-null row of that currency and NOTHING else. t1 and t2 both freeze at the 3.6725 head; the 4.0 head at seq 5 reaches only t3, which is sequenced after it. An executor that re-froze at the final head would report 40000 for all three."
+    },
+    {
+      "file": "05-rate-unset-does-not-thaw.json",
+      "name": "rate-unset-does-not-thaw",
+      "note": "rate_unset makes later rows pending and leaves earlier freezes alone (§3.7:127). t2, ingested into the gap, waits for the NEXT rate and freezes at 5.0 — the smallest position >= its own at which a non-null head exists. A null head is a live fact, not a rate."
+    },
+    {
+      "file": "06-rate-set-for-home-currency-is-an-anomaly.json",
+      "name": "rate-set-for-home-currency-is-an-anomaly",
+      "note": "The home currency carries the implicit identity rate by construction (§3.7:124), so an op claiming a rate for it is an anomaly, not an instruction: applying it would silently re-denominate every later home-currency snapshot."
+    },
+    {
+      "file": "07-rate-unset-for-home-currency-is-an-anomaly.json",
+      "name": "rate-unset-for-home-currency-is-an-anomaly",
+      "note": "The symmetric refusal. Unsetting the identity would be unrecoverable — rate_set(H) is refused and home_currency_set is one-shot — so every home-currency row after it would snapshot null forever, which §3.7:133 forbids."
+    },
+    {
+      "file": "08-rate-set-before-home-currency-is-an-anomaly.json",
+      "name": "rate-set-before-home-currency-is-an-anomaly",
+      "note": "The same rule read from the other side of onboarding. A rate for the currency that later becomes home really did apply to rows sequenced before the onboarding op — t1 is frozen at 2.0 and stays there, because §3.7 never rewrites a frozen snapshot — so the identity takes over from seq 3 and the two-basis split is SURFACED rather than left to be discovered in a total."
+    },
+    {
+      "file": "09-supersede-recomputes-at-its-own-position.json",
+      "name": "supersede-recomputes-at-its-own-position",
+      "note": "A template fix that corrects a mis-detected currency (§3.2's heuristic tier is AED-shaped). The new row is computed at ITS OWN position — AED identity — and never inherits t1's USD-based number. t1 keeps the snapshot it froze at, because a supersede is a new value at a new position, not a rewrite of an old one."
+    },
+    {
+      "file": "10-superseded-row-is-not-backfilled.json",
+      "name": "superseded-row-is-not-backfilled",
+      "note": "t1 was still pending when it was superseded, so it leaves the pending index with it: a retired row is not a live transaction, and a later rate_set that froze a number onto it would be freezing a number nothing displays and every re-fold recomputes differently."
+    },
+    {
+      "file": "11-supersede-into-a-rated-currency-freezes.json",
+      "name": "supersede-into-a-rated-currency-freezes",
+      "note": "The other half of 'recomputes at its own position': a supersede must not be left permanently null either. t1 was pending in a currency with no rate; the corrected row lands in one that has a live head and freezes on the spot."
+    },
+    {
+      "file": "12-recompute-carries-the-value.json",
+      "name": "recompute-carries-the-value",
+      "note": "The 'recompute at current rate' action of §3.7:137 is a txn_edited that CARRIES the number, never an instruction to recompute later — replay stays a pure function of logged data. Setting it back to null re-arms the row for backfill, which the rate_set at seq 6 then performs."
+    },
+    {
+      "file": "13-bigint-intermediate-exceeds-a-double.json",
+      "name": "bigint-intermediate-exceeds-a-double",
+      "note": "amount_minor x rate_micro is 91815912878499999, past 2^53, and the exact result sits one unit below a half-up boundary. An executor that multiplies in float64 rounds the product UP to ...500000 and reports 91815912879 — one fil too many, from a number that looks entirely plausible. The product stays below 2^63-1 so an int64 executor gets the same answer this one does."
+    },
+    {
+      "file": "14-identity-is-exact-past-2-53.json",
+      "name": "identity-is-exact-past-2-53",
+      "note": "The identity rate is not a free pass: amount x 1000000 exceeds 2^53 for any amount past ~9e9, so a float64 executor loses the low digits of an ordinary home-currency row. 9007199254740 fils is 2^53 minor units, and the answer must be itself, digit for digit."
+    },
+    {
+      "file": "15-half-up-rounding-boundaries.json",
+      "name": "half-up-rounding-boundaries",
+      "note": "Half-up at the boundary, in both directions, through the real fold: 1 x 1.500000 rounds to 2 and 1 x 1.499999 rounds to 1. Truncating division is half-up here only because amounts are positive by invariant (direction carries the sign), which convert() asserts rather than assumes."
+    },
+    {
+      "file": "16-two-ops-in-one-blob.json",
+      "name": "two-ops-in-one-blob",
+      "note": "A client-authored blob carries several ops at ONE seq, so the order inside a blob is part of the total order. The rate_set and the ingest below share seq 2 with the rate first: the row freezes at ingest. Read the other way round it would be pending, so an executor that sorted by seq alone and lost intra-blob order would diverge here and nowhere else."
+    }
+  ]
+}

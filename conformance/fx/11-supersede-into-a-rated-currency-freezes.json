@@ -1,0 +1,97 @@
+{
+  "name": "supersede-into-a-rated-currency-freezes",
+  "note": "The other half of 'recomputes at its own position': a supersede must not be left permanently null either. t1 was pending in a currency with no rate; the corrected row lands in one that has a live head and freezes on the spot.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "supersede-into-a-rated-currency-freezes-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "supersede-into-a-rated-currency-freezes-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "EUR",
+          "rate_micro": "4000000"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "supersede-into-a-rated-currency-freezes-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "USD",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "4",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_superseded",
+        "op_id": "supersede-into-a-rated-currency-freezes-4",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t2"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "EUR",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t2",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000",
+      "EUR": "4000000"
+    },
+    "snapshots": {
+      "t1": null,
+      "t2": "40000"
+    },
+    "pending": {},
+    "anomalies": []
+  }
+}
