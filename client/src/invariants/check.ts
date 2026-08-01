@@ -1309,16 +1309,56 @@ const I12 = "I12_money_shape";
  * A home-currency snapshot of ZERO is accepted. Rounding half-up can genuinely
  * produce it (one minor unit at a tiny rate), and `amount_home_minor` is the one
  * money field that is a computed result rather than a parsed amount.
+ *
+ * # The unparsed row is the exception, and it is a two-sided one
+ *
+ * A message no tier resolved is appended anyway (spec §2's drop policy) with
+ * `0n`, `""` and `""` where the money would be — a shape every rule above
+ * rejects. So `unparsed` selects which rule set applies, and the checker asserts
+ * BOTH directions rather than merely relaxing one:
+ *
+ *   - an unparsed row must carry the empty shape *exactly*, because one carrying
+ *     a real amount is money hidden from every total on the device
+ *     (`countsTowardMoney` excludes it) rather than money shown wrongly, and
+ *   - a parsed row must carry money, unchanged from before.
+ *
+ * Relaxing only the first would be the mutant this exists to catch: a checker
+ * that simply allowed `0n` everywhere passes both an unparsed row and a broken
+ * parsed one, and `amount_minor === 0n` would then be the only thing left
+ * distinguishing them — which is precisely the inference the decoder refuses to
+ * let anyone make.
  */
 function checkMoneyShape(i: CheckInput): Violation[] {
   const out: Violation[] = [];
   for (const [id, t] of i.state.txns) {
+    // Every branch below keys on this flag, so a non-boolean here does not just
+    // mis-describe a row — a truthy string would read as unparsed and switch the
+    // money rules off entirely, disarming the checker with the field it uses to
+    // decide.
+    if (typeof t.unparsed !== "boolean") {
+      out.push(hard(I12, `${id}.unparsed is a ${typeof t.unparsed} (${JSON.stringify(String(t.unparsed))}), not a boolean`));
+    }
     if (typeof t.amount_minor !== "bigint") {
       out.push(hard(I12, `${id}.amount_minor is a ${typeof t.amount_minor} (${JSON.stringify(String(t.amount_minor))}), not a bigint`));
+    } else if (t.unparsed === true) {
+      if (t.amount_minor !== 0n) {
+        out.push(hard(I12, `${id} is unparsed and carries amount_minor ${t.amount_minor}; nothing was extracted, so there is no amount`));
+      }
+      if (t.currency !== "") {
+        out.push(hard(I12, `${id} is unparsed and carries currency ${JSON.stringify(t.currency)}; nothing was extracted, so there is no currency`));
+      }
+      if (t.direction !== "") {
+        out.push(hard(I12, `${id} is unparsed and carries direction ${JSON.stringify(t.direction)}; nothing was extracted, so there is no direction`));
+      }
+      if (t.amount_home_minor !== null) {
+        out.push(
+          hard(I12, `${id} is unparsed and carries amount_home_minor ${t.amount_home_minor}; there is no native amount to have converted`),
+        );
+      }
     } else if (t.amount_minor <= 0n) {
       out.push(hard(I12, `${id}.amount_minor is ${t.amount_minor}; amounts are always positive and direction carries the sign`));
     }
-    if (t.direction !== "debit" && t.direction !== "credit") {
+    if (t.unparsed !== true && t.direction !== "debit" && t.direction !== "credit") {
       out.push(hard(I12, `${id}.direction is ${JSON.stringify(t.direction)}, not debit or credit`));
     }
     if (t.amount_home_minor !== null) {

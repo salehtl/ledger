@@ -71,6 +71,7 @@ import {
   entityKey,
   fingerprint,
   markPending,
+  type ParseTier,
   type Split,
   type State,
   type Txn,
@@ -567,6 +568,9 @@ function createTxn(s: State, e: LogEntry, p: TxnPayload, superseding: boolean): 
     last4: p.last4,
     category: p.category,
     needs_review: p.needs_review,
+    unparsed: p.unparsed,
+    tier: p.tier,
+    parse_error: p.parse_error,
     provenance: e.writer_id === INGEST_WRITER_ID ? "ingest" : "user",
     // NEVER inherited from the row this supersedes (spec §3.7:129): a template
     // fix can change the amount or even the detected currency, so the snapshot
@@ -692,12 +696,22 @@ function applyTxnEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
   if (p.category !== undefined) t.category = p.category;
   if (p.needs_review !== undefined) t.needs_review = p.needs_review;
   if (p.amount_home_minor !== undefined) {
-    // Carried explicitly, never a "recompute later" instruction (spec §3.7:137),
-    // so replay stays a pure function of logged data.
-    t.amount_home_minor = p.amount_home_minor;
-    if (t.superseded_by === null) {
-      if (t.amount_home_minor === null) markPending(s, t);
-      else clearPending(s, t);
+    if (t.unparsed) {
+      // §3.7:137's explicit recompute is a user's decision about a conversion,
+      // and there is no amount here to have converted. Applying it would leave a
+      // home-currency figure attached to a row that carries no native amount and
+      // no currency — a number in a total whose provenance is nothing — and it
+      // is the one way `unparsed ⟹ amount_home_minor === null` becomes false, so
+      // `I12_money_shape` would then report a hard stop for a legal user op.
+      anomaly(s, seq, "unsupported_edit_field", `${t.id}: amount_home_minor cannot be set on an unparsed transaction, which has no amount to convert`);
+    } else {
+      // Carried explicitly, never a "recompute later" instruction (spec §3.7:137),
+      // so replay stays a pure function of logged data.
+      t.amount_home_minor = p.amount_home_minor;
+      if (t.superseded_by === null) {
+        if (t.amount_home_minor === null) markPending(s, t);
+        else clearPending(s, t);
+      }
     }
   }
   if (fingerprint(t) !== before && t.superseded_by === null) {
@@ -764,12 +778,15 @@ function unindexFingerprintAt(s: State, fp: string, id: string): void {
 interface TxnPayload {
   amount_minor: bigint;
   currency: string;
-  direction: "debit" | "credit";
+  direction: "debit" | "credit" | "";
   posted_at: string;
   merchant_raw: string;
   last4: string;
   category: string | null;
   needs_review: boolean;
+  unparsed: boolean;
+  tier: ParseTier;
+  parse_error: string | null;
 }
 interface CategorizePayload {
   category: string | null;
@@ -821,24 +838,155 @@ function decodePayload(op: Op): Payload {
   }
 }
 
+/**
+ * Decodes a `txn_ingested` / `txn_superseded` payload, in either of its two
+ * shapes: a transaction, or a message no tier could read.
+ *
+ * # The unparsed shape, and why it is checked rather than tolerated
+ *
+ * `internal/v2/ingest/pipeline.go` appends an op for every accepted message,
+ * resolved or not, and an unresolved one carries `amount_minor: "0"`,
+ * `currency: ""`, `direction: ""`, `tier: "none"`, `unparsed: true`. Every one of
+ * those three money fields is refused by the strict decoders below, so before
+ * this task the whole op became an `invalid_payload` anomaly and the message was
+ * invisible — which is the review queue's entire input, missing.
+ *
+ * The flag is what selects the shape, and the two are then held to each other:
+ *
+ *   - **`unparsed: true` requires the empty money shape.** A writer that flagged
+ *     a row unparsed while carrying a real amount would hide a transaction the
+ *     user paid for from every total on the device — {@link countsTowardMoney}
+ *     excludes it — with no signal anywhere. Refused.
+ *   - **A parsed row still requires a positive amount.** Zero is not money
+ *     movement, and Go refuses it upstream for exactly this reason
+ *     (`carriesMoney` in `pipeline.go`: it "turns an undecodable *trusted* op
+ *     into an honest unparsed one"). Admitting it here would make a real row and
+ *     an empty one indistinguishable by amount, which is how a consumer ends up
+ *     inferring `unparsed` from `amount_minor === 0n` and getting it wrong.
+ *   - **`unparsed: true` requires `tier: "none"`.** No cascade both produces a
+ *     transaction and reports nothing extracted.
+ *   - **`needs_review` may not be false on an unparsed row.** It is the only
+ *     surface such a row has; one that opted out of review would be a message
+ *     retained, per §2, and then shown to nobody.
+ *
+ * The converse of the third rule does **not** hold and must not be enforced:
+ * `tier: "none"` with `unparsed: false` is every client-authored op — a CSV
+ * import (Decision 9), a manual entry — and those carry real money. An absent
+ * `tier` reads as `"none"` for the same reason.
+ *
+ * `merchant_raw`, `last4` and `category` are left free on an unparsed row. Today
+ * the pipeline sends them empty, but a future tier that recovered a merchant and
+ * no amount would be telling the truth, and refusing it would cost the review
+ * queue the one useful thing it had.
+ */
 function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
   const category = optionalCategory(p["category"]);
-  return {
-    amount_minor: positiveMoney(p["amount_minor"], "amount_minor"),
-    currency: currencyOf(p, "currency"),
-    direction: direction(p["direction"]),
+  const tier = tierOf(p["tier"]);
+  // Absent means PARSED. A writer that omits the flag is claiming money, which
+  // is the right default: every op authored before this field existed, and every
+  // op a client authors, carries a real amount.
+  const unparsed = bool(p["unparsed"], false);
+  const parse_error = parseErrorOf(p["parse_error"]);
+  const common = {
     posted_at: instant(p["posted_at"], "posted_at"),
     merchant_raw: optionalString(p["merchant_raw"], "merchant_raw") ?? "",
     last4: optionalString(p["last4"], "last4") ?? "",
     category,
+    unparsed,
+    tier,
+    parse_error,
+  };
+
+  if (unparsed) {
+    if (tier !== "none") {
+      throw new PayloadError(`unparsed is true but tier is ${JSON.stringify(tier)}: nothing was extracted, so no tier produced it`);
+    }
+    const amount = parseMoney(p["amount_minor"] ?? "0", "amount_minor");
+    if (amount !== 0n) {
+      throw new PayloadError(`unparsed is true but amount_minor is ${amount}: an unparsed message carries no amount`);
+    }
+    const ccy = p["currency"];
+    if (ccy !== undefined && ccy !== "") {
+      throw new PayloadError(`unparsed is true but currency is ${JSON.stringify(ccy)}: an unparsed message carries no currency`);
+    }
+    const dir = p["direction"];
+    if (dir !== undefined && dir !== "") {
+      throw new PayloadError(`unparsed is true but direction is ${JSON.stringify(dir)}: an unparsed message carries no direction`);
+    }
+    if (bool(p["needs_review"], true) !== true) {
+      throw new PayloadError("unparsed is true but needs_review is false: an unparsed message is a review item");
+    }
+    return { ...common, amount_minor: 0n, currency: "", direction: "", needs_review: true };
+  }
+
+  if (parse_error !== null) {
+    throw new PayloadError(`parse_error is ${JSON.stringify(parse_error)} on a row that is not unparsed`);
+  }
+  return {
+    ...common,
+    amount_minor: positiveMoney(p["amount_minor"], "amount_minor"),
+    currency: currencyOf(p, "currency"),
+    direction: direction(p["direction"]),
     // A transaction with no category is a review item by construction; an
     // explicit flag in the payload still wins.
     needs_review: bool(p["needs_review"], category === null),
   };
 }
 
-/** Fields an edit may not touch: they come from the parse (spec §3.7:129). */
-const PARSE_OWNED = ["amount_minor", "currency", "direction"];
+const TIERS: ReadonlySet<string> = new Set(["template", "heuristic", "none"]);
+
+/** The tier that produced a row. Absent reads as `"none"`: no tier did. */
+function tierOf(v: unknown): ParseTier {
+  if (v === undefined) return "none";
+  if (typeof v !== "string" || !TIERS.has(v)) {
+    throw new PayloadError(`tier must be template|heuristic|none, got ${JSON.stringify(v)}`);
+  }
+  return v as ParseTier;
+}
+
+/**
+ * The reason the cascade gave up, as a short lower-snake token.
+ *
+ * # Shape, not membership, and the gap that leaves
+ *
+ * The plan calls for a value "from a closed set; never body text". The set is the
+ * *pipeline's* to define and it does not define one yet — `txnPayload` in
+ * `pipeline.go` has no `parse_error` field at all, so every op in existence
+ * omits this and reads as null. Enumerating four plausible reasons here would be
+ * inventing protocol for a writer that emits none, and would then refuse the
+ * fifth reason Go eventually adds.
+ *
+ * So what is enforced is the half that is this executor's to enforce, and it is
+ * the half that carries the risk: a token cannot be body text. No spaces, no
+ * punctuation, 64 characters at most. This op rides in the HOT stream — the one
+ * the cold/hot split exists to keep email bodies out of — so a free-text reason
+ * would put a fragment of a message into the lane that is not supposed to hold
+ * one, and in Phase 3 into a differently-keyed one. The gap is recorded in the
+ * task report: when the pipeline gains reasons, the set belongs here.
+ */
+const PARSE_ERROR_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
+
+function parseErrorOf(v: unknown): string | null {
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v !== "string") throw new PayloadError(`parse_error must be a string or null, got ${JSON.stringify(v)}`);
+  if (!PARSE_ERROR_TOKEN.test(v)) {
+    throw new PayloadError(`parse_error ${JSON.stringify(v)} is not a lower-snake token: a reason is a code, never message text`);
+  }
+  return v;
+}
+
+/**
+ * Fields an edit may not touch: they come from the parse (spec §3.7:129).
+ *
+ * `unparsed`, `tier` and `parse_error` are on this list for the same reason the
+ * money fields are — re-reading a message is what `txn_superseded` is for, and
+ * it is the only op that recomputes the FX snapshot at its own position. Being
+ * on the list matters even though {@link applyTxnEdit} never assigns them: a
+ * decoder that simply does not read a key ignores it *silently*, and a client
+ * correcting a row would watch its op land, consume a version and change
+ * nothing, with no anomaly anywhere. §2 says nothing is ever silently dropped.
+ */
+const PARSE_OWNED = ["amount_minor", "currency", "direction", "unparsed", "tier", "parse_error"];
 
 function decodeEditPayload(p: Record<string, unknown>): EditPayload {
   const out: EditPayload = { rejected: PARSE_OWNED.filter((k) => p[k] !== undefined) };
@@ -914,15 +1062,48 @@ function direction(v: unknown): "debit" | "credit" {
   return v;
 }
 
-/** Canonicalised on the way in, so the fingerprint day is stable across replicas. */
+/**
+ * Canonicalised on the way in, so the fingerprint day is stable across replicas.
+ *
+ * # The canonical form has to be readable back, and it is not always
+ *
+ * The wire grammar admits a four-digit year with a UTC offset of up to ±23:59,
+ * so `9999-12-31T23:59:59-23:59` is a legal `posted_at` that lands in year
+ * 10000. `canonicalTime` then writes it in ISO *expanded-year* form,
+ * `"+010000-01-01T23:58:59.000Z"` — which `parseInstantMs` refuses, because the
+ * grammar it enforces (deliberately, to match Go) has exactly four year digits.
+ *
+ * That combination used to reach the state, and then `fingerprint` re-parsed the
+ * stored string and threw `BlobDecodeError` from inside `createTxn`. It is not a
+ * `PayloadError`, so it escaped {@link applyOp}'s catch and took down the whole
+ * fold: one legal message and the device can never sync again.
+ *
+ * There is a second, quieter reason to refuse rather than to store it: the two
+ * executors do not even *spell* it the same way. Go's `Format(RFC3339)` renders
+ * year 10000 as `10000-01-01T…` and JavaScript's `toISOString` as
+ * `+010000-01-01T…`, so a payload in this range is one the executors would fold
+ * to different bytes. A value neither side can read back is not one to
+ * canonicalise; it is one to record as an anomaly, which is a visible refusal
+ * that keeps the message in the log and every other op folding.
+ *
+ * The check is the round trip itself rather than a year-range test, so it cannot
+ * drift from whatever `canonicalTime` actually produces.
+ */
 function instant(v: unknown, what: string): string {
   if (typeof v !== "string") throw new PayloadError(`${what} must be an RFC3339 timestamp, got ${JSON.stringify(v)}`);
+  let canonical: string;
   try {
     parseInstantMs(v);
-    return canonicalTime(v);
+    canonical = canonicalTime(v);
   } catch (err) {
     throw new PayloadError(`${what}: ${(err as Error).message}`);
   }
+  try {
+    parseInstantMs(canonical);
+  } catch {
+    throw new PayloadError(`${what} ${JSON.stringify(v)} canonicalises to ${JSON.stringify(canonical)}, which is outside the range this wire format can carry`);
+  }
+  return canonical;
 }
 
 function requiredString(v: unknown, what: string): string {

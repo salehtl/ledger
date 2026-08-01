@@ -93,6 +93,26 @@ const rateSet = (ccy: string, micro: string, at = "2026-06-01T00:01:00Z"): Op =>
 const ingested = (ingest: string, txnId: string, over: TxnFields = {}, at = "2026-06-05T09:00:05Z"): Op =>
   mk("txn_ingested", at, { entity: { kind: "txn", id: txnId }, ingest_id: ingestID(ingest), payload: txnPayload(over) });
 
+/** The payload `internal/v2/ingest/pipeline.go` appends when no tier resolved a message. */
+const unparsedIngest = (ingest: string, txnId: string, at = "2026-06-05T09:30:00Z"): Op =>
+  mk("txn_ingested", at, {
+    entity: { kind: "txn", id: txnId },
+    ingest_id: ingestID(ingest),
+    payload: {
+      amount_minor: "0",
+      currency: "",
+      direction: "",
+      posted_at: "2026-06-05T09:00:00Z",
+      merchant_raw: "",
+      last4: "",
+      is_transfer: false,
+      tier: "none",
+      needs_review: true,
+      unparsed: true,
+      normalizer_version: 3,
+    },
+  });
+
 const superseded = (ingest: string, txnId: string, over: TxnFields = {}, at = "2026-06-06T09:00:05Z"): Op =>
   mk("txn_superseded", at, {
     entity: { kind: "txn", id: txnId },
@@ -1159,6 +1179,49 @@ test("I12 accepts a zero home-currency snapshot, which rounding can legitimately
   const input = cleanInput();
   input.state.txns.get("t2")!.amount_home_minor = 0n;
   expect(stopIDs(checkAll(input))).not.toContain("I12_money_shape");
+});
+
+test("I12 accepts the zero-amount shape of an unparsed row, and only there", () => {
+  // An unparsed message carries no amount, no currency and no direction — the
+  // pipeline appends "0"/""/"" — so the shape rule that is right for every other
+  // row is exactly wrong for this one. Accepting it unconditionally would be
+  // worse: `amount_minor === 0n` on a row claiming to be parsed is a transaction
+  // nothing can spend, and the flag is the only thing that distinguishes them.
+  const clean = cleanInput({ plans: [...hotPlans(), { writer: "ingest", ops: [unparsedIngest("u1", "u1")] }] });
+  expect(clean.state.txns.get("u1")!.unparsed).toBe(true);
+  expect(stopIDs(checkAll(clean))).not.toContain("I12_money_shape");
+
+  // Flip the flag off and the very same row is a violation. This is the mutant
+  // the guard exists for: a checker that dropped the `unparsed` condition and
+  // simply allowed zero amounts would pass both halves.
+  const flipped = cleanInput({ plans: [...hotPlans(), { writer: "ingest", ops: [unparsedIngest("u1", "u1")] }] });
+  flipped.state.txns.get("u1")!.unparsed = false;
+  expect(stopIDs(checkAll(flipped))).toContain("I12_money_shape");
+});
+
+test("I12 fires on an unparsed row that carries money anyway", () => {
+  // The direction that hides money rather than inventing it: a row flagged
+  // unparsed is excluded from every total on the device, so one that carries a
+  // real amount is a transaction the user paid for and will never see.
+  for (const mutate of [
+    (t: { amount_minor: bigint }) => (t.amount_minor = 25_000n),
+    (t: { currency: string }) => (t.currency = "AED"),
+    (t: { direction: string }) => (t.direction = "debit"),
+    (t: { amount_home_minor: bigint | null }) => (t.amount_home_minor = 25_000n),
+  ]) {
+    const input = cleanInput({ plans: [...hotPlans(), { writer: "ingest", ops: [unparsedIngest("u1", "u1")] }] });
+    mutate(input.state.txns.get("u1") as never);
+    expect(stopIDs(checkAll(input))).toContain("I12_money_shape");
+  }
+});
+
+test("I12 fires when the unparsed flag itself is not a boolean", () => {
+  // Every branch above keys on it, so a state that reached the checker with a
+  // truthy string there would be read as unparsed and skip the money rules
+  // entirely — the checker disarmed by the field it uses to decide.
+  const input = cleanInput();
+  (input.state.txns.get("t2") as unknown as { unparsed: unknown }).unparsed = "true";
+  expect(stopIDs(checkAll(input))).toContain("I12_money_shape");
 });
 
 // ---------------------------------------------------------------------------

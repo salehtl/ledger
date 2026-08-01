@@ -10,8 +10,14 @@
  * reaches the same state** — so every field here has to be a deterministic
  * function of `(the ops, their seq order)` and nothing else. In particular:
  *
- *   - **No wall clock.** Nothing here reads `Date.now()`. `authored_at` is read
- *     only as a fork tiebreak, and only through `parseInstantMs`.
+ *   - **No clock and no `Date` at all.** Nothing here reads `Date.now()`, and —
+ *     since Phase 2 Task 7 — nothing constructs a `Date` either. The weaker
+ *     claim this bullet used to make covered only `Date.now()`, and it let a
+ *     `new Date(ms).toISOString()` sit inside {@link fingerprint}, which is a
+ *     value fork resolution and dedup compare. See {@link utcDay} for what that
+ *     cost. `authored_at` is read only as a fork tiebreak, and only through
+ *     `parseInstantMs`, which range-checks and computes arithmetically for the
+ *     same reason.
  *   - **No floats in money.** `amount_minor`, `amount_home_minor`, split parts
  *     and rate micros are `bigint`. A `number` is a bug — the FX intermediate
  *     product exceeds 2^53 long before the result does (spec §3.7:125).
@@ -48,6 +54,18 @@ export interface Split {
 }
 
 /**
+ * The extraction tier that produced a transaction. The same closed set as Go's
+ * `diag.TierTemplate` / `TierHeuristic` / `TierNone`.
+ *
+ * `"none"` does **not** mean `unparsed`. It means "no extraction tier produced
+ * this row", which is also true of every op a *client* authors — a CSV import, a
+ * manual entry — and those carry real money. Only {@link Txn.unparsed} says the
+ * row is empty. The implication runs one way and one way only:
+ * `unparsed ⟹ tier === "none"`, enforced on decode.
+ */
+export type ParseTier = "template" | "heuristic" | "none";
+
+/**
  * A transaction as the client shows it.
  *
  * `id` is the entity id (`op.entity.id`); `ingest_id` is the sha256 of the raw
@@ -59,13 +77,55 @@ export interface Txn {
   ingest_id: string;
   amount_minor: bigint;
   currency: string;
-  direction: "debit" | "credit";
+  /**
+   * `""` **only** when {@link Txn.unparsed} — nothing was extracted, so there is
+   * no direction, and the type says so rather than leaving a consumer to
+   * discover it. Narrow with {@link countsTowardMoney} before treating it as a
+   * sign; `I12_money_shape` rejects `""` on any row that is not unparsed.
+   */
+  direction: "debit" | "credit" | "";
   /** RFC3339 UTC, canonicalised on decode so the fingerprint day is stable. */
   posted_at: string;
   merchant_raw: string;
   last4: string;
   category: string | null;
   needs_review: boolean;
+  /**
+   * No tier extracted anything: this row is a message that arrived, not money
+   * that moved. `amount_minor` is `0n`, `currency` and `direction` are `""`, and
+   * `amount_home_minor` is null and stays null.
+   *
+   * # Why the row exists at all
+   *
+   * Spec §2's drop policy. The pipeline appends an op for every message it
+   * accepts, resolved or not (`pipeline.go` step 7: *"nothing matched — still
+   * appended, flagged unparsed"*), because a message that exists nowhere cannot
+   * answer "my transactions stopped appearing". The review queue is where it
+   * surfaces, joined to its cold-stream raw body by {@link Txn.ingest_id}, and a
+   * later template fix supersedes it into a real transaction.
+   *
+   * # What every consumer owes it
+   *
+   * **Exclusion from money math**, via {@link countsTowardMoney} rather than by
+   * re-deriving the rule. Treating one as a zero-amount debit is not a visible
+   * error — it adds zero to a total — it is a row that silently joins the
+   * transaction count, the direction split and the currency breakdown of a
+   * budget it has no business being in.
+   */
+  unparsed: boolean;
+  /** Which tier produced this row. See {@link ParseTier}: `"none"` is not `unparsed`. */
+  tier: ParseTier;
+  /**
+   * Why the cascade gave up, when the pipeline says. Null on a parsed row, and
+   * null on an unparsed one whose writer offered no reason — which is every one
+   * of them today, since the Go pipeline does not yet emit this field.
+   *
+   * Constrained on decode to a short lower-snake token, never free text: this
+   * rides in the HOT stream, which the cold stream exists to keep email bodies
+   * out of. A reason that could carry a fragment of a message body would put
+   * plaintext in the one lane designed not to hold it.
+   */
+  parse_error: string | null;
   /**
    * Derived from the WRITER the blob was attributed to, never from the payload.
    * Spec §3.3(b) requires the UI to distinguish server-ingested from
@@ -258,8 +318,29 @@ export function entityKey(kind: string, id: string): string {
 // re-checks at the freeze site that would silently paper over a break.
 // ---------------------------------------------------------------------------
 
-/** Files a live, unfrozen transaction under its currency for later conversion. */
+/**
+ * Reports whether a row carries money an aggregate may sum, count or bucket.
+ *
+ * The single place the rule lives, so that a total, a count, a direction split
+ * and a currency breakdown cannot each answer it differently. It is a function
+ * rather than a comment because "every aggregate excludes unparsed rows" is only
+ * true if every aggregate calls the same thing.
+ */
+export function countsTowardMoney(t: Txn): boolean {
+  return !t.unparsed;
+}
+
+/**
+ * Files a live, unfrozen transaction under its currency for later conversion.
+ *
+ * An unparsed row is refused entry. Its currency is `""`, which `rate_set`
+ * cannot name — `currencyOf` requires three letters — so the bucket it would sit
+ * in is one no op in the vocabulary can ever drain, and it would grow with every
+ * unresolved message for the life of the log. The guard lives here rather than at
+ * the two call sites because the index's meaning is defined here.
+ */
 export function markPending(s: State, t: Txn): void {
+  if (t.unparsed) return;
   if (t.amount_home_minor !== null) return;
   const set = s.pendingByCurrency.get(t.currency);
   if (set === undefined) s.pendingByCurrency.set(t.currency, new Set([t.id]));
@@ -278,13 +359,19 @@ export function clearPending(s: State, t: Txn): void {
 
 /**
  * The cross-source duplicate heuristic of spec §3.3:67 —
- * `last4|amount|direction|merchant|day`.
+ * `last4|amount|direction|merchant|day`, and `unparsed|ingest_id` for a row that
+ * has none of those.
  *
- * Two things about it are deliberate:
+ * Three things about it are deliberate:
  *
  *   - **The day comes from the parsed instant, not from slicing the string.**
  *     `2026-06-05T22:00:00-04:00` is the 6th in UTC; a substring would read the
  *     5th and manufacture a collision one executor sees and the other does not.
+ *     It is computed by {@link utcDay}, arithmetically, with no `Date`.
+ *   - **An unparsed row is fingerprinted on its ingest id**, because the five
+ *     fields above are empty for every one of them and would collapse the whole
+ *     day's backlog into a single bucket. The two forms cannot collide: see the
+ *     body.
  *   - **`|` is not escaped**, so a merchant containing a pipe can in principle
  *     collide with a different transaction. That is accepted rather than fixed
  *     because a fingerprint hit is only ever a *notice* — it never drops, merges
@@ -293,8 +380,90 @@ export function clearPending(s: State, t: Txn): void {
  *     cross-executor contract.
  */
 export function fingerprint(t: Txn): string {
-  const day = new Date(parseInstantMs(t.posted_at)).toISOString().slice(0, 10);
-  return `${t.last4}|${t.amount_minor}|${t.direction}|${t.merchant_raw}|${day}`;
+  // An unparsed row has nothing to fingerprint ON: last4, amount, direction and
+  // merchant are all empty by construction, so the heuristic form collapses to
+  // `||0|||day` and EVERY unresolved message on a given day becomes a possible
+  // duplicate of every other. Phase 1's exit run produced 18 such anomalies from
+  // a corpus of two distinct messages, which is what a review queue built on
+  // this would show a user on their first week.
+  //
+  // The ingest id is the right discriminator and not merely a unique one: it is
+  // the sha256 of the raw body, so it is exactly the identity dedup already keys
+  // on (spec §3.3:67), and `liveByIngestID` guarantees at most one live row per
+  // value — a second ingest of the same email is a `duplicate_ingest` anomaly
+  // and a supersede retires its predecessor out of the index first. So this is
+  // still the duplicate heuristic, applied to the only field an unparsed message
+  // has, rather than a special case that opts out of it.
+  //
+  // The two forms occupy DISJOINT namespaces structurally: the parsed form emits
+  // four separators unconditionally, so a two-segment value is unreachable from
+  // it no matter what a merchant contains. That matters because `|` is not
+  // escaped (below) — a discriminator that relied on a prefix no merchant
+  // happens to spell would be a rule a user could break by typing.
+  if (t.unparsed) return `unparsed|${t.ingest_id}`;
+  return `${t.last4}|${t.amount_minor}|${t.direction}|${t.merchant_raw}|${utcDay(parseInstantMs(t.posted_at))}`;
+}
+
+/**
+ * The UTC calendar day of an epoch-millisecond instant, `YYYY-MM-DD`.
+ *
+ * # Why this is not `new Date(ms).toISOString().slice(0, 10)`
+ *
+ * That expression was inside {@link fingerprint}, which is inside the frozen
+ * cross-executor contract, and it had two defects — one live, one waiting.
+ *
+ *   1. **It could crash the fold.** `posted_at` is stored canonicalised
+ *      (`canonicalTime`), and the wire grammar admits a four-digit year with an
+ *      offset up to ±23:59 — so `9999-12-31T23:59:59-23:59` canonicalises to
+ *      ISO *expanded-year* form, `"+010000-01-01T23:58:59.000Z"`. `slice(0, 10)`
+ *      then reads `"+010000-01"`, and the re-parse this function had to perform
+ *      to get there threw `BlobDecodeError` — which is not a `PayloadError`, so
+ *      it escaped `applyOp`'s catch and took down the whole fold. One legal
+ *      message, one device that can never sync again.
+ *   2. **It made a frozen value depend on a `Date` round trip.** `Date` is the
+ *      one part of the runtime this codebase already refuses to trust across
+ *      executors (see `parseInstantMs`, which range-checks and computes the
+ *      instant arithmetically rather than letting `Date.parse` have a say). The
+ *      second executor of this engine will be Hermes, and putting a `Date`
+ *      construction inside the value fork resolution and dedup compare is the
+ *      same bet, taken again, in the one function whose output must be identical
+ *      everywhere.
+ *
+ * So: integer arithmetic, no `Date`, no allocation, total over every finite
+ * input. The civil-from-days algorithm is Howard Hinnant's, shifted to a
+ * March-based year so the leap day lands at the end of the cycle; it is exact
+ * for the whole proleptic Gregorian calendar, and `replay.test.ts` pins it
+ * against the expression it replaces across the range where that expression was
+ * trustworthy at all.
+ *
+ * Years outside 0000-9999 are written with an explicit sign and six digits, the
+ * ISO expanded form — a whole date rather than the truncated fragment the old
+ * expression produced, and unambiguous against the four-digit form.
+ */
+export function utcDay(epochMs: number): string {
+  const days = Math.floor(epochMs / 86_400_000);
+  // Shift the era origin to 0000-03-01 so February is the last month of the
+  // year and no leap-day special case is needed anywhere below.
+  const z = days + 719_468;
+  const era = Math.floor(z / 146_097);
+  const doe = z - era * 146_097; // day of era, 0..146096
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36_524) - Math.floor(doe / 146_096)) / 365);
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100)); // 0..365, from March 1
+  const mp = Math.floor((5 * doy + 2) / 153); // 0..11, March = 0
+  const day = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const month = mp < 10 ? mp + 3 : mp - 9;
+  const year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+  return `${padYear(year)}-${pad2(month)}-${pad2(day)}`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
+}
+
+function padYear(y: number): string {
+  if (y >= 0 && y <= 9999) return `${y}`.padStart(4, "0");
+  const sign = y < 0 ? "-" : "+";
+  return sign + `${Math.abs(y)}`.padStart(6, "0");
 }
 
 /**

@@ -139,6 +139,35 @@ export function superseded(ingest: string, txnId: string, over: TxnFields = {}, 
   });
 }
 
+/**
+ * The payload `internal/v2/ingest/pipeline.go` appends when no tier resolved a
+ * message: zero money, no currency, no direction, `tier: "none"`.
+ *
+ * No conformance case uses it — an unparsed row has no currency, so it takes no
+ * part in FX and pinning one would state a rule about a value that does not
+ * exist. It is here because the sample log in `fx.test.ts` does use it, and the
+ * builders and the cases have to stay one vocabulary.
+ */
+export function unparsedIngest(ingest: string, txnId: string, writer = "ingest"): Authored {
+  return mk("txn_ingested", writer, {
+    entity: { kind: "txn", id: txnId },
+    ingest_id: ingestID(ingest),
+    payload: {
+      amount_minor: "0",
+      currency: "",
+      direction: "",
+      posted_at: "2026-06-05T09:00:00Z",
+      merchant_raw: "",
+      last4: "",
+      is_transfer: false,
+      tier: "none",
+      needs_review: true,
+      unparsed: true,
+      normalizer_version: 3,
+    },
+  });
+}
+
 export function edited(txnId: string, parentVersion: number, patch: Record<string, unknown>, writer = "dev-a"): Authored {
   return mk("txn_edited", writer, {
     entity: { kind: "txn", id: txnId },
