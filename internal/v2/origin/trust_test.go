@@ -408,9 +408,12 @@ func TestForwarderMatchingIsPermissive(t *testing.T) {
 // the other way round: a name wrongly on it can attest any bank it likes.
 func TestSealerTrustIsExactMatch(t *testing.T) {
 	// Equality, not containment: this list is the opposite risk to the
-	// forwarder one, so a fourth entry is a deliberate act needing its own
+	// forwarder one, so a further entry is a deliberate act needing its own
 	// evidence and a missing entry is a forwarder losing its ARC fallback.
-	want := []string{"google.com", "icloud.com", "microsoft.com"}
+	// TestEverySealerWeTrustCanActuallyAttestAForwardItSealed is the other half
+	// — this pins the membership, that one pins what the membership BUYS, and
+	// neither alone would notice a domain that is listed but never reached.
+	want := []string{"google.com", "icloud.com", "messagingengine.com", "microsoft.com"}
 	if !slices.Equal(slices.Sorted(slices.Values(TrustedSealers)), want) {
 		t.Errorf("TrustedSealers = %v, want exactly %v", TrustedSealers, want)
 	}

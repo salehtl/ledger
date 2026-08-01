@@ -1302,3 +1302,183 @@ func (s *synth) build() []byte {
 	}
 	return raw
 }
+
+// ---------------------------------------------------------------------------
+// Forwarders that are not hyperscalers
+// ---------------------------------------------------------------------------
+//
+// b5089cc made "is there a forwarder to see behind?" a question only a trusted
+// ARC sealer can answer. That is right, and the tests above are why. But it
+// narrowed the set of forwarders that produce an INNER origin from "anything
+// the envelope disagreed with" to "google.com, icloud.com, microsoft.com", and
+// the users behind every other provider went with it.
+//
+// The block below is that surface, split into the two shapes it actually has —
+// because they have different answers, and conflating them is what produced the
+// claim that a Fastmail or Proton user cannot onboard at all.
+
+// A Fastmail forward is a forward. It is the same shape as the gmail fixtures —
+// a one-hop chain whose instance-1 AAR reports the bank's own passing signature
+// — and before this test the only thing standing between it and an attestation
+// was that messagingengine.com was not on [TrustedSealers].
+//
+// The evidence for the entry is recorded at [TrustedSealers]. The shape here is
+// taken from a real Fastmail ARC set, not invented: seal domain
+// messagingengine.com, selector fm3, authserv-id mx6.messagingengine.com.
+func TestAFastmailForwardIsAttestedTheSameWayAGmailOneIs(t *testing.T) {
+	direct := mustRead(t, "dib-dkim-unexpired.eml")
+	c := synthOver(t, direct, "DIB Notification <DIB.notification@dib.ae>")
+	c.seal(1, "messagingengine.com", "fm3",
+		"mx6.messagingengine.com; dkim=pass header.d=dib.ae header.i=@dib.ae; "+
+			"spf=pass smtp.mailfrom=DIB.notification@dib.ae; dmarc=pass header.from=dib.ae")
+	raw := c.build()
+	lookup := mergedLookup(t, c.recs)
+
+	got := ResolveWithEnvelope(context.Background(), raw, "srs0=abc=xy=dib.ae=DIB.notification@fastmail.com", lookup)
+	if got.DKIM != SigPass || got.ARC != SigPass {
+		t.Fatalf("premise gone: both must verify: %+v", got)
+	}
+	if !got.Attested || got.Inner != "dib.ae" || got.AttestedBy != AttestedByDKIM {
+		t.Fatalf("a Fastmail forward of genuine bank mail is not attested: %+v", got)
+	}
+	if got.Outer != "messagingengine.com" {
+		t.Fatalf("Outer = %q, want the sealing hop that handed us the message", got.Outer)
+	}
+	// And it is RELEASABLE: the row the user confirms is the bank at the inner
+	// scope, which is the row spec section 3.2:47 onboards every alpha through.
+	if d := decide(t, allow("dib.ae|inner"), got); !d.Trusted || d.Scope != ScopeInner {
+		t.Fatalf("the confirmed bank could not be released: %+v", d)
+	}
+}
+
+// The ARC fallback for the same provider: the forward did not leave the bank's
+// signature verifiable, so the only evidence left is instance 1's report — and
+// that report is worth reading exactly because the seal above it is one we
+// believe. This is the path that is UNREACHABLE by any other route, and it is
+// the reason the fix is a trust-set entry rather than a note in the docs.
+func TestAFastmailForwardThatLostTheBanksSignatureFallsBackToARC(t *testing.T) {
+	c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "srs0=abc@fastmail.com")
+	c.seal(1, "messagingengine.com", "fm3",
+		"mx6.messagingengine.com; dkim=pass header.d=dib.ae header.i=@dib.ae; spf=pass")
+	got := Resolve(context.Background(), c.build(), c.dns())
+
+	if got.DKIM == SigPass {
+		t.Fatalf("premise gone: this test is only about the ARC path: %+v", got)
+	}
+	if !got.Attested || got.Inner != "dib.ae" || got.AttestedBy != AttestedByARC {
+		t.Fatalf("the ARC fallback did not fire for a trusted non-hyperscaler sealer: %+v", got)
+	}
+	if d := decide(t, allow("dib.ae|inner"), got); !d.Trusted {
+		t.Fatalf("the confirmed bank could not be released: %+v", d)
+	}
+}
+
+// The mutation test the review asked for, one row per entry, written out in
+// full. Deleting a domain from [TrustedSealers] deletes exactly one provider's
+// users, silently — a shrinking closed list is invisible to every test that
+// iterates the list itself, which is how apple.com, messagingengine.com and
+// protonmail.ch were once deleted from [ForwarderDomains] with a green suite.
+//
+// Each row is the whole path: seal, resolve, decide, release.
+func TestEverySealerWeTrustCanActuallyAttestAForwardItSealed(t *testing.T) {
+	for _, tc := range []struct {
+		provider, seal, selector, authserv string
+	}{
+		{"Gmail", "google.com", "arc-20260327", "mx.google.com"},
+		{"Apple", "icloud.com", "arc-0513", "arc.icloud.com"},
+		{"Microsoft", "microsoft.com", "arcselector10001", "mx.microsoft.com"},
+		{"Fastmail", "messagingengine.com", "fm3", "mx6.messagingengine.com"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			if !IsTrustedSealer(tc.seal) {
+				t.Fatalf("%s seals as %s, which is no longer trusted: forwards from every "+
+					"%s user now quarantine unreleasably", tc.provider, tc.seal, tc.provider)
+			}
+			c := synthOver(t, mustRead(t, "dib-dkim-unexpired.eml"),
+				"DIB Notification <DIB.notification@dib.ae>")
+			c.seal(1, tc.seal, tc.selector,
+				tc.authserv+"; dkim=pass header.d=dib.ae header.i=@dib.ae; spf=pass")
+			got := Resolve(context.Background(), c.build(), mergedLookup(t, c.recs))
+
+			if !got.Attested || got.Inner != "dib.ae" {
+				t.Fatalf("a %s forward is not attested: %+v", tc.provider, got)
+			}
+			if d := decide(t, allow("dib.ae|inner"), got); !d.Trusted {
+				t.Fatalf("a %s forward cannot be released: %+v", tc.provider, d)
+			}
+		})
+	}
+}
+
+// Proton and Yahoo have no evidence of sealing anything (see [TrustedSealers]),
+// so they are NOT on the list — and this is the test that says why that is not
+// a locked door. A forwarder that leaves the bank's signature intact does not
+// need to be believed about anything: the bank's own key still verifies over
+// these exact bytes, so Outer is the BANK, and the bank is confirmable at the
+// outer scope like any direct sender.
+//
+// Both halves matter. The second is the one that is easy to get wrong: a seal
+// by a domain we do NOT trust must not displace the bank from Outer, or the
+// user would be offered their forwarder to confirm and refused for it.
+func TestAForwarderWeCannotBelieveStillLeavesTheBankConfirmable(t *testing.T) {
+	direct := mustRead(t, "dib-dkim-unexpired.eml")
+
+	// Proton's shape: nothing sealed, the envelope rewritten by the forwarder.
+	got := ResolveWithEnvelope(context.Background(), direct,
+		"srs0=abc=xy=dib.ae=DIB.notification@proton.me", recordedLookup(t))
+	if got.DKIM != SigPass {
+		t.Fatalf("premise gone: the bank's signature must survive: %+v", got)
+	}
+	if got.Outer != "dib.ae" {
+		t.Fatalf("Outer = %q, want the bank whose signature verified", got.Outer)
+	}
+	if got.Attested {
+		t.Fatalf("nothing verified says this was relayed, so nothing may be attested: %+v", got)
+	}
+	if d := decide(t, allow("dib.ae|outer"), got); !d.Trusted || d.Scope != ScopeOuter {
+		t.Fatalf("a Proton user cannot confirm their own bank: %+v", d)
+	}
+
+	// Yahoo's shape: a chain we do not believe, wrapped around a signature we
+	// do. The untrusted seal must change nothing.
+	c := synthOver(t, direct, "DIB Notification <DIB.notification@dib.ae>")
+	c.seal(1, "yahoo.com", "cobra", "yahoo.com; dkim=pass header.d=dib.ae; spf=pass")
+	sealed := ResolveWithEnvelope(context.Background(), c.build(),
+		"srs0=abc@yahoo.com", mergedLookup(t, c.recs))
+	if sealed.ARC != SigPass {
+		t.Fatalf("premise gone: the chain must verify, or this proves nothing: %+v", sealed)
+	}
+	if sealed.Outer != "dib.ae" || sealed.Attested {
+		t.Fatalf("a seal we do not trust rewrote the origin: %+v", sealed)
+	}
+	if d := decide(t, allow("dib.ae|outer"), sealed); !d.Trusted {
+		t.Fatalf("a Yahoo user cannot confirm their own bank: %+v", d)
+	}
+}
+
+// The residual, pinned so it is a known boundary rather than a surprise: a
+// forwarder that BOTH breaks the bank's signature AND is not a sealer we
+// believe leaves nothing whatsoever that names the bank. Spec section 3.2 says
+// such mail stays quarantined permanently, and it must — the only candidate
+// origin left is the forwarder itself, and confirming that would trust
+// everything anyone routes through it (spec section 3.2:51).
+//
+// This is NOT a regression of b5089cc: an untrusted sealer never attested,
+// before or after. It is the price of having no verified evidence at all.
+func TestAForwarderThatBreaksTheSignatureAndSealsUnbelievablyIsNotReleasable(t *testing.T) {
+	c := newSynth(t, "DIB Notification <DIB.notification@dib.ae>", "srs0=abc@yahoo.com")
+	c.seal(1, "yahoo.com", "cobra", "yahoo.com; dkim=pass header.d=dib.ae; spf=pass")
+	got := Resolve(context.Background(), c.build(), c.dns())
+
+	if got.DKIM == SigPass || got.ARC != SigPass {
+		t.Fatalf("premise gone: no surviving signature, one passing chain: %+v", got)
+	}
+	if got.Attested || got.Outer != "yahoo.com" {
+		t.Fatalf("%+v", got)
+	}
+	for _, row := range []string{"dib.ae|inner", "dib.ae|outer", "yahoo.com|outer"} {
+		if d := decide(t, allow(row), got); d.Trusted {
+			t.Fatalf("%s released a message nothing verified as the bank's: %+v", row, d)
+		}
+	}
+}
