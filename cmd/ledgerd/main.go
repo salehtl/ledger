@@ -8,11 +8,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"ledger/internal/v2/api"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/pg"
 )
@@ -84,12 +87,19 @@ func main() {
 	}
 }
 
-// runServe opens the Postgres pool, applies every embedded migration, logs
-// readiness, and blocks until SIGINT/SIGTERM. This is deliberately the whole
-// of "serve" for now: the sync API (Task 9), the SMTP receiver (Task 24) and
-// the Tailscale-bound admin listener (Task 32) all mount onto this same
-// startup sequence as their tasks land — none of them exist yet, so there is
-// nothing to serve beyond proving the database is reachable and migrated.
+// runServe opens the Postgres pool, applies every embedded migration, and
+// serves the sync API until SIGINT/SIGTERM.
+//
+// Plain HTTP on purpose: TLS/autocert is deployment Task D4, and until then
+// this listener is reached only over Tailscale. The SMTP receiver (Task 24) and
+// the Tailscale-bound admin listener (Task 32) mount onto this same startup
+// sequence as their tasks land.
+//
+// The api.Server — and with it the two IdP verifiers — is built ONCE here,
+// before the listener starts. That is load bearing rather than stylistic: every
+// JWKS cache, fetch-attempt limit and inflight-herd guard in auth is per
+// verifier instance, so a verifier constructed per request would restore the
+// unauthenticated outbound amplifier those exist to remove.
 func runServe(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -105,9 +115,50 @@ func runServe(cfg config.Config) error {
 	}
 	log.Println("ledgerd serve: migrations applied")
 
-	<-ctx.Done()
+	syncAPI, err := api.NewServer(cfg, pool)
+	if err != nil {
+		return fmt.Errorf("build api: %w", err)
+	}
+	srv := &http.Server{
+		Addr:    cfg.Server.HTTPListen,
+		Handler: syncAPI.Handler(),
+		// A client that opens a connection and never finishes its headers costs
+		// a goroutine and a file descriptor until it does. This listener is
+		// public-facing in every deployment that matters, so the timeout is not
+		// optional.
+		ReadHeaderTimeout: 10 * time.Second,
+		// No WriteTimeout: a cold-stream page can legitimately carry megabytes
+		// to a slow mobile connection, and a write deadline that fires mid-body
+		// truncates the response rather than failing it cleanly. IdleTimeout
+		// plus ReadHeaderTimeout bound the cheap abuses; a slow reader is
+		// bounded by the response byte budget instead.
+		IdleTimeout: 2 * time.Minute,
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- err
+			return
+		}
+		errc <- nil
+	}()
+
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
 	log.Println("shutting down")
-	return nil
+	// Detached from ctx, which is already cancelled: in-flight requests get a
+	// bounded window to finish rather than being cut off at the signal.
+	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	return <-errc
 }
 
 // runRelay will start the SMTP receiver in relay mode: a durable local spool
