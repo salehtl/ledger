@@ -162,7 +162,8 @@ func writeJSON(v any) error {
 func printAccounting(a verify.Report) {
 	fmt.Printf("mail accounting %s .. %s\n",
 		a.From.UTC().Format(time.RFC3339), a.To.UTC().Format(time.RFC3339))
-	fmt.Printf("  inbound_total (arrivals only)   %d\n", a.InboundTotal)
+	fmt.Printf("  inbound_total (delivery attempts)  %d\n", a.InboundTotal)
+	fmt.Printf("  distinct messages                  %d\n", a.InboundIdentities)
 	for _, o := range verify.ArrivalOutcomes {
 		fmt.Printf("    %-28s  %d\n", o, a.Arrival[o])
 	}
@@ -179,10 +180,13 @@ func printAccounting(a verify.Report) {
 	for _, r := range sortedCounts(a.ProtocolRejections) {
 		fmt.Printf("    %-28s  %d\n", r.name, r.n)
 	}
+	fmt.Printf("  discarded duplicates            %d  (refused as already-held, held nowhere)\n",
+		a.Discarded)
 	q := a.Quarantine
-	fmt.Printf("  quarantine (all time)           expected %d = held %d + removed %d "+
-		"(distinct %d), untraced %d, extra %d\n",
-		q.Expected, q.Held, q.Removed, q.Accounted, q.Untraced, q.Extra)
+	fmt.Printf("  quarantine (all time)           expected %d = held %d + expired %d + promoted %d "+
+		"(distinct %d)\n", q.Expected, q.Held, q.Expired, q.Promoted, q.Accounted)
+	fmt.Printf("    untraced %d (lost), extra %d (held with no diagnostics row)\n",
+		q.Untraced, q.Extra)
 
 	fmt.Println("  what this report CANNOT see:")
 	for _, b := range a.BlindSpots {

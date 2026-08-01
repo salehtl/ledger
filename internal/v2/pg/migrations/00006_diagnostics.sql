@@ -183,8 +183,14 @@ CREATE TABLE parse_diagnostics (
       reject_reason IN ('too_large','unknown_rcpt','over_quota','no_text_part','normalize_error')
     ),
 
-  -- Each event kind has its own outcome vocabulary. diag.Accounting counts
+  -- Each event kind has its own outcome vocabulary. verify.Accounting counts
   -- arrivals only as inbound_total and reports reprocessing beside it.
+  --
+  -- Note what 'duplicate' is and is not: it is an ASSERTION that these bytes
+  -- are already stored somewhere, not a fact about the row itself. A duplicate
+  -- whose referent is in no store is a DISCARDED message, and no constraint
+  -- here can see that because the evidence lives in three other places. That is
+  -- verify's A3_duplicate_of_nothing check.
   CONSTRAINT parse_diagnostics_outcome_matches_event CHECK (
     (event = 'arrival'   AND outcome IN ('appended','quarantined','rejected','over_quota','duplicate')) OR
     (event = 'reprocess' AND outcome IN ('appended','superseded','unchanged'))

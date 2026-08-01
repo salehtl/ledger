@@ -59,17 +59,23 @@ func (h *Handler) accounting(w http.ResponseWriter, r *http.Request) {
 	// sum says.
 	body := map[string]any{
 		"from": rep.From, "to": rep.To,
-		"inbound_total": rep.InboundTotal,
-		"arrival":       rep.Arrival,
-		"arrival_sum":   rep.ArrivalSum(),
-		"reprocess":     rep.Reprocess,
-		"unaccounted":   rep.Unaccounted,
-		"balanced":      rep.ArrivalSum()+rep.Unaccounted == rep.InboundTotal && rep.Unaccounted == 0,
+		"inbound_total":      rep.InboundTotal,
+		"inbound_identities": rep.InboundIdentities,
+		"arrival":            rep.Arrival,
+		"arrival_sum":        rep.ArrivalSum(),
+		"reprocess":          rep.Reprocess,
+		"unaccounted":        rep.Unaccounted,
+		// The equation is necessary and not sufficient: a discarded duplicate
+		// and a vanished hold both leave it balanced, so "balanced" must not be
+		// the console's headline. Findings is.
+		"balanced": rep.ArrivalSum()+rep.Unaccounted == rep.InboundTotal && rep.Unaccounted == 0,
+		"ok":       len(rep.Findings()) == 0,
 
 		"protocol_rejections":       rep.ProtocolRejections,
 		"protocol_rejections_total": rep.ProtocolRejectionsTotal(),
 		"rejection_days":            rep.RejectionDays,
 
+		"discarded":   rep.Discarded,
 		"quarantine":  rep.Quarantine,
 		"blind_spots": rep.BlindSpots,
 		"findings":    rep.Findings(),

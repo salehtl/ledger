@@ -171,28 +171,92 @@ func (r ParseRateReport) MeetsGate() bool {
 	return r.HasRate && r.Parsed+r.Unparsed > 0 && r.LowerBound >= GateThreshold
 }
 
-// populationSQL selects the unparsed arrivals that are candidates for
-// adjudication.
+// messagesSQL folds every diagnostics row about one message into one row about
+// that MESSAGE.
 //
-// outcome = 'appended' is the whole population definition and it is the
-// load-bearing line. Refused mail (too_large, over_quota, unknown_rcpt) never
-// reached the cascade; a duplicate was parsed the first time; quarantined mail
-// has not been parsed YET and is held pending a trust decision, so counting any
-// of them as a parse failure would measure the SMTP layer and call it a parser.
+// # Why the unit is an identity and not a row
 //
-// Ordered by ingest_id, which is SHA-256 of the body. That ordering is
-// independent of sender, time, size and parse outcome, so the first N rows ARE a
-// uniform random sample — and, unlike an RNG, a stable one, so an operator can
-// stop adjudicating and come back to the same sample tomorrow.
-const populationSQL = `
-SELECT user_id, ingest_id, min(received_at), min(sender_domain), min(structure_sig)
-  FROM parse_diagnostics
- WHERE event = 'arrival' AND outcome = 'appended' AND tier = 'none'
-   AND user_id IS NOT NULL
-   AND received_at >= $1 AND received_at < $2
-   AND ($3::uuid IS NULL OR user_id = $3)
- GROUP BY user_id, ingest_id
- ORDER BY ingest_id`
+// The numerator used to count rows while the population counted distinct
+// (user, ingest_id) identities, and the two disagree exactly where it hurts:
+// ingest.alreadyHandled is a read followed by an append with no lock between
+// them, and its own doc measures the window at eight appends for one message.
+// Every one of those races added one to the numerator and nothing to the
+// denominator, so concurrent delivery inflated the number the exit gate is read
+// off, in the direction that passes the gate.
+//
+// # Why the window anchors on ARRIVALS but the facts do not
+//
+// `win` is the set of messages that ARRIVED in the window — that is what the
+// criterion is about. `stored` and `best_tier` are then computed over EVERY row
+// about those messages, whenever it was written, because the fact that matters
+// is what finally became of the message, not what was known on day one.
+//
+// That is what brings promoted quarantine mail back into the measurement.
+// Trust-on-first-use means every sender's FIRST batch is quarantined, and the
+// promote that later parses it writes event='reprocess' with a fresh timestamp
+// (ingest.reprocessRecord uses now(), not the received time). Measuring
+// event='arrival' alone therefore dropped every one of those messages out
+// through Excluded['quarantined'] and never let them back in — so the rate was
+// computed over mail from senders that were ALREADY trusted, which is the mail
+// most likely to parse. The bias was invisible and in the flattering direction.
+const messagesSQL = `
+WITH win AS (
+  SELECT DISTINCT user_id, ingest_id
+    FROM parse_diagnostics
+   WHERE event = 'arrival' AND user_id IS NOT NULL
+     AND received_at >= $1 AND received_at < $2
+     AND ($3::uuid IS NULL OR user_id = $3)
+)
+SELECT d.user_id, d.ingest_id,
+       bool_or(d.outcome IN ('appended','superseded'))                            AS stored,
+       max(CASE d.tier WHEN 'template' THEN 2 WHEN 'heuristic' THEN 1 ELSE 0 END) AS best_tier,
+       min(d.received_at)                                                         AS first_seen,
+       min(d.sender_domain)                                                       AS sender_domain,
+       min(d.structure_sig)                                                       AS structure_sig,
+       (array_agg(d.outcome ORDER BY d.received_at, d.id)
+          FILTER (WHERE d.event = 'arrival'))[1]                                  AS arrival_outcome
+  FROM parse_diagnostics d JOIN win w ON w.user_id = d.user_id AND w.ingest_id = d.ingest_id
+ GROUP BY d.user_id, d.ingest_id
+ ORDER BY d.ingest_id`
+
+// message is one email, however many rows it produced.
+type message struct {
+	pending  Pending
+	stored   bool
+	bestTier int
+	outcome  string
+}
+
+func messages(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) ([]message, error) {
+	rows, err := pool.Query(ctx, messagesSQL, opts.From, opts.To, user)
+	if err != nil {
+		return nil, fmt.Errorf("verify: parse rate: %w", err)
+	}
+	defer rows.Close()
+	var out []message
+	for rows.Next() {
+		var (
+			m       message
+			sig     *string
+			outcome *string
+		)
+		if err := rows.Scan(&m.pending.UserID, &m.pending.IngestID, &m.stored, &m.bestTier,
+			&m.pending.ReceivedAt, &m.pending.SenderDomain, &sig, &outcome); err != nil {
+			return nil, fmt.Errorf("verify: parse rate: %w", err)
+		}
+		if sig != nil {
+			m.pending.StructureSig = *sig
+		}
+		if outcome != nil {
+			m.outcome = *outcome
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("verify: parse rate: %w", err)
+	}
+	return out, nil
+}
 
 // ParseRate measures the window. It reads no content.
 func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (ParseRateReport, error) {
@@ -210,46 +274,25 @@ func ParseRate(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions) (
 		user = opts.User
 	}
 
-	// --- numerator ----------------------------------------------------------
-	rows, err := pool.Query(ctx, `SELECT tier, outcome, count(*) FROM parse_diagnostics
-	  WHERE event = 'arrival' AND received_at >= $1 AND received_at < $2
-	    AND ($3::uuid IS NULL OR user_id = $3)
-	  GROUP BY tier, outcome`, opts.From, opts.To, user)
-	if err != nil {
-		return ParseRateReport{}, fmt.Errorf("verify: parse rate: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var tier, outcome string
-		var n int64
-		if err := rows.Scan(&tier, &outcome, &n); err != nil {
-			return ParseRateReport{}, fmt.Errorf("verify: parse rate: %w", err)
-		}
-		switch {
-		// outcome='appended' on BOTH sides, so the numerator and the
-		// denominator's population are the same class of mail: what the cascade
-		// saw and what we then stored. Today the pipeline only assigns a tier on
-		// the path that appends, so this filter changes nothing; it is here so
-		// that a future path which parses and then refuses cannot inflate the
-		// numerator without also showing up in Excluded.
-		case outcome == diag.OutcomeAppended && (tier == diag.TierTemplate || tier == diag.TierHeuristic):
-			rep.Parsed += n
-			rep.ByTier[clip(tier)] += n
-		case outcome == diag.OutcomeAppended:
-			// The population; counted from the row list below so the two
-			// cannot disagree.
-		default:
-			rep.Excluded[clip(outcome)] += n
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return ParseRateReport{}, fmt.Errorf("verify: parse rate: %w", err)
-	}
-
-	// --- the population needing judgement ------------------------------------
-	pop, err := population(ctx, pool, opts, user)
+	// --- one pass over messages, not rows -----------------------------------
+	msgs, err := messages(ctx, pool, opts, user)
 	if err != nil {
 		return ParseRateReport{}, err
+	}
+	var pop []Pending
+	for _, m := range msgs {
+		switch {
+		case !m.stored:
+			// Never reached the log: refused, still held, or a redelivery of
+			// something already counted. Not a parse failure — reported so the
+			// denominator is auditable rather than a choice in a WHERE clause.
+			rep.Excluded[clip(m.outcome)]++
+		case m.bestTier > 0:
+			rep.Parsed++
+			rep.ByTier[tierName(m.bestTier)]++
+		default:
+			pop = append(pop, m.pending)
+		}
 	}
 	rep.Unparsed = int64(len(pop))
 
@@ -323,30 +366,6 @@ func ratio(parsed, misses int64) float64 {
 	return float64(parsed) / float64(den)
 }
 
-func population(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) ([]Pending, error) {
-	rows, err := pool.Query(ctx, populationSQL, opts.From, opts.To, user)
-	if err != nil {
-		return nil, fmt.Errorf("verify: parse rate: population: %w", err)
-	}
-	defer rows.Close()
-	var out []Pending
-	for rows.Next() {
-		var p Pending
-		var sig *string
-		if err := rows.Scan(&p.UserID, &p.IngestID, &p.ReceivedAt, &p.SenderDomain, &sig); err != nil {
-			return nil, fmt.Errorf("verify: parse rate: population: %w", err)
-		}
-		if sig != nil {
-			p.StructureSig = *sig
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("verify: parse rate: population: %w", err)
-	}
-	return out, nil
-}
-
 func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOptions, user any) (map[string]string, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT user_id, ingest_id, verdict FROM parse_rate_adjudications
@@ -372,6 +391,14 @@ func adjudications(ctx context.Context, pool *pgxpool.Pool, opts ParseRateOption
 }
 
 func key(u uuid.UUID, id []byte) string { return u.String() + "/" + string(id) }
+
+// tierName maps the SQL ranking back to the tier that earned it.
+func tierName(rank int) string {
+	if rank >= 2 {
+		return diag.TierTemplate
+	}
+	return diag.TierHeuristic
+}
 
 // Wilson returns the 95% Wilson score interval for k successes in n trials,
 // clamped to [0, 1].
