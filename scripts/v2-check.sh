@@ -15,9 +15,24 @@
 # of the dual-executor contract and Tasks 11-13 are ALL TypeScript: without it
 # the gate cannot see a client-side regression at all. Measured, not assumed —
 # of five mutations used to test the conformance mechanism, two are caught only
-# by `bun test`. Task 17 owns the final shape of this script (it adds the
-# normalizer conformance runner and rewrites the closing line); it should absorb
-# this step, not rediscover it.
+# by `bun test`.
+#
+# Task 17 added the normalizer, and with it the cross-executor conformance
+# runner (client/src/norm/conformance.test.ts). That runner is why the `bun test`
+# step is not optional: the Go and TypeScript normalizers must produce
+# byte-identical output, and this script is the only thing that checks it. A
+# mutation battery of 16 plausible normalizer defects was used to confirm the
+# suite can actually fail — all 16 are caught here, and 8 of them are invisible
+# to the full 7,002-message corpus, so `go test` alone would have passed every
+# one of them.
+#
+# What this script does NOT run is the full-corpus cross-executor diff: it needs
+# a snapshot of the operator's live v1 mailbox, which most checkouts do not have.
+# It is a measurement, reproduced deliberately:
+#
+#   LEDGER_CORPUS_DB=$S/corpus.db LEDGER_CROSSEXEC_OUT=$S/go-corpus.jsonl \
+#     go test ./internal/v2/norm/ -run TestWriteCrossExecutorCorpus -timeout 20m
+#   (cd client && bun run scripts/crossexec.ts $S/go-corpus.jsonl)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -72,4 +87,4 @@ if [[ ! -d client/node_modules ]]; then
 fi
 (cd client && bun run typecheck && bun test)
 
-echo "v2-check: OK (go + client)"
+echo "v2-check: OK (go + client + conformance)"
