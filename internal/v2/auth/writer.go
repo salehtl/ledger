@@ -43,12 +43,38 @@ package auth
 // needs an out-of-band operator action, which must itself land in key_history
 // where peers can see it. That path is not built here.
 //
+// The same wall stands one tap closer than device loss: a user who revokes
+// their LAST live device — a legitimate thing to want before selling a phone —
+// permanently loses write capability WHILE STILL HOLDING THE KEY. Re-enrolling
+// that device returns ErrWriterExists (the id is taken) and enrolling it under
+// a new id returns ErrKeyAlreadyEnrolled (the key is taken), and neither is a
+// bug: a revoked key must not be able to reinstate itself, or revocation would
+// mean nothing. A client must therefore refuse to revoke the last live device
+// without enrolling a replacement first. Nothing on the server enforces that
+// today; see the task report's concerns.
+//
 // key_history is also server-attested, not self-authenticating: it records what
 // happened, not a proof of it. A compromised server can append a fabricated
 // entry, which §3.4 already concedes ("cannot make key substitution impossible,
 // only detectable"). Storing the authorizing signature alongside each entry
 // would upgrade peer audit from "compare heads" to "verify locally"; it is not
 // in the Phase 1 schema and is recorded as a follow-up.
+//
+// # What the append-only guard on key_history actually binds
+//
+// The trigger in 00003_writers.sql refuses UPDATE, TRUNCATE, and DELETE-while-
+// the-user-exists for EVERY role, superusers included — triggers cannot be
+// skipped. What it cannot stop is the table's OWNER, who needs no more than
+// `ALTER TABLE ... DISABLE TRIGGER` to switch it off first and then rewrite the
+// log freely.
+//
+// That matters right now, because cmd/ledgerd opens ONE pool from
+// cfg.Server.DSN and runs pg.Migrate on it: the role that serves requests is
+// the role that created these tables, so today it owns them and the guard does
+// not bind it. The fix belongs to deployment, not to this package — migrate as
+// a separate owner role and grant the runtime role only DML — and
+// TestKeyHistoryGuardBindsANonOwnerRuntimeRole pins both halves of that
+// requirement so it is executable rather than a sentence in a report.
 
 import (
 	"context"
@@ -58,6 +84,7 @@ import (
 	"fmt"
 	"time"
 
+	"filippo.io/edwards25519"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -131,7 +158,45 @@ var (
 	ErrWriterExists       = fmt.Errorf("%w: writer id is already registered", ErrRegistrationRejected)
 	ErrKeyAlreadyEnrolled = fmt.Errorf("%w: public key is already enrolled as another writer", ErrRegistrationRejected)
 	ErrNoSuchWriter       = fmt.Errorf("%w: no such writer", ErrRegistrationRejected)
+	// ErrKeyUnusable is a public key that is not a usable Ed25519 identity —
+	// see checkPublicKey, which explains why length alone is not enough.
+	ErrKeyUnusable = fmt.Errorf("%w: public key is not a usable Ed25519 identity", ErrRegistrationRejected)
 )
+
+// checkPublicKey rejects a public key that cannot carry the property this
+// package depends on: that a valid signature under it proves possession of a
+// private key.
+//
+// A 32-byte length check is NOT enough. The Ed25519 identity point (0x01
+// followed by 31 zero bytes) is a valid encoding of a valid curve point, and
+// crypto/ed25519 — like most implementations — accepts the signature
+// `identity || 32 zero bytes` under it for EVERY message. Nobody needs a
+// private key to write those 64 bytes down. A writer enrolled with such a key
+// is therefore a writer that ANY holder of a session for that account can sign
+// for, forever: the forgery is message-independent, so it satisfies every later
+// registration and revocation too. That is a total collapse of the capability
+// rule this package exists to enforce, so the check runs before any signature
+// is verified and again for every key read back out of the roster.
+//
+// The test is the standard one: decode the point, multiply by the cofactor (8),
+// and reject if the result is the identity — which is true for exactly the
+// points of small order, in any encoding. edwards25519.Point.SetBytes accepts
+// non-canonical encodings, matching what crypto/ed25519 itself will accept, so
+// there is no encoding a caller can pick that slips past here and is still
+// honoured by Verify.
+func checkPublicKey(pub ed25519.PublicKey) error {
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: %d bytes, want %d", ErrKeyUnusable, len(pub), ed25519.PublicKeySize)
+	}
+	p, err := new(edwards25519.Point).SetBytes(pub)
+	if err != nil {
+		return fmt.Errorf("%w: not a curve point", ErrKeyUnusable)
+	}
+	if new(edwards25519.Point).MultByCofactor(p).Equal(edwards25519.NewIdentityPoint()) == 1 {
+		return fmt.Errorf("%w: small-order point (signatures under it are forgeable by anyone)", ErrKeyUnusable)
+	}
+	return nil
+}
 
 // Writer is one row of a user's writer roster.
 type Writer struct {
@@ -341,8 +406,10 @@ func (w *Writers) Register(ctx context.Context, userID uuid.UUID, writerID strin
 	if err := w.checkArgs(userID, writerID, nonce, sig); err != nil {
 		return err
 	}
-	if len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("%w: public key is %d bytes, want %d", ErrRegistrationRejected, len(pub), ed25519.PublicKeySize)
+	// Screened here, before a challenge is spent: a small-order key is a
+	// malformed request, not a failed authorization.
+	if err := checkPublicKey(pub); err != nil {
+		return err
 	}
 
 	// Spent before anything else can fail, so one challenge buys one attempt.
@@ -369,18 +436,21 @@ func (w *Writers) Register(ctx context.Context, userID uuid.UUID, writerID strin
 
 	// hadDevice tracks whether this user has EVER enrolled a device, revoked
 	// ones included; enrolled holds only the keys that may authorize today.
+	// Nothing returns from this loop: the duplicate findings are recorded and
+	// reported only AFTER authorization, so a caller that cannot prove key
+	// possession learns nothing about which writer ids and keys exist.
 	var enrolled []ed25519.PublicKey
-	hadDevice := false
+	var hadDevice, idTaken, keyTaken bool
 	for _, r := range roster {
 		if r.WriterID == writerID {
-			return ErrWriterExists
+			idTaken = true
 		}
 		if r.Kind != KindDevice {
 			continue
 		}
 		hadDevice = true
 		if r.PubKey.Equal(pub) {
-			return ErrKeyAlreadyEnrolled
+			keyTaken = true
 		}
 		if r.Live() {
 			enrolled = append(enrolled, r.PubKey)
@@ -393,11 +463,17 @@ func (w *Writers) Register(ctx context.Context, userID uuid.UUID, writerID strin
 	// time a device is enrolled and never reopens, so revoking the last device
 	// cannot hand a stolen session a self-signed enrollment.
 	if !hadDevice {
-		if !ed25519.Verify(pub, msg, sig) {
+		if !verifiedBy(pub, msg, sig) {
 			return fmt.Errorf("%w (first writer: the key being enrolled must sign for itself)", ErrNotAuthorized)
 		}
 	} else if !verifiedByAny(enrolled, msg, sig) {
 		return ErrNotAuthorized
+	}
+	if idTaken {
+		return ErrWriterExists
+	}
+	if keyTaken {
+		return ErrKeyAlreadyEnrolled
 	}
 
 	now := w.now()
@@ -618,12 +694,23 @@ func appendKeyHistory(ctx context.Context, tx pgx.Tx, userID uuid.UUID, writerID
 	return nil
 }
 
+// verifiedBy is the ONLY place a signature is ever checked. Every path goes
+// through the small-order screen first, including keys read back from the
+// roster: a row planted by a repair script, or enrolled before checkPublicKey
+// existed, must not be able to authorize anything either.
+func verifiedBy(key ed25519.PublicKey, msg, sig []byte) bool {
+	if checkPublicKey(key) != nil {
+		return false
+	}
+	return ed25519.Verify(key, msg, sig)
+}
+
 // verifiedByAny reports whether the signature verifies under any of the keys.
 // ed25519.Verify is constant time in the key material; the loop leaks only how
 // many keys a user has enrolled, which the roster endpoint returns anyway.
 func verifiedByAny(keys []ed25519.PublicKey, msg, sig []byte) bool {
 	for _, k := range keys {
-		if ed25519.Verify(k, msg, sig) {
+		if verifiedBy(k, msg, sig) {
 			return true
 		}
 	}

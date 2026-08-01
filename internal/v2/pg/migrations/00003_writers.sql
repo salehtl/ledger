@@ -49,9 +49,21 @@ CREATE UNIQUE INDEX writers_pubkey_uniq ON writers (user_id, pubkey) WHERE pubke
 -- It is server-attested, not self-authenticating: a compromised server can
 -- append a fabricated entry. Spec §3.4 states that limit ("cannot make key
 -- substitution impossible, only detectable") and detection is by comparing this
--- log's head across devices. What the guard below buys is that a rewrite of an
--- already-published entry — the silent version of the same attack — cannot
--- happen through the application's own database role.
+-- log's head across devices.
+--
+-- DEPLOYMENT REQUIREMENT (D-series tasks). The guard below refuses the offending
+-- STATEMENT for every role, superusers included — triggers cannot be skipped.
+-- It does not bind the table's OWNER, who can `ALTER TABLE ... DISABLE TRIGGER`
+-- and then rewrite at will. cmd/ledgerd currently migrates and serves through
+-- one pool from one DSN, so the runtime role owns these tables and is not bound.
+-- Production must therefore run migrations as a separate owner role and grant
+-- the runtime role DML only:
+--
+--   CREATE ROLE ledger_migrate LOGIN;   -- owns the schema, runs goose
+--   CREATE ROLE ledger_runtime LOGIN;   -- the app; never the owner
+--   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ledger_runtime;
+--
+-- auth.TestKeyHistoryGuardBindsANonOwnerRuntimeRole pins exactly that split.
 CREATE TABLE key_history (
   id        bigserial PRIMARY KEY,
   user_id   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
