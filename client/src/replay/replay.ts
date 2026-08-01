@@ -39,13 +39,15 @@
  * # What this file deliberately does NOT do
  *
  * **The FX arithmetic.** `rate_set` / `rate_unset` / `home_currency_set` are
- * folded here — they are parent-free, append-only, positional facts and getting
- * their *heads* right is replay's job — but `convert()` and the freeze/backfill
- * of `amount_home_minor` belong to Task 12's `fx.ts`. The seam is exactly
- * {@link markPending}/{@link clearPending}: this file keeps
- * `state.pendingByCurrency` exact (every live, unfrozen transaction, filed under
- * its own currency, removed the moment it is superseded), and Task 12 drains it.
- * Every call site that Task 12 must extend is marked `Task 12`.
+ * folded here — they are parent-free, append-only, positional facts, and getting
+ * their *heads* right, along with which ops are refused, is replay's job — but
+ * `convert()` and the freeze/backfill of `amount_home_minor` live in `fx.ts`.
+ * The seam is `markPending`/`clearPending` (in `state.ts`, with the field they
+ * maintain): this file keeps `state.pendingByCurrency` exact — every live,
+ * unfrozen transaction, filed under its own currency, removed the moment it is
+ * superseded — and `fx.ts` drains it. None of the FX hooks takes a `seq`,
+ * because the position they act at is the position this fold has reached; see
+ * the note in `fx.ts` on why that is the point rather than an omission.
  */
 
 import {
@@ -62,7 +64,17 @@ import {
   type Op,
   type OpType,
 } from "../wire/op";
-import { HOME_IDENTITY_MICRO, emptyState, entityKey, fingerprint, type Split, type State, type Txn } from "./state";
+import { freezeIfPossible, onHomeCurrencySet, onRateSet, onRateUnset } from "./fx";
+import {
+  clearPending,
+  emptyState,
+  entityKey,
+  fingerprint,
+  markPending,
+  type Split,
+  type State,
+  type Txn,
+} from "./state";
 
 export { emptyState, fingerprint } from "./state";
 
@@ -269,12 +281,32 @@ function applyHomeCurrencySet(s: State, e: LogEntry): void {
     anomaly(s, e.seq, "home_currency_reset", `home currency is already ${s.homeCurrency}; ${e.op.op_id} says ${ccy}`);
     return;
   }
-  s.homeCurrency = ccy;
-  // The home currency has no rate row of its own; the identity rate is what
-  // makes `head_rate(home, P)` answerable at all.
-  s.rates.set(ccy, HOME_IDENTITY_MICRO);
-  // Task 12: backfill pendingByCurrency[ccy] at the identity rate here, so a
-  // home-currency transaction ingested BEFORE onboarding still freezes.
+  if (s.rates.has(ccy)) {
+    // `rate_set_for_home_currency` read from the other side of onboarding, and
+    // the same hazard: this currency already has a rate history, so any row of
+    // it frozen before this position used a NON-IDENTITY basis and — per §3.7,
+    // which never rewrites a frozen snapshot — keeps it. The log therefore holds
+    // two home-currency bases, which is the silent re-denomination the forward
+    // guard exists to prevent, so it is surfaced here too.
+    //
+    // The onboarding op still wins: the identity rate is what the home currency
+    // means (§3.7:124), and refusing the adoption instead would leave a log with
+    // no home currency at all, which no later op could repair. A notice, never a
+    // refusal, exactly like every other anomaly here.
+    //
+    // Keyed on "a rate head exists", not on "a non-null rate head exists": a
+    // `rate_set` later cancelled by a `rate_unset` leaves a null head and rows
+    // frozen at the old basis, so the null case is not the safe one.
+    const head = s.rates.get(ccy);
+    anomaly(
+      s,
+      e.seq,
+      "rate_set_before_home_currency",
+      `${ccy} already carries a rate head (${head === null ? "unset" : head}) where ${e.op.op_id} adopts it as the ` +
+        `home currency; rows frozen before this position keep that basis, not the identity`,
+    );
+  }
+  onHomeCurrencySet(s, ccy);
 }
 
 function applyRateSet(s: State, e: LogEntry): void {
@@ -287,8 +319,7 @@ function applyRateSet(s: State, e: LogEntry): void {
     anomaly(s, e.seq, "rate_set_for_home_currency", `${e.op.op_id} sets a rate for the home currency ${ccy}`);
     return;
   }
-  s.rates.set(ccy, micro);
-  // Task 12: freeze every txn id in pendingByCurrency[ccy] at `micro` here.
+  onRateSet(s, ccy, micro);
 }
 
 function applyRateUnset(s: State, e: LogEntry): void {
@@ -307,7 +338,7 @@ function applyRateUnset(s: State, e: LogEntry): void {
   }
   // Present-and-null, not deleted: "unset" is a live fact at this position, and
   // transactions frozen before it stay frozen (spec §3.7:127).
-  s.rates.set(ccy, null);
+  onRateUnset(s, ccy);
 }
 
 function applyCheckpoint(s: State, e: LogEntry): void {
@@ -548,9 +579,9 @@ function createTxn(s: State, e: LogEntry, p: TxnPayload, superseding: boolean): 
   };
   s.txns.set(id, t);
   s.liveByIngestID.set(ingestID, id);
-  // Task 12: freezeIfPossible(s, id, seq) — freezes against the rate head live
-  // at this position, or leaves the row pending.
-  markPending(s, t);
+  // Against the rate head live at THIS position — which is what makes a
+  // supersede recompute rather than inherit, since it arrives here too.
+  freezeIfPossible(s, t);
   indexFingerprint(s, t, seq);
   return true;
 }
@@ -719,25 +750,6 @@ function unindexFingerprintAt(s: State, fp: string, id: string): void {
   // Empty buckets are deleted rather than kept: a state's canonical form must
   // not depend on which keys happen to have been touched.
   if (bucket.length === 0) s.byFingerprint.delete(fp);
-}
-
-// ---------------------------------------------------------------------------
-// The FX seam (Task 12)
-// ---------------------------------------------------------------------------
-
-/** Files a live, unfrozen transaction under its currency for later conversion. */
-function markPending(s: State, t: Txn): void {
-  if (t.amount_home_minor !== null) return;
-  const set = s.pendingByCurrency.get(t.currency);
-  if (set === undefined) s.pendingByCurrency.set(t.currency, new Set([t.id]));
-  else set.add(t.id);
-}
-
-function clearPending(s: State, t: Txn): void {
-  const set = s.pendingByCurrency.get(t.currency);
-  if (set === undefined) return;
-  set.delete(t.id);
-  if (set.size === 0) s.pendingByCurrency.delete(t.currency);
 }
 
 // ---------------------------------------------------------------------------

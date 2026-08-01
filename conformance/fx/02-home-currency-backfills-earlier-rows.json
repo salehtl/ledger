@@ -1,0 +1,56 @@
+{
+  "name": "home-currency-backfills-earlier-rows",
+  "note": "P is the smallest position >= pos(T) at which a head rate exists, so a home-currency row ingested BEFORE onboarding freezes at the identity rate the onboarding op installs. Without the backfill it would stay null forever.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "home-currency-backfills-earlier-rows-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "home-currency-backfills-earlier-rows-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000"
+    },
+    "snapshots": {
+      "t1": "10000"
+    },
+    "pending": {},
+    "anomalies": []
+  }
+}

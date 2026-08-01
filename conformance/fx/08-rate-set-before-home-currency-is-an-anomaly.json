@@ -1,0 +1,101 @@
+{
+  "name": "rate-set-before-home-currency-is-an-anomaly",
+  "note": "The same rule read from the other side of onboarding. A rate for the currency that later becomes home really did apply to rows sequenced before the onboarding op — t1 is frozen at 2.0 and stays there, because §3.7 never rewrites a frozen snapshot — so the identity takes over from seq 3 and the two-basis split is SURFACED rather than left to be discovered in a total.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "rate-set-before-home-currency-is-an-anomaly-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED",
+          "rate_micro": "2000000"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "rate-set-before-home-currency-is-an-anomaly-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "rate-set-before-home-currency-is-an-anomaly-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "4",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "rate-set-before-home-currency-is-an-anomaly-4",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t2"
+        },
+        "ingest_id": "420fce314175df402adbeae3cfbbb85665b72d8b9bc2346f463e32a82f64b114",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t2",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000"
+    },
+    "snapshots": {
+      "t1": "20000",
+      "t2": "10000"
+    },
+    "pending": {},
+    "anomalies": [
+      {
+        "kind": "rate_set_before_home_currency",
+        "at_seq": "3"
+      }
+    ]
+  }
+}

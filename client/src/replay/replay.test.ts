@@ -525,26 +525,28 @@ test("supersede does not inherit the predecessor's frozen home-currency amount",
     // A "recompute at current rate" edit freezes a value onto t1 explicitly.
     at(3n, edited("t1", 1, { amount_home_minor: "91812" })),
     // The template fix corrects a mis-detected currency. The new row must be
-    // computed at ITS OWN position, so it starts unfrozen and pending in AED —
-    // not carrying t1's USD-based number forward.
+    // computed at ITS OWN position — against the AED identity rate live there —
+    // and not carry t1's USD-based number forward.
     at(4n, superseded("i1", "t2", { currency: "AED", amount_minor: "25000" })),
   ]);
   expect(s.txns.get("t1")!.amount_home_minor).toBe(91812n);
-  expect(s.txns.get("t2")!.amount_home_minor).toBeNull();
-  expect(s.pendingByCurrency.get("AED")!.has("t2")).toBe(true);
+  expect(s.txns.get("t2")!.amount_home_minor).toBe(25000n);
   // The retired row is no longer a pending conversion target: leaving it there
   // would let a later rate_set freeze a number nothing displays.
   expect([...(s.pendingByCurrency.get("USD") ?? [])]).not.toContain("t1");
 });
 
 test("a currency-correcting supersede moves the row to the corrected currency's pending set", () => {
+  // Neither currency has a rate here, so both rows are unfrozen and the only
+  // question is which bucket the live one is filed under. (Correcting INTO the
+  // home currency would freeze at the identity rate instead — see the FX tests.)
   const s = fold([
     at(1n, homeCurrency("AED")),
     at(2n, ingested("i1", "t1", { currency: "USD", amount_minor: "25000" })),
-    at(3n, superseded("i1", "t2", { currency: "AED", amount_minor: "25000" })),
+    at(3n, superseded("i1", "t2", { currency: "EUR", amount_minor: "25000" })),
   ]);
   expect(s.pendingByCurrency.get("USD")).toBeUndefined();
-  expect([...s.pendingByCurrency.get("AED")!]).toEqual(["t2"]);
+  expect([...s.pendingByCurrency.get("EUR")!]).toEqual(["t2"]);
 });
 
 // ---------------------------------------------------------------------------

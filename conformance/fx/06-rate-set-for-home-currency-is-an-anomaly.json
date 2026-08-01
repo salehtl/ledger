@@ -1,0 +1,76 @@
+{
+  "name": "rate-set-for-home-currency-is-an-anomaly",
+  "note": "The home currency carries the implicit identity rate by construction (§3.7:124), so an op claiming a rate for it is an anomaly, not an instruction: applying it would silently re-denominate every later home-currency snapshot.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "seq": "1",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "home_currency_set",
+        "op_id": "rate-set-for-home-currency-is-an-anomaly-1",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED"
+        }
+      }
+    },
+    {
+      "seq": "2",
+      "writer_id": "dev-a",
+      "op": {
+        "v": 1,
+        "type": "rate_set",
+        "op_id": "rate-set-for-home-currency-is-an-anomaly-2",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "payload": {
+          "currency": "AED",
+          "rate_micro": "2000000"
+        }
+      }
+    },
+    {
+      "seq": "3",
+      "writer_id": "ingest",
+      "op": {
+        "v": 1,
+        "type": "txn_ingested",
+        "op_id": "rate-set-for-home-currency-is-an-anomaly-3",
+        "authored_at": "2026-06-05T10:00:00.000Z",
+        "parent_version": null,
+        "entity": {
+          "kind": "txn",
+          "id": "t1"
+        },
+        "ingest_id": "4cd9b7672d7fbee8fb51fb1e049f690342035f543a8efe734b7b5ffb0c154a45",
+        "payload": {
+          "amount_minor": "10000",
+          "currency": "AED",
+          "direction": "debit",
+          "posted_at": "2026-06-05T09:00:00Z",
+          "merchant_raw": "M-t1",
+          "last4": "3701"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "home_currency": "AED",
+    "rates": {
+      "AED": "1000000"
+    },
+    "snapshots": {
+      "t1": "10000"
+    },
+    "pending": {},
+    "anomalies": [
+      {
+        "kind": "rate_set_for_home_currency",
+        "at_seq": "2"
+      }
+    ]
+  }
+}

@@ -247,6 +247,35 @@ export function entityKey(kind: string, id: string): string {
   return `${kind}\u0000${id}`;
 }
 
+// ---------------------------------------------------------------------------
+// The pending index
+//
+// `pendingByCurrency` is maintained by `replay.ts` (creates, supersedes, edits)
+// and drained by `fx.ts` (backfill), so the two functions that define what it
+// MEANS live here with the field rather than in either consumer. Its invariant —
+// an id is in this index exactly when its row is live and its snapshot is null —
+// is asserted over a whole sample log in `fx.test.ts`, rather than defended by
+// re-checks at the freeze site that would silently paper over a break.
+// ---------------------------------------------------------------------------
+
+/** Files a live, unfrozen transaction under its currency for later conversion. */
+export function markPending(s: State, t: Txn): void {
+  if (t.amount_home_minor !== null) return;
+  const set = s.pendingByCurrency.get(t.currency);
+  if (set === undefined) s.pendingByCurrency.set(t.currency, new Set([t.id]));
+  else set.add(t.id);
+}
+
+/** Takes a transaction out of the index, because it froze or stopped being live. */
+export function clearPending(s: State, t: Txn): void {
+  const set = s.pendingByCurrency.get(t.currency);
+  if (set === undefined) return;
+  set.delete(t.id);
+  // Empty buckets are deleted rather than kept: a state's canonical form must
+  // not depend on which keys happen to have been touched.
+  if (set.size === 0) s.pendingByCurrency.delete(t.currency);
+}
+
 /**
  * The cross-source duplicate heuristic of spec §3.3:67 —
  * `last4|amount|direction|merchant|day`.

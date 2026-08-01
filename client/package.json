@@ -6,7 +6,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "gen-fixtures": "bun run scripts/gen-fixtures.ts",
-    "cli": "bun run src/cli/main.ts"
+    "cli": "bun run src/cli/main.ts",
+    "gen-fx-conformance": "bun run scripts/gen-fx-conformance.ts"
   },
   "devDependencies": {
     "typescript": "5.9.2",
