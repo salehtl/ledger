@@ -306,6 +306,30 @@ property a test can observe without instrumenting the lock.
 
 ---
 
+## The gate
+
+The shared worktree is red from concurrent sessions and its index has been
+committed from three times tonight, so the gate was run against **commit
+`48c4a16`** extracted with `git archive` into a tree with no other session's
+work in it (only `client/node_modules` symlinked in, which the script requires
+and refuses to install itself):
+
+```
+$ git archive 48c4a16 | tar -x -C <clean tree>
+$ go clean -testcache && bash scripts/v2-check.sh
+...
+ 1916 pass
+ 0 fail
+Ran 1916 tests across 17 files. [10.92s]
+v2-check: OK (go + client + conformance)
+```
+
+`go vet` + `go test -count=1 ./internal/v2/... ./cmd/ledgerd`, then the client's
+typecheck and 1,916 `bun test` assertions including the cross-executor
+conformance runners. Exit 0.
+
+---
+
 ## Not addressed, deliberately
 
 - **`reprocessOne` does not check `sha256(raw) == ingestID`** (critic's Minor).
