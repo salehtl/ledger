@@ -291,3 +291,59 @@ func TestSanitizeOperatorKeepsTheAuditGrammar(t *testing.T) {
 		t.Errorf("sanitizeOperator did not bound length: %d", len(got))
 	}
 }
+
+// The audit answer has to reach the printed report, because the printed report
+// is what gets pasted into the exit record. A revision reachable only from a
+// library function nobody calls is not evidence anybody reviewing a ship
+// decision will ever see.
+func TestPrintParseRateShowsWhoChangedAVerdict(t *testing.T) {
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	out := captureStdout(t, func() {
+		printParseRate(verify.ParseRateReport{
+			HasRate: true, Rate: 1, LowerBound: 1, Gate: verify.Gate{Passed: true},
+			Adjudicators: []verify.Adjudicator{{Operator: "bob", Verdicts: 3, Last: at}},
+			Revisions: verify.RevisionLog{
+				Superseded: 1, Changed: 1,
+				Changes: []verify.Revision{{
+					IngestID: []byte{0xde, 0xad, 0xbe, 0xef, 0x01, 0x02},
+					From:     verify.VerdictTransaction, To: verify.VerdictNonTransactional,
+					Operator: "bob", At: at, RaisesRate: true,
+				}},
+			},
+		}, false)
+	})
+	for _, want := range []string{
+		"adjudicated by bob", "3 verdict(s)",
+		"1 superseded, 1 changed",
+		"transaction -> non_transactional", "by bob", "2026-08-01T12:00:00Z",
+		"RAISES the rate",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("printed report does not contain %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestParseRateJSONCarriesTheAuditTrail(t *testing.T) {
+	out := captureStdout(t, func() {
+		printParseRate(verify.ParseRateReport{
+			HasRate: true, Gate: verify.Gate{Passed: true},
+			Adjudicators: []verify.Adjudicator{{Operator: "bob", Verdicts: 1}},
+			Revisions:    verify.RevisionLog{Superseded: 1, Changed: 1},
+		}, true)
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("--json did not emit JSON: %v", err)
+	}
+	if _, ok := got["adjudicators"]; !ok {
+		t.Fatalf("--json omits `adjudicators`; keys: %v", keysOf(got))
+	}
+	rev, ok := got["revisions"].(map[string]any)
+	if !ok {
+		t.Fatalf("--json omits `revisions`; keys: %v", keysOf(got))
+	}
+	if rev["changed"] != float64(1) {
+		t.Fatalf("revisions.changed = %v, want 1", rev["changed"])
+	}
+}

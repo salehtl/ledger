@@ -835,12 +835,12 @@ func TestRecordVerdictAppendsAndTheOldVerdictSurvives(t *testing.T) {
 		t.Fatalf("%d row(s) after a revision, want 2: the earlier verdict must survive or "+
 			"the number can be edited into passing with no trace", rows)
 	}
-	superseded, changed, err := Revisions(bg, pool)
+	log, err := Revisions(bg, pool, ParseRateOptions{})
 	if err != nil {
 		t.Fatalf("Revisions: %v", err)
 	}
-	if superseded != 1 || changed != 1 {
-		t.Fatalf("Revisions = (%d, %d), want (1, 1)", superseded, changed)
+	if log.Superseded != 1 || log.Changed != 1 {
+		t.Fatalf("Revisions = (%d, %d), want (1, 1)", log.Superseded, log.Changed)
 	}
 
 	// And the LIVE verdict is the newest one.
@@ -848,8 +848,12 @@ func TestRecordVerdictAppendsAndTheOldVerdictSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[key(u, id[:])] != VerdictTransaction {
-		t.Fatalf("live verdict = %q, want the newest", got[key(u, id[:])])
+	live := got[key(u, id[:])]
+	if live.verdict != VerdictTransaction {
+		t.Fatalf("live verdict = %q, want the newest", live.verdict)
+	}
+	if live.operator != "alice" || live.at.IsZero() {
+		t.Fatalf("the live verdict carries no operator or timestamp: %+v", live)
 	}
 }
 
@@ -970,5 +974,148 @@ func TestColdTextsSkipsAMessageItCannotRead(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("got %v, want nothing: the caller records VerdictUnreadable for a body it "+
 			"could not fetch, and an error here would stop the whole batch", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The audit trail has to be READABLE, not merely written
+// ---------------------------------------------------------------------------
+
+// TestRevisionsSayWhoChangedAVerdictAndWhen.
+//
+// 00018 added `operator` and `adjudicated_at` in response to the finding that
+// adjudication moves the ship gate with no trace — flipping six of ten verdicts
+// took 0.9000 (fail) to 0.9574 (pass). Both columns were WRITE-ONLY: nothing
+// selected either, so the audit existed in the table and in no answer anybody
+// could get. A trail nobody can read is not a trail.
+func TestRevisionsSayWhoChangedAVerdictAndWhen(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	changed := sha256.Sum256([]byte("a verdict someone reconsidered"))
+	steady := sha256.Sum256([]byte("a verdict nobody touched"))
+
+	if err := RecordVerdict(bg, pool, u, steady[:], VerdictNonTransactional, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordVerdict(bg, pool, u, changed[:], VerdictNonTransactional, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordVerdict(bg, pool, u, changed[:], VerdictTransaction, "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := Revisions(bg, pool, ParseRateOptions{})
+	if err != nil {
+		t.Fatalf("Revisions: %v", err)
+	}
+	if log.Superseded != 1 || log.Changed != 1 {
+		t.Fatalf("Revisions = superseded %d / changed %d, want 1 and 1", log.Superseded, log.Changed)
+	}
+	if len(log.Changes) != 1 {
+		t.Fatalf("Changes = %d, want the one verdict that moved; counts alone cannot answer "+
+			"\"who changed it\"", len(log.Changes))
+	}
+	c := log.Changes[0]
+	if c.Operator != "bob" {
+		t.Fatalf("Changes[0].Operator = %q, want bob — the whole point of the column", c.Operator)
+	}
+	if c.From != VerdictNonTransactional || c.To != VerdictTransaction {
+		t.Fatalf("Changes[0] = %q -> %q, want non_transactional -> transaction", c.From, c.To)
+	}
+	if c.At.IsZero() {
+		t.Fatal("Changes[0].At is zero: adjudicated_at is written and never read")
+	}
+	if !bytes.Equal(c.IngestID, changed[:]) {
+		t.Fatalf("Changes[0] names the wrong message")
+	}
+	// The direction matters more than the count: the revision a reviewer is
+	// looking for is the one that made the gate EASIER. This one is the
+	// opposite — it put a message into the denominator, which lowers the rate —
+	// and flagging it would bury the flips that matter in noise.
+	if c.RaisesRate {
+		t.Fatal("non_transactional -> transaction puts a message INTO the denominator and " +
+			"lowers the rate; flagging it as rate-raising inverts the signal")
+	}
+}
+
+// A revision that leaves the denominator alone must not be flagged as raising
+// the rate, or the signal is noise.
+func TestARevisionAwayFromTransactionDoesNotRaiseTheRate(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	id := sha256.Sum256([]byte("m"))
+	if err := RecordVerdict(bg, pool, u, id[:], VerdictTransaction, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordVerdict(bg, pool, u, id[:], VerdictNonTransactional, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	log, err := Revisions(bg, pool, ParseRateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(log.Changes) != 1 {
+		t.Fatalf("Changes = %d, want 1", len(log.Changes))
+	}
+	if !log.Changes[0].RaisesRate {
+		t.Fatal("transaction -> non_transactional removes a message from the denominator, " +
+			"which RAISES the rate; it must be flagged")
+	}
+}
+
+// The report itself has to carry the audit, because the report is what an
+// operator pastes into the exit record — a fact available only from a separate
+// function nobody calls is not evidence anybody will see.
+func TestParseRateReportCarriesWhoAdjudicatedAndWhatMoved(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	miss := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierNone, "")
+	if err := RecordVerdict(bg, pool, u, miss, VerdictTransaction, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordVerdict(bg, pool, u, miss, VerdictNonTransactional, "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.Revisions.Changed != 1 || len(rep.Revisions.Changes) != 1 {
+		t.Fatalf("the report carries no revision detail: %+v", rep.Revisions)
+	}
+	if rep.Revisions.Changes[0].Operator != "bob" {
+		t.Fatalf("revision operator = %q, want bob", rep.Revisions.Changes[0].Operator)
+	}
+	// And who stands behind the verdicts actually used.
+	if len(rep.Adjudicators) != 1 || rep.Adjudicators[0].Operator != "bob" {
+		t.Fatalf("adjudicators = %+v, want the operator whose verdict is LIVE", rep.Adjudicators)
+	}
+	if rep.Adjudicators[0].Verdicts != 1 || rep.Adjudicators[0].Last.IsZero() {
+		t.Fatalf("adjudicator row is missing its count or timestamp: %+v", rep.Adjudicators[0])
+	}
+}
+
+// An unattributed verdict is allowed (RecordVerdict accepts ""), and it must be
+// countable rather than invisible — "nobody signed for this" is the fact the
+// exit record needs.
+func TestAnUnattributedVerdictIsReportedAsUnattributed(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	miss := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierNone, "")
+	if err := RecordVerdict(bg, pool, u, miss, VerdictTransaction, ""); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Adjudicators) != 1 || rep.Adjudicators[0].Operator != UnattributedOperator {
+		t.Fatalf("adjudicators = %+v, want one %q row", rep.Adjudicators, UnattributedOperator)
 	}
 }
