@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,7 @@ var bgctx = context.Background()
 type testKey struct {
 	kid string
 	alg string
+	use string // published "use"; empty means the JWKS omits it
 	rsa *rsa.PrivateKey
 	ec  *ecdsa.PrivateKey
 }
@@ -81,7 +83,7 @@ func mustRSAKey(kid string) *testKey {
 	if err != nil {
 		panic(err)
 	}
-	return &testKey{kid: kid, alg: "RS256", rsa: k}
+	return &testKey{kid: kid, alg: "RS256", use: "sig", rsa: k}
 }
 
 func mustECKey(kid string) *testKey {
@@ -89,32 +91,53 @@ func mustECKey(kid string) *testKey {
 	if err != nil {
 		panic(err)
 	}
-	return &testKey{kid: kid, alg: "ES256", ec: k}
+	return &testKey{kid: kid, alg: "ES256", use: "sig", ec: k}
+}
+
+// withUse republishes the key under a different "use", so a test can serve a
+// key the provider marks for encryption.
+func (k *testKey) withUse(use string) *testKey {
+	c := *k
+	c.use = use
+	return &c
+}
+
+// withKID returns the same key material published under a different kid. It
+// models a provider replacing a key's bytes without changing its identifier —
+// the one rotation the published-kid guard is blind to.
+func (k *testKey) withKID(kid string) *testKey {
+	c := *k
+	c.kid = kid
+	return &c
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // jwk renders the key as the JSON Web Key a JWKS endpoint would publish.
 func (k *testKey) jwk() map[string]any {
+	var out map[string]any
 	if k.rsa != nil {
-		return map[string]any{
+		out = map[string]any{
 			"kty": "RSA",
-			"use": "sig",
 			"alg": "RS256",
 			"kid": k.kid,
 			"n":   b64(k.rsa.PublicKey.N.Bytes()),
 			"e":   b64(big.NewInt(int64(k.rsa.PublicKey.E)).Bytes()),
 		}
+	} else {
+		out = map[string]any{
+			"kty": "EC",
+			"alg": "ES256",
+			"crv": "P-256",
+			"kid": k.kid,
+			"x":   b64(pad32(k.ec.PublicKey.X)),
+			"y":   b64(pad32(k.ec.PublicKey.Y)),
+		}
 	}
-	return map[string]any{
-		"kty": "EC",
-		"use": "sig",
-		"alg": "ES256",
-		"crv": "P-256",
-		"kid": k.kid,
-		"x":   b64(pad32(k.ec.PublicKey.X)),
-		"y":   b64(pad32(k.ec.PublicKey.Y)),
+	if k.use != "" {
+		out["use"] = k.use
 	}
+	return out
 }
 
 func pad32(i *big.Int) []byte {
@@ -145,10 +168,11 @@ func (k *testKey) sign(t *testing.T, input []byte) []byte {
 // ---------------------------------------------------------------------------
 
 type jwksServer struct {
-	srv  *httptest.Server
-	mu   sync.Mutex
-	keys []*testKey
-	hits int
+	srv     *httptest.Server
+	mu      sync.Mutex
+	keys    []*testKey
+	hits    int
+	failing bool
 }
 
 func newJWKS(t *testing.T, keys ...*testKey) *jwksServer {
@@ -162,16 +186,29 @@ func newJWKS(t *testing.T, keys ...*testKey) *jwksServer {
 func (j *jwksServer) serve(w http.ResponseWriter, _ *http.Request) {
 	j.mu.Lock()
 	j.hits++
+	failing := j.failing
 	out := make([]map[string]any, 0, len(j.keys))
 	for _, k := range j.keys {
 		out = append(out, k.jwk())
 	}
 	j.mu.Unlock()
+	if failing {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"keys": out})
 }
 
 func (j *jwksServer) url() string { return j.srv.URL }
+
+// fail makes the endpoint start (or stop) returning 503, modelling a provider
+// outage.
+func (j *jwksServer) fail(v bool) {
+	j.mu.Lock()
+	j.failing = v
+	j.mu.Unlock()
+}
 
 // rotate replaces the published key set, as an IdP does when it retires a
 // signing key.
@@ -280,7 +317,12 @@ func verifierOn(j *jwksServer, c *clock) Verifier {
 // pins that every rejection wraps ErrTokenRejected and yields no identity.
 func mustReject(t *testing.T, v Verifier, token string, want error) {
 	t.Helper()
-	id, err := v.Verify(bgctx, token)
+	mustRejectOpts(t, v, token, VerifyOpts{}, want)
+}
+
+func mustRejectOpts(t *testing.T, v Verifier, token string, opts VerifyOpts, want error) {
+	t.Helper()
+	id, err := v.Verify(bgctx, token, opts)
 	if err == nil {
 		t.Fatalf("token was ACCEPTED as %+v; want rejection with %v", id, want)
 	}
@@ -305,7 +347,7 @@ func TestVerifierAcceptsAGoodRS256Token(t *testing.T) {
 	c := newClock()
 	v := verifierOn(j, c)
 
-	id, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)))
+	id, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -322,7 +364,7 @@ func TestVerifierAcceptsAGoodES256Token(t *testing.T) {
 	c := newClock()
 	v := verifierOn(j, c)
 
-	id, err := v.Verify(bgctx, mint(t, k.ec1, nil, goodClaims(c.now(), nil)))
+	id, err := v.Verify(bgctx, mint(t, k.ec1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -343,7 +385,7 @@ func TestVerifierAcceptsAppleMultiAudienceArray(t *testing.T) {
 	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{
 		"aud": []string{"someone.elses.app", testAudience},
 	}))
-	if _, err := v.Verify(bgctx, tok); err != nil {
+	if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
 		t.Fatalf("multi-audience token rejected: %v", err)
 	}
 }
@@ -359,7 +401,7 @@ func TestVerifierAcceptsAnyConfiguredAudience(t *testing.T) {
 		[]string{"ios.client.id", "android.client.id", "web.client.id"}, c.now)
 
 	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"aud": "android.client.id"}))
-	id, err := v.Verify(bgctx, tok)
+	id, err := v.Verify(bgctx, tok, VerifyOpts{})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -495,6 +537,53 @@ func TestVerifierRejectsAMismatchedKid(t *testing.T) {
 // Attack: claim substitution
 // ---------------------------------------------------------------------------
 
+// Google documents `iss` as EITHER "https://accounts.google.com" or the bare
+// "accounts.google.com" and issues both; go-oidc carries a carve-out for
+// exactly that pair. A verifier stricter than the library here is not a
+// bypass, but it silently fails a subset of real Google sign-ins — which is
+// how this was missed the first time.
+func TestGoogleVerifierAcceptsBothDocumentedIssuerForms(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	// Google's real issuer with a LOCAL jwks url: the issuer is only ever
+	// compared as a string, so this stays hermetic.
+	v := NewOIDCVerifier(IdPGoogle, GoogleIssuer, j.url(), []string{testAudience}, c.now)
+
+	for _, iss := range []string{GoogleIssuer, GoogleIssuerNoScheme} {
+		t.Run(iss, func(t *testing.T) {
+			tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"iss": iss}))
+			id, err := v.Verify(bgctx, tok, VerifyOpts{})
+			if err != nil {
+				t.Fatalf("google issuer %q rejected: %v", iss, err)
+			}
+			if id.IdP != IdPGoogle {
+				t.Fatalf("idp = %q", id.IdP)
+			}
+		})
+	}
+}
+
+// The carve-out is Google's alone and is scoped to Google's real issuer, so it
+// cannot drift into a general "scheme optional" rule.
+func TestTheSchemeLessIssuerAliasIsGoogleOnly(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+
+	t.Run("apple gets no alias", func(t *testing.T) {
+		v := NewOIDCVerifier(IdPApple, AppleIssuer, j.url(), []string{testAudience}, c.now)
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"iss": "appleid.apple.com"}))
+		mustReject(t, v, tok, ErrIssuer)
+	})
+	t.Run("google with a non-google issuer gets no alias", func(t *testing.T) {
+		v := NewOIDCVerifier(IdPGoogle, testIssuer, j.url(), []string{testAudience}, c.now)
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(),
+			map[string]any{"iss": strings.TrimPrefix(testIssuer, "https://")}))
+		mustReject(t, v, tok, ErrIssuer)
+	})
+}
+
 // Attack: an attacker who can get a token signed by their own IdP presents it
 // to us. Only the configured issuer may mint identities we accept.
 func TestVerifierRejectsWrongIssuer(t *testing.T) {
@@ -557,7 +646,7 @@ func TestVerifierRejectsExpiredAndNotYetValid(t *testing.T) {
 	})
 	t.Run("expires while held", func(t *testing.T) {
 		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
-		if _, err := v.Verify(bgctx, tok); err != nil {
+		if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
 			t.Fatalf("token should be good now: %v", err)
 		}
 		c.advance(2 * time.Hour)
@@ -578,7 +667,7 @@ func TestVerifierRejectsExpiredAndNotYetValid(t *testing.T) {
 	t.Run("nbf inside the skew leeway is accepted", func(t *testing.T) {
 		tok := mint(t, k.rsa1, nil, goodClaims(c.now(),
 			map[string]any{"nbf": c.now().Add(time.Minute).Unix()}))
-		if _, err := v.Verify(bgctx, tok); err != nil {
+		if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
 			t.Fatalf("nbf 1m ahead should be tolerated as clock skew: %v", err)
 		}
 	})
@@ -597,13 +686,13 @@ func TestVerifierRejectsATokenFromTheOtherIdP(t *testing.T) {
 	google := NewOIDCVerifier(IdPGoogle, testOtherIssuer, googleJWKS.url(), []string{testAudience}, c.now)
 
 	googleToken := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"iss": testOtherIssuer}))
-	if _, err := google.Verify(bgctx, googleToken); err != nil {
+	if _, err := google.Verify(bgctx, googleToken, VerifyOpts{}); err != nil {
 		t.Fatalf("google token should verify at the google verifier: %v", err)
 	}
 	mustReject(t, apple, googleToken, ErrIssuer)
 
 	appleToken := mint(t, k.ec1, nil, goodClaims(c.now(), nil))
-	if _, err := apple.Verify(bgctx, appleToken); err != nil {
+	if _, err := apple.Verify(bgctx, appleToken, VerifyOpts{}); err != nil {
 		t.Fatalf("apple token should verify at the apple verifier: %v", err)
 	}
 	mustReject(t, google, appleToken, ErrIssuer)
@@ -641,9 +730,20 @@ func TestVerifierRejectsMalformedTokens(t *testing.T) {
 		"header not json":   b64([]byte("nope")) + "." + parts[1] + "." + parts[2],
 		"body not json":     parts[0] + "." + b64([]byte("nope")) + "." + parts[2],
 	}
-	// Verify is reachable unauthenticated, so an oversized "token" must be
+	// Verify is reachable unauthenticated, so an oversized token must be
 	// refused before anything base64-decodes it into memory.
-	cases["oversized"] = strings.Repeat("A", maxIDTokenBytes+1) + ".b.c"
+	//
+	// It is a genuinely signed, otherwise-perfect token on purpose: a
+	// `strings.Repeat("A", ...)` blob would be rejected as unparseable JSON
+	// whether or not the cap existed, so it would pass this test while
+	// testing nothing. Mutation-checked — deleting the cap accepts this.
+	oversized := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{
+		"padding": strings.Repeat("x", maxIDTokenBytes),
+	}))
+	if len(oversized) <= maxIDTokenBytes {
+		t.Fatalf("fixture is %d bytes, which does not exceed the %d cap", len(oversized), maxIDTokenBytes)
+	}
+	cases["oversized"] = oversized
 
 	for name, tok := range cases {
 		t.Run(name, func(t *testing.T) { mustReject(t, v, tok, ErrMalformed) })
@@ -656,8 +756,115 @@ func TestVerifierRejectsMalformedTokens(t *testing.T) {
 	if len(big) >= maxIDTokenBytes {
 		t.Fatalf("a %d-byte token is not under the %d cap; the cap is too tight", len(big), maxIDTokenBytes)
 	}
-	if _, err := v.Verify(bgctx, big); err != nil {
+	if _, err := v.Verify(bgctx, big, VerifyOpts{}); err != nil {
 		t.Fatalf("a large but legitimate token was rejected: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nonce binding (replay)
+// ---------------------------------------------------------------------------
+
+// Without a bound nonce an ID token is a pure bearer credential for the
+// sign-in exchange: anything that observes one inside its validity window can
+// replay it and be issued a session. These tests pin both the Phase 1 default
+// (unbound, and honest about it) and the binding that closes it.
+func TestNonceBinding(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	t.Run("unbound is replayable, which is why binding exists", func(t *testing.T) {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
+		for i := 0; i < 5; i++ {
+			if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
+				t.Fatalf("replay %d: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("bound nonce matches", func(t *testing.T) {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "n-abc123"}))
+		if _, err := v.Verify(bgctx, tok, VerifyOpts{Nonce: "n-abc123"}); err != nil {
+			t.Fatalf("matching nonce rejected: %v", err)
+		}
+	})
+
+	// The replay case: a token captured from someone else's sign-in carries
+	// THEIR nonce, so it is useless against a session bound to ours.
+	t.Run("captured token carries another sign-in's nonce", func(t *testing.T) {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "someone-elses"}))
+		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: "n-abc123"}, ErrNonce)
+	})
+
+	// The failure that would make the whole mechanism decorative: a token with
+	// NO nonce must not satisfy a caller that bound one.
+	t.Run("token with no nonce cannot satisfy a bound one", func(t *testing.T) {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
+		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: "n-abc123"}, ErrNonce)
+	})
+
+	// A nonce on the token but none bound is accepted: Phase 1's clients do
+	// not yet round-trip one, and refusing would break them.
+	t.Run("unbound caller ignores a token nonce", func(t *testing.T) {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "n-abc123"}))
+		if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
+			t.Fatalf("unbound verify rejected a token carrying a nonce: %v", err)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Header media type and unsupported constructs
+// ---------------------------------------------------------------------------
+
+// `typ` is optional (Apple omits it) but when present must say this is an ID
+// token. Defence in depth against a provider that later signs another token
+// type with the same key set — the classic way a token minted for one purpose
+// is accepted for another.
+func TestVerifierChecksTheTypHeader(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+	claims := goodClaims(c.now(), nil)
+
+	t.Run("accepted", func(t *testing.T) {
+		for _, typ := range []any{nil, "JWT", "jwt", "application/jwt"} {
+			tok := mint(t, k.rsa1, map[string]any{"typ": typ}, claims)
+			if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
+				t.Fatalf("typ %v rejected: %v", typ, err)
+			}
+		}
+	})
+	t.Run("rejected", func(t *testing.T) {
+		for _, typ := range []string{"at+jwt", "JWE", "secevent+jwt"} {
+			tok := mint(t, k.rsa1, map[string]any{"typ": typ}, claims)
+			mustReject(t, v, tok, ErrUntrustedHeader)
+		}
+	})
+}
+
+// Aggregated/distributed claims (OIDC Core 5.6.2) are not implemented here.
+// Rejecting them in our own parse keeps them from reaching go-oidc, whose
+// error for them would otherwise be logged as a signature failure — the wrong
+// reason, on the one path where the log is the only diagnosis available.
+func TestVerifierRejectsDistributedClaims(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{
+		"_claim_names":   map[string]any{"email": "src1"},
+		"_claim_sources": map[string]any{"src1": map[string]any{"endpoint": "https://evil.test/claims"}},
+	}))
+	mustReject(t, v, tok, ErrMalformed)
+
+	// And it never reached the network to resolve that endpoint.
+	if j.hitCount() != 0 {
+		t.Fatalf("distributed-claims token caused %d JWKS fetches", j.hitCount())
 	}
 }
 
@@ -666,20 +873,32 @@ func TestVerifierRejectsMalformedTokens(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // A provider that rotates IN a new signing key must not break sign-in until
-// the process is restarted: an unknown kid triggers a refetch.
+// the process is restarted: once the published kid list is refreshed, an
+// unknown kid triggers a refetch and the new key works.
+//
+// The clock advance is the point, not scaffolding: the kid list is trusted for
+// jwksRefresh, so a key rotated in is refused for up to that long. That delay is
+// the price of the amplification bound (see rotatingKeySet) and is asserted
+// here in both directions.
 func TestVerifierRefetchesJWKSAfterRotation(t *testing.T) {
 	k := testKeys()
 	j := newJWKS(t, k.rsa1)
 	c := newClock()
 	v := verifierOn(j, c)
 
-	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil))); err != nil {
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
 		t.Fatalf("pre-rotation verify: %v", err)
 	}
 
 	j.rotate(k.rsa2) // the provider retires rsa-1 and publishes rsa-2
+
+	// Inside jwksRefresh the new kid is not yet known, and is refused rather than
+	// costing an outbound fetch.
+	mustReject(t, v, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)), ErrSignature)
+
+	c.advance(jwksRefresh + time.Second)
 	before := j.hitCount()
-	id, err := v.Verify(bgctx, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)))
+	id, err := v.Verify(bgctx, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)), VerifyOpts{})
 	if err != nil {
 		t.Fatalf("post-rotation verify (new kid must trigger a refetch): %v", err)
 	}
@@ -696,37 +915,251 @@ func TestVerifierRefetchesJWKSAfterRotation(t *testing.T) {
 //
 // go-oidc v3.11.0's RemoteKeySet caches the key set with no expiry whatsoever
 // and only refetches on a kid MISS, so on its own a retired key stays valid in
-// a long-lived process forever. jwksMaxAge is what bounds that; this test pins
-// both halves of the bound.
+// a long-lived process forever. Here the retired key's KID disappears from the
+// published list, so the kid guard retires it within jwksRefresh — well before
+// jwksMaxAge would.
 func TestVerifierRejectsATokenSignedByARotatedOutKey(t *testing.T) {
 	k := testKeys()
 	j := newJWKS(t, k.rsa1)
 	c := newClock()
-	const maxAge = time.Hour
-	v := newOIDCVerifier(IdPApple, testIssuer, j.url(), []string{testAudience}, c.now, maxAge)
+	v := verifierOn(j, c)
 
-	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil))); err != nil {
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
 		t.Fatalf("pre-rotation verify: %v", err)
 	}
 
 	j.rotate(k.rsa2) // rsa-1 is retired
 
-	// Documented, bounded staleness: inside the window the cached key is
-	// still honoured. Asserted rather than glossed over, so a future change
-	// to jwksMaxAge is a deliberate change to a tested property.
-	c.advance(maxAge / 2)
-	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil))); err != nil {
-		t.Fatalf("inside the cache window the retired key should still verify: %v", err)
+	// Documented, bounded staleness: inside the kid-list window the cached
+	// key is still honoured. Asserted rather than glossed over, so a change
+	// to jwksRefresh is a deliberate change to a tested property.
+	c.advance(jwksRefresh / 2)
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("inside the kid-list window the retired key should still verify: %v", err)
 	}
 
-	c.advance(maxAge)
+	c.advance(jwksRefresh)
 	mustReject(t, v, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), ErrSignature)
 
-	// The refreshed key set is not merely empty — the currently published
-	// key still works.
-	if _, err := v.Verify(bgctx, mint(t, k.rsa2, nil, goodClaims(c.now(), nil))); err != nil {
+	// The refreshed view is not merely empty — the currently published key
+	// still works.
+	if _, err := v.Verify(bgctx, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
 		t.Fatalf("current key rejected after refresh: %v", err)
 	}
+}
+
+// Key MATERIAL replaced under an UNCHANGED kid — the rotation a kid-list
+// comparison would be blind to. One refresh interval governs this too, because
+// the whole key set is replaced on the clock rather than patched by kid.
+func TestVerifierRejectsAKeyReplacedUnderTheSameKid(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("pre-rotation verify: %v", err)
+	}
+
+	imposter := k.rsa2.withKID(k.rsa1.kid) // same kid, different key
+	j.rotate(imposter)
+
+	// Inside the window the cached material is still honoured — stated, so a
+	// change to jwksRefresh is a change to a tested property.
+	c.advance(jwksRefresh / 2)
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("inside the refresh window the cached key should still verify: %v", err)
+	}
+
+	c.advance(jwksRefresh)
+	mustReject(t, v, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), ErrSignature)
+
+	// And the replacement key, under that same kid, is accepted.
+	if _, err := v.Verify(bgctx, mint(t, imposter, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("replacement key rejected: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Outbound amplification
+// ---------------------------------------------------------------------------
+
+// The regression this whole key set exists for.
+//
+// go-oidc's RemoteKeySet refetches the JWKS whenever no cached key VERIFIES —
+// not, as its comment claims, only when the kid is unknown — with no negative
+// caching and no rate limit. Every check an attacker must pass to reach that
+// point is public: `iss` and `alg` are fixed, `exp` is theirs, `aud` is the
+// client ID shipped inside the mobile app, and the kid is published in the
+// JWKS. Measured against the unguarded implementation: 20 forged tokens
+// produced 21 outbound fetches.
+//
+// The live-kid case below is the one a published-kid filter does NOT catch,
+// and is why the fix had to own the refetch policy rather than filter kids.
+func TestForgedTokensCannotAmplifyIntoJWKSFetches(t *testing.T) {
+	k := testKeys()
+
+	forgeries := map[string]func(i int) map[string]any{
+		"unknown kid": func(i int) map[string]any {
+			return map[string]any{"kid": fmt.Sprintf("forged-%d", i)}
+		},
+		"live kid, forged signature": func(int) map[string]any {
+			return map[string]any{"kid": k.rsa1.kid}
+		},
+		"no kid": func(int) map[string]any {
+			return map[string]any{"kid": nil}
+		},
+	}
+	for name, hdr := range forgeries {
+		t.Run(name, func(t *testing.T) {
+			j := newJWKS(t, k.rsa1)
+			c := newClock()
+			v := verifierOn(j, c)
+			for i := 0; i < 20; i++ {
+				// Signed with the attacker's own key; everything a public
+				// observer can set is set correctly.
+				tok := mint(t, k.rsa2, hdr(i), goodClaims(c.now(), map[string]any{"sub": fmt.Sprint(i)}))
+				mustReject(t, v, tok, ErrSignature)
+			}
+			if got := j.hitCount(); got != 1 {
+				t.Fatalf("20 forged tokens caused %d JWKS fetches; want exactly 1 (the initial load)", got)
+			}
+		})
+	}
+}
+
+// Time, not token content, is the only thing that may cause a fetch.
+func TestJWKSIsFetchedOnAClockNotOnFailure(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	good := func() string { return mint(t, k.rsa1, nil, goodClaims(c.now(), nil)) }
+	if _, err := v.Verify(bgctx, good(), VerifyOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if j.hitCount() != 1 {
+		t.Fatalf("first verify caused %d fetches, want 1", j.hitCount())
+	}
+	// A hundred successful verifications inside one window: still one fetch.
+	for i := 0; i < 100; i++ {
+		if _, err := v.Verify(bgctx, good(), VerifyOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j.hitCount() != 1 {
+		t.Fatalf("100 good verifies caused %d fetches, want 1", j.hitCount())
+	}
+	// Crossing the window costs exactly one more.
+	c.advance(jwksRefresh + time.Second)
+	if _, err := v.Verify(bgctx, good(), VerifyOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if j.hitCount() != 2 {
+		t.Fatalf("after one refresh interval there were %d fetches, want 2", j.hitCount())
+	}
+}
+
+// There is no attacker-keyed state in the key set, so a forgery cannot poison
+// anything. This is the test that fails if the policy is ever "simplified"
+// into a negative cache of recently-missed kids — which would let an attacker
+// forging garbage under the provider's LIVE kid lock out every real sign-in.
+func TestAForgedSignatureUnderALiveKidDoesNotLockOutRealTokens(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	forged := mint(t, k.rsa2, map[string]any{"kid": k.rsa1.kid}, goodClaims(c.now(), nil))
+	for i := 0; i < 5; i++ {
+		mustReject(t, v, forged, ErrSignature)
+	}
+	// A genuine token under that same kid must still work, immediately.
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("a forgery under the live kid locked out genuine tokens: %v", err)
+	}
+}
+
+// A provider outage must not be a sign-in outage — but it must not keep a
+// revoked key alive forever either. Both ends of that are policy this package
+// owns, so both are pinned.
+func TestJWKSOutageServesStaleKeysButOnlyUpToTheLimit(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	j.fail(true) // the provider's endpoint starts erroring
+
+	c.advance(jwksRefresh + time.Second)
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("a JWKS blip must not be a sign-in outage: %v", err)
+	}
+
+	// A failed fetch must be rate limited too, or a down provider gets one
+	// request per inbound sign-in.
+	before := j.hitCount()
+	for i := 0; i < 20; i++ {
+		_, _ = v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
+	}
+	if got := j.hitCount() - before; got != 0 {
+		t.Fatalf("20 verifies during an outage made %d further fetch attempts, want 0 inside the window", got)
+	}
+
+	// Staleness is not unbounded.
+	c.advance(jwksStaleMax)
+	mustReject(t, v, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), ErrSignature)
+
+	// Recovery works.
+	j.fail(false)
+	c.advance(jwksRefresh + time.Second)
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("after the provider recovered: %v", err)
+	}
+}
+
+// RFC 7515 makes `kid` optional and go-oidc verifies such a token against every
+// published key in turn. Neither provider emits one, but the behaviour is
+// pinned so it is a known quantity rather than something discovered later.
+func TestVerifierAcceptsAKidLessTokenThatVerifies(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	tok := mint(t, k.rsa1, map[string]any{"kid": nil}, goodClaims(c.now(), nil))
+	id, err := v.Verify(bgctx, tok, VerifyOpts{})
+	if err != nil {
+		t.Fatalf("kid-less token that verifies against a published key: %v", err)
+	}
+	if id.Subject != testSubject {
+		t.Fatalf("subject = %q", id.Subject)
+	}
+}
+
+// A key the provider publishes for ENCRYPTION must never verify a signature.
+// RFC 7517 makes "use" optional, so an absent one is not disqualifying — but a
+// key that explicitly says it is not for signing is.
+func TestVerifierIgnoresKeysNotPublishedForSigning(t *testing.T) {
+	k := testKeys()
+	c := newClock()
+
+	t.Run("use=enc is not a signing key", func(t *testing.T) {
+		j := newJWKS(t, k.rsa1.withUse("enc"))
+		v := verifierOn(j, c)
+		mustReject(t, v, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), ErrSignature)
+	})
+	t.Run("absent use is still usable", func(t *testing.T) {
+		j := newJWKS(t, k.rsa1.withUse(""))
+		v := verifierOn(j, c)
+		if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+			t.Fatalf("a key with no declared use should still verify: %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -794,9 +1227,15 @@ func TestProviderConstructorsAreWiredToTheRealProviders(t *testing.T) {
 		name             string
 		v                *oidcVerifier
 		idp, issuer, url string
+		accepted         []string
 	}{
-		{"apple", apple, IdPApple, "https://appleid.apple.com", "https://appleid.apple.com/auth/keys"},
-		{"google", google, IdPGoogle, "https://accounts.google.com", "https://www.googleapis.com/oauth2/v3/certs"},
+		{"apple", apple, IdPApple,
+			"https://appleid.apple.com", "https://appleid.apple.com/auth/keys",
+			[]string{"https://appleid.apple.com"}},
+		{"google", google, IdPGoogle,
+			"https://accounts.google.com", "https://www.googleapis.com/oauth2/v3/certs",
+			// Both forms Google documents; see the carve-out in newOIDCVerifier.
+			[]string{"https://accounts.google.com", "accounts.google.com"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -809,11 +1248,17 @@ func TestProviderConstructorsAreWiredToTheRealProviders(t *testing.T) {
 			if tc.v.issuer != tc.issuer {
 				t.Errorf("issuer = %q, want %q", tc.v.issuer, tc.issuer)
 			}
+			if !sameStrings(tc.v.acceptedIssuers, tc.accepted) {
+				t.Errorf("accepted issuers = %q, want %q", tc.v.acceptedIssuers, tc.accepted)
+			}
 			if tc.v.keys.jwksURL != tc.url {
 				t.Errorf("jwks url = %q, want %q", tc.v.keys.jwksURL, tc.url)
 			}
-			if tc.v.keys.maxAge != jwksMaxAge {
-				t.Errorf("jwks max age = %v, want %v", tc.v.keys.maxAge, jwksMaxAge)
+			if tc.v.keys.refresh != jwksRefresh {
+				t.Errorf("jwks refresh = %v, want %v", tc.v.keys.refresh, jwksRefresh)
+			}
+			if tc.v.keys.staleMax != jwksStaleMax {
+				t.Errorf("jwks stale max = %v, want %v", tc.v.keys.staleMax, jwksStaleMax)
 			}
 		})
 	}
