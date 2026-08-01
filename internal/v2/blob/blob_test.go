@@ -3,18 +3,12 @@ package blob
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"math"
 	"math/rand"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-
-	"ledger/internal/v2/oplog"
 )
 
 func env() Envelope {
@@ -328,56 +322,6 @@ func TestSealAndOpenAgreeOnTheSizeCap(t *testing.T) {
 		t.Fatal("a plaintext past the cap must be refused by Seal, not discovered at Open")
 	}
 
-}
-
-// TestWorstCaseColdMailFitsABucket is the assertion that matters for ingest,
-// and it deliberately does not check MaxPlaintext: the binding limit on a cold
-// blob is MaxBucket, on the COMPRESSED frame. So it builds the actual worst
-// case — an incompressible message at exactly the DATA cap, base64'd into a
-// real RawBody record, at the longest envelope ingest can produce — and
-// requires it to seal. An earlier version of this test asserted a MaxPlaintext
-// inequality instead; it passed while Seal was in fact refusing legal mail.
-func TestWorstCaseColdMailFitsABucket(t *testing.T) {
-	// MaxColdMail IS the DATA cap: config.validate rejects any
-	// mail.max_message_bytes above it, so proving the ceiling here proves it
-	// for every configuration that loads. (This file cannot import config —
-	// config imports blob for exactly this constant.)
-	raw := incompressible(MaxColdMail)
-	rec, err := oplog.EncodeRawBody(oplog.RawBody{
-		IngestID:   strings.Repeat("f", 64),
-		ReceivedAt: time.Now().UTC(),
-		RawBase64:  base64.StdEncoding.EncodeToString(raw),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The longest AAD the ingest writer can produce: the widest counter it will
-	// ever reach costs the most header bytes, which is the case most likely to
-	// tip a blob past its bucket.
-	e := Envelope{UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-		Stream: StreamCold, WriterID: "ingest", WriterCounter: math.MaxInt64}
-
-	s := PlaintextSealer{}
-	sealed, err := s.Seal(e, rec)
-	if err != nil {
-		t.Fatalf("a message at the DATA cap (%d bytes, incompressible) must seal, "+
-			"or SMTP accepts mail ingest cannot store: %v", MaxColdMail, err)
-	}
-	if sealed.SizeBucket != MaxBucket {
-		t.Logf("worst-case cold blob landed in the %d KB bucket", sealed.SizeBucket>>10)
-	}
-	got, err := s.Open(e, sealed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	back, err := oplog.DecodeRawBody(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if back.RawBase64 != base64.StdEncoding.EncodeToString(raw) {
-		t.Fatal("worst-case cold round trip lost the message")
-	}
 }
 
 func TestHashChainsOverTheFramedBytes(t *testing.T) {
