@@ -387,6 +387,15 @@ func (s *Server) renderQuarantineItem(it quarantine.Item, withBlob bool) Quarant
 // is the difference between a flow that teaches and a flow that dead-ends on
 // the screen where they are trying to onboard.
 func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	// FIRST, before the body is even read. A confirmation re-ingests every
+	// message it releases through the whole parse cascade, synchronously,
+	// inside this request — the most expensive thing a session can ask this API
+	// to do, and until now the only write path here with no budget at all. See
+	// the quarantineRate block in api.go.
+	if !s.QuarantinePerUser.Allow(userID.String()) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many sender confirmations; try again shortly")
+		return
+	}
 	var req ConfirmSenderRequest
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
@@ -472,8 +481,13 @@ func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, use
 // message (see Pipeline.promoteHeld) — the loser finds the message already in
 // the log and clears the row instead of appending a second copy.
 //
-// The absence of a rate limit on this route is therefore safe because the
-// PROMOTION is exclusive, not because repetition happens to be idempotent.
+// What makes repetition CORRECT is therefore that the promotion is exclusive,
+// not that it happens to be idempotent. What makes it AFFORDABLE is the
+// per-user budget on the route (Server.QuarantinePerUser): correctness under
+// repetition was never an argument that a session should be allowed to run the
+// parse cascade over 500 messages as fast as it can issue requests, and this
+// comment used to say the absence of a limit was safe on those grounds. It was
+// answering the wrong question.
 func (s *Server) reingest(ctx context.Context, userID uuid.UUID, ids [][]byte) *ReingestReport {
 	// Absent means "this deployment cannot re-ingest"; an all-zero report means
 	// "there was nothing held to re-ingest". Collapsing them would make a

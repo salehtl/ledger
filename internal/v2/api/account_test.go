@@ -284,8 +284,15 @@ func TestDeleteAccountWithAllThreeFactorsPurgesTheAccount(t *testing.T) {
 	}
 
 	// The session died with the account, so the credential that reached this
-	// endpoint is worth nothing afterwards.
-	wantStatus(t, h.req("GET", "/api/v1/sync?stream=hot", acc.tok, nil), http.StatusUnauthorized)
+	// endpoint is worth nothing afterwards — and it says so DISTINGUISHABLY.
+	// A 401 here would be indistinguishable from an expired session, and the
+	// device that just deleted its own account has to know which of the two it
+	// is looking at before it wipes anything (Task 26 Step 4, Task 29 Step 8).
+	after := h.req("GET", "/api/v1/sync?stream=hot", acc.tok, nil)
+	wantStatus(t, after, http.StatusGone)
+	if got := after.Body.String(); got != `{"error":"account_deleted"}` {
+		t.Fatalf("body = %s", got)
+	}
 }
 
 func TestDeleteAccountChallengeIsSingleUse(t *testing.T) {

@@ -143,6 +143,31 @@ var notUserLinked = []string{
 	// Per-bank demand counters from onboarding. A bank name and a count, never
 	// linked to who asked. See 00012_waitlist.sql.
 	"public.waitlist",
+	// Single-use beta invite codes. A row is a code hash, a note in the
+	// operator's words, and — once spent — a `redeemed_by` link to the account
+	// that spent it.
+	//
+	// The link is the only user-attributable thing here and it is removed by
+	// the schema itself: `redeemed_by uuid REFERENCES users(id) ON DELETE SET
+	// NULL`. What survives the purge is "some code was spent, and nobody knows
+	// by whom", which is the same unattributable residue dict_entries leaves
+	// after ForgetSubmitter.
+	//
+	// The column is NOT called user_id on purpose. A user_id column here would
+	// be discovered as user-scoped, and checkCascades would then correctly
+	// refuse the whole purge because SET NULL is exactly the silent survival it
+	// guards against — while CASCADE, the action it would demand instead, would
+	// DELETE the row and put a spent code back into circulation. Neither
+	// outcome is wanted, so the table is not user-scoped and says so here. See
+	// 00020_invite_codes.sql.
+	"public.invite_codes",
+	// The deleted-account tombstone: SHA-256 of the session tokens that were
+	// live when an account was deleted, so the devices holding them get a 410
+	// instead of a 401 and can safely wipe. It is WRITTEN BY the deletion, so it
+	// is the one table that must survive one, and it carries no user id, no
+	// subject, no address and nothing derived from them — see
+	// 00021_deleted_account_sessions.sql, which argues the privacy case in full.
+	"public.deleted_account_sessions",
 	// goose's own migration ledger.
 	"public.goose_db_version",
 }

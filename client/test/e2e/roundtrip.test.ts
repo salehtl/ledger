@@ -132,8 +132,28 @@ function clientFor(profile: string): Client {
  */
 async function accountFor(name: string, profile = name): Promise<Client> {
   const c = clientFor(profile);
-  await c.login("apple", `dev:${name}`);
+  await c.login("apple", `dev:${name}`, mintInvite(name));
   return c;
+}
+
+/**
+ * One single-use invite code, minted by the real `ledgerd mint-invite`.
+ *
+ * Account CREATION is gated on a code (Phase 2, Decision 8) and every account
+ * here is a fresh `dev:<name>` subject, so every one of them needs its own.
+ * Running the CLI rather than INSERTing a row is deliberate: it is what proves
+ * the mint → hand over → redeem loop works, and an INSERT would be the test
+ * doing the job production is supposed to do.
+ */
+function mintInvite(note: string): string {
+  const out = execFileSync(binary, ["mint-invite", "--note", note], {
+    cwd: REPO,
+    env: { ...process.env, LEDGER_MAIL_DOMAIN: "example.test", LEDGER_PG_DSN: dsnFor(DB) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const code = out.toString().trim();
+  if (code === "") throw new Error("ledgerd mint-invite printed no code");
+  return code;
 }
 
 const hard = (v: { severity: string }[]): unknown[] => v.filter((x) => x.severity === "hard_stop");

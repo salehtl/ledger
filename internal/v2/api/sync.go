@@ -97,6 +97,11 @@ type UploadResponse struct {
 type ExchangeRequest struct {
 	IdP     string `json:"idp"`
 	IDToken string `json:"id_token"`
+	// InviteCode is the closed beta's gate (plan Decision 8). It is required to
+	// CREATE an account and ignored entirely for one that already exists, so a
+	// client may send it on every sign-in without burning it, and an existing
+	// user who omits it is never locked out. See auth/invite.go.
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // ExchangeResponse carries the session token, returned exactly once.
@@ -190,6 +195,31 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// reuse. Phase 1 has no such store on this path and no client to drive it,
 	// so the binding is left unwired rather than half-wired: a decorative nonce
 	// check reads as a defence in every later review and is none.
+	//
+	// # Phase 2 kept it empty here, and closed the twin
+	//
+	// api/addresses.go:170 carried the byte-identical empty VerifyOpts{} and no
+	// longer does, because that endpoint's store DID exist —
+	// address_rotation_challenges, issued by POST /api/v1/address/challenge,
+	// spent exactly once by RotateAuthorized. Sign-in has no equivalent: the
+	// challenge would have to be issued to an ANONYMOUS caller before any
+	// identity is known, which is a new unauthenticated, rate-limited,
+	// swept table and a two-round-trip sign-in — a real design, not a call-site
+	// change, and one nothing in Phase 2 needs.
+	//
+	// So the residual is restated rather than closed: a captured ID token is a
+	// replayable bearer credential HERE for its validity window. What Phase 2
+	// took away from it is the ability to create an ACCOUNT — that now needs a
+	// single-use invite code (below) — so a replayed token can take over a
+	// sign-in for an identity that already exists and can do nothing for one
+	// that does not. Closing it properly is named Phase-4-blocking in the
+	// package doc.
+	//
+	// Task 13 Step 2 has the client send a nonce on sign-in ANYWAY, so that the
+	// day the store lands the server can begin enforcing it without a client
+	// change. Until then the field it sends is ignored, deliberately, because
+	// comparing a value the caller chose against a value the caller chose is
+	// not a check.
 	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{})
 	if err != nil {
 		if errors.Is(err, auth.ErrNotConfigured) {
@@ -221,7 +251,26 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := auth.UpsertUser(r.Context(), s.Pool, id)
+	// The closed beta's gate, and the ONE distinguishable rejection this
+	// endpoint emits.
+	//
+	// Everything above collapses to a byte-identical 401 because telling a
+	// caller which credential check failed is an oracle. `not_invited` is
+	// different in kind: it is a fact about this deployment's POLICY, not about
+	// the credential, and it says the one thing the person holding the phone
+	// needs to know — that re-entering their Apple password will never help.
+	// An attacker learns nothing they could not learn by presenting a code.
+	//
+	// It gates CREATION only: UpsertUserInvited ignores the field entirely for
+	// an identity that already has an account, and the redemption happens
+	// inside the same transaction as the account so a refusal leaves nothing
+	// behind.
+	userID, err := auth.UpsertUserInvited(r.Context(), s.Pool, id, req.InviteCode)
+	if errors.Is(err, auth.ErrNotInvited) {
+		s.logf("api: exchange: sign-up refused: no unredeemed invite code")
+		writeErr(w, http.StatusForbidden, "not_invited", "")
+		return
+	}
 	if err != nil {
 		s.logf("api: exchange: upsert user: %v", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")

@@ -68,6 +68,11 @@ type Config struct {
 	// the deadline after which an account gets deleted, so a value sitting in a
 	// config file would be a destruction date nobody typed.
 	Consent ConsentArgs `toml:"-"`
+
+	// Invite carries `ledgerd mint-invite`'s arguments. Command-line only, on
+	// the same terms: a code minted because a note sat in a config file is a
+	// beta invitation nobody decided to send.
+	Invite InviteArgs `toml:"-"`
 }
 
 // ConsentArgs is the `record-consent` mode's command line.
@@ -93,6 +98,21 @@ type ConsentArgs struct {
 	// SignedAt is when they signed, as RFC3339. Empty means now.
 	SignedAt string
 	// Show lists the recorded deadlines and writes nothing.
+	Show bool
+}
+
+// InviteArgs is the `mint-invite` mode's command line.
+//
+// The closed beta's gate (Phase 2, Decision 8) is a code the OPERATOR mints and
+// hands over out of band, because the thing that would otherwise key an
+// allowlist — the IdP subject — is not knowable until the sign-in being gated.
+// So there has to be a command, and this is its argument list.
+type InviteArgs struct {
+	// Note is the operator's own words about who the code is for. Optional, and
+	// free text: nothing machine-reads it, and a gate whose audit trail is a
+	// slug is a gate nobody can audit six weeks later.
+	Note string
+	// Show lists what has been minted and redeemed, and mints nothing.
 	Show bool
 }
 
@@ -207,7 +227,7 @@ type AuthConfig struct {
 // it cannot itself verify that main's dispatch table actually has an entry
 // for each of these — see the "cross-package coverage" note on
 // modeImplemented below for where that's actually checked.
-var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-templates", "purge-user", "record-consent", "parse-rate"}
+var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-templates", "purge-user", "record-consent", "parse-rate", "mint-invite"}
 
 // modeImplemented is this package's own declared expectation of which modes
 // in modeOrder are meant to have a real dispatch entry in cmd/ledgerd.
@@ -237,6 +257,7 @@ var modeImplemented = map[string]bool{
 	"purge-user":      true,
 	"record-consent":  true,
 	"parse-rate":      true,
+	"mint-invite":     true,
 }
 
 // Modes returns every mode cmd/ledgerd is meant to dispatch on. cmd/ledgerd

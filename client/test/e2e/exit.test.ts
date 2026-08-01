@@ -267,7 +267,10 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
   // ------------------------------------------------------------------
   test("step 2: dev-b is enrolled by dev-a's key, not by a session token", async () => {
     a = clientFor(s, "dev-a");
-    await a.login("apple", SUBJECT);
+    // The account does not exist yet, so this sign-in is the one that needs an
+    // invite code; every later login on SUBJECT is a returning user and passes
+    // nothing.
+    await a.login("apple", SUBJECT, s.mintInvite("phase1-exit"));
     await a.enroll("dev-a");
 
     b = clientFor(s, "dev-b");

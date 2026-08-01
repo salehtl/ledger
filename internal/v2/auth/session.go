@@ -25,15 +25,24 @@ const sessionTokenBytes = 32
 // Session rejection reasons. All of them wrap ErrSessionInvalid so a caller
 // can ask the single question it actually cares about.
 //
-// The HTTP layer must return the SAME 401 for all of them. "Expired" and
-// "revoked" both confirm that the token was once real, which "no such session"
-// does not; telling them apart is an oracle in a response and a useful detail
-// only in a log.
+// The HTTP layer must return the SAME 401 for all of them EXCEPT the last.
+// "Expired" and "revoked" both confirm that the token was once real, which "no
+// such session" does not; telling them apart is an oracle in a response and a
+// useful detail only in a log.
+//
+// ErrSessionAccountDeleted is the deliberate exception, and it is not an
+// oracle: it is a fact about an account that no longer exists, offered to the
+// one party that already holds that account's session token. It exists because
+// the device has to be able to tell "sign in again" from "there is nothing to
+// sign in to", and only the second one may make it wipe local data. See
+// 00021_deleted_account_sessions.sql for why this cannot be detected by looking
+// for a session whose user row is missing.
 var (
-	ErrSessionInvalid = errors.New("auth: session token is not valid")
-	ErrSessionUnknown = fmt.Errorf("%w: no such session", ErrSessionInvalid)
-	ErrSessionExpired = fmt.Errorf("%w: session expired", ErrSessionInvalid)
-	ErrSessionRevoked = fmt.Errorf("%w: session revoked", ErrSessionInvalid)
+	ErrSessionInvalid        = errors.New("auth: session token is not valid")
+	ErrSessionUnknown        = fmt.Errorf("%w: no such session", ErrSessionInvalid)
+	ErrSessionExpired        = fmt.Errorf("%w: session expired", ErrSessionInvalid)
+	ErrSessionRevoked        = fmt.Errorf("%w: session revoked", ErrSessionInvalid)
+	ErrSessionAccountDeleted = fmt.Errorf("%w: the account this session belonged to was deleted", ErrSessionInvalid)
 )
 
 // Sessions issues and resolves opaque server-side session tokens.
@@ -172,7 +181,12 @@ func (s *Sessions) Resolve(ctx context.Context, token string) (uuid.UUID, error)
 		`SELECT token_hash, user_id, expires_at, revoked_at FROM sessions WHERE token_hash = $1`,
 		want).Scan(&stored, &userID, &expires, &revoked)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, ErrSessionUnknown
+		// The session row is GONE, which is the only state a deleted account
+		// leaves behind: sessions.user_id cascades from users, so the deletion
+		// took every row with it. The tombstone is the one place that remembers,
+		// and it is consulted only here — on a token this server does not
+		// recognize — so the common path pays nothing.
+		return uuid.Nil, s.deletedOrUnknown(ctx, want)
 	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("auth: resolve session: %w", err)
@@ -187,6 +201,30 @@ func (s *Sessions) Resolve(ctx context.Context, token string) (uuid.UUID, error)
 		return uuid.Nil, ErrSessionExpired
 	}
 	return userID, nil
+}
+
+// deletedOrUnknown answers the one question an unrecognized token can still be
+// asked: did this token belong to an account that was deleted?
+//
+// It reads the tombstone 00021 fills in from a BEFORE DELETE trigger on users.
+// A row past its own recorded expiry answers nothing — a session that would
+// have died anyway gets the ordinary "unknown", because at that point "expired"
+// is a true and sufficient statement and 410 would be claiming knowledge about
+// a credential that is dead either way.
+//
+// Any error reading the tombstone degrades to ErrSessionUnknown rather than
+// propagating: the caller is about to reject this token no matter what, and
+// turning a rejected credential into a 500 because a supplementary lookup
+// failed would be a worse answer than the 401 that was already correct.
+func (s *Sessions) deletedOrUnknown(ctx context.Context, tokenHash []byte) error {
+	var expires time.Time
+	err := s.Pool.QueryRow(ctx,
+		`SELECT expires_at FROM deleted_account_sessions WHERE token_hash = $1`,
+		tokenHash).Scan(&expires)
+	if err != nil || !expires.After(s.now()) {
+		return ErrSessionUnknown
+	}
+	return ErrSessionAccountDeleted
 }
 
 // Revoke kills one session. It is idempotent: revoking an already-revoked
@@ -264,7 +302,17 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 }
 
 // UpsertUser returns the user id for a verified Identity, creating the user on
-// first sign-in.
+// first sign-in — WITH NO INVITE GATE.
+//
+// # Read this before calling it
+//
+// This is the ungated creation path. It exists for test and operator seeding,
+// and after Phase 2's Task 6 no production request path calls it: the sign-in
+// exchange calls UpsertUserInvited, and the address-rotation path (which used
+// to call this to "resolve" a re-authenticating identity, and thereby minted a
+// users row on every rejected attempt) now calls IdentityMatchesUser instead
+// and creates nothing. A new caller here is a new way past the closed beta's
+// only gate, so add one deliberately or not at all.
 //
 // The user row and its oplog_seq counter row are created in ONE transaction.
 // That is a requirement, not tidiness: oplog.Appender documents its
@@ -277,6 +325,26 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 // Verifier. Nothing in this function can tell a verified subject from an
 // attacker-supplied string.
 func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID, error) {
+	return upsertUser(ctx, pool, id, nil)
+}
+
+// UpsertUserInvited is UpsertUser behind the closed beta's gate: an identity
+// that already has an account signs in and the code is IGNORED ENTIRELY, while
+// an identity that does not gets an account only if code redeems an unredeemed
+// invite. It returns ErrNotInvited otherwise, and creates nothing.
+//
+// The redemption happens in the SAME transaction as the account, which is what
+// makes "single use" true rather than nearly true. Every failure mode a
+// two-statement version would have — a code marked spent for an account that
+// was never created, an account created against a code someone else spent a
+// millisecond earlier — is a rollback here instead.
+func UpsertUserInvited(ctx context.Context, pool *pgxpool.Pool, id Identity, code string) (uuid.UUID, error) {
+	return upsertUser(ctx, pool, id, &code)
+}
+
+// upsertUser is the body both entry points share. invite is nil when creation
+// is unconditional and non-nil (possibly empty) when it must be paid for.
+func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *string) (uuid.UUID, error) {
 	if pool == nil {
 		return uuid.Nil, errors.New("auth: UpsertUser: pool is nil")
 	}
@@ -316,16 +384,35 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 	// snapshot — always sees the winner's row. If the other transaction rolled
 	// back instead, our insert proceeds normally.
 	var userID uuid.UUID
+	created := true
 	err = tx.QueryRow(ctx,
 		`INSERT INTO users (idp, idp_sub_hash) VALUES ($1, $2)
 		 ON CONFLICT (idp, idp_sub_hash) DO NOTHING
 		 RETURNING id`, id.IdP, hash).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The conflict path: this identity already had an account, either from
+		// an earlier sign-in or from a concurrent one that committed while we
+		// waited. Either way nothing was created here, so nothing is owed.
+		created = false
 		err = tx.QueryRow(ctx,
 			`SELECT id FROM users WHERE idp = $1 AND idp_sub_hash = $2`, id.IdP, hash).Scan(&userID)
 	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: %w", err)
+	}
+
+	// The gate, and it is keyed on `created` — a value that came back from the
+	// INSERT itself rather than from a SELECT this function ran beforehand.
+	// The difference is the whole guarantee: a pre-flight "does this user
+	// exist?" is a check-then-act with a window in it, and the window is
+	// exactly a concurrent first sign-in.
+	//
+	// Placed before the counter row and the writer so that a refusal does the
+	// least work possible before rolling back.
+	if invite != nil && created {
+		if err := redeemInviteTx(ctx, tx, *invite, userID, time.Now().UTC()); err != nil {
+			return uuid.Nil, err
+		}
 	}
 
 	// Idempotent (ON CONFLICT DO NOTHING inside), so running it for a
@@ -361,4 +448,35 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: commit: %w", err)
 	}
 	return userID, nil
+}
+
+// IdentityMatchesUser reports whether a verified Identity names the account
+// userID, and CREATES NOTHING.
+//
+// It is what a re-authentication check needs, and it is deliberately not
+// UpsertUser. Resolving a re-auth identity by upserting it means the endpoint
+// mints a `users` row whenever the token names someone else — a row-creation
+// primitive on the path that answers 403, reachable by anyone holding one valid
+// session plus any Apple or Google token, and (since Phase 2) a way straight
+// past the invite gate. account.go found and fixed that on the deletion path;
+// this is the same fix, extracted so the rotation path cannot drift back.
+//
+// The comparison is constant-time so that the endpoint is not an oracle for
+// which subject hashes exist.
+func IdentityMatchesUser(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, id Identity) (bool, error) {
+	if pool == nil {
+		return false, errors.New("auth: IdentityMatchesUser: pool is nil")
+	}
+	var want []byte
+	err := pool.QueryRow(ctx,
+		`SELECT idp_sub_hash FROM users WHERE id = $1 AND idp = $2`, userID, id.IdP).Scan(&want)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// This account has no identity under that provider: a token from the
+		// other IdP, or an account that is already gone.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auth: IdentityMatchesUser: %w", err)
+	}
+	return subtle.ConstantTimeCompare(want, SubjectHash(id.IdP, id.Subject)) == 1, nil
 }

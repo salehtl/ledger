@@ -203,7 +203,7 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     // Independent for real, not merely differently named: `dev-a` signing in
     // must leave `dev-b` signed out, or the "two concurrent writers" the exit
     // criterion names would be one writer with two handles.
-    await a.login("apple", "dev:harness-two-profiles");
+    await a.login("apple", "dev:harness-two-profiles", s.mintInvite());
     await a.enroll("dev-a");
     expect(() => b.userId).toThrow(/not signed in/);
     expect(existsSync(a.location)).toBe(true);
@@ -246,7 +246,7 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     const s = await boot();
 
     const a = clientFor(s, "dev-a");
-    await a.login("apple", "dev:harness-mail");
+    await a.login("apple", "dev:harness-mail", s.mintInvite());
     await a.enroll("dev-a");
     const address = await s.address(a);
     expect(address.endsWith(`@in.${s.mailDomain}`)).toBe(true);
