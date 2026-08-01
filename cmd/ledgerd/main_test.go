@@ -237,6 +237,8 @@ func TestQuarantineSweepSurvivesAFailureAndStopsOnShutdown(t *testing.T) {
 // would fail with a connection error naming the DSN, not with this message.
 func TestRunServeRefusesAPublicAdminBind(t *testing.T) {
 	for _, addr := range []string{"0.0.0.0:8079", ":8079", "178.104.132.41:8079", "192.168.1.10:8079"} {
+		// No DSN at all: a handler that reached pg.Open before the bind check
+		// would fail with a connection error rather than this one.
 		err := runServe(config.Config{
 			Server: config.ServerConfig{HTTPListen: "127.0.0.1:8443", AdminListen: addr},
 		})
@@ -250,14 +252,27 @@ func TestRunServeRefusesAPublicAdminBind(t *testing.T) {
 }
 
 // And the accepted shapes get past the bind check — they fail later, on the
-// empty DSN, which is what proves the rail let them through rather than that it
+// database, which is what proves the rail let them through rather than that it
 // was never consulted.
+//
+// The DSN points at a closed port rather than being empty. An empty conn string
+// makes pgx fall back to libpq's PG* environment variables, so on a box where
+// those happen to name a live cluster this test would migrate it and then reach
+// net.Listen — binding :25 and :8443 and blocking until the signal that never
+// comes. A test whose behaviour depends on the developer's shell environment is
+// not a test.
 func TestRunServeAcceptsLoopbackAndTailnetAdminBinds(t *testing.T) {
+	const unreachable = "postgres://ledger@127.0.0.1:1/ledger_v2_unreachable?connect_timeout=1"
 	for _, addr := range []string{"127.0.0.1:8079", "100.100.215.38:8079", "[::1]:8079"} {
 		err := runServe(config.Config{
-			Server: config.ServerConfig{HTTPListen: "127.0.0.1:8443", AdminListen: addr},
+			Server: config.ServerConfig{
+				HTTPListen: "127.0.0.1:8443", AdminListen: addr, DSN: unreachable,
+			},
 		})
-		if err != nil && strings.Contains(err.Error(), "admin_listen") {
+		if err == nil {
+			t.Fatalf("runServe returned no error against an unreachable database")
+		}
+		if strings.Contains(err.Error(), "admin_listen") {
 			t.Fatalf("runServe refused %q: %v", addr, err)
 		}
 	}
