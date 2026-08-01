@@ -185,6 +185,11 @@ type Report struct {
 // partial. A per-message problem is counted in Report.Failed and the call
 // continues: one message whose sender is no longer trusted must not stop the
 // other four hundred.
+//
+// A device's blob written at an op schema newer than this build's is neither:
+// it is the normal release order, so it is set aside — named in the log, with
+// its seq and its writer — and the call proceeds. See
+// [Pipeline.currentPayloads].
 func (p *Pipeline) Reprocess(ctx context.Context, userID uuid.UUID, ingestIDs [][]byte) (Report, error) {
 	var rep Report
 	if err := p.check(); err != nil {
@@ -675,9 +680,56 @@ func (p *Pipeline) appendSupersede(ctx context.Context, userID uuid.UUID,
 // the eight compared fields (replay refuses an edit to amount, currency or
 // direction with unsupported_edit_field), and reading them would be the server
 // folding a user's private history for no answer it needs.
+//
+// # A blob this build cannot read is not the same as a broken one
+//
+// [oplog.DecodeBlob]'s doc requires its callers to split its errors two ways,
+// and this one has to split them by WRITER as well, because the two halves land
+// on opposite sides here:
+//
+//   - A DEVICE blob at a newer op schema is the normal release order. Phones
+//     update themselves and the server is deployed separately, so from the
+//     first v2 op a user's device writes, this scan meets a blob it cannot
+//     read — and nothing in the upload path would have stopped it, since
+//     api.decodeUploadBlob checks the framing and never decodes the ops. It is
+//     logged and skipped: refusing here would mean no template fix could ever
+//     reach that account again, silently, and forever. What it costs is that
+//     the comparison base may be missing a device op — and a device op is not
+//     where these creates come from. [oplog.AppendClient] refuses the ingest
+//     writer id outright and stamps every device row type_flag "edit", so a
+//     txn_ingested for this ingest id was written by the server, on the writer
+//     whose blobs are still read below. (What is NOT enforced is the op TYPE
+//     inside a device blob; a device that authored its own txn_superseded would
+//     be outside the contract in a way replay already labels as its op rather
+//     than the server's, and it is a strictly better failure than the account
+//     never being reprocessable again.)
+//   - The INGEST writer's own blob at a newer op schema means this binary is
+//     older than the log it is serving. That is a downgrade, the comparison
+//     base really does have a hole where a supersede may be, and superseding
+//     against it would append the redundant correction §3.3's second rule
+//     exists to prevent. That is the STOP oplog documents.
+//   - Anything else is corruption at a version this build owns, from either
+//     writer, and is likewise a stop: it is an infrastructure fault with a seq
+//     an operator can act on, not a routine skew.
+//
+// Every skipped blob is NAMED in the log, with its seq and the writer that
+// produced it, and a run that skipped any says so once more at the end. That is
+// the whole difference between "I could not read forty of this user's blobs"
+// and "there was nothing to do", and before this split the two were the same
+// four zeros. It is not in [Report]: that struct is mirrored field for field by
+// admin.Report and api.Report, and a count that stopped at the pipeline would
+// be a number the operator's console silently drops. Carrying it properly is
+// four files and belongs with whoever owns the adapters.
 func (p *Pipeline) currentPayloads(ctx context.Context, userID uuid.UUID,
 	want map[string][]byte) (map[string]*txnPayload, error) {
 	out := make(map[string]*txnPayload, len(want))
+	skipped := 0
+	defer func() {
+		if skipped > 0 {
+			p.logf("ingest: reprocess: user %s: %d hot blob(s) were set aside because a device is running "+
+				"ahead of this build; deploying the newer server puts them back in the comparison", userID, skipped)
+		}
+	}()
 	after := int64(0)
 	for {
 		rows, err := oplog.Read(ctx, p.Pool, userID, blob.StreamHot, after, hotPageRows, hotPageBytes)
@@ -695,11 +747,12 @@ func (p *Pipeline) currentPayloads(ctx context.Context, userID uuid.UUID,
 			}
 			ops, err := oplog.DecodeBlob(pt)
 			if err != nil {
-				// Not skipped. A hot blob this build cannot read might hold the
-				// supersede that already corrected one of these messages, and
-				// comparing against a stale payload would append a duplicate
-				// correction. Reprocessing is an operator action; failing it
-				// loudly is cheaper than a log full of redundant supersedes.
+				if errors.Is(err, oplog.ErrUnknownNewerVersion) && row.WriterID != oplog.IngestWriterID {
+					skipped++
+					p.logf("ingest: reprocess: setting aside the hot blob at seq %d: writer %s is ahead of this build (%v)",
+						row.Seq, row.WriterID, err)
+					continue
+				}
 				return nil, fmt.Errorf("ingest: reprocess: hot blob at seq %d: %w", row.Seq, err)
 			}
 			for _, o := range ops {

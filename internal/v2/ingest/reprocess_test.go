@@ -17,6 +17,7 @@ import (
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/origin"
+	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/tmpl"
 )
 
@@ -847,6 +848,12 @@ func TestReprocessDoesNotAppendTwiceWhenAPromoteFailedAfterItsAppend(t *testing.
 // The pool is warmed before the racers start. pgxpool connects lazily and
 // staggers new connections, so racers that each have to dial first do not
 // actually overlap and the race this test exists to reproduce never happens.
+//
+// What this test can and cannot assert is spelled out where it counts the
+// diagnostics rows below. The half it cannot reach —the losing interleaving,
+// which is the whole reason that count is not fixed — is pinned deterministically
+// by TestAConfirmationArrivingAfterThePromotionRecordsAnUnchangedReprocess
+// rather than left to the scheduler to produce sometimes.
 func TestConcurrentConfirmationsAppendTheMessageOnce(t *testing.T) {
 	r := newRig(t)
 	r.publish(amountTemplate(1, authPattern))
@@ -923,6 +930,48 @@ func TestConcurrentConfirmationsAppendTheMessageOnce(t *testing.T) {
 	if appendedRows != 1 || supersededRows != 0 {
 		t.Fatalf("%d appended and %d superseded reprocess rows for one promotion, want 1 and 0",
 			appendedRows, supersededRows)
+	}
+}
+
+// TestAConfirmationArrivingAfterThePromotionRecordsAnUnchangedReprocess is the
+// losing interleaving of the race above, made deterministic by running the two
+// confirmations in sequence instead of hoping the scheduler produces it.
+//
+// It is the reason the test above counts appended rows rather than rows: a
+// confirmation that lands after the promotion has committed finds nothing held,
+// so it takes the STORED lane — the body is in the cold stream, the create is on
+// the hot stream, they compare equal — and records an unchanged reprocess.
+// Nothing is appended and nothing is superseded, which is what makes the racer's
+// extra row wasted work rather than a symptom. Asserted here so that the
+// property is pinned by something that cannot fail for a scheduling reason.
+func TestAConfirmationArrivingAfterThePromotionRecordsAnUnchangedReprocess(t *testing.T) {
+	r := newRig(t)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+	ids, err := r.q.Confirm(bg, r.user, "bank.example", origin.ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if rep := r.reprocess(ids...); rep != (Report{Examined: 1, Appended: 1}) {
+		t.Fatalf("report = %+v, want one appended", rep)
+	}
+	rows := len(r.rows())
+
+	if rep := r.reprocess(ids...); rep != (Report{Examined: 1, Unchanged: 1}) {
+		t.Fatalf("the second confirmation reported %+v, want one unchanged", rep)
+	}
+	if got := len(r.rows()); got != rows {
+		t.Fatalf("op_log grew from %d to %d rows on a second confirmation", rows, got)
+	}
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("%d messages still held after both confirmations", got)
+	}
+	replayLiveEntities(t, r.hotOps())
+
+	d := r.reprocessDiags()
+	if len(d) != 2 || d[0].Outcome != diag.OutcomeAppended || d[1].Outcome != diag.OutcomeUnchanged {
+		t.Fatalf("reprocess diagnostics = %+v, want an appended row then an unchanged one", d)
 	}
 }
 
@@ -1028,5 +1077,761 @@ func TestReprocessOfAnotherUsersMessageFindsNothing(t *testing.T) {
 	}
 	if got := len(r.hotOps()); got != 1 {
 		t.Fatalf("the owner's log now has %d ops", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The forwarded, attested path — §3.2's primary onboarding shape
+// ---------------------------------------------------------------------------
+
+// forwardedAlert wraps a bank body in the inline forward Apple Mail and Gmail
+// produce, with the outer From belonging to the user's own mailbox.
+func forwardedAlert(body string) []byte {
+	return message("<user@gmail.com>", "Fwd: Transaction Alert",
+		"Begin forwarded message:\n"+
+			"From: TheBank <alerts@bank.example>\n"+
+			"Subject: Transaction Alert\n"+
+			"Date: 5 June 2026 at 10:00:00 GST\n"+
+			"\n"+body)
+}
+
+// TestReprocessOfForwardedMailRunsTheInnerBanksTemplate covers the path §3.2
+// calls the primary onboarding path — a Gmail forwarding rule — end to end
+// through a reprocess, which nothing did.
+//
+// Two decisions are on the line and both were unasserted. The origin replayed
+// from the arrival row has to keep its ATTESTATION, or a user who confirmed
+// their bank at ScopeInner (the only row that forwarding produces) gets Failed
+// on every message of every reprocess and reads it as "my transactions never
+// came back". And the templates that run have to be chosen by the domain the
+// trust decision LANDED on — the inner bank — not by the outer forwarder, or
+// the wrong bank's templates are matched against the body.
+func TestReprocessOfForwardedMailRunsTheInnerBanksTemplate(t *testing.T) {
+	r := newRig(t)
+	// Proving an attested inner origin from real signatures is origin's own
+	// subject and is asserted there; what is under test here is which of the
+	// two domains survives the round trip through parse_diagnostics.
+	r.p.Origin = stubOrigin(origin.Origin{
+		Outer: "google.com", Inner: "bank.example", Attested: true,
+		AttestedBy: origin.AttestedByARC, DKIM: origin.SigNone, ARC: origin.SigPass,
+	})
+	r.allow("bank.example", origin.ScopeInner)
+	r.publish(amountTemplate(1, authPattern))
+	fwd := forwardedAlert(reprocessBody)
+	r.mustDeliver(fwd, "user@gmail.com")
+
+	if p := r.onlyPayload(); p.TemplateID != "bank.card.v1" || p.AmountMinor != "25000" {
+		t.Fatalf("the forwarded message did not arrive through the bank's template: %+v", p)
+	}
+
+	r.publish(amountTemplate(2, chargedPattern))
+	if rep := r.reprocess(idOf(fwd)); rep != (Report{Examined: 1, Superseded: 1}) {
+		t.Fatalf("report = %+v, want one supersede; a forwarded message's attestation was lost", rep)
+	}
+	ops := r.hotOps()
+	sup := payloadOf(t, ops[len(ops)-1])
+	if sup.TemplateID != "bank.card.v1" || sup.TemplateVersion != 2 {
+		t.Fatalf("supersede provenance = %s v%d; the OUTER domain chose the templates",
+			sup.TemplateID, sup.TemplateVersion)
+	}
+	if sup.AmountMinor != "91813" || sup.Currency != "AED" {
+		t.Fatalf("supersede payload = %s %s, want 91813 AED", sup.AmountMinor, sup.Currency)
+	}
+	if sup.NeedsReview {
+		t.Fatal("a template-tier supersede of confirmed forwarded mail must not need review")
+	}
+	d := r.reprocessDiags()
+	if len(d) != 1 {
+		t.Fatalf("reprocess diagnostics = %+v, want one row", d)
+	}
+	if d[0].InnerOrigin == nil || *d[0].InnerOrigin != "bank.example" {
+		t.Fatalf("the reprocess row does not record the attested inner origin: %+v", d[0])
+	}
+	if d[0].SenderDomain != "google.com" {
+		t.Fatalf("sender_domain = %q, want the outer domain the forward arrived from", d[0].SenderDomain)
+	}
+}
+
+// TestReprocessOfDirectMailAttestsNothing is the same round trip for mail that
+// was never forwarded: an arrival that recorded no inner origin must come back
+// with no attestation, and the reprocess row must say so.
+//
+// It is the direction that cannot be caught by the forwarded test above, and
+// the one that matters for trust: an origin that claims an attestation it does
+// not have is an inner-scope allowlist match nobody proved.
+func TestReprocessOfDirectMailAttestsNothing(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	r.publish(amountTemplate(2, chargedPattern))
+	if rep := r.reprocess(idOf(raw)); rep != (Report{Examined: 1, Superseded: 1}) {
+		t.Fatalf("report = %+v, want one supersede", rep)
+	}
+	d := r.reprocessDiags()
+	if len(d) != 1 {
+		t.Fatalf("reprocess diagnostics = %+v, want one row", d)
+	}
+	if d[0].InnerOrigin != nil {
+		t.Fatalf("inner_origin_domain = %q for mail that was never forwarded", *d[0].InnerOrigin)
+	}
+}
+
+// TestTheRecordedOriginIsRebuiltExactlyFromTheArrivalRow reads the rebuild
+// directly, in both directions, because the two ends of it fail in opposite and
+// equally silent ways.
+//
+// Dropping the attestation strands every user onboarded through a forwarding
+// rule. Asserting one that was never recorded is worse: origin.Decide takes the
+// INNER path first, so an origin that claims to be attested is asking to be
+// matched against ScopeInner rows using a domain nothing verified — and for
+// direct mail there is no inner domain at all, so the claim is attached to an
+// empty string. Neither shows up in an end-to-end outcome, because Decide's own
+// gates absorb both; this asserts the value the gates are handed.
+func TestTheRecordedOriginIsRebuiltExactlyFromTheArrivalRow(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.allow("bank.example", origin.ScopeInner)
+	r.publish(amountTemplate(1, authPattern))
+
+	direct := r.trusted(reprocessBody)
+	r.mustDeliver(direct, "alerts@bank.example")
+	o, err := r.p.recordedOrigin(bg, r.user, idOf(direct))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o == nil {
+		t.Fatal("no origin was recorded for a delivered message")
+	}
+	if o.Attested || o.Inner != "" || o.AttestedBy != "" {
+		t.Fatalf("direct mail came back attested: %+v", *o)
+	}
+	if o.Outer != "bank.example" || o.DKIM != origin.SigPass {
+		t.Fatalf("the verified facts did not survive the round trip: %+v", *o)
+	}
+
+	// The same read for a forward this server attested at arrival.
+	r.p.Origin = stubOrigin(origin.Origin{
+		Outer: "google.com", Inner: "bank.example", Attested: true,
+		AttestedBy: origin.AttestedByARC, DKIM: origin.SigNone, ARC: origin.SigPass,
+	})
+	fwd := forwardedAlert(reprocessBody)
+	r.mustDeliver(fwd, "user@gmail.com")
+	o, err = r.p.recordedOrigin(bg, r.user, idOf(fwd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o == nil {
+		t.Fatal("no origin was recorded for the forwarded message")
+	}
+	if !o.Attested || o.Inner != "bank.example" {
+		t.Fatalf("the attested inner origin was dropped: %+v", *o)
+	}
+	// The attestation has to NAME the verdict it rests on, and that verdict has
+	// to be one that passed: origin.Decide refuses an inner origin whose
+	// AttestedBy did not verify, so naming DKIM here — which is "none" — would
+	// quietly demote every forwarded message to its outer domain.
+	if o.AttestedBy != origin.AttestedByARC {
+		t.Fatalf("attested_by = %q, want %s: only ARC passed for this message",
+			o.AttestedBy, origin.AttestedByARC)
+	}
+	if o.Outer != "google.com" || o.ARC != origin.SigPass {
+		t.Fatalf("the verified facts did not survive the round trip: %+v", *o)
+	}
+
+	// An id this user never received has no arrival, which is nil and not an
+	// empty origin — the difference reprocessOne refuses on.
+	o, err = r.p.recordedOrigin(bg, r.user, idOf([]byte("never delivered")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o != nil {
+		t.Fatalf("an unknown ingest id produced an origin: %+v", *o)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The refusals
+// ---------------------------------------------------------------------------
+
+// TestReprocessRefusesAMessageWithNoRecordedArrival. The arrival diagnostics row
+// is the only record of which domain's signature this server verified, and the
+// cold stream stores the message without its SMTP envelope — so a re-resolve
+// with the row gone could only fall back to Return-Path, a header the SENDER
+// wrote, and that domain would then choose which bank's template runs.
+//
+// The branch that refuses was reached by no test at all: deleting it does not
+// fail the suite, it makes origin.Decide dereference a nil pointer. A refusal
+// whose failure mode is a panic is not a refusal.
+func TestReprocessRefusesAMessageWithNoRecordedArrival(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	if _, err := r.pool.Exec(bg, `DELETE FROM parse_diagnostics WHERE user_id = $1 AND event = $2`,
+		r.user, diag.EventArrival); err != nil {
+		t.Fatal(err)
+	}
+	r.publish(amountTemplate(2, chargedPattern))
+
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err != nil {
+		t.Fatalf("reprocess: %v", err)
+	}
+	if rep != (Report{Examined: 1, Failed: 1}) {
+		t.Fatalf("report = %+v, want one failure", rep)
+	}
+	if got := len(r.hotOps()); got != 1 {
+		t.Fatalf("the log has %d ops; a message with no verified origin was re-parsed anyway", got)
+	}
+	if d := r.reprocessDiags(); len(d) != 0 {
+		t.Fatalf("a refused reprocess wrote %d diagnostics rows", len(d))
+	}
+}
+
+// TestReprocessRefusesAColdBodyWithNoTransactionOp pins the prev == nil guard.
+//
+// A supersede is a CREATE with no parent_version, and replay keys it to the
+// transaction already live under the same ingest id. Emitting one with no live
+// predecessor is replay's supersede_without_origin anomaly — the client folds
+// it as a fault and shows nothing — so a cold body whose hot create is missing
+// is a message that needs a look, not a guess.
+func TestReprocessRefusesAColdBodyWithNoTransactionOp(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	// The create is gone; the cold body under the same ingest id is not. The
+	// blob keeps its position and its link, so this is a hot stream that is
+	// intact and simply holds no transaction.
+	r.rewriteHotBlob(1, mustEncodeOps(t))
+
+	r.publish(amountTemplate(2, chargedPattern))
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err != nil {
+		t.Fatalf("reprocess: %v", err)
+	}
+	if rep != (Report{Examined: 1, Failed: 1}) {
+		t.Fatalf("report = %+v, want one failure", rep)
+	}
+	if got := len(r.hotOps()); got != 0 {
+		t.Fatalf("a supersede with no live predecessor was appended: %+v", r.hotOps())
+	}
+	if d := r.reprocessDiags(); len(d) != 0 {
+		t.Fatalf("a refused reprocess wrote %d diagnostics rows", len(d))
+	}
+}
+
+// mustEncodeOps encodes an op blob, defaulting to the empty one.
+func mustEncodeOps(t *testing.T, ops ...oplog.Op) []byte {
+	t.Helper()
+	b, err := oplog.EncodeBlob(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// ---------------------------------------------------------------------------
+// Timestamps
+// ---------------------------------------------------------------------------
+
+// TestPromotedMailIsDatedItsArrivalAndNotItsConfirmation. A hold lasts 30 days
+// and the confirmation that releases it is a tap on a button weeks later. Both
+// timestamps that describe the message have to be the ARRIVAL instant: the op's
+// authored_at, which is what the client orders and tiebreaks by, and the cold
+// record's received_at, which is the only timestamp a client has for when the
+// mail actually came. Stamping either with the confirmation would show a user
+// six weeks of held mail dated the moment they tapped.
+//
+// The unparsed message is here for the third timestamp, which is not an op
+// field at all: a message no template reads takes its posted_at from the
+// instant the NORMALIZER was given, so normalizing against now rather than the
+// arrival redates the transaction itself.
+func TestPromotedMailIsDatedItsArrivalAndNotItsConfirmation(t *testing.T) {
+	r := newRig(t)
+	r.publish(amountTemplate(1, authPattern))
+	parsed := r.trusted(reprocessBody)
+	unparsed := r.trusted("Dear customer, our branches will be closed on Eid.\n")
+	r.mustDeliver(parsed, "alerts@bank.example")
+	r.mustDeliver(unparsed, "alerts@bank.example")
+
+	held, err := r.q.Held(bg, r.user, [][]byte{idOf(parsed), idOf(unparsed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 2 {
+		t.Fatalf("%d messages held, want 2", len(held))
+	}
+	arrival := map[string]time.Time{}
+	for _, it := range held {
+		arrival[hex.EncodeToString(it.IngestID)] = it.ReceivedAt
+	}
+
+	// Six weeks in quarantine, then the user confirms their bank.
+	r.now = r.now.Add(42 * 24 * time.Hour)
+	ids, err := r.q.Confirm(bg, r.user, "bank.example", origin.ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if rep := r.reprocess(ids...); rep != (Report{Examined: 2, Appended: 2}) {
+		t.Fatalf("report = %+v, want two appended", rep)
+	}
+
+	for _, op := range r.hotOps() {
+		want, ok := arrival[op.IngestID]
+		if !ok {
+			t.Fatalf("op %s names ingest id %s, which was never held", op.OpID, op.IngestID)
+		}
+		if d := op.AuthoredAt.Sub(want); d < -time.Millisecond || d > time.Millisecond {
+			t.Fatalf("op for %s… is authored at %s, %s away from its arrival %s",
+				op.IngestID[:12], op.AuthoredAt, d, want)
+		}
+	}
+	for _, row := range r.rows() {
+		if row.Stream != blob.StreamCold {
+			continue
+		}
+		rb, err := oplog.DecodeRawBody(r.open(row))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := arrival[rb.IngestID]
+		if d := rb.ReceivedAt.Sub(want); d < -time.Millisecond || d > time.Millisecond {
+			t.Fatalf("the cold record for %s… says it was received at %s, %s away from %s",
+				rb.IngestID[:12], rb.ReceivedAt, d, want)
+		}
+	}
+	// The unparsed message has no date of its own, so its transaction is dated
+	// from what the normalizer was handed.
+	for _, op := range r.hotOps() {
+		if op.IngestID != hex.EncodeToString(idOf(unparsed)) {
+			continue
+		}
+		p := payloadOf(t, op)
+		if !p.Unparsed {
+			t.Fatalf("the fixture is no longer unparsed: %+v", p)
+		}
+		if got := p.PostedAt[:10]; got != arrival[op.IngestID].Format("2006-01-02") {
+			t.Fatalf("posted_at = %q, want the arrival date %s",
+				got, arrival[op.IngestID].Format("2006-01-02"))
+		}
+	}
+}
+
+// TestReprocessDoesNotRedateAMessageItLeavesAlone is the same property on the
+// stored lane, and the one that turns a wrong instant into an APPEND: a message
+// whose posted_at came from its arrival is re-parsed weeks later, and if the
+// re-parse is handed today's clock instead of the stored arrival, posted_at
+// moves, changedFields sees it move, and a supersede retires a transaction the
+// user may have categorized for no change at all.
+func TestReprocessDoesNotRedateAMessageItLeavesAlone(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted("Dear customer, our branches will be closed on Eid.\n")
+	r.mustDeliver(raw, "alerts@bank.example")
+	before := r.onlyPayload()
+	if !before.Unparsed {
+		t.Fatalf("the fixture is no longer unparsed: %+v", before)
+	}
+
+	r.now = r.now.Add(42 * 24 * time.Hour)
+	if rep := r.reprocess(idOf(raw)); rep != (Report{Examined: 1, Unchanged: 1}) {
+		t.Fatalf("report = %+v; reprocessing weeks later redated the message", rep)
+	}
+	if got := len(r.hotOps()); got != 1 {
+		t.Fatalf("the log has %d ops after an unchanged reprocess", got)
+	}
+}
+
+// TestTheReprocessDiagnosticsRowIsStampedWithTheRerun. For event='reprocess'
+// the column is when the thing being reported happened, which is what makes
+// Accounting's window mean anything: a row stamped with a six-week-old arrival
+// is invisible to every report an operator runs, and it ties with the arrival
+// row in every ordering.
+func TestTheReprocessDiagnosticsRowIsStampedWithTheRerun(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+	arrival := r.now
+
+	r.now = r.now.Add(42 * 24 * time.Hour)
+	r.publish(amountTemplate(2, chargedPattern))
+	if rep := r.reprocess(idOf(raw)); rep != (Report{Examined: 1, Superseded: 1}) {
+		t.Fatalf("report = %+v, want one supersede", rep)
+	}
+
+	var at time.Time
+	if err := r.pool.QueryRow(bg, `SELECT received_at FROM parse_diagnostics
+	  WHERE user_id = $1 AND event = $2`, r.user, diag.EventReprocess).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	if d := at.UTC().Sub(r.now); d < -time.Millisecond || d > time.Millisecond {
+		t.Fatalf("the reprocess row is stamped %s, %s away from the re-run at %s", at, d, r.now)
+	}
+	if !at.UTC().After(arrival) {
+		t.Fatalf("the reprocess row is stamped %s, at or before the arrival %s", at, arrival)
+	}
+	// The supersede itself is stamped the same way, for a different reason:
+	// authored_at is replay's fork tiebreak, so a supersede stamped anywhere
+	// but the instant the CORRECTION was made either ties with the op it
+	// replaces or sorts against ops it has no relationship to.
+	ops := r.hotOps()
+	if len(ops) != 2 {
+		t.Fatalf("want two ops, got %d", len(ops))
+	}
+	if d := ops[1].AuthoredAt.Sub(r.now); d < -time.Millisecond || d > time.Millisecond {
+		t.Fatalf("the supersede is authored at %s, %s away from the correction at %s",
+			ops[1].AuthoredAt, d, r.now)
+	}
+	if !ops[1].AuthoredAt.After(ops[0].AuthoredAt) {
+		t.Fatalf("the supersede is authored at %s, not after the op it replaces (%s)",
+			ops[1].AuthoredAt, ops[0].AuthoredAt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The origin rebuilt from a quarantine row
+// ---------------------------------------------------------------------------
+
+// TestStoredOriginNeverCarriesAnUnattestedInnerDomain. storedOrigin rebuilds an
+// origin from the facts a quarantine row holds so that mail whose signing key
+// has since rotated can still be promoted — but the inner domain is the one
+// field that is only ever a CLAIM until something attested it. Carrying it
+// through unattested would put quarantine's stored, unproven inner domain in
+// front of a ScopeInner allowlist match, which is an attacker-writable value
+// selecting a trust decision.
+//
+// Asserted as a unit because that is where the guard is: Pipeline.hold only
+// writes InnerDomain when the origin was attested, so nothing end to end can
+// tell the two apart, and the guard would be free to disappear.
+func TestStoredOriginNeverCarriesAnUnattestedInnerDomain(t *testing.T) {
+	base := quarantine.Item{
+		OuterDomain: "google.com",
+		InnerDomain: "bank.example",
+		AttestedBy:  quarantine.AttestedByARC,
+		DKIM:        quarantine.ResultNone,
+		ARC:         quarantine.ResultPass,
+	}
+
+	unattested := storedOrigin(base)
+	if unattested.Inner != "" {
+		t.Fatalf("inner = %q for a row that attested nothing", unattested.Inner)
+	}
+	if unattested.Attested {
+		t.Fatal("attested = true for a row that attested nothing")
+	}
+
+	base.Attested = true
+	attested := storedOrigin(base)
+	if attested.Inner != "bank.example" {
+		t.Fatalf("inner = %q, want the attested inner domain", attested.Inner)
+	}
+	if !attested.Attested || attested.AttestedBy != origin.AttestedByARC {
+		t.Fatalf("attestation = %v/%q, want true/%s", attested.Attested, attested.AttestedBy, origin.AttestedByARC)
+	}
+	if attested.Outer != "google.com" || attested.DKIM != origin.SigNone || attested.ARC != origin.SigPass {
+		t.Fatalf("the verified facts did not survive the rebuild: %+v", attested)
+	}
+}
+
+// TestTrustHeldPrefersTheFreshVerificationOverTheStoredOne. The fallback to the
+// arrival verification exists for a rotated selector, and it is a fallback: the
+// fresh resolve is the one made against the bytes as they are NOW, and a
+// promotion that preferred the stored facts would keep using a domain this
+// server can no longer verify while a perfectly good verification sat next to
+// it — including for the diagnostics row, and for the templates that run.
+func TestTrustHeldPrefersTheFreshVerificationOverTheStoredOne(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.allow("stale.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+
+	// A real, signed bank.example message held under a row that records a
+	// DIFFERENT (also trusted) domain — the shape a re-verification disagreeing
+	// with the arrival record takes, with both answers acceptable to the
+	// allowlist so that the choice between them is visible in the result.
+	raw := r.trusted(reprocessBody)
+	if err := r.q.Hold(bg, quarantine.Item{
+		UserID:       r.user,
+		IngestID:     idOf(raw),
+		ReceivedAt:   r.now,
+		EnvelopeFrom: "alerts@bank.example",
+		OuterDomain:  "stale.example",
+		DKIM:         quarantine.ResultPass,
+		ARC:          quarantine.ResultNone,
+		Blob:         raw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if rep := r.reprocess(idOf(raw)); rep != (Report{Examined: 1, Appended: 1}) {
+		t.Fatalf("report = %+v, want one appended", rep)
+	}
+	d := r.reprocessDiags()
+	if len(d) != 1 {
+		t.Fatalf("reprocess diagnostics = %+v, want one row", d)
+	}
+	if d[0].SenderDomain != "bank.example" {
+		t.Fatalf("sender_domain = %q; the stored facts were preferred over the fresh verification",
+			d[0].SenderDomain)
+	}
+	if p := r.onlyPayload(); p.TemplateID != "bank.card.v1" {
+		t.Fatalf("template = %q; the stored domain chose which templates ran", p.TemplateID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hot blobs this build cannot read
+// ---------------------------------------------------------------------------
+
+// captureLog redirects the pipeline's log and returns a handle on what it said.
+// The pipeline's log is the only place a set-aside blob can be reported — see
+// Pipeline.currentPayloads on why the count is not in Report — so it is
+// asserted rather than discarded, which is what the rig does by default.
+func (r *rig) captureLog() *loggedLines {
+	r.t.Helper()
+	l := &loggedLines{}
+	r.p.Logf = func(format string, args ...any) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	}
+	return l
+}
+
+type loggedLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+// contains reports whether some ONE line contains every substring.
+func (l *loggedLines) contains(subs ...string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, line := range l.lines {
+		hit := true
+		for _, s := range subs {
+			if !strings.Contains(line, s) {
+				hit = false
+				break
+			}
+		}
+		if hit {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *loggedLines) all() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
+}
+
+// appendClientBlob appends one DEVICE-authored hot blob at the next position of
+// that writer's chain, the same way POST /api/v1/sync/upload does: a client
+// writer id, type_flag "edit", and bytes the server never looks inside.
+//
+// That last part is the point. api.decodeUploadBlob checks the framing version,
+// the hashes, the size bucket and the embedded AAD, and stops — the OPS are
+// never decoded on the way in, so whatever a client puts in a blob is what the
+// server later has to read back.
+func (r *rig) appendClientBlob(writerID string, plaintext []byte) {
+	r.t.Helper()
+	counter, prev, err := r.p.Appender.Head(bg, r.user, writerID, blob.StreamHot)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	counter++
+	sealed, err := blob.PlaintextSealer{}.Seal(blob.Envelope{
+		UserID: r.user, Stream: blob.StreamHot, WriterID: writerID, WriterCounter: counter,
+	}, plaintext)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	h := blob.Hash(prev, sealed)
+	if _, err := r.p.Appender.AppendClient(bg, r.user, writerID, blob.StreamHot, []oplog.Row{{
+		WriterCounter: counter,
+		TypeFlag:      oplog.TypeFlagEdit,
+		Blob:          sealed.Bytes,
+		SizeBucket:    sealed.SizeBucket,
+		BlobHash:      h[:],
+		PrevHash:      prev[:],
+		CreatedAt:     r.now,
+	}}); err != nil {
+		r.t.Fatalf("append a client blob at counter %d: %v", counter, err)
+	}
+}
+
+// rewriteHotBlob replaces the plaintext of the INGEST writer's hot blob at the
+// given counter, keeping its position and re-linking its hash — the hot-stream
+// twin of rewriteColdBody, and subject to the same rule: it must be the last
+// blob of that chain or its successor's prev_hash no longer links.
+func (r *rig) rewriteHotBlob(counter int64, plaintext []byte) {
+	r.t.Helper()
+	for _, row := range r.rows() {
+		if row.Stream != blob.StreamHot || row.WriterID != oplog.IngestWriterID || row.WriterCounter != counter {
+			continue
+		}
+		sealed, err := blob.PlaintextSealer{}.Seal(blob.Envelope{
+			UserID: r.user, Stream: row.Stream, WriterID: row.WriterID, WriterCounter: row.WriterCounter,
+		}, plaintext)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		var prev []byte
+		if err := r.pool.QueryRow(bg,
+			`SELECT prev_hash FROM op_log WHERE user_id = $1 AND seq = $2`, r.user, row.Seq).Scan(&prev); err != nil {
+			r.t.Fatal(err)
+		}
+		var p32 [32]byte
+		copy(p32[:], prev)
+		h := blob.Hash(p32, sealed)
+		if _, err := r.pool.Exec(bg,
+			`UPDATE op_log SET blob = $3, size_bucket = $4, blob_hash = $5 WHERE user_id = $1 AND seq = $2`,
+			r.user, row.Seq, sealed.Bytes, sealed.SizeBucket, h[:]); err != nil {
+			r.t.Fatal(err)
+		}
+		return
+	}
+	r.t.Fatalf("the ingest writer has no hot blob at counter %d", counter)
+}
+
+// serverHotOps returns the ops of the INGEST writer's hot blobs only, so a test
+// that plants an unreadable device blob can still read what the server wrote.
+func (r *rig) serverHotOps() []oplog.Op {
+	r.t.Helper()
+	var out []oplog.Op
+	for _, row := range r.rows() {
+		if row.Stream != blob.StreamHot || row.WriterID != oplog.IngestWriterID {
+			continue
+		}
+		ops, err := oplog.DecodeBlob(r.open(row))
+		if err != nil {
+			r.t.Fatalf("decode the ingest writer's hot blob at counter %d: %v", row.WriterCounter, err)
+		}
+		out = append(out, ops...)
+	}
+	return out
+}
+
+// TestReprocessSkipsAClientBlobThisBuildCannotRead is the normal release order:
+// a phone updates itself, the server has not been redeployed yet, and the
+// device's next op blob is written at an op schema version this build does not
+// have. §3.3:68 anticipates exactly that with oplog.ErrUnknownNewerVersion, and
+// oplog.DecodeBlob's doc requires its callers to split its errors two ways.
+//
+// currentPayloads did neither: ONE such blob made every later Reprocess for
+// that account return all zeros and an error, permanently. Nothing in the
+// upload path decodes ops, so no fix and no operator action could clear it —
+// the account simply stopped being reachable by a template fix, silently.
+//
+// A blob that is skipped is NAMED, because "I could not read 40 of this user's
+// blobs" and "there was nothing to do" are different answers and used to be the
+// same four zeros.
+func TestReprocessSkipsAClientBlobThisBuildCannotRead(t *testing.T) {
+	r := newRig(t)
+	logged := r.captureLog()
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	// The framing version is frozen and still v1 — this is not an unopenable
+	// blob, it is a perfectly stored one whose CONTENTS are a schema newer than
+	// this build. That is the only shape the upload path can produce.
+	r.appendClientBlob("device-ahead", []byte(`{"v":2,"kind":"ops","ops":[]}`))
+
+	r.publish(amountTemplate(2, chargedPattern))
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err != nil {
+		t.Fatalf("one client blob from a newer build failed the whole reprocess: %v", err)
+	}
+	if want := (Report{Examined: 1, Superseded: 1}); rep != want {
+		t.Fatalf("report = %+v, want %+v", rep, want)
+	}
+	// A silent skip is the same defect one layer down: the report is four
+	// numbers that cannot say "and I could not read part of your log".
+	if !logged.contains("setting aside the hot blob at seq", "device-ahead") {
+		t.Fatalf("the set-aside blob is not named in the log:\n%s", logged.all())
+	}
+	if !logged.contains("1 hot blob(s) were set aside") {
+		t.Fatalf("the run does not report how many blobs it set aside:\n%s", logged.all())
+	}
+	ops := r.serverHotOps()
+	if len(ops) != 2 || ops[1].Type != oplog.OpTxnSuperseded {
+		t.Fatalf("the template fix did not reach this account: %+v", ops)
+	}
+	if p := payloadOf(t, ops[1]); p.AmountMinor != "91813" || p.Currency != "AED" {
+		t.Fatalf("supersede payload = %s %s, want 91813 AED", p.AmountMinor, p.Currency)
+	}
+}
+
+// TestReprocessFailsOnACorruptHotBlob is the other half of the split. A blob
+// this build cannot INTERPRET is a version skew and routine; a blob that is
+// malformed at a version this build does understand is corruption, and a
+// reprocess that quietly compared against a log it knew was damaged would be
+// choosing to append supersedes on incomplete evidence.
+func TestReprocessFailsOnACorruptHotBlob(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	// v1 — a version this build owns — carrying an op type that does not exist.
+	r.appendClientBlob("device-broken", []byte(`{"v":1,"kind":"ops","ops":[{"v":1,"type":"nope",`+
+		`"op_id":"01J0000000000000000000000A","authored_at":"2026-08-01T09:00:00Z","payload":{}}]}`))
+
+	r.publish(amountTemplate(2, chargedPattern))
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err == nil {
+		t.Fatalf("a corrupt hot blob was skipped: %+v", rep)
+	}
+	if !strings.Contains(err.Error(), "hot blob at seq") {
+		t.Fatalf("the error does not name the blob: %v", err)
+	}
+	if got := len(r.serverHotOps()); got != 1 {
+		t.Fatalf("the log has %d server ops; nothing may be appended off a damaged comparison", got)
+	}
+}
+
+// TestReprocessFailsOnAServerBlobThisBuildCannotRead is why the skip is keyed
+// on the WRITER and not on the error alone.
+//
+// A device blob cannot hold a txn_ingested or a txn_superseded that this
+// reprocess would need to compare against: oplog.AppendClient refuses the
+// ingest writer id outright and stamps every device row type_flag "edit", so
+// the creates in a user's log are the server's own. The server's own blob at a
+// version the server cannot read means this binary is OLDER than the log it is
+// serving — a downgrade — and superseding against a comparison base with a hole
+// in it is exactly the redundant correction §3.3's two rules exist to prevent.
+func TestReprocessFailsOnAServerBlobThisBuildCannotRead(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeOuter)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+
+	r.rewriteHotBlob(1, []byte(`{"v":2,"kind":"ops","ops":[]}`))
+
+	r.publish(amountTemplate(2, chargedPattern))
+	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
+	if err == nil {
+		t.Fatalf("the server's own unreadable blob was skipped: %+v", rep)
+	}
+	if got := len(r.rows()); got != 2 {
+		t.Fatalf("op_log has %d rows; nothing may be appended against a hole in the server's own log", got)
 	}
 }
