@@ -58,6 +58,32 @@ apple_client_ids  = []            # Sign in with Apple client identifiers (not s
 google_client_ids = []            # Google Sign-In client identifiers (not secret; LEDGER_GOOGLE_CLIENT_IDS, comma-separated)
 session_ttl       = "720h"        # 30 days; opaque server-side session lifetime
 
+# --- TEST-ONLY command-line switches. They have NO TOML KEY AT ALL. ---
+#
+# Neither of these can be set from this file or from the environment, and that
+# is the point: "is this deployment accepting dev tokens" must be answerable
+# from the command line that started the process and from nowhere else. Both are
+# refused unless server.http_listen is a loopback address
+# (config.EnableTestOnly), and `serve` prints a loud banner for each on every
+# start.
+#
+#   ledgerd serve --dev-auth
+#       Accepts "dev:<subject>" as an ID token and REJECTS every real Apple or
+#       Google one — it replaces both verifiers rather than joining them, so a
+#       deployment that left the flag on fails every genuine sign-in instead of
+#       working perfectly while also accepting "dev:anyone". Anything reachable
+#       with a session issued this way is reachable by anyone who can reach the
+#       listener. Used by client/test/e2e and the Phase 1 exit test, which
+#       cannot mint a real provider token offline.
+#
+#   ledgerd serve --dns-fixtures <path/to/dns.json>
+#       Loads a recorded TXT map (arc.FixtureLookup) so DKIM/ARC verification is
+#       deterministic and offline; a name that is not in the recording answers
+#       "no key" and never falls through to a resolver. Today `serve` LOADS and
+#       VALIDATES the file and nothing consumes it: there is no SMTP receiver
+#       (Task 24) and no DKIM/ARC verification (Task 25) in this process yet.
+#       Those tasks take an arc.LookupTXT and this is where it comes from.
+
 # --- Consumed by later Phase 1 tasks; inert today. ---
 #
 # Secret, never stored anywhere in this file: LEDGER_DICT_HMAC_KEY — keys the

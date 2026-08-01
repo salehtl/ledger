@@ -226,6 +226,18 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 		},
 		Now: now,
 	}
+	if cfg.DevAuth {
+		// TEST ONLY, and it REPLACES both verifiers rather than joining them.
+		// A process started with --dev-auth can therefore verify no real Apple
+		// or Google token at all, which is the loud failure: a deployment that
+		// left the flag on stops signing anybody in, instead of working
+		// perfectly while also accepting "dev:anyone". config.EnableTestOnly
+		// has already refused the flag off a loopback listener.
+		s.Verifiers = map[string]auth.Verifier{
+			auth.IdPApple:  auth.NewDevVerifier(auth.IdPApple),
+			auth.IdPGoogle: auth.NewDevVerifier(auth.IdPGoogle),
+		}
+	}
 	return s, nil
 }
 

@@ -1306,3 +1306,109 @@ func wireToRow(t *testing.T, r Row) oplog.Row {
 		PrevHash:      ph,
 	}
 }
+
+// ---------------------------------------------------------------------------
+// --dev-auth (Task 14)
+// ---------------------------------------------------------------------------
+
+// With cfg.DevAuth set, NewServer installs the dev verifier for BOTH providers
+// and neither real one. That is the safe direction: a deployment that left the
+// flag on cannot sign anybody in with a genuine Apple or Google token, so the
+// mistake is loud rather than invisible.
+func TestNewServerWithDevAuthReplacesEveryVerifier(t *testing.T) {
+	pool := pgtest.New(t)
+	cfg := config.Config{
+		Mail:   config.MailConfig{Domain: "example.test"},
+		Server: config.ServerConfig{HTTPListen: "127.0.0.1:8091"},
+		Auth:   config.AuthConfig{SessionTTL: time.Hour, AppleClientIDs: []string{"com.example.app"}},
+	}
+	if err := cfg.EnableTestOnly(true, ""); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, idp := range []string{auth.IdPApple, auth.IdPGoogle} {
+		v, ok := srv.Verifiers[idp]
+		if !ok {
+			t.Fatalf("no verifier for %q", idp)
+		}
+		id, err := v.Verify(bg, "dev:alice", auth.VerifyOpts{})
+		if err != nil {
+			t.Fatalf("%s dev verifier rejected dev:alice: %v", idp, err)
+		}
+		if id.Subject != "alice" {
+			t.Fatalf("%s dev verifier gave subject %q", idp, id.Subject)
+		}
+		if _, err := v.Verify(bg, "eyJhbGciOiJSUzI1NiJ9.e30.sig", auth.VerifyOpts{}); err == nil {
+			t.Fatalf("%s dev verifier accepted a JWT-shaped token", idp)
+		}
+	}
+}
+
+// Without the flag, nothing changes: a dev token is just a token that fails.
+func TestNewServerWithoutDevAuthInstallsTheRealVerifiers(t *testing.T) {
+	pool := pgtest.New(t)
+	cfg := config.Config{
+		Mail:   config.MailConfig{Domain: "example.test"},
+		Server: config.ServerConfig{HTTPListen: "127.0.0.1:8091"},
+		Auth:   config.AuthConfig{SessionTTL: time.Hour},
+	}
+	srv, err := NewServer(cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Verifiers[auth.IdPApple].Verify(bg, "dev:alice", auth.VerifyOpts{}); err == nil {
+		t.Fatal("the production Apple verifier accepted a dev token")
+	}
+}
+
+// The end-to-end shape the CLI's `login` drives: a dev token exchanges for a
+// session, and that session resolves to a real account.
+func TestDevAuthExchangeIssuesAWorkingSession(t *testing.T) {
+	pool := pgtest.New(t)
+	srv := &Server{
+		Pool:      pool,
+		Sessions:  &auth.Sessions{Pool: pool, TTL: time.Hour},
+		Writers:   &auth.Writers{Pool: pool},
+		Appender:  &oplog.Appender{Pool: pool},
+		Verifiers: map[string]auth.Verifier{auth.IdPApple: auth.NewDevVerifier(auth.IdPApple)},
+		Logf:      func(string, ...any) {},
+	}
+	h := srv.Handler()
+
+	body, _ := json.Marshal(ExchangeRequest{IdP: auth.IdPApple, IDToken: "dev:alice"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/exchange", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exchange = %d %s", rec.Code, rec.Body.String())
+	}
+	var out ExchangeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.SessionToken == "" || out.UserID == "" {
+		t.Fatalf("exchange returned %+v", out)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/writers", nil)
+	req.Header.Set("Authorization", "Bearer "+out.SessionToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("roster with a dev session = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The same dev subject is the same account, twice.
+	rec = httptest.NewRecorder()
+	body2, _ := json.Marshal(ExchangeRequest{IdP: auth.IdPApple, IDToken: "dev:alice"})
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/exchange", bytes.NewReader(body2)))
+	var again ExchangeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &again); err != nil {
+		t.Fatal(err)
+	}
+	if again.UserID != out.UserID {
+		t.Fatalf("dev:alice resolved to %s and then %s", out.UserID, again.UserID)
+	}
+}

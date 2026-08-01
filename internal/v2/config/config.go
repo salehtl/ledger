@@ -41,6 +41,12 @@ type Config struct {
 	// LEDGER_DICT_HMAC_KEY). It is a cryptographic key, not a setting:
 	// env-only, never TOML.
 	DictHMACKey string `toml:"-"`
+
+	// DevAuth makes the sign-in exchange accept `dev:<subject>` as an ID
+	// token and REJECT every real one (auth.NewDevVerifier). TEST ONLY: it
+	// is set by `ledgerd serve --dev-auth`, never by TOML and never by the
+	// environment, and EnableTestOnly refuses it off loopback.
+	DevAuth bool `toml:"-"`
 }
 
 // ServerConfig controls the HTTP/admin listeners and the Postgres DSN.
@@ -52,6 +58,12 @@ type ServerConfig struct {
 	// AdminToken authenticates the Tailscale-bound admin API (Task 32,
 	// LEDGER_ADMIN_TOKEN). Env-only, never TOML.
 	AdminToken string `toml:"-"`
+
+	// DNSFixtures is the path to a recorded dns.json (arc.FixtureLookup),
+	// served as the DKIM/ARC TXT resolver so mail verification is
+	// deterministic and offline. TEST ONLY: set by `ledgerd serve
+	// --dns-fixtures`, never by TOML, and refused off loopback.
+	DNSFixtures string `toml:"-"`
 }
 
 // MailConfig controls the SMTP receiver (Task 24) and inbound addressing
@@ -247,6 +259,41 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// EnableTestOnly applies the two test-only server flags — `--dev-auth` and
+// `--dns-fixtures` — and refuses BOTH unless the HTTP listener binds loopback.
+// It leaves the config untouched when it refuses.
+//
+// It is a method rather than part of Load because the flags come from the
+// command line and Load only ever reads a file and the environment. That
+// separation is the point: neither switch has a TOML key or an env override, so
+// "is this deployment accepting dev tokens" is answerable from the command line
+// that started it and from nowhere else.
+//
+// # The loopback rail is currently implied, and is written anyway
+//
+// validate() already refuses a non-loopback http_listen for every config, so
+// today this check cannot fire. Deployment Task D4 is the change that lifts
+// that general rail (it adds autocert to runServe and moves the listener to
+// :443), and on that day this is the only thing between a public deployment and
+// a server that accepts `dev:anyone` as a credential. A rail that is currently
+// redundant costs four lines; discovering it was load bearing after the fact
+// costs an account takeover.
+func (c *Config) EnableTestOnly(devAuth bool, dnsFixtures string) error {
+	if !devAuth && dnsFixtures == "" {
+		return nil
+	}
+	if !isLoopbackListen(c.Server.HTTPListen) {
+		return fmt.Errorf(
+			"refusing --dev-auth/--dns-fixtures with server.http_listen %q: both are TEST-ONLY switches "+
+				"(--dev-auth accepts \"dev:<subject>\" as an identity and rejects every real token) and are "+
+				"permitted only on a loopback listener",
+			c.Server.HTTPListen)
+	}
+	c.DevAuth = devAuth
+	c.Server.DNSFixtures = dnsFixtures
+	return nil
 }
 
 // isLoopbackListen reports whether a listen address binds only the loopback
