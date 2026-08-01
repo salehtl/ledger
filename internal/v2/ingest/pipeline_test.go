@@ -517,6 +517,40 @@ func TestATrustDecisionNeverReadsTheUnwrappedFrom(t *testing.T) {
 	}
 }
 
+// TestTheEnvelopeCannotChooseTheTrustScope is the same bypass one layer down,
+// and it is the reason origin.Resolve no longer asks the envelope whether a
+// message was forwarded.
+//
+// The bytes below are ORDINARY DIRECT BANK MAIL: one signature, d=bank.example,
+// aligned with From. The user has confirmed the bank at the INNER scope only —
+// which is what every alpha confirms, because §3.2:47 onboards them through a
+// forwarding rule. Handing those bytes to the pipeline with an attacker-chosen
+// MAIL FROM used to flip Attested from false to true, which made
+// bank.example|inner match, which put the message in the trusted lane at
+// needs_review = false. Same bytes, same signature, opposite outcome, decided
+// by the one field the sender types.
+func TestTheEnvelopeCannotChooseTheTrustScope(t *testing.T) {
+	r := newRig(t)
+	r.allow("bank.example", origin.ScopeInner)
+	r.publish(bankTemplate())
+
+	r.mustDeliver(r.trusted(templateBody), "mallory@evil.test")
+
+	if got := r.rows(); len(got) != 0 {
+		t.Fatalf("op_log has %d rows; a chosen envelope bought the inner lane", len(got))
+	}
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("quarantine holds %d items, want 1", got)
+	}
+	d := r.diags()
+	if len(d) != 1 || d[0].Outcome != diag.OutcomeQuarantined {
+		t.Fatalf("diagnostics = %+v, want one quarantined arrival", d)
+	}
+	if d[0].InnerOrigin != nil {
+		t.Fatalf("inner_origin_domain = %q; the envelope is not evidence of a forwarder", *d[0].InnerOrigin)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The append
 // ---------------------------------------------------------------------------

@@ -765,6 +765,16 @@ func (p *Pipeline) recordedOrigin(ctx context.Context, userID uuid.UUID, ingestI
 		// diag refuses inner_origin_domain unless a signature passed, so a
 		// stored value IS an attestation. Nothing else can put one there.
 		o.Inner, o.Attested = *inner, true
+		// parse_diagnostics has no attested_by column, and origin.Decide
+		// requires an attestation to name the verdict it rests on rather than
+		// asserting one. The CHECK at 00006_diagnostics.sql:201 guarantees at
+		// least one of these passed, so naming whichever did is exact in the
+		// only direction that matters: it can never name a verification that
+		// failed. Preferring DKIM matches Resolve's own order.
+		o.AttestedBy = origin.AttestedByDKIM
+		if o.DKIM != origin.SigPass {
+			o.AttestedBy = origin.AttestedByARC
+		}
 	}
 	return &o, nil
 }
