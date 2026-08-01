@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,10 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	"ledger/internal/v2/addresses"
 	"ledger/internal/v2/api"
 	"ledger/internal/v2/arc"
 	"ledger/internal/v2/config"
+	"ledger/internal/v2/diag"
 	"ledger/internal/v2/pg"
+	"ledger/internal/v2/smtpd"
 )
 
 // modeHandlers is the single dispatch table main() uses — the real switch,
@@ -143,8 +147,9 @@ func main() {
 // config.validate refuses a non-loopback http_listen and the default is
 // loopback. Lifting that rail is part of the same commit that adds autocert.
 //
-// The SMTP receiver (Task 24) and the Tailscale-bound admin listener (Task 32)
-// mount onto this same startup sequence as their tasks land.
+// The SMTP receiver (Task 24) is mounted here too, on the same pool; the
+// Tailscale-bound admin listener (Task 32) joins this startup sequence when its
+// task lands.
 //
 // The api.Server — and with it the two IdP verifiers — is built ONCE here,
 // before the listener starts. That is load bearing rather than stylistic: every
@@ -178,20 +183,20 @@ func runServe(cfg config.Config) error {
 		// recording fails the process rather than surfacing later as a DKIM
 		// failure that looks like a crypto bug.
 		//
-		// NOT YET WIRED, and deliberately so: `serve` has no SMTP receiver
-		// (Task 24) and no DKIM/ARC verification (Task 25), so there is nothing
-		// in this process for a TXT resolver to serve. The seam those tasks
-		// consume is arc.FixtureLookup; the receiver they build takes an
-		// arc.LookupTXT, and this config field is where it comes from. Until
-		// then the flag's only effect is the validation and the count below —
-		// which is exactly what it should be, rather than a lookup handed to
-		// nothing while reading as implemented.
+		// STILL NOT WIRED, and deliberately so. Task 24 landed the receiver
+		// below, but nothing in this process VERIFIES a signature yet — that is
+		// Task 25 — so there is still nothing for a TXT resolver to serve.
+		// internal/v2/smtpd hands Task 25's work the raw message and inspects no
+		// header itself, so this fixture lookup reaches its consumer when that
+		// task adds one, not before. Until then the flag's only effect is the
+		// validation and the count below — which is exactly what it should be,
+		// rather than a lookup handed to nothing while reading as implemented.
 		_, n, err := arc.FixtureLookup(cfg.Server.DNSFixtures)
 		if err != nil {
 			return fmt.Errorf("dns fixtures: %w", err)
 		}
 		log.Printf("ledgerd serve: *** --dns-fixtures: %d recorded TXT name(s) loaded from %s; DKIM/ARC will use "+
-			"them instead of DNS once Task 24/25 land the receiver. TEST ONLY. ***", n, cfg.Server.DNSFixtures)
+			"them instead of DNS once Task 25 lands verification. TEST ONLY. ***", n, cfg.Server.DNSFixtures)
 	}
 
 	syncAPI, err := api.NewServer(cfg, pool)
@@ -225,6 +230,37 @@ func runServe(cfg config.Config) error {
 		IdleTimeout:  2 * time.Minute,
 	}
 
+	// The inbound SMTP receiver (Task 24). It is the most exposed surface in the
+	// system — public, unauthenticated port 25 — so it is built here, once,
+	// with the same pool everything else uses.
+	//
+	// Its Handler is Task 29's ingest path, which does not exist yet, so what is
+	// mounted is deferHandler: every accepted message is answered with a
+	// TEMPORARY failure and the sending MTA retries. That is deliberate and it
+	// is the ONLY safe placeholder. A handler that returned nil would have the
+	// receiver answer 250 — "I have taken responsibility for this message" — to
+	// mail it then discards, which is the silent drop spec §2 forbids, and the
+	// sender would never retry it. Retries last ~1-3 days, so the port can be
+	// live and hardened before the pipeline behind it is finished.
+	mail := smtpd.New(
+		cfg.Mail,
+		&addresses.Addresses{Pool: pool, Suffix: cfg.InboundSuffix()},
+		deferHandler{},
+		&diag.Diag{Pool: pool},
+		time.Now,
+	)
+
+	// Bound HERE, not inside the goroutine below. Two reasons, both real: a
+	// port-25 bind failure (permission, or something already holding it) is a
+	// startup error the operator should see immediately rather than one racing
+	// the rest of boot, and Shutdown closes the listener it was handed — so a
+	// signal arriving during startup must not find the socket still in a
+	// goroutine that has not run yet.
+	mailLn, err := net.Listen("tcp", cfg.Mail.SMTPListen)
+	if err != nil {
+		return fmt.Errorf("smtp listen %s: %w", cfg.Mail.SMTPListen, err)
+	}
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
@@ -234,9 +270,18 @@ func runServe(cfg config.Config) error {
 		}
 		errc <- nil
 	}()
+	smtpErrc := make(chan error, 1)
+	go func() {
+		log.Printf("ledgerd serve: smtp receiver listening on %s for %s (DKIM/ARC verification is Task 25; "+
+			"the ingest handler is Task 29, so accepted mail is DEFERRED with a 451 and retried by the sender)",
+			mailLn.Addr(), cfg.InboundSuffix())
+		smtpErrc <- mail.Serve(mailLn)
+	}()
 
 	select {
 	case err := <-errc:
+		return err
+	case err := <-smtpErrc:
 		return err
 	case <-ctx.Done():
 	}
@@ -245,10 +290,30 @@ func runServe(cfg config.Config) error {
 	// bounded window to finish rather than being cut off at the signal.
 	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
+	// The receiver first, and on its OWN budget rather than the shared one: a
+	// peer MTA is entitled to sit idle between commands, so smtpd.Shutdown
+	// spends its whole window before force-closing, and handing it shutCtx
+	// would leave the HTTP server nothing.
+	mailCtx, mailCancel := context.WithTimeout(shutCtx, 5*time.Second)
+	if err := mail.Shutdown(mailCtx); err != nil {
+		log.Printf("ledgerd serve: smtp shutdown: %v", err)
+	}
+	mailCancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
+	if err := <-smtpErrc; err != nil {
+		return err
+	}
 	return <-errc
+}
+
+// deferHandler is the Task 29 seam. See the comment at its use in runServe for
+// why the placeholder must FAIL rather than succeed.
+type deferHandler struct{}
+
+func (deferHandler) Deliver(ctx context.Context, d smtpd.Delivery) error {
+	return errors.New("ingest pipeline not implemented yet (Task 29)")
 }
 
 // runRelay will start the SMTP receiver in relay mode: a durable local spool

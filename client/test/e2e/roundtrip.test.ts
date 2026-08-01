@@ -164,6 +164,11 @@ async function boot(): Promise<void> {
   execFileSync("go", ["build", "-o", binary, "./cmd/ledgerd"], { cwd: REPO, stdio: "pipe" });
 
   const port = freePort();
+  // `serve` also starts the SMTP receiver (Task 24), and mail.smtp_listen
+  // defaults to ":25" — the real, public, production port on the box this suite
+  // runs on. It MUST be overridden here: without it this test either binds port
+  // 25 on a live host (when run as root) or fails to boot at all (when not).
+  const smtpPort = freePort();
   baseURL = `http://127.0.0.1:${port}`;
   proc = spawn(binary, ["serve", "--dev-auth"], {
     cwd: REPO,
@@ -173,6 +178,7 @@ async function boot(): Promise<void> {
       LEDGER_MAIL_DOMAIN: "example.test",
       LEDGER_PG_DSN: dsnFor(DB),
       LEDGER_HTTP_LISTEN: `127.0.0.1:${port}`,
+      LEDGER_SMTP_LISTEN: `127.0.0.1:${smtpPort}`,
     },
   });
   proc.stderr?.on("data", (b: Buffer) => {
