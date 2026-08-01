@@ -7,7 +7,7 @@ import {
   type Op,
   type OpType,
 } from "../wire/op";
-import { emptyState, fingerprint, serializeState, type State, type Txn } from "./state";
+import { emptyState, fingerprint, notWitnessed, serializeState, type State, type Txn } from "./state";
 import { ReplayOrderError, applyOp, fold, foldBlobs, type LogEntry, type PositionedBlob } from "./replay";
 
 // ---------------------------------------------------------------------------
@@ -313,6 +313,53 @@ test("sub-millisecond precision cannot smuggle in a different winner", () => {
   expect(fold([at(1n, create), at(2n, a), at(3n, b)]).txns.get("t1")!.category).toBe("y");
 });
 
+test("a fork tied on BOTH fields leaves the incumbent, so it resolves by seq", () => {
+  // Reachable in practice: one offline device authoring two edits against the
+  // same head inside one millisecond. Both named tiebreaks are exhausted, so the
+  // total order is the only answer left — and the outcome is that the user's
+  // LATER op is the one discarded. Deterministic, and deliberately not patched
+  // with a third tiebreak spec §3.3:66 does not define.
+  const create = ingested("i1", "t1");
+  const first = categorized("t1", 1, "first", "dev-a", "2026-06-01T10:00:00Z");
+  const second = categorized("t1", 1, "second", "dev-a", "2026-06-01T10:00:00Z");
+  const s = fold([at(1n, create), at(2n, first), at(3n, second)]);
+  expect(s.txns.get("t1")!.category).toBe("first");
+  expect(s.txns.get("t1")!.version).toBe(3);
+  expect(s.forks).toHaveLength(1);
+  expect(s.forks[0]!.winner_op).toBe(first.op.op_id);
+  // Swapping the seqs swaps the winner — that IS resolution by seq, stated.
+  const swapped = fold([at(1n, create), at(2n, second), at(3n, first)]);
+  expect(swapped.txns.get("t1")!.category).toBe("second");
+});
+
+test("parent_version 0 names a version that never existed, and is refused", () => {
+  // Structurally the mirror of future_parent. Left alone it reads as
+  // `parent < head.version`, i.e. a fork — so it could WIN, apply, bump the head
+  // and emit a notice, with nothing saying the parent was fictional.
+  const s = fold([
+    at(1n, ingested("i1", "t1")),
+    at(2n, categorized("t1", 1, "groceries", "dev-a", "2026-06-01T10:00:00Z")),
+    at(3n, categorized("t1", 0, "hijack", "dev-z", "2026-06-01T23:00:00Z")),
+  ]);
+  expect(s.txns.get("t1")!.category).toBe("groceries");
+  expect(s.txns.get("t1")!.version).toBe(2);
+  expect(s.forks).toHaveLength(0);
+  expect(kinds(s)).toContain("nonexistent_parent");
+});
+
+test("a stale-parent op that is refused yields NO fork notice", () => {
+  // So "every op naming a stale parent yields a notice" is not an invariant
+  // Task 13 may assume; "every RESOLVED fork yields one" is.
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "1000" })),
+    at(2n, categorized("t1", 1, "groceries")),
+    at(3n, split("t1", 1, [["a", "600"], ["b", "300"]])), // stale parent AND a bad sum
+  ]);
+  expect(s.forks).toHaveLength(0);
+  expect(kinds(s)).toContain("split_sum");
+  expect(s.txns.get("t1")!.version).toBe(2);
+});
+
 test("fork resolution works on any versioned entity, not just transactions", () => {
   const s = fold([
     at(1n, ruleAdded("r1", null, { pattern: "CARREFOUR", category: "groceries" })),
@@ -347,6 +394,40 @@ test("applyOp refuses to go backwards, so a caller cannot fold out of order", ()
   applyOp(s, at(5n, ingested("i1", "t1")));
   expect(() => applyOp(s, at(4n, categorized("t1", 1, "dining")))).toThrow(ReplayOrderError);
   expect(() => applyOp(s, at(0n, categorized("t1", 1, "dining")))).toThrow(ReplayOrderError);
+});
+
+test("a page delivered twice is not folded twice", () => {
+  // The ordering guard has to admit seq === cursor, because a blob's ops share
+  // one seq. Without an identity check the re-delivered edit would fork against
+  // ITSELF: version 3, and a notice naming one op as both winner and loser.
+  const create = ingested("i1", "t1");
+  const edit = categorized("t1", 1, "dining");
+  const s = fold([at(1n, create), at(2n, edit)]);
+  fold([at(2n, edit)], s);
+  expect(s.txns.get("t1")!.version).toBe(2);
+  expect(s.forks).toHaveLength(0);
+  expect(kinds(s)).toContain("duplicate_delivery");
+});
+
+test("re-delivering the ops at the cursor is idempotent; re-delivering from behind it throws", () => {
+  // The two are different failures and get different answers. Ops AT the cursor
+  // are the ambiguous case — a blob's ops share a seq, so the guard cannot
+  // refuse them — and they are made idempotent. Ops BEHIND the cursor are
+  // unambiguous: a caller resuming from `seq > cursor` never produces them, so
+  // it is a sync-layer bug and stays loud.
+  const create = ingested("i1", "t1");
+  const a = categorized("t1", 1, "a");
+  const b = categorized("t1", 2, "b");
+  const page = [at(1n, create), at(2n, a), at(2n, b)];
+  const s = fold(page);
+
+  fold([at(2n, a), at(2n, b)], s); // the tail page again
+  expect(s.txns.get("t1")!.version).toBe(3);
+  expect(s.txns.get("t1")!.category).toBe("b");
+  expect(s.forks).toHaveLength(0);
+  expect(s.anomalies.filter((x) => x.kind === "duplicate_delivery")).toHaveLength(2);
+
+  expect(() => fold(page, s)).toThrow(ReplayOrderError);
 });
 
 test("ops sharing one blob share one seq and apply in intra-blob order", () => {
@@ -504,6 +585,21 @@ test("a three-way collision names the EARLIEST live match, not just any of them"
   expect(s2.byFingerprint.get(fingerprint(s2.txns.get("t2")!))).toEqual(["t2", "t3"]);
 });
 
+test("possible_duplicate_of is a snapshot of the answer, not a live claim", () => {
+  // The pointed-at row can afterwards be edited into a different bucket, and
+  // nothing re-walks the rows pointing at it. Recorded rather than fixed: the
+  // repair is a scan, and the value of a duplicate NOTICE does not justify one.
+  // Task 13 must not read this field as "currently shares a fingerprint with".
+  const same = { last4: "3701", amount_minor: "25000", merchant_raw: "CARREFOUR", posted_at: "2026-06-05T09:00:00Z" };
+  const s = fold([
+    at(1n, ingested("i1", "t1", same)),
+    at(2n, ingested("i2", "t2", same)),
+    at(3n, edited("t1", 1, { merchant_raw: "SOMEWHERE ELSE" })),
+  ]);
+  expect(s.txns.get("t2")!.possible_duplicate_of).toBe("t1");
+  expect(fingerprint(s.txns.get("t1")!)).not.toBe(fingerprint(s.txns.get("t2")!));
+});
+
 test("a superseded transaction stops matching fingerprints", () => {
   // t1 superseded by t2 with identical fields must NOT flag t2 as its own duplicate.
   const s = fold([at(1n, ingested("i1", "t1")), at(2n, superseded("i1", "t2"))]);
@@ -612,6 +708,29 @@ test("a rate_set for the home currency is refused: the identity rate stands", ()
   const s = fold([at(1n, homeCurrency("AED")), at(2n, rateSet("AED", "2000000"))]);
   expect(s.rates.get("AED")).toBe(1_000_000n);
   expect(kinds(s)).toContain("rate_set_for_home_currency");
+});
+
+test("a rate_unset for the home currency is refused: the identity rate is not destructible", () => {
+  // The home currency's rate is implicit (§3.7:124), and unsetting it would be
+  // UNRECOVERABLE: rate_set(H) is refused and home_currency_set is one-shot, so
+  // no op in the vocabulary can put the identity back. Every home-currency
+  // transaction from that position on would snapshot null forever.
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, rateUnset("AED")),
+    at(3n, rateSet("AED", "2000000")),
+    at(4n, ingested("i1", "t1", { currency: "AED", amount_minor: "10000" })),
+  ]);
+  expect(s.rates.get("AED")).toBe(1_000_000n);
+  expect(kinds(s)).toContain("rate_unset_for_home_currency");
+  // Still convertible at its own position, which is what Task 12 needs to be true.
+  expect(s.rates.get(s.txns.get("t1")!.currency)).toBe(1_000_000n);
+});
+
+test("a rate_unset for any other currency still works", () => {
+  const s = fold([at(1n, homeCurrency("AED")), at(2n, rateSet("USD", "3672500")), at(3n, rateUnset("USD"))]);
+  expect(s.rates.get("USD")).toBeNull();
+  expect(kinds(s)).not.toContain("rate_unset_for_home_currency");
 });
 
 test("a parent-free op carrying a parent_version is refused, not folded", () => {
@@ -766,6 +885,29 @@ test("foldBlobs enforces one seq per blob, across calls as well as within one", 
   expect(s.txns.size).toBe(1);
 });
 
+test("a set-aside blob still consumes its position, across calls", () => {
+  // The set-aside path is rule 8's own path, so it is where the guard most has
+  // to hold: a seq consumed by an unreadable blob must not be re-deliverable
+  // later with different content, and a resuming client must not re-request it
+  // forever.
+  const s = emptyState();
+  const bad: PositionedBlob = {
+    pos: { writer_id: "ingest", stream: "hot", writer_counter: 5n, seq: 5n },
+    body: new TextEncoder().encode("{not json"),
+  };
+  foldBlobs([bad], s);
+  expect(s.cursors.hot).toBe(5n); // the cursor advanced past it
+  expect(s.unreadable).toHaveLength(1);
+
+  const good = (seq: bigint, a: Authored): PositionedBlob => ({
+    pos: { writer_id: a.writer_id, stream: "hot", writer_counter: seq, seq },
+    body: encodeBlobOps([a.op]),
+  });
+  expect(() => foldBlobs([good(3n, ingested("i2", "t2"))], s)).toThrow(ReplayOrderError);
+  expect(() => foldBlobs([bad], s)).toThrow(ReplayOrderError);
+  expect(s.txns.size).toBe(0);
+});
+
 test("foldBlobs applies every op in a blob at that blob's seq", () => {
   const create = ingested("i1", "t1");
   const cat = categorized("t1", 1, "dining");
@@ -828,13 +970,50 @@ test("the sample log actually exercises the interesting paths", () => {
       "supersede_without_origin",
       "edit_of_superseded",
       "rate_set_for_home_currency",
+      "rate_unset_for_home_currency",
       "home_currency_reset",
+      "nonexistent_parent",
     ]),
   );
+  // The identity rate survived a rate_unset aimed at it — the property that
+  // makes every home-currency transaction in this log convertible by Task 12.
+  expect(s.rates.get("AED")).toBe(1_000_000n);
   // The invariant the whole dedup design exists for, checked over the whole log.
   expect([...s.liveByIngestID.values()].every((id) => s.txns.get(id)!.superseded_by === null)).toBe(true);
   const liveIngestIDs = live(s).map((t) => t.ingest_id);
   expect(new Set(liveIngestIDs).size).toBe(liveIngestIDs.length);
+});
+
+// ---------------------------------------------------------------------------
+// What serializeState does and does not witness
+// ---------------------------------------------------------------------------
+
+test("map insertion order is a policy, pinned by name rather than by comparing two runs", () => {
+  // serializeState SORTS map keys, and the chunk-stability tests that do pin key
+  // order compare two runs of the same code — so they catch chunking-dependence
+  // and would not catch a policy change (moving a retired row to the end, say).
+  // The policy: `txns` is create order and a row never moves; `liveByIngestID`
+  // is order of last (re)insertion, so a supersede moves its ingest id to the
+  // end. Both are deterministic; both are stated here so a change is deliberate.
+  const s = fold([
+    at(1n, ingested("i1", "t1")),
+    at(2n, ingested("i2", "t2")),
+    at(3n, ingested("i3", "t3")),
+    at(4n, superseded("i1", "t4")),
+  ]);
+  expect([...s.txns.keys()]).toEqual(["t1", "t2", "t3", "t4"]);
+  expect([...s.liveByIngestID.keys()]).toEqual([ingestID("i2"), ingestID("i3"), ingestID("i1")]);
+});
+
+test("the witness covers every field of State except the one it names", () => {
+  // `canonical()` walks keys generically, so this stays true as State grows —
+  // which is the property that makes serializeState usable as a witness at all.
+  // The single exclusion is pinned here so a field added later cannot quietly
+  // join it and drop out of the convergence claim.
+  const s = emptyState();
+  expect(notWitnessed()).toEqual(["appliedAtCursor"]);
+  const witnessed = Object.keys(s).filter((k) => !notWitnessed().includes(k));
+  expect(Object.keys(JSON.parse(serializeState(s))).sort()).toEqual(witnessed.sort());
 });
 
 // ---------------------------------------------------------------------------
@@ -1026,8 +1205,10 @@ function buildSampleLog(): LogEntry[] {
   emit(ingested("i-extra", last.id, {}, "ingest", tick())); // duplicate_create
   emit(categorized("ghost", 1, "dining", "dev-a", tick())); // unknown_entity
   emit(categorized(last.id, last.version + 5, "dining", "dev-a", tick())); // future_parent
+  emit(categorized(last.id, 0, "zero", "dev-a", tick())); // nonexistent_parent
   emit(superseded("i-orphan", "orphan", {}, "ingest", tick())); // supersede_without_origin
   emit(rateSet("AED", "2000000", "dev-a", tick())); // rate_set_for_home_currency
+  emit(rateUnset("AED", "dev-a", tick())); // rate_unset_for_home_currency
   emit(homeCurrency("USD", "dev-a", tick())); // home_currency_reset
   return out;
 }
