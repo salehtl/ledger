@@ -21,6 +21,8 @@
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
+//	POST /api/v1/account/challenge {}                              -> {nonce}
+//	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
 //
 // The quarantine pair is a SEPARATE channel from sync, deliberately: held mail
 // is outside the op log and its chains until a sender is confirmed. See
@@ -92,9 +94,13 @@
 // POST /api/v1/address/rotate is the same rule with one more factor: spec §3.4
 // requires fresh IdP re-authentication PLUS key possession there, because a
 // rotation the user did not ask for silently ends every bank forward pointed at
-// the old address. See addresses.go. Account deletion (§3.10) is the remaining
-// member of this class and has not landed yet; do not reach for requireSession
-// as its only gate either.
+// the old address. See addresses.go.
+//
+// DELETE /api/v1/account is the third member of that class and the strongest
+// case for it: a stolen session must not be able to destroy a life's financial
+// history. It demands the same three factors AND requires the ID token to have
+// been minted within the last five minutes, which rotation does not (see
+// account.go for why that difference is a gap in rotation rather than a policy).
 package api
 
 import (
@@ -117,6 +123,7 @@ import (
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/dict"
 	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/purge"
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/samples"
 )
@@ -189,6 +196,17 @@ const (
 	addressBurst   = 10
 	addressMaxKeys = 4096
 
+	// The account budget is the address budget's twin, for the same reasons and
+	// one more. A user deletes their account at most once in its life, so any
+	// caller making more than a handful of attempts a minute is not a user —
+	// and every attempt here costs a challenge row, an Ed25519 verification, a
+	// roster read and an IdP round trip. It also bounds how fast an attacker
+	// holding only a session can burn through nonces looking for a signature
+	// that verifies.
+	accountRate    = 1.0 / 60.0 // 1/minute sustained
+	accountBurst   = 10
+	accountMaxKeys = 4096
+
 	// The sample budget is generous in BURST and mean in sustained rate,
 	// because that is the shape of the legitimate traffic: a template breaks,
 	// the client works through a backlog of unparsed mail and reports a
@@ -232,6 +250,13 @@ type Server struct {
 	// here that can approve anything.
 	Dict *dict.Dict
 
+	// Deletion owns the account-deletion challenge lane (spec §3.10). Unlike
+	// Addresses, Quarantine and Dict, it is NEVER left nil and its routes are
+	// ALWAYS mounted: App Review 5.1.1(v) requires in-app deletion, and a
+	// deployment where the delete button 404s is one that cannot ship. Handler
+	// fills it in when a Server was built field-by-field.
+	Deletion *purge.Challenges
+
 	// Samples is the donated-sample queue (§3.5). Nil means the two intake
 	// routes are not mounted, same rule as the blocks above.
 	//
@@ -241,7 +266,6 @@ type Server struct {
 	// The corpus is replayed by internal/v2/admin on the tailnet-bound
 	// listener, and even there it returns match results rather than bytes.
 	Samples *samples.Samples
-
 
 	// Verifiers maps an IdP name to its verifier, and it is built ONCE per
 	// process (NewServer), never per request.
@@ -263,6 +287,11 @@ type Server struct {
 	// budget, because they are two halves of one flow and a caller who can mint
 	// unlimited nonces can make unlimited attempts.
 	AddressPerUser *Limiter
+	// AccountPerUser covers deletion challenges AND deletion attempts on one
+	// budget, for the same reason AddressPerUser does: they are two halves of
+	// one flow, and a caller who can mint unlimited nonces can make unlimited
+	// attempts.
+	AccountPerUser *Limiter
 	// SamplesPerUser covers the structural report and the donation on ONE
 	// budget. They are two halves of one flow — the client reports what it
 	// cannot parse and the user may then donate one of those messages — and a
@@ -346,7 +375,10 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 			Retention: samples.DefaultRetention,
 			Now:       now,
 		},
-		Now: now,
+		// Never conditional: App Review 5.1.1(v) requires in-app account
+		// deletion, so there is no configuration in which this is absent.
+		Deletion: &purge.Challenges{Pool: pool, Now: now},
+		Now:      now,
 	}
 	// The global merchant dictionary. The HMAC key is attached when it is
 	// configured and left empty when it is not: reading the dictionary needs
@@ -419,6 +451,14 @@ func (s *Server) Handler() http.Handler {
 	if s.SamplesPerUser == nil {
 		s.SamplesPerUser = NewLimiter(sampleRate, sampleBurst, sampleMaxKeys, s.now)
 	}
+	if s.AccountPerUser == nil {
+		s.AccountPerUser = NewLimiter(accountRate, accountBurst, accountMaxKeys, s.now)
+	}
+	// Filled in rather than checked for nil at the route, because these two
+	// routes are the ones that must never be missing — see the Deletion field.
+	if s.Deletion == nil {
+		s.Deletion = &purge.Challenges{Pool: s.Pool, Now: s.now}
+	}
 	if s.PullByteBudget <= 0 {
 		s.PullByteBudget = pullByteBudget
 	}
@@ -454,6 +494,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/v1/samples/report", s.requireSession(s.handleReport))
 		mux.HandleFunc("POST /api/v1/samples/donate", s.requireSession(s.handleDonate))
 	}
+	// Unconditional, unlike every optional block above: App Review 5.1.1(v)
+	// requires in-app account deletion, so there is no deployment of this
+	// server in which the route may be absent. See account.go.
+	mux.HandleFunc("POST /api/v1/account/challenge", s.requireSession(s.handleAccountChallenge))
+	mux.HandleFunc("DELETE /api/v1/account", s.requireSession(s.handleDeleteAccount))
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling
 	// through to anything a later task mounts at "/" (a static client bundle,

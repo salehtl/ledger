@@ -136,3 +136,14 @@ The alpha consent document (Task 38) must name these four paths **in plain
 words** — reprocessing, quarantine re-ingest, sample donation and parse-rate
 adjudication — because "we can read your mail during the alpha" is the actual
 thing being consented to. This file is the source it is written from.
+
+It must also carry a **retention deadline**, per spec §5's "unencrypted, under
+signed plain-language consent (plaintext handling, retention limit,
+migrate-or-delete at Phase 3 cutover)". That deadline is not prose: Task 34
+gives it a row. `user_consent` (`00014_account_deletion.sql`) holds one record
+per alpha — which document they signed, when, and the instant their plaintext
+must be gone — and `ledgerd purge-user --retention-due` is what acts on it.
+Recording it is `purge.RecordConsent`; previewing it is the same command with
+`--dry-run`. The document's date and that column must be the same date, and an
+alpha admitted without the row is reported by every sweep
+(`Report.WithoutConsentRecord`) rather than silently exempt from the promise.

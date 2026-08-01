@@ -147,6 +147,12 @@ var (
 	// ErrNoSubject means the token carries no `sub`, so it names nobody.
 	ErrNoSubject = fmt.Errorf("%w: no subject", ErrTokenRejected)
 
+	// ErrStale means the caller required a freshly minted token
+	// (VerifyOpts.MaxAge) and this one's `iat` is outside that window, or
+	// absent. The token may be perfectly valid for an ordinary sign-in; it is
+	// not proof that the user authenticated just now.
+	ErrStale = fmt.Errorf("%w: not freshly issued", ErrTokenRejected)
+
 	// ErrNotConfigured means the verifier itself is unusable (no audience, no
 	// issuer, no JWKS URL, unknown IdP). It rejects every token rather than
 	// existing in a state where it could accept one it should not.
@@ -171,6 +177,20 @@ var ErrKeySetUnavailable = errors.New("auth: provider key set is unavailable")
 type Identity struct {
 	IdP     string
 	Subject string
+
+	// IssuedAt is the token's `iat`, or the zero time when it carried none.
+	//
+	// It exists for spec §3.4's "fresh IdP re-authentication": an endpoint that
+	// destroys something (account deletion, address rotation) needs to know not
+	// only that the token is VALID but that it was minted moments ago. A caller
+	// that cares passes VerifyOpts.MaxAge, which is the check that actually
+	// runs against the authenticated payload; this field lets that caller
+	// re-state the requirement in its own terms rather than trusting a
+	// Verifier implementation it did not write.
+	//
+	// It is NOT freshness in the strong sense — see VerifyOpts.Nonce. A token
+	// captured seconds after it was minted has a recent `iat` too.
+	IssuedAt time.Time
 }
 
 // VerifyOpts carries per-exchange bindings. It is a struct rather than an
@@ -214,6 +234,22 @@ type VerifyOpts struct {
 	// the parameter is here now is so closing it is a change to a call site
 	// rather than a change to this interface.
 	Nonce string
+
+	// MaxAge, when positive, refuses a token whose `iat` is older than it —
+	// and refuses a token with no `iat` at all, because a token that will not
+	// say when it was minted cannot be shown to be recent.
+	//
+	// This is spec §3.4's "fresh IdP re-authentication", and it is a WEAKER
+	// property than it sounds: it bounds how long a captured token stays
+	// useful, it does not bind the token to the action. A token stolen inside
+	// the window satisfies it. Only the server-issued Nonce flow above closes
+	// that, and it is the same fix in both places.
+	//
+	// A token issued in the FUTURE is refused too, beyond the same clock-skew
+	// leeway `nbf` gets. Without that, a five-minute window is trivially
+	// widened by a provider (or a forger, though the signature check is what
+	// stops them) writing a later `iat`.
+	MaxAge time.Duration
 }
 
 // Verifier turns a provider ID token into an Identity, or an error wrapping
@@ -432,7 +468,8 @@ func (v *oidcVerifier) Verify(ctx context.Context, idToken string, opts VerifyOp
 	// changes. If that ever happens, the identity we return would be derived
 	// from claims that were never the ones validated — fail instead.
 	if tok.Issuer != claims.Issuer || tok.Subject != claims.Subject ||
-		tok.Nonce != claims.Nonce || !sameStrings(tok.Audience, claims.Audience) {
+		tok.Nonce != claims.Nonce || !sameStrings(tok.Audience, claims.Audience) ||
+		!tok.IssuedAt.Equal(iatOf(claims.IssuedAt)) {
 		return Identity{}, fmt.Errorf("%w: claim parse divergence between auth and go-oidc", ErrMalformed)
 	}
 
@@ -444,10 +481,15 @@ func (v *oidcVerifier) Verify(ctx context.Context, idToken string, opts VerifyOp
 	if opts.Nonce != "" && subtle.ConstantTimeCompare([]byte(tok.Nonce), []byte(opts.Nonce)) != 1 {
 		return Identity{}, ErrNonce
 	}
+	// Re-checked against the VERIFIED payload for the same reason the audience
+	// is: the pre-parse decides nothing on its own.
+	if err := checkFreshness(tok.IssuedAt, opts.MaxAge, v.now()); err != nil {
+		return Identity{}, err
+	}
 	if tok.Subject == "" {
 		return Identity{}, ErrNoSubject
 	}
-	return Identity{IdP: v.idp, Subject: tok.Subject}, nil
+	return Identity{IdP: v.idp, Subject: tok.Subject, IssuedAt: tok.IssuedAt}, nil
 }
 
 // forbiddenHeaders are the JOSE header parameters that either carry key
@@ -528,8 +570,38 @@ func (v *oidcVerifier) checkClaims(c idClaims, opts VerifyOpts) error {
 	if opts.Nonce != "" && subtle.ConstantTimeCompare([]byte(c.Nonce), []byte(opts.Nonce)) != 1 {
 		return ErrNonce
 	}
+	if err := checkFreshness(iatOf(c.IssuedAt), opts.MaxAge, now); err != nil {
+		return err
+	}
 	if c.Subject == "" {
 		return ErrNoSubject
+	}
+	return nil
+}
+
+func iatOf(n *numericDate) time.Time {
+	if n == nil {
+		return time.Time{}
+	}
+	return n.t
+}
+
+// checkFreshness implements VerifyOpts.MaxAge. It is a function rather than
+// four lines inline because it runs TWICE — once on the pre-parse, to refuse a
+// stale token without spending a JWKS fetch, and once against the payload
+// go-oidc authenticated, which is the check that decides.
+func checkFreshness(issuedAt time.Time, maxAge time.Duration, now time.Time) error {
+	if maxAge <= 0 {
+		return nil
+	}
+	if issuedAt.IsZero() {
+		return fmt.Errorf("%w: token has no iat claim, so its age cannot be established", ErrStale)
+	}
+	if now.Sub(issuedAt) > maxAge {
+		return fmt.Errorf("%w: iat %s is older than %s", ErrStale, issuedAt.UTC(), maxAge)
+	}
+	if issuedAt.After(now.Add(nbfLeeway)) {
+		return fmt.Errorf("%w: iat %s is in the future", ErrStale, issuedAt.UTC())
 	}
 	return nil
 }
@@ -581,6 +653,10 @@ type idClaims struct {
 	Nonce     string       `json:"nonce"`
 	Expiry    *numericDate `json:"exp"`
 	NotBefore *numericDate `json:"nbf"`
+	// IssuedAt is read ONLY to serve VerifyOpts.MaxAge and Identity.IssuedAt.
+	// Nothing branches on it otherwise; a token with no `iat` signs in exactly
+	// as it always did.
+	IssuedAt *numericDate `json:"iat"`
 
 	// Aggregated/distributed claims (OIDC Core §5.6.2). Neither Apple nor
 	// Google issues them and this package does not implement them; a token

@@ -47,6 +47,27 @@ type Config struct {
 	// is set by `ledgerd serve --dev-auth`, never by TOML and never by the
 	// environment, and EnableTestOnly refuses it off loopback.
 	DevAuth bool `toml:"-"`
+
+	// Purge carries `ledgerd purge-user`'s own arguments. Command-line only,
+	// on the same terms as Mode and DevAuth: which account an operator is
+	// about to delete must be answerable from the command that ran and from
+	// nowhere else. A TOML key or an environment variable here would be a
+	// standing instruction to destroy an account, sitting in a file.
+	Purge PurgeArgs `toml:"-"`
+}
+
+// PurgeArgs is the `purge-user` mode's command line.
+//
+// Exactly one of User and RetentionDue is required; runPurgeUser refuses both
+// and neither, before it opens a database connection.
+type PurgeArgs struct {
+	// User is the account to delete, as a UUID.
+	User string
+	// RetentionDue selects every account whose consent record's retention
+	// deadline has passed (spec §5's plaintext-retention commitment).
+	RetentionDue bool
+	// DryRun reports what would be deleted and deletes nothing.
+	DryRun bool
 }
 
 // ServerConfig controls the HTTP/admin listeners and the Postgres DSN.
