@@ -4,10 +4,13 @@
 //
 // It has three halves, and they answer three different questions.
 //
-//   - [Structural] answers "is the stored log internally consistent?" — four
+//   - [Structural] answers "is the stored log internally consistent?" — five
 //     invariants over op_log that the append path cannot violate and that
 //     therefore only a bug, a repair script, a restore from a damaged backup or
-//     a tampering operator can produce.
+//     a tampering operator can produce. Four (S1-S4) check the rows that
+//     survive; the fifth, S5, is the only one that can tell a truncated tail
+//     apart from a healthy log, because deleted rows leave nothing behind for
+//     the others to see a hole in.
 //   - [Accounting] answers "did every message that arrived end up somewhere we
 //     can name?" — the arrival split, the reprocessing split beside it, the
 //     protocol-level refusals that never resolved a recipient, and the
@@ -131,7 +134,7 @@ const (
 // one nobody reads; the truncation is itself reported.
 const maxFindings = 2000
 
-// Structural runs the four op_log invariants over every account.
+// Structural runs the five op_log invariants (S1-S5) over every account.
 func Structural(ctx context.Context, pool *pgxpool.Pool) ([]Finding, error) {
 	return StructuralFor(ctx, pool, nil)
 }

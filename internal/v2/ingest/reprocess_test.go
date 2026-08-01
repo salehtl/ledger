@@ -838,12 +838,15 @@ func TestReprocessDoesNotAppendTwiceWhenAPromoteFailedAfterItsAppend(t *testing.
 
 // TestConcurrentConfirmationsAppendTheMessageOnce is a double-tap.
 //
-// POST /api/v1/quarantine/confirm deliberately has no rate limit, and two
-// simultaneous confirmations of the same origin both read the same held ids and
-// both re-ingest them. Without a claim, both append: two txn_ingested ops for
-// one ingest id — replay's `duplicate_ingest` anomaly — and a second copy of a
-// body that can be a megabyte, while one of the two Promotes loses the FOR
-// UPDATE race and removes nothing.
+// POST /api/v1/quarantine/confirm is rate-limited in the HTTP handler
+// (quarantineRate/quarantineBurst in internal/v2/api: 1/minute sustained,
+// burst 10), but this test calls the pipeline's Reprocess directly and never
+// goes near that limiter, so it still reaches the race a burst of taps within
+// the budget would: two simultaneous confirmations of the same origin both
+// read the same held ids and both re-ingest them. Without a claim, both
+// append: two txn_ingested ops for one ingest id — replay's `duplicate_ingest`
+// anomaly — and a second copy of a body that can be a megabyte, while one of
+// the two Promotes loses the FOR UPDATE race and removes nothing.
 //
 // The pool is warmed before the racers start. pgxpool connects lazily and
 // staggers new connections, so racers that each have to dial first do not
