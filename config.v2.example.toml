@@ -9,11 +9,20 @@
 # binary — this file is independent of config.example.toml.
 
 [mail]
-# domain: NOT YET CHOSEN — spec §6 / plan task D1. Every inbound address v2
-# issues (e.g. "<local>@in.<domain>") is derived from this value, so it has
-# no default and ledgerd refuses to start without it. Set it here or via
-# LEDGER_MAIL_DOMAIN once the domain is picked.
-domain             = ""
+# domain: CHOSEN 2026-08-01 — sirdab.ae. Every inbound address v2 issues
+# (e.g. "<local>@in.sirdab.ae") is derived from this value; there is no
+# default and ledgerd refuses to start without it. Override with
+# LEDGER_MAIL_DOMAIN. Closes spec §6's open question; plan task D1.
+#
+# DNS as configured (Cloudflare, verified 2026-08-01):
+#   in.sirdab.ae  MX 10 -> _dc-mx.<hash>.in.sirdab.ae -> 178.104.132.41
+#   in.sirdab.ae  MX 20 -> mx2.sirdab.ae (DOES NOT RESOLVE — relay VPS unprovisioned)
+# The priority-10 host is a Cloudflare "direct connect" record auto-created
+# because mx1.sirdab.ae is proxied; Cloudflare does not proxy SMTP, so the
+# _dc-mx record bypasses the proxy and points at the origin. Mail therefore
+# reaches this box today, but the arrangement is implicit — D1 should set
+# mx1 to DNS-only so the MX names a host we control the meaning of.
+domain             = "sirdab.ae"
 smtp_listen        = ":25"        # SMTP receiver bind address (LEDGER_SMTP_LISTEN)
 max_message_bytes  = 1000000      # DATA cap in bytes. NOT 1 MiB: spec §3.2 says 1 MB, but the binding limit is
                                   # blob.MaxColdMail (1,000,000) — a message is stored base64'd inside a JSON cold
