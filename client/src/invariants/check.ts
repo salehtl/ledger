@@ -1162,6 +1162,15 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
             `that chain is ${observed} — the server is withholding rows a peer device has already witnessed`,
         ),
       );
+    } else if (c.counter === 0n && observed > 0n) {
+      out.push(
+        note(
+          I11,
+          `checkpoint head (${key}) claims that chain is empty, but this client has verified ${observed} blob(s) on ` +
+            `it — the checkpoint provides NO trusted head for that chain, so a truncation of it would verify. ` +
+            `Re-checkpoint from a device that has synced it`,
+        ),
+      );
     }
   }
   return out;

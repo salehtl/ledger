@@ -921,6 +921,68 @@ test("I11 does not hard-stop over a checkpoint head on a stream this pull did no
   expect(vs.some((v) => v.severity === "notice" && v.detail.includes("cold"))).toBe(true);
 });
 
+test("I11 surfaces a checkpoint head claiming genesis for a chain this client has evidence for", () => {
+  // The residual under-claim: `c.counter > observed` can never be true when the
+  // counter is 0, so a checkpoint asserting "that chain is empty" was accepted
+  // no matter how many blobs the reader itself held. CHECKPOINT_NAMES_THE_ROSTER
+  // makes the shape routine — every unobserved pair is filled with 0/genesis —
+  // so the gap became operationally live rather than theoretical.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = cleanInput({
+    plans: [
+      // The checkpoint is written FIRST, when ingest has authored nothing.
+      checkpointPlan("dev-a", roster),
+      ...hotPlans(),
+    ],
+    roster,
+  });
+  expect(input.state.checkpoints.find((c) => c.writer_id === "ingest")).toMatchObject({ counter: 0n });
+  // Both chains were empty when it was written and both have grown since, so
+  // both are reported: the checkpoint covers neither.
+  const empty = all(checkAll(input), "I11_roster_checkpoint").filter((x) => x.detail.includes("claims that chain is empty"));
+  expect(empty.map((v) => v.detail.match(/\(([^)]*)\)/)![1]).sort()).toEqual(["dev-a|hot", "ingest|hot"]);
+  expect(empty.find((v) => v.detail.includes("ingest|hot"))!.detail).toContain("verified 3 blob(s)");
+});
+
+test("a stale genesis claim is a NOTICE, because the exit test reaches it on a correct log", () => {
+  // Plan Task 38 in order: dev-a checkpoints at step 4, when `ingest` has
+  // written nothing; twenty emails arrive at step 5; dev-b pulls at step 6 and
+  // the plan asserts ZERO hard stops. A checkpoint is a snapshot of what its
+  // author had verified, so "claims 0, I now see 20" is the ordinary result of a
+  // checkpoint older than the rows — indistinguishable, from the state alone,
+  // from a checkpoint that is hiding them. Hard-stopping it would fail the exit
+  // criterion on a correct log, and would be the mirror image of the bug that
+  // made an enrolled-but-silent writer unsyncable.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = cleanInput({
+    plans: [
+      { writer: "dev-a", ops: [homeCurrency("AED")] }, // step 3
+      checkpointPlan("dev-a", roster), // step 4: ingest is still empty
+      ...Array.from({ length: 20 }, (_, n) => ({
+        writer: "ingest",
+        ops: [ingested(`mail-${n}`, `m${n}`, { merchant_raw: `M${n}`, last4: `${4000 + n}` })],
+      })), // step 5
+    ],
+    roster,
+  });
+  expect(hardStops(checkAll(input))).toHaveLength(0);
+  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.severity === "notice")).toBe(true);
+});
+
+test("I11 surfaces a genesis claim against a cold chain the client has hash-list evidence for", () => {
+  // The shape that matters most in practice. A hot-only client's `checkpoint()`
+  // fills every unobserved pair from its pinned heads, so `ingest|cold` is
+  // claimed at 0/genesis — and the cold chain is where the raw email bodies
+  // live. On a hot pull that lands in the "not cross-checked, other stream"
+  // notice; on a COLD pull, where the client does hold hash-list evidence, it
+  // used to pass in total silence.
+  const input = coldWithCheckpoint("0", [1n], 6);
+  const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.detail.includes("claims that chain is empty"));
+  expect(v?.detail).toContain("ingest|cold");
+  expect(v?.detail).toContain("verified 6 blob(s)"); // from the pinned hash list, with one body fetched
+  expect(hardStops(checkAll(input))).toHaveLength(0);
+});
+
 test("I11 fires when a checkpoint counter is not a bigint", () => {
   const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
   (input.state.checkpoints[0] as unknown as { counter: string }).counter = "6";
