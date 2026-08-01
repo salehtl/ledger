@@ -210,6 +210,37 @@ func TestApproveSeedTouchesOnlyOperatorSeededEntries(t *testing.T) {
 	}
 }
 
+// The moderator is the only gate that can catch a pattern which is too BROAD
+// rather than too rare, and every other column in the queue looks identical for
+// the two cases. So the breadth signal has to reach the console, not just the
+// store.
+func TestTheQueueCarriesTheMatchBreadthSignal(t *testing.T) {
+	h := newHarness(t)
+	if err := h.d.SeedFromV1(bg, []dict.Entry{
+		{Pattern: "NOON", Category: "Shopping"},
+		{Pattern: "NOON MINUTES", Category: "Dining"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := h.req(http.MethodGet, "/admin/dictionary", testToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "also_matches") {
+		t.Fatalf("the queue carries no breadth signal at all: %s", rec.Body.String())
+	}
+	var got listResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range got.Entries {
+		if e.Pattern == "noon" && len(e.AlsoMatches) == 0 {
+			t.Fatal("the console does not tell the moderator that `noon` also swallows " +
+				"`noon minutes`")
+		}
+	}
+}
+
 func TestBadRequestsAreRefusedWithoutEchoingAnything(t *testing.T) {
 	h := newHarness(t)
 	rec := h.req(http.MethodPost, "/admin/dictionary/moderate", testToken,

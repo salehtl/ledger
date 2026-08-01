@@ -232,6 +232,23 @@ func runServe(cfg config.Config) error {
 	}
 	log.Println("ledgerd serve: migrations applied")
 
+	// A rotated LEDGER_DICT_HMAC_KEY silently breaks the merchant dictionary in
+	// two directions at once: the k threshold counts distinct HMACs, so one
+	// user reappears as one submitter per key generation, and an account purge
+	// recomputes a pseudonym that matches nothing and reports success anyway.
+	// Neither shows a symptom. So the process refuses to start rather than
+	// serving in that state — checked here, before the listener, because the
+	// first request is already too late.
+	if cfg.DictHMACKey != "" {
+		key, err := dict.ParseKey(cfg.DictHMACKey)
+		if err != nil {
+			return fmt.Errorf("dictionary key: %w", err)
+		}
+		if err := (&dict.Dict{Pool: pool, HMACKey: key}).VerifyKeyEpoch(ctx); err != nil {
+			return err
+		}
+	}
+
 	if cfg.DevAuth {
 		// Loud, every start, at the top of the log. The flag is only reachable
 		// on a loopback listener (config.EnableTestOnly), and this is the second
@@ -395,6 +412,18 @@ func runServe(cfg config.Config) error {
 	// noticed, rather than left to a cron nobody remembers to install.
 	sampleSweepDone := startSampleSweep(ctx, syncAPI.Samples)
 
+	// The dictionary-submission retention sweep (Task 33). Spec §2 states, as a
+	// fact about the merchant dictionary, that a submitter identifier for an
+	// entry that never reaches the k threshold "is expired outright". That
+	// sentence was true of a function nothing called: dict.ExpireStaleSubmissions
+	// had no production caller at all, so the sweep users were promised simply
+	// never ran, and every identifier that fell short of k lived forever.
+	//
+	// A published retention promise that nothing enforces is worse than no
+	// promise, so it is started here beside the other two rather than left to a
+	// cron nobody remembers to install.
+	dictSweepDone := startDictSweep(ctx, syncAPI.Dict)
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
@@ -463,6 +492,7 @@ func runServe(cfg config.Config) error {
 	}
 	<-sweepDone
 	<-sampleSweepDone
+	<-dictSweepDone
 	return serveErr
 }
 
@@ -612,6 +642,38 @@ func startSampleSweep(ctx context.Context, s *samples.Samples) <-chan struct{} {
 			return "", err
 		}
 		return fmt.Sprintf("deleted %d expired donated sample(s)", n), nil
+	})
+}
+
+// startDictSweep expires merchant-dictionary submitter identifiers that never
+// reached the k threshold, and reaps the entries left with nobody behind them.
+//
+// It is a THIRD loop rather than a branch inside either of the others for the
+// reason given on startSampleSweep: these three failures are not the same and
+// must not share a fate. This one failing means pseudonyms outlive the window
+// spec §2 publishes for them.
+//
+// The two halves belong together because the second only ever has work when the
+// first did: expiring the last identifier for an entry is exactly what leaves a
+// merchant string with a count of zero and nobody behind it.
+func startDictSweep(ctx context.Context, d *dict.Dict) <-chan struct{} {
+	if d == nil {
+		return closedChan()
+	}
+	return startSweep(ctx, "dictionary retention sweep", func(ctx context.Context) (string, error) {
+		expired, err := d.ExpireStaleSubmissions(ctx, dict.DefaultSubmissionRetention)
+		if err != nil {
+			return "", err
+		}
+		reaped, err := d.ReapOrphanedEntries(ctx)
+		if err != nil {
+			return "", err
+		}
+		if expired == 0 && reaped == 0 {
+			return "", nil
+		}
+		return fmt.Sprintf("expired %d submitter identifier(s), reaped %d orphaned entry(s)",
+			expired, reaped), nil
 	})
 }
 

@@ -47,7 +47,16 @@
 //     or not a moderator has looked at it yet. Publication is later; the
 //     identifiers do not wait for it.
 //   - [Dict.ExpireStaleSubmissions] drops identifiers for entries that never
-//     reach K at all, which is the only reason `created_at` exists.
+//     reach K at all, which is the only reason `created_at` exists. It runs
+//     hourly in cmd/ledgerd; spec §2 states the expiry as fact, so it must have
+//     a caller, and for a while it did not.
+//   - `created_at` is a whole UTC DAY, not an instant. A precise arrival time
+//     re-links what the per-entry salt unlinks: an opt-in batch writes one
+//     user's rows milliseconds apart and tens of milliseconds from anyone
+//     else's, so a keyless breach could partition the pending patterns by
+//     submitter on timing alone.
+//   - Every row records the `key_epoch` that wrote it, because an HMAC is only
+//     a pseudonym relative to one key. See [Dict.VerifyKeyEpoch].
 //   - [Dict.ForgetSubmitter] is Task 34's purge hook. It cannot find rows by
 //     user id — there is none — so it recomputes the HMAC for the purged user
 //     against every distinct entry in the table and deletes the matches. A
@@ -62,7 +71,36 @@
 // `published_at` (it actually shipped once) can be named in a retraction, and
 // the cursor a client gets back is the maximum version over rows VISIBLE TO IT.
 // A version taken from the global sequence would advance on every suppressed
-// submission and leak the submission rate by itself.
+// submission and report the submission rate outright.
+//
+// # What the cursor still leaks, stated rather than implied
+//
+// Returning only visible versions stops the cursor from ADVANCING on a
+// suppressed submission. It does not hide the GAP: the sequence is global, so a
+// client that sees its cursor go from 7 to 61 across one publication can read
+// off roughly how many invisible writes happened in between (measured: 20
+// suppressed submissions produced exactly that jump). That is an aggregate
+// volume signal over the whole beta, not a per-user or per-merchant one, and it
+// is the price of one shared sequence. Closing it needs a per-visible-row
+// counter, which is a schema change, not a query change. Until then this is a
+// known, bounded leak rather than a closed one.
+//
+// # Two more limits, recorded because Phase 2 has to close them
+//
+// CANONICALIZATION IS CASE AND WHITESPACE ONLY. It does not normalise Unicode,
+// so fullwidth `ＣＡＲＲＥＦＯＵＲ`, a Cyrillic-С homoglyph and a trailing-dot
+// `carrefour.` each become their OWN entry rather than joining the real one.
+// The direction is fail-safe — the threshold splits, so nothing publishes that
+// otherwise would not — but two visually identical rows can sit in the
+// moderation queue, and a moderator approving both would publish a duplicate.
+// An NFKC fold at [Canonicalize] is the fix and needs a Unicode dependency.
+//
+// [Dict.Submit] HAS NO RATE LIMIT AND NO PER-USER ENTRY CAP. Nothing here
+// bounds how many distinct patterns one account can create, and every one of
+// them costs a row plus a moderation-queue line. That is harmless while the
+// only caller is the operator's seed, and it is a denial-of-service surface the
+// moment a client endpoint reaches this function — so Phase 2 must add both
+// before it ships one.
 package dict
 
 import (
@@ -74,6 +112,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -106,13 +145,32 @@ const (
 // Bounds on the two user-supplied strings. Runes, not bytes: a bound in bytes
 // would silently be three times tighter for an Arabic merchant name.
 const (
-	maxPatternRunes  = 64
-	minPatternRunes  = 2
+	maxPatternRunes = 64
+	// minPatternRunes is the floor for an `exact` pattern, which matches one
+	// merchant string and nothing else.
+	minPatternRunes = 2
+	// minContainsRunes is the floor for a `contains` pattern, which is a
+	// substring test running on every device.
+	//
+	// A short one is a wildcard wearing a merchant's clothes: `on -> charity`
+	// passes every gate this design has — three real users can genuinely submit
+	// it — and then matches AMAZON, NOON and TALABAT ONLINE everywhere. The k
+	// threshold cannot catch that, because breadth is not rarity.
+	//
+	// Four is measured rather than guessed: the operator's own 212 seeded v1
+	// rules bottom out at exactly four characters, so this rejects nothing
+	// real. Pinned to the SQL literal by
+	// TestTheContainsFloorMatchesTheSQLLiteral.
+	minContainsRunes = 4
 	maxCategoryRunes = 32
 	maxNoteBytes     = 500
 	// minKeyBytes is 128 bits. Below that a key is brute-forcible offline
 	// against a table of pseudonyms whose inputs the operator already knows.
 	minKeyBytes = 16
+	// keyEpochBytes is how much of the key fingerprint is stored per row. 64
+	// bits is far more than enough to tell one generation from another, and
+	// storing less of the digest is strictly better than storing more.
+	keyEpochBytes = 8
 )
 
 var (
@@ -125,6 +183,15 @@ var (
 	ErrNoKey = errors.New("dict: no submitter hmac key")
 	// ErrNotFound is returned by Moderate for an entry that does not exist.
 	ErrNotFound = errors.New("dict: no such entry")
+	// ErrKeyEpoch reports that dict_submissions holds identifiers written
+	// under a DIFFERENT LEDGER_DICT_HMAC_KEY than the one configured now.
+	//
+	// It is a hard error rather than a warning because both things this
+	// package promises stop being true in that state: the k gate counts
+	// distinct HMACs, so one user reappears as one submitter per key
+	// generation, and ForgetSubmitter recomputes a pseudonym that matches
+	// nothing — deleting nothing and, without this, reporting success.
+	ErrKeyEpoch = errors.New("dict: submitter identifiers were written under a different key")
 )
 
 // Entry is one published mapping: the whole of what a client receives.
@@ -146,7 +213,26 @@ type Status struct {
 	Note               string `json:"note,omitempty"`
 	Version            int64  `json:"version,string"`
 	Published          bool   `json:"published"`
+
+	// AlsoMatches names other entries in the dictionary that THIS pattern
+	// would match if it published — the moderator's only signal about match
+	// BREADTH, as opposed to the count, which only ever reports rarity.
+	//
+	// It exists because the two dangerous submissions look identical in every
+	// other column. A rare merchant is caught by the k threshold. A pattern
+	// that is short or generic is not rare at all — three real users can
+	// honestly submit it — and its damage is that it swallows merchants it has
+	// nothing to do with, on every device. The moderator is the only gate that
+	// can see that, and until now the queue gave them nothing to see it with.
+	//
+	// It is computed against the dictionary the server already holds, so it
+	// costs no user data at all. Bounded to maxAlsoMatches.
+	AlsoMatches []string `json:"also_matches,omitempty"`
 }
+
+// maxAlsoMatches bounds the breadth sample. A moderator needs enough to see
+// that a pattern is too broad, not an exhaustive list.
+const maxAlsoMatches = 5
 
 // Delta is one page of the client-facing feed. Version is the cursor to send
 // back next time; it is the maximum version over rows this client can see, not
@@ -260,9 +346,15 @@ func Canonicalize(e Entry) (Entry, error) {
 			"client is a fleet-wide execution surface)", ErrInvalidEntry,
 			[]string{MatchContains, MatchExact})
 	}
-	if n := len([]rune(out.Pattern)); n < minPatternRunes || n > maxPatternRunes {
-		return Entry{}, fmt.Errorf("%w: pattern must be %d..%d characters, got %d",
-			ErrInvalidEntry, minPatternRunes, maxPatternRunes, n)
+	// A `contains` pattern is a substring test that will run on every device,
+	// so it carries a higher floor than an `exact` one: see minContainsRunes.
+	minRunes := minPatternRunes
+	if out.Match == MatchContains {
+		minRunes = minContainsRunes
+	}
+	if n := len([]rune(out.Pattern)); n < minRunes || n > maxPatternRunes {
+		return Entry{}, fmt.Errorf("%w: a %q pattern must be %d..%d characters, got %d",
+			ErrInvalidEntry, out.Match, minRunes, maxPatternRunes, n)
 	}
 	if !hasAlnum(out.Pattern) {
 		return Entry{}, fmt.Errorf("%w: pattern must contain a letter or a digit; a pattern of "+
@@ -372,6 +464,54 @@ func (d *Dict) submitterHMAC(userID uuid.UUID, pattern, category string) []byte 
 	return mac.Sum(nil)
 }
 
+// keyEpochLabel domain-separates the epoch fingerprint from every real
+// pseudonym, so no stored submitter_hmac can ever collide with an epoch value
+// and no epoch reveals anything about a pseudonym.
+const keyEpochLabel = "ledger/dict/key-epoch/v1"
+
+// keyEpoch fingerprints the CURRENT key, so a row can say which generation
+// wrote it.
+//
+// It is an HMAC under the key itself rather than a hash OF the key: a stored
+// digest of the key would be an offline verifier for key guesses. Truncated to
+// 64 bits because the only question ever asked of it is "same generation or
+// not", and storing more of the digest buys nothing.
+func (d *Dict) keyEpoch() []byte {
+	mac := hmac.New(sha256.New, d.HMACKey)
+	mac.Write([]byte(keyEpochLabel))
+	return mac.Sum(nil)[:keyEpochBytes]
+}
+
+// VerifyKeyEpoch reports whether every stored identifier was written under the
+// key this process holds. Call it at startup, before serving.
+//
+// An empty table passes under any key: a deployment that has never taken a
+// submission has nothing to orphan and can rotate freely. That is also the
+// documented recovery path — expire or publish the outstanding identifiers
+// (they are short-lived by design), then rotate.
+//
+// This is a REFUSAL rather than a repair because there is no repair available:
+// a pseudonym written under a lost key cannot be re-derived, matched, or
+// attributed by anything, including this package.
+func (d *Dict) VerifyKeyEpoch(ctx context.Context) error {
+	if err := d.checkKey(); err != nil {
+		return err
+	}
+	var foreign int
+	err := d.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM dict_submissions WHERE key_epoch <> $1`, d.keyEpoch()).Scan(&foreign)
+	if err != nil {
+		return fmt.Errorf("dict: verify key epoch: %w", err)
+	}
+	if foreign > 0 {
+		return fmt.Errorf("%w: dict_submissions holds %d identifier(s) written under an "+
+			"earlier LEDGER_DICT_HMAC_KEY. They cannot be counted toward the k threshold or "+
+			"erased by an account purge under the current key. Restore the previous key, or "+
+			"clear them first (dict.ExpireStaleSubmissions) and then rotate", ErrKeyEpoch, foreign)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Submission
 // ---------------------------------------------------------------------------
@@ -433,8 +573,10 @@ func (d *Dict) Submit(ctx context.Context, userID uuid.UUID, pattern, category s
 			return nil
 		}
 		mac := d.submitterHMAC(userID, e.Pattern, e.Category)
-		if _, err := tx.Exec(ctx, `INSERT INTO dict_submissions (pattern, category, submitter_hmac)
-		  VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, e.Pattern, e.Category, mac); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO dict_submissions
+		  (pattern, category, submitter_hmac, key_epoch)
+		  VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+			e.Pattern, e.Category, mac, d.keyEpoch()); err != nil {
 			return fmt.Errorf("dict: submit: %w", err)
 		}
 		return d.recount(ctx, tx, e.Pattern, e.Category)
@@ -447,6 +589,24 @@ func (d *Dict) Submit(ctx context.Context, userID uuid.UUID, pattern, category s
 //
 // The version is bumped only when the count actually moved, so a duplicate
 // submission is not an observable event.
+//
+// # Only the current key epoch counts
+//
+// The count is scoped to rows written under the key this process holds. That
+// is what makes rotating LEDGER_DICT_HMAC_KEY unable to inflate the threshold:
+// without it, one user submitting one merchant once per key generation
+// produces a different HMAC each time and reads as three distinct submitters —
+// and since the rows are deleted at K, the evidence deletes itself.
+//
+// The direction of the scoping matters. A rotation makes suppression STRICTER
+// (earlier generations' rows stop counting), never looser, so the failure mode
+// of getting this wrong is an entry that will not publish rather than one that
+// publishes when it should not. VerifyKeyEpoch refuses to start in that state
+// anyway; this is the layer that holds if it is ever bypassed.
+//
+// The DELETE below is deliberately NOT epoch-scoped: at the threshold every
+// identifier for the entry stops being needed, whichever key wrote it, and
+// erasing more than strictly required is the safe direction here.
 func (d *Dict) recount(ctx context.Context, tx pgx.Tx, pattern, category string) error {
 	var count int
 	err := tx.QueryRow(ctx, `
@@ -458,10 +618,11 @@ func (d *Dict) recount(ctx context.Context, tx pgx.Tx, pattern, category string)
 	      WHEN e.published_at IS NOT NULL THEN e.published_at
 	      WHEN e.approved IS TRUE AND (e.source = 'operator_seed' OR c.n >= $3) THEN $4
 	      ELSE NULL END
-	  FROM (SELECT count(*)::int AS n FROM dict_submissions WHERE pattern = $1 AND category = $2) c
+	  FROM (SELECT count(*)::int AS n FROM dict_submissions
+	          WHERE pattern = $1 AND category = $2 AND key_epoch = $5) c
 	  WHERE e.pattern = $1 AND e.category = $2
 	  RETURNING e.distinct_submitter_count`,
-		pattern, category, K, d.now().UTC()).Scan(&count)
+		pattern, category, K, d.now().UTC(), d.keyEpoch()).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("dict: recount: %w", err)
 	}
@@ -628,10 +789,27 @@ func (d *Dict) List(ctx context.Context) ([]Status, error) {
 	// clients being served this right now", which is the question a moderator
 	// is actually asking. An entry that shipped once and was then retracted
 	// has a published_at and answers no.
-	rows, err := d.Pool.Query(ctx, `SELECT pattern, match_type, category, source,
-	    distinct_submitter_count, approved, coalesce(moderator_note, ''), version,
-	    `+publishable+`
-	  FROM dict_entries ORDER BY approved IS NOT NULL, pattern, category`)
+	//
+	// The LATERAL below is the breadth signal (Status.AlsoMatches): for each
+	// candidate, which OTHER entries this pattern would match. It is a
+	// self-join over a few hundred rows, so the quadratic shape is not worth
+	// avoiding, and it reads only the dictionary — no user data is involved in
+	// answering "how broad is this".
+	rows, err := d.Pool.Query(ctx, `SELECT e.pattern, e.match_type, e.category, e.source,
+	    e.distinct_submitter_count, e.approved, coalesce(e.moderator_note, ''), e.version,
+	    `+publishable+`, coalesce(m.also, '{}')
+	  FROM dict_entries e
+	  LEFT JOIN LATERAL (
+	    SELECT array_agg(o.pattern ORDER BY o.pattern) AS also FROM (
+	      SELECT o2.pattern FROM dict_entries o2
+	      WHERE (o2.pattern, o2.category) <> (e.pattern, e.category)
+	        AND CASE WHEN e.match_type = 'contains'
+	                 THEN position(e.pattern IN o2.pattern) > 0
+	                 ELSE o2.pattern = e.pattern END
+	      ORDER BY o2.pattern LIMIT `+strconv.Itoa(maxAlsoMatches)+`
+	    ) o
+	  ) m ON true
+	  ORDER BY e.approved IS NOT NULL, e.pattern, e.category`)
 	if err != nil {
 		return nil, fmt.Errorf("dict: list: %w", err)
 	}
@@ -641,7 +819,7 @@ func (d *Dict) List(ctx context.Context) ([]Status, error) {
 		var s Status
 		if err := rows.Scan(&s.Pattern, &s.Match, &s.Category, &s.Source,
 			&s.DistinctSubmitters, &s.Approved, &s.Note, &s.Version,
-			&s.Published); err != nil {
+			&s.Published, &s.AlsoMatches); err != nil {
 			return nil, fmt.Errorf("dict: list: %w", err)
 		}
 		out = append(out, s)
@@ -742,6 +920,17 @@ func (d *Dict) ForgetSubmitter(ctx context.Context, userID uuid.UUID) (int, erro
 	if userID == uuid.Nil {
 		return 0, fmt.Errorf("%w: submitter is the nil uuid", ErrInvalidEntry)
 	}
+	// Checked BEFORE any deleting, because the caller's contract is the thing
+	// at stake. purge.forgetSubmitter reads a non-error from here as complete
+	// erasure and reports the account deleted; under a rotated key this
+	// function recomputes a pseudonym that matches nothing, deletes nothing,
+	// and would return (0, nil) — a purge that silently misses a table, which
+	// is exactly the failure this package's doc says the design exists to
+	// prevent. Rotation is also what an operator does AFTER a breach, so this
+	// is the moment stale identifiers matter most.
+	if err := d.VerifyKeyEpoch(ctx); err != nil {
+		return 0, err
+	}
 	deleted := 0
 	err := d.tx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
@@ -781,7 +970,14 @@ func (d *Dict) ForgetSubmitter(ctx context.Context, userID uuid.UUID) (int, erro
 				return err
 			}
 		}
-		return nil
+		// An entry that ONLY the purged user ever submitted is now a merchant
+		// string with a count of zero and nobody behind it. Erasing the
+		// pseudonym while keeping the merchant leaves the more sensitive half
+		// of the pair behind, forever, for an account that no longer exists —
+		// and spec §3.10's deletion list does not name this table, so nothing
+		// else would ever come back for it.
+		var reaped int
+		return reapOrphans(ctx, tx, &reaped)
 	})
 	if err != nil {
 		return 0, err
@@ -789,10 +985,62 @@ func (d *Dict) ForgetSubmitter(ctx context.Context, userID uuid.UUID) (int, erro
 	return deleted, nil
 }
 
+// ReapOrphanedEntries deletes crowd entries nobody is behind any more: no
+// surviving submitter, never published. It returns how many it removed.
+//
+// The predicate is narrow on purpose, and every clause is load bearing:
+//
+//   - source = 'crowd' spares the operator's seed, which legitimately has zero
+//     submitters — it never needed any.
+//   - published_at IS NULL spares anything that ever shipped. Since can only
+//     name an entry that was actually published, so deleting that row would
+//     strand a retraction on every device already holding the entry.
+//   - distinct_submitter_count = 0 spares every entry still counting toward K,
+//     and every entry whose count froze at the threshold.
+func (d *Dict) ReapOrphanedEntries(ctx context.Context) (int, error) {
+	if err := d.check(); err != nil {
+		return 0, err
+	}
+	n := 0
+	if err := d.tx(ctx, func(tx pgx.Tx) error { return reapOrphans(ctx, tx, &n) }); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func reapOrphans(ctx context.Context, tx pgx.Tx, n *int) error {
+	tag, err := tx.Exec(ctx, `DELETE FROM dict_entries
+	  WHERE source = 'crowd' AND published_at IS NULL AND distinct_submitter_count = 0`)
+	if err != nil {
+		return fmt.Errorf("dict: reap orphaned entries: %w", err)
+	}
+	*n += int(tag.RowsAffected())
+	return nil
+}
+
+// DefaultSubmissionRetention bounds how long a submitter identifier may exist
+// without having reached K. cmd/ledgerd sweeps at this age hourly.
+//
+// The tradeoff is real and it is deliberately resolved toward suppression: an
+// entry whose submitters trickle in over more than this window never publishes,
+// because its earliest identifiers expire before the last one arrives. That is
+// the correct failure for the beta — plan Decision 8 already expects the Phase 1
+// dictionary to be effectively operator-seeded, since k=3 among three to five
+// alphas is a threshold almost nothing reaches — and the alternative is a
+// pseudonym with no expiry at all, which is the thing spec §2 promises does not
+// exist.
+const DefaultSubmissionRetention = 90 * 24 * time.Hour
+
 // ExpireStaleSubmissions deletes identifiers older than maxAge and returns how
 // many it removed. It is the only consumer of dict_submissions.created_at, and
 // the only reason that column is worth storing: without it, an identifier for
 // an entry that never reaches K lives forever.
+//
+// created_at is a whole UTC day, so maxAge is effectively rounded up to the
+// next day boundary. That is the intended direction: the coarse timestamp
+// exists so one user's submissions cannot be clustered by arrival time, and
+// deleting slightly late is a far smaller cost than the side channel a precise
+// one reopens.
 func (d *Dict) ExpireStaleSubmissions(ctx context.Context, maxAge time.Duration) (int, error) {
 	if err := d.check(); err != nil {
 		return 0, err
