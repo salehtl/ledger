@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,15 +46,15 @@ var bg = context.Background()
 type seeder func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID)
 
 var seeders = map[string]seeder{
-	"sessions": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.sessions": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO sessions (token_hash, user_id, created_at, expires_at)
 		               VALUES ($2, $1, now(), now() + interval '1 hour')`, u, randBytes(t, 32))
 	},
-	"oplog_seq": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.oplog_seq": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO oplog_seq (user_id, next_seq) VALUES ($1, 3)
 		               ON CONFLICT (user_id) DO UPDATE SET next_seq = 3`, u)
 	},
-	"op_log": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.op_log": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		for seq := 1; seq <= 2; seq++ {
 			exec(t, pool, `INSERT INTO op_log
 			  (user_id, seq, stream, writer_id, writer_counter, type_flag,
@@ -60,19 +63,19 @@ var seeders = map[string]seeder{
 				u, seq, make([]byte, 1024), randBytes(t, 32), make([]byte, 32))
 		}
 	},
-	"writers": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.writers": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
 		               VALUES ($1, 'device-1', 'device', $2, now())`, u, devicePub(t, u))
 	},
-	"key_history": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.key_history": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO key_history (user_id, writer_id, pubkey, event, at)
 		               VALUES ($1, 'device-1', $2, 'registered', now())`, u, devicePub(t, u))
 	},
-	"writer_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.writer_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO writer_challenges (nonce, user_id, issued_at, expires_at)
 		               VALUES ($2, $1, now(), now() + interval '5 minutes')`, u, randBytes(t, 32))
 	},
-	"inbound_addresses": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.inbound_addresses": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		// TWO of them, one retired inside its grace window and chained to the
 		// other. Task 22's Predecessor is one hop, so a live account can hold
 		// several inbound addresses; a purge that walked the chain instead of
@@ -83,15 +86,15 @@ var seeders = map[string]seeder{
 		exec(t, pool, `INSERT INTO inbound_addresses (local_part, user_id, created_at, rotated_from)
 		               VALUES ($2, $1, now(), $3)`, u, cur, old)
 	},
-	"address_rotation_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.address_rotation_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO address_rotation_challenges (nonce, user_id, issued_at, expires_at)
 		               VALUES ($2, $1, now(), now() + interval '5 minutes')`, u, randBytes(t, 32))
 	},
-	"account_deletion_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.account_deletion_challenges": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO account_deletion_challenges (nonce, user_id, issued_at, expires_at)
 		               VALUES ($2, $1, now(), now() + interval '5 minutes')`, u, randBytes(t, 32))
 	},
-	"donated_samples": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.donated_samples": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		// Both shapes Task 31 permits: a consented body, and the content-free
 		// report. They have their OWN retention deadline (expires_at) and their
 		// own consent identifier, and neither is a reason for them to outlive
@@ -107,7 +110,7 @@ var seeders = map[string]seeder{
 		  VALUES ($1, 'enbd.com', $2, now(), now() + interval '90 days')`,
 			u, "fedcba9876543210fedcba9876543210")
 	},
-	"parse_diagnostics": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.parse_diagnostics": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO parse_diagnostics
 		  (user_id, event, ingest_id, received_at, sender_domain, dkim_result, arc_result,
 		   normalizer_version, matched, tier, body_size_bucket, structure_sig, outcome)
@@ -118,32 +121,32 @@ var seeders = map[string]seeder{
 	// user-scoped in the schema precisely so it is discovered here and leaves
 	// with the account — an adjudication that outlived the user would be a
 	// record about somebody who asked to be forgotten.
-	"parse_rate_adjudications": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.parse_rate_adjudications": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO parse_rate_adjudications (ingest_id, user_id, verdict)
 		               VALUES ($2, $1, 'transaction')`, u, randBytes(t, 32))
 	},
-	"quarantine": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.quarantine": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO quarantine
 		  (user_id, ingest_id, received_at, expires_at, outer_domain, dkim, arc, size_bucket, blob)
 		  VALUES ($1, $2, now(), now() + interval '30 days', 'dib.ae', 'pass', 'none', 1024, $3)`,
 			u, randBytes(t, 32), []byte("held"))
 	},
-	"quarantine_removals": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.quarantine_removals": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO quarantine_removals
 		  (quarantine_id, user_id, ingest_id, received_at, expires_at, warned_at, removed_at,
 		   reason, outer_domain, attested, size_bucket)
 		  VALUES (gen_random_uuid(), $1, $2, now(), now() + interval '30 days', now(), now(),
 		          'expired', 'dib.ae', false, 1024)`, u, randBytes(t, 32))
 	},
-	"sender_allowlist": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.sender_allowlist": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO sender_allowlist (user_id, domain, scope, created_at)
 		               VALUES ($1, 'dib.ae', 'outer', now())`, u)
 	},
-	"push_tokens": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.push_tokens": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO push_tokens (user_id, token, platform)
 		               VALUES ($1, $2, 'ios')`, u, "ExponentPushToken["+u.String()+"]")
 	},
-	"user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
 		               VALUES ($1, 'alpha-plaintext-v1', now(), now() + interval '90 days')
 		               ON CONFLICT (user_id) DO NOTHING`, u)
@@ -162,43 +165,56 @@ func newUser(t *testing.T, pool *pgxpool.Pool, sub string) uuid.UUID {
 	return u
 }
 
-// seedAFullyPopulatedUser puts at least one row for a fresh user in EVERY table
-// the schema says references them, and fails loudly if it cannot.
+// seedAFullyPopulatedUser puts at least one row for a fresh user in EVERY
+// relation the schema says references them, and fails loudly if it cannot.
+//
+// A materialized view is skipped rather than seeded: nothing can INSERT into
+// one. It is populated by whatever it selects from, which is what makes it a
+// stored copy, and the matview tests below build their own.
 func seedAFullyPopulatedUser(t *testing.T, pool *pgxpool.Pool, sub string) uuid.UUID {
 	t.Helper()
 	u := newUser(t, pool, sub)
-	tables, err := UserScopedTables(bg, pool)
+	rels, err := UserScopedTables(bg, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tb := range tables {
-		seed, ok := seeders[tb]
+	var seeded []Relation
+	for _, r := range rels {
+		if r.Kind == 'm' {
+			continue
+		}
+		seed, ok := seeders[r.String()]
 		if !ok {
-			t.Fatalf("no seeder for user-scoped table %q: this test proves a purge empties "+
-				"every table that references a user, and it cannot prove it for a table it "+
-				"never populated. Add a seeder to purge_test.go's `seeders` map.", tb)
+			t.Fatalf("no seeder for user-scoped %s %q: this test proves a purge empties "+
+				"every relation that references a user, and it cannot prove it for one it "+
+				"never populated. Add a seeder to purge_test.go's `seeders` map.", r.KindName(), r)
 		}
 		seed(t, pool, u)
+		seeded = append(seeded, r)
 	}
 	// Seeded is not the same as present: an INSERT with ON CONFLICT DO NOTHING,
 	// or a seeder that writes to the wrong table, would leave the completeness
 	// assertion below vacuously true.
-	for _, tb := range tables {
-		if n := rowsFor(t, pool, tb, u); n == 0 {
-			t.Fatalf("seeder for %q left no row for the user", tb)
+	for _, r := range seeded {
+		if n := rowsFor(t, pool, r, u); n == 0 {
+			t.Fatalf("seeder for %q left no row for the user", r)
 		}
 	}
 	return u
 }
 
-func rowsFor(t *testing.T, pool *pgxpool.Pool, table string, u uuid.UUID) int {
+func rowsFor(t *testing.T, pool *pgxpool.Pool, r Relation, u uuid.UUID) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(bg, `SELECT count(*) FROM "`+table+`" WHERE user_id = $1`, u).Scan(&n); err != nil {
-		t.Fatalf("count %s: %v", table, err)
+	if err := pool.QueryRow(bg, `SELECT count(*) FROM `+r.SQL()+` WHERE user_id = $1`, u).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", r, err)
 	}
 	return n
 }
+
+// rel is the Relation for a plain table in `public`, for the tests that name
+// one directly.
+func rel(name string) Relation { return Relation{Schema: "public", Name: name, Kind: 'r'} }
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
@@ -302,19 +318,19 @@ func TestPurgeLeavesNoRowInAnyUserScopedTable(t *testing.T) {
 		t.Fatalf("purge: %v", err)
 	}
 
-	tables, err := UserScopedTables(bg, pool)
+	rels, err := UserScopedTables(bg, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) < 9 {
-		t.Fatalf("expected to discover the user-scoped tables, found %v", tables)
+	if len(rels) < 9 {
+		t.Fatalf("expected to discover the user-scoped relations, found %v", rels)
 	}
-	for _, tb := range tables {
-		if n := rowsFor(t, pool, tb, u); n != 0 {
-			t.Fatalf("table %s still holds %d rows for the purged user", tb, n)
+	for _, r := range rels {
+		if n := rowsFor(t, pool, r, u); n != 0 {
+			t.Fatalf("%s %s still holds %d rows for the purged user", r.KindName(), r, n)
 		}
-		if _, ok := rep.Rows[tb]; !ok {
-			t.Fatalf("report does not account for table %s: %+v", tb, rep.Rows)
+		if _, ok := rep.Rows[r.String()]; !ok {
+			t.Fatalf("report does not account for %s: %+v", r, rep.Rows)
 		}
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, u); n != 0 {
@@ -383,15 +399,18 @@ func TestEveryTableIsClassified(t *testing.T) {
 			"discovered automatically), or add it to purge.go's handledWithoutUserID / "+
 			"notUserLinked with the reason.", c.Unclassified)
 	}
-	for _, want := range []string{"op_log", "quarantine", "sessions", "push_tokens", "user_consent"} {
-		if !slices.Contains(c.UserScoped, want) {
+	for _, want := range []string{
+		"public.op_log", "public.quarantine", "public.sessions",
+		"public.push_tokens", "public.user_consent",
+	} {
+		if !slices.ContainsFunc(c.UserScoped, func(r Relation) bool { return r.String() == want }) {
 			t.Fatalf("%s is not classified as user-scoped: %+v", want, c)
 		}
 	}
-	if !slices.Contains(c.HandledWithoutUserID, "dict_submissions") {
+	if !slices.Contains(c.HandledWithoutUserID, "public.dict_submissions") {
 		t.Fatalf("dict_submissions is not classified as handled-without-user_id: %+v", c)
 	}
-	if !slices.Contains(c.NotUserLinked, "smtp_rejections") {
+	if !slices.Contains(c.NotUserLinked, "public.smtp_rejections") {
 		t.Fatalf("smtp_rejections is not classified as not-user-linked: %+v", c)
 	}
 }
@@ -415,6 +434,186 @@ func TestPurgeRefusesWhenATableIsUnclassified(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The three object classes information_schema could not see
+// ---------------------------------------------------------------------------
+//
+// Discovery used to read information_schema.tables scoped to `public`. That was
+// blind to a materialized view (not listed there AT ALL), to any other schema,
+// and to anything the current role lacks privileges on (information_schema is
+// privilege-filtered). In each case the relation was neither purged NOR
+// reported, and Purge returned success — the worst possible combination for a
+// function whose entire job is to be exhaustive. These four tests are the
+// regression net; see relationFilter in purge.go.
+
+// The one the spec plans to create. §5: "the existing PWA may additionally
+// serve alphas via a temporary server-side materialized view." A matview over
+// op_log is a stored COPY of the user's plaintext blobs, it survives the
+// cascade untouched because nothing cascades into a query result, and it cannot
+// be DELETEd from. Refreshing it is the only way its copy goes away.
+func TestPurgeReachesAMaterializedViewOverUserData(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	u := seedAFullyPopulatedUser(t, pool, "purge-me")
+	bystander := seedAFullyPopulatedUser(t, pool, "leave-me")
+	exec(t, pool, `CREATE MATERIALIZED VIEW user_blob_archive AS
+	                 SELECT user_id, seq, blob FROM op_log`)
+
+	mv := Relation{Schema: "public", Name: "user_blob_archive", Kind: 'm'}
+	if n := rowsFor(t, pool, mv, u); n == 0 {
+		t.Fatal("precondition: the matview holds none of the user's rows")
+	}
+	// Discovery must SEE it. This is the assertion information_schema failed.
+	rels, err := UserScopedTables(bg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rels, func(r Relation) bool { return r.String() == mv.String() }) {
+		t.Fatalf("discovery did not find the materialized view: %v", rels)
+	}
+
+	rep, err := Purge(bg, pool, d, u)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n := rowsFor(t, pool, mv, u); n != 0 {
+		t.Fatalf("the materialized view still holds %d rows of the purged user's plaintext blobs", n)
+	}
+	if !slices.Contains(rep.RefreshedViews, mv.String()) {
+		t.Fatalf("report does not name the refreshed view: %+v", rep.RefreshedViews)
+	}
+	// Refreshing is not a euphemism for emptying: everyone else's rows are back.
+	if n := rowsFor(t, pool, mv, bystander); n == 0 {
+		t.Fatal("the refresh dropped the bystander's rows too")
+	}
+}
+
+// A matview with no user_id is still a relation nobody has classified, and the
+// old query could not see it to say so.
+func TestPurgeRefusesAnUnclassifiedMaterializedView(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	u := seedAFullyPopulatedUser(t, pool, "purge-me")
+	exec(t, pool, `CREATE MATERIALIZED VIEW sender_counts AS
+	                 SELECT outer_domain, count(*) AS n FROM quarantine GROUP BY outer_domain`)
+
+	_, err := Purge(bg, pool, d, u)
+	if err == nil {
+		t.Fatal("purge succeeded with an unclassified materialized view present")
+	}
+	if !strings.Contains(err.Error(), "sender_counts") ||
+		!strings.Contains(err.Error(), "materialized view") {
+		t.Fatalf("error does not name the view and its kind: %v", err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, u); n != 1 {
+		t.Fatal("a refused purge must leave the account intact")
+	}
+}
+
+// `archive.op_log_2026` — the obvious thing a DBA creates, in the obvious place
+// a `WHERE table_schema = 'public'` filter cannot see.
+func TestPurgeReachesATableOutsideThePublicSchema(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	exec(t, pool, `CREATE SCHEMA archive`)
+	exec(t, pool, `CREATE TABLE archive.op_log_2026 (
+	                 id bigserial PRIMARY KEY,
+	                 user_id uuid NOT NULL,
+	                 blob bytea NOT NULL)`)
+	seeders["archive.op_log_2026"] = func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO archive.op_log_2026 (user_id, blob) VALUES ($1, $2)`,
+			u, []byte("archived plaintext"))
+	}
+	t.Cleanup(func() { delete(seeders, "archive.op_log_2026") })
+
+	u := seedAFullyPopulatedUser(t, pool, "purge-me")
+	archived := Relation{Schema: "archive", Name: "op_log_2026", Kind: 'r'}
+	if n := rowsFor(t, pool, archived, u); n != 1 {
+		t.Fatalf("precondition: the archive holds %d rows, want 1", n)
+	}
+
+	rep, err := Purge(bg, pool, d, u)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n := rowsFor(t, pool, archived, u); n != 0 {
+		t.Fatalf("archive.op_log_2026 still holds %d rows of the purged user's plaintext", n)
+	}
+	if !slices.Contains(rep.SweptWithoutCascade, "archive.op_log_2026") {
+		t.Fatalf("report does not flag the out-of-schema table: %+v", rep.SweptWithoutCascade)
+	}
+	// The qualified name is what the report keys on. An unqualified "op_log_2026"
+	// would collide with a public table of the same name.
+	if _, ok := rep.Rows["archive.op_log_2026"]; !ok {
+		t.Fatalf("report keys are not schema-qualified: %+v", rep.Rows)
+	}
+}
+
+// information_schema shows only what the current role has privileges on, and
+// plan D5 mandates a NON-OWNER `ledger_runtime` that `ledgerd purge-user` opens
+// the DSN as. So a relation that role cannot touch used to be absent from the
+// list — silently, with no report and no error. It must now be DISCOVERED, and
+// the count against it must fail loudly rather than being skipped.
+func TestPurgeSeesARelationTheRoleCannotRead(t *testing.T) {
+	pool := pgtest.New(t)
+	u := seedAFullyPopulatedUser(t, pool, "purge-me")
+	exec(t, pool, `CREATE TABLE hidden_user_notes (
+	                 id bigserial PRIMARY KEY,
+	                 user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	                 note text NOT NULL)`)
+	exec(t, pool, `INSERT INTO hidden_user_notes (user_id, note) VALUES ($1, 'x')`, u)
+
+	role := fmt.Sprintf("t_runtime_%d", time.Now().UnixNano())
+	exec(t, pool, `CREATE ROLE `+role+` LOGIN`)
+	exec(t, pool, `GRANT USAGE ON SCHEMA public TO `+role)
+	exec(t, pool, `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO `+role)
+	exec(t, pool, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO `+role)
+	// The one relation the runtime role is not allowed to see into.
+	exec(t, pool, `REVOKE ALL ON hidden_user_notes FROM `+role)
+
+	runtime := poolAs(t, pool, role)
+
+	// Blind spot 3, directly: pg_class is not privilege-filtered.
+	rels, err := UserScopedTables(bg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rels, func(r Relation) bool { return r.String() == "public.hidden_user_notes" }) {
+		t.Fatalf("the runtime role's discovery cannot see a relation it lacks privileges on: %v", rels)
+	}
+
+	_, err = Purge(bg, runtime, &dict.Dict{Pool: runtime}, u)
+	if err == nil {
+		t.Fatal("purge succeeded as a role that cannot read one of the user's tables")
+	}
+	if !strings.Contains(err.Error(), "hidden_user_notes") {
+		t.Fatalf("error does not name the unreadable relation: %v", err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, u); n != 1 {
+		t.Fatal("a refused purge must leave the account intact")
+	}
+}
+
+// poolAs opens a second pool on the same database as a different role. The
+// throwaway cluster runs with `-A trust` over a unix socket, so no password is
+// involved; the role name is unique per test because roles are cluster-wide
+// while databases are not.
+func poolAs(t *testing.T, admin *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
+	cc := admin.Config().ConnConfig
+	q := url.Values{}
+	q.Set("host", cc.Host) // a socket directory; must be escaped, not concatenated
+	q.Set("port", strconv.Itoa(int(cc.Port)))
+	q.Set("sslmode", "disable")
+	dsn := "postgres://" + role + "@/" + cc.Database + "?" + q.Encode()
+	p, err := pgxpool.New(bg, dsn)
+	if err != nil {
+		t.Fatalf("connect as %s: %v", role, err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
 // A user_id column with no foreign key at all is one way a later task can leave
 // rows behind: nothing cascades into it. The sweep catches it, and says so in
 // the report rather than quietly covering for the schema.
@@ -425,20 +624,20 @@ func TestPurgeSweepsAUserScopedTableWithNoForeignKey(t *testing.T) {
 	                 id bigserial PRIMARY KEY,
 	                 user_id uuid NOT NULL,
 	                 note text NOT NULL)`)
-	seeders["later_task_rows"] = func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+	seeders["public.later_task_rows"] = func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO later_task_rows (user_id, note) VALUES ($1, 'x')`, u)
 	}
-	t.Cleanup(func() { delete(seeders, "later_task_rows") })
+	t.Cleanup(func() { delete(seeders, "public.later_task_rows") })
 
 	u := seedAFullyPopulatedUser(t, pool, "purge-me")
 	rep, err := Purge(bg, pool, d, u)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
-	if n := rowsFor(t, pool, "later_task_rows", u); n != 0 {
+	if n := rowsFor(t, pool, rel("later_task_rows"), u); n != 0 {
 		t.Fatalf("later_task_rows still holds %d rows", n)
 	}
-	if !slices.Contains(rep.SweptWithoutCascade, "later_task_rows") {
+	if !slices.Contains(rep.SweptWithoutCascade, "public.later_task_rows") {
 		t.Fatalf("report does not flag the missing cascade: %+v", rep.SweptWithoutCascade)
 	}
 }
@@ -461,10 +660,10 @@ func TestPurgeRefusesAUserIDForeignKeyThatDoesNotCascade(t *testing.T) {
 			                 id bigserial PRIMARY KEY,
 			                 user_id uuid REFERENCES users(id) `+tc.action+`,
 			                 note text NOT NULL)`)
-			seeders["later_task_rows"] = func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+			seeders["public.later_task_rows"] = func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 				exec(t, pool, `INSERT INTO later_task_rows (user_id, note) VALUES ($1, 'x')`, u)
 			}
-			t.Cleanup(func() { delete(seeders, "later_task_rows") })
+			t.Cleanup(func() { delete(seeders, "public.later_task_rows") })
 
 			u := seedAFullyPopulatedUser(t, pool, "purge-me")
 			_, err := Purge(bg, pool, d, u)
@@ -496,13 +695,13 @@ func TestPurgeDoesNotTouchOtherUsers(t *testing.T) {
 		t.Fatalf("purge: %v", err)
 	}
 
-	tables, err := UserScopedTables(bg, pool)
+	rels, err := UserScopedTables(bg, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tb := range tables {
-		if n := rowsFor(t, pool, tb, bystander); n == 0 {
-			t.Fatalf("table %s lost the bystander's rows", tb)
+	for _, r := range rels {
+		if n := rowsFor(t, pool, r, bystander); n == 0 {
+			t.Fatalf("%s lost the bystander's rows", r)
 		}
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, bystander); n != 1 {
@@ -611,6 +810,80 @@ func TestEnforceRetentionPurgesOnlyUsersPastTheirDeadline(t *testing.T) {
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, current); n != 1 {
 		t.Fatal("an account still inside its retention window was purged")
+	}
+}
+
+// The measured failure this test exists for: EnforceRetention was correct and
+// INERT. Nothing anywhere wrote user_consent, so a sweep a century past every
+// deadline purged zero accounts and reported one as having no record. The fix
+// was a caller (`ledgerd record-consent`); this pins the whole loop — record,
+// list, enforce — so the enforcer can never again be the only half that exists.
+func TestTheRecordedDeadlineIsWhatTheSweepActsOn(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	u := seedAFullyPopulatedUser(t, pool, "alpha-tester")
+	signed := time.Now().Add(-180 * 24 * time.Hour)
+	deadline := signed.Add(90 * 24 * time.Hour) // already past
+
+	// The seeder writes a consent row like any other user-scoped table; drop it
+	// to get back to the state a real account starts in, which is the state the
+	// review measured: no record anywhere.
+	exec(t, pool, `DELETE FROM user_consent WHERE user_id = $1`, u)
+
+	// Nothing on file: the sweep must refuse to act and say so.
+	before, err := EnforceRetention(bg, pool, d, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Users) != 0 || !slices.Contains(before.WithoutConsentRecord, u) {
+		t.Fatalf("with no record on file the sweep must report and skip, got %+v", before)
+	}
+
+	if err := RecordConsent(bg, pool, u, "alpha-plaintext-v1", signed, deadline); err != nil {
+		t.Fatal(err)
+	}
+	due, err := DueForRetention(bg, pool, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(due, u) {
+		t.Fatalf("DueForRetention did not list the overdue account: %v", due)
+	}
+
+	after, err := EnforceRetention(bg, pool, d, time.Now())
+	if err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if !slices.Contains(after.Users, u) {
+		t.Fatalf("the sweep purged %v, want the overdue account %s", after.Users, u)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM users WHERE id = $1`, u); n != 0 {
+		t.Fatal("the account survived its own retention deadline")
+	}
+}
+
+// Re-consenting replaces the deadline rather than adding a second, ambiguous
+// one — which is what makes extending an alpha's window possible at all.
+func TestRecordConsentReplacesTheDeadline(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	u := seedAFullyPopulatedUser(t, pool, "alpha-tester")
+	now := time.Now()
+	if err := RecordConsent(bg, pool, u, "alpha-plaintext-v1", now.Add(-time.Hour), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordConsent(bg, pool, u, "alpha-plaintext-v2", now, now.Add(90*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM user_consent WHERE user_id = $1`, u); n != 1 {
+		t.Fatalf("user_consent holds %d rows for one account; two deadlines is a question with no answer", n)
+	}
+	rep, err := EnforceRetention(bg, pool, d, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Users) != 0 {
+		t.Fatalf("the extended account was purged against its OLD deadline: %v", rep.Users)
 	}
 }
 

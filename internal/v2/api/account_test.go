@@ -50,6 +50,15 @@ func (h *harness) idTokenAged(sub string, age time.Duration) string {
 	return "reauth-token"
 }
 
+func (h *harness) countUsers(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := h.pool.QueryRow(bg, `SELECT count(*) FROM users`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func (h *harness) accountExists(t *testing.T, u uuid.UUID) bool {
 	t.Helper()
 	var n int
@@ -177,6 +186,38 @@ func TestDeleteAccountRefusesAnIDTokenNamingAnotherAccount(t *testing.T) {
 	}
 }
 
+// A rejected delete must WRITE NOTHING.
+//
+// Resolving the re-authenticated identity with auth.UpsertUser — which this
+// handler did until the review caught it — CREATES a users row for an unknown
+// subject, on the path that then answers 403. That turns the endpoint whose
+// whole purpose is destruction into a row-creation primitive for anyone holding
+// one valid session plus arbitrary IdP tokens, and every stray account lands in
+// the retention sweep's WithoutConsentRecord list for ever.
+func TestDeleteAccountCreatesNoAccountWhenItRefuses(t *testing.T) {
+	h := newHarness(t)
+	acc := h.deletable(t, "sub-alice")
+	nonce := h.deleteChallenge(t, acc.tok)
+	sig := ed25519.Sign(acc.priv, purge.DeletionMessage(nonce, acc.u))
+	before := h.countUsers(t)
+
+	// A subject this deployment has never seen, presented with a fresh token.
+	token := h.idTokenAged("sub-nobody-has-ever-signed-in-as-this", 0)
+	w := h.req("DELETE", "/api/v1/account", acc.tok, deleteBody{
+		IdP:     auth.IdPApple,
+		IDToken: token,
+		Nonce:   base64.StdEncoding.EncodeToString(nonce),
+		Sig:     base64.StdEncoding.EncodeToString(sig),
+	})
+	wantStatus(t, w, http.StatusForbidden)
+	if after := h.countUsers(t); after != before {
+		t.Fatalf("a rejected delete changed the account count from %d to %d", before, after)
+	}
+	if !h.accountExists(t, acc.u) {
+		t.Fatal("the caller's own account was deleted")
+	}
+}
+
 func TestDeleteAccountRefusesASignatureFromAnUnenrolledKey(t *testing.T) {
 	h := newHarness(t)
 	acc := h.deletable(t, "sub-alice")
@@ -223,17 +264,19 @@ func TestDeleteAccountWithAllThreeFactorsPurgesTheAccount(t *testing.T) {
 	if h.accountExists(t, acc.u) {
 		t.Fatal("the account survived its own deletion")
 	}
-	tables, err := purge.UserScopedTables(bg, h.pool)
+	rels, err := purge.UserScopedTables(bg, h.pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tb := range tables {
+	for _, r := range rels {
 		var n int
-		if err := h.pool.QueryRow(bg, `SELECT count(*) FROM "`+tb+`" WHERE user_id = $1`, acc.u).Scan(&n); err != nil {
+		// r.SQL() quotes schema and name separately; discovery now reaches
+		// relations outside `public`, so the name may be two parts.
+		if err := h.pool.QueryRow(bg, `SELECT count(*) FROM `+r.SQL()+` WHERE user_id = $1`, acc.u).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n != 0 {
-			t.Fatalf("table %s still holds %d rows for the deleted account", tb, n)
+			t.Fatalf("%s still holds %d rows for the deleted account", r, n)
 		}
 	}
 	if !h.accountExists(t, bystander.u) {
