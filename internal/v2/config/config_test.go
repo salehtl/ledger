@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ledger/internal/v2/blob"
 )
 
 // clearV2Env blanks every LEDGER_* env var this package reads, via
@@ -226,8 +228,8 @@ func TestLoadWithNoPathUsesDefaultsAndEnv(t *testing.T) {
 	if cfg.Mail.SMTPListen != ":25" {
 		t.Fatalf("default SMTPListen = %q", cfg.Mail.SMTPListen)
 	}
-	if cfg.Mail.MaxMessageBytes != 1<<20 {
-		t.Fatalf("default MaxMessageBytes = %d", cfg.Mail.MaxMessageBytes)
+	if cfg.Mail.MaxMessageBytes != blob.MaxColdMail {
+		t.Fatalf("default MaxMessageBytes = %d, want blob.MaxColdMail (%d)", cfg.Mail.MaxMessageBytes, blob.MaxColdMail)
 	}
 	if cfg.Mail.PerAddressDaily != 50 {
 		t.Fatalf("default PerAddressDaily = %d", cfg.Mail.PerAddressDaily)
@@ -370,7 +372,11 @@ func TestValidateRejectsSMTPListenAt8080Too(t *testing.T) {
 }
 
 func TestValidateRejectsMaxMessageBytesOutOfRange(t *testing.T) {
-	for _, n := range []int{0, -1, 1<<20 + 1} {
+	// 1 MiB is rejected on purpose: spec section 3.2 allows it, but a message
+	// that big can frame past the largest size bucket once it is base64'd into
+	// a cold blob, and accepting mail the ingest path cannot store is worse
+	// than refusing it at DATA. blob.MaxColdMail is the binding limit.
+	for _, n := range []int{0, -1, blob.MaxColdMail + 1, 1 << 20} {
 		c := defaults()
 		c.Mail.Domain = "example.test"
 		c.Server.DSN = "postgres:///x"

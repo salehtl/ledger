@@ -42,7 +42,17 @@
 //     re-bucketing (and so re-fingerprinting) part of the corpus.
 //     len(Sealed.Bytes) is identical before and after.
 //
-//  3. [PlaintextSealer.Open] recomputes the AAD from the caller's [Envelope]
+//  3. When Phase 3 wires in the AEAD, its associated data should be the whole
+//     cleartext header — b[:start-NonceSize], i.e. version ‖ aadLen ‖ aad — and
+//     not e.AAD() alone. Binding the framing costs nothing and closes the gap
+//     that the version byte and the length prefix are otherwise unauthenticated;
+//     authenticating the AAD's own length is what stops a re-framing that shifts
+//     the region boundary. It changes no offset, so it is a free choice at swap
+//     time and is written down here so the weaker option is not picked by
+//     default. (Today the exposure is nil anyway: [Hash] chains the full framed
+//     bytes, so a header edit breaks the writer's chain.)
+//
+//  4. [PlaintextSealer.Open] recomputes the AAD from the caller's [Envelope]
 //     and rejects a mismatch. That is the replay protection Phase 3's AEAD will
 //     provide cryptographically and Phase 1 provides structurally: a blob
 //     cannot be moved to another position, stream, writer or user without the
@@ -124,6 +134,33 @@ const (
 	aadSeparator = "|"
 )
 
+// The two streams. These are constants rather than free strings because a
+// stream name is baked into every AAD forever: a writer that types "hott" once
+// creates a valid, chain-distinct position that no other writer will ever
+// reconcile with, and the blob is unopenable at the position it should have
+// had. Validate rejects anything else.
+const (
+	// StreamHot carries ops. A hot-only sync is a complete materialization.
+	StreamHot = "hot"
+	// StreamCold carries raw email bodies and never ops (invariant I16).
+	StreamCold = "cold"
+)
+
+// MaxColdMail is the largest raw message that is GUARANTEED to seal as a cold
+// oplog.RawBody record, whatever its content, and it is therefore the ceiling
+// the SMTP DATA cap must respect (config.MailConfig.MaxMessageBytes).
+//
+// The binding limit is not MaxPlaintext, which bounds the plaintext, but
+// MaxBucket, which bounds the COMPRESSED frame — and a cold record is the mail
+// base64'd inside JSON, so incompressible mail arrives at gzip already inflated
+// 4/3 and comes out roughly its original size. Measured, the largest
+// incompressible message that still seals is 1,043,940 bytes; a 1 MiB DATA cap
+// would therefore accept a message the ingest path could not store, in the top
+// 0.44% of the legal range. This value is that ceiling with ~4% margin, and
+// TestWorstCaseColdMailFitsABucket seals an actual worst-case record at exactly
+// this size rather than trusting the arithmetic.
+const MaxColdMail = 1_000_000
+
 // Buckets is the size ladder every blob is padded up to, in bytes. Spec §2
 // specified 1/4/16/64 KB; the ladder is extended to 1 MB because the measured
 // corpus's largest compressed body is ~314 KB and a body that does not fit any
@@ -182,7 +219,7 @@ func BucketFor(n int) (int, error) {
 // invalidates every stored blob, removing one reopens a replay path.
 type Envelope struct {
 	UserID        uuid.UUID
-	Stream        string // "hot" | "cold"
+	Stream        string // StreamHot or StreamCold, nothing else
 	WriterID      string
 	WriterCounter int64 // 1-based position within (writer_id, stream); chains are per-stream
 }
@@ -205,14 +242,14 @@ func (e Envelope) Validate() error {
 	switch {
 	case e.UserID == uuid.Nil:
 		return fmt.Errorf("%w: user_id is zero", ErrInvalidEnvelope)
-	case e.Stream == "":
-		return fmt.Errorf("%w: stream is empty", ErrInvalidEnvelope)
+	case e.Stream != StreamHot && e.Stream != StreamCold:
+		return fmt.Errorf("%w: stream is %q, want %q or %q", ErrInvalidEnvelope, e.Stream, StreamHot, StreamCold)
 	case e.WriterID == "":
 		return fmt.Errorf("%w: writer_id is empty", ErrInvalidEnvelope)
-	case e.WriterCounter < 0:
-		return fmt.Errorf("%w: writer_counter %d is negative", ErrInvalidEnvelope, e.WriterCounter)
-	case strings.Contains(e.Stream, aadSeparator) || strings.Contains(e.WriterID, aadSeparator):
-		return fmt.Errorf("%w: stream and writer_id may not contain %q", ErrInvalidEnvelope, aadSeparator)
+	case e.WriterCounter < 1:
+		return fmt.Errorf("%w: writer_counter is %d, and counters are 1-based", ErrInvalidEnvelope, e.WriterCounter)
+	case strings.Contains(e.WriterID, aadSeparator):
+		return fmt.Errorf("%w: writer_id may not contain %q", ErrInvalidEnvelope, aadSeparator)
 	}
 	if n := versionSize + aadLenSize + len(e.AAD()) + NonceSize + payloadLenSize + TagSize; n > Buckets[0] {
 		return fmt.Errorf("%w: framing overhead %d does not fit the smallest bucket", ErrInvalidEnvelope, n)

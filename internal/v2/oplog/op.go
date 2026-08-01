@@ -13,8 +13,18 @@
 //     JSON.parse of a number silently produces a float64; "25000" cannot be
 //     rounded by accident, and money is int64 minor units everywhere.
 //   - writer_checkpoint.heads is a sorted ARRAY, not a map, so its canonical
-//     encoding is byte-identical in both languages ([EncodeCheckpointPayload]).
-//   - AuthoredAt is normalised to RFC3339 UTC on encode.
+//     encoding is unambiguous in both languages ([EncodeCheckpointPayload]).
+//   - AuthoredAt is normalised to UTC and truncated to milliseconds on encode
+//     AND on decode, so a writer in either language cannot introduce precision
+//     the other cannot represent.
+//
+// What is deliberately NOT claimed is byte-identical JSON across the two
+// languages. Go trims trailing zeros from a timestamp ("…:00.5Z") where
+// JavaScript's toISOString always pads to three digits ("…:00.500Z"), and
+// nothing here depends on closing that gap: each blob is encoded exactly once,
+// by its author, and blob.Hash chains the bytes as stored, so the two encoders
+// never have to agree byte-for-byte. What they must agree on is the parsed
+// value, which is what the millisecond rule guarantees.
 //
 // # Ordering: seq folds, authored_at only breaks ties
 //
@@ -124,7 +134,7 @@ type Op struct {
 	Type          OpType          `json:"type"`
 	OpID          string          `json:"op_id"`               // ULID, author-assigned
 	AuthoredAt    time.Time       `json:"authored_at"`         // RFC3339 UTC; fork tiebreak ONLY
-	Entity        *EntityRef      `json:"entity,omitempty"`    //
+	Entity        *EntityRef      `json:"entity,omitempty"`    // nil on a parent-free op
 	ParentVersion *int64          `json:"parent_version"`      // nil = create, or parent-free op
 	IngestID      string          `json:"ingest_id,omitempty"` // hex sha256 of the raw body
 	Payload       json.RawMessage `json:"payload"`
@@ -178,6 +188,13 @@ func (o Op) Validate() error {
 		// join is unrecoverable, since the cold stream is fetched separately.
 		if !isSHA256Hex(o.IngestID) {
 			return fmt.Errorf("op %s: %s needs a 64-hex-char ingest_id, got %q", o.OpID, o.Type, o.IngestID)
+		}
+	default:
+		// ingest_id is omitempty, so an unchecked value on any other op type is
+		// junk riding into a frozen wire model — and a future reader that joins
+		// on it would join to nothing.
+		if o.IngestID != "" {
+			return fmt.Errorf("op %s: %s must not carry an ingest_id, got %q", o.OpID, o.Type, o.IngestID)
 		}
 	}
 
@@ -276,6 +293,15 @@ func DecodeBlob(b []byte) ([]Op, error) {
 		if err := o.Validate(); err != nil {
 			return nil, fmt.Errorf("oplog: op %d: %w", i, err)
 		}
+		// Canonicalise on the way IN as well as out. Encode-side truncation
+		// alone only holds while every writer is this encoder, and Task 10's
+		// writer is TypeScript: a blob carrying "…:00.0000015Z" parses here to
+		// 1500ns and in JS to 0ms, so the two executors would disagree about
+		// whether two ops are an exact tie and hand the fork to different
+		// winners. Truncating on decode converges instead of setting the blob
+		// aside, and it makes the guarantee a property of the READER, which is
+		// the only place it can be enforced against a writer we do not control.
+		blob.Ops[i].AuthoredAt = canonicalTime(o.AuthoredAt)
 	}
 	return blob.Ops, nil
 }
@@ -322,6 +348,9 @@ func DecodeRawBody(b []byte) (RawBody, error) {
 	}
 	if h.V > SchemaVersion {
 		return RawBody{}, fmt.Errorf("%w: raw body is v%d, this build supports v%d", ErrUnknownNewerVersion, h.V, SchemaVersion)
+	}
+	if h.V < 1 {
+		return RawBody{}, fmt.Errorf("oplog: raw body version %d is not valid", h.V)
 	}
 	if h.Kind != KindRawBody {
 		return RawBody{}, fmt.Errorf("oplog: blob kind is %q, not %q", h.Kind, KindRawBody)

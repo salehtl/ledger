@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"ledger/internal/v2/blob"
 )
 
 // Config is the full v2 configuration surface. Every later Phase 1 task
@@ -159,7 +161,7 @@ func defaults() Config {
 		},
 		Mail: MailConfig{
 			SMTPListen:       ":25",
-			MaxMessageBytes:  1 << 20,
+			MaxMessageBytes:  blob.MaxColdMail,
 			PerAddressDaily:  50,
 			InvalidRcptBurst: 5,
 			TarpitBase:       2 * time.Second,
@@ -271,8 +273,15 @@ func (c Config) validate() error {
 	if strings.Contains(c.Server.DSN, "/var/lib/ledger") {
 		return fmt.Errorf("refusing a dsn pointing at the v1 data directory")
 	}
-	if c.Mail.MaxMessageBytes <= 0 || c.Mail.MaxMessageBytes > 1<<20 {
-		return fmt.Errorf("mail.max_message_bytes must be 1..1048576 (spec section 3.2 caps DATA at 1 MB)")
+	// Spec section 3.2 caps DATA at 1 MB; blob.MaxColdMail is stricter, and it
+	// is the binding one. A message is stored as a cold blob with its bytes
+	// base64'd inside a JSON record, so incompressible mail reaches gzip already
+	// inflated 4/3 and a message in the top fraction of a percent of the 1 MiB
+	// range frames past the largest size bucket. Accepting mail over SMTP that
+	// the ingest path then cannot store is the worst available failure, so the
+	// receiver refuses it at DATA instead.
+	if c.Mail.MaxMessageBytes <= 0 || c.Mail.MaxMessageBytes > blob.MaxColdMail {
+		return fmt.Errorf("mail.max_message_bytes must be 1..%d (blob.MaxColdMail: the largest message that always fits a size bucket)", blob.MaxColdMail)
 	}
 	if c.Server.HTTPListen == "" {
 		return fmt.Errorf("server.http_listen must not be empty")
