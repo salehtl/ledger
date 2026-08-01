@@ -695,8 +695,13 @@ export interface CheckpointPayload {
  * two orders cannot diverge — this is written the exact way anyway, because the
  * cost is a few lines and the failure mode is two devices producing checkpoint
  * payloads that hash differently while agreeing on every value in them.
+ *
+ * Exported because the replay engine needs the identical ordering for the
+ * `writer_id` fork tiebreak (spec §3.3:66): a second implementation of "compare
+ * two strings" is exactly how two executors end up handing one fork to two
+ * different winners.
  */
-function compareUTF8(a: string, b: string): number {
+export function compareUTF8(a: string, b: string): number {
   const x = new TextEncoder().encode(a);
   const y = new TextEncoder().encode(b);
   const n = Math.min(x.length, y.length);
