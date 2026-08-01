@@ -13,6 +13,9 @@
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
 //	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
+//	GET  /api/v1/address                                           -> {address, created_at, rotates_from, grace_until}
+//	POST /api/v1/address/challenge {}                              -> {nonce}
+//	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
 //
 // Every endpoint except the exchange requires `Authorization: Bearer <session
 // token>`. Every query is scoped by the user id RESOLVED from that token and
@@ -75,9 +78,14 @@
 // obtaining a registration challenge. It does NOT authorize enrolling a writer:
 // POST /api/v1/writers/register takes the session only to know WHICH account is
 // being talked about, and the enrollment itself is authorized by an Ed25519
-// signature over a server-issued single-use nonce (auth.Writers.Register). The
-// same rule applies to account deletion and inbound-address rotation when those
-// arrive (spec §3.4); do not reach for requireSession as the only gate.
+// signature over a server-issued single-use nonce (auth.Writers.Register).
+//
+// POST /api/v1/address/rotate is the same rule with one more factor: spec §3.4
+// requires fresh IdP re-authentication PLUS key possession there, because a
+// rotation the user did not ask for silently ends every bank forward pointed at
+// the old address. See addresses.go. Account deletion (§3.10) is the remaining
+// member of this class and has not landed yet; do not reach for requireSession
+// as its only gate either.
 package api
 
 import (
@@ -94,6 +102,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ledger/internal/v2/addresses"
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/oplog"
@@ -157,6 +166,15 @@ const (
 	registerRate    = 2.0 / 60.0 // 2/minute sustained
 	registerBurst   = 20
 	registerMaxKeys = 4096
+
+	// The address budget is the tightest of the three. A user rotates their
+	// inbound address a handful of times in the life of the account — it costs
+	// them a re-onboarding each time — so a caller making more than a few
+	// attempts a minute is not a user, and every attempt costs a roster read
+	// and an Ed25519 verification.
+	addressRate    = 1.0 / 60.0 // 1/minute sustained
+	addressBurst   = 10
+	addressMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -167,6 +185,13 @@ type Server struct {
 	Sessions *auth.Sessions
 	Writers  *auth.Writers
 	Appender *oplog.Appender
+
+	// Addresses owns the per-user inbound mail slot. When it is nil the
+	// /api/v1/address routes are not mounted at all, rather than mounted and
+	// answering 500: a deployment with no mail domain configured has no
+	// address to serve, and a route that exists only to fail is one a client
+	// will keep retrying.
+	Addresses *addresses.Addresses
 
 	// Verifiers maps an IdP name to its verifier, and it is built ONCE per
 	// process (NewServer), never per request.
@@ -184,6 +209,10 @@ type Server struct {
 	SignInGlobal     *Limiter
 	ChallengePerUser *Limiter
 	RegisterPerUser  *Limiter
+	// AddressPerUser covers rotation challenges AND rotation attempts on one
+	// budget, because they are two halves of one flow and a caller who can mint
+	// unlimited nonces can make unlimited attempts.
+	AddressPerUser *Limiter
 
 	// PullByteBudget bounds the blob bytes one page of GET /api/v1/sync may
 	// carry; 0 means pullByteBudget. It is a field rather than a constant so a
@@ -223,6 +252,16 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 			// config is "nobody can sign in", never "anybody can".
 			auth.IdPApple:  auth.NewAppleVerifier(cfg.Auth.AppleClientIDs, now),
 			auth.IdPGoogle: auth.NewGoogleVerifier(cfg.Auth.GoogleClientIDs, now),
+		},
+		// Suffix comes from config, never from a literal: config.validate
+		// refuses to start without mail.domain precisely so that no layer
+		// invents one, and an address minted under a guessed domain silently
+		// receives nothing.
+		Addresses: &addresses.Addresses{
+			Pool:   pool,
+			Suffix: cfg.InboundSuffix(),
+			Grace:  addresses.DefaultGrace,
+			Now:    now,
 		},
 		Now: now,
 	}
@@ -271,6 +310,9 @@ func (s *Server) Handler() http.Handler {
 	if s.RegisterPerUser == nil {
 		s.RegisterPerUser = NewLimiter(registerRate, registerBurst, registerMaxKeys, s.now)
 	}
+	if s.AddressPerUser == nil {
+		s.AddressPerUser = NewLimiter(addressRate, addressBurst, addressMaxKeys, s.now)
+	}
 	if s.PullByteBudget <= 0 {
 		s.PullByteBudget = pullByteBudget
 	}
@@ -283,6 +325,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sync", s.requireSession(s.handlePull))
 	mux.HandleFunc("GET /api/v1/sync/hashes", s.requireSession(s.handleHashes))
 	mux.HandleFunc("POST /api/v1/sync", s.requireSession(s.handleUpload))
+	if s.Addresses != nil {
+		mux.HandleFunc("GET /api/v1/address", s.requireSession(s.handleAddress))
+		mux.HandleFunc("POST /api/v1/address/challenge", s.requireSession(s.handleAddressChallenge))
+		mux.HandleFunc("POST /api/v1/address/rotate", s.requireSession(s.handleAddressRotate))
+	}
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling
 	// through to anything a later task mounts at "/" (a static client bundle,
