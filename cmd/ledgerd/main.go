@@ -36,6 +36,7 @@ import (
 	"ledger/internal/v2/purge"
 	"ledger/internal/v2/pushv2"
 	"ledger/internal/v2/quarantine"
+	"ledger/internal/v2/relay"
 	"ledger/internal/v2/samples"
 	"ledger/internal/v2/smtpd"
 	"ledger/internal/v2/tmpl"
@@ -95,6 +96,13 @@ type args struct {
 	// be a second place the "mode comes first" rule has to be reimplemented —
 	// and is meaningless in every other mode.
 	purge config.PurgeArgs
+	// verify is the command line of `verify` and `parse-rate`, on the same
+	// terms.
+	verify config.VerifyArgs
+	// user backs the single --user flag. Three modes take "which account", and
+	// binding one flag into each of their argument structs after parsing is
+	// what keeps them from drifting into --user, --account and --uuid.
+	user string
 }
 
 // parseArgs strips the leading mode and parses the flags.
@@ -118,18 +126,30 @@ func parseArgs(argv []string) (args, error) {
 		"TEST ONLY: accept \"dev:<subject>\" as an ID token and reject every real one (loopback listener only)")
 	fs.StringVar(&out.dnsFixtures, "dns-fixtures", "",
 		"TEST ONLY: path to a recorded dns.json served as the DKIM/ARC TXT resolver (loopback listener only)")
-	fs.StringVar(&out.purge.User, "user", "",
-		"purge-user: the account to delete, as a UUID")
+	fs.StringVar(&out.user, "user", "",
+		"purge-user|verify|parse-rate: the account to act on, as a UUID")
 	fs.BoolVar(&out.purge.RetentionDue, "retention-due", false,
 		"purge-user: delete every account whose consent retention deadline has passed")
 	fs.BoolVar(&out.purge.DryRun, "dry-run", false,
 		"purge-user: report what would be deleted and delete nothing")
+	fs.StringVar(&out.verify.From, "from", "",
+		"verify|parse-rate: window start, as an RFC3339 instant")
+	fs.StringVar(&out.verify.To, "to", "",
+		"verify|parse-rate: window end, as an RFC3339 instant (exclusive)")
+	fs.IntVar(&out.verify.Sample, "sample", 0,
+		"parse-rate: adjudicate a uniform sample once the population exceeds this many (0 = 200)")
+	fs.BoolVar(&out.verify.Adjudicate, "adjudicate", false,
+		"parse-rate: PHASE 1 ONLY — read unparsed cold bodies and record a verdict for each")
+	fs.BoolVar(&out.verify.JSON, "json", false,
+		"verify|parse-rate: emit JSON instead of the operator's text report")
 	if err := fs.Parse(rest); err != nil {
 		return args{}, err
 	}
 	if n := fs.NArg(); n > 0 {
 		return args{}, fmt.Errorf("unexpected argument %q: the mode comes first (%s)", fs.Arg(0), strings.Join(config.Modes(), "|"))
 	}
+	// One flag, three destinations. See args.user.
+	out.purge.User, out.verify.User = out.user, out.user
 	return out, nil
 }
 
@@ -147,6 +167,7 @@ func main() {
 	}
 	cfg.Mode = a.mode
 	cfg.Purge = a.purge
+	cfg.Verify = a.verify
 	if err := cfg.EnableTestOnly(a.devAuth, a.dnsFixtures); err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -246,9 +267,9 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("build api: %w", err)
 	}
 	srv := &http.Server{
-		Addr:    cfg.Server.HTTPListen,
-		Handler: syncAPI.Handler(),
-		// A client that opens a connection and never finishes its headers costs
+		Addr: cfg.Server.HTTPListen,
+		// Handler is assigned BELOW, after the ingest pipeline exists — see
+		// there. A client that opens a connection and never finishes its headers costs
 		// a goroutine and a file descriptor until it does. This listener is
 		// public-facing in every deployment that matters, so the timeout is not
 		// optional.
@@ -296,6 +317,16 @@ func runServe(cfg config.Config) error {
 		Push:       pusher,
 		Now:        time.Now,
 	}
+
+	// The router is built HERE, after the pipeline, rather than in the
+	// http.Server literal above. The backup relay's deliver endpoint (Task 35)
+	// hands a forwarded message to the SAME pipeline the SMTP receiver uses, and
+	// api.Handler decides at build time whether the relay routes can be mounted
+	// at all — so building the router first would produce a server that answers
+	// every one of the relay's forwards with a 404, which its drain reads as a
+	// permanent rejection and files a whole spool under `rejected/`.
+	syncAPI.Mail = pipeline
+	srv.Handler = syncAPI.Handler()
 
 	// The inbound SMTP receiver (Task 24). It is the most exposed surface in the
 	// system — public, unauthenticated port 25 — so it is built here, once,
@@ -627,16 +658,218 @@ func closedChan() <-chan struct{} {
 	return done
 }
 
-// runRelay will start the SMTP receiver in relay mode: a durable local spool
-// plus a drain loop that forwards to the primary. Task 35.
+// runRelay is the BACKUP MX (spec §3.2): the same binary on a second VPS,
+// listed at a lower MX priority, whose only job is to hold mail durably while
+// the primary is down and hand it over unchanged when it comes back.
+//
+// # What this process does NOT have
+//
+// A database. Not a degraded one, not an optional one — none. It opens no
+// Postgres pool, applies no migrations, and holds no user data beyond the
+// address replica (`inbound_address -> user public key`) and whatever mail is
+// currently spooled. That is the whole security argument for running our own
+// relay instead of a managed one: a second box on the internet with a copy of
+// everyone's financial history would be a strictly worse trade than the outage
+// it protects against.
+//
+// ⚠ DEPLOYMENT NOTE for Task D3: config.Load still REQUIRES server.dsn, because
+// it validates before the mode is known. A relay host must therefore set
+// LEDGER_PG_DSN to a placeholder (e.g. "relay-mode-has-no-database"); it is
+// never opened. Making config validation mode-aware is the clean fix and is left
+// to whoever next owns internal/v2/config.
+//
+// # The three loops
+//
+//	receiver   port 25, the same hardened smtpd as the primary, with the relay
+//	           as both Resolver (against the replica) and Handler (spool)
+//	sync       every 5 minutes, pull the address replica
+//	drain      every minute, offer the spool to the primary
+//
+// A failed first sync is NOT fatal. The relay exists for the case where the
+// primary is unreachable, and a process that refused to start without it would
+// be absent in exactly the situation it was provisioned for — it comes up with
+// whatever replica the last run persisted, or with none, in which case it defers
+// every recipient (never refuses permanently) until a sync succeeds.
 func runRelay(cfg config.Config) error {
-	return errors.New("ledgerd relay: not implemented yet (Task 35)")
+	// Argument validation FIRST, before any I/O at all, so a misconfigured
+	// relay fails against its configuration rather than against whatever
+	// happens to be listening.
+	if cfg.Mail.Domain == "" {
+		return errors.New("ledgerd relay: mail.domain is required (LEDGER_MAIL_DOMAIN); the relay " +
+			"decides which recipients are ours from it")
+	}
+	r := &relay.Relay{
+		SpoolDir:   cfg.Relay.SpoolDir,
+		PrimaryURL: cfg.Relay.PrimaryURL,
+		Token:      cfg.Relay.Token,
+		Suffix:     cfg.InboundSuffix(),
+		Now:        time.Now,
+	}
+	if err := r.Init(); err != nil {
+		return fmt.Errorf("ledgerd relay: %w", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// One attempt before the port opens, so the operator sees immediately
+	// whether the token and the URL work — and so a relay restarted during a
+	// quiet period has a fresh replica before the first message arrives.
+	syncCtx, syncCancel := context.WithTimeout(ctx, relaySyncTimeout)
+	if n, err := r.SyncAddresses(syncCtx); err != nil {
+		log.Printf("ledgerd relay: the first address sync FAILED (%v). Starting anyway with "+
+			"whatever replica the last run left behind; recipients this relay cannot confirm "+
+			"will be DEFERRED, never refused permanently.", err)
+	} else {
+		log.Printf("ledgerd relay: address replica synced: %d address(es)", n)
+	}
+	syncCancel()
+
+	// The same receiver the primary runs, with the relay behind it. The
+	// diagnostics sink is the no-database one: see relayDiagnostics.
+	mail := smtpd.New(cfg.Mail, r, r, relayDiagnostics{}, time.Now)
+	mailLn, err := net.Listen("tcp", cfg.Mail.SMTPListen)
+	if err != nil {
+		return fmt.Errorf("ledgerd relay: smtp listen %s: %w", cfg.Mail.SMTPListen, err)
+	}
+
+	smtpErrc := make(chan error, 1)
+	go func() {
+		log.Printf("ledgerd relay: smtp receiver listening on %s for %s; spooling to %s, "+
+			"forwarding to %s", mailLn.Addr(), cfg.InboundSuffix(), r.SpoolDir, r.PrimaryURL)
+		smtpErrc <- mail.Serve(mailLn)
+	}()
+	syncDone := startRelaySync(ctx, r)
+	drainDone := startRelayDrain(ctx, r)
+
+	var serveErr error
+	select {
+	case serveErr = <-smtpErrc:
+	case <-ctx.Done():
+	}
+	log.Println("ledgerd relay: shutting down")
+	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := mail.Shutdown(shutCtx); err != nil {
+		log.Printf("ledgerd relay: smtp shutdown: %v", err)
+	}
+	<-syncDone
+	<-drainDone
+	// One last attempt on the way out, on a budget of its own. A relay that is
+	// being restarted for a deploy should not leave a message sitting for a
+	// minute longer than it has to; a failure here changes nothing, because
+	// nothing is deleted that was not delivered.
+	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), relayDrainTimeout)
+	if sent, failed, err := r.Drain(finalCtx); err != nil {
+		log.Printf("ledgerd relay: final drain: %v (nothing was discarded)", err)
+	} else if sent > 0 || failed > 0 {
+		log.Printf("ledgerd relay: final drain: %d forwarded, %d set aside", sent, failed)
+	}
+	finalCancel()
+	if st, err := r.Stats(); err == nil && (st.Spooled > 0 || st.Rejected > 0) {
+		log.Printf("ledgerd relay: exiting with %d message(s) still spooled and %d set aside "+
+			"in %s. NOTHING HAS BEEN DISCARDED; they are delivered by the next run.",
+			st.Spooled, st.Rejected, r.SpoolDir)
+	}
+	return serveErr
 }
 
-// runVerify will run the offline structural checker and mail-accounting
-// report against cfg.Server.DSN. Task 36.
-func runVerify(cfg config.Config) error {
-	return errors.New("ledgerd verify: not implemented yet (Task 36)")
+// Timeouts for the relay's two background loops. Each bounds one round trip to
+// a primary that may be wedged rather than down, which is the case a bare
+// "unreachable" check does not cover.
+const (
+	relaySyncTimeout  = 2 * time.Minute
+	relayDrainTimeout = 10 * time.Minute
+)
+
+// relayDiagnostics is the relay's refusal accounting: it has no database, so
+// there is nowhere to write a row.
+//
+// This is a real, stated reduction rather than an oversight, and it is bounded:
+// every refusal the relay issues is a REFUSAL, not an acceptance, so no message
+// is dropped by it — the sender keeps what it was refused. What is lost is the
+// aggregate nuisance counter and the user-scoped notice, both of which are
+// reconstructed on the primary as soon as the sender retries there. The
+// alternative — giving the relay a Postgres connection to the primary's database
+// — would put the whole ledger one credential away from a box whose entire
+// purpose is to be exposed on port 25.
+//
+// Record returns nil rather than an error on purpose: smtpd downgrades an
+// unrecordable refusal to a TEMPORARY failure so the sender retries and the
+// notice gets another chance. On the relay that would turn every over-quota
+// refusal into a 451, which is not wrong but is noise; the honest statement is
+// that this deployment accounts for refusals in its log and nowhere else.
+type relayDiagnostics struct{}
+
+func (relayDiagnostics) Record(_ context.Context, r diag.Record) error {
+	log.Printf("ledgerd relay: refused a message: outcome=%s reason=%s", r.Outcome, r.RejectReason)
+	return nil
+}
+
+func (relayDiagnostics) CountRejection(ctx context.Context, reason string) error {
+	return relayDiagnostics{}.CountRejections(ctx, reason, 1)
+}
+
+func (relayDiagnostics) CountRejections(_ context.Context, reason string, n int64) error {
+	if n > 0 {
+		log.Printf("ledgerd relay: %d protocol rejection(s): %s", n, reason)
+	}
+	return nil
+}
+
+// startRelaySync refreshes the address replica on a ticker.
+//
+// A failed sync is logged and the loop CONTINUES: during an outage every sync
+// fails, and that is precisely when the relay must keep running on its last
+// good replica.
+func startRelaySync(ctx context.Context, r *relay.Relay) <-chan struct{} {
+	return startTicker(ctx, relay.DefaultSyncInterval, func() {
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), relaySyncTimeout)
+		defer cancel()
+		if n, err := r.SyncAddresses(c); err != nil {
+			log.Printf("ledgerd relay: address sync: %v", err)
+		} else {
+			log.Printf("ledgerd relay: address replica synced: %d address(es)", n)
+		}
+	})
+}
+
+// startRelayDrain offers the spool to the primary on a ticker.
+func startRelayDrain(ctx context.Context, r *relay.Relay) <-chan struct{} {
+	return startTicker(ctx, relay.DefaultDrainInterval, func() {
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayDrainTimeout)
+		defer cancel()
+		sent, failed, err := r.Drain(c)
+		switch {
+		case sent > 0 || failed > 0:
+			log.Printf("ledgerd relay: drain: %d forwarded, %d set aside (err: %v)", sent, failed, err)
+		case err != nil:
+			// Expected, once a minute, for the whole duration of an outage.
+			log.Printf("ledgerd relay: drain: %v", err)
+		}
+	})
+}
+
+// startTicker runs job on an interval until ctx is done, returning a channel
+// that closes when it has stopped. It does NOT run the job immediately: both
+// callers have already done their first pass explicitly, where a failure gets
+// its own message.
+func startTicker(ctx context.Context, every time.Duration, job func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				job()
+			}
+		}
+	}()
+	return done
 }
 
 // runSeedDictionary one-shot imports the operator's v1 categorization rules
@@ -898,12 +1131,6 @@ func printPurgeReport(rep purge.Report) {
 			"deadline; they were NOT purged: %v\n",
 			len(rep.WithoutConsentRecord), rep.WithoutConsentRecord)
 	}
-}
-
-// runParseRate will report the Task 36 parse-rate instrument used to measure
-// the alpha's two-week exit criterion. PHASE 1 ONLY. Task 36.
-func runParseRate(cfg config.Config) error {
-	return errors.New("ledgerd parse-rate: not implemented yet (Task 36)")
 }
 
 // reprocessAdapter is the seam between ingest's Reprocess and the admin

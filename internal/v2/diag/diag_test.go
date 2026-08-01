@@ -708,115 +708,6 @@ func TestEmptyGroupsAreBoundedIdentifierNames(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Accounting: arrivals and reprocessing are never folded together
-// ---------------------------------------------------------------------------
-
-func TestArrivalAndReprocessAreCountedSeparately(t *testing.T) {
-	pool := pgtest.New(t)
-	d, now := newDiag(t, pool)
-	user := insertUser(t, pool)
-
-	for i := 0; i < 3; i++ {
-		r := validRecord(user, *now)
-		r.IngestID = ingestID(byte(i))
-		if err := d.Record(bg, r); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < 2; i++ {
-		r := validRecord(user, *now)
-		r.IngestID = ingestID(byte(100 + i))
-		r.Event = EventReprocess
-		r.Outcome = OutcomeAppended
-		if err := d.Record(bg, r); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	acc, err := d.Accounting(bg, now.Add(-time.Hour), now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acc.InboundTotal != 3 {
-		t.Errorf("InboundTotal = %d, want 3 (arrivals only)", acc.InboundTotal)
-	}
-	if acc.Arrival[OutcomeAppended] != 3 {
-		t.Errorf("Arrival[appended] = %d, want 3", acc.Arrival[OutcomeAppended])
-	}
-	if acc.Reprocess[OutcomeAppended] != 2 {
-		t.Errorf("Reprocess[appended] = %d, want 2", acc.Reprocess[OutcomeAppended])
-	}
-	if acc.Unaccounted != 0 {
-		t.Errorf("Unaccounted = %d, want 0", acc.Unaccounted)
-	}
-}
-
-func TestAccountingCountsOnlyTheRequestedWindow(t *testing.T) {
-	pool := pgtest.New(t)
-	d, now := newDiag(t, pool)
-	user := insertUser(t, pool)
-
-	at := []time.Time{now.Add(-2 * time.Hour), *now, now.Add(2 * time.Hour)}
-	for i, ts := range at {
-		r := validRecord(user, ts)
-		r.IngestID = ingestID(byte(i))
-		if err := d.Record(bg, r); err != nil {
-			t.Fatal(err)
-		}
-	}
-	acc, err := d.Accounting(bg, *now, now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acc.InboundTotal != 1 {
-		t.Fatalf("InboundTotal = %d, want 1 — the window is half-open [from,to)", acc.InboundTotal)
-	}
-	// The lower bound is inclusive and the upper exclusive; prove both edges.
-	// The step is a microsecond, not a nanosecond: Postgres stores timestamptz
-	// at microsecond resolution, so a nanosecond offset is not representable
-	// and the "just past the row" bound would silently be the row's own
-	// timestamp.
-	acc, err = d.Accounting(bg, now.Add(time.Microsecond), now.Add(2*time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acc.InboundTotal != 0 {
-		t.Errorf("InboundTotal = %d, want 0 with the row just below the window", acc.InboundTotal)
-	}
-}
-
-// Unaccounted is the drift detector between the database's CHECK enum and this
-// package's own list. If a migration widens one without the other, the report
-// that claims "zero drops" must say so rather than silently under-count.
-func TestUnaccountedSeesAnOutcomeTheGoEnumDoesNotKnow(t *testing.T) {
-	pool := pgtest.New(t)
-	d, now := newDiag(t, pool)
-	user := insertUser(t, pool)
-
-	if _, err := pool.Exec(bg,
-		`ALTER TABLE parse_diagnostics DROP CONSTRAINT parse_diagnostics_outcome_matches_event`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(bg, `INSERT INTO parse_diagnostics
-	  (user_id,event,ingest_id,received_at,sender_domain,dkim_result,arc_result,
-	   normalizer_version,matched,tier,body_size_bucket,structure_sig,outcome)
-	  VALUES ($1,'arrival',$2,$3,'gmail.com','pass','none',1,false,'none',1024,$4,'teleported')`,
-		user, ingestID(0x33), *now, StructureSig("x")); err != nil {
-		t.Fatal(err)
-	}
-	acc, err := d.Accounting(bg, now.Add(-time.Hour), now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acc.InboundTotal != 1 {
-		t.Errorf("InboundTotal = %d, want 1", acc.InboundTotal)
-	}
-	if acc.Unaccounted != 1 {
-		t.Errorf("Unaccounted = %d, want 1 for an outcome this build does not know", acc.Unaccounted)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Aggregated protocol-level rejections
 // ---------------------------------------------------------------------------
 
@@ -909,29 +800,11 @@ func TestCountRejectionIsAtomicUnderConcurrency(t *testing.T) {
 	}
 }
 
-func TestAccountingReportsRejectionsBesideArrivals(t *testing.T) {
-	pool := pgtest.New(t)
-	d, now := newDiag(t, pool)
-	user := insertUser(t, pool)
-
-	if err := d.Record(bg, validRecord(user, *now)); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.CountRejection(bg, RejectUnknownRcpt); err != nil {
-		t.Fatal(err)
-	}
-	acc, err := d.Accounting(bg, now.Add(-time.Hour), now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acc.InboundTotal != 1 {
-		t.Errorf("InboundTotal = %d, want 1", acc.InboundTotal)
-	}
-	if acc.Rejections[RejectUnknownRcpt] != 1 {
-		t.Errorf("Rejections[unknown_rcpt] = %d, want 1 — rejections are reported "+
-			"beside arrivals, never folded in", acc.Rejections[RejectUnknownRcpt])
-	}
-}
+// The accounting REPORT that reads these counters lives in internal/v2/verify,
+// with the structural verifier and the parse-rate instrument, and its tests
+// live there too. This package's job is to WRITE the ledger honestly; deciding
+// whether the ledger adds up is a separate question with a separate answer, and
+// two implementations of that arithmetic would be two places for it to drift.
 
 // ---------------------------------------------------------------------------
 // Scoping, purge, and the protocol-layer NULL

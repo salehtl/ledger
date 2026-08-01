@@ -94,6 +94,26 @@ Task 36. The operator subcommand that reads unparsed bodies to decide whether a
 message was a transaction at all. Reads plaintext cold bodies; the table it
 writes is dropped at the cutover.
 
+Delivered as `verify.ColdTexts`, called only from `adjudicatePending` in
+`cmd/ledgerd/main.go`, and reached only via `ledgerd parse-rate --adjudicate`.
+Three properties are worth writing down, because they are what keep this
+narrower than the other three paths:
+
+- **It is opt-in behind its own flag.** `ledgerd parse-rate` with no
+  `--adjudicate` reports counts and refuses to print a rate; it never opens a
+  blob. Reading a user's mail is never a side effect of asking for a number.
+- **It prints a banner naming this file** before the first body appears.
+- **The rest of `internal/v2/verify` reads no content at all** — the structural
+  verifier hashes stored bytes and compares cleartext framing, and the
+  accounting reads counts and closed enums. `ColdTexts` is the single exception
+  and lives below a marked line in `parserate.go`.
+
+What is dropped at the cutover: `parse_rate_adjudications`
+(`00016_parse_rate.sql`), `verify.ColdTexts`, `adjudicatePending`, and the
+`--adjudicate` flag. `verify.ParseRate` itself survives with a numerator and no
+denominator, which is the honest shape of the metric once nobody can read the
+mail — see the table below.
+
 ---
 
 ## What replaces them
