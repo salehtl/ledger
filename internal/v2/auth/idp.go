@@ -153,6 +153,18 @@ var (
 	ErrNotConfigured = fmt.Errorf("%w: verifier is not configured", ErrTokenRejected)
 )
 
+// ErrKeySetUnavailable deliberately does NOT wrap ErrTokenRejected: it means we
+// could not obtain the provider's keys, which says nothing about the token.
+//
+// Two reasons it is separate. Operationally, a provider outage and someone
+// forging tokens must not land on the same metric — one is an incident on
+// their side, the other is an attack, and a shared counter hides both.
+// Behaviourally, the HTTP layer should answer this with a retryable 503, not
+// the 401 every ErrTokenRejected gets: telling a user with a perfectly good
+// token that their sign-in was invalid sends them off to re-authenticate
+// against a provider that will hand back another token we still cannot verify.
+var ErrKeySetUnavailable = errors.New("auth: provider key set is unavailable")
+
 // Identity is who an ID token says the bearer is: a provider plus that
 // provider's opaque subject string. The Subject is the raw value from the
 // token; it is hashed by SubjectHash before it goes anywhere near storage.
@@ -167,20 +179,40 @@ type Identity struct {
 type VerifyOpts struct {
 	// Nonce, when non-empty, must equal the token's `nonce` claim.
 	//
-	// An ID token with no nonce bound to it is a pure BEARER credential for
-	// the sign-in exchange: anything that observes one inside its validity
-	// window — a malicious SDK in the client app, a log line, an intercepting
-	// proxy — can replay it to this endpoint and be issued a session. Binding
-	// a nonce is what makes a captured token useless to anyone but the client
-	// that requested it.
+	// Why it exists: an ID token with no nonce bound to it is a pure BEARER
+	// credential for the sign-in exchange. Anything that observes one inside
+	// its validity window — a malicious SDK in the client app, a log line, an
+	// intercepting proxy — can replay it here and be issued a session.
 	//
-	// Phase 1 does not yet require it: the client generates the nonce, and the
-	// Expo client does not exist. Leaving it empty is therefore ALLOWED and is
-	// the current behaviour, but it is a deliberate, temporary gap and not the
-	// intended end state. When the client can round-trip a nonce (pass it to
-	// the provider at authorization, hand it back here at exchange), set it —
-	// the plumbing is here so that becomes a one-line change rather than an
-	// interface change.
+	// # READ THIS BEFORE WIRING IT UP
+	//
+	// The `nonce` claim sits in the token's PLAINTEXT payload. Anyone who
+	// captured the token can read it. So a flow where the CLIENT chooses the
+	// nonce and hands it back alongside the token is decorative: the replayer
+	// simply reads the nonce out of the token they stole and supplies it too,
+	// and every check here passes.
+	//
+	// The binding only defeats replay when the expected value comes from
+	// SERVER-SIDE state established before the token existed:
+	//
+	//  1. the server generates a challenge (32 bytes from crypto/rand) and
+	//     stores it against the pending sign-in, with a short TTL;
+	//  2. the client passes that value to the provider as `nonce` when it
+	//     starts authorization;
+	//  3. the client returns the resulting ID token;
+	//  4. the server looks the challenge up by its own reference, passes it
+	//     here as Nonce, and CONSUMES it — single use, so a replay of the same
+	//     token finds no challenge to match against.
+	//
+	// Step 4 is the one that does the work. Without server-side issuance and
+	// single-use consumption this field is theatre. The plan's Writers.Challenge
+	// is the same shape (32 random bytes, single-use, 5-minute TTL) and is the
+	// thing to reuse rather than reinvent.
+	//
+	// Phase 1 leaves this empty: the challenge store does not exist and neither
+	// does the Expo client. That is a deliberate, temporary gap, and the reason
+	// the parameter is here now is so closing it is a change to a call site
+	// rather than a change to this interface.
 	Nonce string
 }
 
@@ -370,6 +402,16 @@ func (v *oidcVerifier) Verify(ctx context.Context, idToken string, opts VerifyOp
 	}
 	if err := v.checkClaims(claims, opts); err != nil {
 		return Identity{}, err
+	}
+
+	// Obtain the keys before delegating, purely so an unavailable key set is
+	// reported as itself. go-oidc wraps whatever the KeySet returns with %v,
+	// not %w, so once it is inside inner.Verify's error the chain is gone and
+	// "the provider is down" is indistinguishable from "this token is forged".
+	// Cheap: on the warm path this is a mutex and a time comparison, and the
+	// call below reuses the same cached set rather than fetching again.
+	if _, err := v.keys.currentKeys(ctx); err != nil {
+		return Identity{}, fmt.Errorf("%w: %s: %v", ErrKeySetUnavailable, v.idp, err)
 	}
 
 	// Everything above is advisory: the payload was not authenticated yet.
@@ -729,14 +771,11 @@ type cachingKeySet struct {
 	staleMax time.Duration
 	now      func() time.Time
 
-	// fetchMu serialises fetches so a burst costs one request, not one per
-	// goroutine. Held across the HTTP call; mu never is.
-	fetchMu sync.Mutex
-
 	mu          sync.Mutex
+	inflight    *inflightFetch // non-nil while a fetch is in progress
 	keys        []jose.JSONWebKey
 	fetchedAt   time.Time // last SUCCESSFUL fetch
-	attemptedAt time.Time // last attempt, successful or not
+	attemptedAt time.Time // last attempt that reached the provider
 }
 
 // keySetAlgs is the third and innermost enforcement of the signing-algorithm
@@ -785,40 +824,113 @@ func (r *cachingKeySet) VerifySignature(ctx context.Context, jwt string) ([]byte
 
 // currentKeys returns the key set, refreshing it at most once per r.refresh.
 // It serves a stale set through a provider outage, but only up to r.staleMax.
+// currentKeys returns the key set, refreshing it at most once per r.refresh.
+// It serves a stale set through a provider outage, but only up to r.staleMax.
+//
+// # The fetch is detached from the caller, deliberately
+//
+// A JWKS fetch is shared infrastructure: every concurrent sign-in is waiting on
+// the same one. Running it on the requesting caller's context — which an
+// earlier version of this function did — means one caller's cancellation
+// aborts a fetch everyone else depends on, and net/http cancels a request's
+// context the moment the client disconnects.
+//
+// That was an unauthenticated denial of the entire auth front door, and a
+// silent one. On a cold process (every deploy, every restart) an attacker
+// sends ONE forged token that satisfies only public inputs — `iss` and `alg`
+// are fixed, `exp` is theirs, `aud` is the client ID that ships inside the
+// mobile app, `typ` is "JWT" — so it reaches VerifySignature, and then aborts
+// the connection. The attempt slot was consumed, the fetch died on
+// context.Canceled, nothing was cached, and every genuine sign-in failed for
+// the next refresh window. Zero outbound requests, so the provider saw nothing
+// and there was no external evidence at all. Cost: one aborted TCP connection
+// per minute, forever.
+//
+// go-oidc protects this property on purpose — newRemoteKeySet stores
+// context.WithoutCancel(ctx) and fetches on THAT, so only the *wait* is
+// cancellable — and this function had noted as much in a previous revision
+// before losing it in a rewrite. Hence, in order:
+//
+//   - the fetch runs in its own goroutine on context.WithoutCancel, so it
+//     survives the departure of whichever caller happened to trigger it while
+//     still inheriting that caller's context VALUES,
+//   - waiting callers select on their own ctx.Done(), so a caller keeps its
+//     own deadline instead of inheriting the fetch's,
+//   - the attempt slot is consumed only by an attempt that actually reached
+//     the provider, never by a cancellation (belt: the primary fix already
+//     makes caller cancellation unreachable here).
+//
+// The inflight handoff also gives herd control for free: N concurrent callers
+// arriving on a cold cache produce ONE request, not N.
 func (r *cachingKeySet) currentKeys(ctx context.Context) ([]jose.JSONWebKey, error) {
 	if keys, ok := r.freshKeys(); ok {
 		return keys, nil
 	}
-	r.fetchMu.Lock()
-	defer r.fetchMu.Unlock()
-	if keys, ok := r.freshKeys(); ok { // another goroutine may have just fetched
-		return keys, nil
-	}
 
 	r.mu.Lock()
-	// Rate-limit ATTEMPTS, not just successes: without this a provider that is
-	// down would be hammered once per inbound request, which is the same
-	// amplification bug in a different costume.
-	tooSoon := !r.attemptedAt.IsZero() && r.now().Sub(r.attemptedAt) < r.refresh
+	if r.inflight == nil {
+		// Rate-limit ATTEMPTS, not just successes: without this a provider
+		// that is down would be hammered once per inbound request, which is
+		// the same amplification bug in a different costume.
+		if !r.attemptedAt.IsZero() && r.now().Sub(r.attemptedAt) < r.refresh {
+			r.mu.Unlock()
+			return r.staleKeys()
+		}
+		fl := &inflightFetch{done: make(chan struct{})}
+		r.inflight = fl
+		go r.fetch(context.WithoutCancel(ctx), fl)
+	}
+	fl := r.inflight
 	r.mu.Unlock()
-	if tooSoon {
+
+	select {
+	case <-ctx.Done():
+		// This caller gave up; the fetch continues for everyone else.
+		return nil, ctx.Err()
+	case <-fl.done:
+	}
+	if fl.err != nil {
 		return r.staleKeys()
 	}
+	return fl.keys, nil
+}
 
-	r.mu.Lock()
-	r.attemptedAt = r.now()
-	r.mu.Unlock()
+// inflightFetch lets several callers wait on one fetch. keys/err are written
+// before done is closed, which is the happens-before edge that makes reading
+// them after the receive safe.
+type inflightFetch struct {
+	done chan struct{}
+	keys []jose.JSONWebKey
+	err  error
+}
 
+// fetch performs one JWKS retrieval and publishes it. ctx is already detached
+// from any caller (see currentKeys); the only cancellation it carries is the
+// timeout applied here.
+func (r *cachingKeySet) fetch(ctx context.Context, fl *inflightFetch) {
 	fetchCtx, cancel := context.WithTimeout(ctx, jwksFetchTimeout)
 	defer cancel()
-	fetched, err := fetchJWKS(fetchCtx, r.jwksURL)
-	if err != nil {
-		return r.staleKeys()
-	}
+	keys, err := fetchJWKS(fetchCtx, r.jwksURL)
+	fl.keys, fl.err = keys, err
+
+	now := r.now()
 	r.mu.Lock()
-	r.keys, r.fetchedAt = fetched, r.now()
+	switch {
+	case err == nil:
+		r.keys, r.fetchedAt, r.attemptedAt = keys, now, now
+	case errors.Is(err, context.Canceled):
+		// Something aborted us rather than the provider failing. The primary
+		// fix makes this unreachable from a caller disconnect; not consuming
+		// the slot means that even if a future change reconnects the two, an
+		// aborted request cannot deny the next one its attempt.
+	default:
+		// A real failure — refused, 5xx, unparseable, or our own timeout.
+		// Consume the slot so a down provider is not hammered.
+		r.attemptedAt = now
+	}
+	r.inflight = nil
 	r.mu.Unlock()
-	return fetched, nil
+	close(fl.done)
 }
 
 func (r *cachingKeySet) freshKeys() ([]jose.JSONWebKey, bool) {
@@ -830,6 +942,10 @@ func (r *cachingKeySet) freshKeys() ([]jose.JSONWebKey, bool) {
 	return r.keys, r.now().Sub(r.fetchedAt) < r.refresh
 }
 
+// staleKeys is the outage path: a key set we could not refresh is still used,
+// because failing closed would turn a provider blip into a total sign-in
+// outage — but only up to staleMax, because "the JWKS is unreachable" must not
+// keep a revoked key alive indefinitely.
 func (r *cachingKeySet) staleKeys() ([]jose.JSONWebKey, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

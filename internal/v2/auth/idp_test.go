@@ -104,7 +104,7 @@ func (k *testKey) withUse(use string) *testKey {
 
 // withKID returns the same key material published under a different kid. It
 // models a provider replacing a key's bytes without changing its identifier —
-// the one rotation the published-kid guard is blind to.
+// the one rotation a kid-by-kid comparison would be blind to.
 func (k *testKey) withKID(kid string) *testKey {
 	c := *k
 	c.kid = kid
@@ -173,6 +173,11 @@ type jwksServer struct {
 	keys    []*testKey
 	hits    int
 	failing bool
+	// gate, when set, makes the NEXT request announce itself on entered and
+	// then block until release is closed. One-shot: later requests are served
+	// normally.
+	entered chan struct{}
+	release chan struct{}
 }
 
 func newJWKS(t *testing.T, keys ...*testKey) *jwksServer {
@@ -186,12 +191,18 @@ func newJWKS(t *testing.T, keys ...*testKey) *jwksServer {
 func (j *jwksServer) serve(w http.ResponseWriter, _ *http.Request) {
 	j.mu.Lock()
 	j.hits++
+	entered, release := j.entered, j.release
+	j.entered, j.release = nil, nil
 	failing := j.failing
 	out := make([]map[string]any, 0, len(j.keys))
 	for _, k := range j.keys {
 		out = append(out, k.jwk())
 	}
 	j.mu.Unlock()
+	if entered != nil {
+		close(entered)
+		<-release
+	}
 	if failing {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
@@ -201,6 +212,16 @@ func (j *jwksServer) serve(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (j *jwksServer) url() string { return j.srv.URL }
+
+// gate arms a one-shot block on the next request, so a test can hold a JWKS
+// fetch open while it does something else (such as abort the caller).
+func (j *jwksServer) gate() (entered <-chan struct{}, release chan<- struct{}) {
+	e, r := make(chan struct{}), make(chan struct{})
+	j.mu.Lock()
+	j.entered, j.release = e, r
+	j.mu.Unlock()
+	return e, r
+}
 
 // fail makes the endpoint start (or stop) returning 503, modelling a provider
 // outage.
@@ -873,13 +894,13 @@ func TestVerifierRejectsDistributedClaims(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // A provider that rotates IN a new signing key must not break sign-in until
-// the process is restarted: once the published kid list is refreshed, an
-// unknown kid triggers a refetch and the new key works.
+// the process is restarted: once the cached key set is refreshed, the new key
+// works.
 //
-// The clock advance is the point, not scaffolding: the kid list is trusted for
-// jwksRefresh, so a key rotated in is refused for up to that long. That delay is
-// the price of the amplification bound (see rotatingKeySet) and is asserted
-// here in both directions.
+// The clock advance is the point, not scaffolding. The key set is refreshed on
+// a clock and never in response to a token, so a key rotated in is refused for
+// up to jwksRefresh. That delay is the price of the amplification bound (see
+// cachingKeySet) and is asserted here in both directions.
 func TestVerifierRefetchesJWKSAfterRotation(t *testing.T) {
 	k := testKeys()
 	j := newJWKS(t, k.rsa1)
@@ -916,8 +937,8 @@ func TestVerifierRefetchesJWKSAfterRotation(t *testing.T) {
 // go-oidc v3.11.0's RemoteKeySet caches the key set with no expiry whatsoever
 // and only refetches on a kid MISS, so on its own a retired key stays valid in
 // a long-lived process forever. Here the retired key's KID disappears from the
-// published list, so the kid guard retires it within jwksRefresh — well before
-// jwksMaxAge would.
+// cached set, and the set is replaced wholesale on the clock, so the key stops
+// verifying within jwksRefresh.
 func TestVerifierRejectsATokenSignedByARotatedOutKey(t *testing.T) {
 	k := testKeys()
 	j := newJWKS(t, k.rsa1)
@@ -930,12 +951,12 @@ func TestVerifierRejectsATokenSignedByARotatedOutKey(t *testing.T) {
 
 	j.rotate(k.rsa2) // rsa-1 is retired
 
-	// Documented, bounded staleness: inside the kid-list window the cached
-	// key is still honoured. Asserted rather than glossed over, so a change
-	// to jwksRefresh is a deliberate change to a tested property.
+	// Documented, bounded staleness: inside the refresh window the cached key
+	// is still honoured. Asserted rather than glossed over, so a change to
+	// jwksRefresh is a deliberate change to a tested property.
 	c.advance(jwksRefresh / 2)
 	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
-		t.Fatalf("inside the kid-list window the retired key should still verify: %v", err)
+		t.Fatalf("inside the refresh window the retired key should still verify: %v", err)
 	}
 
 	c.advance(jwksRefresh)
@@ -948,7 +969,7 @@ func TestVerifierRejectsATokenSignedByARotatedOutKey(t *testing.T) {
 	}
 }
 
-// Key MATERIAL replaced under an UNCHANGED kid — the rotation a kid-list
+// Key MATERIAL replaced under an UNCHANGED kid — the rotation a kid-by-kid
 // comparison would be blind to. One refresh interval governs this too, because
 // the whole key set is replaced on the clock rather than patched by kid.
 func TestVerifierRejectsAKeyReplacedUnderTheSameKid(t *testing.T) {
@@ -994,8 +1015,10 @@ func TestVerifierRejectsAKeyReplacedUnderTheSameKid(t *testing.T) {
 // JWKS. Measured against the unguarded implementation: 20 forged tokens
 // produced 21 outbound fetches.
 //
-// The live-kid case below is the one a published-kid filter does NOT catch,
-// and is why the fix had to own the refetch policy rather than filter kids.
+// The live-kid case below is the one a kid filter does NOT catch — measured
+// against a first attempt at this fix, which filtered unpublished kids and
+// still produced 21 fetches — and is why the fix had to own the refetch policy
+// instead.
 func TestForgedTokensCannotAmplifyIntoJWKSFetches(t *testing.T) {
 	k := testKeys()
 
@@ -1110,9 +1133,17 @@ func TestJWKSOutageServesStaleKeysButOnlyUpToTheLimit(t *testing.T) {
 		t.Fatalf("20 verifies during an outage made %d further fetch attempts, want 0 inside the window", got)
 	}
 
-	// Staleness is not unbounded.
+	// Staleness is not unbounded — and past the limit this is reported as an
+	// unavailable key set, not as a forged token, so the operator sees an
+	// outage rather than an attack.
 	c.advance(jwksStaleMax)
-	mustReject(t, v, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), ErrSignature)
+	_, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
+	if !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("past the stale limit: %v, want ErrKeySetUnavailable", err)
+	}
+	if errors.Is(err, ErrTokenRejected) {
+		t.Fatal("an expired-stale key set must not be reported as a rejected token")
+	}
 
 	// Recovery works.
 	j.fail(false)
@@ -1160,6 +1191,151 @@ func TestVerifierIgnoresKeysNotPublishedForSigning(t *testing.T) {
 			t.Fatalf("a key with no declared use should still verify: %v", err)
 		}
 	})
+}
+
+// The regression for the worst bug in this package's history, which the fix
+// for outbound amplification introduced and review caught.
+//
+// The JWKS fetch used to run on the REQUESTING caller's context. net/http
+// cancels that context the instant the client disconnects, so on a cold
+// process one forged token — satisfying only public inputs — followed by an
+// aborted connection consumed the single fetch attempt, killed the fetch, and
+// cached nothing. Every genuine sign-in then failed for a full refresh window,
+// with zero outbound requests, so the provider saw nothing and there was no
+// external evidence. One aborted TCP connection per minute, forever.
+func TestAnAbortedRequestCannotPoisonTheKeySet(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c) // cold: nothing cached, as after every restart
+
+	entered, release := j.gate()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A forged token that passes every PUBLIC pre-check and so reaches
+		// the key set. Its rejection is not what this test is about.
+		_, _ = v.Verify(ctx, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)), VerifyOpts{})
+	}()
+
+	<-entered // the JWKS fetch is in flight
+	cancel()  // the attacker aborts the connection
+	close(release)
+	<-done
+
+	// The whole point: a genuine user signing in immediately afterwards, with
+	// no clock advance, must succeed. Before the fix this failed for a full
+	// jwksRefresh window.
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("an aborted request poisoned the key set: %v", err)
+	}
+
+	// Tighter, and what makes the DETACHMENT itself testable rather than only
+	// the attempt-slot belt: the abandoned fetch ran to completion and
+	// populated the cache, so the genuine sign-in needed no fetch of its own.
+	// If the fetch were still tied to the caller's context it would have died
+	// on the abort, and this would be 2 — an attacker aborting once a minute
+	// would force an extra outbound request every time.
+	if got := j.hitCount(); got != 1 {
+		t.Fatalf("the sequence made %d JWKS fetches, want 1 (the aborted caller's fetch, completed anyway)", got)
+	}
+}
+
+// A caller that gives up must not take the shared fetch down with it, and must
+// not be made to wait past its own deadline either. go-oidc gets both by
+// fetching on a detached context while making only the WAIT cancellable; so
+// does this.
+func TestASlowFetchHonoursTheCallersDeadlineWithoutAbortingTheFetch(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	entered, release := j.gate()
+
+	// Caller A arrives first and owns the fetch.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _ = v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
+	}()
+	<-entered // A's fetch is in flight and blocked
+
+	// Caller B arrives with a short deadline and must get control back on
+	// roughly its own schedule, not the fetch's.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := v.Verify(ctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{})
+	waited := time.Since(start)
+	if err == nil {
+		t.Fatal("caller B should not have succeeded while the fetch was blocked")
+	}
+	if waited > 400*time.Millisecond {
+		t.Fatalf("caller B waited %s despite a 50ms deadline", waited)
+	}
+
+	// B's departure must not have harmed A's fetch.
+	close(release)
+	<-firstDone
+	if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+		t.Fatalf("the shared fetch did not complete: %v", err)
+	}
+}
+
+// Concurrent callers on a cold cache must produce ONE request, not one each.
+func TestConcurrentCallersShareOneJWKSFetch(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := v.Verify(bgctx, mint(t, k.rsa1, nil, goodClaims(c.now(), nil)), VerifyOpts{}); err != nil {
+				t.Errorf("verify: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := j.hitCount(); got != 1 {
+		t.Fatalf("16 concurrent cold-cache verifies made %d fetches, want 1", got)
+	}
+}
+
+// A provider outage is not an invalid token. They must be distinguishable, so
+// an incident on Apple's side and someone forging tokens do not share a metric
+// — and so the HTTP layer can answer one with a retryable 503 and the other
+// with 401.
+func TestAnUnavailableKeySetIsNotReportedAsAForgedToken(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	v := verifierOn(j, c)
+	j.fail(true) // down before we ever cached anything
+
+	good := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
+	_, err := v.Verify(bgctx, good, VerifyOpts{})
+	if err == nil {
+		t.Fatal("verify succeeded with no keys available")
+	}
+	if !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("err = %v, want ErrKeySetUnavailable", err)
+	}
+	if errors.Is(err, ErrTokenRejected) {
+		t.Fatal("a provider outage must not be reported as a rejected token")
+	}
+
+	// And a genuinely bad token, once the provider is reachable, is still a
+	// rejection rather than an outage.
+	j.fail(false)
+	c.advance(jwksRefresh + time.Second)
+	mustReject(t, v, mint(t, k.rsa2, nil, goodClaims(c.now(), nil)), ErrSignature)
 }
 
 // ---------------------------------------------------------------------------
