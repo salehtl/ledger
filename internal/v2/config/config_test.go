@@ -219,7 +219,8 @@ func TestLoadWithNoPathUsesDefaultsAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
-	if cfg.Server.HTTPListen != ":443" {
+	// Loopback by default: this listener is cleartext until Task D4.
+	if cfg.Server.HTTPListen != "127.0.0.1:8443" {
 		t.Fatalf("default HTTPListen = %q", cfg.Server.HTTPListen)
 	}
 	if cfg.Server.AdminListen != "127.0.0.1:8079" {
@@ -313,6 +314,37 @@ dsn = "postgres:///x"
 	}
 	if !strings.Contains(err.Error(), "max_message_bytes") {
 		t.Fatalf("error should name the offending key, got: %v", err)
+	}
+}
+
+func TestRefusesToServeCleartextOnANonLoopbackAddress(t *testing.T) {
+	// ledgerd serves plain HTTP until deployment Task D4 lands TLS, and session
+	// bearer tokens plus the whole op log travel over it. "It is only reached
+	// over Tailscale" is a deployment assumption nothing enforces, so the
+	// binding itself is the place to enforce it.
+	base := func() Config {
+		c := defaults()
+		c.Mail.Domain = "example.test"
+		c.Server.DSN = "postgres:///x"
+		return c
+	}
+	for _, addr := range []string{":443", "0.0.0.0:8443", "[::]:8443", "192.168.1.10:8443"} {
+		c := base()
+		c.Server.HTTPListen = addr
+		err := c.validate()
+		if err == nil {
+			t.Fatalf("validate() accepted cleartext on %q", addr)
+		}
+		if !strings.Contains(err.Error(), "http_listen") {
+			t.Fatalf("error for %q does not name the setting: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"127.0.0.1:8443", "[::1]:8443", "localhost:8443"} {
+		c := base()
+		c.Server.HTTPListen = addr
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate() refused loopback %q: %v", addr, err)
+		}
 	}
 }
 

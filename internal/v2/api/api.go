@@ -58,6 +58,17 @@
 // when Phase 3 seals the blobs. No response from this package may be presented
 // as more than that.
 //
+// # Replay of an ID token, stated plainly
+//
+// POST /api/v1/auth/exchange binds no nonce in Phase 1 (see handleExchange for
+// why a client-supplied one would be theatre). The consequence: a captured
+// Apple or Google ID token is a REPLAYABLE BEARER CREDENTIAL here for its whole
+// validity window — anything that observes one (a malicious SDK in the client
+// app, a log line, an intercepting proxy) can exchange it for a session. That
+// compounds with the absence of a sign-up allowlist: a replayed token for an
+// account this deployment has never seen creates one. Closing it needs the
+// issue → store → compare → consume-once flow described at the call site.
+//
 // # Sessions are weak capabilities
 //
 // A session token authorizes reading and appending to the account's log, and
@@ -91,27 +102,36 @@ import (
 // Request-shaping limits. They bound what one caller can make the server hold
 // in memory before anything about the caller is known to be legitimate.
 const (
-	// maxUploadBytes caps POST /api/v1/sync. One blob can be a full megabyte
-	// (blob.MaxBucket) and base64 inflates it by a third, so this is roughly
-	// five max-size blobs of headroom over maxUploadBlobs' realistic worst case
-	// — high enough that an oversize blob is answered with 413 by the per-blob
-	// check (which says what is wrong) instead of a truncated-body parse error.
-	maxUploadBytes = 8 << 20
-	// maxSmallBodyBytes caps every other request body. None of them carries
-	// anything but short strings; an ID token is capped again inside auth.
-	maxSmallBodyBytes = 64 << 10
 	// maxUploadBlobs caps how many positions one call may claim. The whole
 	// batch shares one seq block and one counter-lock hold (oplog.appendRows),
 	// so this is also the bound on how long one upload can serialise a user's
 	// appends.
-	maxUploadBlobs = 32
+	maxUploadBlobs = 8
+	// maxUploadBytes caps POST /api/v1/sync.
+	//
+	// It is sized so that a batch conforming to maxUploadBlobs ALWAYS fits:
+	// 8 blobs x base64(1 MiB) is ~11.2 MB, plus JSON framing. The two limits
+	// disagreeing is not cosmetic — a client sending the permitted number of
+	// max-size blobs would trip the body cap and get a generic "body too large"
+	// instead of the per-blob 413 that says which blob is wrong and why.
+	// TestUploadSizeCapsAgree asserts the arithmetic so they cannot drift.
+	maxUploadBytes = 12 << 20
+	// maxSmallBodyBytes caps every other request body. None of them carries
+	// anything but short strings; an ID token is capped again inside auth.
+	maxSmallBodyBytes = 64 << 10
 
 	// defaultPullLimit / maxPullLimit bound GET /api/v1/sync's row count;
 	// pullByteBudget bounds the bytes those rows may carry, which is the limit
 	// that actually matters when a row can be a megabyte.
 	defaultPullLimit = 100
 	maxPullLimit     = 500
-	pullByteBudget   = 8 << 20
+	// pullByteBudget is chosen against PEAK MEMORY, not bandwidth: a response
+	// is marshalled into one buffer, so a full page costs its raw blobs plus
+	// their base64 expansion plus the marshalled JSON — roughly 4x the budget,
+	// live at once, for every in-flight request. 4 MiB keeps that near 15 MB
+	// per request; cmd/ledgerd's WriteTimeout is what bounds how long a client
+	// that stops reading can hold it.
+	pullByteBudget = 4 << 20
 
 	// Hash-list pages are fixed-width rows (two 32-byte hashes and three small
 	// fields), so a much larger page is still a small response.
@@ -130,6 +150,13 @@ const (
 	challengeRate    = 1.0 / 60.0 // 1/minute sustained
 	challengeBurst   = 10
 	challengeMaxKeys = 4096
+
+	// Strictly more generous than the challenge cap, because a legitimate
+	// client spends one challenge per registration and may retry a request that
+	// failed in transit.
+	registerRate    = 2.0 / 60.0 // 2/minute sustained
+	registerBurst   = 20
+	registerMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -152,11 +179,17 @@ type Server struct {
 	// exists to remove. TestIdPVerifiersAreReusedAcrossRequests pins it.
 	Verifiers map[string]auth.Verifier
 
-	// SignInPerIP, SignInGlobal and ChallengePerUser default to the constants
-	// above when nil.
+	// The limiters default to the constants above when nil.
 	SignInPerIP      *Limiter
 	SignInGlobal     *Limiter
 	ChallengePerUser *Limiter
+	RegisterPerUser  *Limiter
+
+	// PullByteBudget bounds the blob bytes one page of GET /api/v1/sync may
+	// carry; 0 means pullByteBudget. It is a field rather than a constant so a
+	// test can truncate a page by BYTES — the case `complete` exists for, and
+	// the one a page-size heuristic gets wrong — without seeding megabytes.
+	PullByteBudget int
 
 	// Logf receives operator-facing detail: the REASON a request was rejected,
 	// which the response deliberately does not carry. Defaults to log.Printf.
@@ -223,6 +256,12 @@ func (s *Server) Handler() http.Handler {
 	if s.ChallengePerUser == nil {
 		s.ChallengePerUser = NewLimiter(challengeRate, challengeBurst, challengeMaxKeys, s.now)
 	}
+	if s.RegisterPerUser == nil {
+		s.RegisterPerUser = NewLimiter(registerRate, registerBurst, registerMaxKeys, s.now)
+	}
+	if s.PullByteBudget <= 0 {
+		s.PullByteBudget = pullByteBudget
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/exchange", s.handleExchange)
@@ -237,6 +276,13 @@ func (s *Server) Handler() http.Handler {
 	// through to anything a later task mounts at "/" (a static client bundle,
 	// say), which would turn a client's typo into an HTML page it tries to
 	// parse as a sync response.
+	//
+	// One edge this does NOT cover, stated so the guarantee is not overclaimed:
+	// ServeMux cleans paths BEFORE matching, so a request for a path needing
+	// normalisation (`/api/v1/../v1/sync`) is answered with a 301 and an HTML
+	// body by net/http itself, never reaching this handler. Harmless — the
+	// redirect target is the correct route — but a client that follows
+	// redirects sees one non-JSON response on the way.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})
@@ -327,6 +373,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	// Every response from this API is either a credential (the exchange returns
+	// a session bearer token) or the user's own financial history. None of it
+	// may reach a shared cache, an intermediary, or a client's disk cache, so
+	// the header is set here — once, for every response — rather than on the
+	// handlers someone remembers.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf)
 }
@@ -411,6 +463,13 @@ func parseLimit(r *http.Request, def, max int) (int, error) {
 // listener today, and no X-Forwarded-For is trusted — trusting one would let
 // any caller pick their own key and defeat the limit entirely), which is why
 // Limiter bounds its key space.
+//
+// FOR TASK D4: if TLS is terminated by a reverse proxy rather than in this
+// process, every request arrives from the proxy and this degenerates to a
+// SINGLE key — the per-IP limiter silently becomes a second global one, and the
+// sign-in budget is shared by everybody again. Whoever wires that must either
+// terminate TLS in-process, use PROXY protocol, or trust a forwarded-for header
+// from that one hop specifically (and only from it).
 func clientKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

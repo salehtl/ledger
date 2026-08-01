@@ -12,6 +12,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -156,7 +157,11 @@ func (c Config) InboundSuffix() string { return "@in." + c.Mail.Domain }
 func defaults() Config {
 	return Config{
 		Server: ServerConfig{
-			HTTPListen:  ":443",
+			// Loopback, not ":443". cmd/ledgerd serves PLAIN HTTP until
+			// deployment Task D4 lands TLS, and session bearer tokens plus the
+			// whole op log travel over it — so the default must not be a
+			// public interface. validate() refuses one too; see there.
+			HTTPListen:  "127.0.0.1:8443",
 			AdminListen: "127.0.0.1:8079",
 		},
 		Mail: MailConfig{
@@ -244,6 +249,29 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// isLoopbackListen reports whether a listen address binds only the loopback
+// interface. An address with no host (":8443") binds every interface and is
+// therefore NOT loopback — that is the case this exists to catch, since it is
+// both the Go idiom and the wrong answer here.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Not host:port at all. Refusing is the safe reading: an address this
+		// function cannot parse is one it cannot vouch for.
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	// "localhost" is resolved by the resolver, not by us, so it is matched by
+	// name. Anything else must parse as an IP and be in a loopback range.
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // splitCSV splits a comma-separated env value into trimmed, non-empty parts.
 func splitCSV(v string) []string {
 	fields := strings.Split(v, ",")
@@ -285,6 +313,23 @@ func (c Config) validate() error {
 	}
 	if c.Server.HTTPListen == "" {
 		return fmt.Errorf("server.http_listen must not be empty")
+	}
+	// The HTTP listener is CLEARTEXT until deployment Task D4 terminates TLS.
+	// Everything it carries is sensitive — the session bearer token on every
+	// request, and the user's entire op log in the responses — so binding it to
+	// anything but loopback puts all of that on the wire in the clear.
+	//
+	// "It is only ever reached over Tailscale" is a deployment assumption, and
+	// an assumption nothing enforces is one a hurried `LEDGER_HTTP_LISTEN=:443`
+	// silently breaks with no visible symptom. This is the hard rail, in the
+	// same spirit as the :8080 refusal above. Task D4 lifts it deliberately, on
+	// the day the same change adds TLS.
+	if !isLoopbackListen(c.Server.HTTPListen) {
+		return fmt.Errorf(
+			"refusing to bind server.http_listen to %q: this listener is plain HTTP until "+
+				"TLS lands (deployment Task D4), and it carries session tokens and the whole "+
+				"op log — bind loopback (e.g. 127.0.0.1:8443) and front it with tailscale serve",
+			c.Server.HTTPListen)
 	}
 	if c.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen must not be empty")

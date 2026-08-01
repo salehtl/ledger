@@ -370,6 +370,43 @@ func TestHashListCoversEveryColdBlobAndMatchesTheStoredHashes(t *testing.T) {
 	}
 }
 
+func TestAPullTruncatedByTheByteBudgetIsNotComplete(t *testing.T) {
+	// This is the case `complete` exists for and the one a page-size heuristic
+	// gets wrong: the page ends early because of BYTES, not because the row
+	// limit was reached or the stream ran out. A client told "complete" here
+	// stops syncing with rows outstanding.
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.seedIngest(u, 5)
+	h.srv.PullByteBudget = 2 * 1024 // two smallest-bucket blobs
+	h.h = h.srv.Handler()
+
+	first := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot&limit=100", tok, nil))
+	if len(first.Rows) != 2 {
+		t.Fatalf("a 2 KiB budget returned %d rows, want 2", len(first.Rows))
+	}
+	if first.Complete {
+		t.Fatal("a page truncated by the byte budget reported complete=true; " +
+			"the client would stop syncing with 3 rows outstanding")
+	}
+
+	// And the cursor still walks the whole stream.
+	seen := len(first.Rows)
+	next := first.Next
+	for i := 0; i < 10; i++ {
+		page := decodeJSON[PullResponse](t, h.req("GET", "/api/v1/sync?stream=hot&limit=100&after="+next, tok, nil))
+		seen += len(page.Rows)
+		next = page.Next
+		if page.Complete {
+			break
+		}
+	}
+	if seen != 5 {
+		t.Fatalf("paging under a byte budget saw %d rows, want 5", seen)
+	}
+}
+
 func TestPullRejectsAnUnknownStream(t *testing.T) {
 	h := newHarness(t)
 	tok := h.session(h.user("u"))
@@ -449,11 +486,23 @@ func TestUploadCannotWriteIntoAnotherUsersLog(t *testing.T) {
 func TestUploadRejectsIngestWriterID(t *testing.T) {
 	h := newHarness(t)
 	u := h.user("u")
+	h.writer(u, "dev-a")
+	// The ingest writer must be ON the roster, and the user must own a device
+	// writer too. Without both, a 403 proves nothing: an empty roster makes
+	// writerIsLive answer "no such writer" with the same status, so deleting
+	// the ingest check entirely would still look green. The status is therefore
+	// checked together with the detail that only the ingest check produces.
+	if _, err := h.srv.Writers.EnsureIngestWriter(bg, u); err != nil {
+		t.Fatal(err)
+	}
 	blobs, _ := uploadChain(t, u, oplog.IngestWriterID, 1, blob.ZeroHash, 1)
 	w := h.req("POST", "/api/v1/sync", h.session(u), UploadRequest{
 		WriterID: oplog.IngestWriterID, Stream: blob.StreamHot, Blobs: blobs,
 	})
 	wantStatus(t, w, http.StatusForbidden)
+	if !bytes.Contains(w.Body.Bytes(), []byte("the ingest writer is the server's own")) {
+		t.Fatalf("the rejection did not come from the ingest check: %s", w.Body.String())
+	}
 	if n := countRows(t, h.pool, u); n != 0 {
 		t.Fatalf("%d rows were appended under the server's own writer", n)
 	}
@@ -585,6 +634,54 @@ func TestUploadReportsAChainBreakAsAConflict(t *testing.T) {
 	wantStatus(t, w, http.StatusConflict)
 	if n := countRows(t, h.pool, u); n != 0 {
 		t.Fatalf("%d rows were appended past a chain break", n)
+	}
+}
+
+func TestABatchThatDoesNotChainToItselfIsAClientErrorNotATamperSignal(t *testing.T) {
+	// oplog.AppendClient verifies the batch's internal links BEFORE it touches
+	// the database, so an inconsistency there is provably the client's own
+	// arithmetic — nothing the server did could have caused it. Answering it
+	// with the chain-break signal would raise spec §3.3:68's non-dismissable
+	// "your server may have tampered with your data" warning over a client bug.
+	h := newHarness(t)
+	u := h.user("u")
+	tok := h.session(u)
+	h.writer(u, "dev-a")
+
+	// Row 2's blob_hash is not SHA256(prev || bytes): purely a local mistake.
+	blobs, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 2)
+	bad := blobs[1]
+	bad.BlobHash = hex.EncodeToString(make([]byte, 32))
+	w := h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{blobs[0], bad},
+	})
+	wantStatus(t, w, http.StatusBadRequest)
+	if bytes.Contains(w.Body.Bytes(), []byte("chain_break")) {
+		t.Fatalf("a client-side batch error raised the tamper hard stop: %s", w.Body.String())
+	}
+
+	// A batch whose rows do not link to each other is the same class.
+	blobs2, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 2)
+	unlinked := blobs2[1]
+	unlinked.PrevHash = hex.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	wantStatus(t, h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: []UploadBlob{blobs2[0], unlinked},
+	}), http.StatusBadRequest)
+
+	if n := countRows(t, h.pool, u); n != 0 {
+		t.Fatalf("%d rows were stored from an inconsistent batch", n)
+	}
+
+	// The head-relative case is still the hard stop: whether the client skipped
+	// or the server lost rows is genuinely ambiguous, and that is the one this
+	// signal is for.
+	good, _ := uploadChain(t, u, "dev-a", 1, blob.ZeroHash, 3)
+	conflict := h.req("POST", "/api/v1/sync", tok, UploadRequest{
+		WriterID: "dev-a", Stream: blob.StreamHot, Blobs: good[1:],
+	})
+	wantStatus(t, conflict, http.StatusConflict)
+	if !bytes.Contains(conflict.Body.Bytes(), []byte("chain_break")) {
+		t.Fatalf("a head mismatch must still be a chain break: %s", conflict.Body.String())
 	}
 }
 
@@ -897,6 +994,48 @@ func TestUnavailableIdPKeySetIsA503NotA401(t *testing.T) {
 	wantStatus(t, w, http.StatusServiceUnavailable)
 }
 
+func TestAMisconfiguredVerifierIsNotReportedAsABadToken(t *testing.T) {
+	// auth.ErrNotConfigured means the SERVER has no client ids for this
+	// provider, so no token can be recognized as ours. It wraps ErrTokenRejected
+	// (so the failure mode of a bad config is "nobody can sign in", never
+	// "anybody can"), but reporting it as 401 is the same confusion the 503 on
+	// ErrKeySetUnavailable exists to remove: it tells a user with a perfectly
+	// good token to go and get another one.
+	h := newHarness(t)
+	h.apple.err = auth.ErrNotConfigured
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+}
+
+func TestResponsesAreNotCacheable(t *testing.T) {
+	// The exchange response is the one that carries a session bearer token; the
+	// pull response carries the user's op log. Neither may be written to a
+	// shared cache, a proxy, or a client's disk cache.
+	h := newHarness(t)
+	w := h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	wantStatus(t, w, http.StatusOK)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("the response carrying a session token has Cache-Control %q, want no-store", got)
+	}
+	tok := decodeJSON[ExchangeResponse](t, w).SessionToken
+	pull := h.req("GET", "/api/v1/sync?stream=hot", tok, nil)
+	if got := pull.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("a pull of the op log has Cache-Control %q, want no-store", got)
+	}
+}
+
+func TestUploadSizeCapsAgree(t *testing.T) {
+	// A batch that satisfies maxUploadBlobs must fit maxUploadBytes, or a
+	// conforming client hits the generic body-cap 413 instead of the per-blob
+	// answer that says which blob is wrong and why. Pure arithmetic, asserted
+	// so the two constants cannot drift apart.
+	worst := base64.StdEncoding.EncodedLen(blob.MaxBucket)*maxUploadBlobs + 1024
+	if worst > maxUploadBytes {
+		t.Fatalf("%d max-size blobs base64-encode to %d bytes, over the %d-byte body cap: "+
+			"lower maxUploadBlobs or raise maxUploadBytes", maxUploadBlobs, worst, maxUploadBytes)
+	}
+}
+
 func TestExchangeRejectsAnUnknownIdP(t *testing.T) {
 	h := newHarness(t)
 	wantStatus(t, h.req("POST", "/api/v1/auth/exchange", "", ExchangeRequest{IdP: "myspace", IDToken: "tok"}), http.StatusBadRequest)
@@ -984,6 +1123,91 @@ func TestSignInIsRateLimitedPerClient(t *testing.T) {
 	}
 	if h.apple.count() != 3 {
 		t.Fatalf("the verifier ran %d times; a rate-limited request must not reach the provider path", h.apple.count())
+	}
+}
+
+func TestOneClientCannotSpendEveryoneElsesSignInBudget(t *testing.T) {
+	// The global limiter is a backstop against a caller spread across
+	// addresses. If it is consulted FIRST it is spent by requests the per-IP
+	// limiter would have refused anyway, so one host sustaining traffic holds
+	// every other client at 429 — an amplification nuisance traded for a total
+	// sign-in outage, which is exactly what ratelimit.go says it refuses to do.
+	h := newHarness(t)
+	frozen := time.Now()
+	clock := func() time.Time { return frozen }
+	h.srv.SignInPerIP = NewLimiter(0, 3, 128, clock)
+	h.srv.SignInGlobal = NewLimiter(0, 8, 1, clock)
+	h.h = h.srv.Handler()
+
+	body, err := json.Marshal(ExchangeRequest{IdP: auth.IdPApple, IDToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchangeFrom := func(addr string) int {
+		r := httptest.NewRequest("POST", "/api/v1/auth/exchange", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		h.h.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	noisy := 0
+	for i := 0; i < 40; i++ {
+		if exchangeFrom("198.51.100.7:5000") == http.StatusOK {
+			noisy++
+		}
+	}
+	if noisy != 3 {
+		t.Fatalf("the noisy host was served %d times, want its per-ip burst of 3", noisy)
+	}
+	// It made 40 attempts but may only have spent 3 global tokens: a rejected
+	// request must not consume the shared budget. A fresh client's own burst of
+	// 3 must therefore still be served out of the 8 global tokens.
+	for i := 0; i < 3; i++ {
+		if code := exchangeFrom("203.0.113.9:5000"); code != http.StatusOK {
+			t.Fatalf("a fresh client was answered %d after another host's flood — "+
+				"the global bucket was spent by requests the per-ip limiter refused", code)
+		}
+	}
+}
+
+func TestRegistrationAttemptsAreRateLimited(t *testing.T) {
+	// The challenge cap bounds SUCCESSFUL registrations only. A failed attempt
+	// — a replayed nonce, say — consumes no challenge budget and still costs
+	// two database round trips inside consumeChallenge before any signature
+	// work happens.
+	h := newHarness(t)
+	h.srv.RegisterPerUser = NewLimiter(0, 3, 128, time.Now)
+	h.h = h.srv.Handler()
+	u := h.user("u")
+	tok := h.session(u)
+	other := h.session(h.user("other"))
+
+	body := RegisterRequest{
+		WriterID: "dev-a",
+		PubKey:   base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
+		Nonce:    base64.StdEncoding.EncodeToString(make([]byte, auth.ChallengeNonceBytes)),
+		Sig:      base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
+	}
+	attempted, limited := 0, 0
+	for i := 0; i < 30; i++ {
+		switch h.req("POST", "/api/v1/writers/register", tok, body).Code {
+		case http.StatusTooManyRequests:
+			limited++
+		default:
+			attempted++
+		}
+	}
+	if attempted != 3 {
+		t.Fatalf("%d registration attempts reached the signature path, want the cap of 3", attempted)
+	}
+	if limited == 0 {
+		t.Fatal("no attempt was rate limited")
+	}
+	// Per user, not global.
+	if code := h.req("POST", "/api/v1/writers/register", other, body).Code; code == http.StatusTooManyRequests {
+		t.Fatal("one account's failed attempts rate-limited another account")
 	}
 }
 
