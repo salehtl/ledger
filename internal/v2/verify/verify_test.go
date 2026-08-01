@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -337,6 +338,16 @@ func diagRow(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, at time.Time,
 	t.Helper()
 	diagSeq++
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", u, diagSeq)))
+	return diagRowFor(t, pool, u, sum[:], at, event, outcome, tier, reason)
+}
+
+// diagRowFor writes a row for an EXPLICIT ingest id, so a test can build several
+// rows about the SAME message — which is what every identity-level check in this
+// file is about, and what diagRow's per-call digest cannot express.
+func diagRowFor(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte, at time.Time,
+	event, outcome, tier, reason string) []byte {
+	t.Helper()
+	sum := [32]byte(id)
 	var user any = u
 	if u == uuid.Nil {
 		user = nil
@@ -563,8 +574,8 @@ func TestAccountingReconcilesAPromotedAndAnExpiredHold(t *testing.T) {
 		t.Fatalf("expected holds = %d, want 3 (2 quarantined + 1 normalizer failure, "+
 			"and NOT the too_large refusal)", rep.Quarantine.Expected)
 	}
-	if rep.Quarantine.Held != 1 || rep.Quarantine.Removed != 2 {
-		t.Fatalf("quarantine reconciliation = %+v, want held 1 / removed 2", rep.Quarantine)
+	if rep.Quarantine.Held != 1 || rep.Quarantine.Expired != 1 || rep.Quarantine.Promoted != 1 {
+		t.Fatalf("quarantine reconciliation = %+v, want held 1 / expired 1 / promoted 1", rep.Quarantine)
 	}
 	if rep.Quarantine.Untraced != 0 {
 		t.Fatalf("untraced = %d, want 0", rep.Quarantine.Untraced)
@@ -651,5 +662,329 @@ func TestAccountingWindowIsHalfOpen(t *testing.T) {
 	}
 	if rep.InboundTotal != 0 {
 		t.Fatalf("inbound_total = %d, want 0 with the row just below the window", rep.InboundTotal)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The dedup lane: a duplicate is a CLAIM that we already hold the message
+// ---------------------------------------------------------------------------
+
+// expire puts a message through the state Task 29's fix closed: held, then the
+// hold expires and is traced away. The message is gone, and the trace says so.
+func expire(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte, at time.Time) {
+	t.Helper()
+	exec(t, pool, `INSERT INTO quarantine_removals
+	  (quarantine_id, user_id, ingest_id, received_at, expires_at, warned_at, removed_at,
+	   reason, outer_domain, attested, size_bucket)
+	  VALUES ($1,$2,$3,$4::timestamptz,$4::timestamptz + interval '30 days',$4,$4,
+	          'expired','bank.test',false,1024)`, uuid.New(), u, id, at)
+}
+
+func promote(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte, at time.Time) {
+	t.Helper()
+	exec(t, pool, `INSERT INTO quarantine_removals
+	  (quarantine_id, user_id, ingest_id, received_at, expires_at, warned_at, removed_at,
+	   reason, outer_domain, attested, size_bucket)
+	  VALUES ($1,$2,$3,$4::timestamptz,$4::timestamptz + interval '30 days',$4,$4,
+	          'promoted','bank.test',false,1024)`, uuid.New(), u, id, at)
+}
+
+// TestAccountingDetectsADuplicateOfAMessageWeNoLongerHold is the drop class the
+// first version of this instrument certified as healthy.
+//
+// The sequence, all of it legal against every constraint: a message is
+// quarantined; the hold expires and is traced away with a removal record, which
+// satisfies the quarantine reconciliation completely; the sender retries; the
+// retry is refused as a 'duplicate' of a message that no longer exists anywhere.
+// Nothing is stored, and the equation not only balanced but counted the lost
+// email TWICE in inbound_total — so the drop INFLATED the number the exit
+// criterion is read off.
+//
+// Task 29's fix (b65c8f8) means the pipeline can no longer produce this. That is
+// exactly why the verifier must be able to see it: an instrument whose only
+// evidence is that the code is currently correct is not an instrument.
+func TestAccountingDetectsADuplicateOfAMessageWeNoLongerHold(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now := time.Now().UTC()
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+
+	id := arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
+	expire(t, pool, u, id, now)
+	diagRowFor(t, pool, u, id, now, diag.EventArrival, diag.OutcomeDuplicate, diag.TierNone, "")
+
+	rep, err := Accounting(bg, pool, from, to)
+	if err != nil {
+		t.Fatalf("Accounting: %v", err)
+	}
+	// The precondition: everything the old instrument looked at is spotless.
+	if rep.Unaccounted != 0 || rep.Quarantine.Untraced != 0 {
+		t.Fatalf("precondition lost: unaccounted %d, untraced %d — this test only proves "+
+			"something if the OLD checks pass", rep.Unaccounted, rep.Quarantine.Untraced)
+	}
+	if rep.Discarded != 1 {
+		t.Fatalf("discarded = %d, want 1: a 'duplicate' whose message is in no store is a "+
+			"message we threw away", rep.Discarded)
+	}
+	if !hasFinding(rep.Findings(), A3DuplicateOfNothing) {
+		t.Fatalf("findings %v do not include %s", ids(rep.Findings()), A3DuplicateOfNothing)
+	}
+	if rep.Err() == nil {
+		t.Fatal("Err() is nil for a message that was received twice and kept zero times")
+	}
+}
+
+// The other side of the same check: every state in which a duplicate is a
+// CORRECT refusal must stay silent, or the finding is noise. These are exactly
+// the three sources ingest.alreadyHandled consults, which is the point — the
+// verifier re-asks the question the pipeline answered, against the store as it
+// is NOW rather than as it was then.
+func TestADuplicateOfSomethingWeStillHoldIsHealthy(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name  string
+		store func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte)
+	}{
+		{"the op was appended", func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte) {
+			diagRowFor(t, pool, u, id, now, diag.EventArrival, diag.OutcomeAppended, diag.TierTemplate, "")
+		}},
+		{"a re-parse superseded it", func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte) {
+			diagRowFor(t, pool, u, id, now, diag.EventReprocess, diag.OutcomeSuperseded, diag.TierTemplate, "")
+		}},
+		{"it is still held", func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte) {
+			diagRowFor(t, pool, u, id, now, diag.EventArrival, diag.OutcomeQuarantined, diag.TierNone, "")
+			hold(t, pool, u, id, now)
+		}},
+		{"the hold was promoted into the log", func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte) {
+			diagRowFor(t, pool, u, id, now, diag.EventArrival, diag.OutcomeQuarantined, diag.TierNone, "")
+			promote(t, pool, u, id, now)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := pgtest.New(t)
+			u := insertUser(t, pool)
+			id := sha256.Sum256([]byte("one message"))
+			tc.store(t, pool, u, id[:])
+			diagRowFor(t, pool, u, id[:], now, diag.EventArrival, diag.OutcomeDuplicate, diag.TierNone, "")
+
+			rep, err := Accounting(bg, pool, now.Add(-time.Hour), now.Add(time.Hour))
+			if err != nil {
+				t.Fatalf("Accounting: %v", err)
+			}
+			if rep.Discarded != 0 {
+				t.Fatalf("discarded = %d, want 0: refusing a redelivery of something we hold "+
+					"is the dedup lane working", rep.Discarded)
+			}
+			if err := rep.Err(); err != nil {
+				t.Fatalf("a correct duplicate refusal reports a failure: %v", err)
+			}
+		})
+	}
+}
+
+// TestQuarantineReconciliationComparesIdentitiesNotCounts.
+//
+// Untraced was `max(0, Expected - Accounted)` — arithmetic on two totals. One
+// message lost and one message held whose diagnostics row never landed are
+// opposite errors of size one, so together they cancel and the report reads
+// clean. The second condition is the `diagnostics_write_failure` blind spot,
+// which the report itself describes as routine — so the one cross-store check
+// was disarmed by a documented-normal event.
+func TestQuarantineReconciliationComparesIdentitiesNotCounts(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now := time.Now().UTC()
+
+	// (a) held mail that vanished with no removal record.
+	lost := arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
+	hold(t, pool, u, lost, now)
+	exec(t, pool, `ALTER TABLE quarantine DISABLE TRIGGER quarantine_no_untraced_removal`)
+	exec(t, pool, `DELETE FROM quarantine WHERE ingest_id = $1`, lost)
+
+	// (b) a message genuinely held whose diagnostics row failed to write.
+	orphan := sha256.Sum256([]byte("held but unrecorded"))
+	hold(t, pool, u, orphan[:], now)
+
+	rep, err := Accounting(bg, pool, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Accounting: %v", err)
+	}
+	if rep.Quarantine.Untraced != 1 {
+		t.Fatalf("untraced = %d, want 1: an equal and opposite extra must not cancel a loss "+
+			"(%+v)", rep.Quarantine.Untraced, rep.Quarantine)
+	}
+	if rep.Quarantine.Extra != 1 {
+		t.Fatalf("extra = %d, want 1 reported in its own right", rep.Quarantine.Extra)
+	}
+	if !hasFinding(rep.Findings(), A2QuarantineUntraced) {
+		t.Fatalf("findings %v do not include %s", ids(rep.Findings()), A2QuarantineUntraced)
+	}
+}
+
+// Held mail that DIED unpromoted is the number an operator most wants, and it
+// was summed into one 'Removed' with the promotions.
+func TestAccountingSeparatesExpiredHoldsFromPromotedOnes(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now := time.Now().UTC()
+
+	for i := 0; i < 3; i++ {
+		expire(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, ""), now)
+	}
+	promote(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, ""), now)
+
+	rep, err := Accounting(bg, pool, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Accounting: %v", err)
+	}
+	if rep.Quarantine.Expired != 3 || rep.Quarantine.Promoted != 1 {
+		t.Fatalf("quarantine = %+v, want expired 3 / promoted 1", rep.Quarantine)
+	}
+	if rep.Quarantine.Untraced != 0 {
+		t.Fatalf("untraced = %d, want 0", rep.Quarantine.Untraced)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S5: the counter is the only witness a truncated log has
+// ---------------------------------------------------------------------------
+
+// S1 answers "are there holes between the rows that survive". It cannot answer
+// "were there more rows" — deleting the TAIL leaves 1..N-1, which is dense, and
+// deleting everything leaves nothing to be dense about. Restoring from a short
+// backup produces exactly the first; a botched purge produces the second. Both
+// are the most likely real loss, and both were zero findings.
+//
+// oplog_seq.next_seq is the witness: no production path deletes an op row, and a
+// rolled-back append restores the counter, so next_seq == max(seq)+1 exactly.
+func TestS5DetectsATruncatedTail(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	appendHot(t, pool, u, 5)
+
+	exec(t, pool, `DELETE FROM op_log WHERE user_id = $1 AND seq = 5`, u)
+
+	got, err := Structural(bg, pool)
+	if err != nil {
+		t.Fatalf("Structural: %v", err)
+	}
+	if hasFinding(got, S1SeqDense) {
+		t.Fatal("S1 reported a truncated tail; if it can, this test is not about S5")
+	}
+	if !hasFinding(got, S5CounterMatchesHead) {
+		t.Fatalf("findings %v do not include %s: 4 dense rows under a counter that says 6 "+
+			"means a row was destroyed", ids(got), S5CounterMatchesHead)
+	}
+}
+
+func TestS5DetectsAWhollyDeletedLog(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	appendHot(t, pool, u, 3)
+
+	exec(t, pool, `DELETE FROM op_log WHERE user_id = $1`, u)
+
+	got, err := Structural(bg, pool)
+	if err != nil {
+		t.Fatalf("Structural: %v", err)
+	}
+	if !hasFinding(got, S5CounterMatchesHead) {
+		t.Fatalf("findings %v do not include %s: an empty log under a counter of 4 is not "+
+			"a new account", ids(got), S5CounterMatchesHead)
+	}
+}
+
+func TestS5IsSilentOnAHealthyAndOnAnEmptyLog(t *testing.T) {
+	pool := pgtest.New(t)
+	busy := insertUser(t, pool)
+	appendPairs(t, pool, busy, 3)
+	insertUser(t, pool) // never wrote an op: next_seq 1, no rows, and that is correct
+
+	got, err := Structural(bg, pool)
+	if err != nil {
+		t.Fatalf("Structural: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("clean database yields %v, want none", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The blind-spot list has to be able to go stale LOUDLY
+// ---------------------------------------------------------------------------
+
+// TestBlindSpotsNameEveryInboundDeliveryPath.
+//
+// BlindSpots was prose with nothing holding it to the code, and it went stale in
+// one commit: the relay landed a whole second inbound mode that writes a message
+// to disk and no parse_diagnostics row at all, so its mail is invisible to
+// inbound_total — and nothing failed.
+//
+// A delivery path IS an implementation of smtpd.Handler. Enumerating them from
+// the source means a third one cannot arrive without either writing diagnostics
+// or being declared here.
+func TestBlindSpotsNameEveryInboundDeliveryPath(t *testing.T) {
+	found, err := inboundHandlers("../..")
+	if err != nil {
+		t.Fatalf("scanning for smtpd.Handler implementations: %v", err)
+	}
+	// The scanner must not pass by finding nothing.
+	for _, want := range []string{"Pipeline", "Relay"} {
+		if !slices.Contains(found, want) {
+			t.Fatalf("the scan found %v, which does not include the known handler %q — "+
+				"the search is broken, so a green result would mean nothing", found, want)
+		}
+	}
+	for _, h := range found {
+		if _, ok := InboundPaths[h]; !ok {
+			t.Errorf("%s implements smtpd.Handler and is a way mail enters this system, but "+
+				"verify.InboundPaths does not classify it. Either it writes a parse_diagnostics "+
+				"row (say so) or its mail is invisible to inbound_total (add a BlindSpot).", h)
+		}
+	}
+	for h, p := range InboundPaths {
+		if !slices.Contains(found, h) {
+			t.Errorf("verify.InboundPaths classifies %q, which no longer implements "+
+				"smtpd.Handler; a stale entry is how the list stops being read", h)
+		}
+		if p.BlindSpot == "" {
+			continue
+		}
+		if !slices.ContainsFunc(BlindSpots, func(b BlindSpot) bool { return b.ID == p.BlindSpot }) {
+			t.Errorf("inbound path %q names blind spot %q, which is not in BlindSpots", h, p.BlindSpot)
+		}
+	}
+}
+
+func TestBlindSpotsNameTheRelaySpoolAndTheRetentionCascade(t *testing.T) {
+	joined := strings.Join(blindSpotIDs(BlindSpots), " ")
+	for _, want := range []string{
+		"relay_spool_writes_no_diagnostics",
+		"retention_and_deletion_shrink_past_windows",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("blind spots %q do not name %q", joined, want)
+		}
+	}
+}
+
+func TestProtocolRejectionDaysDoNotOverrunADayAlignedWindow(t *testing.T) {
+	pool := pgtest.New(t)
+	from := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	exec(t, pool, `INSERT INTO smtp_rejections (day, reason, count)
+	               VALUES ('2026-08-14','unknown_rcpt',3), ('2026-08-15','unknown_rcpt',9)`)
+
+	rep, err := Accounting(bg, pool, from, to)
+	if err != nil {
+		t.Fatalf("Accounting: %v", err)
+	}
+	if rep.ProtocolRejections["unknown_rcpt"] != 3 {
+		t.Fatalf("unknown_rcpt = %d, want 3: [Aug 1 00:00Z, Aug 15 00:00Z) does not contain "+
+			"Aug 15, and a window an operator aligned to whole days must not silently widen",
+			rep.ProtocolRejections["unknown_rcpt"])
+	}
+	if rep.RejectionDays[1] != "2026-08-14" {
+		t.Fatalf("rejection days = %v, want the range to end 2026-08-14", rep.RejectionDays)
 	}
 }

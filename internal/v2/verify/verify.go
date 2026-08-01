@@ -55,6 +55,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/blob"
@@ -88,6 +89,20 @@ const (
 	// S4BucketValid: octet_length(blob) == size_bucket, and size_bucket is one
 	// of the seven rungs of blob.Buckets.
 	S4BucketValid = "S4_bucket_valid"
+	// S5CounterMatchesHead: per user, oplog_seq.next_seq == max(seq)+1 exactly.
+	//
+	// This is the only invariant that can see mail that is GONE rather than
+	// out of order. S1 asks whether the surviving rows have holes between them,
+	// which a truncated TAIL does not — 1..N-1 is perfectly dense, and an
+	// entirely deleted log has nothing to be dense about. Restoring from a
+	// short backup produces the first and a botched repair the second, and they
+	// are the most likely real loss this system will ever see.
+	//
+	// The counter is the witness because nothing in production deletes an op
+	// row and a rolled-back append restores the counter rather than burning the
+	// value (00002_oplog.sql), so the equality is exact rather than an
+	// approximation with slack.
+	S5CounterMatchesHead = "S5_counter_matches_head"
 
 	// A1UnaccountedRow: a diagnostics row this build cannot classify — an
 	// event or an outcome the database accepted and the constants here do not
@@ -98,6 +113,9 @@ const (
 	// A2QuarantineUntraced: mail the diagnostics ledger says was held, which is
 	// neither still held nor recorded as removed.
 	A2QuarantineUntraced = "A2_quarantine_untraced"
+	// A3DuplicateOfNothing: a message refused as a 'duplicate' that is in no
+	// store at all — not appended, not held, not promoted. See [Report].
+	A3DuplicateOfNothing = "A3_duplicate_of_nothing"
 )
 
 // Paging. A row's blob can be a megabyte, so a row count alone bounds nothing:
@@ -187,6 +205,44 @@ func structuralUser(ctx context.Context, pool *pgxpool.Pool, u uuid.UUID) ([]Fin
 		out = append(out, Finding{ID: S1SeqDense, UserID: u, Detail: fmt.Sprintf(
 			"%d rows spanning seq %d..%d: a dense log has min 1 and max == count, so %d position(s) are missing",
 			n, lo, hi, hi-n)})
+	}
+
+	// --- S5: the counter agrees with the head --------------------------------
+	//
+	// Read in ONE statement with max(seq). Two statements are two snapshots, and
+	// an append committing between them reports a break on a healthy log — the
+	// counter row is UPDATEd inside the append transaction, so a reader that saw
+	// the old counter and the new head would see next_seq <= max(seq) and cry
+	// wolf on the busiest accounts.
+	var (
+		nextSeq int64
+		headSeq int64
+		haveSeq bool
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT s.next_seq, coalesce(max(o.seq), 0)
+		  FROM oplog_seq s LEFT JOIN op_log o ON o.user_id = s.user_id
+		 WHERE s.user_id = $1
+		 GROUP BY s.next_seq`, u).Scan(&nextSeq, &headSeq)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// No counter row. Harmless for an account that has never written an op
+		// (auth.UpsertUser creates it, so this is a pre-EnsureSeqRow account);
+		// a hole in the evidence for one that has.
+		if n > 0 {
+			out = append(out, Finding{ID: S5CounterMatchesHead, UserID: u, Detail: fmt.Sprintf(
+				"%d op rows exist but this account has no oplog_seq row, so there is nothing "+
+					"left that knows how many ops it should have", n)})
+		}
+	case err != nil:
+		return nil, fmt.Errorf("verify: seq counter for user %s: %w", u, err)
+	default:
+		haveSeq = true
+	}
+	if haveSeq && nextSeq != headSeq+1 {
+		out = append(out, Finding{ID: S5CounterMatchesHead, UserID: u, Detail: fmt.Sprintf(
+			"oplog_seq.next_seq is %d and the highest stored seq is %d: %d op(s) were assigned "+
+				"a position and are no longer stored", nextSeq, headSeq, nextSeq-1-headSeq)})
 	}
 
 	// --- S2/S3/S4: one pass per stream, in seq order -------------------------
@@ -450,6 +506,42 @@ var BlindSpots = []BlindSpot{
 			"quarantine are the authoritative stores; parse_diagnostics is the instrument.",
 	},
 	{
+		ID: "relay_spool_writes_no_diagnostics", Direction: Undercount,
+		Reason: "the backup MX (relay mode) accepts mail on port 25 and writes it to a disk " +
+			"spool with NO parse_diagnostics row: it deliberately has no database, because a " +
+			"second box on the internet holding a copy of the schema is what that design " +
+			"refuses. Mail that arrives at the relay is therefore invisible to inbound_total " +
+			"until the drain delivers it to the primary, which then counts it as an ordinary " +
+			"arrival. A relay holding an undrained spool is a real gap between what was " +
+			"received and what this report says; the spool's own file count is the only place " +
+			"it is visible. Pinned by verify.InboundPaths.",
+	},
+	{
+		ID: "retention_and_deletion_shrink_past_windows", Direction: Undercount,
+		Reason: "parse_diagnostics rows cascade away with the account (§3.10) and with the " +
+			"plaintext retention sweep, so re-running a window that has already been reported " +
+			"returns SMALLER numbers than the first run, with nothing to say why. Two reports " +
+			"over the same period are not comparable across a deletion. Deliberate — the " +
+			"alternative is a record about somebody who asked to be forgotten — but it means " +
+			"an exit measurement has to be taken and kept, not recomputed later.",
+	},
+	{
+		ID: "quarantine_expiry_is_an_announced_drop", Direction: Undercount,
+		Reason: "an expired hold IS mail that was dropped: the user was warned and the removal " +
+			"is recorded, which is what §2's drop policy requires, but the message is gone and " +
+			"was never in the log. It is reported as quarantine.expired rather than folded " +
+			"into the arrival split, because it happens long after the window the message " +
+			"arrived in and would otherwise make two windows disagree about the same email.",
+	},
+	{
+		ID: "inbound_total_counts_deliveries_not_emails", Direction: Overcount,
+		Reason: "one row per DELIVERY ATTEMPT that resolved a recipient, not one per distinct " +
+			"message: a retried message contributes an 'appended' and one or more 'duplicate' " +
+			"rows, and ingest's dedup window can append the same bytes up to N times under " +
+			"concurrent delivery. Report.InboundIdentities counts distinct (user, ingest id) " +
+			"beside it, which is the per-EMAIL number the exit criterion is about.",
+	},
+	{
 		ID: "rejection_day_granularity", Direction: Overcount,
 		Reason: "smtp_rejections is a per-UTC-day aggregate with no finer resolution, so a " +
 			"window that does not start and end on a day boundary includes whole days at both " +
@@ -470,19 +562,29 @@ type QuarantineRecon struct {
 	// normalizer failures, which are held too.
 	Expected int64 `json:"expected"`
 	Held     int64 `json:"held"`
-	Removed  int64 `json:"removed"`
-	// Accounted is the distinct union of the two: a message held, promoted and
-	// held again is one identity, not two.
+	// Expired and Promoted split quarantine_removals by reason, because they
+	// are opposite facts. A promoted hold entered the op log; an EXPIRED hold is
+	// mail that died unread, which is a drop — an announced one, with a warning
+	// the user saw (00008_quarantine.sql), but a drop. Summing them into one
+	// "removed" hid the single number an operator most wants from this report.
+	Expired  int64 `json:"expired"`
+	Promoted int64 `json:"promoted"`
+	// Accounted is the distinct union of held and removed: a message held,
+	// promoted and held again is one identity, not two.
 	Accounted int64 `json:"accounted"`
-	// Untraced is held mail that is neither present nor recorded as removed.
-	// This is the hard failure: the BEFORE DELETE trigger on quarantine makes it
-	// impossible on the normal path, so a non-zero value means something walked
-	// past the trigger.
+	// Untraced is held mail that is neither present nor recorded as removed,
+	// counted as a SET DIFFERENCE and not as Expected-Accounted.
+	//
+	// The subtraction was wrong in a way that mattered: one message lost and one
+	// message held whose diagnostics row never landed are opposite errors of
+	// size one, so they cancelled and the report read clean. The second half of
+	// that pair is the diagnostics_write_failure blind spot, which this very
+	// report describes as routine — so the one genuine cross-store check in the
+	// instrument was disarmed by a documented-normal event.
 	Untraced int64 `json:"untraced"`
 	// Extra is the opposite direction and is NOT a failure — see
-	// diagnostics_write_failure in [BlindSpots]. A message can be held with no
-	// diagnostics row, and reporting that as an error would train an operator to
-	// ignore this line.
+	// diagnostics_write_failure in [BlindSpots]. It is now an independent set
+	// difference, so it can no longer mask an Untraced.
 	Extra int64 `json:"extra"`
 }
 
@@ -511,9 +613,16 @@ type Report struct {
 	From time.Time `json:"from"`
 	To   time.Time `json:"to"`
 
-	InboundTotal int64            `json:"inbound_total"`
-	Arrival      map[string]int64 `json:"arrival"`
-	Reprocess    map[string]int64 `json:"reprocess"`
+	InboundTotal int64 `json:"inbound_total"`
+	// InboundIdentities counts DISTINCT (user, ingest id) arrivals in the same
+	// window. InboundTotal counts delivery attempts that resolved a recipient,
+	// which is not the same thing and is the larger number: a retried message
+	// contributes an 'appended' and one or more 'duplicate' rows. The exit
+	// criterion is about EMAILS, so both are printed and the difference is the
+	// redelivery traffic.
+	InboundIdentities int64            `json:"inbound_identities"`
+	Arrival           map[string]int64 `json:"arrival"`
+	Reprocess         map[string]int64 `json:"reprocess"`
 
 	// UnknownOutcomes names what could not be classified, so an operator can act
 	// on it. In a database whose CHECK constraints are intact this is always
@@ -528,7 +637,14 @@ type Report struct {
 	RejectionDays [2]string `json:"rejection_days"`
 
 	Quarantine QuarantineRecon `json:"quarantine"`
-	BlindSpots []BlindSpot     `json:"blind_spots"`
+
+	// Discarded counts messages refused as a 'duplicate' whose bytes are in no
+	// store at all. See the equation note above: this is the drop class the
+	// arrival split cannot express, because a duplicate is an ASSERTION about
+	// another row rather than a fact about itself.
+	Discarded int64 `json:"discarded"`
+
+	BlindSpots []BlindSpot `json:"blind_spots"`
 }
 
 // ArrivalSum adds the NAMED arrival outcomes only. It excludes Unaccounted on
@@ -568,6 +684,13 @@ func (r Report) Findings() []Finding {
 		out = append(out, Finding{ID: A1UnaccountedRow, Detail: fmt.Sprintf(
 			"%d row(s) carry the event/outcome pair %q, which this build cannot classify: "+
 				"the equation cannot close over a row nobody can name", r.UnknownOutcomes[o], o)})
+	}
+	if r.Discarded > 0 {
+		out = append(out, Finding{ID: A3DuplicateOfNothing, Detail: fmt.Sprintf(
+			"%d message(s) were refused as a duplicate of something this server does not have: "+
+				"not appended, not held, and not promoted. A duplicate is a CLAIM that we "+
+				"already kept the message; where the claim is false the message was discarded, "+
+				"and it was counted twice in inbound_total on the way out", r.Discarded)})
 	}
 	if r.Quarantine.Untraced > 0 {
 		out = append(out, Finding{ID: A2QuarantineUntraced, Detail: fmt.Sprintf(
@@ -646,10 +769,21 @@ func Accounting(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) (Re
 		return Report{}, fmt.Errorf("verify: accounting: %w", err)
 	}
 
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM (
+	      SELECT DISTINCT user_id, ingest_id FROM parse_diagnostics
+	       WHERE event = 'arrival' AND user_id IS NOT NULL
+	         AND received_at >= $1 AND received_at < $2) t`,
+		from, to).Scan(&rep.InboundIdentities); err != nil {
+		return Report{}, fmt.Errorf("verify: accounting: distinct arrivals: %w", err)
+	}
+
 	if err := rep.readRejections(ctx, pool, from, to); err != nil {
 		return Report{}, err
 	}
 	if err := rep.readQuarantine(ctx, pool); err != nil {
+		return Report{}, err
+	}
+	if err := rep.readDiscarded(ctx, pool, from, to); err != nil {
 		return Report{}, err
 	}
 	return rep, nil
@@ -676,8 +810,20 @@ func zeroed(keys []string) map[string]int64 {
 }
 
 func (r *Report) readRejections(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) error {
+	// The window is half-open, so the LAST day summed is the day containing the
+	// instant just before `to`. Formatting `to` itself adds a whole extra day
+	// whenever an operator does the natural thing and aligns the window to
+	// midnight: [Aug 1 00:00Z, Aug 15 00:00Z) is fourteen days, and summing
+	// through "2026-08-15" silently reported fifteen.
+	//
+	// The subtraction is a microsecond because that is Postgres's timestamptz
+	// resolution; a nanosecond is not representable and would round back to `to`.
+	last := to.UTC().Add(-time.Microsecond)
+	if !last.After(from.UTC()) {
+		last = from.UTC()
+	}
 	r.RejectionDays = [2]string{
-		from.UTC().Format("2006-01-02"), to.UTC().Format("2006-01-02"),
+		from.UTC().Format("2006-01-02"), last.Format("2006-01-02"),
 	}
 	rows, err := pool.Query(ctx, `SELECT reason, coalesce(sum(count),0) FROM smtp_rejections
 	  WHERE day >= $1::date AND day <= $2::date GROUP BY reason`,
@@ -711,35 +857,89 @@ SELECT count(*) FROM (
      AND (outcome = 'quarantined' OR (outcome = 'rejected' AND reject_reason = ANY($1)))
 ) t`
 
+// storedIdentitiesSQL is every (user, ingest id) this server can still show
+// somebody, from the diagnostics ledger and the quarantine tables together.
+//
+// It is deliberately the SAME three sources ingest.alreadyHandled consults to
+// decide that a redelivery is a duplicate: an appended or superseded op, a live
+// hold, or a promoted removal. That symmetry is the whole check — the pipeline
+// answered "we already have this" at delivery time, and the verifier re-asks the
+// identical question against the store as it is NOW.
+const storedIdentitiesSQL = `
+  SELECT user_id, ingest_id FROM parse_diagnostics
+   WHERE user_id IS NOT NULL AND outcome IN ('appended','superseded')
+  UNION
+  SELECT user_id, ingest_id FROM quarantine
+  UNION
+  SELECT user_id, ingest_id FROM quarantine_removals WHERE reason = 'promoted'`
+
+// discardedDuplicatesSQL counts messages refused as a duplicate that no store
+// holds.
+//
+// The duplicates are WINDOWED and the evidence is not: the original of a
+// redelivery is routinely older than the window being reported on, and requiring
+// it to be inside would report every legitimate retry across a window boundary
+// as a drop.
+//
+// The stored set is PARENTHESIZED. EXCEPT and UNION share a precedence level in
+// SQL and associate left to right, so `a EXCEPT b UNION c` means
+// `(a EXCEPT b) UNION c` — which adds every quarantined message to the answer
+// instead of subtracting it, and reports held mail as discarded. Caught by the
+// healthy-duplicate cases below, which is exactly what they are for.
+const discardedDuplicatesSQL = `
+SELECT count(*) FROM (
+  (SELECT DISTINCT user_id, ingest_id FROM parse_diagnostics
+    WHERE event = 'arrival' AND outcome = 'duplicate' AND user_id IS NOT NULL
+      AND received_at >= $1 AND received_at < $2)
+  EXCEPT
+  (` + storedIdentitiesSQL + `)
+) t`
+
+// heldSetSQL and removedSetSQL are the two sides of the quarantine
+// reconciliation, as SETS. See QuarantineRecon.Untraced for why this is not
+// arithmetic on two totals.
+const heldSetSQL = `
+  SELECT DISTINCT user_id, ingest_id FROM parse_diagnostics
+   WHERE event = 'arrival' AND user_id IS NOT NULL
+     AND (outcome = 'quarantined' OR (outcome = 'rejected' AND reject_reason = ANY($1)))`
+
+const removedSetSQL = `
+  SELECT user_id, ingest_id FROM quarantine
+  UNION
+  SELECT user_id, ingest_id FROM quarantine_removals`
+
 func (r *Report) readQuarantine(ctx context.Context, pool *pgxpool.Pool) error {
 	q := &r.Quarantine
-	if err := pool.QueryRow(ctx, heldExpectedSQL, heldReasons).Scan(&q.Expected); err != nil {
-		return fmt.Errorf("verify: accounting: expected holds: %w", err)
+	counts := []struct {
+		into *int64
+		sql  string
+		args []any
+	}{
+		{&q.Expected, `SELECT count(*) FROM (` + heldSetSQL + `) t`, []any{heldReasons}},
+		{&q.Held, `SELECT count(*) FROM (SELECT DISTINCT user_id, ingest_id FROM quarantine) t`, nil},
+		{&q.Expired, `SELECT count(*) FROM (SELECT DISTINCT user_id, ingest_id
+		               FROM quarantine_removals WHERE reason = 'expired') t`, nil},
+		{&q.Promoted, `SELECT count(*) FROM (SELECT DISTINCT user_id, ingest_id
+		                FROM quarantine_removals WHERE reason = 'promoted') t`, nil},
+		{&q.Accounted, `SELECT count(*) FROM (` + removedSetSQL + `) t`, nil},
+		// The two set differences, each computed independently so neither can
+		// cancel the other.
+		{&q.Untraced, `SELECT count(*) FROM ((` + heldSetSQL + `) EXCEPT (` + removedSetSQL + `)) t`,
+			[]any{heldReasons}},
+		{&q.Extra, `SELECT count(*) FROM ((` + removedSetSQL + `) EXCEPT (` + heldSetSQL + `)) t`,
+			[]any{heldReasons}},
 	}
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM (SELECT DISTINCT user_id, ingest_id FROM quarantine) t`).
-		Scan(&q.Held); err != nil {
-		return fmt.Errorf("verify: accounting: held: %w", err)
+	for _, c := range counts {
+		if err := pool.QueryRow(ctx, c.sql, c.args...).Scan(c.into); err != nil {
+			return fmt.Errorf("verify: accounting: quarantine reconciliation: %w", err)
+		}
 	}
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM (SELECT DISTINCT user_id, ingest_id FROM quarantine_removals) t`).
-		Scan(&q.Removed); err != nil {
-		return fmt.Errorf("verify: accounting: removals: %w", err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM (
-	      SELECT user_id, ingest_id FROM quarantine
-	      UNION
-	      SELECT user_id, ingest_id FROM quarantine_removals) t`).Scan(&q.Accounted); err != nil {
-		return fmt.Errorf("verify: accounting: reconciliation: %w", err)
-	}
-	q.Untraced = max64(0, q.Expected-q.Accounted)
-	q.Extra = max64(0, q.Accounted-q.Expected)
 	return nil
 }
 
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
+func (r *Report) readDiscarded(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) error {
+	if err := pool.QueryRow(ctx, discardedDuplicatesSQL, from, to).Scan(&r.Discarded); err != nil {
+		return fmt.Errorf("verify: accounting: discarded duplicates: %w", err)
 	}
-	return b
+	return nil
 }

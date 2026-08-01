@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"crypto/sha256"
 	"errors"
 	"math"
 	"strings"
@@ -356,4 +357,97 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestParseRateCountsAMessageOnceHoweverManyTimesItWasAppended.
+//
+// ingest.alreadyHandled is a read followed by an append with no lock between
+// them, and its own doc measures the window at 8 appends for one message. The
+// numerator counted ROWS while the population counted distinct (user, ingest_id)
+// identities, so every one of those races added 1 to the numerator and 0 to the
+// denominator — the concurrency window inflated the number the exit gate is read
+// off, in the direction that passes the gate.
+func TestParseRateCountsAMessageOnceHoweverManyTimesItWasAppended(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	raced := sha256.Sum256([]byte("one message, eight appends"))
+	for i := 0; i < 8; i++ {
+		diagRowFor(t, pool, u, raced[:], now, diag.EventArrival, diag.OutcomeAppended, diag.TierTemplate, "")
+	}
+	id := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierNone, "")
+	adjudicate(t, pool, u, id, VerdictTransaction)
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.Parsed != 1 {
+		t.Fatalf("parsed = %d, want 1: eight appends of one email are one email", rep.Parsed)
+	}
+	if want := 0.5; math.Abs(rep.Rate-want) > 1e-9 {
+		t.Fatalf("rate = %v, want %v (1 parsed of 2 messages, not 8 of 9)", rep.Rate, want)
+	}
+}
+
+// TestParseRateMeasuresPromotedQuarantineMail.
+//
+// Under trust-on-first-use every sender's FIRST batch is quarantined, then
+// promoted and parsed once the user confirms them. The promote writes
+// event='reprocess'; the population and the numerator both read event='arrival'
+// only, so that mail left through Excluded['quarantined'] and never came back.
+// The rate was measured over the mail from senders that were already trusted —
+// which is the mail most likely to parse.
+func TestParseRateMeasuresPromotedQuarantineMail(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	// One ordinary parsed arrival.
+	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+
+	// A held message, later promoted and parsed by a template.
+	good := arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
+	promote(t, pool, u, good, now)
+	diagRowFor(t, pool, u, good, now.Add(time.Minute), diag.EventReprocess,
+		diag.OutcomeAppended, diag.TierTemplate, "")
+
+	// A held message, promoted, and STILL unparsed. It is a genuine parse
+	// failure and must reach the population.
+	bad := arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
+	promote(t, pool, u, bad, now)
+	diagRowFor(t, pool, u, bad, now.Add(time.Minute), diag.EventReprocess,
+		diag.OutcomeAppended, diag.TierNone, "")
+
+	// A message still sitting in quarantine: not parsed YET, and excluded.
+	stillHeld := arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
+	hold(t, pool, u, stillHeld, now)
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if !errors.Is(err, ErrUnadjudicated) {
+		t.Fatalf("ParseRate err = %v, want ErrUnadjudicated for the promoted-but-unparsed message", err)
+	}
+	if rep.Parsed != 2 {
+		t.Fatalf("parsed = %d, want 2 (one direct, one promoted then parsed)", rep.Parsed)
+	}
+	if rep.Unparsed != 1 {
+		t.Fatalf("unparsed = %d, want 1 (the promoted message no template matched): %+v",
+			rep.Unparsed, rep.Pending)
+	}
+	if len(rep.Pending) != 1 || string(rep.Pending[0].IngestID) != string(bad) {
+		t.Fatalf("pending = %+v, want exactly the promoted-and-unparsed message", rep.Pending)
+	}
+	if rep.Excluded[diag.OutcomeQuarantined] != 1 {
+		t.Fatalf("excluded = %v, want the one message that is still held", rep.Excluded)
+	}
+
+	adjudicate(t, pool, u, bad, VerdictTransaction)
+	got, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if want := 2.0 / 3.0; math.Abs(got.Rate-want) > 1e-9 {
+		t.Fatalf("rate = %v, want %v", got.Rate, want)
+	}
 }
