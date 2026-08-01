@@ -197,3 +197,60 @@ func gunzip(b []byte) ([]byte, error) {
 
 // DefaultPath is the snapshot path from LEDGER_CORPUS_DB, or "" when unset.
 func DefaultPath() string { return os.Getenv("LEDGER_CORPUS_DB") }
+
+// Rule is one row of v1's merchant -> category rule table, resolved against the
+// categories table so the category arrives as its NAME rather than a foreign
+// key into a database v2 does not have.
+type Rule struct {
+	// MatchType is v1's 'contains' | 'exact' | 'regex'. Every rule in the
+	// operator's live corpus is 'contains'; the other two are read faithfully
+	// rather than assumed away, so a caller can decide what to do with them
+	// (dict refuses 'regex' — see internal/v2/dict).
+	MatchType string
+	Pattern   string
+	Category  string
+	// Active mirrors v1's is_active. Inactive rules are returned, not
+	// filtered: "the seed skipped 1 of 270 rules" is a fact the operator
+	// should read in the output rather than infer from a count that silently
+	// does not add up.
+	Active bool
+}
+
+// Rules returns v1's categorization rules, oldest first.
+//
+// This is the operator's own accumulated knowledge — every manual and
+// AI-confirmed categorization v1 ever wrote back — and it is the seed for v2's
+// merchant dictionary (spec §3.6). It is read through this package rather than
+// with a direct sql.Open so that it inherits [Open]'s refusal to touch the live
+// database: the seed is a one-shot operator command, run by hand, which is
+// exactly the situation in which someone points a tool at /var/lib/ledger.
+//
+// Duplicates are NOT collapsed here. v1's rule table contains both exact
+// repeats and genuine conflicts (one pattern mapped to two different categories
+// by two different confirmations), and resolving those is a decision for the
+// caller with the seed's reconciliation output in front of them, not something
+// to hide inside a reader.
+func (d *DB) Rules() ([]Rule, error) {
+	rows, err := d.db.Query(`
+		SELECT r.match_type, r.pattern, c.name, r.is_active
+		FROM rules r JOIN categories c ON c.id = r.category_id
+		ORDER BY r.id`)
+	if err != nil {
+		return nil, fmt.Errorf("corpus: rules: %w", err)
+	}
+	defer rows.Close()
+	var out []Rule
+	for rows.Next() {
+		var r Rule
+		var active int
+		if err := rows.Scan(&r.MatchType, &r.Pattern, &r.Category, &active); err != nil {
+			return nil, fmt.Errorf("corpus: rules: %w", err)
+		}
+		r.Active = active != 0
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("corpus: rules: %w", err)
+	}
+	return out, nil
+}

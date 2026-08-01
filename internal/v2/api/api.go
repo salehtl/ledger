@@ -18,6 +18,7 @@
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
 //	GET  /api/v1/quarantine?after=&after_id=&limit=&include_blob=  -> {items, removed, action_needed, ...}
 //	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids}
+//	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //
 // The quarantine pair is a SEPARATE channel from sync, deliberately: held mail
 // is outside the op log and its chains until a sender is confirmed. See
@@ -97,6 +98,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -111,6 +113,7 @@ import (
 	"ledger/internal/v2/addresses"
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/config"
+	"ledger/internal/v2/dict"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/quarantine"
 )
@@ -205,6 +208,16 @@ type Server struct {
 	// nothing to quarantine.
 	Quarantine *quarantine.Store
 
+	// Dict is the global merchant dictionary (§3.6). Same rule again: nil
+	// means GET /api/v1/dictionary is not mounted. A deployment with no
+	// LEDGER_DICT_HMAC_KEY cannot count submitters at all, and a dictionary
+	// route that answers 500 is one a client retries forever.
+	//
+	// Only the READ side is reachable from this listener. Moderation is
+	// internal/v2/admin's, on the tailnet-bound listener; there is no route
+	// here that can approve anything.
+	Dict *dict.Dict
+
 	// Verifiers maps an IdP name to its verifier, and it is built ONCE per
 	// process (NewServer), never per request.
 	//
@@ -293,6 +306,26 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 		},
 		Now: now,
 	}
+	// The global merchant dictionary. The HMAC key is attached when it is
+	// configured and left empty when it is not: reading the dictionary needs
+	// no key at all, and dict refuses every WRITE without one (ErrNoKey)
+	// rather than silently hashing under an empty key. So a deployment with no
+	// LEDGER_DICT_HMAC_KEY still distributes the operator's seeded rules, and
+	// the first submission is a loud failure instead of a table of pseudonyms
+	// anyone can recompute.
+	//
+	// A malformed key is a startup error, not a warning. It is the one case
+	// where continuing would write rows under a key nobody can reproduce,
+	// which silently breaks the account-purge path (dict.ForgetSubmitter).
+	if cfg.DictHMACKey != "" {
+		key, err := dict.ParseKey(cfg.DictHMACKey)
+		if err != nil {
+			return nil, fmt.Errorf("api: NewServer: %w", err)
+		}
+		s.Dict = &dict.Dict{Pool: pool, HMACKey: key, Now: now}
+	} else {
+		s.Dict = &dict.Dict{Pool: pool, Now: now}
+	}
 	if cfg.DevAuth {
 		// TEST ONLY, and it REPLACES both verifiers rather than joining them.
 		// A process started with --dev-auth can therefore verify no real Apple
@@ -361,6 +394,9 @@ func (s *Server) Handler() http.Handler {
 	if s.Quarantine != nil {
 		mux.HandleFunc("GET /api/v1/quarantine", s.requireSession(s.handleQuarantine))
 		mux.HandleFunc("POST /api/v1/quarantine/confirm", s.requireSession(s.handleConfirmSender))
+	}
+	if s.Dict != nil {
+		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))
 	}
 
 	// Catch-all: an unrouted /api/ path answers 404 JSON rather than falling
