@@ -17,6 +17,7 @@ import (
 	"ledger/internal/v2/admin"
 	"ledger/internal/v2/api"
 	"ledger/internal/v2/config"
+	"ledger/internal/v2/dict"
 	"ledger/internal/v2/ingest"
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/samples"
@@ -151,6 +152,27 @@ func TestSeedDictionaryRefusesWithoutACorpusBeforeTouchingPostgres(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "LEDGER_CORPUS_DB") {
 		t.Fatalf("error does not name the missing input: %v", err)
+	}
+}
+
+// The dictionary retention sweep is wired into runServe, not left as a
+// function nobody calls. Spec §2 states the expiry of a submitter identifier
+// that never reaches the k threshold as a FACT, and for a while
+// dict.ExpireStaleSubmissions had no production caller at all — so the promise
+// held only in the prose. This asserts the wiring exists and survives a nil
+// store, which is the shape every other sweep here has.
+func TestDictSweepIsWiredAndToleratesNoStore(t *testing.T) {
+	done := startDictSweep(context.Background(), nil)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startDictSweep(nil) did not return a closed channel")
+	}
+	// The sweep must not silently do nothing when a store IS present: the
+	// retention window has to be a real, finite number.
+	if dict.DefaultSubmissionRetention <= 0 {
+		t.Fatalf("dict.DefaultSubmissionRetention is %v; §2 publishes an expiry, so it "+
+			"needs a finite window", dict.DefaultSubmissionRetention)
 	}
 }
 

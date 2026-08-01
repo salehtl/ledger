@@ -27,9 +27,24 @@
 --     smallest threshold at which a rare merchant stops being a single-user
 --     identifier.
 --
--- Both are required, and the requirement is enforced in SQL rather than only in
--- Go: dict_entries_publishable_rows_are_published below embeds the same
--- predicate dict.Published selects on. See "the publication invariant" there.
+-- Both are required, and both are enforced by dict.Submit and dict.Moderate,
+-- which are the only writers.
+--
+-- What the SQL adds is NARROWER than "the gates are enforced in the database",
+-- and the difference matters. dict_entries_publishable_rows_are_published
+-- below embeds the same predicate dict.Published selects on, and it guarantees
+-- exactly one thing: a row that is BEING SERVED to clients also carries a
+-- published_at, so the retraction feed can never lose an entry it already
+-- shipped. It does NOT make the gates unforgeable. A direct INSERT can still
+-- set distinct_submitter_count to 99 with no submission rows behind it, or
+-- supply its own published_at alongside an unmoderated or below-k row, and the
+-- constraint will accept it — the first of those is then served by
+-- dict.Published like any other entry.
+--
+-- That is not a hole to be plugged here: anything with INSERT on this table is
+-- the operator, who can approve an entry through the front door anyway. It is
+-- written down because a comment claiming the database enforces the gates
+-- would be relied on by the next person to skip a check in Go.
 --
 -- # Why dict_submissions has no user_id
 --

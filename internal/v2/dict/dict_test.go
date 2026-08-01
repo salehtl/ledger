@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +101,7 @@ func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 var disclosedSubmissionColumns = []string{
 	"category",
 	"created_at",
+	"key_epoch",
 	"pattern",
 	"submitter_hmac",
 }
@@ -208,8 +212,35 @@ func TestTheKThresholdMatchesTheSQLLiteralAndTheSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the publication constraint: %v", err)
 	}
-	if !strings.Contains(def, fmt.Sprintf("%d", K)) {
-		t.Fatalf("the SQL publication gate does not embed K=%d: %s", K, def)
+	// Matched as a WHOLE NUMBER against the actual comparison, not with
+	// strings.Contains(def, "3"): that passes against `>= 30` and against the
+	// '3' inside any other literal in the definition, so it would have gone on
+	// reporting agreement after the threshold silently became ten times looser.
+	m := regexp.MustCompile(`distinct_submitter_count >= (\d+)`).FindStringSubmatch(def)
+	if m == nil {
+		t.Fatalf("the SQL publication gate has no distinct_submitter_count comparison: %s", def)
+	}
+	if m[1] != strconv.Itoa(K) {
+		t.Fatalf("the SQL publication gate compares against %s, but dict.K is %d: %s", m[1], K, def)
+	}
+}
+
+// The Go floor and the SQL floor for a `contains` pattern are two spellings of
+// one rule, so pin them together the same way.
+func TestTheContainsFloorMatchesTheSQLLiteral(t *testing.T) {
+	pool := pgtest.New(t)
+	var def string
+	err := pool.QueryRow(bg, `SELECT pg_get_constraintdef(oid) FROM pg_constraint
+	                           WHERE conname = 'dict_entries_contains_patterns_have_a_floor'`).Scan(&def)
+	if err != nil {
+		t.Fatalf("read the contains floor constraint: %v", err)
+	}
+	m := regexp.MustCompile(`length\(pattern\) >= (\d+)`).FindStringSubmatch(def)
+	if m == nil {
+		t.Fatalf("the SQL contains floor has no length comparison: %s", def)
+	}
+	if m[1] != strconv.Itoa(minContainsRunes) {
+		t.Fatalf("SQL floors `contains` at %s, Go floors it at %d: %s", m[1], minContainsRunes, def)
 	}
 }
 
@@ -557,9 +588,13 @@ func TestForgetSubmitterRemovesAPurgedUsersSubmissions(t *testing.T) {
 		`SELECT distinct_submitter_count FROM dict_entries WHERE pattern='carrefour'`); got != 1 {
 		t.Fatalf("carrefour still counts %d submitters after one of its two was purged", got)
 	}
+	// spinneys had exactly one submitter, and they are gone. The entry is not
+	// left behind as a merchant string with a count of zero: erasing the
+	// pseudonym while keeping the merchant would strand the more sensitive
+	// half of the pair, forever, for an account that no longer exists.
 	if got := countRows(t, d.Pool,
-		`SELECT distinct_submitter_count FROM dict_entries WHERE pattern='spinneys'`); got != 0 {
-		t.Fatalf("spinneys still counts %d submitters after its only one was purged", got)
+		`SELECT count(*) FROM dict_entries WHERE pattern='spinneys'`); got != 0 {
+		t.Fatalf("the spinneys entry survives the purge of its only submitter (%d rows)", got)
 	}
 	// Idempotent: a re-run of a purge must not report phantom work.
 	again, err := d.ForgetSubmitter(bg, users[0])
@@ -574,8 +609,11 @@ func TestForgetSubmitterRemovesAPurgedUsersSubmissions(t *testing.T) {
 func TestExpireStaleSubmissionsDropsIdentifiersThatNeverReachedK(t *testing.T) {
 	d := newDict(t)
 	submit(t, d, mkUsers(1)[0], "CARREFOUR", "Groceries")
+	// Day-aligned, because created_at is coarsened to a whole UTC day and the
+	// database refuses anything finer.
 	if _, err := d.Pool.Exec(bg,
-		`UPDATE dict_submissions SET created_at = now() - interval '400 days'`); err != nil {
+		`UPDATE dict_submissions SET created_at =
+		   date_trunc('day', (now() - interval '400 days') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`); err != nil {
 		t.Fatal(err)
 	}
 	n, err := d.ExpireStaleSubmissions(bg, 365*24*time.Hour)
@@ -588,6 +626,275 @@ func TestExpireStaleSubmissionsDropsIdentifiersThatNeverReachedK(t *testing.T) {
 	if got := countRows(t, d.Pool,
 		`SELECT distinct_submitter_count FROM dict_entries WHERE pattern='carrefour'`); got != 0 {
 		t.Fatalf("the entry still counts %d submitters whose identifiers are gone", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Key rotation
+//
+// The k gate counts distinct HMACs. An HMAC is a function of the key, so
+// without an epoch pinned to each row, ROTATING THE KEY turns one user into as
+// many submitters as the operator has generations — and because rows are
+// deleted at K, the evidence deletes itself. Erasure breaks the same way, in
+// the direction that matters most: rotation is what you do after a breach.
+// ---------------------------------------------------------------------------
+
+// rotate returns a Dict on the same pool under a different key.
+func rotate(d *Dict, keyHex string) *Dict {
+	return &Dict{Pool: d.Pool, HMACKey: mustKey(keyHex)}
+}
+
+// Two later key generations. 32 bytes each, like `openssl rand -hex 32`.
+var (
+	keyGen2 = strings.Repeat("a1b2", 16)
+	keyGen3 = strings.Repeat("c3d4", 16)
+)
+
+func TestARotatedKeyCannotInflateTheSubmitterCount(t *testing.T) {
+	d := newDict(t)
+	u := mkUsers(1)[0]
+	submit(t, d, u, "CARREFOUR", "Groceries")
+	for _, k := range []string{keyGen2, keyGen3} {
+		// One user, one merchant, once per key generation — the whole attack.
+		// Whether the rotated Submit succeeds or refuses, the COUNT must not
+		// treat the same person as a second and third submitter.
+		_ = rotate(d, k).Submit(bg, u, "CARREFOUR", "Groceries")
+	}
+	got := countRows(t, d.Pool, `SELECT distinct_submitter_count FROM dict_entries`)
+	if got >= K {
+		t.Fatalf("one user reached distinct_submitter_count=%d by rotating the key %d times; "+
+			"the gate counts distinct HMACs, not distinct users", got, 2)
+	}
+	// And the entry must still be suppressed after an approval.
+	moderate(t, d, "CARREFOUR", "Groceries", true)
+	if pub := published(t, d); len(pub) != 0 {
+		t.Fatalf("a single user published an entry by rotating the key: %v", pub)
+	}
+}
+
+func TestForgetSubmitterRefusesWhenIdentifiersFromAnotherEpochSurvive(t *testing.T) {
+	d := newDict(t)
+	u := mkUsers(1)[0]
+	submit(t, d, u, "CARREFOUR", "Groceries")
+
+	rotated := rotate(d, keyGen2)
+	n, err := rotated.ForgetSubmitter(bg, u)
+	if err == nil {
+		t.Fatalf("ForgetSubmitter under a rotated key returned (%d, nil) — purge reads a "+
+			"non-error as complete erasure, so the account is reported deleted while the "+
+			"identifier survives", n)
+	}
+	if !errors.Is(err, ErrKeyEpoch) {
+		t.Fatalf("ForgetSubmitter returned %v, want ErrKeyEpoch", err)
+	}
+	// The row is still there — which is the point: the caller must be told, not
+	// have it silently skipped.
+	if got := countRows(t, d.Pool, `SELECT count(*) FROM dict_submissions`); got != 1 {
+		t.Fatalf("dict_submissions holds %d rows, want the 1 that could not be matched", got)
+	}
+	// Under the ORIGINAL key it still works, so the refusal is about the key,
+	// not about the row being unreachable in principle.
+	if n, err := d.ForgetSubmitter(bg, u); err != nil || n != 1 {
+		t.Fatalf("ForgetSubmitter under the original key = (%d, %v), want (1, nil)", n, err)
+	}
+}
+
+func TestVerifyKeyEpochRefusesAChangedKeyAndPassesOnAnEmptyTable(t *testing.T) {
+	d := newDict(t)
+	// Nothing stored: any key is fine, because there is nothing to fail to
+	// match. A deployment that has never taken a submission can rotate freely.
+	if err := rotate(d, keyGen2).VerifyKeyEpoch(bg); err != nil {
+		t.Fatalf("VerifyKeyEpoch on an empty table: %v", err)
+	}
+	submit(t, d, mkUsers(1)[0], "CARREFOUR", "Groceries")
+	if err := d.VerifyKeyEpoch(bg); err != nil {
+		t.Fatalf("VerifyKeyEpoch under the key that wrote the rows: %v", err)
+	}
+	err := rotate(d, keyGen2).VerifyKeyEpoch(bg)
+	if !errors.Is(err, ErrKeyEpoch) {
+		t.Fatalf("VerifyKeyEpoch under a rotated key = %v, want ErrKeyEpoch", err)
+	}
+	// The refusal has to be actionable: it must say what to do.
+	if !strings.Contains(err.Error(), "LEDGER_DICT_HMAC_KEY") {
+		t.Fatalf("the refusal does not name the key: %v", err)
+	}
+}
+
+// Rotation becomes safe again once nothing is left to orphan, which is the
+// documented recovery path and has to actually work.
+func TestRotationIsPermittedOnceTheIdentifiersAreGone(t *testing.T) {
+	d := newDict(t)
+	submit(t, d, mkUsers(1)[0], "CARREFOUR", "Groceries")
+	if _, err := d.ExpireStaleSubmissions(bg, time.Nanosecond); err != nil {
+		t.Fatalf("ExpireStaleSubmissions: %v", err)
+	}
+	if err := rotate(d, keyGen2).VerifyKeyEpoch(bg); err != nil {
+		t.Fatalf("rotation still refused after the identifiers were expired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// created_at must not re-link what the salt unlinks
+// ---------------------------------------------------------------------------
+
+// Spec §2 tells users, as fact, that "one user's rows under two different
+// merchants cannot be matched to each other". A full-precision timestamp
+// defeats that with no key at all: an opt-in batch writes one user's rows
+// microseconds apart and hundreds of milliseconds from anyone else's, so a
+// keyless breach partitions the pending patterns by submitter on arrival time
+// alone.
+func TestSubmissionTimestampsCannotRelinkOneUsersMerchants(t *testing.T) {
+	d := newDict(t)
+	users := mkUsers(2)
+	for _, p := range []string{"CARREFOUR", "SPINNEYS", "TALABAT", "NOON", "CAREEM"} {
+		submit(t, d, users[0], p, "Groceries")
+	}
+	submit(t, d, users[1], "LULU HYPERMARKET", "Groceries")
+
+	rows, err := d.Pool.Query(bg, `SELECT DISTINCT created_at FROM dict_submissions`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var stamps []time.Time
+	for rows.Next() {
+		var ts time.Time
+		if err := rows.Scan(&ts); err != nil {
+			t.Fatal(err)
+		}
+		stamps = append(stamps, ts)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(stamps) != 1 {
+		t.Fatalf("six submissions produced %d distinct timestamps; any spread at all "+
+			"clusters one user's merchants together: %v", len(stamps), stamps)
+	}
+	ts := stamps[0].UTC()
+	if !ts.Equal(ts.Truncate(24 * time.Hour)) {
+		t.Fatalf("created_at is %s, want a whole UTC day", ts)
+	}
+}
+
+// The Go side never sets created_at, so the coarsening is entirely the
+// database's job — which means a direct insert has to be refused too, or the
+// guarantee holds only for callers that happen to go through this package.
+func TestTheDatabaseRefusesASubmissionTimestampWithSubDayPrecision(t *testing.T) {
+	d := newDict(t)
+	submit(t, d, mkUsers(1)[0], "CARREFOUR", "Groceries")
+	_, err := d.Pool.Exec(bg, `UPDATE dict_submissions SET created_at = now()`)
+	if err == nil {
+		t.Fatal("the database accepted a full-precision created_at; the arrival-time " +
+			"side channel is only closed for callers that use this package")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Purge must not leave the merchant string behind
+// ---------------------------------------------------------------------------
+
+// After ForgetSubmitter, an entry that exactly one now-deleted user ever
+// submitted is a merchant string with a count of zero that nothing reaps. Spec
+// §3.10's deletion list does not name it, and it would outlive the account
+// forever.
+func TestPurgingTheOnlySubmitterRemovesTheMerchantStringToo(t *testing.T) {
+	d := newDict(t)
+	u := mkUsers(1)[0]
+	submit(t, d, u, "DR ALIA FERTILITY CLINIC", "Healthcare")
+	if _, err := d.ForgetSubmitter(bg, u); err != nil {
+		t.Fatalf("ForgetSubmitter: %v", err)
+	}
+	if n := countRows(t, d.Pool, `SELECT count(*) FROM dict_entries`); n != 0 {
+		t.Fatalf("%d entries survive the purge of their only submitter; the merchant "+
+			"string outlives the account that produced it", n)
+	}
+}
+
+// The reaper must not take anything the rest of the design depends on.
+func TestTheReaperSparesPublishedSeededAndStillCountingEntries(t *testing.T) {
+	d := newDict(t)
+	// (a) published, then retracted: published_at is what the retraction feed
+	// needs preserved.
+	for _, u := range mkUsers(K) {
+		submit(t, d, u, "AMAZON", "Charity")
+	}
+	moderate(t, d, "AMAZON", "Charity", true)
+	moderate(t, d, "AMAZON", "Charity", false)
+	// (b) operator seed with no submitters at all.
+	if err := d.SeedFromV1(bg, []Entry{{Pattern: "SPINNEYS", Category: "Groceries"}}); err != nil {
+		t.Fatal(err)
+	}
+	// (c) a crowd entry still counting.
+	submit(t, d, mkUsers(9)[8], "TALABAT", "Dining")
+
+	n, err := d.ReapOrphanedEntries(bg)
+	if err != nil {
+		t.Fatalf("ReapOrphanedEntries: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("the reaper took %d entries it should have spared", n)
+	}
+	if got := countRows(t, d.Pool, `SELECT count(*) FROM dict_entries`); got != 3 {
+		t.Fatalf("%d entries survive, want 3", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Match breadth
+// ---------------------------------------------------------------------------
+
+// A short `contains` pattern is a wildcard. `on -> charity` reaches k like any
+// other entry and then contains-matches AMAZON, NOON and TALABAT ONLINE on
+// every device. The operator's own 212 seeded rules bottom out at four
+// characters, so the floor costs nothing real.
+func TestShortContainsPatternsAreRefused(t *testing.T) {
+	d := newDict(t)
+	u := mkUsers(1)[0]
+	for _, p := range []string{"on", "no", "ab1"} {
+		if err := d.Submit(bg, u, p, "Charity"); !errors.Is(err, ErrInvalidEntry) {
+			t.Errorf("Submit(%q) = %v, want ErrInvalidEntry: a %d-character contains "+
+				"pattern matches merchants it has nothing to do with", p, err, len([]rune(p)))
+		}
+	}
+	// Four characters is the floor, not a rejection.
+	if err := d.Submit(bg, u, "noon", "Shopping"); err != nil {
+		t.Errorf("Submit(%q): %v", "noon", err)
+	}
+	// `exact` is not a wildcard, so it keeps the shorter floor.
+	if err := d.SeedFromV1(bg, []Entry{{Pattern: "IK", Match: MatchExact, Category: "Shopping"}}); err != nil {
+		t.Errorf("SeedFromV1 with a two-character EXACT pattern: %v", err)
+	}
+}
+
+// The moderator is the only gate between a crowd submission and every device,
+// and "does this pattern also swallow other merchants" is the question the
+// queue has to answer for them. The server can answer it without any user
+// data: it matches the candidate against the dictionary it already holds.
+func TestTheModerationQueueShowsWhatElseAPatternWouldMatch(t *testing.T) {
+	d := newDict(t)
+	if err := d.SeedFromV1(bg, []Entry{
+		{Pattern: "NOON", Category: "Shopping"},
+		{Pattern: "NOON MINUTES", Category: "Dining"},
+		{Pattern: "TALABAT", Category: "Dining"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.List(bg)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	byPattern := map[string]Status{}
+	for _, s := range got {
+		byPattern[s.Pattern] = s
+	}
+	noon := byPattern["noon"]
+	if len(noon.AlsoMatches) == 0 || !slices.Contains(noon.AlsoMatches, "noon minutes") {
+		t.Fatalf("the queue does not tell the moderator that `noon` also swallows "+
+			"`noon minutes`: %+v", noon)
+	}
+	if talabat := byPattern["talabat"]; len(talabat.AlsoMatches) != 0 {
+		t.Fatalf("`talabat` matches nothing else but the queue claims %v", talabat.AlsoMatches)
 	}
 }
 
