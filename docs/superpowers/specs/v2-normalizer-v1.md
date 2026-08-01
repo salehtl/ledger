@@ -1,7 +1,8 @@
 # v2 Normalizer, version 1 — the written contract
 
-**Status:** frozen. **Implementations:** `internal/v2/norm` (Go, this task);
-a TypeScript twin follows. **Fixtures:** `conformance/normalizer/*.json`.
+**Status:** frozen. **Implementations:** `internal/v2/norm` (Go) and
+`client/src/norm/` (TypeScript), verified byte-identical over all 7,002 corpus
+messages — see §12. **Fixtures:** `conformance/normalizer/*.json`.
 
 Extraction templates match **normalized** text. That makes this algorithm, not
 the templates, the place where template behaviour actually lives: change how a
@@ -98,6 +99,23 @@ For each leaf, decode its `Content-Transfer-Encoding`, then convert its charset
 to UTF-8. An undecodable leaf is **skipped, not fatal**; its partial bytes are
 discarded.
 
+**The walk asymmetry.** "Skipped, not fatal" applies to a leaf whose *body* will
+not decode — bad base64, an invalid quoted-printable byte. It does **not** apply
+to a leaf whose *declaration* is unknown. An unknown charset or an unknown
+`Content-Transfer-Encoding` is:
+
+- **tolerated** on the top-level entity — the body passes through undecoded;
+- **fatal to the whole walk** on a sub-part, because `go-message` reports it out
+  of `NextPart` rather than out of the body reader.
+
+So a two-part `multipart/alternative` whose *first* part declares
+`charset=x-nope` abandons the tree and takes the raw-body fallback, even though
+its second part is a perfectly good `text/html`. This is inherited from
+`go-message`, it is reproduced rather than fixed (fixing it changes output and
+is a version bump), and it is pinned by `mp-subpart-unknown-charset-raw-fallback`
+and `mp-subpart-unknown-cte-raw-fallback` in `edge-cases.json`. Zero corpus
+messages reach it.
+
 #### base64
 
 Skip **every** ASCII whitespace byte (space, tab, CR, LF) anywhere in the
@@ -128,30 +146,53 @@ So `A=ZZB` → `A=ZZB`, `AB=` → `AB`, `A  =\r\nB` → `A  B`, `A  \r\nB` →
 
 #### charset
 
-The declared label is resolved through the **WHATWG Encoding Standard's label
-table**, which is what a TypeScript `TextDecoder` implements natively and what
-`golang.org/x/text/encoding/htmlindex` is a copy of. Decoding is in
-**replacement mode** (never `fatal: true`).
+> **Corrected 2026-08-01 (Task 17).** This section previously said the label was
+> resolved through the WHATWG table because "that is what a TypeScript
+> `TextDecoder` implements natively". Both halves were wrong, and building the
+> TypeScript twin on that description would have produced a divergent executor.
+> What follows is the **measured** behaviour of the Go implementation.
+
+The declared label goes through `go-message`'s `charsetReader`, which is a
+four-step dispatch, and the result falls into exactly four classes. Both
+executors implement this table and nothing else:
+
+| class | which labels | bytes | error |
+|---|---|---|---|
+| **passthrough** | `utf-8`, `us-ascii` (short-circuited by go-message before any lookup), plus any label that resolves to UTF-8 | reach stage 3 **undecoded** | none |
+| **unresolved** | any label the registry cannot resolve at all | reach stage 3 **undecoded** | `UnknownCharsetError` |
+| **single-byte** | anything `ianaindex.MIME` → `"cs"`-prefix retry → `htmlindex` resolves to a stateless 256-entry encoding, plus the two go-message quirks (`ansi_x3.110-1983` → ISO-8859-1, `x-utf_8j` → UTF-8) | table-decoded | none |
+| **unsupported** | UTF-16/UCS-2, GB\*, Big5, EUC-\*, Shift_JIS, ISO-2022-\* | — | the TS twin **throws**; see §12 |
+
+`passthrough` and `unresolved` produce identical text and differ **only** in the
+error — which matters, because that error is ignored on the top-level entity and
+is **fatal on a sub-part** (see stage 2's walk asymmetry below). Folding the two
+together is a silent divergence, not a simplification.
+
+Decoding is always in **replacement mode** (never `fatal: true`).
 
 `Result.Charset` is the leaf's **declared** label, lowercased and trimmed —
 not the resolved canonical name — so an operator can see what the bank claimed.
 It is `""` when no charset parameter was present, and `""` on the raw fallback.
 
-**Known boundary.** v1 resolves labels through Go's `ianaindex.MIME` first and
-only falls back to the WHATWG table. The two disagree for exactly two labels
-that matter:
+**Two labels behave surprisingly, and both are pinned by fixtures:**
 
-| label | ianaindex (v1) | WHATWG (v2, TS) |
+| label | what actually happens | note |
 |---|---|---|
-| `us-ascii` | strict US-ASCII: bytes ≥ 0x80 → U+FFFD | windows-1252 |
-| `iso-8859-1` | true Latin-1 | windows-1252 (differs at 0x80–0x9F) |
+| `us-ascii` | **passthrough.** Bytes ≥ 0x80 are NOT replaced at the charset layer; they reach stage 3 and become U+FFFD by the WHATWG maximal-subpart rule | not strict US-ASCII, and not windows-1252 |
+| `iso-8859-1` | **true Latin-1**, via `ianaindex` | a `TextDecoder` would give windows-1252, which differs at 0x80–0x9F |
+| `iso8859-1` | **windows-1252** | the same encoding without the hyphen misses `ianaindex` and lands on the WHATWG table |
 
-The corpus contains **one** `us-ascii` part (id 6) and **zero** `iso-8859-1`
-parts, and the `us-ascii` part is pure ASCII, so the disagreement is invisible
-today and produces zero divergences. The WHATWG table is chosen anyway because
-it is the only one both languages can implement without hand-porting Go's
-three-step alias chain. **If a real `iso-8859-1` message with bytes in
-0x80–0x9F ever arrives, this is where it will differ from v1.**
+The corpus declares exactly three labels: `utf-8` (6,905 leaves),
+`windows-1256` (110) and `us-ascii` (1, pure ASCII).
+
+**The TypeScript twin does not use `TextDecoder` for any of this.** Bun 1.3's
+`TextDecoder` does not implement `windows-1256` at all — the corpus's only
+non-UTF-8 charset — and where both implement a label they disagree, because
+`TextDecoder` follows the WHATWG index while `x/text/encoding/charmap` follows
+the Unicode consortium's mapping files (windows-1252 differs at 5 of 256 bytes,
+iso-8859-6 at 32). The byte tables in `client/src/norm/charset-tables.ts` are
+therefore **generated from the Go registry itself**, and a Go freshness test
+fails the build if they drift.
 
 ### Stage 3 — Validate UTF-8 and substitute (WHATWG)
 
@@ -561,3 +602,121 @@ to the same corruption. Base64 makes the fixture the exact bytes.
 > a real message. It **does not verify** over that fixture's body. It is there
 > only so the normalizer walks a realistic header block, and must never be used
 > as an ARC fixture.
+
+---
+
+## 12. The TypeScript twin — added by Task 17
+
+`client/src/norm/` is the second executor: `norm.ts` (stages 1-10),
+`mime.ts` (header, media type, multipart, base64, quoted-printable, RFC 2047,
+addresses), `charset.ts` + the generated `charset-tables.ts`, and `unwrap.ts`
+(stage 10 and the four date layouts). No npm MIME, charset or date library is
+used — the point is that the two implementations agree on **this** contract, not
+that they agree on some library's reading of RFC 2045.
+
+### How the two are held together
+
+| mechanism | what it covers | runs |
+|---|---|---|
+| `conformance/normalizer/*.json` | 37 real corpus messages | every build |
+| `conformance/normalizer/edge-cases.json` | 92 synthetic cases for the classes the corpus has none of | every build |
+| `client/src/norm/norm.test.ts` | unit vectors for clauses no end-to-end fixture can reach | every build |
+| `scripts/crossexec.ts` + `TestWriteCrossExecutorCorpus` | **all 7,002 corpus messages, all 8 result fields** | on demand, needs the corpus |
+
+**Recorded pass — 2026-08-01: 7,002 messages compared, 0 disagreements.**
+
+Both generated artifacts (`charset-tables.ts`, `edge-cases.json`) are written by
+`internal/v2/norm TestWriteTwinArtifacts` and checked by
+`TestTwinArtifactsAreFresh`, which fails the build when what is committed is not
+what this build would generate. Without that, a change to the Go normalizer
+would leave the TypeScript executor passing against a fossil.
+
+### Why the synthetic family exists
+
+An 18-mutation battery was run against the TypeScript normalizer. All 18 are
+caught by the committed suite; **10 of them are invisible to the entire 7,002
+message corpus** — real bank mail simply never exercises them:
+
+| mutation | corpus | fixtures + units |
+|---|---|---|
+| entity decode chained instead of single-pass | no | yes |
+| `</div>` dropped from `blockTags` | no | yes |
+| bad `=XX` treated as fatal | no | yes |
+| whitespace kept before a hard line break | no | yes |
+| base64 skips only CR/LF | no | yes |
+| `Date.parse` instead of the four layouts | no | yes |
+| trailing-zone-token retry dropped | no | yes |
+| BOM stripped at stage 3 | no | yes |
+| sub-part unknown charset tolerated | no | yes |
+| body charset registry used for encoded words | no | yes |
+| header bytes decoded as text too early (mojibake) | no | yes |
+| U+00A0 dropped from the collapse | yes (id 6859) | yes |
+| `TrimSpace` instead of the explicit set | yes (id 6859) | yes |
+| `text/plain` preferred over `text/html` | yes (3 ids) | yes |
+| windows-1256 table replaced by UTF-8 | yes (110 ids) | yes |
+| outer `From` kept over the inner one | yes (6 ids) | yes |
+| forward body loses its first line | yes (6 ids) | yes |
+| RFC 2047 decoding disabled | yes (id 6852) | yes |
+
+Two of these deserve naming. **The BOM rule is unobservable end to end**, because
+stage 8's trim set removes U+FEFF wherever it lands — so only a unit vector can
+hold it. **The five block tags are inert on well-formed HTML**, because the
+generic tag rule yields the same newline; they are observable only on malformed
+markup such as `A<p</div>B`, which is what the `html-block-tag-pass-precedes-
+generic-rule` fixture is.
+
+### 12.1 The one place bit-identity is impossible
+
+**Invalid UTF-8 in a header value.** A Go string is bytes. Go never validates a
+header, so `Result.Subject` and `Result.From` can hold invalid UTF-8, by two
+routes — measured, not assumed:
+
+| input | Go's `Subject` bytes |
+|---|---|
+| `Subject: =?utf-8?B?QcMoQg==?=` (a `utf-8`-labelled word whose payload is not UTF-8) | `41 c3 28 42` |
+| `Subject: A<0xFF>B` (a raw 8-bit header) | `41 ff 42` |
+
+A JavaScript string cannot hold those bytes at all, so the twin applies the
+stage-3 WHATWG substitution to the assembled header and emits U+FFFD.
+
+The bound is exact:
+
+- It affects **`Subject` and `From` only**. `Text` is unreachable, because
+  stage 3 already guarantees it is valid UTF-8 on every path including the raw
+  fallback.
+- It requires **invalid UTF-8 in the header**. The corpus contains none: the
+  full-corpus diff compares both header fields on all 7,002 messages and reports
+  0 differences.
+- **Valid** 8-bit headers round-trip exactly, which is the case that actually
+  occurs. Header values are carried as byte strings end to end for precisely
+  this reason; converting them to text early would have produced one code point
+  per byte and no corpus message would have revealed it.
+- It is **structural**, not a defect to be fixed: the interface returns a
+  `string`, and no `string` can carry those bytes.
+
+All four behaviours are pinned in `norm.test.ts`.
+
+### 12.2 The bounded contract for multi-byte charsets
+
+The twin **throws `UnsupportedCharsetError`** for UTF-16/UCS-2, GB2312/GBK/
+GB18030, Big5, EUC-JP/KR, Shift_JIS and ISO-2022-\*, which Go decodes with
+stateful multi-byte codecs. A loud, deterministic failure was chosen over the
+two alternatives: passing the bytes through would turn a UTF-16 body into U+FFFD
+soup that still "parses", and reaching for `TextDecoder` would disagree with Go
+on the undefined positions of every legacy table. The corpus contains none of
+these labels, and `TestEveryCorpusCharsetHasATable` fails if one of the three it
+does contain ever reclassifies.
+
+The classification is **generated by probing the Go registry**, not hand-written:
+each candidate label is decoded byte by byte, then checked for statelessness
+against ESC-sequence and byte-pair probes. That check earned its place —
+ISO-2022-JP passed a naive 256-byte ramp and was briefly, wrongly, recorded as a
+single-byte table.
+
+### 12.3 Fidelity boundary in `parseMediaType`
+
+RFC 2231 continuations and extended values **are** implemented, including Go's
+rule that only `us-ascii`, `utf-8` and the empty charset are accepted and any
+other extended-value charset silently drops the parameter. The corpus contains
+no RFC 2231 parameter, so this is unexercised by real mail and rests on the port
+being faithful to `mime.ParseMediaType`.

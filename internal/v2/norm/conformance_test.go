@@ -69,7 +69,12 @@ func loadCases(t *testing.T) []conformanceCase {
 	}
 	var cases []conformanceCase
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == "manifest.json" {
+		// edge-cases.json is the synthetic family (see twin_test.go): a different
+		// schema, a single document rather than one file per case, and already
+		// executed against Go by TestTwinArtifactsAreFresh, which regenerates
+		// every expectation from Normalize and compares the whole file.
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") ||
+			e.Name() == "manifest.json" || e.Name() == "edge-cases.json" {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(conformanceDir, e.Name()))
