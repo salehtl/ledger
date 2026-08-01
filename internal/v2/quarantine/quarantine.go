@@ -78,6 +78,12 @@ const (
 	// reverse-path at 256 octets; this leaves room for the angle brackets and a
 	// long address without admitting anything body-shaped.
 	MaxEnvelopeFrom = 320
+	// MaxDomain is RFC 1035's 253-octet cap on a presentation-form hostname,
+	// and the cap the CHECK constraints carry.
+	MaxDomain = 253
+	// MaxOuterDomain is MaxDomain plus room for UnverifiedPrefix, because an
+	// unverified outer domain stores the marker in the same column.
+	MaxOuterDomain = MaxDomain + len(UnverifiedPrefix)
 	// DefaultWarnBefore is how long before expiry the client is warned. It
 	// matches the address grace window for the same reason that one is 7 days:
 	// it is the shortest window in which a person who checks their phone
@@ -175,6 +181,17 @@ var (
 // reHostname mirrors the SQL grammar. It deliberately does not admit
 // UnverifiedPrefix.
 var reHostname = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
+// NormalizeDomain is the ONE spelling rule for a stored hostname: trimmed and
+// lower-cased, because DNS is case-insensitive while `=` is not.
+//
+// It is exported because the HTTP layer has to echo back the value it stored
+// rather than the one it was sent — a response that repeats "DIB.AE" while the
+// row says "dib.ae" invites a client to build its next request, and its local
+// state, from a string this store would not match.
+func NormalizeDomain(domain string) string {
+	return strings.ToLower(strings.TrimSpace(domain))
+}
 
 // Item is one held message.
 //
@@ -432,12 +449,18 @@ func (s *Store) validate(it Item) (Item, error) {
 		return it, fmt.Errorf("%w: envelope_from contains a control character", ErrInvalidItem)
 	}
 
-	it.OuterDomain = strings.ToLower(strings.TrimSpace(it.OuterDomain))
-	if it.OuterDomain != "" && !reHostname.MatchString(strings.TrimPrefix(it.OuterDomain, UnverifiedPrefix)) {
+	// The length caps are the CHECK constraints' own, and they are here because
+	// this function claims to mirror them: without them an over-long domain —
+	// which a regex anchored on LABEL length happily accepts — passed validate
+	// and was refused by the database instead, which reaches the caller as a
+	// 500 rather than as the ErrInvalidItem it is.
+	it.OuterDomain = NormalizeDomain(it.OuterDomain)
+	if it.OuterDomain != "" &&
+		(len(it.OuterDomain) > MaxOuterDomain || !reHostname.MatchString(strings.TrimPrefix(it.OuterDomain, UnverifiedPrefix))) {
 		return it, fmt.Errorf("%w: outer_domain is not a hostname", ErrInvalidItem)
 	}
-	it.InnerDomain = strings.ToLower(strings.TrimSpace(it.InnerDomain))
-	if it.InnerDomain != "" && !reHostname.MatchString(it.InnerDomain) {
+	it.InnerDomain = NormalizeDomain(it.InnerDomain)
+	if it.InnerDomain != "" && (len(it.InnerDomain) > MaxDomain || !reHostname.MatchString(it.InnerDomain)) {
 		return it, fmt.Errorf("%w: inner_domain is not a hostname", ErrInvalidItem)
 	}
 
@@ -490,40 +513,124 @@ func (s *Store) validate(it Item) (Item, error) {
 const itemColumns = `id, user_id, ingest_id, received_at, expires_at, warned_at,
  envelope_from, outer_domain, inner_domain, attested, attested_by, dkim, arc, size_bucket`
 
-// List returns one keyset page of a user's held mail, oldest first.
+// DefaultListBytes bounds the raw-message bytes one ?include_blob=1 page may
+// carry. It is chosen against PEAK MEMORY rather than bandwidth, and it is the
+// same number as oplog's pull budget for the same reason: a held blob can be a
+// megabyte, so a row limit alone bounds nothing useful.
+const DefaultListBytes = 4 << 20
+
+// List returns one keyset page of a user's held mail, oldest first, under the
+// default byte budget. See [Store.ListPage] for the budget and what it means
+// for a caller that needs to know whether the page was complete.
+func (s *Store) List(ctx context.Context, userID uuid.UUID, after Cursor, limit int, withBlob bool) ([]Item, error) {
+	items, _, err := s.ListPage(ctx, userID, after, limit, withBlob, 0)
+	return items, err
+}
+
+// listPageSQL is the blob-carrying page, with the byte budget applied IN THE
+// DATABASE. It is oplog.readPageSQL's shape, and it is that shape for the
+// reason written out there rather than for symmetry:
+//
+// The obvious implementation — LIMIT in SQL, budget in Go — bounds what this
+// process retains and nothing else. pgx drains a result set it stops scanning,
+// so Postgres still sends every row LIMIT selected, and every one of them is
+// materialized into the []Item this function returns before anything can
+// truncate it. At maxQuarantineLimit and this table's 1 MB rows that is 200 MB
+// allocated server-side for one request, by any authenticated caller,
+// concurrently.
+//
+// The window sum runs over size_bucket — a plain int column — so a row the
+// outer WHERE discards is never detoasted and never serialized. `running` is
+// monotone because (received_at, id) is unique, so `running <= $5` always
+// selects a PREFIX: a page with a hole in it would be far worse than a page
+// that is too big, because the cursor below is taken from the last row RETURNED.
+//
+// `rn = 1` is what guarantees forward progress: without it a single message
+// larger than the budget would return an empty page forever and the client's
+// cursor could never pass it.
+const listPageSQL = `
+SELECT ` + itemColumns + `, blob, selected
+  FROM (
+    SELECT ` + itemColumns + `, blob,
+           sum(size_bucket) OVER (ORDER BY received_at, id) AS running,
+           row_number()     OVER (ORDER BY received_at, id) AS rn,
+           count(*)         OVER ()                         AS selected
+      FROM quarantine
+     WHERE user_id = $1 AND (received_at, id) > ($2, $3)
+     ORDER BY received_at, id
+     LIMIT $4
+  ) page
+ WHERE page.rn = 1 OR page.running <= $5
+ ORDER BY page.received_at, page.id`
+
+// ListPage returns one keyset page of a user's held mail, oldest first, and
+// reports whether the byte budget cut it short of the rows the limit selected.
 //
 // withBlob is false for the ordinary listing: the client's lane renders origin
 // facts, not the message, and a page of raw bodies is megabytes. It is true for
 // the one Phase 1 path that needs the body — Gmail's own forward-verification
 // mail quarantines like everything else, and onboarding reads the confirmation
 // link out of it (§3.2:47).
-func (s *Store) List(ctx context.Context, userID uuid.UUID, after Cursor, limit int, withBlob bool) ([]Item, error) {
+//
+// maxBytes applies only to that path, because the ordinary listing selects no
+// blob column at all and so has nothing to bound. maxBytes <= 0 means
+// [DefaultListBytes].
+//
+// truncated is not a nicety: a caller that reports "complete" because the page
+// came back shorter than the limit would tell a client the lane is empty when
+// the budget stopped it three rows in.
+func (s *Store) ListPage(ctx context.Context, userID uuid.UUID, after Cursor, limit int,
+	withBlob bool, maxBytes int) ([]Item, bool, error) {
 	if err := s.check(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	cols := itemColumns
-	if withBlob {
-		cols += ", blob"
+	if !withBlob {
+		rows, err := s.Pool.Query(ctx, `SELECT `+itemColumns+` FROM quarantine
+		  WHERE user_id = $1 AND (received_at, id) > ($2, $3)
+		  ORDER BY received_at, id LIMIT $4`, userID, after.At, after.ID, limit)
+		if err != nil {
+			return nil, false, fmt.Errorf("quarantine: list: %w", err)
+		}
+		defer rows.Close()
+		var out []Item
+		for rows.Next() {
+			it, err := scanItem(rows, false)
+			if err != nil {
+				return nil, false, fmt.Errorf("quarantine: list: %w", err)
+			}
+			out = append(out, it)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, false, fmt.Errorf("quarantine: list: %w", err)
+		}
+		return out, false, nil
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT `+cols+` FROM quarantine
-	  WHERE user_id = $1 AND (received_at, id) > ($2, $3)
-	  ORDER BY received_at, id LIMIT $4`, userID, after.At, after.ID, limit)
+	if maxBytes <= 0 {
+		maxBytes = DefaultListBytes
+	}
+	rows, err := s.Pool.Query(ctx, listPageSQL, userID, after.At, after.ID, limit, maxBytes)
 	if err != nil {
-		return nil, fmt.Errorf("quarantine: list: %w", err)
+		return nil, false, fmt.Errorf("quarantine: list: %w", err)
 	}
 	defer rows.Close()
-	var out []Item
+	var (
+		out      []Item
+		selected int
+	)
 	for rows.Next() {
-		it, err := scanItem(rows, withBlob)
+		// selected is the number of rows the LIMIT chose before the budget cut
+		// them; anything it dropped is the difference. Read from the same rows
+		// so it is one query and one instant rather than two answers.
+		it, err := scanItem(rows, true, &selected)
 		if err != nil {
-			return nil, fmt.Errorf("quarantine: list: %w", err)
+			return nil, false, fmt.Errorf("quarantine: list: %w", err)
 		}
 		out = append(out, it)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("quarantine: list: %w", err)
+		return nil, false, fmt.Errorf("quarantine: list: %w", err)
 	}
-	return out, nil
+	return out, selected > len(out), nil
 }
 
 // Held returns the named messages WITH their raw bodies, for re-ingest after a
@@ -557,6 +664,31 @@ func (s *Store) Held(ctx context.Context, userID uuid.UUID, ingestIDs [][]byte) 
 		return nil, fmt.Errorf("quarantine: held: %w", err)
 	}
 	return out, nil
+}
+
+// IsHeld reports whether this user is still holding the named message.
+//
+// It exists so the arrival path's redelivery check does not have to be a
+// [Store.Held] whose result it throws away: that read SELECTs the full raw body
+// — up to a megabyte, out of TOAST — purely to test existence, on EVERY inbound
+// message. EXISTS answers the same question off the (user_id, ingest_id) unique
+// index without touching the blob.
+//
+// The user id is not decoration. Two accounts can hold the SAME bytes, so an
+// unscoped existence check would tell the pipeline that a stranger's copy makes
+// this user's arrival a duplicate — and a duplicate is discarded.
+func (s *Store) IsHeld(ctx context.Context, userID uuid.UUID, ingestID []byte) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	var ok bool
+	err := s.Pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM quarantine WHERE user_id = $1 AND ingest_id = $2)`,
+		userID, ingestID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("quarantine: is held: %w", err)
+	}
+	return ok, nil
 }
 
 // Counts returns how many messages this user has held and how many of those
@@ -616,7 +748,9 @@ func (s *Store) Removals(ctx context.Context, userID uuid.UUID, after Cursor, li
 	return out, nil
 }
 
-func scanItem(rows pgx.Rows, withBlob bool) (Item, error) {
+// scanItem reads one row of [itemColumns], optionally followed by the blob and
+// then by any extra destinations the caller's own SELECT appended.
+func scanItem(rows pgx.Rows, withBlob bool, extra ...any) (Item, error) {
 	var (
 		it    Item
 		inner *string
@@ -626,6 +760,7 @@ func scanItem(rows pgx.Rows, withBlob bool) (Item, error) {
 	if withBlob {
 		dst = append(dst, &it.Blob)
 	}
+	dst = append(dst, extra...)
 	if err := rows.Scan(dst...); err != nil {
 		return Item{}, err
 	}
@@ -659,8 +794,15 @@ func scanItem(rows pgx.Rows, withBlob bool) (Item, error) {
 //     forwarded body names a bank; it is not evidence, and a confirmation sheet
 //     that accepted it would be trusting attacker-rendered content.
 //
-// It is idempotent: confirming an already-confirmed origin re-reports the held
-// ids and writes nothing new.
+// It is idempotent in both directions. Confirming an already-confirmed origin
+// re-reports whatever is still held and writes nothing new — and once the
+// released mail has been promoted, so that nothing is held from that origin at
+// all, it succeeds with an EMPTY list rather than refusing. The refusal is
+// reserved for an origin this account has never proven; an origin already on
+// the allowlist has been proven, and answering "there is nothing to trust yet"
+// about it is reachable by a double-tap, a retry after a lost response, or one
+// extra pass of the `remaining > 0` loop the API documents — on the single step
+// spec §3.2 calls out as onboarding.
 func (s *Store) Confirm(ctx context.Context, userID uuid.UUID, domain, scope string) ([][]byte, error) {
 	if err := s.check(); err != nil {
 		return nil, err
@@ -668,7 +810,7 @@ func (s *Store) Confirm(ctx context.Context, userID uuid.UUID, domain, scope str
 	if userID == uuid.Nil {
 		return nil, errors.New("quarantine: confirm: user id is zero")
 	}
-	domain = strings.ToLower(strings.TrimSpace(domain))
+	domain = NormalizeDomain(domain)
 	if !reHostname.MatchString(domain) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDomain, domain)
 	}
@@ -718,10 +860,27 @@ func (s *Store) Confirm(ctx context.Context, userID uuid.UUID, domain, scope str
 		return nil, fmt.Errorf("quarantine: confirm: %w", err)
 	}
 	if len(ids) == 0 {
-		// Nothing this user has been shown proves the origin, so there is
-		// nothing for them to confirm. Refusing here rather than writing the row
-		// anyway is what keeps the allowlist a record of verifications the user
-		// actually saw.
+		// Nothing is held from this origin, which is two different situations
+		// and only one of them is a refusal.
+		//
+		// If the entry already exists, this account has ALREADY proven the
+		// origin and the mail that proved it has since been promoted into the
+		// log — the state a successful confirmation leaves behind. There is
+		// nothing to release and nothing to write, and the honest answer is an
+		// empty list.
+		//
+		// If it does not, nothing this user has been shown proves the origin.
+		// Refusing here rather than writing the row anyway is what keeps the
+		// allowlist a record of verifications the user actually saw.
+		var already bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM sender_allowlist WHERE user_id = $1 AND domain = $2 AND scope = $3)`,
+			userID, domain, scope).Scan(&already); err != nil {
+			return nil, fmt.Errorf("quarantine: confirm: %w", err)
+		}
+		if already {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("%w: %s", missing, domain)
 	}
 
@@ -751,11 +910,100 @@ func (s *Store) Allowlisted(ctx context.Context, userID uuid.UUID, domain, scope
 	var ok bool
 	err := s.Pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM sender_allowlist WHERE user_id = $1 AND domain = $2 AND scope = $3)`,
-		userID, strings.ToLower(strings.TrimSpace(domain)), scope).Scan(&ok)
+		userID, NormalizeDomain(domain), scope).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("quarantine: allowlisted: %w", err)
 	}
 	return ok, nil
+}
+
+// AllowlistEntry is one origin a user has vouched for. It is content-free: a
+// hostname, which scope it was vouched for at, and when.
+type AllowlistEntry struct {
+	Domain    string
+	Scope     string
+	CreatedAt time.Time
+}
+
+// AllowlistedOrigins returns everything this user has confirmed, newest first.
+//
+// It is not a convenience, for the same reason the push-token list route is not
+// one: [Store.Revoke] needs the exact (domain, scope) pair, and a user who
+// confirmed a lookalike months ago has no other way to find out what their
+// account currently trusts. An undo nobody can aim is not an undo.
+func (s *Store) AllowlistedOrigins(ctx context.Context, userID uuid.UUID) ([]AllowlistEntry, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.Pool.Query(ctx,
+		`SELECT domain, scope, created_at FROM sender_allowlist
+		  WHERE user_id = $1 ORDER BY created_at DESC, domain, scope`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine: allowlisted origins: %w", err)
+	}
+	defer rows.Close()
+	var out []AllowlistEntry
+	for rows.Next() {
+		var e AllowlistEntry
+		if err := rows.Scan(&e.Domain, &e.Scope, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("quarantine: allowlisted origins: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("quarantine: allowlisted origins: %w", err)
+	}
+	return out, nil
+}
+
+// Revoke withdraws a user's confirmation of an origin and reports whether there
+// was one to withdraw.
+//
+// # Why this exists
+//
+// Confirming is one tap and the hostname grammar admits lookalikes —
+// dib-alerts.ae, or a punycode A-label that renders as the bank's own name.
+// Until this existed nothing in the tree deleted a sender_allowlist row except
+// `users ON DELETE CASCADE`, so the only remedy for a mistaken confirmation was
+// deleting the account. A trust decision a user can make and cannot unmake is
+// not a decision they were really offered.
+//
+// # What it does and does not undo
+//
+// It closes the lane going forward: the trust decision is re-read from this
+// table on every arrival AND on every reprocess, so the next message from that
+// origin quarantines again exactly as the first one did
+// (ingest.TestReprocessOfStoredMailReChecksTheAllowlist already proved the
+// reprocess half — the row simply could not be removed).
+//
+// It does not retract what is already in the log. Those ops are in the user's
+// integrity chains and removing them is not a thing this system can do; the
+// transactions are theirs to delete on the client like any other. Nor does it
+// re-quarantine mail: the messages are no longer held, and a copy this store
+// deleted after promoting is not recoverable from here.
+func (s *Store) Revoke(ctx context.Context, userID uuid.UUID, domain, scope string) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	if userID == uuid.Nil {
+		return false, errors.New("quarantine: revoke: user id is zero")
+	}
+	// The same two refusals Confirm makes, so a client cannot discover that a
+	// malformed request is treated differently by the two halves of one flow.
+	if scope != ScopeOuter && scope != ScopeInner {
+		return false, fmt.Errorf("%w: %q", ErrUnknownScope, scope)
+	}
+	domain = NormalizeDomain(domain)
+	if !reHostname.MatchString(domain) {
+		return false, fmt.Errorf("%w: %q", ErrInvalidDomain, domain)
+	}
+	ct, err := s.Pool.Exec(ctx,
+		`DELETE FROM sender_allowlist WHERE user_id = $1 AND domain = $2 AND scope = $3`,
+		userID, domain, scope)
+	if err != nil {
+		return false, fmt.Errorf("quarantine: revoke: %w", err)
+	}
+	return ct.RowsAffected() > 0, nil
 }
 
 // ---------------------------------------------------------------------------

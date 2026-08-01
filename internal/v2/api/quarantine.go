@@ -85,7 +85,15 @@ const (
 	// can be a megabyte: 200 of them is a 200 MB response, base64-expanded and
 	// marshalled into one buffer, for one request. The row limit is the wrong
 	// instrument the moment a row can be a megabyte.
-	quarantineBlobBudget = 4 << 20
+	//
+	// It is spent by quarantine.Store.ListPage, IN THE DATABASE, and this
+	// handler no longer truncates. That distinction is the whole point and it
+	// was wrong here for one release: a budget applied after the store has
+	// materialized every row of the page bounds the RESPONSE and not the
+	// server, so ?include_blob=1&limit=200 still allocated ~200 MB per request,
+	// concurrently, for any authenticated caller. See listPageSQL, and
+	// oplog.readPageSQL, which says the same thing about the same mistake.
+	quarantineBlobBudget = quarantine.DefaultListBytes
 )
 
 // QuarantineItem is one held message, as the client sees it.
@@ -170,6 +178,36 @@ type ConfirmSenderRequest struct {
 	Scope  string `json:"scope"` // "outer" | "inner"
 }
 
+// RevokeSenderRequest is DELETE /api/v1/quarantine/allowlist.
+type RevokeSenderRequest struct {
+	Domain string `json:"domain"`
+	Scope  string `json:"scope"` // "outer" | "inner"
+}
+
+// RevokeSenderResponse reports what the revocation did. Revoked is false when
+// the account did not trust that origin to begin with, which is a fact and not
+// an error — the caller's goal is met either way.
+type RevokeSenderResponse struct {
+	Domain  string `json:"domain"`
+	Scope   string `json:"scope"`
+	Revoked bool   `json:"revoked"`
+}
+
+// AllowlistEntry is one origin this account has vouched for. Content-free, like
+// everything else on this channel: a hostname, a scope and an instant.
+type AllowlistEntry struct {
+	Domain    string    `json:"domain"`
+	Scope     string    `json:"scope"` // "outer" | "inner"
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AllowlistResponse is GET /api/v1/quarantine/allowlist. It is not paged: the
+// list is one row per origin a person has deliberately confirmed, which is a
+// handful.
+type AllowlistResponse struct {
+	Entries []AllowlistEntry `json:"entries"`
+}
+
 // ConfirmSenderResponse names the messages the confirmation released, and what
 // re-ingesting them did.
 //
@@ -247,7 +285,8 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request, userID
 	// what it asks for.
 	withBlob := r.URL.Query().Get("include_blob") == "1"
 
-	held, err := s.Quarantine.List(r.Context(), userID, items, limit, withBlob)
+	held, truncated, err := s.Quarantine.ListPage(r.Context(), userID, items, limit, withBlob,
+		s.quarantineByteBudget())
 	if err != nil {
 		s.logf("api: quarantine list for %s: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
@@ -272,25 +311,23 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request, userID
 		ActionNeeded: action,
 		ExpiringSoon: warned,
 	}
-	// The page may end short of what the store returned, on bytes rather than
-	// rows. The cursor below is taken from the LAST ITEM ACTUALLY RENDERED, so
-	// a truncated page resumes exactly where it stopped and nothing is skipped
-	// — a page boundary is not a place mail is allowed to disappear.
-	budget := s.quarantineByteBudget()
-	spent := 0
+	// The page may already have ended short of the row limit, on bytes rather
+	// than rows — the store spends the budget in SQL. The cursor is taken from
+	// the LAST ITEM RETURNED, so a truncated page resumes exactly where it
+	// stopped and nothing is skipped: a page boundary is not a place mail is
+	// allowed to disappear.
 	for _, it := range held {
-		if withBlob && len(out.Items) > 0 && spent+len(it.Blob) > budget {
-			break
-		}
-		spent += len(it.Blob)
 		out.Items = append(out.Items, s.renderQuarantineItem(it, withBlob))
 	}
-	if n := len(out.Items); n > 0 {
-		last := held[n-1]
-		out.Next = last.ReceivedAt.UTC().Format(time.RFC3339Nano)
-		out.NextID = last.ID.String()
+	if n := len(held); n > 0 {
+		out.Next = held[n-1].ReceivedAt.UTC().Format(time.RFC3339Nano)
+		out.NextID = held[n-1].ID.String()
 	}
-	out.Complete = len(out.Items) == len(held) && len(held) < limit && len(removals) < limit
+	// `truncated` is why this is not just a row count: a page the budget cut at
+	// three of fifty comes back shorter than the limit, and reading that as
+	// "the lane is exhausted" tells the client the rest of its quarantined mail
+	// does not exist.
+	out.Complete = !truncated && len(held) < limit && len(removals) < limit
 	for _, rem := range removals {
 		out.Removed = append(out.Removed, QuarantineRemoval{
 			IngestID:    hex.EncodeToString(rem.IngestID),
@@ -366,6 +403,10 @@ func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, use
 				"verified domain — instead.")
 		return
 	case errors.Is(err, quarantine.ErrOriginUnproven):
+		// Reachable only for an origin this account has NEVER proven. Confirm
+		// answers an already-allowlisted origin with an empty release instead,
+		// because "there is nothing to trust yet" is a lie about a sender the
+		// user has already trusted, and it was the answer a double-tap got.
 		writeErr(w, http.StatusConflict, "origin_unproven",
 			"no message held for this account carries a verified signature from that origin, so there is "+
 				"nothing to trust yet. Mail that cannot be verified stays quarantined.")
@@ -382,7 +423,15 @@ func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	out := ConfirmSenderResponse{Domain: req.Domain, Scope: req.Scope, IngestIDs: make([]string, 0, len(ids))}
+	// The NORMALIZED domain, not the caller's spelling. The stored row is
+	// lower-cased, and a response that echoes "DIB.AE" invites the client to
+	// build its next request — and its own list of trusted senders — from a
+	// string this server would not match.
+	out := ConfirmSenderResponse{
+		Domain:    quarantine.NormalizeDomain(req.Domain),
+		Scope:     req.Scope,
+		IngestIDs: make([]string, 0, len(ids)),
+	}
 	for _, id := range ids {
 		out.IngestIDs = append(out.IngestIDs, hex.EncodeToString(id))
 	}
@@ -412,12 +461,19 @@ func (s *Server) handleConfirmSender(w http.ResponseWriter, r *http.Request, use
 // was not trusted when it was, and the natural response (confirm again) is
 // already the repair.
 //
-// # Why repeating this is cheap
+// # Why repeating this is cheap, stated correctly
 //
 // Confirm returns the ids still HELD for that origin, and a promoted message is
-// no longer held. So a second confirmation of an already-confirmed origin
-// re-ingests nothing, which is what keeps this route's deliberate absence of a
-// rate limit (Task 27) safe.
+// no longer held — so a second confirmation of an already-confirmed origin
+// re-ingests nothing. That is true SERIALLY and was written here as though it
+// were true absolutely, which is a different claim: two confirmations in flight
+// at once both read the same held ids, because neither has promoted anything
+// yet. What makes them safe is not this sentence but ingest's own claim on the
+// message (see Pipeline.promoteHeld) — the loser finds the message already in
+// the log and clears the row instead of appending a second copy.
+//
+// The absence of a rate limit on this route is therefore safe because the
+// PROMOTION is exclusive, not because repetition happens to be idempotent.
 func (s *Server) reingest(ctx context.Context, userID uuid.UUID, ids [][]byte) *ReingestReport {
 	// Absent means "this deployment cannot re-ingest"; an all-zero report means
 	// "there was nothing held to re-ingest". Collapsing them would make a
@@ -442,6 +498,81 @@ func (s *Server) reingest(ctx context.Context, userID uuid.UUID, ids [][]byte) *
 		out.Incomplete = true
 	}
 	return out
+}
+
+// handleAllowlist lists the origins this account has vouched for.
+//
+// It is not a convenience, and the argument is the one written above the push
+// token routes: the delete below needs a (domain, scope) pair, and a user who
+// confirmed something months ago has no other way to recover it. Without this
+// route the revocation is unreachable to the person who needs it, which is the
+// same as not having one.
+//
+// It carries no message content — a hostname, a scope and an instant — for the
+// same reason the quarantine listing does not (§3.2:55).
+func (s *Server) handleAllowlist(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	entries, err := s.Quarantine.AllowlistedOrigins(r.Context(), userID)
+	if err != nil {
+		s.logf("api: allowlist for %s: %v", userID, err)
+		writeErr(w, http.StatusInternalServerError, "internal", "")
+		return
+	}
+	out := AllowlistResponse{Entries: make([]AllowlistEntry, 0, len(entries))}
+	for _, e := range entries {
+		out.Entries = append(out.Entries, AllowlistEntry{Domain: e.Domain, Scope: e.Scope, CreatedAt: e.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRevokeSender withdraws a confirmation.
+//
+// # Why this route exists
+//
+// Confirming is one tap on a sheet, and the hostname grammar admits lookalikes:
+// dib-alerts.ae, or a punycode A-label that renders in a client as the bank's
+// own name. Until this existed, nothing anywhere in the tree deleted a
+// sender_allowlist row except `users ON DELETE CASCADE` — so the only remedy
+// for a mistaken confirmation was deleting the account. A trust decision the
+// product asks a user to make and gives them no way to unmake is not a decision
+// they were really offered.
+//
+// # What it undoes
+//
+// The lane, going forward: the allowlist is re-read on every arrival and on
+// every reprocess, so the next message from that origin quarantines exactly as
+// the first one did. It does not retract ops already in the log — those are in
+// the user's own integrity chains — and it does not re-quarantine mail that has
+// already been promoted.
+//
+// A revocation of something that was not trusted is a 200 reporting
+// `revoked: false`, not a 404: the caller's goal is "this origin is not
+// trusted", and that goal is met either way. It also keeps the route from
+// answering "does this account trust X" differently depending on whether it
+// does.
+func (s *Server) handleRevokeSender(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	var req RevokeSenderRequest
+	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
+		return
+	}
+	revoked, err := s.Quarantine.Revoke(r.Context(), userID, req.Domain, req.Scope)
+	switch {
+	case err == nil:
+	case errors.Is(err, quarantine.ErrUnknownScope):
+		writeErr(w, http.StatusBadRequest, "bad_request", "scope must be \"outer\" or \"inner\"")
+		return
+	case errors.Is(err, quarantine.ErrInvalidDomain):
+		writeErr(w, http.StatusBadRequest, "bad_request", "domain must be a plain hostname")
+		return
+	default:
+		s.logf("api: revoke sender for %s: %v", userID, err)
+		writeErr(w, http.StatusInternalServerError, "internal", "")
+		return
+	}
+	writeJSON(w, http.StatusOK, RevokeSenderResponse{
+		Domain:  quarantine.NormalizeDomain(req.Domain),
+		Scope:   req.Scope,
+		Revoked: revoked,
+	})
 }
 
 func (s *Server) maxReingestPerConfirm() int {

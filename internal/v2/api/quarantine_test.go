@@ -190,6 +190,8 @@ func TestQuarantineRoutesRequireASession(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/quarantine", nil},
 		{http.MethodPost, "/api/v1/quarantine/confirm", ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"}},
+		{http.MethodGet, "/api/v1/quarantine/allowlist", nil},
+		{http.MethodDelete, "/api/v1/quarantine/allowlist", RevokeSenderRequest{Domain: "dib.ae", Scope: "outer"}},
 	} {
 		if rec := h.req(c.method, c.path, "", c.body); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("%s %s without a session: %d", c.method, c.path, rec.Code)
@@ -610,5 +612,180 @@ func TestConfirmSenderBoundsOneReIngestAndReportsTheRemainder(t *testing.T) {
 	}
 	if out.Reingest == nil || out.Reingest.Remaining != 3 {
 		t.Fatalf("the remainder must be reported so the caller knows to confirm again: %+v", out.Reingest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Confirming again, after the mail it released is already in the log
+// ---------------------------------------------------------------------------
+
+// TestConfirmingATrustedOriginAgainIsNotAConflict. Confirming re-ingests what
+// it releases, and a promoted message is no longer held — so the SECOND
+// confirmation of the same origin finds nothing held and used to be answered
+// `409 origin_unproven`: "no message held for this account carries a verified
+// signature from that origin… Mail that cannot be verified stays quarantined."
+// About an origin that is on the account's allowlist. On the one step spec
+// §3.2 calls out as onboarding, reachable by a double-tap, a retry after a lost
+// response, or one more pass of the `remaining > 0` loop this API documents.
+func TestConfirmingATrustedOriginAgainIsNotAConflict(t *testing.T) {
+	h := newQHarness(t)
+	fake := &fakeReprocessor{rep: Report{Appended: 1}}
+	h.srv.Reprocessor = fake
+	h.h = h.srv.Handler()
+	u := h.user("alice")
+	session := h.session(u)
+	it := h.hold(t, u, "a", nil)
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first confirmation: %d %s", rec.Code, rec.Body.String())
+	}
+	// What Task 30's re-ingest does with the ids it was handed.
+	if _, err := h.q.Promote(bg, u, [][]byte{it.IngestID}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-confirming a trusted origin: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[ConfirmSenderResponse](t, rec)
+	if len(out.IngestIDs) != 0 {
+		t.Fatalf("nothing is held, so nothing is released: %v", out.IngestIDs)
+	}
+	if out.Reingest == nil || out.Reingest.Report != (Report{}) {
+		t.Fatalf("an empty release re-ingests nothing: %+v", out.Reingest)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("the second confirmation re-ingested %d batches, want 0 after the first", len(fake.calls)-1)
+	}
+	// An origin this account has never proven is still refused.
+	rec = h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "never-seen.example", Scope: "outer"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("an unproven origin must still be refused: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestConfirmSenderEchoesTheDomainItStored. The row is lower-cased; echoing the
+// caller's own spelling invites a client to build its next request — and its
+// local list of trusted senders — from a string this server would not match.
+func TestConfirmSenderEchoesTheDomainItStored(t *testing.T) {
+	h := newQHarness(t)
+	u := h.user("alice")
+	session := h.session(u)
+	h.hold(t, u, "a", nil)
+
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "  DIB.AE  ", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if out := decodeJSON[ConfirmSenderResponse](t, rec); out.Domain != "dib.ae" {
+		t.Fatalf("the response echoes %q while the row says %q", out.Domain, "dib.ae")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Revocation
+// ---------------------------------------------------------------------------
+
+// TestTrustCanBeWithdrawn. Confirming is one tap and the hostname grammar
+// admits lookalikes — dib-alerts.ae, or a punycode A-label that renders as the
+// bank's own name. Until this route existed nothing in the tree deleted a
+// sender_allowlist row except deleting the account.
+func TestTrustCanBeWithdrawn(t *testing.T) {
+	h := newQHarness(t)
+	u := h.user("alice")
+	session := h.session(u)
+	h.hold(t, u, "a", nil)
+	rec := h.req(http.MethodPost, "/api/v1/quarantine/confirm", session,
+		ConfirmSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// It is listed, which is what makes it revocable: the delete needs a pair
+	// the user has no other way to recover.
+	rec = h.req(http.MethodGet, "/api/v1/quarantine/allowlist", session, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	listed := decodeJSON[AllowlistResponse](t, rec)
+	if len(listed.Entries) != 1 || listed.Entries[0].Domain != "dib.ae" || listed.Entries[0].Scope != "outer" {
+		t.Fatalf("the allowlist listing does not describe what was confirmed: %+v", listed)
+	}
+
+	rec = h.req(http.MethodDelete, "/api/v1/quarantine/allowlist", session,
+		RevokeSenderRequest{Domain: "DIB.AE", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[RevokeSenderResponse](t, rec)
+	if !out.Revoked || out.Domain != "dib.ae" {
+		t.Fatalf("revoke reported %+v", out)
+	}
+	if ok, err := h.q.Allowlisted(bg, u, "dib.ae", quarantine.ScopeOuter); err != nil || ok {
+		t.Fatalf("the origin is still trusted (ok=%v err=%v)", ok, err)
+	}
+
+	// Idempotent: revoking again is a fact, not an error.
+	rec = h.req(http.MethodDelete, "/api/v1/quarantine/allowlist", session,
+		RevokeSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second revoke: %d %s", rec.Code, rec.Body.String())
+	}
+	if decodeJSON[RevokeSenderResponse](t, rec).Revoked {
+		t.Fatal("the second revocation claimed to remove a row that was already gone")
+	}
+
+	rec = h.req(http.MethodGet, "/api/v1/quarantine/allowlist", session, nil)
+	if got := decodeJSON[AllowlistResponse](t, rec); len(got.Entries) != 0 {
+		t.Fatalf("the revoked entry is still listed: %+v", got)
+	}
+}
+
+// TestRevocationCannotReachAnotherAccount. Same rule as every other route here:
+// the user id comes from the session and never from the request.
+func TestRevocationCannotReachAnotherAccount(t *testing.T) {
+	h := newQHarness(t)
+	a, b := h.user("alice"), h.user("bob")
+	h.hold(t, b, "b", nil)
+	if _, err := h.q.Confirm(bg, b, "dib.ae", quarantine.ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := h.req(http.MethodDelete, "/api/v1/quarantine/allowlist", h.session(a),
+		RevokeSenderRequest{Domain: "dib.ae", Scope: "outer"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if decodeJSON[RevokeSenderResponse](t, rec).Revoked {
+		t.Fatal("one account's revocation removed another account's entry")
+	}
+	if ok, _ := h.q.Allowlisted(bg, b, "dib.ae", quarantine.ScopeOuter); !ok {
+		t.Fatal("the other account's origin was untrusted by a stranger")
+	}
+	// And the listing shows the caller's own account, not the one with entries.
+	rec = h.req(http.MethodGet, "/api/v1/quarantine/allowlist", h.session(a), nil)
+	if got := decodeJSON[AllowlistResponse](t, rec); len(got.Entries) != 0 {
+		t.Fatalf("one account's listing carries another's entries: %+v", got)
+	}
+}
+
+func TestRevokeRejectsMalformedInput(t *testing.T) {
+	h := newQHarness(t)
+	session := h.session(h.user("alice"))
+	for _, c := range []RevokeSenderRequest{
+		{Domain: "dib.ae", Scope: "either"},
+		{Domain: "not a hostname", Scope: "outer"},
+		{Domain: "", Scope: "outer"},
+	} {
+		rec := h.req(http.MethodDelete, "/api/v1/quarantine/allowlist", session, c)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%+v answered %d %s", c, rec.Code, rec.Body.String())
+		}
 	}
 }

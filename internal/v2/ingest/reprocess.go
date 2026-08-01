@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,7 +77,61 @@ const (
 	coldPageBytes = 4 << 20
 	hotPageRows   = 256
 	hotPageBytes  = 4 << 20
+
+	// promoteTimeout bounds the quarantine promote that follows a successful
+	// append. It runs on a context detached from the caller's, so it needs a
+	// deadline of its own or a hung database would pin the request forever.
+	promoteTimeout = 10 * time.Second
 )
+
+// promotionClaims serializes the promotion of one held message.
+//
+// PACKAGE level rather than a Pipeline field, deliberately: the thing being
+// made exclusive is a (user, message) pair in one PROCESS, and two Pipelines
+// built over one pool would otherwise race each other exactly as two goroutines
+// on one Pipeline do. See [Pipeline.promoteHeld] for what this closes, what it
+// does not, and why it is not a database lock.
+var promotionClaims keyedMutex
+
+// keyedMutex is a mutex per key, with the entry dropped once nothing holds or
+// waits for it. The refcount is not tidiness: without it the map grows by one
+// entry per distinct message ever promoted and never shrinks, which for a
+// process that runs for months is a leak with a user-supplied key.
+type keyedMutex struct {
+	mu   sync.Mutex
+	held map[string]*keyedEntry
+}
+
+type keyedEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// claim blocks until the key is free and returns the release.
+func (k *keyedMutex) claim(key string) func() {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = make(map[string]*keyedEntry)
+	}
+	e, ok := k.held[key]
+	if !ok {
+		e = &keyedEntry{}
+		k.held[key] = e
+	}
+	e.refs++
+	k.mu.Unlock()
+
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		e.refs--
+		if e.refs == 0 {
+			delete(k.held, key)
+		}
+	}
+}
 
 // Report is what one Reprocess did, in outcomes that sum to Examined.
 //
@@ -196,15 +251,48 @@ func (p *Pipeline) reprocessHeld(ctx context.Context, userID uuid.UUID,
 
 // promoteHeld re-runs pipeline steps 4-7 over one held message and, if it is
 // now trusted, appends it and clears the quarantine row.
+//
+// # Exactly one append per held message
+//
+// Confirming a sender is a tap on a button, POST /api/v1/quarantine/confirm has
+// no rate limit deliberately (Task 27), and every confirmation re-ingests
+// everything still held from that origin. Two simultaneous confirmations
+// therefore read the same held ids and race each other here: without a claim
+// both append, which is two txn_ingested ops for one ingest id — replay's
+// `duplicate_ingest` anomaly — plus a second copy of a body that can be a
+// megabyte, while one of the two Promotes loses the FOR UPDATE race and removes
+// nothing. TestConcurrentConfirmationsAppendTheMessageOnce reproduced it 5 runs
+// out of 5 before [promotionClaims] existed.
+//
+// The claim is held from before the "was this already appended" check to after
+// the append, so the loser's check runs against a log the winner has already
+// written to. What it does NOT do is span processes: it is a Go lock, not a
+// database one. That is a deliberate trade and the alternative was measured,
+// not assumed — a row lock or an advisory lock spanning the append holds a pool
+// connection while [Pipeline.appendOps] acquires a second one, so pool-max
+// concurrent confirmations would each hold one and wait for one, on a route
+// with no rate limit. Turning a duplicate op into a self-inflicted deadlock is
+// not an improvement. Two ledgerd processes serving one database would still
+// race, and the residue is what [Pipeline.alreadyHandled] already documents for
+// the arrival path: a bounded, visible mess in the log that replay folds to one
+// live transaction, never wrong money.
 func (p *Pipeline) promoteHeld(ctx context.Context, userID uuid.UUID,
 	it quarantine.Item, rep *Report) error {
 	short := hex.EncodeToString(it.IngestID)[:12]
+
+	release := promotionClaims.claim(userID.String() + "/" + hex.EncodeToString(it.IngestID))
+	defer release()
 
 	// A Promote that failed AFTER its append leaves the quarantine row behind,
 	// and the natural response to that error is to run the reprocess again.
 	// Without this the retry appends a second copy of a message already in the
 	// log — recoverable (replay refuses it with a duplicate_ingest anomaly) but
 	// entirely avoidable, since the diagnostics row already records the append.
+	//
+	// That last clause is only true because the diagnostics row is written
+	// BEFORE the promote below rather than after it. Written after, this guard
+	// reads a row that the very failure it guards against prevents from
+	// existing, and it is inert.
 	appended, err := p.appendedBefore(ctx, userID, it.IngestID)
 	if err != nil {
 		return err
@@ -253,11 +341,37 @@ func (p *Pipeline) promoteHeld(ctx context.Context, userID uuid.UUID,
 	if err := p.appendOps(ctx, d, it.IngestID, it.ReceivedAt, res, tr); err != nil {
 		return err
 	}
-	if _, err := p.Quarantine.Promote(ctx, userID, [][]byte{it.IngestID}); err != nil {
+	// The message is in the log from here on, so it is counted here rather than
+	// after the promote below: a Report returned alongside an error is partial
+	// by contract, and a partial report that omitted an append that HAPPENED
+	// would be the one kind of wrong this accounting exists to prevent.
+	rep.Appended++
+
+	// BEFORE the promote, not after it. This row is the evidence appendedBefore
+	// reads, and the state it has to survive is precisely "the append committed
+	// and the promote did not" — so writing it after the promote makes it
+	// unwritable in exactly the case it is for. recordAfterStore runs on a
+	// context detached from the caller's, so a client that hung up mid-request
+	// still leaves the evidence behind.
+	p.recordAfterStore(ctx, p.reprocessRecord(userID, it.IngestID, o, res, tr, diag.OutcomeAppended))
+
+	// Detached for the same reason, and it is the difference between a
+	// cancelled request costing nothing and a cancelled request leaving mail
+	// showing as quarantined in the user's lane when it is already in their
+	// ledger. The message is durable either way; only the stale row is at stake.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteTimeout)
+	defer cancel()
+	n, err := p.Quarantine.Promote(pctx, userID, [][]byte{it.IngestID})
+	if err != nil {
 		return fmt.Errorf("ingest: reprocess: promote %s… after appending it: %w", short, err)
 	}
-	rep.Appended++
-	p.recordAfterStore(ctx, p.reprocessRecord(userID, it.IngestID, o, res, tr, diag.OutcomeAppended))
+	if n == 0 {
+		// Nothing to promote means the row went between this append and this
+		// call. Nothing is lost — the message is in the log and the removal is
+		// recorded by whoever took it — but it is the visible symptom of two
+		// promotions of one message, so it is not swallowed silently.
+		p.logf("ingest: reprocess: %s… was appended but no quarantine row was left to promote", short)
+	}
 	return nil
 }
 
