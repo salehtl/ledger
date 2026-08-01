@@ -518,6 +518,9 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	// Unauthenticated and unconditional — the only route here that is both.
+	// See health.go for why it pings the pool and why its body is two words.
+	mux.HandleFunc("GET /api/v1/healthz", s.handleHealthz)
 	mux.HandleFunc("POST /api/v1/auth/exchange", s.handleExchange)
 	mux.HandleFunc("POST /api/v1/writers/challenge", s.requireSession(s.handleChallenge))
 	mux.HandleFunc("POST /api/v1/writers/register", s.requireSession(s.handleRegister))
