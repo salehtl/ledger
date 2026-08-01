@@ -4531,7 +4531,11 @@ Spec §3.2's precondition and §5's Phase 0 require confirming port 25 with **bo
 
 ### Task D5: PostgreSQL on the primary
 
-- [ ] Install PostgreSQL 16, `listen_addresses = 'localhost'` only, a dedicated `ledgerv2` role and database, `scram-sha-256` auth, password in `/etc/ledger-v2/ledgerd.env`.
+- [ ] Install PostgreSQL 16, `listen_addresses = 'localhost'` only, a dedicated database, `scram-sha-256` auth, passwords in `/etc/ledger-v2/ledgerd.env`.
+- [ ] **Two roles, not one — `ledger_migrate` (owns the schema) and `ledger_runtime` (the app, never the owner).** This is a security requirement, not tidiness: `key_history` is append-only by trigger (Task 7), and `ALTER TABLE … DISABLE TRIGGER` needs only **ownership**. A single role that migrates and serves can switch the guard off and rewrite the key-history log that peer devices audit for key substitution (spec §3.4). The full recipe — including the two steps that are easy to miss — is in the header comment of `internal/v2/pg/migrations/00003_writers.sql`, and `auth.TestDocumentedRuntimeRoleGrantsWork` pins it:
+  - `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public` — `key_history.id` is a `bigserial`, so table grants alone make **every** registration and revocation fail with `permission denied for sequence`.
+  - `ALTER DEFAULT PRIVILEGES FOR ROLE ledger_migrate IN SCHEMA public GRANT … ON TABLES/SEQUENCES` — `GRANT … ON ALL TABLES` is a snapshot, not a policy, so any table added by a later migration is unreachable to the runtime role without it.
+- [ ] Consequence for the deploy script: **apply migrations out-of-band as `ledger_migrate` before starting the new binary.** `ledgerd`'s own `pg.Migrate` call stays in place and is a clean no-op for a non-owner against an up-to-date database; a deploy that ships a new migration and starts `ledgerd` first fails loudly at startup rather than running on a half-applied schema.
 - [ ] **Create the database with `LC_COLLATE='C.UTF-8' LC_CTYPE='C.UTF-8' ENCODING='UTF8'`**, matching `pgtest`'s cluster locale exactly (Decision 2). A production cluster whose collation differs from the test cluster's is a class of bug — ordering, `LIKE` behavior, index usability — that only appears after deploy.
 - [ ] Nightly `pg_dump` to `/var/backups/ledger-v2/` with 14-day rotation, plus a pre-deploy dump in the deploy script.
 - [ ] Verify: `ledgerd verify` exits 0 against the production database, and a restore of last night's dump into a scratch database also passes `ledgerd verify`.

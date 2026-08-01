@@ -335,6 +335,16 @@ func TestUpsertUserIsSafeUnderConcurrentFirstLogin(t *testing.T) {
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
+	// pgxpool opens connections lazily, so without this the goroutines are
+	// staggered by connection setup and may barely overlap. Replacing
+	// UpsertUser's `INSERT ... ON CONFLICT DO NOTHING` + fallback SELECT with a
+	// SELECT-then-INSERT TOCTOU is the mutation this test exists to catch:
+	// warmed, it fails 8 of 8 runs here; unwarmed, whether it fails at all is
+	// load- and machine-dependent (it failed 8 of 8 on this box but survived 3
+	// of 8 for a reviewer on another). Warming removes the dependence on luck
+	// rather than fixing a specific number. Every single-shot concurrency test
+	// in this package wants it; see warmPool in writer_test.go.
+	warmPool(t, pool, n)
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {

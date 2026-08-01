@@ -395,8 +395,11 @@ func TestChallengeIsSingleUseUnderConcurrency(t *testing.T) {
 
 	// Several rounds, because one round of an unwarmed race proves nothing: a
 	// read-then-write consume has a window measured in one round trip, and a
-	// single staggered round misses it. Verified by mutation — a
-	// SELECT-then-UPDATE consume survives one round and fails here.
+	// single staggered round can miss it entirely. Verified by mutation: a
+	// SELECT-then-UPDATE consume survived the single unwarmed round this test
+	// used to be, and fails reliably here (3 of 12 racers got through). Whether
+	// an unwarmed round catches it is a matter of machine and load — which is
+	// the reason to warm and repeat rather than to trust one green run.
 	const rounds = 8
 	for round := 0; round < rounds; round++ {
 		racers := make([]device, goroutines)
@@ -480,8 +483,11 @@ func TestConcurrentBootstrapsCannotBothWin(t *testing.T) {
 
 	// A fresh account per round: a bootstrap window closes for good once it is
 	// spent, so rounds cannot share a user. Rounds (with a warmed pool) are
-	// what makes this catch anything — verified by mutation: dropping FOR
-	// UPDATE survives a single unwarmed round and fails here.
+	// what make this reliable. Verified by mutation: dropping FOR UPDATE fails
+	// here every time (6 of 12 racers bootstrapped). It also survived a single
+	// unwarmed round on this box while a reviewer's box caught it — so treat
+	// "one unwarmed round found nothing" as no evidence either way, not as
+	// proof the lock is doing its job.
 	const rounds = 8
 	for round := 0; round < rounds; round++ {
 		u := mustUpsert(t, pool, appleIdentity(fmt.Sprintf("sub-writer-bootrace-%d", round)))
@@ -825,6 +831,122 @@ func asRole(t *testing.T, pool *pgxpool.Pool, role, sql string) error {
 	return err
 }
 
+// newRuntimeRole creates the non-owner role the deployment recipe describes.
+// Roles are cluster-wide while databases are per-test, so the name is derived
+// from the database to stay unique in the shared cluster scripts/v2-check.sh
+// boots. DROP OWNED BY revokes every privilege granted to the role in this
+// database — including default-privilege entries, which would otherwise make
+// DROP ROLE fail.
+func newRuntimeRole(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	var db string
+	if err := pool.QueryRow(bgctx, `SELECT current_database()`).Scan(&db); err != nil {
+		t.Fatal(err)
+	}
+	role := "ledger_runtime_" + db
+	if _, err := pool.Exec(bgctx, `CREATE ROLE `+role+` NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Registered after pgtest.New's cleanup, so it runs BEFORE the database
+		// is dropped (t.Cleanup is LIFO) — DROP OWNED needs the objects to exist.
+		if _, err := pool.Exec(bgctx, `DROP OWNED BY `+role); err != nil {
+			t.Errorf("drop owned by %s: %v", role, err)
+		}
+		if _, err := pool.Exec(bgctx, `DROP ROLE `+role); err != nil {
+			t.Errorf("drop role %s: %v", role, err)
+		}
+	})
+	return role
+}
+
+// grantRuntimePrivileges applies the recipe documented in 00003_writers.sql,
+// verbatim. If this function and that comment ever disagree, the comment is a
+// deployment instruction that does not work.
+func grantRuntimePrivileges(t *testing.T, pool *pgxpool.Pool, role string) {
+	t.Helper()
+	var owner string
+	if err := pool.QueryRow(bgctx, `SELECT current_user`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`GRANT USAGE ON SCHEMA public TO ` + role,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + role,
+		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + role,
+		`ALTER DEFAULT PRIVILEGES FOR ROLE ` + owner + ` IN SCHEMA public
+		   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + role,
+		`ALTER DEFAULT PRIVILEGES FOR ROLE ` + owner + ` IN SCHEMA public
+		   GRANT USAGE, SELECT ON SEQUENCES TO ` + role,
+	} {
+		if _, err := pool.Exec(bgctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+// The recipe in 00003_writers.sql is a deployment instruction, so it has to
+// actually run an application workload — not just be refused in the right
+// places. Two failures it is pinned against, both of which produce a runtime
+// role that cannot serve a single registration:
+//
+//   - key_history.id is a bigserial, so an INSERT calls nextval() on its
+//     sequence. Table grants alone give "permission denied for sequence".
+//   - GRANT ... ON ALL TABLES is a snapshot of the schema at that instant, not
+//     a policy. A table created by a LATER migration (Tasks 8+ add several) is
+//     unreachable until ALTER DEFAULT PRIVILEGES is in place.
+func TestDocumentedRuntimeRoleGrantsWork(t *testing.T) {
+	pool := pgtest.New(t)
+	u := mustUpsert(t, pool, appleIdentity("sub-writer-grants"))
+	// A committed key_history row: the guard is a per-ROW trigger, so an UPDATE
+	// against an empty table touches nothing and raises nothing. Without this
+	// the last assertion below passes for the wrong reason.
+	a := newDevice(t, "dev-a")
+	mustEnroll(t, newWriters(pool, newClock()), u, a, a)
+	role := newRuntimeRole(t, pool)
+
+	// Before the sequence grant: the table grant alone is not enough.
+	if _, err := pool.Exec(bgctx,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO `+role); err != nil {
+		t.Fatal(err)
+	}
+	insert := `INSERT INTO key_history (user_id, writer_id, pubkey, event, at)
+	           VALUES ('` + u.String() + `', 'dev-a', NULL, 'registered', now())`
+	if err := asRole(t, pool, role, insert); err == nil {
+		t.Fatal("table grants alone let a bigserial INSERT through; the recipe would not have needed the sequence grant")
+	} else if !strings.Contains(err.Error(), "permission denied for sequence") {
+		t.Fatalf("table-grants-only INSERT: %v, want permission denied for sequence", err)
+	}
+
+	// A table added by a later migration, before default privileges are set.
+	if _, err := pool.Exec(bgctx, `CREATE TABLE future_task8_table (id int)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := asRole(t, pool, role, `SELECT * FROM future_task8_table`); err == nil {
+		t.Fatal("ON ALL TABLES reached a table created afterwards; the default-privileges step would be unnecessary")
+	} else if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("future table without default privileges: %v", err)
+	}
+
+	// Now the full documented recipe.
+	grantRuntimePrivileges(t, pool, role)
+
+	if err := asRole(t, pool, role, insert); err != nil {
+		t.Fatalf("the documented grants do not permit a registration's key_history INSERT: %v", err)
+	}
+	if _, err := pool.Exec(bgctx, `CREATE TABLE future_task9_table (id bigserial PRIMARY KEY, x int)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := asRole(t, pool, role, `INSERT INTO future_task9_table (x) VALUES (1)`); err != nil {
+		t.Fatalf("a table created after the default-privileges step is still unreachable: %v", err)
+	}
+
+	// And the guard still binds this role, with all of that granted.
+	if err := asRole(t, pool, role, `UPDATE key_history SET pubkey = '\x00'::bytea`); err == nil ||
+		!strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("the full recipe unbound the append-only guard: %v", err)
+	}
+}
+
 // The append-only guard binds a role that can write rows but does not OWN the
 // table. That distinction is the whole deployment requirement: ALTER TABLE ...
 // DISABLE TRIGGER needs only ownership, so an application that migrates with
@@ -839,36 +961,28 @@ func TestKeyHistoryGuardBindsANonOwnerRuntimeRole(t *testing.T) {
 	a := newDevice(t, "dev-a")
 	mustEnroll(t, w, u, a, a)
 
-	var db string
-	if err := pool.QueryRow(bgctx, `SELECT current_database()`).Scan(&db); err != nil {
-		t.Fatal(err)
-	}
-	// Roles are cluster-wide while databases are per-test, so the name is
-	// derived from the database to stay unique in the shared cluster that
-	// scripts/v2-check.sh boots.
-	role := "ledger_runtime_" + db
-	if _, err := pool.Exec(bgctx, `CREATE ROLE `+role+` NOLOGIN`); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		// Registered after pgtest.New's cleanup, so it runs BEFORE the database
-		// is dropped (t.Cleanup is LIFO) — the revoke needs the table to exist.
-		if _, err := pool.Exec(bgctx, `REVOKE ALL ON key_history FROM `+role); err != nil {
-			t.Errorf("revoke: %v", err)
-		}
-		if _, err := pool.Exec(bgctx, `DROP ROLE `+role); err != nil {
-			t.Errorf("drop role: %v", err)
-		}
-	})
-	if _, err := pool.Exec(bgctx,
-		`GRANT SELECT, INSERT, UPDATE, DELETE ON key_history TO `+role); err != nil {
-		t.Fatal(err)
+	role := newRuntimeRole(t, pool)
+	grantRuntimePrivileges(t, pool, role)
+
+	// The workload this role exists to run still works: appending is the whole
+	// point of an append-only log, and a guard that blocked it would be a
+	// passing test and a dead application.
+	if err := asRole(t, pool, role,
+		`INSERT INTO key_history (user_id, writer_id, pubkey, event, at)
+		 VALUES ('`+u.String()+`', 'dev-b', NULL, 'registered', now())`); err != nil {
+		t.Fatalf("the runtime role cannot append to key_history: %v", err)
 	}
 
 	// A non-owner with full DML is refused by the trigger...
 	err := asRole(t, pool, role, `UPDATE key_history SET pubkey = '\x00'::bytea`)
 	if err == nil || !strings.Contains(err.Error(), "append-only") {
 		t.Fatalf("non-owner UPDATE: %v, want the append-only guard", err)
+	}
+	// ...including the DELETE half, which the cascade carve-out could have
+	// widened by accident.
+	err = asRole(t, pool, role, `DELETE FROM key_history`)
+	if err == nil || !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("non-owner DELETE: %v, want the append-only guard", err)
 	}
 	// ...and cannot switch the trigger off, because that needs ownership.
 	err = asRole(t, pool, role, `ALTER TABLE key_history DISABLE TRIGGER key_history_no_rewrite`)

@@ -61,9 +61,31 @@ CREATE UNIQUE INDEX writers_pubkey_uniq ON writers (user_id, pubkey) WHERE pubke
 --
 --   CREATE ROLE ledger_migrate LOGIN;   -- owns the schema, runs goose
 --   CREATE ROLE ledger_runtime LOGIN;   -- the app; never the owner
---   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ledger_runtime;
+--   GRANT USAGE ON SCHEMA public TO ledger_runtime;
+--   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES     IN SCHEMA public TO ledger_runtime;
+--   -- Not optional: key_history.id is a bigserial, so an INSERT calls
+--   -- nextval() on key_history_id_seq. Without this grant EVERY registration
+--   -- and revocation fails with "permission denied for sequence".
+--   GRANT USAGE, SELECT           ON ALL SEQUENCES IN SCHEMA public TO ledger_runtime;
+--   -- ON ALL is a snapshot of what exists at that instant, not a policy: a
+--   -- table added by a later migration would be unreachable to the runtime
+--   -- role ("permission denied for table ..."). Tasks 8+ add tables, so the
+--   -- default must be set as well, and it must name the role that will CREATE
+--   -- them.
+--   ALTER DEFAULT PRIVILEGES FOR ROLE ledger_migrate IN SCHEMA public
+--     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ledger_runtime;
+--   ALTER DEFAULT PRIVILEGES FOR ROLE ledger_migrate IN SCHEMA public
+--     GRANT USAGE, SELECT ON SEQUENCES TO ledger_runtime;
 --
--- auth.TestKeyHistoryGuardBindsANonOwnerRuntimeRole pins exactly that split.
+-- Applying migrations is then an out-of-band step run as ledger_migrate,
+-- BEFORE the new binary starts. ledgerd's own pg.Migrate call stays harmless:
+-- as a non-owner against an already-up-to-date database it is a clean no-op
+-- (goose reads goose_db_version and finds nothing to do). A deploy that ships a
+-- new migration and starts ledgerd first fails loudly at startup instead of
+-- silently running with a half-applied schema.
+--
+-- auth.TestKeyHistoryGuardBindsANonOwnerRuntimeRole and
+-- auth.TestDocumentedRuntimeRoleGrantsWork pin exactly this recipe.
 CREATE TABLE key_history (
   id        bigserial PRIMARY KEY,
   user_id   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
