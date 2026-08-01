@@ -486,6 +486,12 @@ func (a *Addresses) Resolve(ctx context.Context, rcpt string) (uuid.UUID, bool, 
 
 // localPartOf extracts and normalizes the local part of a recipient this server
 // is willing to consider, or reports false.
+func (a *Addresses) localPartOf(rcpt string) (string, bool) {
+	return LocalPartOf(rcpt, a.Suffix)
+}
+
+// LocalPartOf extracts and normalizes the local part of a recipient addressed
+// to suffix ("@in.<domain>"), or reports false.
 //
 // It is deliberately strict. The only things folded are the ones that are the
 // SAME mailbox by any reading — surrounding whitespace, the angle brackets an
@@ -495,14 +501,21 @@ func (a *Addresses) Resolve(ctx context.Context, rcpt string) (uuid.UUID, bool, 
 // parts, no second '@'. Each of those is a way to write more than one string
 // that reaches one mailbox, and a receiver that accepts them gives a per-address
 // quota (Task 24) more keys than it has mailboxes.
-func (a *Addresses) localPartOf(rcpt string) (string, bool) {
+//
+// It is exported for the BACKUP RELAY (internal/v2/relay), which holds no
+// database and therefore cannot call [Addresses.Resolve], but must decide
+// whether an SMTP recipient is one of ours against its address replica. A second
+// copy of this rule in that package is the drift that matters: a relay that
+// accepted a spelling the primary refuses would spool mail the primary then
+// answers 404 to, permanently, after the sender was already told 250.
+func LocalPartOf(rcpt, suffix string) (string, bool) {
 	s := strings.TrimSpace(rcpt)
 	if strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">") {
 		s = strings.TrimSpace(s[1 : len(s)-1])
 	}
 	s = strings.ToLower(s)
-	suffix := strings.ToLower(a.Suffix)
-	if !strings.HasSuffix(s, suffix) {
+	suffix = strings.ToLower(suffix)
+	if suffix == "" || !strings.HasSuffix(s, suffix) {
 		return "", false
 	}
 	local := s[:len(s)-len(suffix)]

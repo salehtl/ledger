@@ -281,6 +281,29 @@ type Handler interface {
 	Deliver(ctx context.Context, d Delivery) error
 }
 
+// Diagnostics is where this package's refusal accounting goes. *diag.Diag is
+// the implementation on the primary, and the only one that satisfies spec §3.5
+// in full: a durable, queryable, bounded ledger.
+//
+// It is an interface for exactly one reason, and it is not testability. Task
+// 35's BACKUP RELAY runs this same receiver on a second VPS that has no
+// Postgres and holds no user data at all — that is the whole point of relay
+// mode — so it cannot supply a *diag.Diag. Passing one with a nil pool
+// "works" (diag.check returns an error rather than panicking) at the cost of an
+// error log line per refusal on a public port that sees constant junk, and of
+// making every refusal look unaccounted-for to [Server.accountRefusal]. The
+// relay supplies its own sink instead, and the difference between the two
+// deployments is stated here rather than hidden in a nil check.
+type Diagnostics interface {
+	Record(ctx context.Context, r diag.Record) error
+	CountRejection(ctx context.Context, reason string) error
+	CountRejections(ctx context.Context, reason string, n int64) error
+}
+
+// The production implementation, asserted here so a signature change in diag is
+// a compile error in this package rather than a wiring failure in main.
+var _ Diagnostics = (*diag.Diag)(nil)
+
 // Resolver maps an SMTP recipient to the account that owns it. It is
 // *addresses.Addresses in production.
 //
@@ -299,7 +322,7 @@ type Server struct {
 	// diag and limiter are fields rather than constructor-captured values so
 	// that a test in this package can substitute them BEFORE Serve starts. They
 	// are never mutated afterwards.
-	diag    *diag.Diag
+	diag    Diagnostics
 	limiter *Limiter
 	now     func() time.Time
 	inner   *smtp.Server
@@ -339,7 +362,7 @@ type Server struct {
 // New builds a receiver. cfg supplies the DATA cap, the daily allowance and the
 // tarpit shape; the remaining limiter knobs are policy constants (see
 // LimiterConfig). now defaults to time.Now.
-func New(cfg config.MailConfig, res Resolver, h Handler, d *diag.Diag, now func() time.Time) *Server {
+func New(cfg config.MailConfig, res Resolver, h Handler, d Diagnostics, now func() time.Time) *Server {
 	if now == nil {
 		now = time.Now
 	}
