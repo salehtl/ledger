@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { Client, HardStopError, ROSTER_CHECKPOINT, decodeWireRow, registrationMessage } from "./client";
-import { INVARIANT_IDS } from "../invariants/check";
+import { INVARIANT_IDS, VIOLATION_CHAIN_WITHHELD, VIOLATION_ROSTER_COVERAGE } from "../invariants/check";
 import { memStore, type WireRow } from "../store/store";
 import { STREAM_COLD, STREAM_HOT, sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, chainKey } from "../wire/chain";
@@ -123,12 +123,27 @@ class FakeServer {
     };
   }
 
+  /**
+   * Truncations: chain key -> the highest counter still served.
+   *
+   * A truncation is a CLEAN PREFIX, so nothing about the rows it does serve is
+   * wrong — `verifyChain` passes, no hash is out of place, and the only thing
+   * that can detect it is a checkpoint a peer wrote before the rows vanished.
+   * That is the entire point of I11's withholding branch.
+   */
+  readonly truncated = new Map<string, bigint>();
+
+  truncate(writerId: string, stream: Stream, keepUpTo: bigint): void {
+    this.truncated.set(`${writerId}|${stream}`, keepUpTo);
+  }
+
   /** Rows a pull may see: `dropWriterCounter` is withheld here and nowhere else. */
   private visible(stream: Stream): FakeRow[] {
     return this.rows.filter(
       (r) =>
         r.stream === stream &&
-        !(this.opts.dropWriterCounter !== undefined && r.stream === STREAM_HOT && r.writer_id === "ingest" && r.writer_counter === this.opts.dropWriterCounter),
+        !(this.opts.dropWriterCounter !== undefined && r.stream === STREAM_HOT && r.writer_id === "ingest" && r.writer_counter === this.opts.dropWriterCounter) &&
+        r.writer_counter <= (this.truncated.get(`${r.writer_id}|${r.stream}`) ?? r.writer_counter),
     );
   }
 
@@ -858,5 +873,113 @@ describe("guards", () => {
       /31 bytes, and Ed25519 keys are 32/,
     );
     expect(srv.writers.map((w) => w.writer_id)).toEqual(["dev-a"]);
+  });
+});
+
+describe("withholding is never escaped", () => {
+  /**
+   * The hole this section exists for, built end to end.
+   *
+   * `I11_roster_checkpoint` bundles a benign condition — the roster names a
+   * writer the checkpoint does not cover — with an adversarial one: a
+   * checkpoint claims a head above anything this client has seen, which means
+   * the server is withholding rows a peer already witnessed. `push` proceeds
+   * over the first, because writing the checkpoint is the repair. Matching on
+   * the ID alone made it proceed over the second too, and the consequence is
+   * that the withheld-from device REPLACES the honest attestation with one
+   * claiming genesis — `applyCheckpoint` keeps only the latest — after which
+   * the truncation is a notice nobody has to act on.
+   */
+  async function truncatedAccount(): Promise<{ srv: FakeServer; c: Client }> {
+    const srv = serve({
+      writers: [
+        { writer_id: "dev-a", kind: "device", revoked_at: null },
+        { writer_id: "dev-b", kind: "device", revoked_at: null },
+        { writer_id: "dev-c", kind: "device", revoked_at: null },
+      ],
+    });
+    // dev-a authors up to hot counter 4. Every push carries a checkpoint, and
+    // the roster is complete from the start, so dev-c is covered throughout.
+    const a = await loggedIn(srv, "dev-a");
+    for (let i = 0; i < 4; i++) {
+      a.emit({ type: "rate_set", payload: { currency: CODES[i]!, rate_micro: `${1_000_000 + i}` } });
+      await a.push();
+    }
+    expect(srv.head("dev-a", STREAM_HOT).counter).toBe(4n);
+
+    // dev-b syncs the whole log and attests it. Its checkpoint is the newest in
+    // the account, and it names dev-a|hot at its real head.
+    const b = await loggedIn(srv, "dev-b");
+    b.emit({ type: "rate_set", payload: { currency: "ZAR", rate_micro: "200000" } });
+    await b.push();
+    const attested = b.state().checkpoints.find((h) => h.writer_id === "dev-a" && h.stream === STREAM_HOT);
+    expect(attested?.counter).toBe(4n);
+
+    // The server now truncates dev-a's hot chain to counter 2. A clean prefix:
+    // no chain break, no bad hash, nothing local can see it.
+    srv.truncate("dev-a", STREAM_HOT, 2n);
+
+    const c = await loggedIn(srv, "dev-c");
+    c.emit({ type: "rate_set", payload: { currency: "BRL", rate_micro: "700000" } });
+    return { srv, c };
+  }
+
+  test("a truncated peer chain is the ONLY hard stop dev-c sees, and it is not a coverage one", async () => {
+    const { c } = await truncatedAccount();
+    const err = await c.pull().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HardStopError);
+    const stops = (err as HardStopError).violations.filter((v) => v.severity === "hard_stop");
+    expect(stops).toHaveLength(1);
+    expect(stops[0]?.id).toBe(ROSTER_CHECKPOINT);
+    expect(stops[0]?.kind).toBe(VIOLATION_CHAIN_WITHHELD);
+    expect(stops[0]?.detail).toMatch(/withholding rows a peer device has already witnessed/);
+  });
+
+  test("push refuses rather than laundering the truncation into a fresh genesis claim", async () => {
+    const { srv, c } = await truncatedAccount();
+    const uploadsBefore = srv.uploaded.length;
+
+    await expect(c.push()).rejects.toThrow(/withholding rows a peer device has already witnessed/);
+
+    // Nothing was written. In particular no checkpoint from a device that
+    // cannot see the chain it would be attesting.
+    expect(srv.uploaded.length).toBe(uploadsBefore);
+    expect(srv.rows.some((r) => r.writer_id === "dev-c")).toBe(false);
+    // dev-b's honest attestation is still the latest one in the log, so the
+    // next device to sync meets the same hard stop rather than a notice.
+    const again = await c.pull().catch((e: unknown) => e);
+    expect((again as HardStopError).violations.some((v) => v.kind === VIOLATION_CHAIN_WITHHELD)).toBe(true);
+  });
+
+  // The boundary the escape rests on: it is an ALLOW-list over every hard stop,
+  // so a coverage stop travelling with any other stop must still refuse.
+  // Mutating `.every` to `.some` passes every other test in this file.
+  test("a coverage stop alongside another hard stop is still a refusal", async () => {
+    const srv = serve({
+      dropWriterCounter: 2n,
+      writers: [
+        { writer_id: "dev-a", kind: "device", revoked_at: null },
+        { writer_id: "dev-b", kind: "device", revoked_at: null },
+      ],
+    });
+    seedIngest(srv, 4);
+    const c = await loggedIn(srv, "dev-a");
+    c.emit({ type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } });
+
+    // Two live device writers and no checkpoint at all is the COVERAGE stop —
+    // the one a push may proceed over — and the dropped ingest row is an I2
+    // stop, which it may not. Together they must refuse.
+    const err = await c.pull().catch((e: unknown) => e);
+    const stops = (err as HardStopError).violations.filter((v) => v.severity === "hard_stop");
+    expect(stops.some((v) => v.kind === VIOLATION_ROSTER_COVERAGE)).toBe(true);
+    expect(stops.some((v) => v.id === "I2_writer_counters")).toBe(true);
+
+    await expect(c.push()).rejects.toThrow(/I2_writer_counters/);
+    expect(srv.uploaded).toHaveLength(0);
+  });
+
+  test("the two conditions the escape distinguishes are both real and both under I11", () => {
+    expect(INVARIANT_IDS).toContain(ROSTER_CHECKPOINT);
+    expect(VIOLATION_ROSTER_COVERAGE).not.toBe(VIOLATION_CHAIN_WITHHELD);
   });
 });
