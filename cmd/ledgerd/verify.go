@@ -287,6 +287,14 @@ func runParseRate(cfg config.Config) error {
 		return fmt.Errorf("ledgerd parse-rate: %w", err)
 	}
 	printParseRate(rep, cfg.Verify.JSON)
+	if !rep.MeetsGate() {
+		// Exit non-zero, like `verify`. This is the ship/no-ship instrument for
+		// spec §5, and a tool that prints "gate false" and exits 0 is not
+		// machine-checkable: a deploy script, a cron or a release checklist
+		// reading only the status code was told everything was fine.
+		return fmt.Errorf("ledgerd parse-rate: the exit criterion is NOT met: %s",
+			strings.Join(rep.Gate.Reasons, "; "))
+	}
 	return nil
 }
 
@@ -299,26 +307,85 @@ func printParseRate(rep verify.ParseRateReport, asJSON bool) {
 		rep.From.UTC().Format(time.RFC3339), rep.To.UTC().Format(time.RFC3339))
 	fmt.Printf("  parsed (numerator)       %d  (template %d, heuristic %d)\n",
 		rep.Parsed, rep.ByTier["template"], rep.ByTier["heuristic"])
-	fmt.Printf("  unparsed population      %d\n", rep.Unparsed)
+	fmt.Printf("  unparsed, adjudicable    %d\n", rep.Unparsed)
 	fmt.Printf("  adjudicated              %d  (transaction %d, non-transactional %d, unreadable %d)\n",
 		rep.Adjudicated, rep.Transaction, rep.NonTransactional, rep.Unreadable)
-	for _, e := range sortedCounts(rep.Excluded) {
-		fmt.Printf("    excluded %-14s %d\n", e.name, e.n)
+	fmt.Printf("  LOST before the parser   %d\n", rep.LostTotal)
+	for _, l := range sortedCounts(rep.Lost) {
+		fmt.Printf("    %-22s %d\n", l.name, l.n)
 	}
+	fmt.Printf("  denominator              %d\n", rep.Denominator())
+
 	if !rep.HasRate {
 		fmt.Printf("  NO RATE: %d message(s) await a verdict. The denominator is a judgement, "+
 			"not a query.\n", len(rep.Pending))
-		return
-	}
-	if rep.Sampled {
+	} else if rep.Sampled {
 		fmt.Printf("  rate (point estimate)    %.2f%%  [SAMPLED]\n", rep.Rate*100)
 		fmt.Printf("  Wilson 95%% lower bound   %.2f%%  <- THIS is the gate\n", rep.LowerBound*100)
 	} else {
 		fmt.Printf("  rate                     %.2f%%  (whole population adjudicated, no sampling error)\n",
 			rep.Rate*100)
 	}
+
+	for _, pu := range rep.PerUser {
+		judged := ""
+		if !pu.Judged {
+			judged = "  (too few messages to judge)"
+		}
+		fmt.Printf("    account %s  %d/%d  %.2f%%%s\n",
+			pu.UserID, pu.Parsed, pu.Total, pu.Rate*100, judged)
+	}
+	for _, w := range rep.Weeks {
+		fmt.Printf("    week of %s  %d/%d  %.2f%%\n",
+			w.From.UTC().Format("2006-01-02"), w.Parsed, w.Total, w.Rate*100)
+	}
+
 	fmt.Printf("  exit gate (>= %.0f%%)       %v\n", verify.GateThreshold*100, rep.MeetsGate())
+	for _, why := range rep.Gate.Reasons {
+		fmt.Printf("    NOT MET: %s\n", why)
+	}
+	fmt.Println("  what this number CANNOT see:")
+	for _, b := range rep.BlindSpots {
+		fmt.Printf("    [%s] %s: %s\n", b.Direction, b.ID, b.Reason)
+	}
 	fmt.Printf("  NOTE: %s\n", verify.ParseRateCaveat)
+}
+
+// operatorName is who is adjudicating, for the audit trail 00018 keeps.
+//
+// LEDGER_OPERATOR first, then the login name. Empty is accepted rather than
+// fatal — refusing to record a verdict because an environment variable is unset
+// would push an operator toward editing the table by hand, which is the thing
+// the append-only trigger exists to stop.
+func operatorName() string {
+	for _, v := range []string{os.Getenv("LEDGER_OPERATOR"), os.Getenv("USER")} {
+		if s := sanitizeOperator(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// sanitizeOperator keeps the value inside 00018's CHECK grammar, lowercasing and
+// dropping anything else, so a hostile or merely unusual login name cannot fail
+// the write.
+func sanitizeOperator(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	var b strings.Builder
+	for _, r := range v {
+		if b.Len() >= 64 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.' || r == '_' || r == '-' || r == '@':
+			if b.Len() > 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // adjudicatePending is the interactive pass. One scan of each user's cold
@@ -354,12 +421,10 @@ func adjudicatePending(ctx context.Context, pool *pgxpool.Pool, pending []verify
 			i+1, len(pending), p.UserID, hexID[:12], p.SenderDomain,
 			p.ReceivedAt.UTC().Format(time.RFC3339))
 		body, ok := texts[p.UserID][hexID]
-		if !ok {
-			// No body recovered. Recorded as 'unreadable' WITHOUT asking: there
-			// is nothing for the operator to look at, and leaving it unjudged
-			// would make the tool ask for it again forever.
+		if auto, isAuto := autoVerdict(ok); isAuto {
 			fmt.Println("(the cold body could not be read; recorded as unreadable)")
-			if err := verify.RecordVerdict(ctx, pool, p.UserID, p.IngestID, verify.VerdictUnreadable); err != nil {
+			if err := verify.RecordVerdict(ctx, pool, p.UserID, p.IngestID,
+				auto, operatorName()); err != nil {
 				return fmt.Errorf("ledgerd parse-rate: %w", err)
 			}
 			continue
@@ -373,11 +438,30 @@ func adjudicatePending(ctx context.Context, pool *pgxpool.Pool, pending []verify
 			fmt.Println("stopping; verdicts recorded so far are kept")
 			return nil
 		}
-		if err := verify.RecordVerdict(ctx, pool, p.UserID, p.IngestID, v); err != nil {
+		if err := verify.RecordVerdict(ctx, pool, p.UserID, p.IngestID, v, operatorName()); err != nil {
 			return fmt.Errorf("ledgerd parse-rate: %w", err)
 		}
 	}
 	return nil
+}
+
+// autoVerdict is the verdict recorded WITHOUT asking, for a message whose cold
+// body could not be fetched, plus whether that applies at all.
+//
+// It is a named function rather than two lines inline because it is the exact
+// place an optimistic flip is invisible: recording an unreadable body as
+// 'non_transactional' removes it from the denominator and RAISES the rate, and
+// that mutation survived the first suite because the only path to this decision
+// needed a database and a terminal. VerdictUnreadable exists precisely to stop
+// a body nobody read from being assumed harmless — it counts AGAINST the rate.
+//
+// Leaving it unjudged is not an option either: the tool would ask for the same
+// message forever.
+func autoVerdict(haveBody bool) (string, bool) {
+	if haveBody {
+		return "", false
+	}
+	return verify.VerdictUnreadable, true
 }
 
 // maxAdjudicationBody bounds what is printed. Deciding "was this a transaction"

@@ -1,9 +1,14 @@
 package verify
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,16 +16,19 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
+	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/pgtest"
 )
 
+// adjudicate goes through the real writer, so every test exercises the
+// append-only path rather than a fixture that could drift from it.
 func adjudicate(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, id []byte, verdict string) {
 	t.Helper()
-	exec(t, pool, `INSERT INTO parse_rate_adjudications (ingest_id, user_id, verdict, adjudicated_at)
-	               VALUES ($1,$2,$3, now())
-	               ON CONFLICT (ingest_id, user_id) DO UPDATE SET verdict = EXCLUDED.verdict`,
-		id, u, verdict)
+	if err := RecordVerdict(bg, pool, u, id, verdict, "tester"); err != nil {
+		t.Fatalf("RecordVerdict: %v", err)
+	}
 }
 
 func window() (time.Time, time.Time, time.Time) {
@@ -242,9 +250,10 @@ func TestParseRatePopulationIsMailTheCascadeActuallySaw(t *testing.T) {
 	u := insertUser(t, pool)
 	now, from, to := window()
 
-	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
-	arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, "")
-	arrival(t, pool, u, now, diag.OutcomeDuplicate, diag.TierNone, "")
+	stored := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	hold(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, ""), now)
+	diagRowFor(t, pool, u, stored, now.Add(time.Minute), diag.EventArrival,
+		diag.OutcomeDuplicate, diag.TierNone, "")
 	arrival(t, pool, u, now, diag.OutcomeRejected, diag.TierNone, diag.RejectTooLarge)
 	arrival(t, pool, u, now, diag.OutcomeOverQuota, diag.TierNone, diag.RejectOverQuota)
 	arrival(t, pool, uuid.Nil, now, diag.OutcomeRejected, diag.TierNone, diag.RejectUnknownRcpt)
@@ -259,12 +268,18 @@ func TestParseRatePopulationIsMailTheCascadeActuallySaw(t *testing.T) {
 	if rep.Parsed != 1 {
 		t.Fatalf("parsed = %d, want 1", rep.Parsed)
 	}
-	if !rep.HasRate || rep.Rate != 1 {
-		t.Fatalf("rate = %v (has=%v), want 1", rep.Rate, rep.HasRate)
+	// A redelivery of a stored message merged into that message's identity, so
+	// it is neither counted twice nor excluded by a rule. Everything else that
+	// produced no transaction is a LOSS in the denominator, keyed by what
+	// actually happened rather than by one anonymous "rejected".
+	if rep.Lost[diag.RejectTooLarge] != 1 || rep.Lost[diag.RejectOverQuota] != 1 {
+		t.Fatalf("lost = %v, want too_large and over_quota named by their reason", rep.Lost)
 	}
-	if rep.Excluded[diag.OutcomeQuarantined] != 1 || rep.Excluded[diag.OutcomeDuplicate] != 1 {
-		t.Fatalf("excluded = %v: what was left out has to be reported, or the denominator "+
-			"is a choice nobody can audit", rep.Excluded)
+	if rep.Lost[LossHeldUnconfirmed] != 1 {
+		t.Fatalf("lost = %v, want the still-held message under %s", rep.Lost, LossHeldUnconfirmed)
+	}
+	if want := 1.0 / 4.0; math.Abs(rep.Rate-want) > 1e-9 {
+		t.Fatalf("rate = %v, want %v: one parsed of four messages that arrived", rep.Rate, want)
 	}
 }
 
@@ -296,7 +311,7 @@ func TestParseRateNumeratorIsRestrictedToStoredMailToo(t *testing.T) {
 	now, from, to := window()
 
 	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
-	arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierTemplate, "")
+	hold(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierTemplate, ""), now)
 
 	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
 	if err != nil {
@@ -306,8 +321,10 @@ func TestParseRateNumeratorIsRestrictedToStoredMailToo(t *testing.T) {
 		t.Fatalf("parsed = %d, want 1: a template match that was not appended is not a parse "+
 			"the numerator may claim", rep.Parsed)
 	}
-	if rep.Excluded[diag.OutcomeQuarantined] != 1 {
-		t.Fatalf("excluded = %v, want the quarantined row named", rep.Excluded)
+	if rep.Lost[LossHeldUnconfirmed] != 1 {
+		t.Fatalf("lost = %v, want the held message under %s: a template match that was never "+
+			"stored is not a parse the numerator may claim, and it is not free either",
+			rep.Lost, LossHeldUnconfirmed)
 	}
 }
 
@@ -438,8 +455,8 @@ func TestParseRateMeasuresPromotedQuarantineMail(t *testing.T) {
 	if len(rep.Pending) != 1 || string(rep.Pending[0].IngestID) != string(bad) {
 		t.Fatalf("pending = %+v, want exactly the promoted-and-unparsed message", rep.Pending)
 	}
-	if rep.Excluded[diag.OutcomeQuarantined] != 1 {
-		t.Fatalf("excluded = %v, want the one message that is still held", rep.Excluded)
+	if rep.Lost[LossHeldUnconfirmed] != 1 {
+		t.Fatalf("lost = %v, want the one message that is still held", rep.Lost)
 	}
 
 	adjudicate(t, pool, u, bad, VerdictTransaction)
@@ -447,7 +464,511 @@ func TestParseRateMeasuresPromotedQuarantineMail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRate: %v", err)
 	}
-	if want := 2.0 / 3.0; math.Abs(got.Rate-want) > 1e-9 {
+	// 2 parsed, 1 adjudicated miss, 1 still held and unconfirmed.
+	if want := 2.0 / 4.0; math.Abs(got.Rate-want) > 1e-9 {
 		t.Fatalf("rate = %v, want %v", got.Rate, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The denominator has to contain what the alpha LOST
+// ---------------------------------------------------------------------------
+
+// reject writes an arrival that was refused with a reason. These are our
+// failures, not the sender's, and they all used to collapse into one
+// "rejected" bucket that the gate never looked at.
+func reject(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, at time.Time, reason string) []byte {
+	t.Helper()
+	outcome := diag.OutcomeRejected
+	if reason == diag.RejectOverQuota {
+		outcome = diag.OutcomeOverQuota
+	}
+	return arrival(t, pool, u, at, outcome, diag.TierNone, reason)
+}
+
+// TestParseRateCountsMailTheNormalizerLost is the critic's first scenario: the
+// normalizer breaks on one bank, the alpha loses 40 of 100 messages, and the
+// instrument reported a perfect score because every one of them left through
+// Excluded and MeetsGate never looked at it.
+func TestParseRateCountsMailTheNormalizerLost(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	for i := 0; i < 60; i++ {
+		arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	}
+	for i := 0; i < 40; i++ {
+		reject(t, pool, u, now, diag.RejectNoTextPart)
+	}
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.Lost[diag.RejectNoTextPart] != 40 {
+		t.Fatalf("lost = %v, want 40 under no_text_part — the reason is on the row and "+
+			"collapsing it into 'rejected' hides whose failure it was", rep.Lost)
+	}
+	if want := 0.6; math.Abs(rep.Rate-want) > 1e-9 {
+		t.Fatalf("rate = %.4f, want %v: 40 messages the alpha sent produced no transaction",
+			rep.Rate, want)
+	}
+	if rep.MeetsGate() {
+		t.Fatal("gate passes with 40%% of the alpha's mail lost before the parser")
+	}
+}
+
+// The critic's second scenario: trust-on-first-use holds the user never
+// confirms, expired by the sweep. 200 messages gone, previously rate=1.0000.
+func TestParseRateCountsHeldMailTheUserNeverConfirmed(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	for i := 0; i < 10; i++ {
+		arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	}
+	for i := 0; i < 150; i++ {
+		expire(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, ""), now)
+	}
+	for i := 0; i < 50; i++ {
+		hold(t, pool, u, arrival(t, pool, u, now, diag.OutcomeQuarantined, diag.TierNone, ""), now)
+	}
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.Lost[LossHeldExpired] != 150 || rep.Lost[LossHeldUnconfirmed] != 50 {
+		t.Fatalf("lost = %v, want 150 expired / 50 still held", rep.Lost)
+	}
+	if rep.Rate > 0.05 {
+		t.Fatalf("rate = %.4f with 10 parsed and 200 lost", rep.Rate)
+	}
+	if rep.MeetsGate() {
+		t.Fatal("gate passes with 200 of the alpha's 210 messages never becoming a transaction")
+	}
+}
+
+// A redelivery is the ONE exclusion that is not a loss: its original is counted.
+func TestParseRateStillExcludesDuplicatesAndNothingElse(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	id := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	diagRowFor(t, pool, u, id, now.Add(time.Minute), diag.EventArrival, diag.OutcomeDuplicate, diag.TierNone, "")
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.LostTotal != 0 {
+		t.Fatalf("lost = %v, want none: a retry of a stored message shares its ingest id, "+
+			"so it merges into that message rather than needing an exclusion rule", rep.Lost)
+	}
+	if rep.Parsed != 1 || rep.Rate != 1 {
+		t.Fatalf("parsed = %d rate = %v, want 1 and 1", rep.Parsed, rep.Rate)
+	}
+}
+
+// TestParseRateReportsWhatItCannotSee mirrors the accounting report: a bare
+// number overclaims, and the classes with no user-scoped diagnostics row at all
+// (tarpit, connection caps, over-long lines) cannot even reach Lost.
+func TestParseRateReportsWhatItCannotSee(t *testing.T) {
+	pool := pgtest.New(t)
+	now, from, to := window()
+	_ = now
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if len(rep.BlindSpots) == 0 {
+		t.Fatal("the parse-rate report names no blind spots; verify.Report carries them " +
+			"precisely because a bare number overclaims, and this number is the SOLE " +
+			"evidence for the ship gate")
+	}
+	for _, b := range rep.BlindSpots {
+		if b.Reason == "" || b.Direction == "" {
+			t.Errorf("blind spot %q is missing a reason or a direction", b.ID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A past window's number must not rise
+// ---------------------------------------------------------------------------
+
+// TestParseRateDoesNotRiseWhenATemplateIsFixedLater.
+//
+// best_tier was max() over every diagnostics row for the identity with no event
+// or time filter, so publishing a template and reprocessing six weeks later
+// raised the score of a window that had already been measured — and "two
+// consecutive weeks" could be satisfied retroactively.
+//
+// Promotion out of quarantine is the fold-in that must survive, and it is
+// distinguishable: a promote writes reprocess/appended, a template fix writes
+// reprocess/superseded or reprocess/unchanged.
+func TestParseRateDoesNotRiseWhenATemplateIsFixedLater(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+	unparsed := arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierNone, "")
+	adjudicate(t, pool, u, unparsed, VerdictTransaction)
+
+	before, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if before.Rate != 0.5 {
+		t.Fatalf("rate = %v, want 0.5", before.Rate)
+	}
+
+	// Six weeks later: publish a template, reprocess, the message now parses.
+	diagRowFor(t, pool, u, unparsed, now.Add(6*7*24*time.Hour), diag.EventReprocess,
+		diag.OutcomeSuperseded, diag.TierTemplate, "")
+
+	after, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if after.Rate != before.Rate {
+		t.Fatalf("the same window now reports %.4f, was %.4f: a window already measured must "+
+			"not improve because a template was fixed afterwards", after.Rate, before.Rate)
+	}
+	if after.MeetsGate() {
+		t.Fatal("gate passes retroactively")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gate shape: per user, per week, minimum volume
+// ---------------------------------------------------------------------------
+
+// One totally broken alpha is invisible in the aggregate. The critic's numbers:
+// 4 alphas x 130 clean plus 1 alpha with 27 failures and zero parses averages to
+// 0.9506 and passed.
+func TestParseRateGateFailsWhenOneAlphaIsBrokenAndTheAggregatePasses(t *testing.T) {
+	pool := pgtest.New(t)
+	now, from, to := twoWeekWindow()
+
+	for i := 0; i < 4; i++ {
+		u := insertUser(t, pool)
+		for j := 0; j < 130; j++ {
+			arrival(t, pool, u, now, diag.OutcomeAppended, diag.TierTemplate, "")
+		}
+	}
+	broken := insertUser(t, pool)
+	for j := 0; j < 27; j++ {
+		id := arrival(t, pool, broken, now, diag.OutcomeAppended, diag.TierNone, "")
+		adjudicate(t, pool, broken, id, VerdictTransaction)
+	}
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.LowerBound < GateThreshold {
+		t.Fatalf("precondition lost: aggregate %.4f already fails, so this test proves nothing",
+			rep.LowerBound)
+	}
+	if rep.MeetsGate() {
+		t.Fatalf("gate passes while one alpha parsed 0 of 27: %+v", rep.PerUser)
+	}
+	var seen bool
+	for _, pu := range rep.PerUser {
+		if pu.UserID == broken {
+			seen = true
+			if pu.Rate != 0 {
+				t.Fatalf("the broken alpha reports %.4f, want 0", pu.Rate)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("the report has no per-user rows, so an operator cannot see which alpha failed")
+	}
+}
+
+// twoWeekWindow is a window long enough for the exit criterion to be assertable.
+func twoWeekWindow() (time.Time, time.Time, time.Time) {
+	now := time.Now().UTC().Add(-24 * time.Hour)
+	return now, now.Add(-13 * 24 * time.Hour), now.Add(24 * time.Hour)
+}
+
+// "Two consecutive weeks" was never enforced: 90% then 100% averages to a pass.
+func TestParseRateRequiresEachWeekToClearTheGate(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := twoWeekWindow()
+	week2 := now.Add(-3 * 24 * time.Hour) // inside the second 7-day bucket
+
+	// Week 1: 90 parsed, 10 genuine misses -> 0.90.
+	for i := 0; i < 90; i++ {
+		arrival(t, pool, u, from.Add(time.Hour), diag.OutcomeAppended, diag.TierTemplate, "")
+	}
+	for i := 0; i < 10; i++ {
+		id := arrival(t, pool, u, from.Add(time.Hour), diag.OutcomeAppended, diag.TierNone, "")
+		adjudicate(t, pool, u, id, VerdictTransaction)
+	}
+	// Week 2: 100 parsed -> 1.00. The mean clears 95%.
+	for i := 0; i < 100; i++ {
+		arrival(t, pool, u, week2, diag.OutcomeAppended, diag.TierTemplate, "")
+	}
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if len(rep.Weeks) < 2 {
+		t.Fatalf("a two-week window produced %d week rows; the criterion is about each week",
+			len(rep.Weeks))
+	}
+	if rep.MeetsGate() {
+		t.Fatalf("gate passes on a 0.90 week followed by a 1.00 week: %+v", rep.Weeks)
+	}
+}
+
+func TestParseRateGateNeedsAWindowAndAVolumeWorthShippingOn(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now := time.Now().UTC()
+
+	// One perfectly parsed message over two minutes: the exit record's own
+	// worked example, which printed a green gate.
+	arrival(t, pool, u, now.Add(-time.Minute), diag.OutcomeAppended, diag.TierTemplate, "")
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: now.Add(-2 * time.Minute), To: now})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.MeetsGate() {
+		t.Fatal("a two-minute window with one message passes the ship gate")
+	}
+	if len(rep.Gate.Reasons) == 0 {
+		t.Fatal("the gate failed without saying why")
+	}
+	joined := strings.Join(rep.Gate.Reasons, " ")
+	if !strings.Contains(joined, "window") || !strings.Contains(joined, "message") {
+		t.Fatalf("gate reasons %q name neither the short window nor the tiny volume", joined)
+	}
+}
+
+// The sample must be drawn by ingest id, which is a SHA-256 and therefore
+// independent of everything; drawing the EARLIEST N instead would be a
+// chronological sample, and the Wilson interval's validity rests on the draw
+// being uniform. Nothing asserted this, so the mutation survived.
+func TestParseRateSamplesUniformlyByIngestIDNotChronologically(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	now, from, to := window()
+
+	type seeded struct {
+		id []byte
+		at time.Time
+	}
+	var all []seeded
+	for i := 0; i < 40; i++ {
+		at := now.Add(-time.Duration(i) * time.Minute)
+		all = append(all, seeded{arrival(t, pool, u, at, diag.OutcomeAppended, diag.TierNone, ""), at})
+	}
+	rep, _ := ParseRate(bg, pool, ParseRateOptions{From: from, To: to, Sample: 5})
+	if len(rep.Pending) != 5 {
+		t.Fatalf("pending = %d, want the 5 drawn", len(rep.Pending))
+	}
+	// The drawn set must be the 5 smallest ingest ids.
+	sorted := slices.Clone(all)
+	slices.SortFunc(sorted, func(a, b seeded) int { return bytes.Compare(a.id, b.id) })
+	for i, p := range rep.Pending {
+		if !bytes.Equal(p.IngestID, sorted[i].id) {
+			t.Fatalf("draw %d is not the ingest-id ordering; a chronological draw is not a "+
+				"uniform sample and the Wilson interval would not apply", i)
+		}
+	}
+}
+
+func TestParseRateWindowIsHalfOpen(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	to := time.Now().UTC().Truncate(time.Microsecond)
+	from := to.Add(-time.Hour)
+
+	arrival(t, pool, u, from, diag.OutcomeAppended, diag.TierTemplate, "")
+	arrival(t, pool, u, to, diag.OutcomeAppended, diag.TierTemplate, "")
+
+	rep, err := ParseRate(bg, pool, ParseRateOptions{From: from, To: to})
+	if err != nil {
+		t.Fatalf("ParseRate: %v", err)
+	}
+	if rep.Parsed != 1 {
+		t.Fatalf("parsed = %d, want 1: [from, to) excludes a message dated exactly `to`", rep.Parsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RecordVerdict and ColdTexts: previously untested anywhere
+// ---------------------------------------------------------------------------
+
+// The verdict table is the ship gate's denominator, held by a party interested
+// in the outcome, so its append-only guarantee is the whole point. Flipping six
+// of ten verdicts was measured to move the rate from 0.9000 to 0.9574 leaving
+// ten rows and no trace.
+func TestRecordVerdictAppendsAndTheOldVerdictSurvives(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	id := sha256.Sum256([]byte("a message judged twice"))
+
+	if err := RecordVerdict(bg, pool, u, id[:], VerdictNonTransactional, "alice"); err != nil {
+		t.Fatalf("RecordVerdict: %v", err)
+	}
+	if err := RecordVerdict(bg, pool, u, id[:], VerdictTransaction, "alice"); err != nil {
+		t.Fatalf("RecordVerdict (revision): %v", err)
+	}
+
+	var rows int
+	if err := pool.QueryRow(bg,
+		`SELECT count(*) FROM parse_rate_adjudications WHERE ingest_id = $1`, id[:]).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("%d row(s) after a revision, want 2: the earlier verdict must survive or "+
+			"the number can be edited into passing with no trace", rows)
+	}
+	superseded, changed, err := Revisions(bg, pool)
+	if err != nil {
+		t.Fatalf("Revisions: %v", err)
+	}
+	if superseded != 1 || changed != 1 {
+		t.Fatalf("Revisions = (%d, %d), want (1, 1)", superseded, changed)
+	}
+
+	// And the LIVE verdict is the newest one.
+	got, err := adjudications(bg, pool, ParseRateOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[key(u, id[:])] != VerdictTransaction {
+		t.Fatalf("live verdict = %q, want the newest", got[key(u, id[:])])
+	}
+}
+
+func TestTheVerdictTableRefusesRewrites(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	id := sha256.Sum256([]byte("a verdict somebody wants to change quietly"))
+	if err := RecordVerdict(bg, pool, u, id[:], VerdictTransaction, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`UPDATE parse_rate_adjudications SET verdict = 'non_transactional'`,
+		`DELETE FROM parse_rate_adjudications`,
+		`TRUNCATE parse_rate_adjudications`,
+	} {
+		if _, err := pool.Exec(bg, sql); err == nil {
+			t.Fatalf("%q succeeded; the audit trail is not append-only", sql)
+		}
+	}
+	// Erasing the ACCOUNT still works: that is a person asking to be forgotten,
+	// not history being edited.
+	if _, err := pool.Exec(bg, `DELETE FROM users WHERE id = $1`, u); err != nil {
+		t.Fatalf("account deletion was blocked by the audit trigger: %v", err)
+	}
+}
+
+func TestRecordVerdictRefusesWhatItCannotStore(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	id := sha256.Sum256([]byte("x"))
+	for _, tc := range []struct {
+		name, verdict, operator string
+		ingest                  []byte
+	}{
+		{"an unknown verdict", "probably", "alice", id[:]},
+		{"a short ingest id", VerdictTransaction, "alice", []byte("short")},
+		{"an operator that is not an identifier", VerdictTransaction, "AMOUNT: AED 45.00", id[:]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RecordVerdict(bg, pool, u, tc.ingest, tc.verdict, tc.operator)
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			// The rejected value is never echoed: the caller that got this wrong
+			// is the one that might have passed a line of somebody's mail.
+			if strings.Contains(err.Error(), "AED") || strings.Contains(err.Error(), "probably") {
+				t.Fatalf("the error echoes the value it rejected: %v", err)
+			}
+		})
+	}
+}
+
+// ColdTexts is the one function in this package that reads content. It had no
+// test at all, so nothing checked that it returns the right message's body — the
+// failure that would silently show an operator one email while asking them to
+// judge another.
+func TestColdTextsReturnsEachMessagesOwnBody(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	ap := &oplog.Appender{Pool: pool}
+
+	type seeded struct {
+		id   []byte
+		body string
+	}
+	var want []seeded
+	for i := 0; i < 3; i++ {
+		raw := fmt.Sprintf("From: bank%d@bank.test\r\nSubject: Alert %d\r\n\r\nPurchase %d AED\r\n", i, i, i)
+		sum := sha256.Sum256([]byte(raw))
+		rb, err := oplog.EncodeRawBody(oplog.RawBody{
+			V: 1, Kind: oplog.KindRawBody, IngestID: hex.EncodeToString(sum[:]),
+			ReceivedAt: time.Now().UTC(), RawBase64: base64.StdEncoding.EncodeToString([]byte(raw)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ap.AppendIngest(bg, u, []oplog.IngestBlob{
+			{Stream: blob.StreamCold, Plaintext: rb, CreatedAt: time.Now()},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, seeded{sum[:], raw})
+	}
+
+	ids := [][]byte{want[2].id, want[0].id}
+	got, err := ColdTexts(bg, pool, nil, u, ids)
+	if err != nil {
+		t.Fatalf("ColdTexts: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d bodies, want 2", len(got))
+	}
+	for _, w := range []seeded{want[0], want[2]} {
+		text, ok := got[hex.EncodeToString(w.id)]
+		if !ok {
+			t.Fatalf("no body for %x", w.id[:6])
+		}
+		if !strings.Contains(text, "Purchase") {
+			t.Fatalf("body for %x does not look normalized: %q", w.id[:6], text)
+		}
+	}
+	// The one NOT asked for must not come back: an operator judging message A
+	// while looking at message B is the failure this guards.
+	if _, ok := got[hex.EncodeToString(want[1].id)]; ok {
+		t.Fatal("ColdTexts returned a message that was not requested")
+	}
+}
+
+func TestColdTextsSkipsAMessageItCannotRead(t *testing.T) {
+	pool := pgtest.New(t)
+	u := insertUser(t, pool)
+	missing := sha256.Sum256([]byte("never stored"))
+
+	got, err := ColdTexts(bg, pool, nil, u, [][]byte{missing[:]})
+	if err != nil {
+		t.Fatalf("ColdTexts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v, want nothing: the caller records VerdictUnreadable for a body it "+
+			"could not fetch, and an error here would stop the whole batch", got)
 	}
 }

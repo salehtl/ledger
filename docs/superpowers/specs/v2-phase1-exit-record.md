@@ -215,23 +215,80 @@ adjudicating every `tier='none'` arrival as `transaction` /
 content by design and nothing in the schema can tell a bank alert from a
 newsletter. Step 15 asserts the *instrument* instead: `ledgerd parse-rate` runs
 against the real database, computes the numerator from diagnostics, and prints
-the gate. On this scenario:
+the gate.
+
+**On this scenario the gate is `false`, and that is correct.** The harness runs
+over a window of about two minutes containing 23 messages, and the gate refuses
+to answer at all on that basis:
 
 ```
-parse rate 2026-08-01T19:45:59Z .. 2026-08-01T19:47:59Z
-  parsed (numerator)       23  (template 22, heuristic 1)
-  unparsed population      0
-  adjudicated              0  (transaction 0, non-transactional 0, unreadable 0)
-  rate                     100.00%  (whole population adjudicated, no sampling error)
-  exit gate (>= 95%)       true
-  NOTE: this is parse COVERAGE, not correctness…
+  exit gate (>= 95%)       false
+    NOT MET: the window is 2m0s; the criterion is two consecutive weeks (336h0m0s)
+    NOT MET: 23 message(s) in the window is below the 100 needed for the number
+             to be stable
 ```
 
-The Wilson lower bound is not exercised because nothing was sampled — every
-arrival is in the population. **The criterion itself is Task D6's**, and it is
-recorded here when it is measured, together with the adjudication counts and the
-explicit note that this measures parse *coverage* and not extraction
-*correctness*.
+An earlier version of this record printed `exit gate (>= 95%) true` for exactly
+this run. That was the instrument overclaiming: a two-minute window with 23
+messages and no adjudication cannot evidence a two-week criterion, and a green
+gate on it is precisely the reading a release checklist would take at face
+value.
+
+## What the gate now means
+
+`MeetsGate` is true only when **all** of these hold, and every failure is
+printed with its own `NOT MET:` line:
+
+| condition | why |
+| --- | --- |
+| every drawn message has a verdict | the denominator is a judgement, not a query |
+| window ≥ 14 days | the criterion is "two **consecutive weeks**" |
+| ≥ 100 messages | below that a single message moves the rate by more than a point |
+| Wilson 95% **lower bound** ≥ 0.95 | a point estimate from a sample is not a gate |
+| every account with ≥ 20 messages ≥ 0.95 | one totally broken alpha used to hide inside a healthy aggregate — 4×130 clean plus one at 0/27 averages to 0.9506 |
+| **each** whole week ≥ 0.95 | 0.90 then 1.00 averages to a pass and is not two weeks above the line |
+
+## What is in the denominator
+
+Everything that arrived for a real account in the window and produced no
+transaction — not only the messages the cascade saw and failed to parse:
+
+- adjudicated genuine misses, and `unreadable` bodies (counted against);
+- mail **lost before the parser**: `no_text_part`, `normalize_error`,
+  `too_large`, `over_quota`, holds that expired unconfirmed, holds still
+  unconfirmed at the end of the window, and duplicates whose original is in no
+  store.
+
+That last group used to be reported in an `excluded` map the gate never read, so
+a normalizer that broke on one bank and cost an alpha 40 of 100 messages printed
+`rate 100.00% gate true`. The conservative treatment is deliberate: we cannot
+know whether a message we never read carried a transaction, and the only reading
+that cannot flatter us is to assume it did.
+
+**A past window's number cannot rise.** Promotion out of quarantine is folded in
+(that mail really did parse), but only promotions dated inside the window — a
+template published and reprocessed afterwards writes `superseded`/`unchanged`
+and is excluded, so "two consecutive weeks" cannot be manufactured retroactively.
+
+## What the number still cannot see
+
+`ledgerd parse-rate` prints these on every run and they belong in the record
+beside the number:
+
+- refusals with no user-scoped row at all (tarpit, connection caps, over-long
+  lines, malformed paths, a declared `SIZE` over the cap) — invisible here, and
+  their absence *raises* the rate;
+- mail sitting in an undrained backup-MX spool — **drain the relay before
+  measuring**;
+- deleted accounts, which take their failures out of every past window;
+- heuristic hits, which are guesses the user must confirm, counted as parses;
+- the verdicts themselves, which are the judgement of a party interested in
+  shipping. `parse_rate_adjudications` is append-only with the operator recorded
+  (00018), so revisions are countable — report them.
+
+**The criterion itself is Task D6's**, and it is recorded below when it is
+measured, together with the adjudication counts and the explicit note that this
+measures parse *coverage* and not extraction *correctness*.
 
 ## The two-week measurement (Task D6)
 
@@ -243,4 +300,11 @@ explicit note that this measures parse *coverage* and not extraction
 | `ledgerd parse-rate --from … --to …` output | |
 | adjudicated `transaction` / `non_transactional` / `unreadable` | |
 | sampled? Wilson 95% lower bound | |
+| per-account rates (every account ≥ 20 messages must clear 0.95) | |
+| per-week rates (both weeks must clear 0.95) | |
+| `lost` breakdown, by reason | |
+| adjudication revisions (`verify.Revisions`): superseded / changed | |
+| operator(s) who adjudicated | |
+| relay spool drained before measuring? | |
 | daily `unaccounted == 0` confirmed for all 14 days | |
+| daily `discarded == 0` confirmed for all 14 days | |

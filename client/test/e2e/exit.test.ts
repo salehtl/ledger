@@ -779,13 +779,22 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     const out = s.run(["parse-rate", "--from", windowFrom, "--to", windowTo()]);
     // eslint-disable-next-line no-console
     console.log("step 15 parse-rate:\n" + out.stdout + out.stderr);
-    // Every message in this scenario parsed, so there is nothing to adjudicate
-    // and the tool has a complete denominator. What is being asserted is that
-    // the instrument RUNS against a real database and produces the number spec
-    // §5 is measured on — the ≥95% criterion itself needs two weeks of alpha
-    // traffic and is Task D6's.
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toMatch(/95/);
+    // Every message in this scenario parsed, so there is nothing to adjudicate.
+    // What is asserted is that the instrument RUNS against a real database AND
+    // that it REFUSES to certify the criterion off this scenario: the window is
+    // about two minutes and holds 23 messages, which cannot evidence "≥95% over
+    // two consecutive weeks" however well those 23 parsed.
+    //
+    // This assertion used to be `exitCode === 0` with the tool printing
+    // `exit gate (>= 95%) true`. That was the instrument overclaiming, and a
+    // release checklist reading the status code would have been told the ship
+    // criterion was met by a two-minute test run.
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stdout).toMatch(/exit gate \(>= 95%\)\s+false/);
+    expect(out.stdout).toMatch(/NOT MET: the window is/);
+    expect(out.stdout).toMatch(/NOT MET: 23 message\(s\)/);
+    // And it still names what it cannot see, on every run.
+    expect(out.stdout).toMatch(/what this number CANNOT see/);
   }, TIMEOUT);
 
   // ------------------------------------------------------------------
