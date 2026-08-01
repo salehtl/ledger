@@ -6,16 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/origin"
-	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/tmpl"
 )
 
@@ -750,11 +751,51 @@ func TestReprocessPromotesMailWhoseSigningKeyIsGone(t *testing.T) {
 // Accounting and refusals
 // ---------------------------------------------------------------------------
 
+// blockPromotion makes the NEXT Promote of this message fail, and fail at the
+// one place that matters: AFTER the append it follows.
+//
+// It plants the removal record Promote itself must insert.
+// quarantine_removals.quarantine_id is UNIQUE, so Promote's own INSERT collides
+// and its whole transaction rolls back — a real failure of the real statement,
+// at the real point in the sequence, rather than a hand-built approximation of
+// the aftermath. The returned function removes the plant so a retry can succeed.
+//
+// The earlier version of the test below built the aftermath by hand: it ran a
+// SUCCESSFUL reprocess and then re-Held the message. That leaves the reprocess
+// diagnostics row behind, and the diagnostics row is exactly what the guard
+// reads — so it constructed a state the failure it names cannot produce, and
+// passed against a guard that was inert.
+func (r *rig) blockPromotion(ingestID []byte) func() {
+	r.t.Helper()
+	var quarantineID uuid.UUID
+	err := r.pool.QueryRow(bg, `INSERT INTO quarantine_removals
+	  (quarantine_id, user_id, ingest_id, received_at, expires_at, removed_at,
+	   reason, outer_domain, inner_domain, attested, size_bucket)
+	  SELECT id, user_id, ingest_id, received_at, expires_at, $3, 'promoted',
+	         outer_domain, inner_domain, attested, size_bucket
+	    FROM quarantine WHERE user_id = $1 AND ingest_id = $2
+	  RETURNING quarantine_id`, r.user, ingestID, r.now).Scan(&quarantineID)
+	if err != nil {
+		r.t.Fatalf("plant a colliding removal record: %v", err)
+	}
+	return func() {
+		r.t.Helper()
+		if _, err := r.pool.Exec(bg, `DELETE FROM quarantine_removals WHERE quarantine_id = $1`,
+			quarantineID); err != nil {
+			r.t.Fatalf("remove the planted removal record: %v", err)
+		}
+	}
+}
+
 // TestReprocessDoesNotAppendTwiceWhenAPromoteFailedAfterItsAppend. Promote runs
 // after the append, so an error between them leaves a quarantine row for a
 // message that IS in the log — and the natural response to that error is to run
-// the reprocess again. The diagnostics row already records the append, so the
-// retry clears the stale row instead of appending a second copy.
+// the reprocess again. That retry must not append a second copy.
+//
+// The guard that stops it reads parse_diagnostics, so the diagnostics row has
+// to be written BEFORE the promote that can fail; written after it, as it was,
+// the guard reads a row that the failure being guarded against prevents from
+// existing, and is inert.
 func TestReprocessDoesNotAppendTwiceWhenAPromoteFailedAfterItsAppend(t *testing.T) {
 	r := newRig(t)
 	r.publish(amountTemplate(1, authPattern))
@@ -764,28 +805,123 @@ func TestReprocessDoesNotAppendTwiceWhenAPromoteFailedAfterItsAppend(t *testing.
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if rep := r.reprocess(ids...); rep.Appended != 1 {
-		t.Fatalf("report = %+v, want one appended", rep)
-	}
-	before := len(r.rows())
 
-	// Exactly the state a Promote that failed after its append leaves behind.
-	if err := r.q.Hold(bg, quarantine.Item{
-		UserID: r.user, IngestID: idOf(raw), ReceivedAt: r.now,
-		EnvelopeFrom: "alerts@bank.example", OuterDomain: "bank.example",
-		DKIM: quarantine.ResultPass, ARC: quarantine.ResultNone, Blob: raw,
-	}); err != nil {
-		t.Fatal(err)
+	unblock := r.blockPromotion(idOf(raw))
+	r.now = r.now.Add(time.Second)
+	if rep, err := r.p.Reprocess(bg, r.user, ids); err == nil {
+		t.Fatalf("the planted removal record did not make Promote fail: %+v", rep)
 	}
+	appended := len(r.rows())
+	if appended != 2 {
+		t.Fatalf("%d op_log rows after the append, want a hot op and a cold body", appended)
+	}
+	if got := r.heldCount(); got != 1 {
+		t.Fatalf("a promote that failed must leave the quarantine row behind (%d held)", got)
+	}
+	unblock()
 
+	// The retry: the natural response to that error, and the one the API's own
+	// documentation tells a client to make.
 	if rep := r.reprocess(idOf(raw)); rep != (Report{Examined: 1, Unchanged: 1}) {
 		t.Fatalf("report = %+v, want one unchanged", rep)
 	}
-	if after := len(r.rows()); after != before {
-		t.Fatalf("op_log grew from %d to %d rows: the message was appended twice", before, after)
+	if got := len(r.rows()); got != appended {
+		t.Fatalf("op_log grew from %d to %d rows: the message was appended twice", appended, got)
 	}
 	if got := r.heldCount(); got != 0 {
 		t.Fatalf("the stale quarantine row survived (%d held)", got)
+	}
+	// Whatever the retry did, replay must still see exactly one live create.
+	replayLiveEntities(t, r.hotOps())
+}
+
+// TestConcurrentConfirmationsAppendTheMessageOnce is a double-tap.
+//
+// POST /api/v1/quarantine/confirm deliberately has no rate limit, and two
+// simultaneous confirmations of the same origin both read the same held ids and
+// both re-ingest them. Without a claim, both append: two txn_ingested ops for
+// one ingest id — replay's `duplicate_ingest` anomaly — and a second copy of a
+// body that can be a megabyte, while one of the two Promotes loses the FOR
+// UPDATE race and removes nothing.
+//
+// The pool is warmed before the racers start. pgxpool connects lazily and
+// staggers new connections, so racers that each have to dial first do not
+// actually overlap and the race this test exists to reproduce never happens.
+func TestConcurrentConfirmationsAppendTheMessageOnce(t *testing.T) {
+	r := newRig(t)
+	r.publish(amountTemplate(1, authPattern))
+	raw := r.trusted(reprocessBody)
+	r.mustDeliver(raw, "alerts@bank.example")
+	ids, err := r.q.Confirm(bg, r.user, "bank.example", origin.ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	r.now = r.now.Add(time.Second)
+	warmPool(t, r.pool, 4)
+
+	const racers = 4
+	var (
+		mu    sync.Mutex
+		reps  []Report
+		errs  []error
+		wg    sync.WaitGroup
+		start = make(chan struct{})
+	)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rep, err := r.p.Reprocess(bg, r.user, ids)
+			mu.Lock()
+			defer mu.Unlock()
+			reps = append(reps, rep)
+			errs = append(errs, err)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("reprocess: %v", err)
+		}
+	}
+	total := 0
+	for _, rep := range reps {
+		total += rep.Appended
+	}
+	if total != 1 {
+		t.Fatalf("%d concurrent confirmations reported %d appends of ONE message: %+v", racers, total, reps)
+	}
+	if got := len(r.rows()); got != 2 {
+		t.Fatalf("%d op_log rows for one message, want a hot op and one cold body", got)
+	}
+	// The property the count above is a proxy for: replay keys transactions by
+	// ingest id, so a second txn_ingested is a duplicate_ingest anomaly.
+	replayLiveEntities(t, r.hotOps())
+	if got := r.heldCount(); got != 0 {
+		t.Fatalf("the quarantine row survived the promotion (%d held)", got)
+	}
+	if got := len(r.reprocessDiags()); got != 1 {
+		t.Fatalf("%d reprocess diagnostics rows for one promotion", got)
+	}
+}
+
+// warmPool opens n connections and hands them back, so a following race is
+// between goroutines doing work rather than between goroutines dialling.
+func warmPool(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	conns := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := pool.Acquire(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
 	}
 }
 

@@ -18,6 +18,8 @@
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
 //	GET  /api/v1/quarantine?after=&after_id=&limit=&include_blob=  -> {items, removed, action_needed, ...}
 //	POST /api/v1/quarantine/confirm {domain, scope}                -> {domain, scope, ingest_ids, reingest}
+//	GET  /api/v1/quarantine/allowlist                              -> {entries:[{domain, scope, created_at}]}
+//	DELETE /api/v1/quarantine/allowlist {domain, scope}            -> {domain, scope, revoked}
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
@@ -576,6 +578,10 @@ func (s *Server) Handler() http.Handler {
 	if s.Quarantine != nil {
 		mux.HandleFunc("GET /api/v1/quarantine", s.requireSession(s.handleQuarantine))
 		mux.HandleFunc("POST /api/v1/quarantine/confirm", s.requireSession(s.handleConfirmSender))
+		// The listing is what makes the revocation reachable — see
+		// handleAllowlist, and the same argument above the push token routes.
+		mux.HandleFunc("GET /api/v1/quarantine/allowlist", s.requireSession(s.handleAllowlist))
+		mux.HandleFunc("DELETE /api/v1/quarantine/allowlist", s.requireSession(s.handleRevokeSender))
 	}
 	// Push token registration is mounted unconditionally, unlike the two blocks
 	// above. It needs nothing but the pool, and the routes have to work whether

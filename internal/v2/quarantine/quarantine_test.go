@@ -966,3 +966,478 @@ func TestAForgedEnvelopeSenderCannotCarryALogLine(t *testing.T) {
 		t.Fatalf("an oversize return path was accepted: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The scoping every one of these queries depends on
+//
+// Each test below dies to ONE mutation of ONE clause. They are here because
+// every clause they pin survived the suite that shipped with this store: an
+// unpinned WHERE is not a property, it is a coincidence that has not been
+// tested yet, and three of these clauses are the account boundary itself.
+// ---------------------------------------------------------------------------
+
+// TestAllowlistedMatchesTheWholeDomain: `domain = $2` and nothing looser. A
+// prefix or suffix match on an entry for dib.ae would admit dib.ae.attacker.com
+// — a domain the attacker owns outright — into the trusted lane.
+func TestAllowlistedMatchesTheWholeDomain(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+	for _, lookalike := range []string{"dib.ae.attacker.com", "notdib.ae", "dib.aero", "ib.ae"} {
+		ok, err := s.Allowlisted(bg, u, lookalike, ScopeOuter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Fatalf("%q is trusted by an allowlist entry for dib.ae", lookalike)
+		}
+	}
+	if ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeOuter); err != nil || !ok {
+		t.Fatalf("the confirmed domain itself is not allowlisted (ok=%v err=%v)", ok, err)
+	}
+}
+
+// TestAllowlistedIsScopedToTheScope: dropping `scope = $3` silently converts an
+// inner confirmation into an outer one, which is §3.2:51's foot-gun reached
+// without the user ever asking for it.
+func TestAllowlistedIsScopedToTheScope(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, forwarded(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeInner); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeOuter); err != nil || ok {
+		t.Fatalf("an INNER confirmation allowlisted the domain as an OUTER origin (ok=%v err=%v)", ok, err)
+	}
+	if ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeInner); err != nil || !ok {
+		t.Fatalf("the inner confirmation did not take (ok=%v err=%v)", ok, err)
+	}
+}
+
+// TestHeldIsScopedToTheUser is the worst of these to get wrong, and the one the
+// existing cross-user tests could not see because they never held a message at
+// all. Two accounts can hold the SAME bytes — one bank, two customers, one alert
+// template — so `ingest_id = ANY($2)` alone matches both rows. Two callers rely
+// on it: reprocess reads the raw body out of the row it gets back, and
+// ingest.Pipeline.alreadyHandled treats a hit as "this user has already seen
+// this", so another account's copy would make the victim's own mail a duplicate
+// and discard it silently.
+func TestHeldIsScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	shared := ingestID("one message, two customers")
+
+	for _, u := range []uuid.UUID{a, b} {
+		it := item(u, *now, "x")
+		it.IngestID = shared
+		it.Blob = []byte("From: alerts@dib.ae\r\n\r\nfor " + u.String())
+		hold(t, s, it)
+	}
+
+	held, err := s.Held(bg, a, [][]byte{shared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 {
+		t.Fatalf("Held returned %d rows for one user's copy of a shared message", len(held))
+	}
+	if held[0].UserID != a {
+		t.Fatalf("Held returned another account's row (%s, want %s)", held[0].UserID, a)
+	}
+	if !strings.Contains(string(held[0].Blob), a.String()) {
+		t.Fatalf("Held returned another account's plaintext: %q", held[0].Blob)
+	}
+}
+
+// TestIsHeldIsScopedToTheUser: the existence check the arrival path runs on
+// EVERY inbound message carries the same boundary as the read it replaced.
+func TestIsHeldIsScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	it := item(a, *now, "a")
+	hold(t, s, it)
+
+	ok, err := s.IsHeld(bg, a, it.IngestID)
+	if err != nil || !ok {
+		t.Fatalf("IsHeld(owner) = %v, %v", ok, err)
+	}
+	ok, err = s.IsHeld(bg, b, it.IngestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("one account's held message answers another account's existence check")
+	}
+	ok, err = s.IsHeld(bg, a, ingestID("never arrived"))
+	if err != nil || ok {
+		t.Fatalf("IsHeld(unknown) = %v, %v", ok, err)
+	}
+}
+
+// TestPromoteIsScopedToTheUser: without `user_id = $1` a confirmation on one
+// account deletes another account's held mail, and the removal record it leaves
+// names the victim's own user id — a drop that looks accounted for.
+func TestPromoteIsScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	shared := ingestID("one message, two customers")
+	for _, u := range []uuid.UUID{a, b} {
+		it := item(u, *now, "x")
+		it.IngestID = shared
+		hold(t, s, it)
+	}
+
+	n, err := s.Promote(bg, a, [][]byte{shared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("Promote removed %d rows for one account's copy", n)
+	}
+	if got := len(listAll(t, s, b)); got != 1 {
+		t.Fatalf("one account's promotion removed another account's mail (%d rows left)", got)
+	}
+}
+
+// TestCountsAreScopedToTheUser: the watchdog's "action needed" number is per
+// account, and a count that includes strangers' mail is a badge nobody can clear.
+func TestCountsAreScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	hold(t, s, item(a, *now, "a1"))
+	hold(t, s, item(a, now.Add(-25*24*time.Hour), "a2"))
+	hold(t, s, item(b, *now, "b1"))
+	hold(t, s, item(b, now.Add(-25*24*time.Hour), "b2"))
+	if _, _, err := s.ExpireDue(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	held, warned, err := s.Counts(bg, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 2 || warned != 1 {
+		t.Fatalf("Counts(a) = held %d, warned %d; want 2 and 1 — the other account's mail is being counted", held, warned)
+	}
+}
+
+// TestRemovalsAreScopedToTheUser: this is the channel that answers "what
+// happened to the mail I never got to?", so an unscoped read hands one account
+// the digests, hostnames and timings of another's.
+func TestRemovalsAreScopedToTheUser(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	itA := hold(t, s, item(a, *now, "a"))
+	itB := hold(t, s, item(b, *now, "b"))
+	if _, err := s.Promote(bg, a, [][]byte{itA.IngestID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Promote(bg, b, [][]byte{itB.IngestID}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Removals(bg, a, Cursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Removals(a) returned %d records, want only this account's one", len(got))
+	}
+	if got[0].UserID != a {
+		t.Fatalf("Removals(a) returned another account's record (%s)", got[0].UserID)
+	}
+}
+
+// TestConfirmLowerCasesTheDomain. The stored domain is lower case, the client
+// may send whatever the sheet rendered, and without the normalization the
+// hostname grammar refuses an upper-case domain outright — so this fails CLOSED,
+// as "your bank cannot be trusted", which is the failure nobody debugs.
+func TestConfirmLowerCasesTheDomain(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := hold(t, s, item(u, *now, "a"))
+
+	ids, err := s.Confirm(bg, u, "  DIB.AE  ", ScopeOuter)
+	if err != nil {
+		t.Fatalf("confirming DIB.AE was refused: %v", err)
+	}
+	if len(ids) != 1 || string(ids[0]) != string(it.IngestID) {
+		t.Fatalf("confirm returned %d ids", len(ids))
+	}
+	if ok, err := s.Allowlisted(bg, u, "DIB.AE", ScopeOuter); err != nil || !ok {
+		t.Fatalf("the entry is not readable by the spelling that wrote it (ok=%v err=%v)", ok, err)
+	}
+	if n := countRows(t, pool, "sender_allowlist"); n != 1 {
+		t.Fatalf("%d allowlist rows, want 1 — a second spelling wrote a second entry", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Confirming an origin that is already trusted
+// ---------------------------------------------------------------------------
+
+// TestConfirmingAnAlreadyTrustedOriginIsNotARefusal. Confirm reported "no held
+// message proves this origin" once the mail it released had been promoted —
+// which is the state a SUCCESSFUL confirmation leaves. A double-tap, a retry
+// after a lost response, or one more pass of the documented `remaining > 0`
+// loop then answered 409 "there is nothing to trust yet" about an origin that
+// is on the allowlist, on the single step spec §3.2 calls out as onboarding.
+func TestConfirmingAnAlreadyTrustedOriginIsNotARefusal(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+
+	ids, err := s.Confirm(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what Task 30's re-ingest does with them.
+	if _, err := s.Promote(bg, u, ids); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := s.Confirm(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatalf("re-confirming a trusted origin whose mail is all promoted: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("nothing is held, so nothing is released: %d ids", len(again))
+	}
+	if n := countRows(t, pool, "sender_allowlist"); n != 1 {
+		t.Fatalf("%d allowlist rows, want 1", n)
+	}
+	// The inner scope of the same domain is a DIFFERENT assertion and is still
+	// unproven, so it is still refused.
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeInner); !errors.Is(err, ErrNoAttestedOrigin) {
+		t.Fatalf("an unproven inner origin must still be refused: %v", err)
+	}
+}
+
+func TestConfirmNeverWritesToTheOpLog(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, pool, "op_log"); n != 0 {
+		t.Fatalf("confirming appended %d op(s); the RE-INGEST enters the chains, never the confirmation", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Revocation
+// ---------------------------------------------------------------------------
+
+// TestRevokeUndoesAConfirmation. A user who trusts a lookalike — dib-alerts.ae,
+// or a punycode A-label the hostname grammar admits — had no way back: nothing
+// in the tree deleted a sender_allowlist row except deleting the account.
+func TestRevokeUndoesAConfirmation(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	hold(t, s, item(u, *now, "a"))
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := s.Revoke(bg, u, "DIB.AE", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("revoking a confirmed origin removed nothing")
+	}
+	if ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeOuter); err != nil || ok {
+		t.Fatalf("the origin is still trusted after revocation (ok=%v err=%v)", ok, err)
+	}
+	// Idempotent, and it says so rather than erroring.
+	removed, err = s.Revoke(bg, u, "dib.ae", ScopeOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("the second revocation reported removing a row that was already gone")
+	}
+}
+
+func TestRevokeIsScopedToTheUserAndTheScope(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	for _, u := range []uuid.UUID{a, b} {
+		it := item(u, *now, "x")
+		it.IngestID = ingestID("shared-" + u.String())
+		hold(t, s, it)
+		if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hold(t, s, forwarded(a, *now, "f"))
+	if _, err := s.Confirm(bg, a, "dib.ae", ScopeInner); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Revoke(bg, a, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.Allowlisted(bg, b, "dib.ae", ScopeOuter); !ok {
+		t.Fatal("one account's revocation removed another account's entry")
+	}
+	if ok, _ := s.Allowlisted(bg, a, "dib.ae", ScopeInner); !ok {
+		t.Fatal("revoking the outer scope removed the inner one")
+	}
+}
+
+func TestRevokeRefusesWhatConfirmRefuses(t *testing.T) {
+	s, _, pool := newStore(t)
+	u := insertUser(t, pool)
+	if _, err := s.Revoke(bg, u, "dib.ae", "either"); !errors.Is(err, ErrUnknownScope) {
+		t.Fatalf("scope = %v", err)
+	}
+	if _, err := s.Revoke(bg, u, "not a hostname", ScopeOuter); !errors.Is(err, ErrInvalidDomain) {
+		t.Fatalf("domain = %v", err)
+	}
+}
+
+// TestAllowlistedOriginsIsWhatMakesRevocationReachable. The same argument the
+// push-token list route was added for: a delete that needs a value only the
+// server holds is a delete the user cannot perform.
+func TestAllowlistedOriginsIsWhatMakesRevocationReachable(t *testing.T) {
+	s, now, pool := newStore(t)
+	a, b := insertUser(t, pool), insertUser(t, pool)
+	hold(t, s, item(a, *now, "a"))
+	hold(t, s, forwarded(a, *now, "f"))
+	hold(t, s, item(b, *now, "b"))
+	if _, err := s.Confirm(bg, a, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Confirm(bg, a, "dib.ae", ScopeInner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Confirm(bg, b, "dib.ae", ScopeOuter); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.AllowlistedOrigins(bg, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("%d entries for an account with two confirmations: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.Domain != "dib.ae" || e.CreatedAt.IsZero() {
+			t.Fatalf("entry does not describe what was confirmed: %+v", e)
+		}
+	}
+	if got[0].Scope == got[1].Scope {
+		t.Fatalf("the two scopes are not distinguishable: %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The byte budget, and the two definitions that must not drift
+// ---------------------------------------------------------------------------
+
+// TestListPageIsBoundedByBytesInTheDatabase. The row limit is the wrong
+// instrument the moment a row can be a megabyte: ?include_blob=1&limit=200 is
+// 200 MB of blobs, and the budget has to be applied where the rows are SELECTED
+// rather than after they have all been materialized — pgx drains a result set
+// it stops scanning, so a Go-side budget bounds what this process retains and
+// nothing else. Same rule, same reason, as oplog.readPageSQL.
+func TestListPageIsBoundedByBytesInTheDatabase(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	for i := 0; i < 6; i++ {
+		it := item(u, now.Add(time.Duration(i)*time.Second), fmt.Sprintf("big%d", i))
+		it.Blob = append(it.Blob, make([]byte, 2000)...)
+		hold(t, s, it)
+	}
+
+	items, truncated, err := s.ListPage(bg, u, Cursor{}, 100, true, 3*4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("a 3-bucket budget returned %d rows of 6", len(items))
+	}
+	if !truncated {
+		t.Fatal("a page cut by the byte budget must say so, or the caller reports it as complete")
+	}
+	// And the page resumes exactly where it stopped: a page boundary is not a
+	// place mail is allowed to disappear.
+	rest, truncated, err := s.ListPage(bg, u, Cursor{At: items[2].ReceivedAt, ID: items[2].ID}, 100, true, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 3 || truncated {
+		t.Fatalf("the rest of the lane is %d rows (truncated=%v), want 3", len(rest), truncated)
+	}
+}
+
+// TestListAlwaysReturnsARowHoweverBigItIs is oplog.readPageSQL's `rn = 1`: a
+// budget that could refuse the head of the page leaves a client unable to
+// advance its cursor past one oversized message, forever.
+func TestListAlwaysReturnsARowHoweverBigItIs(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "huge")
+	it.Blob = append(it.Blob, make([]byte, 5000)...)
+	hold(t, s, it)
+
+	items, _, err := s.ListPage(bg, u, Cursor{}, 100, true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || len(items[0].Blob) == 0 {
+		t.Fatalf("a blob larger than the whole budget is unreachable: %d rows", len(items))
+	}
+}
+
+// TestTheAttestationMethodsMatchOrigin. These constants are declared twice —
+// here, because a store should not depend on the verifier to name what it was
+// handed, and in origin, which produces them. Two spellings of one value is the
+// shape of the forwarder-list bug that actually bit this package: a copy that
+// was wrong within the day and durable because it was also a CHECK constraint.
+func TestTheAttestationMethodsMatchOrigin(t *testing.T) {
+	if AttestedByDirectDKIM != origin.AttestedByDKIM {
+		t.Fatalf("direct-DKIM attestation is %q here and %q in origin", AttestedByDirectDKIM, origin.AttestedByDKIM)
+	}
+	if AttestedByARC != origin.AttestedByARC {
+		t.Fatalf("ARC attestation is %q here and %q in origin", AttestedByARC, origin.AttestedByARC)
+	}
+}
+
+// TestValidateMirrorsTheHostnameLengthCaps. validate says it mirrors the CHECK
+// constraints; it omitted their length caps, so an over-long domain was refused
+// by the database as a 500 rather than by this package as an ErrInvalidItem.
+func TestValidateMirrorsTheHostnameLengthCaps(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+
+	// Every label is legal, so only the total length can refuse these: a regex
+	// anchored on LABEL length accepts a name of any number of them.
+	tooLongForOuter := strings.Repeat("ab.", 89) + "test" // 271 > MaxOuterDomain
+	tooLongForInner := strings.Repeat("ab.", 85) + "test" // 259 > MaxDomain, <= MaxOuterDomain
+
+	it := item(u, *now, "a")
+	it.OuterDomain = tooLongForOuter
+	if err := s.Hold(bg, it); !errors.Is(err, ErrInvalidItem) {
+		t.Fatalf("a %d-byte outer domain was not refused by validate: %v", len(tooLongForOuter), err)
+	}
+	it = forwarded(u, *now, "b")
+	it.InnerDomain = tooLongForInner
+	if err := s.Hold(bg, it); !errors.Is(err, ErrInvalidItem) {
+		t.Fatalf("a %d-byte inner domain was not refused by validate: %v", len(tooLongForInner), err)
+	}
+	// The outer column carries UnverifiedPrefix in the same 264 bytes, so a
+	// plain 259-byte hostname is legal there and must not be refused.
+	it = item(u, *now, "c")
+	it.OuterDomain = tooLongForInner
+	if err := s.Hold(bg, it); err != nil {
+		t.Fatalf("a %d-byte outer domain is inside the column's cap: %v", len(tooLongForInner), err)
+	}
+}

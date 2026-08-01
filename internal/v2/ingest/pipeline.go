@@ -406,11 +406,14 @@ var handledOutcomes = []string{diag.OutcomeAppended, diag.OutcomeSuperseded}
 // (user_id, ingest_id) table, which is a new metadata surface for a problem the
 // replay engine already resolves.
 func (p *Pipeline) alreadyHandled(ctx context.Context, userID uuid.UUID, ingestID []byte) (bool, error) {
-	held, err := p.Quarantine.Held(ctx, userID, [][]byte{ingestID})
+	// IsHeld rather than Held: this runs on EVERY inbound message, and Held
+	// SELECTs the full raw body — up to a megabyte, out of TOAST — to answer a
+	// question that is an EXISTS on the (user_id, ingest_id) unique index.
+	held, err := p.Quarantine.IsHeld(ctx, userID, ingestID)
 	if err != nil {
 		return false, fmt.Errorf("ingest: check quarantine for a redelivery: %w", err)
 	}
-	if len(held) > 0 {
+	if held {
 		return true, nil
 	}
 	var one int
