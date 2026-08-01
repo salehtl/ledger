@@ -78,7 +78,18 @@ export interface Txn {
   splits: Split[];
   /** op_id of the `txn_superseded` that replaced this row, or null if live. */
   superseded_by: string | null;
-  /** Fingerprint heuristic (spec §3.3:67). A NOTICE — this row stays visible. */
+  /**
+   * Fingerprint heuristic (spec §3.3:67). A NOTICE — this row stays visible.
+   *
+   * **It is a snapshot of the answer at the moment this row was indexed, not a
+   * live claim.** The row it points at can afterwards be edited into a different
+   * fingerprint bucket, and nothing re-walks the rows pointing at it — so a
+   * consumer must treat this as "was flagged against", never as "currently
+   * shares a fingerprint with". Re-deriving it for every affected row on every
+   * edit would be a scan, and the value of a duplicate *notice* does not justify
+   * one. Task 13's `I14_forks_surfaced` reports it; it must not assert the
+   * fingerprints still match.
+   */
   possible_duplicate_of: string | null;
   version: number;
 }
@@ -171,13 +182,40 @@ export interface State {
   anomalies: Anomaly[];
   unreadable: Unreadable[];
   /**
-   * `hot` is the highest `seq` folded, and is the fold's own ordering guard.
+   * `hot` is the highest `seq` the fold has been OFFERED — not the highest it
+   * folded. A blob that could not be decoded still consumes its position, so the
+   * cursor advances past it; otherwise a resuming client re-requests the same
+   * unreadable blob forever, and — worse — a `seq` consumed by a set-aside blob
+   * could be re-delivered later with different content and folded as if new.
+   *
    * `cold` belongs to the sync layer: cold blobs are raw email bodies, not ops,
    * so replay never advances it (invariant I16 — a cold blob carrying state
    * would make every hot-only client silently wrong).
    */
   cursors: { hot: bigint; cold: bigint };
-  /** Entity head registry, keyed by {@link entityKey}. */
+  /**
+   * The op ids already applied AT `cursors.hot`, which is the idempotence guard
+   * for a page delivered twice.
+   *
+   * The ordering guard alone cannot be it: every op in a blob shares one `seq`,
+   * so the guard has to admit `seq === cursors.hot`, and a re-delivered page
+   * would then re-apply — taking an entity to a version nothing authored and
+   * forking it against itself. Bounded by one blob's op count, because it is
+   * cleared the moment the cursor advances.
+   */
+  appliedAtCursor: Set<string>;
+  /**
+   * Entity head registry, keyed by {@link entityKey}.
+   *
+   * **This map is never pruned**, and a retired transaction keeps its entry
+   * forever: an entity's version line has to stay contiguous for the life of the
+   * log (Task 13's `I9_version_contiguity`), and a supersede does not end the
+   * predecessor's version line — a `txn_categorized` authored offline against
+   * the retired row still arrives and still has to resolve. So it grows with the
+   * log, like the log. That is acceptable at beta scale for the same reason
+   * replay itself is (spec §3.3:73 defers compaction to ~50k ops), and it is
+   * recorded there as one of the things compaction would have to reclaim.
+   */
   heads: Map<string, EntityHead>;
 }
 
@@ -195,6 +233,7 @@ export function emptyState(): State {
     anomalies: [],
     unreadable: [],
     cursors: { hot: 0n, cold: 0n },
+    appliedAtCursor: new Set(),
     heads: new Map(),
   };
 }
@@ -234,17 +273,70 @@ export function fingerprint(t: Txn): string {
  *
  * This is what makes "two replicas converge" checkable rather than assertable.
  * `bigint` becomes a decimal string (`JSON.stringify` throws on it outright),
- * Map keys and object keys are sorted by UTF-8 bytes, and Sets are sorted —
- * because in all three the order carries no meaning, so comparing it would
- * report a difference where there is none.
+ * Map keys and object keys are sorted by UTF-8 bytes, and Sets are sorted.
  *
  * **Arrays are left in order on purpose.** `byFingerprint`'s arrays, `forks`,
  * `anomalies`, `unreadable` and `splits` are all sequences whose order *is*
  * meaning; sorting them would hide exactly the divergence this function exists
  * to catch.
+ *
+ * # What this witness does NOT cover — read before reusing it
+ *
+ * It compares *values*, so two things are invisible to it:
+ *
+ *   - **Set iteration order.** `pendingByCurrency`'s sets are sorted here, so
+ *     reversing their insertion order is not reported. That is correct today
+ *     and only because nothing derives an ordered answer from them — Task 12's
+ *     backfill freezes every id in a set at the same rate, so the result does
+ *     not depend on the order it walks them in. A consumer that ever makes an
+ *     order-dependent decision from a Set must not rely on this to catch it.
+ *   - **Map insertion-order POLICY.** Map keys are sorted here, and the
+ *     chunk-stability tests that do pin key order compare two runs of the same
+ *     code — so they catch chunking-dependence and not a policy change. The
+ *     policy is pinned separately, by name, in `replay.test.ts`.
+ *
+ * # It is not sufficient as the cross-executor fixture on its own
+ *
+ * Spec §3.5 mandates two executors that fold the same log to the same state, and
+ * this task nominated the sample log plus this function as the natural
+ * conformance vector. That still holds for the *values* — but **Go randomizes
+ * map iteration**, so a Go fold that derived any ordered answer from a map would
+ * diverge run to run while this reported a match. This engine has exactly one
+ * order-dependent answer, `possible_duplicate_of`, and it reads an explicit
+ * ARRAY (`byFingerprint`) precisely so that order is data rather than iteration.
+ * A Go port must mirror that: build the array in fold order, never range a map.
+ * Anyone wiring up the conformance suite has to check that property directly —
+ * this function cannot.
  */
 export function serializeState(s: State): string {
-  return JSON.stringify(canonical(s));
+  const witnessed: Record<string, unknown> = {};
+  for (const k of Object.keys(s)) {
+    if (!NOT_WITNESSED.has(k)) witnessed[k] = (s as unknown as Record<string, unknown>)[k];
+  }
+  return JSON.stringify(canonical(witnessed));
+}
+
+/**
+ * The fields that are DELIVERY bookkeeping rather than materialized state, and
+ * so are not part of the convergence claim.
+ *
+ * Only `appliedAtCursor`, and it earns the exception: it records which op ids
+ * arrived at the current position, so two replicas that folded the same log
+ * with the fork's two ops uploaded in opposite orders hold different values in
+ * it *by construction* — the last op at the last position is a different op —
+ * while agreeing on every transaction, rule, rate and notice. Witnessing it
+ * would turn a correct convergence into a reported divergence.
+ *
+ * `cursors` is deliberately NOT here: it converges (both replicas end at the
+ * same highest seq) and a disagreement about it is a real one.
+ *
+ * The list is pinned by a test, so a field added later cannot silently join it.
+ */
+const NOT_WITNESSED: ReadonlySet<string> = new Set(["appliedAtCursor"]);
+
+/** The fields {@link serializeState} deliberately omits. Exported so it is testable. */
+export function notWitnessed(): string[] {
+  return [...NOT_WITNESSED];
 }
 
 function canonical(v: unknown): unknown {

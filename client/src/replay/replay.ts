@@ -140,17 +140,22 @@ export function fold(entries: LogEntry[], s: State = emptyState()): State {
  * layer; this function's only claim is about decode and fold.
  */
 export function foldBlobs(blobs: PositionedBlob[], s: State = emptyState()): State {
-  // Strictly increasing, and checked against the STATE rather than a local, so
-  // the guard holds across successive calls too: one blob is one op_log row, so
-  // two blobs can never share a seq the way two ops inside one blob do. An
-  // unreadable blob leaves the cursor where it was, which is correct — its
-  // position carried no state.
-  let lastSeq = s.cursors.hot;
   for (const b of blobs) {
-    if (b.pos.seq <= lastSeq) {
-      throw new ReplayOrderError(`blob at seq ${b.pos.seq} does not follow ${lastSeq}: one blob is one row, one seq`);
+    // Strictly increasing, and checked against the STATE rather than a local, so
+    // the guard holds across successive calls too: one blob is one op_log row,
+    // so two blobs can never share a seq the way two ops inside one blob do.
+    if (b.pos.seq <= s.cursors.hot) {
+      throw new ReplayOrderError(
+        `blob at seq ${b.pos.seq} does not follow ${s.cursors.hot}: one blob is one row, one seq`,
+      );
     }
-    lastSeq = b.pos.seq;
+    // Advanced BEFORE the decode, so a blob that will not decode still consumes
+    // its position. Leaving the cursor behind on the set-aside path would let
+    // the same seq be re-delivered later with different content and folded as if
+    // it were new — which is rule 8's own path, so it is the one place the guard
+    // most has to hold.
+    s.cursors.hot = b.pos.seq;
+    s.appliedAtCursor.clear();
     let ops: Op[];
     try {
       ops = decodeBlobOps(b.body);
@@ -196,7 +201,20 @@ export function applyOp(s: State, e: LogEntry): void {
     throw new UnknownNewerVersionError(`op ${op.op_id} is v${op.v}, this build supports v${SCHEMA_VERSION}`);
   }
 
-  s.cursors.hot = seq;
+  if (seq > s.cursors.hot) {
+    s.cursors.hot = seq;
+    s.appliedAtCursor.clear();
+  } else if (s.appliedAtCursor.has(op.op_id)) {
+    // The ordering guard has to admit `seq === cursors.hot`, because every op in
+    // a blob shares one seq — so it cannot, by itself, tell a second op in the
+    // same blob from the same page delivered twice. Without this, re-folding a
+    // page takes the entity to a version nothing authored and forks it against
+    // ITSELF, complete with a notice naming one op as both winner and loser.
+    // A well-behaved caller resumes from `seq > cursor` and never sees this.
+    anomaly(s, seq, "duplicate_delivery", `${op.op_id} was already applied at seq ${seq}`);
+    return;
+  }
+  s.appliedAtCursor.add(op.op_id);
 
   // decodeBlobOps validates already; this catches an op assembled in code and
   // costs nothing on the decode path. It is an anomaly rather than a throw
@@ -275,6 +293,18 @@ function applyRateSet(s: State, e: LogEntry): void {
 
 function applyRateUnset(s: State, e: LogEntry): void {
   const ccy = currencyOf(payloadObject(e.op), "currency");
+  if (s.homeCurrency !== null && ccy === s.homeCurrency) {
+    // The home currency's rate is IMPLICIT — 1.000000 by construction (spec
+    // §3.7:124) — so there is nothing to unset, and unsetting it is not a
+    // recoverable mistake: `rate_set(H)` is refused by the guard above and
+    // `home_currency_set` is one-shot, so no op in the vocabulary can put the
+    // identity back. Every home-currency transaction from that position on would
+    // snapshot null forever, which is exactly what §3.7:133 forbids. Same
+    // argument as `rate_set_for_home_currency`; it applies symmetrically and the
+    // first draft only guarded one side.
+    anomaly(s, e.seq, "rate_unset_for_home_currency", `${e.op.op_id} unsets the implicit identity rate of ${ccy}`);
+    return;
+  }
   // Present-and-null, not deleted: "unset" is a live fact at this position, and
   // transactions frozen before it stay frozen (spec §3.7:127).
   s.rates.set(ccy, null);
@@ -365,6 +395,16 @@ function applyCausal(s: State, e: LogEntry): void {
     anomaly(s, seq, "invalid_parent", `${op.type} ${op.op_id} names parent ${parent}, but it can only create`);
     return;
   }
+  if (parent === 0) {
+    // Version numbering starts at 1 (a create), so version 0 never existed. This
+    // is the structural mirror of `future_parent`, and it has to be refused for
+    // the same reason: left alone it reads as `parent < head.version`, i.e. a
+    // fork — so an op authored against a version that never existed could WIN,
+    // apply its payload, bump the head and emit a notice, with nothing anywhere
+    // saying the parent was fictional.
+    anomaly(s, seq, "nonexistent_parent", `${op.op_id} names parent version 0 of ${ref.kind} ${ref.id}, which never existed`);
+    return;
+  }
   if (head === undefined) {
     // The create's blob was probably set aside. Replay must not invent the
     // entity from an edit to it.
@@ -372,12 +412,23 @@ function applyCausal(s: State, e: LogEntry): void {
     return;
   }
   if (parent > head.version) {
+    // The plan calls this "impossible in a gap-free prefix". It is not: it is
+    // reachable through EVERY refusal that returns before the version bump —
+    // `invalid_op`, `entity_kind_mismatch`, `invalid_parent`, `nonexistent_parent`,
+    // `invalid_payload` and `split_sum` — because each leaves the head where it
+    // was while the author believed it had moved. So this stays an
+    // anomaly-and-skip and must never become an assertion (Task 13).
     anomaly(s, seq, "future_parent", `${op.op_id} names parent ${parent} of ${ref.kind} ${ref.id}, whose head is ${head.version}`);
     return;
   }
   // A payload-level refusal (a split that does not sum) is not a causal event:
   // it consumes no version, so the corrected op applies cleanly instead of
   // forking against a phantom.
+  //
+  // Consequence worth stating, because it is not obvious and a checker could
+  // wrongly assume otherwise: a STALE-PARENT op that is refused here produces no
+  // ForkNotice at all. "Every op naming a stale parent yields a notice" is
+  // therefore not an invariant — "every RESOLVED fork yields one" is.
   if (!precheck(s, e, payload)) return;
 
   if (parent === head.version) {
@@ -391,6 +442,15 @@ function applyCausal(s: State, e: LogEntry): void {
 
   // parent < head.version — a true concurrent fork. Both ops were authored
   // against the same head; only the total order tells us that.
+  //
+  // The comparison is STRICT, so a full tie — same millisecond AND same
+  // writer_id — leaves the incumbent in place, which means such a fork is
+  // resolved by `seq`, i.e. by upload order. That is deterministic and it is the
+  // only answer available once both named tiebreaks are exhausted, but it is
+  // worth naming because it is reachable in practice (one offline device
+  // authoring two ops against the same head inside one millisecond) and its
+  // outcome is that the user's LATER op is the one discarded. Spec §3.3:66 gives
+  // no third tiebreak; adding one (op_id, say) would be inventing rule.
   const challengerAt = authoredAtMs(op);
   const challengerWins =
     challengerAt > head.authored_at_ms ||
@@ -630,6 +690,13 @@ function indexFingerprint(s: State, t: Txn, seq: bigint): void {
   // The FIRST live match, i.e. the earliest by fold order — not "some match".
   // Which one it names has to be a function of the log, or two replicas show
   // the user two different "possible duplicate of" answers for the same data.
+  //
+  // This is the ONE place in the engine where an answer depends on the order of
+  // a collection, which is why `byFingerprint` holds an explicit ARRAY built in
+  // fold order rather than a Set. A second executor must mirror that: Go
+  // randomizes map iteration, so a Go port that ranged a map here would diverge
+  // from itself run to run, and `serializeState` would report a match anyway
+  // (see its doc — the witness compares values, not iteration order).
   const other = bucket[0];
   if (other !== undefined && other !== t.id) {
     // Both stay live and fully visible: genuine same-card same-day duplicate
