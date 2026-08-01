@@ -19,14 +19,21 @@ That matters for step 13: `ledgerd verify` before `ababae1` could certify "zero
 drops" over a live drop class, so a green step 13 on an older commit would have
 meant less.
 **Command:** `cd client && bun test test/e2e/exit.test.ts`
-**Result:** 16 tests, 0 fail, 201 `expect()` calls, against a real `ledgerd`, a
+**Result:** 17 tests, 0 fail, 220 `expect()` calls, against a real `ledgerd`, a
 real Postgres, real SMTP over a socket and offline DKIM (`--dns-fixtures`).
+
+**Amended 2026-08-01** after `fix(v2): cover the ingest chain with device
+checkpoints`. The first run of this test surfaced a gap — `GET /api/v1/writers`
+omitted the server's own `ingest` writer, so no checkpoint named a head for the
+chain the user's mail lands on — and the numbers below are the post-fix run.
+Step 16 is new and is the positive proof that a truncation of that chain is now
+detected.
 **Gate:** `go clean -testcache && bash scripts/v2-check.sh` → `v2-check: OK
-(go + client + conformance)`; 1904 client tests across 17 files, 0 fail.
+(go + client + conformance)`; 1910 client tests across 17 files, 0 fail.
 
 ---
 
-## The fourteen steps
+## The sixteen steps
 
 | # | What it asserts | Outcome |
 | --- | --- | --- |
@@ -45,12 +52,19 @@ real Postgres, real SMTP over a socket and offline DKIM (`--dns-fixtures`).
 | 13 | `ledgerd verify --json` → exit 0, `findings: []` | **pass** |
 | 14 | The accounting equation over the window | **pass** |
 | 15 | `ledgerd parse-rate` runs against the real database and prints the §5 number (the *instrument*, not the criterion) | **pass** |
+| 16 | A server withholding the attested head of the **ingest** chain is caught: `I11_roster_checkpoint` / `chain_withheld`, and nothing else sees it | **pass** |
 
 ## Step 4 — the checkpoint, verbatim
 
 ```
-dev-a|cold=0/00000000  dev-a|hot=1/a0a8801b  dev-b|cold=0/00000000  dev-b|hot=0/00000000
+dev-a|cold=0/00000000  dev-a|hot=1/8f25fe09  dev-b|cold=0/00000000  dev-b|hot=0/00000000
+ingest|cold=0/00000000  ingest|hot=0/00000000
 ```
+
+**Six pairs, not four.** `ingest` is a roster writer like any other, present from
+the account's first sign-in and named at counter 0 / genesis because its chain is
+empty — which on a brand-new account is the common case, not an edge one. Step 16
+is what that entry buys.
 
 `dev-b` has authored nothing and is named anyway, at counter 0 with the 64-zero
 genesis hash — `CHECKPOINT_NAMES_THE_ROSTER`. A checkpoint built from *observed*
@@ -138,35 +152,59 @@ Zero `hard_stop` on both devices, on both streams. Printed rather than
 summarised, because a notice list nobody reads is the same as no invariants:
 
 ```
-dev-a hot:  I11 the server served blobs from writer "ingest", which its own roster does not list
-            I11 checkpoint head (dev-a|cold) claims counter 0 and was not cross-checked: hot only
-            I11 checkpoint head (dev-b|cold) claims counter 0 and was not cross-checked: hot only
+dev-a hot:  I11 checkpoint head (dev-a|cold)  claims counter 0  and was not cross-checked: hot only
+            I11 checkpoint head (dev-b|cold)  claims counter 0  and was not cross-checked: hot only
+            I11 checkpoint head (ingest|cold) claims counter 23 and was not cross-checked: hot only
             I14 1 fork, 18 anomalies (possible_duplicate 18)
-dev-a cold: I11 checkpoint head (dev-a|hot) claims counter 2 and was not cross-checked: cold only
-            I11 checkpoint head (dev-b|hot) claims counter 1 and was not cross-checked: cold only
+dev-a cold: I11 checkpoint head (dev-a|hot)   claims counter 2  and was not cross-checked: cold only
+            I11 checkpoint head (dev-b|hot)   claims counter 1  and was not cross-checked: cold only
+            I11 checkpoint head (ingest|hot)  claims counter 23 and was not cross-checked: cold only
             I14 1 fork, 18 anomalies (possible_duplicate 18)
 dev-b hot:  (as dev-a hot)
-dev-b cold: I11 the server served blobs from writer "ingest", which its own roster does not list
-            I11 checkpoint head (dev-a|hot) claims counter 2 and was not cross-checked: cold only
-            I11 checkpoint head (dev-b|hot) claims counter 1 and was not cross-checked: cold only
-            I14 1 fork, 18 anomalies (possible_duplicate 18)
+dev-b cold: (as dev-a cold)
 ```
 
-Two of these are findings rather than noise, and the test pins both so they
-cannot quietly change:
+Every notice is now of one shape — "this pull covered one stream, so the other
+stream's heads were not cross-checked" — plus I14's unconditional report. The
+"the server served blobs from writer `ingest`, which its own roster does not
+list" notice is **gone**, which is the visible half of the fix.
 
-* **`GET /api/v1/writers` does not list the server's own `ingest` writer.**
-  A `writer_checkpoint` therefore names no head for the chain the user's *mail*
-  lives on, and a truncation of the ingest chain would verify against every
-  checkpoint in the log. `I11` reports it as a notice because the roster is the
-  server's own answer and a hard stop would let a server disable sync by
-  omitting a writer. Worth closing before the beta: either the roster lists
-  `ingest`, or `attestableHeads` names it unconditionally.
+One of these is a finding rather than noise, and the test pins it:
+
 * **18 `possible_duplicate` anomalies.** The corpus is 10 byte-distinct copies
   of each of 2 real messages (Task 37 §8.1), so the fingerprint heuristic fires
   9 times per group. Both rows stay live, which is the specified behaviour
   (§3.3:67) — the test asserts every anomaly is of that kind and that
   `liveByIngestID` still holds 23 entries.
+
+## Step 16 — the ingest chain is tamper-evident, verbatim
+
+A fresh checkpoint is signed (attesting `ingest|hot = 24`), and a client of the
+same account then syncs against a server that withholds exactly that head:
+
+```
+step 16 detection: I11_roster_checkpoint/chain_withheld:
+  checkpoint head (ingest|hot) claims counter 24, but the highest blob this client
+  has ever seen on that chain is 23 — the server is withholding rows a peer device
+  has already witnessed
+```
+
+Three things make it evidence rather than a green light:
+
+1. **A control ran first.** The same fresh-profile code path against an honest
+   server pulls clean, zero hard stops, and pins `ingest|hot` at 24.
+2. **`I11` is the ONLY hard stop** — asserted as an exact list. A truncated
+   *tail* leaves a chain that is still dense from 1, so `I2` (row contiguity)
+   and `I3` (the hash chain) are both satisfied by what was served, and the
+   materialized state looks entirely plausible: 23 transactions with the step-10
+   supersede simply absent, which reads as "that correction never happened".
+3. **The refused pull persists nothing** — the victim's hot cursor is still 0.
+
+Two unit tests in `client/src/invariants/check.test.ts` state the pair
+permanently: one detects the truncation behind a checkpoint that names the
+chain, and one records the **pre-fix world** — a roster without `ingest`
+produces *no hard stop at all* for the identical truncation, only a notice about
+an unlisted writer.
 
 ## The criterion that is NOT met here, and why
 

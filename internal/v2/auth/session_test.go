@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -411,5 +412,104 @@ func TestUpsertUserRejectsAnUnusableIdentity(t *testing.T) {
 	}
 	if users != 0 {
 		t.Fatalf("users = %d after only-invalid upserts", users)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The ingest writer exists from the first sign-in
+// ---------------------------------------------------------------------------
+
+// TestUpsertUserCreatesTheIngestWriter is the fix for the gap Task 38's exit
+// test surfaced: EnsureIngestWriter existed, was tested, and had no production
+// caller, so `writers` never held an ingest row and Roster never returned one.
+//
+// The consequence was not cosmetic. A client checkpoint names one head per
+// ROSTER writer, so a roster without `ingest` produced checkpoints that said
+// nothing about the chain the user's MAIL lands on — the one chain no device
+// can re-derive and the one written by the party the threat model declines to
+// trust. A server dropping the last N emails left a chain still dense from 1:
+// row contiguity and the hash chain both verify, and no checkpoint contradicted
+// it. Creating the writer with the user is what closes it.
+func TestUpsertUserCreatesTheIngestWriter(t *testing.T) {
+	pool := pgtest.New(t)
+	u := mustUpsert(t, pool, Identity{IdP: IdPApple, Subject: "ingest-writer"})
+
+	roster, err := (&Writers{Pool: pool}).Roster(bgctx, u)
+	if err != nil {
+		t.Fatalf("Roster: %v", err)
+	}
+	// A brand-new account with no device and no mail: the ingest writer is the
+	// whole roster, and its chain is empty. That is the COMMON path, not an
+	// edge case, and it is the one a first checkpoint has to be able to name.
+	if len(roster) != 1 {
+		t.Fatalf("roster has %d writers, want 1: %+v", len(roster), roster)
+	}
+	if roster[0].WriterID != IngestWriterID || roster[0].Kind != KindIngest {
+		t.Fatalf("roster[0] = %+v, want the ingest writer", roster[0])
+	}
+	if roster[0].PubKey != nil {
+		t.Fatalf("the ingest writer holds no key, got %x", roster[0].PubKey)
+	}
+	if !roster[0].Live() {
+		t.Fatal("the ingest writer must be live")
+	}
+	// The key-history log records its registration exactly once, with no key.
+	var events int
+	if err := pool.QueryRow(bgctx,
+		`SELECT count(*) FROM key_history WHERE user_id=$1 AND writer_id=$2 AND event=$3 AND pubkey IS NULL`,
+		u, IngestWriterID, EventRegistered).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("key_history has %d registration rows for the ingest writer, want 1", events)
+	}
+}
+
+// A returning user must not get a second ingest writer, and must not get a
+// second key_history row: peer devices audit that log for key substitution, so
+// a duplicate entry on every sign-in would be noise in exactly the record that
+// has to stay meaningful.
+func TestUpsertUserDoesNotReCreateTheIngestWriter(t *testing.T) {
+	pool := pgtest.New(t)
+	id := Identity{IdP: IdPApple, Subject: "ingest-writer-twice"}
+	u := mustUpsert(t, pool, id)
+	if again := mustUpsert(t, pool, id); again != u {
+		t.Fatalf("second sign-in returned %s, want %s", again, u)
+	}
+
+	var writers, events int
+	if err := pool.QueryRow(bgctx,
+		`SELECT count(*) FROM writers WHERE user_id=$1 AND writer_id=$2`, u, IngestWriterID).Scan(&writers); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(bgctx,
+		`SELECT count(*) FROM key_history WHERE user_id=$1 AND writer_id=$2`, u, IngestWriterID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if writers != 1 || events != 1 {
+		t.Fatalf("after two sign-ins: %d writer rows, %d key_history rows; want 1 and 1", writers, events)
+	}
+}
+
+// The ingest writer's presence must not open the bootstrap window that lets a
+// session alone enroll the FIRST device: `hadDevice` counts device writers, and
+// a roster that is non-empty for another reason must not be read as "a device
+// already exists".
+func TestTheIngestWriterDoesNotCloseTheDeviceBootstrapWindow(t *testing.T) {
+	pool := pgtest.New(t)
+	u := mustUpsert(t, pool, Identity{IdP: IdPApple, Subject: "ingest-writer-bootstrap"})
+	w := &Writers{Pool: pool}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := w.Challenge(bgctx, u)
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	sig := ed25519.Sign(priv, RegistrationMessage(nonce, "dev-a", pub))
+	if err := w.Register(bgctx, u, "dev-a", pub, nonce, sig); err != nil {
+		t.Fatalf("the first device must still be able to self-enroll: %v", err)
 	}
 }

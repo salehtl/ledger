@@ -872,9 +872,18 @@ func TestABearerTokenAloneCannotRegisterAWriter(t *testing.T) {
 		Sig:      base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
 	})
 	wantStatus(t, w, http.StatusForbidden)
+	// Device writers, not all of them: every account carries the server's own
+	// `ingest` writer from its first sign-in, and counting it here would turn
+	// "a session enrolled nothing" into an off-by-one nobody could read.
 	roster := decodeJSON[WritersResponse](t, h.req("GET", "/api/v1/writers", tok, nil))
-	if len(roster.Writers) != 0 {
-		t.Fatalf("a bare session enrolled %d writers", len(roster.Writers))
+	var devices int
+	for _, wr := range roster.Writers {
+		if wr.Kind == auth.KindDevice {
+			devices++
+		}
+	}
+	if devices != 0 {
+		t.Fatalf("a bare session enrolled %d writers", devices)
 	}
 }
 
@@ -937,15 +946,32 @@ func TestRosterIsScopedToTheCaller(t *testing.T) {
 	h.writer(a, "dev-a")
 	h.writer(b, "dev-b")
 
+	// Two entries: this account's device, and this account's OWN server-side
+	// writer. `ingest` is per-account rather than global — a shared one would
+	// mean a single chain across users, which is neither what the schema stores
+	// nor what a checkpoint could ever attest — so the scoping claim covers it
+	// exactly as it covers dev-a.
 	roster := decodeJSON[WritersResponse](t, h.req("GET", "/api/v1/writers", h.session(a), nil))
-	if len(roster.Writers) != 1 || roster.Writers[0].WriterID != "dev-a" {
-		t.Fatalf("roster for user a is %+v", roster.Writers)
+	byID := map[string]WriterEntry{}
+	for _, wr := range roster.Writers {
+		byID[wr.WriterID] = wr
 	}
-	if roster.Writers[0].PubKey == "" || roster.Writers[0].Kind != auth.KindDevice {
-		t.Fatalf("roster entry is missing its key material or kind: %+v", roster.Writers[0])
+	if len(roster.Writers) != 2 || byID["dev-a"].WriterID == "" || byID["ingest"].WriterID == "" {
+		t.Fatalf("roster for user a is %+v, want dev-a and ingest", roster.Writers)
 	}
-	if roster.Writers[0].RevokedAt != nil {
+	if _, leaked := byID["dev-b"]; leaked {
+		t.Fatalf("user b's writer leaked into user a's roster: %+v", roster.Writers)
+	}
+	if byID["dev-a"].PubKey == "" || byID["dev-a"].Kind != auth.KindDevice {
+		t.Fatalf("roster entry is missing its key material or kind: %+v", byID["dev-a"])
+	}
+	if byID["dev-a"].RevokedAt != nil {
 		t.Fatal("a live writer came back with a revoked_at")
+	}
+	// The server's writer holds no key, and the wire must say so rather than
+	// serving an empty string that reads as "we forgot".
+	if byID["ingest"].Kind != auth.KindIngest || byID["ingest"].PubKey != "" {
+		t.Fatalf("ingest roster entry = %+v", byID["ingest"])
 	}
 }
 

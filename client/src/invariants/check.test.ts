@@ -870,6 +870,132 @@ test("I11 hard-stops on a counter-0 checkpoint head whose hash is not genesis", 
   expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.severity === "hard_stop" && v.detail.includes("genesis"))).toBe(true);
 });
 
+test("I11 hard-stops when the checkpoint names no head for the INGEST chain", () => {
+  // The chain the user's MAIL lands on is the one chain no device can
+  // re-derive from its own state, and it is written by the party the whole
+  // threat model declines to trust. A checkpoint that omits it leaves a
+  // truncation of it verifying clean against every checkpoint ever signed —
+  // which is exactly the state of the world while `GET /api/v1/writers`
+  // omitted the ingest writer, so every device wrote checkpoints naming only
+  // devices. Coverage is therefore over every LIVE roster writer, not over
+  // the device subset.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = cleanInput({
+    plans: [...hotPlans(), checkpointPlan("dev-a", [device("dev-a")])],
+    roster,
+  });
+  const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop");
+  expect(v?.detail).toContain("ingest");
+  expect(v?.kind).toBe("roster_coverage");
+});
+
+test("I11 detects a TRUNCATED ingest chain behind a checkpoint that names it", () => {
+  // The positive form of the property above, and the reason it matters: a
+  // server that drops the last emails of a user's mail leaves a chain that is
+  // still perfectly dense from 1, so I2 sees nothing and I3 links cleanly. The
+  // ONLY artifact is the checkpoint a device signed over the head it saw.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = cleanInput({
+    plans: [...hotPlans(), checkpointPlan("dev-a", roster)],
+    roster,
+  });
+  // The server now serves everything EXCEPT the ingest chain's last blob.
+  const dropped = [...input.rows]
+    .filter((r) => r.writer_id === "ingest")
+    .sort((x, y) => (x.writer_counter < y.writer_counter ? -1 : 1))
+    .pop()!;
+  input.rows = input.rows.filter((r) => r !== dropped);
+
+  const vs = all(checkAll(input), "I11_roster_checkpoint");
+  const withheld = vs.find((x) => x.severity === "hard_stop");
+  expect(withheld?.kind).toBe("chain_withheld");
+  expect(withheld?.detail).toContain("ingest|hot");
+  // And nothing else saw it: a truncated TAIL is dense, so row contiguity and
+  // the hash chain are both satisfied by what was served.
+  expect(ids(checkAll(input))).not.toContain("I2_writer_counters");
+  expect(ids(checkAll(input))).not.toContain("I3_chain");
+});
+
+test("I11 counts a PINNED COLD HASH as evidence the client has seen that counter", () => {
+  // The regression covering `ingest` produced immediately, and it is a real
+  // defect in what "observed" means rather than a tolerance to widen.
+  //
+  // Cold bodies are a lazily-synced window (spec §3.3:70), so the normal state
+  // of a device is: hash list pinned to the head, NO bodies downloaded. A
+  // standalone `cli check` deliberately passes no pinned heads (it re-verifies
+  // from genesis, and passing them would make I2 expect counters to continue
+  // from the head while the rows start at 1) — so with the cold chain now named
+  // in every checkpoint, a device that had done exactly the right thing
+  // reported "the server is withholding rows" about mail it had verified the
+  // hashes of itself.
+  //
+  // A pinned per-blob hash is evidence: `pullColdHashes` verifies the list is
+  // contiguous and correctly chained from the pinned head BEFORE pinning any of
+  // it, so a pin at counter N means the server committed to a blob at N. That
+  // is exactly what the withheld check needs to compare against, and counting
+  // it can only lower a hard stop that was never true.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = assemble({ stream: "cold", plans: coldPlans(4), roster });
+  input.rows = []; // bodies not downloaded — the normal case
+  input.hashList = [];
+  input.state.checkpoints = [
+    { writer_id: "dev-a", stream: "cold", counter: 0n, hash: "0".repeat(64) },
+    { writer_id: "ingest", stream: "cold", counter: 4n, hash: "a".repeat(64) },
+  ];
+  const pins = new Map<bigint, Uint8Array>();
+  for (let c = 1n; c <= 4n; c++) pins.set(c, new Uint8Array(32));
+  input.pinnedBlobHashes.set(chainKey("ingest", "cold"), pins);
+
+  expect(all(checkAll(input), "I11_roster_checkpoint").filter((v) => v.severity === "hard_stop")).toHaveLength(0);
+});
+
+test("I11 still hard-stops when the checkpoint outruns every pinned cold hash", () => {
+  // The other side of the same line: pins are evidence up to the counter they
+  // cover and not one beyond it.
+  const roster = [ingestWriter(), device("dev-a")];
+  const input = assemble({ stream: "cold", plans: coldPlans(4), roster });
+  input.rows = [];
+  input.hashList = [];
+  input.state.checkpoints = [
+    { writer_id: "dev-a", stream: "cold", counter: 0n, hash: "0".repeat(64) },
+    { writer_id: "ingest", stream: "cold", counter: 9n, hash: "a".repeat(64) },
+  ];
+  const pins = new Map<bigint, Uint8Array>();
+  for (let c = 1n; c <= 4n; c++) pins.set(c, new Uint8Array(32));
+  input.pinnedBlobHashes.set(chainKey("ingest", "cold"), pins);
+
+  const v = all(checkAll(input), "I11_roster_checkpoint").find((x) => x.severity === "hard_stop");
+  expect(v?.kind).toBe("chain_withheld");
+  expect(v?.detail).toContain("is 4");
+});
+
+test("the pre-fix world, kept as a record: an unlisted ingest writer makes a truncation INVISIBLE", () => {
+  // This is what the system did before `auth.UpsertUser` created the ingest
+  // writer. `GET /api/v1/writers` answered with devices only, so every
+  // checkpoint a device signed named devices only, so the chain the user's MAIL
+  // lands on had no attested head anywhere. The same truncation the test above
+  // catches produces, here, NOT ONE HARD STOP — only a notice about a writer
+  // the roster does not list, which is indistinguishable from a benign race and
+  // is exactly what made this survivable for as long as it did.
+  //
+  // Post-fix this state is unreachable from a real server, and the assertion
+  // below is the reason the roster fix is load-bearing rather than tidy-up.
+  const rosterWithoutIngest = [device("dev-a")];
+  const input = cleanInput({
+    plans: [...hotPlans(), checkpointPlan("dev-a", rosterWithoutIngest)],
+    roster: rosterWithoutIngest,
+  });
+  const dropped = [...input.rows]
+    .filter((r) => r.writer_id === "ingest")
+    .sort((x, y) => (x.writer_counter < y.writer_counter ? -1 : 1))
+    .pop()!;
+  input.rows = input.rows.filter((r) => r !== dropped);
+
+  const vs = all(checkAll(input), "I11_roster_checkpoint");
+  expect(vs.filter((v) => v.severity === "hard_stop")).toHaveLength(0);
+  expect(vs.some((v) => v.detail.includes("roster does not list"))).toBe(true);
+});
+
 test("I11 fires when the server omits a writer from the roster", () => {
   const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
   input.roster = input.roster.filter((w) => w.writer_id !== "dev-a");

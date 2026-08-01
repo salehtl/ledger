@@ -250,7 +250,14 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
     const state = a.state();
     expect(state.homeCurrency).toBe("AED");
     expect(state.rates.get("USD")).toBe(3672500n);
-    expect(state.checkpoints).toHaveLength(2); // dev-a x {hot, cold}
+    // Four: {dev-a, ingest} x {hot, cold}. The server's own writer is on the
+    // roster from the account's first sign-in, and a checkpoint names one head
+    // per ROSTER writer — which is what gives the chain the user's mail lands
+    // on an attested head at all.
+    expect(state.checkpoints).toHaveLength(4);
+    expect(state.checkpoints.map((c) => `${c.writer_id}|${c.stream}`).sort()).toEqual([
+      "dev-a|cold", "dev-a|hot", "ingest|cold", "ingest|hot",
+    ]);
     expect(a.cursor(STREAM_HOT)).toBe(1n);
     expect(a.cursor(STREAM_COLD)).toBe(0n);
 
@@ -278,7 +285,8 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
     const pubB = b.ensureWriterKey("dev-b");
     await a.enroll("dev-b", { signWith: "dev-a", publicKey: pubB });
     b.useWriter("dev-b");
-    expect((await a.roster()).map((w) => w.writer_id).sort()).toEqual(["dev-a", "dev-b"]);
+    // `ingest` is on the roster too, from the first sign-in and before any mail.
+    expect((await a.roster()).map((w) => w.writer_id).sort()).toEqual(["dev-a", "dev-b", "ingest"]);
 
     // CONTRACT: a multi-device account hard-stops until a checkpoint covering
     // the new writer lands. dev-a's existing checkpoint names only dev-a, so
@@ -301,6 +309,8 @@ describe.skipIf(ADMIN_DSN === "")("round trip against a real ledgerd", () => {
       "dev-a|hot",
       "dev-b|cold",
       "dev-b|hot",
+      "ingest|cold",
+      "ingest|hot",
     ]);
     for (const h of heads.filter((x) => x.writer_id === "dev-b")) {
       expect(h.counter).toBe(0n);
