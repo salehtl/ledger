@@ -207,7 +207,12 @@ describe.skipIf(ADMIN_DSN === "")("the e2e harness", () => {
     await a.enroll("dev-a");
     expect(() => b.userId).toThrow(/not signed in/);
     expect(existsSync(a.location)).toBe(true);
-    expect(existsSync(b.location)).toBe(false);
+    // …and a FRESH handle on dev-b's profile is signed out too, so this is a
+    // claim about what was persisted and not about one live object. The
+    // file-store spelling of it was "no state file exists", which a store that
+    // creates its database on open cannot satisfy and which said nothing about
+    // the contents anyway.
+    expect(() => clientFor(s, "dev-b").userId).toThrow(/not signed in/);
   }, TIMEOUT);
 
   test("stopStack leaves no ledgerd process and no scratch database", async () => {

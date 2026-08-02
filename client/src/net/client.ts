@@ -80,7 +80,15 @@ import {
   type Op,
   type OpType,
 } from "../wire/op";
-import { genesisHead, type ClientState, type Store, type WireRow, type WriterKey } from "../store/store";
+import {
+  eachRowChunk,
+  genesisHead,
+  type ClientState,
+  type RowStore,
+  type Store,
+  type WireRow,
+  type WriterKey,
+} from "../store/store";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -363,11 +371,20 @@ export interface PushReport {
 
 export class Client {
   private readonly store: Store;
+  /**
+   * The verified log, which the state no longer carries.
+   *
+   * Read ONLY through {@link eachRowChunk}: there is no `all()` on a
+   * {@link RowStore}, so every full pass below is a chunked loop and the
+   * memory ceiling is a property of that loop.
+   */
+  private readonly rowStore: RowStore;
   private readonly doFetch: typeof fetch;
   private st: ClientState;
 
   constructor(opts: ClientOptions) {
     this.store = opts.store;
+    this.rowStore = opts.store.rows();
     this.doFetch = opts.fetch ?? fetch;
     this.st = opts.store.load();
     if (opts.server !== undefined && opts.server !== "") this.st.server = opts.server;
@@ -399,6 +416,20 @@ export class Client {
     return this.store.location;
   }
 
+  /**
+   * The bearer token this client would send, or `null` when it is signed out.
+   *
+   * For a test driving one of the routes {@link Client} does not wrap. It used
+   * to be read by re-parsing the state file, which was store-specific — under
+   * `LEDGER_CLIENT_STORE=sqlite` the location is a database and the token is
+   * not in it at all (it belongs in the keystore, see `SecretStore`). Reading
+   * it from the client that would send it is what the file read was
+   * approximating anyway.
+   */
+  get sessionToken(): string | null {
+    return this.st.sessionToken;
+  }
+
   cursor(stream: Stream): bigint {
     return this.st.cursors[stream];
   }
@@ -407,9 +438,20 @@ export class Client {
     return this.st.pinnedHeads.get(chainKey(writerId, stream)) ?? genesisHead();
   }
 
-  /** Every row this client has verified and kept, in the order it pulled them. */
+  /**
+   * Every row this client has verified and kept, ascending by seq.
+   *
+   * **A test accessor, not a product call.** It is the one place that builds an
+   * array of the whole log, which is what {@link RowStore} deliberately offers
+   * no method for; the assertions that read it are counting rows, not folding
+   * them. Product code walks {@link eachRowChunk}, as the two methods below do.
+   */
   rowsFor(stream: Stream): readonly WireRow[] {
-    return this.st.rows[stream];
+    const out: WireRow[] = [];
+    eachRowChunk(this.rowStore, stream, (chunk) => {
+      for (const r of chunk) out.push(r);
+    });
+    return out;
   }
 
   /**
@@ -418,11 +460,20 @@ export class Client {
    * Recomputed rather than cached: a cached state would make I9's and I10's
    * "the state agrees with a re-fold of its own op log" a comparison of the
    * fold against itself.
+   *
+   * The fold runs a CHUNK at a time and keeps none of them. Decoding is where
+   * the memory goes — every row in a chunk is opened, inflated and parsed — so
+   * an implementation that read the whole log first and decoded afterwards
+   * would hold 3,683 inflated blobs at once, which is the >500 MB shape Phase 0
+   * froze on. `store.test.ts` pins the ordering with a row store that poisons
+   * each chunk when the next is asked for.
    */
   materialize(): { state: State; ops: LogEntry[] } {
     const state = emptyState();
     const ops: LogEntry[] = [];
-    applyRows(state, ops, this.userId, this.st.rows.hot.map(decodeWireRow));
+    eachRowChunk(this.rowStore, STREAM_HOT, (chunk) => {
+      applyRows(state, ops, this.userId, chunk.map(decodeWireRow));
+    });
     state.cursors.cold = this.st.cursors.cold;
     return { state, ops };
   }
@@ -442,7 +493,17 @@ export class Client {
    * rows it is handed start at 1.
    */
   check(stream: Stream = STREAM_HOT, roster: readonly Writer[] = []): Violation[] {
-    const rows = this.st.rows[stream].map(decodeWireRow);
+    // Read a chunk at a time — and then, unlike the fold above, keep them all.
+    // `checkAll` is a whole-log API by construction: I2 walks counters across
+    // the run, I9/I10 re-fold from 0, I14 counts forks over everything. So the
+    // chunking bounds what the STORE holds, not what the checker does, and the
+    // honest statement is that `check` is O(log) in memory until the checker
+    // itself streams. That is Task 12's job (the checker on-device), and this
+    // comment is here so nobody reads the loop as a fix it is not.
+    const rows: SyncRow[] = [];
+    eachRowChunk(this.rowStore, stream, (chunk) => {
+      for (const r of chunk) rows.push(decodeWireRow(r));
+    });
     const { state, ops } = this.materialize();
     const last = rows[rows.length - 1];
     return checkAll({
@@ -747,15 +808,26 @@ export class Client {
       report.violations = violations;
       if (violations.some((v) => v.severity === "hard_stop")) throw new HardStopError(violations);
 
-      // 4. Persist: rows, cursor and heads together.
-      this.st.rows[stream].push(...(res.rows ?? []));
-      this.st.cursors[stream] = next;
-      if (stream === STREAM_HOT) {
-        for (const [key, run] of groups) {
-          this.st.pinnedHeads.set(key, headAfter(run, pinnedBefore.get(key) ?? genesisHead()));
+      // 4. Persist: rows, cursor and heads together — in ONE transaction.
+      //
+      // They used to be one write, because the rows lived inside the state.
+      // Splitting the log out split the write, and a page of rows and the
+      // cursor that says they were taken must still land together: a cursor
+      // ahead of the rows claims rows nothing will ever ask for again, and rows
+      // ahead of the cursor make the next pull re-serve rows the fold has
+      // already consumed, which the replay ordering guard refuses. `Store`
+      // makes the pair atomic where it can (SQLite, i.e. the phone) and orders
+      // it onto the recoverable side where it cannot (the file store).
+      this.store.transaction(() => {
+        this.rowStore.append(stream, res.rows ?? []);
+        this.st.cursors[stream] = next;
+        if (stream === STREAM_HOT) {
+          for (const [key, run] of groups) {
+            this.st.pinnedHeads.set(key, headAfter(run, pinnedBefore.get(key) ?? genesisHead()));
+          }
         }
-      }
-      this.commit();
+        this.commit();
+      });
 
       report.rows += rows.length;
       report.cursor = next;

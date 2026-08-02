@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Client, HardStopError, ROSTER_CHECKPOINT, decodeWireRow, registrationMessage } from "./client";
 import { INVARIANT_IDS, VIOLATION_CHAIN_WITHHELD, VIOLATION_ROSTER_COVERAGE } from "../invariants/check";
-import { memStore, type WireRow } from "../store/store";
+import { bunDriver } from "../store/driver";
+import { openMemStore } from "../store/open";
+import { sqliteStore } from "../store/sqlite";
+import { memSecretStore, type Store, type WireRow } from "../store/store";
 import { STREAM_COLD, STREAM_HOT, sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, chainKey } from "../wire/chain";
 import { SCHEMA_VERSION, encodeBlobOps, encodeRawBody, type Op } from "../wire/op";
@@ -372,7 +378,7 @@ function seedIngest(srv: FakeServer, n: number, opts: { cold?: boolean; corruptA
 }
 
 async function loggedIn(srv: FakeServer, writerId?: string): Promise<Client> {
-  const c = new Client({ store: memStore(), server: srv.url, ...(writerId === undefined ? {} : { writerId }) });
+  const c = new Client({ store: openMemStore(), server: srv.url, ...(writerId === undefined ? {} : { writerId }) });
   await c.login("apple", "dev:alice");
   return c;
 }
@@ -661,7 +667,7 @@ describe("enroll", () => {
   // module, so every other test stays green while the state file changes format
   // under an already-enrolled device.
   test("a minted writer key is stored as unpadded base64url, the JWK encoding", () => {
-    const store = memStore();
+    const store = openMemStore();
     const c = new Client({ store, server: "http://127.0.0.1:1" });
     const pub = c.ensureWriterKey("dev-a");
     expect(pub).toHaveLength(32);
@@ -679,10 +685,61 @@ describe("enroll", () => {
 });
 
 describe("state", () => {
+  // `pull` step 4 used to be ONE write, because the rows lived inside the
+  // state. Splitting the log out split the write, so the two halves are wrapped
+  // in `Store.transaction` — and this is what that buys. A save that fails
+  // takes the rows with it, so the next run resumes from the same cursor over
+  // the same page.
+  //
+  // The failure this rules out is not "some rows are missing": it is a store
+  // holding rows ABOVE its saved cursor, which makes the next pull re-serve
+  // rows the fold has already consumed and the replay ordering guard refuse
+  // them. Measured, not assumed — this test failed exactly that way before the
+  // transaction went in.
+  //
+  // The store is SQLite explicitly, not `openMemStore()`: it is the phone's
+  // store, it is the only one that can actually be atomic, and `memStore.load()`
+  // hands back the very object the client mutates, so an unsaved cursor would
+  // read as saved.
+  test("a pull whose save fails stores neither the rows nor the cursor", async () => {
+    const srv = serve();
+    seedIngest(srv, 3);
+    const inner = sqliteStore(bunDriver(join(mkdtempSync(join(tmpdir(), "ledger-crash-")), "p.db")), {
+      secrets: memSecretStore(),
+    });
+    let fail = false;
+    const store: Store = {
+      get location() {
+        return inner.location;
+      },
+      load: () => inner.load(),
+      save: (s) => {
+        if (fail) throw new Error("simulated crash: the state could not be saved");
+        inner.save(s);
+      },
+      rows: () => inner.rows(),
+      transaction: (fn) => inner.transaction(fn),
+    };
+    const c = new Client({ store, server: srv.url });
+    await c.login("apple", "dev:alice");
+
+    fail = true;
+    await expect(c.pull()).rejects.toThrow(/simulated crash/);
+    expect(inner.rows().count(STREAM_HOT)).toBe(0);
+    expect(inner.load().cursors.hot).toBe(0n);
+
+    // …and the resume: the next run pulls the same page, once.
+    fail = false;
+    const again = new Client({ store, server: srv.url });
+    await again.pull();
+    expect(inner.rows().count(STREAM_HOT)).toBe(3);
+    expect(inner.load().cursors.hot).toBe(3n);
+  });
+
   test("a hard stop leaves the store byte-identical to what it was", async () => {
     const srv = serve();
     seedIngest(srv, 2);
-    const store = memStore();
+    const store = openMemStore();
     const c = new Client({ store, server: srv.url });
     await c.login("apple", "dev:alice");
     await c.pull();
