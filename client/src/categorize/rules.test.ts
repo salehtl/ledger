@@ -355,16 +355,14 @@ test("the subject is bounded to MAX_SUBJECT_RUNES before any pattern touches it"
   expect(subjectOf(past).length).toBe(MAX_SUBJECT_RUNES);
 });
 
-test("a legal regex at the subject bound does not blow up", () => {
-  // A blowup detector, not a benchmark: the ceiling is thousands of times the
-  // measured cost, so it cannot fail on a loaded box, and an exponential
-  // regression takes minutes rather than milliseconds.
+test("a legal regex runs against a full-length subject", () => {
+  // 0.7 ms in Bun 1.3.14 at n = 512 (recorded, not asserted: a wall-clock
+  // ceiling in this suite fails on a busy box and measures the box rather than
+  // the code -- the cost policy is asserted structurally below instead).
   const p = prepare([rule({ pattern: "(?:[a-z]{8}){8}[a-z]+z", category: "x", match: "regex" })], []);
   expect(p.defects).toEqual([]);
-  const subject = "a".repeat(MAX_SUBJECT_RUNES);
-  const started = Date.now();
-  expect(categorize(subject, p)).toEqual(none);
-  expect(Date.now() - started).toBeLessThan(2000);
+  expect(categorize("a".repeat(MAX_SUBJECT_RUNES), p)).toEqual(none);
+  expect(categorize("a".repeat(70) + "z", p).category).toBe("x");
 });
 
 // ---------------------------------------------------------------------------
@@ -415,10 +413,14 @@ test("the cost scanner is not fooled by escapes or character classes", () => {
   expect(nestedVariableRepetition("(?:a{4}){4}")).toBe(false);
 });
 
-test("the previously catastrophic pattern cannot cost a pass anything, because it never runs", () => {
+test("the catastrophic pattern cannot cost a pass anything, because it never runs", () => {
+  // Measured at 6,327 ms for ONE match in Bun 1.3.14 -- and 5,986 ms against a
+  // 32-rune subject, so the blowup is in the repeat structure and shrinking the
+  // subject does not tame it. The pattern is therefore never compiled and never
+  // run, which is asserted structurally: timing it here would put a
+  // six-second regex in the suite to prove it is not there.
   const p = prepare([rule({ pattern: "^(?:(?:[a-z]{1,4}){4}){4}z$", category: "x", match: "regex" })], []);
-  const started = Date.now();
+  expect(p.rules).toHaveLength(0);
+  expect(p.defects[0]?.code).toBe("regex_nested_variable_repetition");
   expect(categorize("a".repeat(MAX_SUBJECT_RUNES), p)).toEqual(none);
-  // 6.3 seconds if it ran; a few microseconds because it does not.
-  expect(Date.now() - started).toBeLessThan(1000);
 });
