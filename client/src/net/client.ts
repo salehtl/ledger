@@ -52,7 +52,7 @@ import {
   type Violation,
   type Writer,
 } from "../invariants/check";
-import { storedOps, storedRows } from "../invariants/source";
+import { discardingOps, storedOps, storedRows } from "../invariants/source";
 import { escapableDuringPush } from "../invariants/surface";
 import { fold, foldBlobs, type LogEntry } from "../replay/replay";
 import { emptyState, type State } from "../replay/state";
@@ -747,16 +747,23 @@ export class Client {
     const ops = storedOps(this.rowStore, this.userId, decodeWireRow);
 
     // The state is folded a chunk at a time and the ops each chunk produced are
-    // DISCARDED (`applyRows` needs somewhere to put them; that somewhere is
-    // truncated per chunk). `materialize()` returns them instead, which is what
-    // makes it the array this method no longer builds.
+    // DISCARDED — `applyRows` needs somewhere to put them, and that somewhere
+    // keeps nothing. `materialize()` returns them instead, which is what makes
+    // it the array this method no longer builds.
+    //
+    // {@link discardingOps} rather than an array truncated between chunks. Both
+    // hold one chunk at a time, but the truncating version puts the property in
+    // a LINE inside a sync function — deletable, and invisible to every
+    // instrument, because the array dies at return either way and nothing can
+    // reach a sync function's locals mid-run. Deleting `spent.length = 0` was
+    // this task's one surviving mutant for exactly that reason. A named sink
+    // moves the property somewhere a test can hold it: `stream.test.ts` pins
+    // that this thing keeps nothing.
     const state = emptyState();
-    const spent: LogEntry[] = [];
+    const spent = discardingOps();
     eachRowChunk(this.rowStore, STREAM_HOT, (chunk) => {
-      spent.length = 0;
       applyRows(state, spent, this.userId, chunk.map(decodeWireRow));
     });
-    spent.length = 0;
     state.cursors.cold = this.st.cursors.cold;
 
     // The last row's seq, without decoding a blob to get it: I1 compares `next`

@@ -22,7 +22,7 @@ import { sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, type Head } from "../wire/chain";
 import { encodeBlobOps, type Op } from "../wire/op";
 import { arrayChunks, checkAll, checkAllStream, type CheckInput, type Chunks, type SyncRow, type Violation } from "./check";
-import { storedOps, storedRows } from "./source";
+import { discardingOps, storedOps, storedRows } from "./source";
 import type { LogEntry } from "../replay/replay";
 import type { WireRow } from "../store/store";
 
@@ -211,129 +211,148 @@ test("the poisoning fixture would CATCH a consumer that retains chunks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Bounded memory — measured, with the instrument validated
+// 3. Bounded memory — measured by REACHABILITY, never by the clock
+//
+// # Why this is not a byte count, and never a duration
+//
+// The first version of this section measured live `external` bytes across an
+// 8 MB corpus: 500 sealed 16 KiB blobs, regenerated on every one of the
+// checker's passes because a re-iterable source may not cache. That is ~90 MB of
+// gzip-and-seal work, and it read **1.7 s on an idle box and 7.5 s at load 9** —
+// past bun's 5 s per-test ceiling, so `v2-check.sh` exited 1 on a machine that
+// was merely busy.
+//
+// Raising the ceiling would have been the wrong fix twice over. This repo
+// already carries one wall-clock limit (`replay/fx.test.ts`) under a standing
+// rule not to raise it, because a 5,708 ms reading there was contention and
+// raising it would have erased the signal; a second one turns "the gate is red"
+// into background noise, which is how real failures get waved through. And a
+// duration was never the property anyway: how long a fold takes is a fact about
+// the machine, while what it RETAINS is a fact about the algorithm.
+//
+// So the instrument is a weak reference. A blob handed to the checker that is
+// still alive after `Bun.gc(true)` is a blob something still holds — which is
+// the same answer on a loaded two-core box as on an idle one, and costs sixty
+// small blobs instead of five hundred large ones.
 // ---------------------------------------------------------------------------
 
 /**
- * Live BYTES held in typed arrays, after a forced full collection.
+ * Hands `rows` out a chunk at a time as FRESH copies, weakly references every
+ * blob it hands over, and samples how many are still alive at the end of each
+ * pass.
  *
- * `external`, not `heapUsed`: a `Uint8Array`'s backing store is not in the JS
- * heap, so `heapUsed` reports **zero** for 8 MB of held blobs — which is how an
- * earlier draft of this test managed to "measure" memory while being blind to
- * the only thing on the heap that is measured in megabytes. Verified both ways
- * below: the array arm must show the log it holds.
+ * Three decisions, each of which a measurement here got wrong first:
  *
- * Two collections, because one leaves floaters.
+ *  - **Copies, not the fixture's own rows.** `rows` stays alive for the whole
+ *    test, so weak references into it could never be collected and the answer
+ *    would be "everything survives" whatever the consumer did. What is measured
+ *    is what the CONSUMER kept of what it was given. Copying also means the
+ *    corpus is sealed once instead of once per pass, which is most of why this
+ *    is now milliseconds rather than seconds.
+ *  - **The peak, sampled DURING the run, not the residue after it.** A consumer
+ *    that accumulates every chunk into a local drops the whole array when it
+ *    returns, so an after-the-fact count reports zero and calls it bounded. That
+ *    exact mutant (`checkChain` keeping every row instead of 32 bytes of hash)
+ *    survived the post-run version of this test and is killed by this one:
+ *    honest peaks at one chunk, the retainer at the whole log.
+ *  - **`Bun.gc(true)` twice, once per pass.** One collection leaves floaters,
+ *    and one sample per chunk boundary cost 4 s of forced collections — which
+ *    is how a structural assertion turns back into the wall-clock one it
+ *    replaced. Measured over three runs: 20-21 for a 60-row log and 21-40 for a
+ *    240-row one, against 60 and 240 for a consumer that accumulates.
  */
-function liveBytes(): number {
-  Bun.gc(true);
-  Bun.gc(true);
-  return (process.memoryUsage() as unknown as { external: number }).external;
-}
-
-test("a whole-log check holds a chunk, not the log — and the measurement can see the difference", () => {
-  // 500 rows on the 16 KiB rung is ~8 MB of blob. Small next to the operator's
-  // 3,683-message history at up to 1 MiB a blob, and already several times what
-  // any chunk holds.
-  //
-  // What is measured is the live byte count after a forced collection (see
-  // {@link liveBytes}) — not `heapUsed`, which counts garbage the collector has
-  // not reached AND excludes typed-array storage entirely. It is taken at the
-  // top of the stack rather than mid-pass, because Bun's collector scans the
-  // stack conservatively and a sample inside the checker's own frames keeps that
-  // pass's garbage alive. The transient peak is the test below, which counts
-  // survivors instead.
-  const N = 500;
-  const CHUNK = 50;
-  const PAD = 12_000; // 12 KB of incompressible payload: the 16 KiB rung
-  const bytes = corpus(1, "dev-a", "hot", PAD).reduce((n, r) => n + r.blob.length, 0) * N;
-  expect(bytes).toBeGreaterThan(6_000_000);
-
-  const base = liveBytes();
-
-  // The streaming arm: rows are generated a chunk at a time and nothing outside
-  // the callback ever holds one.
-  const streamedSource: Chunks<SyncRow> = {
-    each(fn) {
-      let head: Head = { counter: 0n, hash: ZERO_HASH };
-      let k = 1;
-      while (k <= N) {
-        const chunk: SyncRow[] = [];
-        for (let j = 0; j < CHUNK && k <= N; j++, k++) {
-          const counter = BigInt(k);
-          const blob = sealBlob(
-            { userId: USER, stream: "hot", writerId: "dev-a", writerCounter: counter },
-            encodeBlobOps(batch(k, PAD)),
-          );
-          const blobHash = chainHash(head.hash, blob);
-          chunk.push({
-            seq: BigInt(k),
-            stream: "hot",
-            writer_id: "dev-a",
-            writer_counter: counter,
-            prev_hash: head.hash,
-            blob_hash: blobHash,
-            blob,
-            size_bucket: blob.length,
-          });
-          head = { counter, hash: blobHash };
-        }
-        fn(chunk);
-      }
-    },
+function tracked(rows: readonly SyncRow[], size: number): {
+  src: Chunks<SyncRow>;
+  /** The most blobs simultaneously reachable at the end of any one pass. */
+  peak: () => number;
+  handed: () => number;
+} {
+  const refs: WeakRef<Uint8Array>[] = [];
+  let peak = 0;
+  const sample = (): void => {
+    Bun.gc(true);
+    Bun.gc(true);
+    const alive = refs.filter((w) => w.deref() !== undefined).length;
+    if (alive > peak) peak = alive;
   };
-
-  const streamedReport = checkAllStream({
-    ...inputFor([], []),
-    next: BigInt(N),
-    rows: streamedSource,
-    ops: arrayChunks([]),
-  });
-  expect(streamedReport.filter((v) => v.severity === "hard_stop")).toEqual([]);
-  const streamedLive = liveBytes() - base;
-
-  // The array arm: the same log, materialized, which is what `Client.check()`
-  // did before this task. It must show the retention, or the assertion below is
-  // measuring nothing at all.
-  const rows = corpus(N, "dev-a", "hot", PAD);
-  const arrayReport = checkAll(inputFor(rows, []));
-  const arrayLive = liveBytes() - base;
-  expect(arrayReport.filter((v) => v.severity === "hard_stop")).toEqual([]);
-  expect(rows.length).toBe(N); // `rows` is still referenced here, which is the point
-
-  // The instrument can see a held log...
-  expect(arrayLive).toBeGreaterThan(bytes / 2);
-  // ...and the streaming arm does not hold one. This is the whole claim: the
-  // array path keeps every blob alive for as long as the session lasts, which is
-  // the shape that took the Phase 0 build past 500 MB and froze it.
-  expect(streamedLive).toBeLessThan(bytes / 8);
-});
-
-test("no retention GROWS with the log: what survives a run is bounded by a chunk, not by n", () => {
-  // The complement of the peak measurement. Weak references to every blob the
-  // source ever handed out; after the run and a forced GC, the ones still alive
-  // are what the checker kept. That number must not scale with the corpus.
-  const survivors = (n: number): number => {
-    const refs: WeakRef<Uint8Array>[] = [];
-    const src: Chunks<SyncRow> = {
+  return {
+    src: {
       each(fn) {
-        const all = corpus(n);
-        for (let k = 0; k < all.length; k += 100) {
-          const chunk = all.slice(k, k + 100);
+        for (let k = 0; k < rows.length; k += size) {
+          const chunk = rows.slice(k, k + size).map((r) => ({ ...r, blob: Uint8Array.from(r.blob) }));
           for (const r of chunk) refs.push(new WeakRef(r.blob));
           fn(chunk);
         }
+        // Once per PASS rather than once per chunk. A consumer that accumulates
+        // still holds everything when its pass ends — that is where its peak is
+        // — so this catches it, at a twelfth of the collections. Forcing a full
+        // GC at every boundary took the file to 4 s, which is how a structural
+        // assertion quietly turns back into a wall-clock one.
+        sample();
       },
-    };
-    checkAllStream({ ...inputFor([], []), next: BigInt(n), rows: src, ops: arrayChunks([]) });
-    Bun.gc(true);
-    Bun.gc(true);
-    return refs.filter((w) => w.deref() !== undefined).length;
+    },
+    peak: () => peak,
+    handed: () => refs.length,
   };
-  const small = survivors(200);
-  const large = survivors(800);
-  // Four times the log, no more than one extra chunk's worth of survivors.
-  expect(large).toBeLessThanOrEqual(small + 100);
+}
+
+test("a whole-log check holds a chunk, not the log — and the instrument can see the difference", () => {
+  const N = 120;
+  const CHUNK = 10;
+  const rows = corpus(N);
+
+  // Arm A: the checker. Every one of its passes gets its own copies, and the
+  // peak is taken across all of them.
+  const streamed = tracked(rows, CHUNK);
+  const report = checkAllStream({ ...inputFor([], []), next: BigInt(N), rows: streamed.src, ops: arrayChunks([]) });
+  expect(report.filter((v) => v.severity === "hard_stop")).toEqual([]);
+  expect(streamed.handed()).toBeGreaterThanOrEqual(N); // it really did walk the log, repeatedly
+
+  // Arm B: the CALIBRATION — the same source, the same instrument, and a
+  // consumer that accumulates instead of consuming. This is the `all()` shape
+  // `RowStore` was refactored to remove and what `Client.check()` used to do.
+  // Without this arm, arm A is a memory assertion that has never been seen to
+  // fail; with it, the instrument is shown to report retention when there is
+  // some.
+  const held = tracked(rows, CHUNK);
+  const accumulated: SyncRow[] = [];
+  held.src.each((chunk) => {
+    for (const r of chunk) accumulated.push(r);
+  });
+  expect(accumulated).toHaveLength(N);
+  expect(held.peak()).toBe(N);
+
+  // And the checker does not. The bound is three chunks against a hundred and
+  // twenty rows — a tenfold margin over arm B, with room for the one artefact
+  // this instrument does have: Bun's collector scans the stack conservatively,
+  // so the chunk BEFORE the current one is sometimes still reachable from a
+  // stale slot. Measured, the honest path reads one chunk at every boundary of
+  // every pass and occasionally two; a retainer reads the whole log.
+  //
+  // The claim is about REACHABILITY, so it reads the same on a loaded two-core
+  // box as on an idle one — which is the entire reason this is not a byte count
+  // over a corpus big enough to need seconds of sealing.
+  expect(streamed.peak()).toBeLessThanOrEqual(3 * CHUNK);
+});
+
+test("no retention GROWS with the log: what is reachable at once is bounded by a chunk, not by n", () => {
+  // The complement: the test above pins the level, this pins the SLOPE.
+  // Quadruple the log and the peak must not follow it — which is the difference
+  // between "holds a chunk" and "holds a fraction of the log".
+  const CHUNK = 20;
+  const peak = (n: number): number => {
+    const t = tracked(corpus(n), CHUNK);
+    checkAllStream({ ...inputFor([], []), next: BigInt(n), rows: t.src, ops: arrayChunks([]) });
+    expect(t.handed()).toBeGreaterThanOrEqual(n);
+    return t.peak();
+  };
+  const small = peak(60);
+  const large = peak(240);
+  if (process.env["PEAKDBG"] === "1") console.log("PEAKS", small, large);
+  // Quadruple the log: the peak must not follow it. A consumer that accumulated
+  // would read 60 and 240 here, failing both.
+  expect(large - small).toBeLessThanOrEqual(2 * CHUNK);
+  expect(large).toBeLessThanOrEqual(3 * CHUNK);
 });
 
 // ---------------------------------------------------------------------------
@@ -394,6 +413,23 @@ test("storedOps sets aside exactly what the fold sets aside, and never invents a
     for (const e of chunk) ops.push(e);
   });
   expect(ops.map((e) => Number(e.seq))).toEqual([1, 2, 5, 6]);
+});
+
+test("the fold's op sink keeps nothing, which is what makes check() a state fold and not a copy", () => {
+  // `Client.check()` folds the log for its state and re-derives the ops lazily,
+  // so the fold's op list must not accumulate a second whole-log copy. That was
+  // the one property in this task no instrument could reach — an array
+  // truncated between chunks inside a sync method reads as zero afterwards
+  // whether or not the truncation is there. Naming the sink is what makes it
+  // assertable, and this is the assertion.
+  const sink = discardingOps();
+  const entry = { op: { op_id: "op-1" }, seq: 1n, writer_id: "dev-a" } as unknown as LogEntry;
+  expect(sink.push(entry)).toBe(0);
+  sink.push(entry, entry);
+  expect(sink).toHaveLength(0);
+  expect([...sink]).toEqual([]);
+  // And it is still a real array, because `applyRows` takes one.
+  expect(Array.isArray(sink)).toBe(true);
 });
 
 test("Client.check() runs the streaming path end to end over a real store", () => {
