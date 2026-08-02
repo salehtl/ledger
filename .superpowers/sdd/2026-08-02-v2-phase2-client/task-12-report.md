@@ -351,3 +351,154 @@ the component, per that file's own rule. Nothing else in Task 12 is outstanding.
 | `client/src/invariants/surface.test.ts` | **new** — I11 has a surface; the two conditions never share one; ranking; the escape's `every`/allow-list boundaries; the three lanes; totality over every id and kind |
 | `client/src/net/client.ts` | `check()` streams; `syncForAttestation` uses the shared escape predicate |
 | `client/src/cli/main.ts` | `printViolations` prints the halt block and the grouped Integrity list; `--json` carries `surface` |
+
+---
+
+# Addendum — the wall-clock ceiling, the last mutant, and the two screens
+
+Three follow-ups from the coordinator, in the order they were raised.
+
+## 1. `stream.test.ts` was failing the gate under load. It is now structural.
+
+**The reading.** The memory measurement took **1.7 s on an idle box and 7.5 s at
+load 9** — past bun's 5 s per-test ceiling, so `v2-check.sh` exited 1 on a
+machine that was merely busy. Task 13's agent measured it failing 3/3 in
+isolation on a 2-core box at load 6.7.
+
+**Why not raise the ceiling.** This repo already carries one wall-clock limit
+(`replay/fx.test.ts`) under a standing rule not to raise it, because the reading
+that broke it was contention and raising it would have erased the signal. A
+second one turns "the gate is red" into background noise, which is how real
+failures get waved through. And a duration was never the property anyway: how
+long a fold takes is a fact about the machine; what it *retains* is a fact about
+the algorithm.
+
+**What replaced it.** A weak reference. `tracked(rows, size)` hands the checker
+fresh copies a chunk at a time, weakly holds every blob it hands over, and counts
+how many survive a forced collection at the end of each pass. What is asserted is
+**reachability**, which reads the same on a loaded two-core box as on an idle
+one.
+
+| | before | after |
+|---|---|---|
+| corpus | 500 blobs × 16 KiB, re-sealed on every pass (~90 MB of gzip) | 120 blobs × 1 KiB, sealed once and copied |
+| assertion | live `external` bytes < corpus/8, calibrated by an array arm > corpus/2 | peak reachable ≤ 3 chunks, calibrated by an accumulating consumer that must read the whole log |
+| slowest test | 7.5 s at load 9 (**failed**) | 134 ms |
+| whole file | 4.1 s | ~0.5 s |
+
+**It is strictly stronger, not merely faster.** The byte version sampled *after*
+the run, so a consumer that accumulated every chunk into a local and dropped it
+at return read as zero. `checkChain` keeping every row instead of 32 bytes of
+hash — a real memory defect — **survived** the old test and is **killed** by the
+new one. The calibration arm is kept and sharpened: same source, same instrument,
+a consumer that accumulates, which must read the whole log or the honest arm is
+measuring nothing.
+
+**Two instrument findings, recorded in the file so they are not rediscovered:**
+
+- `process.memoryUsage().heapUsed` reports **zero** for typed arrays in Bun — the
+  first draft measured memory while blind to the only thing on the heap counted
+  in megabytes. (`external` is the byte metric; it is no longer needed.)
+- A sample taken **mid-pass** keeps that pass's garbage alive through Bun's
+  conservative stack scan. Measured directly: adding a debug array to the
+  sampler changed the readings (51/100 → 50/50), which is the signature of stack
+  layout rather than of retention. The sampler therefore fires **once per pass**,
+  at the point where an accumulating consumer holds the most — which also cut 4 s
+  of forced collections.
+
+**No wall-clock guard was needed anywhere**, so none is gated behind an env flag.
+`PEAKDBG=1` echoes the two peak readings for re-measurement; it asserts nothing.
+
+Three consecutive runs at load 7.8–9.1: green, green, green.
+
+## 2. The last mutant: closed, by making it unrepresentable
+
+The survivor was deleting `spent.length = 0` from `Client.check()`'s fold. Task 8
+has landed and does expose a seam — `materializeChunked({ keepOps: false })`,
+with its own retention test in `engine.test.ts` — but it is **async**, and
+`Client.check()` is synchronous with **eleven synchronous call sites across three
+other sessions' files** (`net/client.test.ts`, `outbox/outbox.test.ts`,
+`store/store.test.ts`). Converting `check()` would edit all of them mid-flight.
+Inappropriate, so the seam was not used.
+
+Instead the property moved somewhere a test can hold it. `discardingOps()` in
+`invariants/source.ts` is a `LogEntry[]` whose `push` keeps nothing, and
+`check()` folds into that. A truncation inside a sync method is a deletable line
+that no instrument can reach — the array dies at return either way. An exported
+sink is a contract:
+
+| mutant | before | now |
+|---|---|---|
+| the fold accumulates the whole log | SURVIVED | **KILLED** (`the fold's op sink keeps nothing`) |
+
+One residue, stated plainly: swapping `discardingOps()` for a plain `[]` **at the
+call site** is still invisible, because that is the same unobservable-locals
+problem one level up. It is a deliberate substitution rather than a deletion, and
+closing it needs the async seam and the eleven call sites above.
+
+## 3. The two screens are real
+
+`app/` exists now, so `HaltBanner.tsx` and `screens/settings/IntegrityScreen.tsx`
+are written, tested and catalogued in `app/src/components/README.md`. Both hold
+**no policy**: they take `Halt` and `Surface` from `invariants/surface.ts` and
+render them; neither switches on an invariant id and neither builds a sentence.
+
+The fixtures are **real `surface()` output**, so the chain under test is
+violation → lane → copy → glass. 13 render tests under `jest-expo`, all passing
+(app suite: 28 jest, 231 bun).
+
+Five deliberate defects, **five killed**:
+
+| mutant | caught by |
+|---|---|
+| the banner renders `halt.kind` where `halt.title` belongs | no invariant id or condition name may reach the glass |
+| the banner opens its details by default | the details are one tap away |
+| the co-occurring halt is dropped | when both `I11` conditions fire, the other is still named |
+| routine notices are hidden | routine notices are present, quiet, and last |
+| the set-aside row is rendered as a stop | an unreadable blob is a warning row, never a wall |
+
+The first of those is the one worth keeping: rendering the *id* passed a "the two
+conditions differ" test, because `not_vouched_for` and `chain_withheld` differ
+too. The test now asserts the copy itself.
+
+**What is still not wired, precisely.** `app/` has no `Client` yet — `Navigation.tsx`
+says so in as many words ("Task 8 constructs the `Client` … until then the screen
+says so on the glass") — so nothing in the app computes a `Surface` to hand these
+components. The remaining hop is three lines at whatever root gains the engine:
+
+```tsx
+const s = surface({ violations, unreadable: state.unreadable, error });
+if (s.halt !== null) return <HaltBanner halt={s.halt} also={s.halts.slice(1)} />;
+```
+
+Writing that today would mean inventing the app's `Client` inside another
+session's live tree. The components and their contract are done; the call site
+belongs to whoever lands sync in `app/`.
+
+## Verification (addendum)
+
+- `cd client && bun test src` — 2,206 pass, 0 fail, 25 files.
+- `cd app && npx jest` — 28 pass, 4 suites. `cd app && bun test src` — 231 pass.
+- `cd app && bun run typecheck` — my files clean; one pre-existing error remains
+  in `screens/onboarding/HomeCurrencyScreen.tsx` (Task 14, another session,
+  in-flight).
+- `go clean -testcache && bash scripts/v2-check.sh` at **commit `219e345`**, in a
+  `git archive` export with `client/node_modules` copied in, on a **loaded box**
+  (load average 5.4–6.5 through the run): **`v2-check: OK (go + client +
+  conformance)`**, and the script's OWN exit code captured as `EXIT=0` — not a
+  pipeline's. Client half: **2,246 pass / 0 fail across 28 files**, up from 2,094
+  and monotonically non-decreasing.
+- And the specific regression, deliberately provoked: `stream.test.ts` run three
+  times with eight CPU burners pinned against it — **3/3 green**, where the
+  wall-clock version failed 3/3 at load 6.7.
+
+## Commits (addendum)
+
+| commit | contents |
+|---|---|
+| `8eb1842` | `fix(v2): assert stream boundedness structurally, not by clock` — `stream.test.ts`, `source.ts`, `client.ts` |
+| `219e345` | `feat(v2): the halt banner and the integrity screen` — `app/src/components/HaltBanner*`, `app/src/screens/settings/IntegrityScreen*`, `README.md` |
+
+`client/src/net/client.ts` was again reconstructed as HEAD + my three hunks only:
+the worktree copy also carried another session's uncommitted doc-comment edit,
+which is not in my commit.
