@@ -1,7 +1,8 @@
 # Task 11 — the writer: outbox, offline queue, chains, checkpoints
 
 **Status:** complete.
-**Branch:** `v2`. **Commit:** see "Commits" below.
+**Branch:** `v2`. **Commit:** `ebadbf1` — "feat(v2): the outbox — page
+it, and make an interrupted push survivable" (parent `c777f11`).
 
 ---
 
@@ -249,7 +250,8 @@ workaround.
 ## Mutation testing
 
 11 deliberate defects. Run: `bun test src/outbox/ src/net/client.test.ts
-src/store/store.test.ts` (127 tests at the fixed tree).
+src/store/store.test.ts` — 125 tests green at the fixed tree (26 outbox + 36
+`client.test.ts` + 63 `store.test.ts`).
 
 | # | mutation | result |
 |---|---|---|
@@ -333,11 +335,70 @@ built through a temporary index from `HEAD` + my paths only, per AGENT-RULES, an
 I did not touch `client/src/invariants/` (Task 12) or `client/src/net/engine.ts`
 (Task 8). The outbox lives in its own directory for that reason.
 
+### Why `client/src/outbox/` and not `app/src/sync/`
+
+The plan names `app/src/sync/outbox.ts`; the dispatch scopes this task to
+`client/src/` writer paths and gives `app/` to another session. Both point the
+same way once you look at what the code is: the fixes are in `Client.push` and
+`ClientState`, and `client/README.md` already says the app **imports** the
+client's protocol logic rather than reimplementing it ("Import `Client`; do not
+fork it" — reimplementing the ordering re-opens all four of Phase 1's review
+rounds). An outbox in `app/` would either be a second copy of that logic or a
+thin wrapper over the same `Client`, so it belongs beside it. **No file under
+`app/` was touched**, and `app/` picks this up the same way it picks up `wire/`,
+`replay/` and `invariants/`.
+
 ---
 
 ## Verification
 
-See "Commits" and "Gate" sections appended below.
+`go clean -testcache && bash scripts/v2-check.sh`, run in a `git archive` export
+of **`ebadbf1`** at `/var/tmp/ledger-task11-export` with `client/node_modules`
+copied in. The script's own exit code was captured (`echo "GATE EXIT: $?"`),
+not a pipeline's.
+
+```
+go vet ./internal/v2/... ./cmd/ledgerd        clean
+go test -count=1 …                            27 packages ok, 0 FAIL
+cd client && bun run typecheck                clean
+cd client && bun test                         2243 pass, 1 fail, 0 skip
+                                              Ran 2244 tests across 28 files
+GATE EXIT: 1
+```
+
+**Zero skips across 28 files**, so the two Postgres-backed e2e files
+(`test/e2e/roundtrip.test.ts`, `test/e2e/exit.test.ts`) actually **ran** rather
+than self-skipping — the gate exported `LEDGER_TEST_POSTGRES_URL` as intended.
+
+**The single failure is not mine and predates this commit.**
+`client/src/invariants/stream.test.ts` — `"a whole-log check holds a chunk, not
+the log — and the measurement can see the difference"` — is a `liveBytes()` GC
+measurement in Task 12's file (landed at `306a3e9`). It fails with a 5 s timeout.
+Proved pre-existing rather than asserted: a separate `git archive` export of
+**`c777f11`**, the commit immediately before mine, fails the same test the same
+way (`12 pass, 1 fail`, "this test timed out after 5000ms"). It also fails when
+run alone, so it is not contention from my suite.
+
+So `v2-check` exits 1 on a defect in another session's file. Everything this task
+owns is green. Suite-level: the client suite grew from 2,229 collected (my
+pre-change local run) to 2,244; **no pre-existing test was removed, skipped or
+weakened** — one was adapted in place with every assertion kept (see below).
+
+Task-scoped runs, all green at the committed tree:
+
+```
+cd client && bun test src/outbox/                 26 pass, 0 fail  [~33 s]
+cd client && bun test src/net/client.test.ts      36 pass, 0 fail
+cd client && bun test src/store/store.test.ts     63 pass, 0 fail
+```
+
+### A note on where the export lives
+
+The first gate run died at the `client/node_modules` check despite the directory
+existing, with `sh: 0: getcwd() failed: No such file or directory` on the next
+line — the session scratchpad the export sat in was replaced underneath the
+running shell. Re-run from `/var/tmp/ledger-task11-export`, which is stable
+across calls. Worth knowing for any long-running build in this environment.
 
 ## Known-not-mine
 
