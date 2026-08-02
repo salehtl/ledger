@@ -827,11 +827,15 @@ func txnPayloadOf(res norm.Result, tr tierResult, receivedAt time.Time) (txnPayl
 		// property of today's extractors.
 		return txnPayload{}, errors.New("ingest: extracted a negative amount")
 	}
+	postedWire, err := wireTime(posted)
+	if err != nil {
+		return txnPayload{}, fmt.Errorf("ingest: posted_at: %w", err)
+	}
 	return txnPayload{
 		AmountMinor:       strconv.FormatInt(tr.ext.AmountMinor, 10),
 		Currency:          tr.ext.Currency,
 		Direction:         tr.ext.Direction,
-		PostedAt:          wireTime(posted),
+		PostedAt:          postedWire,
 		MerchantRaw:       tr.ext.Merchant,
 		Last4:             tr.ext.Last4,
 		IsTransfer:        tr.ext.IsTransfer,
@@ -864,8 +868,21 @@ func templateProvenanceVersion(tr tierResult) int {
 
 // wireTime renders an instant in the one form both executors read identically:
 // UTC, millisecond precision, RFC3339 with a literal Z.
-func wireTime(t time.Time) string {
-	return t.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
+//
+// It delegates to [oplog.CanonicalWireTime] rather than restating that
+// expression, which is what it used to do. The expression was right and the
+// restatement was the bug: it had no closure check, so an instant outside years
+// 0000-9999 rendered as Go's five-digit spelling ("10000-01-01T23:58:59Z")
+// where the TypeScript executor's `canonicalTime` writes the ISO expanded-year
+// one ("+010000-01-01T23:58:59.000Z"). A second renderer is a second spelling.
+//
+// Unreachable today, and guarded anyway: every posted_at source is zoneless and
+// four-digit-year bounded — the forward-header layouts (norm.fwdDateLayouts)
+// and the template layouts (tmpl.goDateLayouts) carry no offset, and receivedAt
+// is the server clock. Adding a layout with a numeric zone reopens it, and that
+// is a template-format change rather than anything this file would notice.
+func wireTime(t time.Time) (string, error) {
+	return oplog.CanonicalWireTime(t)
 }
 
 // ---------------------------------------------------------------------------

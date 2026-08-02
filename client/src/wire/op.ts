@@ -324,9 +324,42 @@ export function parseInstantMs(s: unknown): number {
  * truncated to milliseconds. Mirrors `oplog.canonicalTime`, and is applied on
  * ENCODE and on DECODE for the reason Go states — encode-side truncation alone
  * only holds while every writer is one encoder, and there are two.
+ *
+ * # Canonicalisation is CLOSED over the wire grammar
+ *
+ * {@link RFC3339} admits a four-digit year with a UTC offset of up to ±23:59, so
+ * `9999-12-31T23:59:59-23:59` is a wire-legal timestamp whose UTC value lands in
+ * year 10000 — and `0000-01-01T00:00:00+00:01` is its mirror, landing in year
+ * −1. `toISOString` writes both in ISO *expanded-year* form
+ * (`+010000-01-01T23:58:59.000Z`, `-000001-12-31T23:59:00.000Z`), which this
+ * grammar refuses, because it has exactly four year digits in order to match Go.
+ *
+ * Go spells the same overflow differently — `10000-01-01T23:58:59Z` and
+ * `-0001-12-31T23:59:00Z` — so a canonical form in this range is one the two
+ * executors would fold to different bytes. It was also an *acceptance*
+ * divergence, which is the worse half: Go's decoder read those two strings
+ * happily while this one set the blob aside, so an op could be in one executor's
+ * log and in neither device's. Both sides now refuse them, at the same point,
+ * by the same rule; `conformance/op/manifest.json` pins the pair.
+ *
+ * Refusing here rather than downstream is what makes the refusal a RULE. It was
+ * already refused in practice — `decodeOp` canonicalises and then `validateOp`
+ * re-parses the result — but only as an emergent consequence of that ordering,
+ * and `replay.ts`'s `instant()` had to write the same round trip out by hand for
+ * `posted_at` because this function would hand back a string it could not read.
+ *
+ * The check is the round trip, not a year-range test, so it cannot drift from
+ * whatever `toISOString` actually produces.
  */
 export function canonicalTime(s: string): string {
-  return new Date(parseInstantMs(s)).toISOString();
+  const canonical = new Date(parseInstantMs(s)).toISOString();
+  if (!RFC3339.test(canonical)) {
+    throw new BlobDecodeError(
+      `timestamp ${JSON.stringify(s)} canonicalises to ${JSON.stringify(canonical)}, ` +
+        "which is outside the four-digit-year range this wire format carries",
+    );
+  }
+  return canonical;
 }
 
 /** Epoch milliseconds of an op's authored_at. Compare INSTANTS, never strings. */
@@ -539,7 +572,12 @@ export function validateOp(o: Op): void {
   if (o.v < 1) throw new Error(`version ${o.v} is not valid`);
   if (!isOpType(o.type)) throw new Error(`unknown type ${JSON.stringify(o.type)}`);
   if (typeof o.op_id !== "string" || o.op_id === "") throw new Error("op_id is empty");
-  parseInstantMs(o.authored_at); // throws on a missing, malformed or zero timestamp
+  // Throws on a missing, malformed or zero timestamp — and on one whose
+  // canonical form is not itself a wire timestamp, which is what `Op.Validate`
+  // checks on the Go side. `encodeBlobOps` validates a caller-built op before
+  // canonicalising it, so without this the refusal would come from the encoder
+  // one line later, unattributed to any op.
+  canonicalTime(o.authored_at);
 
   if (isParentFree(o.type)) {
     if (o.entity !== undefined) throw new Error(`${o.type} is parent-free and must not name an entity`);
@@ -638,7 +676,14 @@ export function decodeRawBody(bytes: Uint8Array): RawBodyRecord {
   if (typeof receivedAt !== "string") {
     throw new BlobDecodeError(`raw body received_at is ${JSON.stringify(receivedAt)}`);
   }
-  parseInstantMs(receivedAt);
+  // Checked as `canonicalTime`, not merely `parseInstantMs`. Go's
+  // `RawBody.UnmarshalJSON` routes received_at through `parseWireTime`, which
+  // refuses a timestamp whose canonical form leaves the four-digit-year grammar
+  // — so a bare instant check here would accept a cold record Go sets aside,
+  // which is the acceptance divergence {@link canonicalTime} exists to close.
+  // The string is RETURNED unchanged, as Go leaves its parsed value unchanged:
+  // canonicalisation is an encode-side rewrite, this is a decode-side refusal.
+  canonicalTime(receivedAt);
   return { ingest_id: ingestID, received_at: receivedAt, raw: decodeBase64Strict(doc["raw_base64"]) };
 }
 

@@ -41,6 +41,20 @@ package oplog
 //     JavaScript's toISOString always pads to three digits, so the two encoders
 //     are byte-different and instant-identical, and only the second is claimed.
 //
+//     That instants-only rule had a hole, and it was live. A timestamp's
+//     canonical FORM can leave the grammar both decoders enforce — the wire
+//     admits a four-digit year with an offset up to ±23:59, so year 10000 and
+//     year −1 are both reachable — and the two languages do not spell the
+//     overflow the same way (10000-01-01T… against +010000-01-01T…). Every
+//     assertion here compared parsed instants, and the divergence is in a string
+//     neither side can parse, so the suite was structurally unable to see it:
+//     Go accepted both boundary values and TypeScript refused them, for as long
+//     as the contract has existed. Each case therefore also carries
+//     expect_canonical_wire — the string THIS executor writes, which the
+//     TypeScript side reads back — and the two boundary values are in
+//     authored_at_rejects. See TestCanonicalTimeIsClosedOverTheWireGrammar and
+//     TestTheExpandedYearRangeIsRefusedByBothExecutors.
+//
 // # What is deliberately NOT asserted
 //
 // That re-sealing a fixture reproduces its stored bytes. Sealing gzips, and
@@ -57,8 +71,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -152,6 +168,21 @@ type opExpect struct {
 type timeCase struct {
 	Wire         string `json:"wire"`
 	ExpectUnixMs string `json:"expect_unix_ms"`
+	// ExpectCanonicalWire is what THIS executor renders the canonical form as:
+	// oplog.CanonicalWireTime, i.e. the string a Go writer puts on the wire.
+	//
+	// It is the one place the manifest pins a timestamp STRING, and the reason
+	// is narrow. The header note is right that the two encoders are byte-
+	// different and only the instant is claimed — Go trims trailing zeros where
+	// toISOString pads to three digits — so this is NOT asserted to equal the
+	// TypeScript rendering. What the TypeScript side asserts is that it can READ
+	// this string, to the same instant: before this field existed, no test on
+	// either side ever handed one executor a timestamp the other had actually
+	// written, so a canonical form outside the shared grammar (year 10000 and
+	// year −1 are both reachable from a wire-legal input) was invisible to the
+	// whole suite. Go's own half is a golden pin: the value must still be what
+	// this build produces, so a change to Go's spelling fails here.
+	ExpectCanonicalWire string `json:"expect_canonical_wire"`
 }
 
 type opManifest struct {
@@ -181,7 +212,9 @@ type opManifest struct {
 	AuthoredAtRejects []string `json:"authored_at_rejects"`
 }
 
-// timeAcceptCases are timestamps both executors must read as the same instant.
+// timeAcceptCases are timestamps both executors must read as the same instant,
+// AND whose canonical form both executors can write and read back (see
+// TestCanonicalTimeIsClosedOverTheWireGrammar).
 var timeAcceptCases = []string{
 	"2026-06-05T10:00:00Z",
 	"2026-06-05T10:00:00.1Z",
@@ -192,6 +225,20 @@ var timeAcceptCases = []string{
 	"2026-06-05T10:00:00+23:59", // the largest offset both accept
 	"2024-02-29T00:00:00Z",      // a real leap day
 	"2000-02-29T00:00:00Z",      // divisible by 400
+
+	// The four-digit-year range, at both ends and just inside. These are the
+	// legal neighbours of the two rejects below: without them "refuses year
+	// 10000" is indistinguishable from "refuses anything near the boundary",
+	// and a fix that clamped the whole millennium would pass.
+	"0000-01-01T00:00:00Z",     // the earliest instant the grammar can express
+	"9999-12-31T23:59:59.999Z", // the latest
+	"0000-02-29T00:00:00Z",     // year 0 IS a leap year: divisible by 400
+	// Offsets that are not a whole or half hour, and the largest NEGATIVE one.
+	// Only +23:59 was pinned, so the sign that actually crosses the upper year
+	// boundary was the untested one.
+	"2026-06-05T10:00:00+05:45", // Nepal
+	"2026-06-05T10:00:00-09:30", // Marquesas
+	"2026-06-05T10:00:00-23:59",
 }
 
 // timeRejectCases are timestamps both executors must refuse. Each was MEASURED
@@ -215,6 +262,28 @@ var timeRejectCases = []string{
 	"2026-06-05",
 	"June 5 2026",
 	"",
+
+	// The expanded-year boundary. These four are the case this file could not
+	// see before, and each one dies if either executor's spelling changes.
+	//
+	// The first two are WIRE-LEGAL by every rule that existed: four-digit year,
+	// offset within ±23:59, real calendar date. Their UTC value lands outside
+	// years 0000-9999, which the grammar cannot express — and the two languages
+	// spell that overflow differently (Go "10000-01-01T23:58:59Z", JavaScript
+	// "+010000-01-01T23:58:59.000Z"). Go used to ACCEPT both and TypeScript to
+	// refuse them, so the op was in one executor's log and in neither device's.
+	"9999-12-31T23:59:59-23:59", // → year 10000
+	"0000-01-01T00:00:00+00:01", // → year −1, the same defect at the bottom
+	// And the two spellings offered back as INPUT. If either executor ever
+	// learns to write one of these, it must not also learn to read it: an
+	// expanded year on the wire is a blob the other executor sets aside.
+	"+010000-01-01T23:58:59.000Z", // JavaScript's spelling
+	"10000-01-01T23:58:59Z",       // Go's
+	"-0001-12-31T23:59:00Z",       // a signed year, written literally
+
+	// The negative twin of the +24:00 case. An offset is bounded at ±23:59 in
+	// both directions, and only the positive bound was pinned.
+	"2026-06-05T10:00:00-24:00",
 }
 
 // ---------------------------------------------------------------------------
@@ -516,8 +585,12 @@ func TestWriteConformanceFixtures(t *testing.T) {
 		Note: "Encoded by internal/v2/oplog TestWriteConformanceFixtures. " +
 			"parent_version is a raw JSON NUMBER on the wire and a decimal string in this manifest; " +
 			"money and counters are decimal strings on the wire. " +
-			"authored_at_cases pin PARSED INSTANTS, never strings: Go's RFC3339Nano trims trailing " +
-			"zeros where JavaScript's toISOString pads to three digits.",
+			"authored_at_cases pin PARSED INSTANTS: Go's RFC3339Nano trims trailing " +
+			"zeros where JavaScript's toISOString pads to three digits, so the two encoders are " +
+			"byte-different and instant-identical. expect_canonical_wire is the one exception — it is " +
+			"the string THIS executor writes, and the TypeScript side asserts it can READ it, which " +
+			"is how a canonical form outside the shared four-digit-year grammar (years 10000 and -1 " +
+			"are both reachable from a wire-legal input) becomes visible to the suite at all.",
 		SchemaVersion:          SchemaVersion,
 		GoldenOpsBase64:        base64.StdEncoding.EncodeToString(ops),
 		GoldenRawBodyBase64:    base64.StdEncoding.EncodeToString(raw),
@@ -555,9 +628,14 @@ func TestWriteConformanceFixtures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", wire, err)
 		}
+		canonical, err := CanonicalWireTime(got[0].AuthoredAt)
+		if err != nil {
+			t.Fatalf("%s: an ACCEPTED timestamp must have a canonical form: %v", wire, err)
+		}
 		opMan.AuthoredAtCases = append(opMan.AuthoredAtCases, timeCase{
-			Wire:         wire,
-			ExpectUnixMs: strconv.FormatInt(got[0].AuthoredAt.UnixMilli(), 10),
+			Wire:                wire,
+			ExpectUnixMs:        strconv.FormatInt(got[0].AuthoredAt.UnixMilli(), 10),
+			ExpectCanonicalWire: canonical,
 		})
 	}
 	// The parent_version asymmetry, encoded by this executor so the other can
@@ -761,9 +839,12 @@ func TestConformanceFixturesAreWhatThisBuildProduces(t *testing.T) {
 	}
 }
 
-// TestOpConformanceManifestMatchesThisBuild does the same for the op wire
-// model: the golden bytes must still encode and decode identically here.
-func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
+// readOpManifest opens the committed op manifest. Shared by the two tests that
+// read it, so a second reader cannot drift into a second copy of the "missing
+// fixture" policy — a missing manifest is a FATAL, never a skip, because a gate
+// that silently disables itself is worse than no gate.
+func readOpManifest(t *testing.T) opManifest {
+	t.Helper()
 	b, err := os.ReadFile(filepath.Join(conformanceDir(), "op", "manifest.json"))
 	if err != nil {
 		t.Fatalf("op manifest is missing (%v); regenerate with %s=1", err, writeFixturesEnv)
@@ -772,6 +853,13 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 	if err := json.Unmarshal(b, &man); err != nil {
 		t.Fatal(err)
 	}
+	return man
+}
+
+// TestOpConformanceManifestMatchesThisBuild does the same for the op wire
+// model: the golden bytes must still encode and decode identically here.
+func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
+	man := readOpManifest(t)
 	if man.SchemaVersion != SchemaVersion {
 		t.Fatalf("manifest is for schema v%d, this build is v%d", man.SchemaVersion, SchemaVersion)
 	}
@@ -843,8 +931,29 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 		}
 	}
 
-	if len(man.AuthoredAtCases) == 0 {
-		t.Fatal("the manifest carries no authored_at cases")
+	// Counted against this build's own list, the way the reject side already is.
+	// Without it a case can be DELETED from the fixture and both executors stay
+	// green — the accept side had exactly that hole, and a mutation run walked
+	// through it by dropping the year-9999 case.
+	if len(man.AuthoredAtCases) != len(timeAcceptCases) {
+		t.Fatalf("the manifest lists %d authored_at cases, this build has %d", len(man.AuthoredAtCases), len(timeAcceptCases))
+	}
+	// And the boundary ones named, for the reason the parent-free set is: the
+	// list is generated, so deleting an entry and regenerating moves both
+	// executors together.
+	haveCase := make(map[string]bool, len(man.AuthoredAtCases))
+	for _, c := range man.AuthoredAtCases {
+		haveCase[c.Wire] = true
+	}
+	for _, must := range []string{
+		"0000-01-01T00:00:00Z",
+		"9999-12-31T23:59:59.999Z",
+		"0000-02-29T00:00:00Z",
+		"2026-06-05T10:00:00-23:59",
+	} {
+		if !haveCase[must] {
+			t.Fatalf("the manifest no longer publishes the boundary accept case %q", must)
+		}
 	}
 	for _, c := range man.AuthoredAtCases {
 		got, err := DecodeBlob(timeProbeBlob(c.Wire))
@@ -853,6 +962,16 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 		}
 		if ms := strconv.FormatInt(got[0].AuthoredAt.UnixMilli(), 10); ms != c.ExpectUnixMs {
 			t.Fatalf("%s decodes to %s ms, manifest says %s", c.Wire, ms, c.ExpectUnixMs)
+		}
+		// Go's canonical SPELLING, pinned. The TypeScript side reads this exact
+		// string; a change to how this executor renders a timestamp fails here
+		// before it reaches a device that cannot parse it.
+		canonical, err := CanonicalWireTime(got[0].AuthoredAt)
+		if err != nil {
+			t.Fatalf("%s: accepted but has no canonical form: %v", c.Wire, err)
+		}
+		if canonical != c.ExpectCanonicalWire {
+			t.Fatalf("%s canonicalises to %q, manifest says %q", c.Wire, canonical, c.ExpectCanonicalWire)
 		}
 	}
 	// Go reads the overflow blob exactly; TypeScript must refuse it. Asserting
@@ -873,12 +992,182 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 		t.Fatalf("parent_version decoded as %s, manifest says %s", got, man.ParentVersionOverflow)
 	}
 
+	// Named explicitly as well as compared, for the reason the parent-free set
+	// is: everything above is GENERATED from timeRejectCases, so deleting an
+	// entry and regenerating would take both executors green together. These
+	// six are the expanded-year contract and cannot leave the manifest quietly.
+	for _, must := range []string{
+		"9999-12-31T23:59:59-23:59",
+		"0000-01-01T00:00:00+00:01",
+		"+010000-01-01T23:58:59.000Z",
+		"10000-01-01T23:58:59Z",
+		"-0001-12-31T23:59:00Z",
+		"2026-06-05T10:00:00-24:00",
+	} {
+		if !slices.Contains(man.AuthoredAtRejects, must) {
+			t.Fatalf("the manifest no longer promises %q is refused; the TypeScript executor reads that list", must)
+		}
+	}
 	if len(man.AuthoredAtRejects) != len(timeRejectCases) {
 		t.Fatalf("the manifest lists %d reject cases, this build has %d", len(man.AuthoredAtRejects), len(timeRejectCases))
 	}
 	for _, wire := range man.AuthoredAtRejects {
 		if _, err := DecodeBlob(timeProbeBlob(wire)); err == nil {
 			t.Fatalf("authored_at %q must be refused: the manifest promises the TypeScript executor refuses it", wire)
+		}
+	}
+}
+
+// TestCanonicalTimeIsClosedOverTheWireGrammar states the property whose absence
+// was the defect, as a property rather than as a list of blessed strings.
+//
+// Canonicalisation is a function from wire timestamps to wire timestamps. If it
+// can produce a value outside its own input grammar, then "both executors read
+// the same instant" says nothing about the value they STORE — and the two
+// languages spell exactly that overflow differently. The suite could not see it
+// because every timestamp assertion in this file compared parsed instants, and
+// the divergence is in a string neither side could parse.
+//
+// Two claims, over the same accept set the manifest publishes:
+//
+//  1. Closure: the canonical form of an accepted timestamp is itself accepted,
+//     to the same instant. This is what makes decode∘canonical = canonical.
+//  2. Idempotence: canonicalising twice changes nothing, which is what lets
+//     DecodeBlob canonicalise a value EncodeBlob already canonicalised.
+//
+// Note there is deliberately NO `rfc3339Shape.MatchString(canonical)` assertion
+// in here. parseWireTime's first statement is that same regex, so such a check
+// could never fail while the round trip below passes — a check true by
+// construction, which is the exact defect class this whole task is about. A
+// mutation run caught it sitting there doing nothing; it was deleted rather than
+// dressed up.
+func TestCanonicalTimeIsClosedOverTheWireGrammar(t *testing.T) {
+	// Cross-read against the published fixture rather than only against this
+	// build's inputs: the canonical STRING is the thing the other executor
+	// consumes, so the property and the golden are stated over the same values.
+	published := map[string]string{}
+	for _, c := range readOpManifest(t).AuthoredAtCases {
+		published[c.Wire] = c.ExpectCanonicalWire
+	}
+
+	for _, wire := range timeAcceptCases {
+		parsed, err := parseWireTime(wire)
+		if err != nil {
+			t.Errorf("parseWireTime(%q): %v", wire, err)
+			continue
+		}
+		canonical, err := CanonicalWireTime(parsed)
+		if err != nil {
+			t.Errorf("%q is accepted but has no canonical form: %v", wire, err)
+			continue
+		}
+		if want, ok := published[wire]; !ok {
+			t.Errorf("%q is an accept case this build tests and the manifest does not publish", wire)
+		} else if want != canonical {
+			t.Errorf("%q canonicalises to %q, the manifest publishes %q to the other executor", wire, canonical, want)
+		}
+		reparsed, err := parseWireTime(canonical)
+		if err != nil {
+			t.Errorf("%q canonicalises to %q, which will not parse back: %v", wire, canonical, err)
+			continue
+		}
+		if want := parsed.UTC().Truncate(time.Millisecond); !reparsed.Equal(want) {
+			t.Errorf("%q round-trips to %v, want %v", wire, reparsed.UTC(), want)
+		}
+		again, err := CanonicalWireTime(reparsed)
+		if err != nil || again != canonical {
+			t.Errorf("canonicalising %q twice gives %q (%v), want %q", wire, again, err, canonical)
+		}
+	}
+}
+
+// TestTheExpandedYearRangeIsRefusedByBothExecutors is the regression test for
+// the divergence itself, written as the two reachable boundary values rather
+// than as a year check, because a year check is what both executors were
+// missing and would be the same assumption twice.
+//
+// Reachability is the point: these are not malformed strings. Every rule that
+// existed accepts them — four digits of year, a real calendar date, an offset
+// inside ±23:59 — and one of them is the value Task 7 proved could strand a
+// device (client/src/replay: the canonical form was stored, re-read, and threw
+// out of the fold). A bank will not send year 10000; a hostile or broken Date
+// header can, and the wire cannot say so.
+func TestTheExpandedYearRangeIsRefusedByBothExecutors(t *testing.T) {
+	for _, tc := range []struct {
+		wire     string
+		goSpells string // what this executor renders it as, measured
+		jsSpells string // what toISOString renders it as, measured
+	}{
+		{"9999-12-31T23:59:59-23:59", "10000-01-01T23:58:59Z", "+010000-01-01T23:58:59.000Z"},
+		{"0000-01-01T00:00:00+00:01", "-0001-12-31T23:59:00Z", "-000001-12-31T23:59:00.000Z"},
+	} {
+		// The spellings really do differ, and really are unreadable here. If a
+		// Go release ever made Format agree with toISOString this would fail and
+		// say so, rather than the contract quietly changing shape.
+		loose, err := time.Parse(time.RFC3339, tc.wire)
+		if err != nil {
+			t.Fatalf("%q must still parse under the stock layout, or this test proves nothing: %v", tc.wire, err)
+		}
+		if got := loose.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano); got != tc.goSpells {
+			t.Errorf("this executor now spells %q as %q, not %q", tc.wire, got, tc.goSpells)
+		}
+		if tc.goSpells == tc.jsSpells {
+			t.Errorf("the two spellings for %q are no longer different", tc.wire)
+		}
+		if rfc3339Shape.MatchString(tc.goSpells) || rfc3339Shape.MatchString(tc.jsSpells) {
+			t.Errorf("an expanded-year spelling for %q now satisfies the wire grammar", tc.wire)
+		}
+
+		// And the value is refused, in every direction a timestamp enters.
+		if _, err := parseWireTime(tc.wire); err == nil {
+			t.Errorf("parseWireTime(%q) must be refused: its canonical form is not a wire timestamp", tc.wire)
+		}
+		if _, err := DecodeBlob(timeProbeBlob(tc.wire)); err == nil {
+			t.Errorf("an op carrying authored_at %q must not decode", tc.wire)
+		} else if errors.Is(err, ErrUnknownNewerVersion) {
+			t.Errorf("authored_at %q must be a set-aside, never the sync hard stop", tc.wire)
+		}
+		rawBody := []byte(`{"v":1,"kind":"raw_body","ingest_id":"` + strings.Repeat("a", 64) +
+			`","received_at":"` + tc.wire + `","raw_base64":"aGk="}`)
+		if _, err := DecodeRawBody(rawBody); err == nil {
+			t.Errorf("a cold record with received_at %q must not decode", tc.wire)
+		}
+		// Op.Validate in its own right, not only through EncodeBlob. Validate is
+		// EXPORTED and documented as "the structural rules replay depends on",
+		// so a caller holding a hand-built op must be told there; EncodeBlob's
+		// own check would otherwise make this one look redundant, which is how a
+		// mutation run got the Validate guard deleted with every test green.
+		if err := (Op{
+			V: SchemaVersion, Type: OpRateSet, OpID: "01J000000000000000000000R1",
+			AuthoredAt: loose, Payload: json.RawMessage(`{}`),
+		}).Validate(); err == nil {
+			t.Errorf("Op.Validate must refuse authored_at %q on its own", tc.wire)
+		} else if !strings.Contains(err.Error(), "authored_at") {
+			t.Errorf("Op.Validate's refusal of %q does not name the field: %v", tc.wire, err)
+		}
+		// The ENCODE side too: a writer whose clock is out there is told which
+		// field and which op, instead of getting encoding/json's message about a
+		// type it never named.
+		if _, err := EncodeBlob([]Op{{
+			V: SchemaVersion, Type: OpRateSet, OpID: "01J000000000000000000000R1",
+			AuthoredAt: loose, Payload: json.RawMessage(`{}`),
+		}}); err == nil {
+			t.Errorf("EncodeBlob must refuse authored_at %q", tc.wire)
+		} else if !strings.Contains(err.Error(), "authored_at") {
+			t.Errorf("EncodeBlob's refusal of %q does not name the field: %v", tc.wire, err)
+		}
+		if _, err := EncodeRawBody(RawBody{
+			IngestID: strings.Repeat("a", 64), ReceivedAt: loose, RawBase64: "aGk=",
+		}); err == nil {
+			t.Errorf("EncodeRawBody must refuse received_at %q", tc.wire)
+		}
+	}
+
+	// The legal neighbours still pass, so the refusal is the range and not the
+	// millennium either side of it.
+	for _, ok := range []string{"9999-12-31T23:59:59.999Z", "0000-01-01T00:00:00Z", "0000-02-29T00:00:00Z"} {
+		if _, err := parseWireTime(ok); err != nil {
+			t.Errorf("parseWireTime(%q) must still be accepted: %v", ok, err)
 		}
 	}
 }

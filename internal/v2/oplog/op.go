@@ -202,6 +202,14 @@ func (o Op) Validate() error {
 	if o.AuthoredAt.IsZero() {
 		return fmt.Errorf("op %s: authored_at is zero", o.OpID)
 	}
+	// The ENCODE half of the closure rule (see [canonicalTime]); parseWireTime
+	// is the decode half. Without it a Go writer whose clock is past year 9999
+	// gets `json: error calling MarshalJSON for type time.Time` out of
+	// EncodeBlob — an error naming neither the op nor the field — instead of
+	// being told which timestamp the wire cannot carry.
+	if _, err := canonicalTime(o.AuthoredAt); err != nil {
+		return fmt.Errorf("op %s: authored_at %w", o.OpID, err)
+	}
 
 	if o.Type.ParentFree() {
 		if o.Entity != nil {
@@ -248,7 +256,8 @@ func (o Op) Validate() error {
 }
 
 // canonicalTime puts a timestamp in the one form both executors read
-// identically: UTC, truncated to milliseconds.
+// identically: UTC, truncated to milliseconds — and refuses one whose canonical
+// form is not itself a wire timestamp.
 //
 // The truncation is not cosmetic. Fork resolution compares authored_at and
 // falls through to writer_id only on an exact tie, and JavaScript's Date
@@ -256,8 +265,54 @@ func (o Op) Validate() error {
 // ops that Go orders and TypeScript calls tied, i.e. two executors materialising
 // different money from the same log. Rounding to what both can represent removes
 // the disagreement at the source rather than asking the TS port to compensate.
-func canonicalTime(t time.Time) time.Time {
-	return t.UTC().Truncate(time.Millisecond)
+//
+// # Why canonicalisation has to be CLOSED over the wire grammar
+//
+// [rfc3339Shape] admits a four-digit year with a UTC offset of up to ±23:59, so
+// "9999-12-31T23:59:59-23:59" is a wire-legal timestamp whose UTC value lands in
+// year 10000 — and "0000-01-01T00:00:00+00:01" is its mirror, landing in year
+// −1. Neither year can be written back in the four-digit grammar both executors
+// enforce, and the two languages do not even SPELL the overflow the same way:
+//
+//	                             Go Format(RFC3339Nano)   JS toISOString
+//	9999-12-31T23:59:59-23:59    10000-01-01T23:58:59Z    +010000-01-01T23:58:59.000Z
+//	0000-01-01T00:00:00+00:01    -0001-12-31T23:59:00Z    -000001-12-31T23:59:00.000Z
+//
+// Measured, not assumed. On the JSON path Go cannot even emit its spelling:
+// time.Time.MarshalJSON refuses a year outside [0,9999] outright, so the whole
+// blob fails to encode. What that left was an ACCEPTANCE divergence, which is
+// the worse half — this decoder read both strings happily while the TypeScript
+// one set the blob aside, so an op could be in one executor's log and in
+// neither device's, with nothing in the build able to see it.
+//
+// The rule is therefore that a canonical form must be re-readable as a wire
+// timestamp, and the check is that round trip rather than a year-range test, so
+// it cannot drift from whatever the renderer actually produces. Both executors
+// apply it in the same place, and both refuse the same two boundary strings —
+// pinned in conformance/op/manifest.json's authored_at_rejects.
+func canonicalTime(t time.Time) (time.Time, error) {
+	c := t.UTC().Truncate(time.Millisecond)
+	if s := c.Format(time.RFC3339Nano); !rfc3339Shape.MatchString(s) {
+		return time.Time{}, fmt.Errorf("canonicalises to %q, which is outside the four-digit-year range this wire format carries", s)
+	}
+	return c, nil
+}
+
+// CanonicalWireTime is [canonicalTime]'s string half: the one rendering of an
+// instant that every v2 Go writer must use for a timestamp it puts on the wire.
+//
+// It is exported so there is ONE renderer rather than one per package. The
+// ingest pipeline had its own (`t.UTC().Truncate(time.Millisecond).
+// Format(time.RFC3339Nano)`, for a transaction's posted_at) which was the same
+// expression without the closure check, and would therefore have written the
+// five-digit spelling above into a payload where the TypeScript executor writes
+// the expanded-year one. A second renderer is a second spelling.
+func CanonicalWireTime(t time.Time) (string, error) {
+	c, err := canonicalTime(t)
+	if err != nil {
+		return "", fmt.Errorf("oplog: timestamp %s: %w", t.UTC().Format(time.RFC3339Nano), err)
+	}
+	return c.Format(time.RFC3339Nano), nil
 }
 
 // rfc3339Shape is the timestamp grammar BOTH executors accept: 4-digit year,
@@ -310,6 +365,13 @@ func parseWireTime(s string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("timestamp %q: %w", s, err)
 	}
+	// Wire-legal is not the same as canonicalisable: the offset can carry a
+	// four-digit year out of the four-digit-year grammar in either direction.
+	// See [canonicalTime] — this is the acceptance half of that divergence, and
+	// refusing here is what makes the two executors set aside the same blobs.
+	if _, cerr := canonicalTime(t); cerr != nil {
+		return time.Time{}, fmt.Errorf("timestamp %q %w", s, cerr)
+	}
 	return t, nil
 }
 
@@ -350,7 +412,11 @@ func EncodeBlob(ops []Op) ([]byte, error) {
 		if err := o.Validate(); err != nil {
 			return nil, fmt.Errorf("oplog: op %d: %w", i, err)
 		}
-		o.AuthoredAt = canonicalTime(o.AuthoredAt)
+		ct, err := canonicalTime(o.AuthoredAt)
+		if err != nil {
+			return nil, fmt.Errorf("oplog: op %d: authored_at %w", i, err)
+		}
+		o.AuthoredAt = ct
 		out[i] = o
 	}
 	return json.Marshal(opBlob{V: SchemaVersion, Kind: KindOps, Ops: out})
@@ -394,7 +460,17 @@ func DecodeBlob(b []byte) ([]Op, error) {
 		// winners. Truncating on decode converges instead of setting the blob
 		// aside, and it makes the guarantee a property of the READER, which is
 		// the only place it can be enforced against a writer we do not control.
-		blob.Ops[i].AuthoredAt = canonicalTime(o.AuthoredAt)
+		//
+		// Cannot fail here: Op.UnmarshalJSON routed authored_at through
+		// parseWireTime, which already refused anything this would refuse. The
+		// error is still handled rather than dropped, because "cannot fail" is a
+		// property of the caller and this is the reader half of a dual-executor
+		// contract.
+		ct, cerr := canonicalTime(o.AuthoredAt)
+		if cerr != nil {
+			return nil, fmt.Errorf("oplog: op %d: authored_at %w", i, cerr)
+		}
+		blob.Ops[i].AuthoredAt = ct
 	}
 	return blob.Ops, nil
 }
@@ -449,7 +525,11 @@ func EncodeRawBody(r RawBody) ([]byte, error) {
 	if r.ReceivedAt.IsZero() {
 		return nil, errors.New("oplog: raw body received_at is zero")
 	}
-	r.ReceivedAt = canonicalTime(r.ReceivedAt)
+	ct, err := canonicalTime(r.ReceivedAt)
+	if err != nil {
+		return nil, fmt.Errorf("oplog: raw body received_at %w", err)
+	}
+	r.ReceivedAt = ct
 	return json.Marshal(r)
 }
 
