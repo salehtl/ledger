@@ -47,11 +47,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Client, HardStopError, decodeWireRow } from "../../src/net/client";
-import { fileStore } from "../../src/store/store";
+import { openStore } from "../../src/store/open";
 import { STREAM_COLD, STREAM_HOT } from "../../src/wire/blob";
 import type { Violation } from "../../src/invariants/check";
 import { clientFor, corpusFixtures, sendMail, startStack, stopStack, type Stack } from "./harness";
@@ -93,11 +92,10 @@ const ids = (v: readonly Violation[]): string[] => v.map((x) => x.id);
  * success and wrong for step 8, whose whole assertion is a 409.
  */
 async function raw(c: Client, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const state = JSON.parse(readFileSync(c.location, "utf8")) as { session_token?: string | null };
   const res = await fetch(`${s.httpURL}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${state.session_token ?? ""}`,
+      Authorization: `Bearer ${c.sessionToken ?? ""}`,
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -681,7 +679,7 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     // corruption lands on a range nothing has accepted yet.
     const corrupt = { on: false };
     const c = new Client({
-      store: fileStore(join(s.dir, "state"), "dev-c"),
+      store: openStore(join(s.dir, "state"), "dev-c"),
       server: s.httpURL,
       fetch: (async (input: any, init?: any) => {
         const res = await fetch(input, init);
@@ -849,7 +847,7 @@ describe.skipIf(ADMIN_DSN === "")("Phase 1 exit criterion (spec §5)", () => {
     /** A client on this account whose server withholds ingest rows at/above `from`. */
     const withholding = (profile: string, from: bigint | null): Client =>
       new Client({
-        store: fileStore(join(s.dir, "state"), profile),
+        store: openStore(join(s.dir, "state"), profile),
         server: s.httpURL,
         fetch: (async (input: any, init?: any) => {
           const res = await fetch(input, init);

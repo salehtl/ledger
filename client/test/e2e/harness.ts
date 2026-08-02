@@ -54,7 +54,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { Client } from "../../src/net/client";
-import { fileStore } from "../../src/store/store";
+import { openStore } from "../../src/store/open";
 import { smtpSend, type SMTPReply } from "./smtp";
 
 // ---------------------------------------------------------------------------
@@ -468,12 +468,11 @@ export class Stack {
    * An authenticated JSON call as `c`, for the routes the {@link Client} class
    * does not wrap (address, quarantine, samples, account).
    *
-   * The bearer token is read from the client's own state file rather than kept
-   * beside it, so this cannot drift from what the client would actually send.
+   * The bearer token is read from the client itself rather than kept beside it,
+   * so this cannot drift from what the client would actually send.
    */
   async json<T>(c: Client, method: string, path: string, body?: unknown): Promise<T> {
-    const state = JSON.parse(readFileSync(c.location, "utf8")) as { session_token?: string | null };
-    const token = state.session_token ?? "";
+    const token = c.sessionToken ?? "";
     if (token === "") throw new Error(`${c.location} holds no session token: call login first`);
     return await this.call<T>(method, path, token, body);
   }
@@ -786,7 +785,7 @@ export function processAlive(pid: number): boolean {
  * parameter is named for it.
  */
 export function clientFor(s: Stack, profile: string): Client {
-  return new Client({ store: fileStore(join(s.dir, "state"), profile), server: s.httpURL });
+  return new Client({ store: openStore(join(s.dir, "state"), profile), server: s.httpURL });
 }
 
 // ---------------------------------------------------------------------------

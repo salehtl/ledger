@@ -41,7 +41,7 @@ import { join, resolve } from "node:path";
 import { checkAll } from "../../src/invariants/check";
 import { Client, HardStopError, decodeWireRow } from "../../src/net/client";
 import { serializeState } from "../../src/replay/state";
-import { fileStore } from "../../src/store/store";
+import { openStore } from "../../src/store/open";
 import { STREAM_COLD, STREAM_HOT } from "../../src/wire/blob";
 
 const ADMIN_DSN = process.env["LEDGER_TEST_POSTGRES_URL"] ?? "";
@@ -113,7 +113,7 @@ async function waitReady(url: string, proc: ChildProcess): Promise<void> {
 }
 
 function clientFor(profile: string): Client {
-  return new Client({ store: fileStore(join(scratch, "state"), profile), server: baseURL });
+  return new Client({ store: openStore(join(scratch, "state"), profile), server: baseURL });
 }
 
 /**

@@ -39,7 +39,7 @@
 
 import { INVARIANT_IDS, type Violation } from "../invariants/check";
 import { Client, HardStopError, newEntityID, stateToJSON, summarize, unbase64 } from "../net/client";
-import { fileStore } from "../store/store";
+import { openStore } from "../store/open";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 
 interface Args {
@@ -203,7 +203,7 @@ export async function run(argv: readonly string[]): Promise<number> {
 
   const dir = args.flags.get("state-dir") ?? "./.ledger-client";
   const profile = args.flags.get("profile") ?? "default";
-  const store = fileStore(dir, profile);
+  const store = openStore(dir, profile);
   const server = args.flags.get("server");
   const client = new Client({ store, ...(server === undefined ? {} : { server }) });
 

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parseArgs, run } from "./main";
-import { emptyClientState, fileStore } from "../store/store";
+import { fileStore } from "../store/file";
+import { emptyClientState } from "../store/store";
 
 describe("parseArgs", () => {
   test("reads the command and its flags", () => {

@@ -1,15 +1,33 @@
 # The v2 headless client
 
-**This is Phase 1's exit-test instrument, not a product.** Spec §5 makes the
-exit criterion "a minimal headless client that authenticates, pulls, replays,
-runs the invariant checker, and round-trips client-authored ops" — not the PWA —
-so this directory exists to *be* that instrument, and every design choice in it
-favours checkability over the things a real client needs. It re-folds its entire
-op log on every command so that "the state agrees with a re-fold of its own log"
-is a claim about something rather than a tautology; it keeps every verified row
-on disk so that `check` can re-verify each chain from genesis; it holds its
-writer key in a plain file. A phone client does none of those. Phase 2's Expo
-app is a separate program, and it must not be built by growing this one.
+**This is Phase 1's exit-test instrument — and Phase 2's protocol library.**
+Spec §5 makes the exit criterion "a minimal headless client that authenticates,
+pulls, replays, runs the invariant checker, and round-trips client-authored ops"
+— not the PWA — so this directory exists to *be* that instrument, and every
+design choice in it favours checkability over the things a real client needs.
+
+### What Phase 2 reuses, and what it replaces
+
+An earlier revision of this file said the Expo app "must not be built by growing
+this one", and gave three reasons. **The three reasons were about the store and
+the instrument, and Task 5 addressed two of them; the sentence was not about the
+protocol logic, which the app does reuse and must not reimplement.** Precisely:
+
+| | Phase 2 |
+|---|---|
+| `wire/` (op, blob, chain), `replay/` (the fold and FX), `invariants/` (the seventeen), `norm/`, `tmpl/` | **Reused as-is.** `app/` imports them. |
+| `net/client.ts`'s **protocol logic** — the `pull → verify → pin → fold → attest → push` ordering | **Reused.** See below. |
+| *"It re-folds its entire op log on every command"* | **Still true, and still deliberate** — that is what keeps I9/I10 from comparing the fold against itself. What changed is that the fold now READS the log a chunk at a time (`eachRowChunk`, 250) instead of holding it in one array, and `save()` no longer WRITES it: `ClientState` lost its `rows`, and the log lives in a `RowStore`. |
+| *"It keeps every verified row on disk"* | **Still true, and NOT yet fixed.** `sqliteStore`'s `wire_rows` grows with the log. `RowStore.prune` is the mechanism; Task 10's rolling window is the policy for cold, and hot is an open question (spec §3.3:73 defers compaction to ~50k ops). |
+| *"It holds its writer key in a plain file"* | **Replaced.** `sqliteStore` takes a `SecretStore`; on a device the session token and the Ed25519 private half go to the Keychain (`expo-secure-store`) and are provably absent from the database. `fileStore` still holds them in its 0600 state file, because the CLI has no keystore. |
+
+**The one thing not to reimplement is the protocol ordering.** Phase 1's ledger
+records four review rounds establishing it: the checkpoint must be built from
+PINNED heads (one built from unpinned heads claims genesis for chains that are
+merely un-pinned rather than empty), the I11 sync deadlock needs its escape
+hatch, and the hot/cold pin interaction makes a hot head pinned from the hash
+list an unclearable chain break on the next pull. A second implementation in
+`app/` re-opens every one of those. Import `Client`; do not fork it.
 
 ## The commands
 
@@ -203,17 +221,47 @@ because of it.
 
 ## State
 
-`--state-dir/<profile>.json`, one file per **profile**. A profile is one
-device's view of one account: two devices on one account differ in every field
-the file holds — their own writer key, their own cursors, their own pinned
-heads — so the file cannot be keyed by user alone.
+Two things, kept apart: the **state** (cursors, pinned heads, keys, pending
+ops — small, saved whole on every command) and the **log** (`RowStore` — the
+verified rows, appended to and never rewritten). Until Task 5 they were one
+object, so every command rewrote the entire log; that is what the split fixes.
 
-The file holds the writer's Ed25519 **private key** and the session bearer
-token, both in the clear. The directory is created `0700` and the file written
-`0600`, re-chmod'ed on every save and written through a temp file and a rename.
-There is no passphrase and no keychain: this is a scratch artifact for a test
-rig, `client/.gitignore` keeps `.ledger-client/` out of the repository, and a
-product client must put its key in the platform keystore instead.
+`--state-dir/<profile>.json` plus `<profile>.rows.jsonl`, one pair per
+**profile**. A profile is one device's view of one account: two devices on one
+account differ in every field the state holds — their own writer key, their own
+cursors, their own pinned heads — so it cannot be keyed by user alone.
+
+The state file holds the writer's Ed25519 **private key** and the session bearer
+token, both in the clear. The directory is created `0700` and both files written
+`0600`, re-chmod'ed on every write; the state file goes through a temp file and
+a rename, and the directory carries a `.gitignore` containing `*` because
+`--state-dir` takes any path, including one inside a working tree. There is no
+passphrase and no keychain: this is a scratch artifact for a test rig, and a
+product client puts its key in the platform keystore instead — which is what
+`sqliteStore`'s `SecretStore` is.
+
+### The three stores
+
+| | |
+|---|---|
+| `memStore()` | Unit tests. Loses everything on exit, so a CLI could never use it: a run that lost its cursor would re-pull from 0 and could never detect a re-serving server. |
+| `fileStore(dir, profile)` | The CLI instrument, above. Holds the whole log in memory once read — which is exactly what a phone must not do. |
+| `sqliteStore(driver, { secrets })` | The device. `client_state` is one row; `wire_rows` is the append-only log, read only by `range()`. Takes any `SqlDriver` — `bunDriver` here, `expoDriver` in `app/`. |
+
+**There is deliberately no `all(stream)` on a `RowStore`.** Loading 3,683 blobs
+into one JS array is the shape that took the Phase 0 build past 500 MB RSS and
+froze it, and a method named `all()` makes it look sanctioned. `range()` is the
+only read path; a caller needing a full pass writes the loop (`eachRowChunk`),
+so the memory ceiling is a property of the loop rather than of the callee.
+
+```bash
+cd client && bun test                              # file / mem store
+cd client && LEDGER_CLIENT_STORE=sqlite bun test   # the same suite, SQLite-backed
+```
+
+Both must be green. That second run is why the device's persistence layer is not
+a fresh untested surface: it inherits this whole suite, the two-device exit
+scenario included.
 
 ## What this suite does NOT cover
 
@@ -247,4 +295,5 @@ bash ../scripts/v2-check.sh     # go vet + go test + typecheck + bun test (incl.
 
 `wire/` (the frozen op, blob and chain model) → `replay/` (the fold) →
 `invariants/check.ts` (the seventeen) → `net/client.ts` (this client) →
-`store/store.ts` (what it persists and why it is the rows).
+`store/store.ts` (what it persists, why it is still the rows, and why there is
+no `all()`) → `store/sqlite.ts` (the device's store).

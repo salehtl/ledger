@@ -1,23 +1,36 @@
 /**
- * Local persistence for the headless client: cursors, pinned heads, pinned
- * cold-blob hashes, the writer's key material, and the rows it has verified.
+ * Local persistence for the client: cursors, pinned heads, pinned cold-blob
+ * hashes, the writer's key material — and, kept strictly apart from all of
+ * those, the rows it has verified.
  *
- * # What is stored, and why it is the ROWS
+ * # The state and the log are two different things
  *
- * The obvious design persists the materialized {@link State}. This one persists
- * the verified op-log ROWS, exactly as the server returned them, and re-folds
- * them on every command.
+ * Until Task 5 they were one: `ClientState` carried `rows`, and `Client.commit()`
+ * saved the whole state after every mutation, so **each command rewrote the
+ * entire log**. That is O(log) bytes of write per command, which this file's own
+ * module doc called "the correct trade for a test instrument and the wrong one
+ * for a phone". The split is:
  *
- * That is the whole point of the instrument. Spec §5's exit criterion is "a
- * headless client replays cleanly", and the invariant checker's I9/I10 compare
- * the state against a re-fold of its own op log — a comparison that is vacuous
- * if the state was never anything but the fold's own output, saved. Keeping the
- * rows means every `check` re-derives the ops from the bytes it verified
- * (nothing joins ops to rows through a side channel), re-runs the chain, AAD and
- * bucket checks from genesis, and re-folds from position 0. It costs O(log) work
- * per command and O(log) bytes on disk, which is the correct trade for a test
- * instrument and the wrong one for a phone — the product client (Phase 2) keeps
- * a materialized snapshot and prunes. This file is not that client.
+ *  - {@link ClientState} — small, bounded by the number of writers and chains,
+ *    saved whole on every command. Cursors, heads, keys, pending ops.
+ *  - {@link RowStore} — the verified op-log rows, appended to and never
+ *    rewritten. `save()` does not touch it.
+ *
+ * The rows are still kept, and still re-folded on every command, because that
+ * is what makes I9/I10 ("the state agrees with a re-fold of its own op log") a
+ * claim about something rather than a tautology. What changed is that a fold
+ * now READS the log a chunk at a time ({@link eachRowChunk}) instead of holding
+ * it in one array, and a save no longer WRITES it at all.
+ *
+ * # There is deliberately no `all(stream)`
+ *
+ * An earlier draft of {@link RowStore} had one, documented as "every row for a
+ * stream, ascending — only `check`/`materialize` call this". Those are exactly
+ * the on-device callers, and loading 3,683 blobs into one JS array is the shape
+ * that took the Phase 0 build past 500 MB RSS and froze it. A method named
+ * `all()` makes that look sanctioned. So {@link RowStore.range} is the only
+ * read path: a caller that needs a full pass writes the loop, and the memory
+ * ceiling is a property of the loop rather than of the callee.
  *
  * # One file per PROFILE, not per user
  *
@@ -26,36 +39,51 @@
  * field here — their own writer key, their own cursors, their own pinned heads.
  * Keying by user id would make them share a file and immediately corrupt each
  * other's chain state. So the key is a PROFILE (`--profile`, default `default`),
- * which is one device's view of one account; {@link fileStore} records the user
- * id inside and {@link Client} refuses to log a profile into a second account.
+ * which is one device's view of one account; the store records the user id
+ * inside and {@link Client} refuses to log a profile into a second account.
  *
  * # Secrets
  *
- * The file holds the writer's Ed25519 PRIVATE key and the session bearer token,
- * both in the clear. It is written 0600 inside a 0700 directory, re-chmod'ed on
- * every save (mode on `open` applies only at creation), and written through a
- * temp file + rename so a crash cannot leave a truncated one. There is no
- * passphrase and no keychain: this is a scratch artifact for a test rig on a
- * single-operator box. A product client must not reuse this — Phase 2's key
- * belongs in the platform keystore.
+ * The session bearer token and the Ed25519 PRIVATE key are the two fields that
+ * must not be in the database. {@link sqliteStore} takes a {@link SecretStore}
+ * and puts them there instead — on a device that is the Keychain, via
+ * `expo-secure-store`. `fileStore` still holds them in its 0600 state file; it
+ * is a scratch artifact for a test rig on a single-operator box, and a product
+ * client must not reuse it.
  *
- * `client/.gitignore` names the DEFAULT state directory, which covers nothing
- * when `--state-dir` points somewhere else — and it takes any path. So the
- * directory ignores itself: {@link fileStore} writes a `.gitignore` containing
- * `*` beside the state file on every save, and a state directory created
- * anywhere inside a working tree therefore cannot be committed by accident.
+ * # Host imports
+ *
+ * There are none, on purpose. This module is reachable from Hermes; `file.ts`
+ * (`node:fs`) and `driver.ts` (`bun:sqlite`) are not, and nothing here imports
+ * either of them.
  */
-
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 
 import { platform } from "../platform";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 import { ZERO_HASH, type ChainKey, type Head } from "../wire/chain";
 import { parseDecimal, type Op } from "../wire/op";
 
-/** The on-disk format version. Bumping it is a deliberate, breaking act. */
-export const STATE_VERSION = 1;
+/**
+ * The on-disk format version. Bumping it is a deliberate, breaking act.
+ *
+ * **v1 → v2 (Task 5): `rows` left the state.** A v1 file carries the log inside
+ * itself, and its cursors mean nothing without it. Read as a v2 file it would
+ * produce a client whose cursor says "fully synced" over an empty log — and
+ * `check` over an empty log passes vacuously, so nothing downstream would
+ * notice. Refusing it is the only safe reading; the recovery is to delete the
+ * profile and re-pull, which costs nothing but time.
+ */
+export const STATE_VERSION = 2;
+
+/**
+ * How many rows a full pass reads at a time.
+ *
+ * 250 is the chunk size the Phase 0 fix shipped with, and Task 8 mandates the
+ * same one for the sync engine. Note what the chunking alone does NOT buy: the
+ * yield between chunks is what restores the garbage collector, and a synchronous
+ * `Store` cannot yield. Responsiveness comes from Task 1's async batch API.
+ */
+export const ROW_CHUNK = 250;
 
 /**
  * An Ed25519 keypair in JWK form: `x` is the public key and `d` the private
@@ -115,7 +143,6 @@ export interface ClientState {
   pinnedHeads: Map<ChainKey, Head>;
   /** Per-blob hashes pinned by `pull-cold-hashes`, by chain then by counter. */
   pinnedBlobHashes: Map<ChainKey, Map<bigint, Uint8Array>>;
-  rows: Record<Stream, WireRow[]>;
   /** Ops authored locally and not yet uploaded. They hold no `seq` yet. */
   pending: Op[];
   /**
@@ -151,7 +178,6 @@ export function emptyClientState(server = ""): ClientState {
     hashCursors: { hot: 0n, cold: 0n },
     pinnedHeads: new Map(),
     pinnedBlobHashes: new Map(),
-    rows: { hot: [], cold: [] },
     pending: [],
     authoredHead: null,
     checkpointRoster: null,
@@ -159,12 +185,298 @@ export function emptyClientState(server = ""): ClientState {
   };
 }
 
+/**
+ * The verified op log: append-only, read by range, pruned from below.
+ *
+ * Every method is synchronous, because `Client` is (see the plan's Decision 3 —
+ * widening this to async ripples through every `Client` method for no gain that
+ * `expo-sqlite`'s `*Sync` family does not already provide).
+ */
+export interface RowStore {
+  /**
+   * Appends rows. Idempotent for a byte-identical row at a seq already held —
+   * which is what makes `pull`'s "append the rows, THEN save the cursor" safe
+   * across a crash between the two. A row that DIFFERS from one already held is
+   * refused: that is a server substituting bytes under a seq, and quietly
+   * keeping either copy destroys the evidence I3 exists to find.
+   */
+  append(stream: Stream, rows: readonly WireRow[]): void;
+  /** Ascending by seq, from exclusive `afterSeq`, at most `limit`. THE ONLY READ PATH. */
+  range(stream: Stream, afterSeq: bigint, limit: number): WireRow[];
+  count(stream: Stream): number;
+  /** Drops rows below `beforeSeq`. Task 10's cold window. */
+  prune(stream: Stream, beforeSeq: bigint): void;
+}
+
+/**
+ * Walks every row of a stream in ascending seq order, `limit` at a time.
+ *
+ * This is the sanctioned replacement for the `all()` that {@link RowStore}
+ * deliberately does not have. `fn` is called with one chunk at a time and must
+ * consume it before returning: nothing here retains a chunk, and a caller that
+ * accumulates them has simply moved `all()` into its own body.
+ */
+export function eachRowChunk(
+  rows: RowStore,
+  stream: Stream,
+  fn: (chunk: readonly WireRow[]) => void,
+  limit: number = ROW_CHUNK,
+): void {
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error(`eachRowChunk needs a positive integer chunk size, got ${String(limit)}`);
+  }
+  let after = 0n;
+  for (;;) {
+    const chunk = rows.range(stream, after, limit);
+    if (chunk.length === 0) return;
+    const last = chunk[chunk.length - 1];
+    if (last === undefined) return;
+    const next = parseDecimal(last.seq);
+    // A store that answers with rows at or below the cursor it was given would
+    // loop here forever. Louder is better than slower.
+    if (next <= after) {
+      throw new Error(`${stream} rows: range() did not advance past seq ${after.toString(10)}`);
+    }
+    fn(chunk);
+    after = next;
+    if (chunk.length < limit) return;
+  }
+}
+
 /** Where a {@link Client} reads and writes its state. */
 export interface Store {
   /** A human-readable location, for error messages and `cli state`. */
   readonly location: string;
   load(): ClientState;
+  /** Persists the state. Does NOT write the rows — see {@link RowStore}. */
   save(state: ClientState): void;
+  rows(): RowStore;
+  /**
+   * Commits the rows and the state written inside `fn` together, or neither.
+   *
+   * **This exists because splitting the log out of the state split one write
+   * into two.** `pull` step 4 persists a page of rows and the cursor that says
+   * they were taken; a crash between them leaves either rows the cursor denies
+   * (recoverable, but the next pull re-serves rows the fold has already
+   * consumed and the replay ordering guard refuses them) or — far worse, in the
+   * other order — a cursor claiming rows that are gone, which nothing will ever
+   * ask for again. {@link sqliteStore} makes the pair atomic and the window
+   * disappears.
+   *
+   * `memStore` and `fileStore` implement it as a plain call: one has no
+   * durability at all and the other is two files, which cannot be made atomic
+   * without a journal. `fileStore` therefore still writes the rows FIRST, so
+   * its residual crash window lands on the recoverable side. It is a CLI
+   * instrument on a box that does not get killed mid-pull; the phone gets the
+   * real thing.
+   *
+   * Not re-entrant across implementations — `expo-sqlite`'s
+   * `withTransactionSync` does not nest — so nested calls flatten into the
+   * outermost one rather than opening a savepoint.
+   */
+  transaction<T>(fn: () => T): T;
+}
+
+/**
+ * Where the two secrets go when they are not going in the database.
+ *
+ * On a device this is `expo-secure-store` (the Keychain), wired up in
+ * `app/src/auth/keys.ts` for Task 13. `null` means "not present", and setting
+ * `null` deletes — signing out has to actually remove the token.
+ */
+export interface SecretStore {
+  get(name: string): string | null;
+  set(name: string, value: string | null): void;
+}
+
+/** The secret store the tests use. Holds nothing after the process exits. */
+export function memSecretStore(): SecretStore {
+  const held = new Map<string, string>();
+  return {
+    get: (name) => held.get(name) ?? null,
+    set: (name, value) => {
+      if (value === null) held.delete(name);
+      else held.set(name, value);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The in-memory row store, shared by memStore and fileStore
+// ---------------------------------------------------------------------------
+
+interface Entry {
+  seq: bigint;
+  row: WireRow;
+}
+
+export interface ArrayRowStoreHooks {
+  /** Rows read back from durable storage on first use, if there are any. */
+  hydrate?: () => readonly WireRow[];
+  /** Called with the rows actually accepted — never with a re-appended duplicate. */
+  onAppend?: (stream: Stream, accepted: readonly WireRow[]) => void;
+  /**
+   * Called after a prune removed something, with **every row that remains, in
+   * both streams**.
+   *
+   * Not just the pruned stream's: a durable store that keeps one file for the
+   * log would rewrite it from a per-stream list and silently delete the other
+   * stream. That defect is invisible in memory — the arrays are right either
+   * way — and only shows up on the next open, which is why the durability
+   * tests prune and then REOPEN.
+   */
+  onPrune?: (remaining: readonly WireRow[]) => void;
+}
+
+/**
+ * A {@link RowStore} over two sorted arrays.
+ *
+ * Backs {@link memStore} and, with hooks, `fileStore`. It holds the whole log
+ * in memory, which is exactly what {@link sqliteStore} exists not to do: both
+ * of its users are host-side instruments (a unit test, a CLI process), and a
+ * device never constructs one.
+ */
+export function arrayRowStore(hooks: ArrayRowStoreHooks = {}): RowStore {
+  const held: Record<Stream, Entry[]> = { hot: [], cold: [] };
+  const index: Record<Stream, Map<string, WireRow>> = { hot: new Map(), cold: new Map() };
+  let hydrated = hooks.hydrate === undefined;
+  const bySeq = (a: Entry, b: Entry): number => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0);
+
+  const ready = (): void => {
+    if (hydrated) return;
+    hydrated = true; // set first: a hydrate that reads back must not recurse
+    for (const row of hooks.hydrate?.() ?? []) {
+      const stream = streamOf(row.stream);
+      const seq = parseDecimal(row.seq);
+      const key = seq.toString(10);
+      const have = index[stream].get(key);
+      if (have !== undefined) {
+        sameRowOrThrow(have, row, seq);
+        continue;
+      }
+      held[stream].push({ seq, row });
+      index[stream].set(key, row);
+    }
+    for (const s of [STREAM_HOT, STREAM_COLD] as const) held[s].sort(bySeq);
+  };
+
+  /** First index whose seq is strictly greater than `afterSeq`. */
+  const upperBound = (list: Entry[], afterSeq: bigint): number => {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((list[mid]?.seq ?? 0n) <= afterSeq) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  return {
+    append(stream, rows) {
+      ready();
+      // Validated WHOLE before anything is stored, so a batch whose third row
+      // is bad leaves nothing behind. The SQLite store gets this from its
+      // transaction; without the two phases here the two implementations would
+      // disagree only on the failure path, which is the hardest divergence to
+      // find and the worst one to have.
+      const accepted: Entry[] = [];
+      const seen = new Set<string>();
+      for (const row of rows) {
+        const seq = checkRow(stream, row);
+        const key = seq.toString(10);
+        const have = index[stream].get(key);
+        if (have !== undefined) {
+          sameRowOrThrow(have, row, seq);
+          continue;
+        }
+        if (seen.has(key)) {
+          // Twice in ONE batch: same rule, and the earlier copy is not stored
+          // yet so `index` cannot see it.
+          const earlier = accepted.find((e) => e.seq === seq);
+          if (earlier !== undefined) sameRowOrThrow(earlier.row, row, seq);
+          continue;
+        }
+        seen.add(key);
+        accepted.push({ seq, row: { ...row } });
+      }
+      if (accepted.length === 0) return;
+
+      const list = held[stream];
+      let ordered = true;
+      for (const e of accepted) {
+        if (list.length > 0 && (list[list.length - 1]?.seq ?? 0n) >= e.seq) ordered = false;
+        list.push(e);
+        index[stream].set(e.seq.toString(10), e.row);
+      }
+      if (!ordered) list.sort(bySeq);
+      hooks.onAppend?.(
+        stream,
+        accepted.map((e) => e.row),
+      );
+    },
+    range(stream, afterSeq, limit) {
+      ready();
+      if (limit <= 0) return [];
+      const list = held[stream];
+      const out: WireRow[] = [];
+      for (let i = upperBound(list, afterSeq); i < list.length && out.length < limit; i++) {
+        out.push({ ...(list[i] as Entry).row });
+      }
+      return out;
+    },
+    count(stream) {
+      ready();
+      return held[stream].length;
+    },
+    prune(stream, beforeSeq) {
+      ready();
+      const before = held[stream].length;
+      const kept = held[stream].filter((e) => e.seq >= beforeSeq);
+      if (kept.length === before) return;
+      held[stream] = kept;
+      index[stream] = new Map(kept.map((e) => [e.seq.toString(10), e.row]));
+      hooks.onPrune?.([...held.hot, ...held.cold].map((e) => e.row));
+    },
+  };
+}
+
+/** Validates a row against the stream it is being filed under, and returns its seq. */
+export function checkRow(stream: Stream, row: WireRow): bigint {
+  if (row.stream !== stream) {
+    throw new Error(`row at seq ${JSON.stringify(row.seq)} is stream ${JSON.stringify(row.stream)}, not ${stream}`);
+  }
+  return parseDecimal(row.seq);
+}
+
+/** Refuses a second row at a seq already held unless it is byte-identical. */
+export function sameRowOrThrow(have: WireRow, want: WireRow, seq: bigint): void {
+  if (rowKey(have) === rowKey(want)) return;
+  throw new Error(
+    `${want.stream} seq ${seq.toString(10)} was already stored with different bytes — ` +
+      `the server is re-serving a position with new content`,
+  );
+}
+
+/** A canonical rendering of every wire field, for the identity comparison above. */
+function rowKey(r: WireRow): string {
+  return JSON.stringify([
+    r.seq,
+    r.stream,
+    r.writer_id,
+    r.writer_counter,
+    r.type_flag,
+    r.size_bucket,
+    r.blob_hash,
+    r.prev_hash,
+    r.created_at,
+    r.blob,
+  ]);
+}
+
+function streamOf(s: string): Stream {
+  if (s === STREAM_HOT || s === STREAM_COLD) return s;
+  throw new Error(`stored row names an unknown stream ${JSON.stringify(s)}`);
 }
 
 /**
@@ -173,65 +485,17 @@ export interface Store {
  * log every time and could never detect a re-serving server.
  */
 export function memStore(server = ""): Store {
-  let held = emptyClientState(server);
+  let heldState = emptyClientState(server);
+  const heldRows = arrayRowStore();
   return {
     location: "memory",
-    load: () => held,
+    load: () => heldState,
     save: (s) => {
-      held = s;
+      heldState = s;
     },
-  };
-}
-
-/**
- * A store backed by one JSON file per profile under `dir`.
- *
- * The directory is created 0700 and the file written 0600 — see the module doc
- * on what is in it.
- */
-export function fileStore(dir: string, profile: string): Store {
-  if (!/^[A-Za-z0-9._-]+$/.test(profile)) {
-    throw new Error(`profile ${JSON.stringify(profile)} must match [A-Za-z0-9._-]+`);
-  }
-  const path = join(dir, `${profile}.json`);
-  return {
-    location: path,
-    load(): ClientState {
-      let text: string;
-      try {
-        text = readFileSync(path, "utf8");
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyClientState();
-        throw err;
-      }
-      return decodeState(JSON.parse(text) as unknown, path);
-    },
-    save(state: ClientState): void {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      // The directory ignores ITSELF, because `client/.gitignore` can only name
-      // the default `.ledger-client/` and `--state-dir` takes any path — the
-      // manual runs in this task's own report used one. A state directory
-      // created anywhere inside a working tree therefore cannot be committed by
-      // accident, and what it holds is an Ed25519 private key and a session
-      // bearer token. Written every save rather than only on create, so a
-      // directory that predates this still gets one.
-      writeFileSync(join(dirname(path), ".gitignore"), "# ledger v2 client state: private keys and session tokens.\n*\n", {
-        mode: 0o600,
-      });
-      const tmp = `${path}.tmp`;
-      // mode on write applies only when the file is CREATED, so an existing
-      // temp file from a crashed run would keep whatever mode it had. Removed
-      // first, then chmod'ed again after writing, so neither path can leave the
-      // private key world-readable.
-      try {
-        unlinkSync(tmp);
-      } catch {
-        /* not there: the normal case */
-      }
-      writeFileSync(tmp, JSON.stringify(encodeState(state), null, 2), { mode: 0o600 });
-      chmodSync(tmp, 0o600);
-      renameSync(tmp, path);
-    },
+    rows: () => heldRows,
+    // Nothing here is durable, so there is nothing to make atomic.
+    transaction: <T,>(fn: () => T): T => fn(),
   };
 }
 
@@ -253,25 +517,32 @@ function unhex(s: unknown, what: string): Uint8Array {
   return platform().fromHex(s);
 }
 
-interface WireState {
+/**
+ * The persisted shape of {@link ClientState}.
+ *
+ * `writers` is typed with an OPTIONAL `d`, because {@link sqliteStore} strips
+ * the private half out to the {@link SecretStore} and puts it back on load. A
+ * missing one is then caught by {@link decodeState}'s existing "no usable key"
+ * check rather than by a second, parallel guard.
+ */
+export interface WireState {
   v: number;
   server: string;
   user_id: string | null;
   session_token: string | null;
   writer_id: string | null;
-  writers: Record<string, WriterKey>;
+  writers: Record<string, { x: string; d?: string }>;
   cursors: Record<string, string>;
   hash_cursors: Record<string, string>;
   pinned_heads: { chain: string; counter: string; hash: string }[];
   pinned_blob_hashes: { chain: string; entries: [string, string][] }[];
-  rows: Record<string, WireRow[]>;
   pending: Op[];
   authored_head: { counter: string; hash: string } | null;
   checkpoint_roster: string[] | null;
   checkpoint_heads: string | null;
 }
 
-function encodeState(s: ClientState): WireState {
+export function encodeState(s: ClientState): WireState {
   return {
     v: STATE_VERSION,
     server: s.server,
@@ -290,7 +561,6 @@ function encodeState(s: ClientState): WireState {
       chain,
       entries: [...m].map(([counter, h]): [string, string] => [counter.toString(10), hex(h)]),
     })),
-    rows: { hot: s.rows.hot, cold: s.rows.cold },
     pending: s.pending,
     authored_head:
       s.authoredHead === null ? null : { counter: s.authoredHead.counter.toString(10), hash: hex(s.authoredHead.hash) },
@@ -300,7 +570,7 @@ function encodeState(s: ClientState): WireState {
 }
 
 /**
- * Reads a state file, refusing anything it cannot read exactly.
+ * Reads a persisted state, refusing anything it cannot read exactly.
  *
  * It throws rather than repairing: a client that silently reset a cursor it
  * could not parse would re-pull from 0 and lose every pinned head, which is
@@ -310,7 +580,7 @@ export function decodeState(raw: unknown, where: string): ClientState {
   if (typeof raw !== "object" || raw === null) throw new Error(`${where}: not a JSON object`);
   const d = raw as Partial<WireState>;
   if (d.v !== STATE_VERSION) {
-    throw new Error(`${where}: state file version is ${String(d.v)}, this build writes v${STATE_VERSION}`);
+    throw new Error(`${where}: state version is ${String(d.v)}, this build writes v${STATE_VERSION}`);
   }
   const out = emptyClientState(typeof d.server === "string" ? d.server : "");
   out.userId = typeof d.user_id === "string" ? d.user_id : null;
@@ -323,9 +593,6 @@ export function decodeState(raw: unknown, where: string): ClientState {
   for (const stream of [STREAM_HOT, STREAM_COLD] as const) {
     out.cursors[stream] = parseDecimal(d.cursors?.[stream] ?? "0");
     out.hashCursors[stream] = parseDecimal(d.hash_cursors?.[stream] ?? "0");
-    const rows = d.rows?.[stream] ?? [];
-    if (!Array.isArray(rows)) throw new Error(`${where}: rows.${stream} is not an array`);
-    out.rows[stream] = rows;
   }
   for (const h of d.pinned_heads ?? []) {
     out.pinnedHeads.set(h.chain, { counter: parseDecimal(h.counter), hash: unhex(h.hash, `${where}: pinned head hash`) });
