@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -617,6 +618,82 @@ func TestTheQueueClustersDemandByPeople(t *testing.T) {
 // What the console can never return
 // ---------------------------------------------------------------------------
 
+// donatedContent is what the corpus below says that no response may repeat.
+// It is a package-level list because TWO tests read it: the gate itself, and
+// TestBlankingIdentifiersCannotHideDonatedContent, which proves the gate's
+// identifier blanking cannot swallow any entry. Two copies would drift, and the
+// copy that drifted would be the one holding the safety property.
+var donatedContent = []string{
+	"ALIA", "FERTILITY", "CLINIC", "STARBUCKS", "9,912.45", "250.00",
+	"Transaction Alert", "alerts@testbank.test",
+	// The values the value-level comparison reads and must not report: the
+	// balance it now mistakes for a transaction, and the card fragment it
+	// newly captures. (A const direction is the operator's own text in
+	// their own definition, which GET /admin/templates returns by design.)
+	"9999.99", "4321",
+}
+
+// identifierToken matches the three shapes of machine identifier these
+// responses carry BY DESIGN and that can never hold message content: a uuid (a
+// diagnostics row id, a user id, a donated sample id), a hex digest (an ingest
+// id, a structure signature) and an RFC3339 instant.
+//
+// The gate below blanks them before it searches for donated content, and the
+// reason is measured rather than theoretical. "4321" — the card fragment the
+// value-level comparison must not report — is four HEX characters, and every
+// response here is full of random hex. Worse, uuid v4 pins the first nibble of
+// the third group to '4', so "-4321-" needs only three random nibbles: 1/4096
+// per uuid against 1/65536 for any other window. Across the nine random uuids
+// one run puts in front of the check that is a FALSE failure about once every
+// 190 runs — measured at 16 in 3,000 iterations on 6a97cb4, every one of them a
+// uuid and not one of them a leak (14 on GET /admin/diagnostics, whose row ids
+// and user ids are the largest pile of random hex in the set; the rest on the
+// validate/publish results, whose sample_id is the same shape).
+//
+// That matters more than a rare red run. This is a redaction gate; a gate that
+// cries wolf is a gate somebody re-runs until it is green, and the next time it
+// goes red for a real reason nobody will believe it.
+var identifierToken = regexp.MustCompile(
+	`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` + // uuid
+		`|\b[0-9a-f]{16,}\b` + // hex digest: ingest id (64), structure sig (32)
+		`|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`) // RFC3339
+
+// withoutIdentifiers blanks every [identifierToken] in a response.
+//
+// It replaces rather than deletes, so two fields cannot be spliced into a
+// string that reads like content neither of them contained.
+func withoutIdentifiers(s string) string {
+	return identifierToken.ReplaceAllString(s, "<identifier>")
+}
+
+// Blanking anything before a leak check is a LOOSENING of a security assertion,
+// so it gets its own gate instead of an argument in a comment: every string the
+// test below hunts for has to survive [withoutIdentifiers] wherever a leak
+// could plausibly put it — as a field value, as free text inside one, and
+// wedged between the identifiers that are the reason blanking exists at all.
+func TestBlankingIdentifiersCannotHideDonatedContent(t *testing.T) {
+	// Both uuids are real, captured from failing runs of the gate below.
+	const beside = `{"id":"223a80aa-801e-4321-8f7d-58bb8a981f6a",` +
+		`"user_id":"45f5d9cc-4371-4321-b925-80f794b1661c",` +
+		`"ingest_id":"f2ae56f720adb97b8a239710ad7705882e063ef28dcbd97677cc313f3be8586e",` +
+		`"received_at":"2026-08-01T23:20:20.568Z","leaked":%q}`
+	for _, f := range donatedContent {
+		for _, doc := range []string{
+			fmt.Sprintf(`{"merchant":%q}`, f),
+			fmt.Sprintf(`{"raw":"You spent AED %s at the shop on 01/01/2026"}`, f),
+			fmt.Sprintf(beside, f),
+		} {
+			if !strings.Contains(withoutIdentifiers(doc), f) {
+				t.Errorf("blanking identifiers hid %q in %s", f, doc)
+			}
+		}
+	}
+	// And the other half: it does remove the collision that made the gate flake.
+	if got := withoutIdentifiers(`{"id":"223a80aa-801e-4321-8f7d-58bb8a981f6a"}`); strings.Contains(got, "4321") {
+		t.Errorf("a uuid that failed a real run still reads as a card fragment: %s", got)
+	}
+}
+
 // The access half of the retention promise: no route on this console returns a
 // donated body. Validate and publish see the bytes — they have to, the replay
 // runs over them — and turn them into match results before they reach a
@@ -660,20 +737,16 @@ func TestNoConsoleRouteReturnsADonatedBody(t *testing.T) {
 		{"GET", "/admin/diagnostics", nil},
 		{"GET", "/admin/accounting", nil},
 	}
-	forbidden := []string{
-		"ALIA", "FERTILITY", "CLINIC", "STARBUCKS", "9,912.45", "250.00",
-		"Transaction Alert", "alerts@testbank.test",
-		// The values the value-level comparison reads and must not report: the
-		// balance it now mistakes for a transaction, and the card fragment it
-		// newly captures. (A const direction is the operator's own text in
-		// their own definition, which GET /admin/templates returns by design.)
-		"9999.99", "4321",
-	}
 	for _, p := range probes {
 		rec := g.do(p.method, p.path, testToken, p.body)
 		got := rec.Body.String()
-		for _, f := range forbidden {
-			if strings.Contains(got, f) {
+		// Searched with the response's own identifiers blanked — see
+		// identifierToken for why, and for the measurement behind it. The base64
+		// check below deliberately reads the response UNBLANKED: an encoded body
+		// is compared whole, so nothing in it can collide with a short needle.
+		text := withoutIdentifiers(got)
+		for _, f := range donatedContent {
+			if strings.Contains(text, f) {
 				t.Errorf("%s %s returned donated content %q: %s", p.method, p.path, f, got)
 			}
 		}

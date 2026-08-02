@@ -770,6 +770,50 @@ func TestRepublishCanTriggerReprocess(t *testing.T) {
 	}
 }
 
+// One reprocess call per user, carrying THAT user's ids and nobody else's.
+//
+// The test above cannot see this: it has one user, so "grouped by user" and
+// "handed everything to the only user there is" produce identical calls, and a
+// fan-out that lost the grouping would pass it. Measured, not assumed —
+// replacing the grouping with `byUser[order[0]]` survives the whole v2 suite
+// without this test and is killed by it.
+//
+// What it protects is not a read. ingest.Reprocess resolves an ingest id
+// against the calling user's OWN cold stream, so a misrouted id finds nothing
+// and is counted as Failed (ingest's TestReprocessAccountsForEveryRequestedID
+// pins that) — one user cannot read another's mail through this route. What
+// breaks is the backfill: the republish an operator ran to repair a parser
+// would silently repair one account and report the rest as failures.
+func TestReprocessFansOutEachUsersMailToThatUserAlone(t *testing.T) {
+	c := newConsole(t)
+	c.publishV1(broadAmount)
+
+	alice, bob := insertUser(t, c.pool), insertUser(t, c.pool)
+	// Two for alice, one for bob, interleaved so a fan-out that keyed off the
+	// first row it saw would be caught whichever order the query returns.
+	for i, r := range []diag.Record{
+		diagRow(alice, c.now, 0x11, nil),
+		diagRow(bob, c.now, 0x12, nil),
+		diagRow(alice, c.now, 0x13, nil),
+	} {
+		if err := c.diag.Record(bg, r); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+
+	c.ok("POST", "/admin/templates/testbank.card/1/reprocess", nil)
+	got := map[uuid.UUID]int{}
+	for _, call := range c.reproc.calls {
+		if _, dup := got[call.user]; dup {
+			t.Fatalf("user %s was reprocessed twice: %+v", call.user, c.reproc.calls)
+		}
+		got[call.user] = call.ids
+	}
+	if len(got) != 2 || got[alice] != 2 || got[bob] != 1 {
+		t.Fatalf("reprocess calls = %+v; want alice with her 2 ids and bob with his 1", c.reproc.calls)
+	}
+}
+
 // Task 30 has not landed. The route must say so plainly rather than 500 or
 // pretend it reprocessed nothing.
 func TestReprocessIsUnavailableWithoutAReprocessor(t *testing.T) {
