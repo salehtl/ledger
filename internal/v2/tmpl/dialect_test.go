@@ -1,7 +1,9 @@
 package tmpl
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -95,6 +97,25 @@ func dialectRules() []dialectRule {
 				"[0-9]+[0-9]+[0-9]+[0-9]+z is 88,191 ms on 400, and separating them with a mandatory literal " +
 				"does not help ([^\\n]+X[^\\n]+Y is 31,680 ms on 8,000). Go's RE2 does not backtrack and is " +
 				"unaffected, so this is a CLIENT-side cost rule, not an engine divergence"},
+		{code: ReasonNestedVariableRepetition, reject: `(?:[0-9]{1,4}){4}`, accept: `[0-9]{4,16}`,
+			divergence: "the BOUNDED analogue of unbounded_inside_quantified_group, and the hole it left: a " +
+				"group that repeats more than once re-splits its own contents on every repeat, so a " +
+				"variable-length interior is raised to the power of the repeat count. MEASURED in Bun 1.3.14 " +
+				"on a 512-rune subject: (?:[a-z0-9 ]{1,8}){8}z is 2,178 ms and (?:(?:[a-z]{1,4}){4}){4}z is " +
+				"1,948 ms, while (?:[a-z]{8}){8}z — the SAME bound product of 64, fixed-width interior — is " +
+				"0.0 ms, which is why no tightening of MaxBoundProduct separates them. '?' and {0,1} are " +
+				"exempt: one repetition multiplies nothing, and ([0-9]{1,4})? is this table's own rewrite for " +
+				"([0-9]+)?. RE2 does not backtrack, so this is a client-side cost rule"},
+		{code: ReasonRepetitionWidthTooLarge, reject: `[0-9]{1,16}[0-9]{1,16}[0-9]{1,16}z`, accept: `[0-9]{3,48}z`,
+			divergence: "the same explosion reached by CONCATENATION rather than nesting, which no nesting " +
+				"rule can see: three sibling runs nest nothing and quantify no group. MEASURED in Bun 1.3.14: " +
+				"eight sibling [a-z]{1,8} runs took 7,140 ms on a 512-character body, and " +
+				"[0-9]{1,64}[0-9]{1,64}z took 8,711 ms at MaxBodyBytes (2,000,000 digits) — measured there, " +
+				"not extrapolated from a smaller run. The bound is the number of ways one branch can split " +
+				"the same input, which is what MaxBoundProduct (a bound on match LENGTH) does not measure. " +
+				"1,024 is exactly the widest collapsible pair MaxBoundProduct still permits: {1,a}{1,b} " +
+				"collapses to {2,a+b}, a+b <= 64 maximises a*b at 32*32; the widest pattern the seed set " +
+				"actually ships is 200, and the widest this rule ADMITS still costs 1,858 ms at MaxBodyBytes"},
 		{code: ReasonBoundProductTooLarge, reject: `((a{4}){4}){5}`, accept: `((a{4}){4}){4}`,
 			divergence: "bounded match length"},
 		{code: ReasonMalformedRepetition, reject: `a{,3}`, accept: `a{0,3}`,
@@ -283,12 +304,311 @@ func TestMultipleUnboundedQuantifiersInOneBranchAreRejected(t *testing.T) {
 		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`,
 		`الدفع الى\n(?P<v>[^\n]+)`,
 		`المعاملة\n[^\n]*DEBIT(?:\n|$)`,
-		`[0-9]{1,64}[0-9]{1,64}z`, // bounded quantifiers do not count
+		// Bounded quantifiers do not count toward THIS bound. They are counted
+		// by MaxRepetitionWidth instead, and this row used to be
+		// `[0-9]{1,64}[0-9]{1,64}z` — width 4,096, and 827 ms on 200,000 digits
+		// in Bun 1.3.14, and 8,711 ms measured at MaxBodyBytes. The claim
+		// being made here is "bounded quantifiers are not unbounded ones", and
+		// it is made with a pair that is genuinely cheap (2.7 ms on the same
+		// 200,000 digits) rather than with one that is a DoS by another name.
+		`[0-9]{1,4}[0-9]{1,4}z`,
 	} {
 		if errs := ValidatePattern(p, nil); len(errs) != 0 {
 			t.Errorf("%q has at most one unbounded quantifier per branch and must be accepted: %v", p, errs)
 		}
 	}
+}
+
+// The two BOUNDED cost rules, which close the hole Task 20 measured on the
+// categorization path and deliberately left open here.
+//
+// Task 18's two nesting rules stop the exponential (a+)+ shape and Task 20's
+// MaxUnboundedPerBranch stops the polynomial one. Neither says anything about a
+// pattern built entirely out of BOUNDED quantifiers, and MaxBoundProduct — a
+// product of quantifier UPPER bounds — bounds how long a match may be, not how
+// many ways it may be assembled. Measured in Bun 1.3.14 with re.exec against
+// "a" x 512 — a subject that FAILS to match, which is what a backtracking
+// engine pays for — and every one of these PASSED the dialect before these two
+// rules existed:
+//
+//	pattern                            width   anchored/512   unanchored/512
+//	(?:[a-z]{8}){8}z                        1        0.0 ms          0.0 ms
+//	(?:[a-z0-9 ]{1,4}){8}z             65,536        0.3 ms        131.0 ms
+//	(?:[a-z0-9 ]{1,8}){8}z         16,777,216       54.9 ms      2,178.0 ms
+//	(?:(?:[a-z]{1,4}){4}){4}z       4.3 x 10^9    2,146.7 ms      1,948.0 ms
+//	[a-z]{1,8} x8, CONCATENATED    16,777,216       16.3 ms      7,140.0 ms
+//
+// The first two rows have the SAME bound product (64), which is the whole
+// argument for a second bound: 0.0 ms and 131 ms are indistinguishable to the
+// number this dialect was calibrated on. The last row is why the width bound
+// exists as well as the nesting one — eight siblings nest nothing. The fourth
+// is why an anchor is not a defence: ^...$ made it no cheaper at all.
+func TestVariableRepetitionInsideARepeatedGroupIsRejected(t *testing.T) {
+	for _, p := range []string{
+		`(?:[a-z0-9 ]{1,8}){8}z`,    // 2,178 ms unanchored
+		`(?:(?:[a-z]{1,4}){4}){4}z`, // 1,948 ms unanchored, 2,147 ms even ANCHORED
+		`(?:[a-z0-9 ]{1,4}){8}z`,    // 131 ms unanchored, and only 0.3 ms anchored
+		// The next three are measured on "a" x 60 with a forced-fail 'z'
+		// suffix, because as written they match at offset 0 and cost nothing.
+		// Sixty characters is the point: these are EXPONENTIAL, so the subject
+		// that hurts is tiny rather than large.
+		`(?:a?){60}`,                // 1,094 ms: '?' on the INTERIOR is variable
+		`(?:a|aa){30}`,              // 684 ms: so is an alternation of unequal lengths
+		`(?:a|){40}`,                // 1,499 ms: so is an empty branch
+		`(?:[)]{1,4}x){4}`,          // a ')' inside a class does not close a group
+		`(?:[\]a]{1,4}){4}`,         // nor does an escaped ']' end one
+		`(?:a{1,4}?){4}`,            // lazy is the same shape
+		`(?P<v>[0-9]{1,4}){2}`,      // a capture group is a group
+		`(?:(?:a|bcd)x){2}`,         // the variability is one level down
+		`(?:[0-9]{1,4}){2,4}`,       // a RANGE on the outer group repeats too
+		`(?:[0-9]{1,4}){0,2}`,       // ...including one that may repeat zero times
+		`(?:(?:[0-9]{1,4})?x?y){2}`, // nested optionals
+		`(?:[0-9]{1,4}\-[0-9]{2}){3}`,
+	} {
+		if !hasCode(ValidatePattern(p, nil), ReasonNestedVariableRepetition) {
+			t.Errorf("%q repeats a variable-length group and must be rejected: %v",
+				p, codesOf(ValidatePattern(p, nil)))
+		}
+	}
+
+	// The controls, and they are not decoration: a rule that refused all of
+	// these would be a rule that makes the corpus inexpressible. Every one is
+	// either a shipping seed shape or this table's own sanctioned rewrite.
+	for _, p := range []string{
+		`(?:[a-z]{8}){8}`,   // fixed-width interior, same bound product as the first reject
+		`[a-z]{1,64}`,       // variable, but nothing repeats it
+		`([0-9]{1,4})?`,     // THE sanctioned rewrite for ([0-9]+)? — '?' repeats at most once
+		`([0-9]{1,4}){0,1}`, // the same thing spelled out
+		`([0-9]{1,4}){1}`,   // and repeated exactly once
+		`(?:ab|cd){8}`,      // an alternation of EQUAL lengths is fixed-width
+		`[0-9]{4,16}`,       // the sanctioned rewrite for (?:[0-9]{1,4}){4}
+		`(ab){2,3}`,
+		`((a{4}){4}){4}`,
+		`\(a{1,4}\){4}`,    // an ESCAPED paren opens no group
+		`(?:[a{1,4}]x){4}`, // a quantifier-shaped run inside a class is literal text
+		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`,
+		`(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`,
+	} {
+		if errs := ValidatePattern(p, nil); len(errs) != 0 {
+			t.Errorf("%q does not repeat a variable-length group and must be accepted: %v", p, codesOf(errs))
+		}
+	}
+}
+
+// The sanctioned rewrite has to be a rewrite. A ban whose replacement means
+// something else silently changes what a template extracts, which is the defect
+// the accept/reject table exists to prevent — so the two are run against the
+// same inputs and compared, not merely both accepted.
+func TestTheRewritesForTheBoundedCostRulesMeanTheSameThing(t *testing.T) {
+	for _, pair := range []struct{ banned, rewrite string }{
+		{`(?:[0-9]{1,4}){4}`, `[0-9]{4,16}`},
+		{`[0-9]{1,16}[0-9]{1,16}[0-9]{1,16}z`, `[0-9]{3,48}z`},
+	} {
+		a := regexp.MustCompile(pair.banned)
+		b := regexp.MustCompile(pair.rewrite)
+		for _, s := range []string{
+			"", "z", "1", "12", "123", "1234", "12345", "1z", "12z", "123z", "1234z",
+			strings.Repeat("9", 15), strings.Repeat("9", 16), strings.Repeat("9", 17),
+			strings.Repeat("9", 47) + "z", strings.Repeat("9", 48) + "z", strings.Repeat("9", 49) + "z",
+			"a1234b", "١٢٣٤",
+		} {
+			if got, want := b.FindString(s), a.FindString(s); got != want {
+				t.Errorf("%q vs %q on %q: rewrite matched %q, banned matched %q",
+					pair.rewrite, pair.banned, s, got, want)
+			}
+		}
+	}
+}
+
+func TestTheBacktrackingWidthOfOneBranchIsBounded(t *testing.T) {
+	for _, p := range []string{
+		`[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}z`, // 7,140 ms
+		`[0-9]{1,64}[0-9]{1,64}z`,  // 8,711 ms at MaxBodyBytes
+		`[0-9]{1,25}[0-9]{1,41}z`,  // 1,025 — ONE over the limit; see the pair below
+		`x{0,24}x{0,24}x{0,24}`,    // 15,625
+		`(?:a|bcd){20}`,            // an alternation is a choice too
+		`a?a?a?a?a?a?a?a?a?a?a?bz`, // 2,048: eleven CONCATENATED optionals, no group at all
+	} {
+		if !hasCode(ValidatePattern(p, nil), ReasonRepetitionWidthTooLarge) {
+			t.Errorf("%q can split one branch more than %d ways and must be rejected: %v",
+				p, MaxRepetitionWidth, codesOf(ValidatePattern(p, nil)))
+		}
+	}
+	for _, p := range []string{
+		`[0-9]{1,4}[0-9]{1,4}z`,   // 16
+		`x{0,24}x{0,24}`,          // 625
+		`[0-9]{1,25}[0-9]{1,40}z`, // 1,000
+		`[0-9]{1,32}[0-9]{1,32}z`, // exactly 1,024, the widest MaxBoundProduct permits a collapsible pair
+		`[0-9]{3,48}z`,            // the sanctioned rewrite
+		`a?a?a?a?a?a?a?a?a?a?bz`,  // 1,024: ten concatenated optionals, one short of the reject above
+		`المبلغ\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})`, // 50
+		`الدفع الى\n(?P<v>[^\n]+)`,                                        // an UNBOUNDED quantifier counts 1, not infinity
+		// The widest pattern the seed set actually ships, at 200. It is the one
+		// row here whose acceptance is not a matter of taste: refusing it would
+		// mean no ENBD credit alert parses at all.
+		`(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:credited|deposited)[ \n](?:in)?to your account`,
+	} {
+		if errs := ValidatePattern(p, nil); len(errs) != 0 {
+			t.Errorf("%q is within the width bound and must be accepted: %v", p, codesOf(errs))
+		}
+	}
+
+	// The bound, measured from BOTH sides at one. Every accept/reject list in
+	// this file would still pass with the limit at 900 or at 4,096 — a pair
+	// that straddles it by exactly one is what makes the NUMBER load-bearing
+	// rather than the direction of the inequality.
+	if w := patternWidth(t, `[0-9]{1,32}[0-9]{1,32}z`); w != MaxRepetitionWidth {
+		t.Errorf("[0-9]{1,32}[0-9]{1,32}z should measure exactly %d wide, got %d", MaxRepetitionWidth, w)
+	}
+	if w := patternWidth(t, `[0-9]{1,25}[0-9]{1,41}z`); w != MaxRepetitionWidth+1 {
+		t.Errorf("[0-9]{1,25}[0-9]{1,41}z should measure exactly %d wide, got %d", MaxRepetitionWidth+1, w)
+	}
+
+	// Alternation branches ADD and concatenation MULTIPLIES, which is the
+	// difference between "the engine tries one branch at a time" and "the
+	// engine tries every combination". Two branches of width 625 is 1,250 and
+	// is refused; a pattern that took the max would report 625 and be accepted,
+	// which is the mutation this pair exists to catch.
+	if !hasCode(ValidatePattern(`x{0,24}x{0,24}|y{0,24}y{0,24}`, nil), ReasonRepetitionWidthTooLarge) {
+		t.Error("two branches of width 625 must SUM to 1,250 and be refused; a scanner that took the " +
+			"MAX across branches would report 625 and accept it")
+	}
+	if errs := ValidatePattern(`x{0,24}x{0,19}|y{0,24}y{0,19}`, nil); len(errs) != 0 {
+		t.Errorf("two branches of width 500 sum to 1,000 and must be accepted: %v", codesOf(errs))
+	}
+}
+
+// An UNBOUNDED interior makes its group variable, and that has to be VISIBLE.
+//
+// The verdict on these was never in doubt — unbounded_inside_quantified_group
+// refuses every one of them on its own, and a mutation that stopped the length
+// accumulator from saturating on `+` was measured against 9,072 generated
+// patterns without flipping a single one from rejected to accepted. What it DID
+// change was the code list, and the code list is the two-engine contract: Go
+// and TypeScript must not merely agree that a pattern is bad, they must agree
+// on why. Nothing pinned this combination, so the mutation survived the whole
+// suite including the conformance fixture. This is what closes it.
+func TestAnUnboundedInteriorAlsoMakesItsGroupVariable(t *testing.T) {
+	for _, tc := range []struct {
+		pat  string
+		want []string
+	}{
+		{`(?:a+){2}`, []string{ReasonUnboundedInsideQuantifiedGroup, ReasonNestedVariableRepetition}},
+		{`(?:[^\n]+x){2}`, []string{ReasonUnboundedInsideQuantifiedGroup, ReasonNestedVariableRepetition}},
+		{`(?:a{2,}){4}`, []string{ReasonUnboundedInsideQuantifiedGroup, ReasonNestedVariableRepetition}},
+		// ...and one repetition still multiplies nothing, even here.
+		{`(?:a+)?`, []string{ReasonUnboundedInsideQuantifiedGroup}},
+	} {
+		got := codesOf(ValidatePattern(tc.pat, nil))
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%q: got %v, want %v", tc.pat, got, tc.want)
+		}
+	}
+}
+
+// patternWidth is the scanner's own width accumulator, read directly. The two
+// cost rules report a yes/no, and a yes/no cannot distinguish "1,024" from
+// "anything at all under the limit" — so the boundary tests read the number.
+func patternWidth(t *testing.T, p string) int {
+	t.Helper()
+	v := &patternScanner{src: []rune(p)}
+	v.scan()
+	return v.stack[0].width
+}
+
+// TestTheShippingSeedsHaveHeadroomUnderTheWidthBound is the check the ReDoS fix
+// could not be made without, kept so that the NEXT template is checked too.
+//
+// It reads seed/*.json off disk rather than taking a list: a hard-coded copy of
+// the patterns would keep passing after someone adds a fifth seed, which is
+// precisely the case where "would this bound refuse a real template?" needs an
+// answer. Every pattern must be accepted, and the widest must stay well under
+// the limit — a seed that landed at 1,020 would pass the accept check while
+// leaving the next parser fix nowhere to go.
+//
+// A failure here is NOT a licence to raise MaxRepetitionWidth. It means a
+// template the bank's mail actually needs is at the edge, which is a migration
+// question (publish the collapsed rewrite, bump the template version) rather
+// than a constant to edit.
+func TestTheShippingSeedsHaveHeadroomUnderTheWidthBound(t *testing.T) {
+	pats := seedPatterns(t)
+	// A directory that yielded nothing would make every assertion below
+	// vacuous, which is the failure mode this whole file exists to avoid.
+	if len(pats) < 15 {
+		t.Fatalf("found only %d patterns in seed/*.json; the walker is not reading the seeds", len(pats))
+	}
+	widest, widestPat := 0, ""
+	for _, p := range pats {
+		if errs := ValidatePattern(p, []string{"i"}); len(errs) != 0 {
+			t.Errorf("SHIPPING SEED REFUSED: %q -> %v. This needs a migration, not a rule.", p, codesOf(errs))
+		}
+		if w := patternWidth(t, p); w > widest {
+			widest, widestPat = w, p
+		}
+	}
+	t.Logf("%d seed patterns; widest is %d (%q); the limit is %d", len(pats), widest, widestPat, MaxRepetitionWidth)
+	// 200 is the ENBD credit anchor. Pinned exactly, because a change to the
+	// width arithmetic that halved every measurement would leave every accept
+	// and reject in this file green.
+	if widest != 200 {
+		t.Errorf("the widest shipping seed measures %d wide (%q); it was 200 when the bound was set. "+
+			"Either a seed changed or the width arithmetic did — both need the bound re-argued",
+			widest, widestPat)
+	}
+	if widest*4 > MaxRepetitionWidth {
+		t.Errorf("the widest seed is %d and the limit is %d: less than 4x headroom is too little "+
+			"for the next parser fix", widest, MaxRepetitionWidth)
+	}
+}
+
+// seedPatterns walks seed/*.json and returns every regex in them. The seed
+// package imports this one, so it cannot be imported back; the files are read
+// as JSON instead, which is also what makes this a check on what SHIPS rather
+// than on a Go literal that agrees with it.
+func seedPatterns(t *testing.T) []string {
+	t.Helper()
+	names, err := filepath.Glob("seed/*.json")
+	if err != nil || len(names) == 0 {
+		t.Fatalf("seed/*.json: %v (matched %d)", err, len(names))
+	}
+	var out []string
+	var walk func(any)
+	walk = func(n any) {
+		switch v := n.(type) {
+		case []any:
+			for _, e := range v {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range v {
+				if s, ok := e.(string); ok && k == "pattern" {
+					out = append(out, s)
+					continue
+				}
+				if arr, ok := e.([]any); ok && k == "patterns" {
+					for _, p := range arr {
+						if s, ok := p.(string); ok {
+							out = append(out, s)
+						}
+					}
+					continue
+				}
+				walk(e)
+			}
+		}
+	}
+	for _, n := range names {
+		b, err := os.ReadFile(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc any
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatalf("%s: %v", n, err)
+		}
+		walk(doc)
+	}
+	return out
 }
 
 func TestBoundProductIsMeasuredAlongTheNestingPath(t *testing.T) {

@@ -7,7 +7,6 @@ import {
   type DictEntry,
   type UserRule,
   categorize,
-  nestedVariableRepetition,
   prepare,
   subjectOf,
   validateDictEntry,
@@ -366,59 +365,100 @@ test("a legal regex runs against a full-length subject", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The cost rule the dialect does not cover
+// The cost rules, which now live in the dialect and are enforced here
 // ---------------------------------------------------------------------------
 
 test("a variable repetition inside a quantified group is refused, with the cheap shapes kept", () => {
-  // Measured in Bun 1.3.14 at a 512-rune subject: the two refused patterns take
-  // 216 ms and 6,327 ms, the four accepted ones 0.7-4.0 ms. All six pass
-  // `validatePattern`, and the refused pair have the SAME bound product (64) as
-  // two of the accepted ones, so no tightening of that number separates them.
+  // Task 20 measured these here and enforced them here. Task 21 moved the rule
+  // into `tmpl/dialect.ts`, in BOTH languages and in the conformance fixture,
+  // because the same shapes reach a device as published templates. So the
+  // refusal now arrives as a dialect reason code and this module's job is to
+  // map it — which is what these assertions check, rather than re-checking the
+  // scanner from the other side of an import.
+  //
+  // Measured in Bun 1.3.14 against "a".repeat(512): 2,178 ms and 1,948 ms for
+  // the refused pair, 0.0-0.5 ms for the accepted ones. The refused pair have
+  // the SAME bound product (64) as two of the accepted ones, so no tightening
+  // of that number separates them.
   const refused = ["^(?:[a-z0-9 ]{1,8}){8}z$", "^(?:(?:[a-z]{1,4}){4}){4}z$"];
   for (const pattern of refused) {
-    expect(validatePattern(pattern, ["i"])).toEqual([]); // the dialect accepts it
-    expect(nestedVariableRepetition(pattern)).toBe(true);
+    expect(validatePattern(pattern, ["i"])).toContain("nested_variable_repetition");
     const p = prepare([rule({ pattern, category: "x", match: "regex" })], []);
     expect(p.rules).toHaveLength(0);
     expect(p.defects[0]?.code).toBe("regex_nested_variable_repetition");
+    // The reason codes travel with the defect: a screen that says only "your
+    // rule was rejected" cannot tell the user to collapse the repetition.
+    expect(p.defects[0]?.reasons).toContain("nested_variable_repetition");
   }
-  const accepted = ["^(?:[a-z]{8}){8}z$", "^[a-z]{1,64}z$", "carrefour [0-9]{1,4}", "^carrefour (hyper|market)$"];
+  // The CONCATENATED shape, which Task 20's scanner could not see at all: no
+  // nesting, no quantified group, and 7,140 ms on the same subject. It arrives
+  // under the same defect code because the user's fix is the same one.
+  const wide = prepare(
+    [rule({ pattern: "[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}[a-z]{1,8}z", category: "x", match: "regex" })],
+    [],
+  );
+  expect(wide.rules).toHaveLength(0);
+  expect(wide.defects[0]?.code).toBe("regex_nested_variable_repetition");
+  expect(wide.defects[0]?.reasons).toContain("repetition_width_too_large");
+
+  const accepted = [
+    "^(?:[a-z]{8}){8}z$",
+    "^[a-z]{1,64}z$",
+    "carrefour [0-9]{1,4}",
+    "^carrefour (hyper|market)$",
+    // The rewrite the ban leans on. Task 20's private scanner REFUSED this one
+    // — `?` is a quantifier, and it did not distinguish "repeats at most once"
+    // from "repeats" — so the same regex was legal in a template and illegal as
+    // a user rule. Unifying on the dialect is what fixed that, and this row is
+    // the regression test for it.
+    "^([0-9]{1,4})?carrefour$",
+  ];
   for (const pattern of accepted) {
-    expect(nestedVariableRepetition(pattern)).toBe(false);
+    expect(validatePattern(pattern, ["i"])).toEqual([]);
     const p = prepare([rule({ pattern, category: "x", match: "regex" })], []);
     expect(p.defects).toEqual([]);
     expect(p.rules).toHaveLength(1);
   }
 });
 
-test("the cost scanner is not fooled by escapes or character classes", () => {
+test("a syntax refusal and a cost refusal are different defect codes", () => {
+  // Both come out of the same `validatePattern` call now, so the mapping is the
+  // only thing keeping them apart. A test with one refusal in it cannot see a
+  // mapping that returns the same code for everything.
+  const syntax = prepare([rule({ pattern: "^a{,3}$", category: "x", match: "regex" })], []);
+  expect(syntax.defects[0]?.code).toBe("regex_rejected");
+  const cost = prepare([rule({ pattern: "^(?:[0-9]{1,4}){4}$", category: "x", match: "regex" })], []);
+  expect(cost.defects[0]?.code).toBe("regex_nested_variable_repetition");
+});
+
+test("the cost rule is not fooled by escapes or character classes", () => {
   // `\(` is a literal parenthesis and `[{]` is a literal brace: neither opens a
-  // group nor starts a quantifier, so neither may be read as one.
-  expect(nestedVariableRepetition("\\(a{1,4}\\){4}")).toBe(false);
-  expect(nestedVariableRepetition("[{]{1,4}")).toBe(false);
-  expect(nestedVariableRepetition("[\\]a]{1,4}")).toBe(false);
-  // A quantifier-shaped run INSIDE a class is literal text, not a quantifier:
-  // read as one, this pattern looks like a variable repetition inside a
-  // quantified group and would be refused for nothing.
-  expect(nestedVariableRepetition("(?:[a{1,4}]x){4}")).toBe(false);
-  // ...and a parenthesis inside a class does not close a group.
-  expect(nestedVariableRepetition("[)]{1,4}")).toBe(false);
-  expect(nestedVariableRepetition("(?:[)]{1,4}x){4}")).toBe(true);
+  // group nor starts a quantifier, so neither may be read as one. A
+  // quantifier-shaped run INSIDE a class is literal text, and a parenthesis
+  // inside a class does not close a group.
+  const cheap = (p: string): boolean => validatePattern(p, ["i"]).length === 0;
+  expect(cheap("\\(a{1,4}\\){4}")).toBe(true);
+  expect(cheap("[{]{1,4}")).toBe(true);
+  expect(cheap("[\\]a]{1,4}")).toBe(true);
+  expect(cheap("(?:[a{1,4}]x){4}")).toBe(true);
+  expect(cheap("[)]{1,4}")).toBe(true);
   // ...and a class WITH a variable quantifier inside a quantified group is
   // still caught, so the class handling has not disabled the check.
-  expect(nestedVariableRepetition("(?:[\\]a]{1,4}){4}")).toBe(true);
+  const caught = (p: string): boolean => validatePattern(p, ["i"]).includes("nested_variable_repetition");
+  expect(caught("(?:[)]{1,4}x){4}")).toBe(true);
+  expect(caught("(?:[\\]a]{1,4}){4}")).toBe(true);
   // A lazy quantifier is the same shape.
-  expect(nestedVariableRepetition("(?:a{1,4}?){4}")).toBe(true);
+  expect(caught("(?:a{1,4}?){4}")).toBe(true);
   // A fixed repetition of a fixed repetition is not variable at all.
-  expect(nestedVariableRepetition("(?:a{4}){4}")).toBe(false);
+  expect(cheap("(?:a{4}){4}")).toBe(true);
 });
 
 test("the catastrophic pattern cannot cost a pass anything, because it never runs", () => {
-  // Measured at 6,327 ms for ONE match in Bun 1.3.14 -- and 5,986 ms against a
+  // Measured at 2,330 ms for ONE exec in Bun 1.3.14 -- and 918 ms against a
   // 32-rune subject, so the blowup is in the repeat structure and shrinking the
   // subject does not tame it. The pattern is therefore never compiled and never
   // run, which is asserted structurally: timing it here would put a
-  // six-second regex in the suite to prove it is not there.
+  // multi-second regex in the suite to prove it is not there.
   const p = prepare([rule({ pattern: "^(?:(?:[a-z]{1,4}){4}){4}z$", category: "x", match: "regex" })], []);
   expect(p.rules).toHaveLength(0);
   expect(p.defects[0]?.code).toBe("regex_nested_variable_repetition");
