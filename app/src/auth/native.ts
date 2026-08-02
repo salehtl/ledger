@@ -244,21 +244,26 @@ export interface SignInDeps {
 /**
  * The real dependencies, for the navigator to hand to the sign-in screen.
  *
- * **`backend` is `null` on purpose, and it is the one thing Task 8 must
- * change.** Constructing a `Client` needs a `Store` (which exists), a database
- * (`src/db/driver.ts`, which exists) and a **server base URL**, which does not
- * exist anywhere in this app: plan step P3 has not run, nothing is listening
- * on `:8444`, and the tailnet hostname is deliberately not recorded in this
- * repo. Writing a client against a URL nobody has is the "written, tested
- * green, never wired" defect with an extra step, so it is not written. The
- * screen renders an explicit "no server configured" state instead of failing
- * under a thumb — the same treatment the missing Google client id gets, for
- * the same reason.
+ * **`backend` is `null` on purpose.** Constructing a `Client` needs a `Store`
+ * (exists), a database (`src/db/driver.ts`, exists), a `SecretStore` (this
+ * file) — and a **server base URL**, which exists nowhere in this app: plan
+ * step P3 has not run, nothing is listening on `:8444`, and the tailnet
+ * hostname is deliberately not recorded in this repo. Nothing in `app/`
+ * instantiates a `Client` today; Task 8 landed its sync engine in
+ * `client/src/net/engine.ts` and stopped at the same line. Writing a client
+ * against a URL nobody has is the "written, tested green, never wired" defect
+ * with an extra step, so it is not written. The screen renders an explicit
+ * "no server configured" state instead of failing under a thumb — the same
+ * treatment the missing Google client id gets, for the same reason.
  *
- * When the client exists: build it once, alongside the single database handle
- * `openLedgerDatabase` hands out, and pass it here. `Client.login` already
- * satisfies {@link ExchangeBackend}; `session.test.ts` asserts that at compile
- * time.
+ * When the URL exists: build the `Client` once, alongside the single database
+ * handle `openLedgerDatabase` hands out, and pass it here. `Client.login`
+ * already satisfies {@link ExchangeBackend}; `session.test.ts` asserts that at
+ * compile time. The device's writer id comes from `keys.ts`'s
+ * `ensureWriterId(keychainSecretStore(), ulid)` and enrolment is
+ * `Client.enroll(writerId)` — challenge, `registrationMessage`, strict base64,
+ * all already implemented and tested in `client/src/net/client.ts`. Do not
+ * write a second one.
  */
 export function deviceSignInDeps(backend: ExchangeBackend | null = null): SignInDeps {
   return {
