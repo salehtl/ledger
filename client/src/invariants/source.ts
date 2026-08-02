@@ -128,3 +128,39 @@ export function storedOps(rows: RowStore, userId: string, decode: RowDecoder, li
     },
   };
 }
+
+/**
+ * An op sink for a fold that wants the state and not the ops.
+ *
+ * `Client`'s `applyRows` appends every op it folds, which is O(log) in decoded
+ * *payload* — the biggest thing a blob carries, and the shape Phase 0's device
+ * build froze on at >500 MB. A whole-log `check()` re-derives the ops
+ * separately and lazily ({@link storedOps}), so a second copy accumulating in
+ * the fold would undo the streaming it exists for.
+ *
+ * # Why a sink and not `ops.length = 0` between chunks
+ *
+ * They hold the same amount at any instant. The difference is what a test can
+ * see: a truncation inside a synchronous method is a LINE, deletable, and
+ * invisible to every instrument — the array dies when the method returns, so a
+ * post-run measurement reads zero either way, and nothing can sample a sync
+ * function's locals mid-run. That mutation (removing the truncation) was this
+ * task's one surviving mutant.
+ *
+ * Naming the sink moves the property somewhere a test can hold it directly:
+ * `push` keeps nothing, and `stream.test.ts` asserts exactly that. The mutant is
+ * now "make `push` keep things", which fails a two-line unit test.
+ *
+ * A fresh instance per call rather than a shared singleton: it is cheap, and a
+ * shared mutable array reachable from two folds is a hazard that buys nothing.
+ */
+class DiscardingOps extends Array<LogEntry> {
+  override push(): number {
+    return 0;
+  }
+}
+
+/** A {@link LogEntry} sink that discards everything pushed into it. */
+export function discardingOps(): LogEntry[] {
+  return new DiscardingOps();
+}
