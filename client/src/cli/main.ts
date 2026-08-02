@@ -40,6 +40,7 @@
 import { INVARIANT_IDS, type Violation } from "../invariants/check";
 import { surface } from "../invariants/surface";
 import { Client, HardStopError, newEntityID, stateToJSON, summarize, unbase64 } from "../net/client";
+import { Outbox } from "../outbox/outbox";
 import { openStore } from "../store/open";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 
@@ -345,14 +346,26 @@ export async function run(argv: readonly string[]): Promise<number> {
       return 0;
     }
     case "push": {
-      const report = await client.push();
+      // Through the outbox, not `client.push()` directly: one push is one
+      // upload, and an upload claims at most 8 chain positions, so a backlog
+      // bigger than that needs the page loop. A CLI that sent one page and
+      // reported success would leave the rest queued and say nothing.
+      const outbox = new Outbox(client);
+      const report = await outbox.flush();
+      if (report.stopped === "offline") {
+        console.error(
+          `push stopped after ${report.pages} page(s) with ${report.queued} op(s) still queued: ` +
+            `${report.offlineCause?.message ?? "unknown"}`,
+        );
+        return 1;
+      }
       if (report.blobs === 0) {
         console.log("nothing to push");
         return 0;
       }
       console.log(
-        `pushed ${report.ops} op(s) in ${report.blobs} blob(s) at seq ${report.seqs.join(", ")}` +
-          `${report.checkpointed ? " (including a writer_checkpoint: the roster changed)" : ""}`,
+        `pushed ${report.sent} op(s) in ${report.blobs} blob(s) across ${report.pages} page(s)` +
+          `${report.queued === 0 ? "" : `, ${report.queued} still queued`}`,
       );
       return 0;
     }

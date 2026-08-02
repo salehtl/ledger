@@ -88,6 +88,7 @@ import {
   eachRowChunk,
   genesisHead,
   type ClientState,
+  type InflightBlob,
   type RowStore,
   type Store,
   type WireRow,
@@ -99,6 +100,23 @@ import {
 // ---------------------------------------------------------------------------
 
 /** The server answered with a non-2xx status. `code`/`detail` are its own. */
+/**
+ * The request never reached a server, or its answer never came back.
+ *
+ * Distinct from {@link ApiError}, which means an HTTP status DID arrive: one is
+ * "try again when there is a network", the other is "the server has an opinion
+ * about this and it is not going to change on a retry".
+ */
+export class NetworkError extends Error {
+  override readonly name = "NetworkError";
+  constructor(
+    message: string,
+    override readonly cause: unknown,
+  ) {
+    super(message);
+  }
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -186,8 +204,24 @@ interface UploadBlob {
 /** The `RegistrationMessage` domain prefix, mirroring `auth.registrationDomain`. */
 const REGISTRATION_DOMAIN = "ledger-v2-writer-registration\u0000";
 
-/** Mirrors `api.maxUploadBlobs`: one request may claim at most this many positions. */
-const MAX_UPLOAD_BLOBS = 8;
+/**
+ * Mirrors `api.maxUploadBlobs`: one request may claim at most this many
+ * positions. A batch longer than this is PAGED, not refused — see
+ * {@link Client.push}'s `remaining`.
+ */
+export const MAX_UPLOAD_BLOBS = 8;
+
+/**
+ * Mirrors `api.maxUploadBytes`: the cap on the whole request body.
+ *
+ * The client pages on the BLOB count alone and never measures bytes, because
+ * `api/sync_test.go`'s `TestUploadCapsAreConsistent` pins that a batch
+ * satisfying `maxUploadBlobs` always fits `maxUploadBytes` — the ladder's top
+ * rung is 1 MiB, and eight of those base64'd plus framing is under 12 MiB.
+ * `outbox.test.ts` re-measures that here rather than trusting the Go test,
+ * by building eight top-bucket blobs and weighing the actual request body.
+ */
+export const MAX_UPLOAD_BYTES = 12 << 20;
 
 /** `oplog.TypeFlagEdit` — the only type flag a device may submit. */
 const TYPE_FLAG_EDIT = "edit";
@@ -368,9 +402,21 @@ export interface PullReport {
 
 export interface PushReport {
   blobs: number;
+  /** Ops in the blobs this call uploaded, not ops the outbox holds. */
   ops: number;
   seqs: bigint[];
+  /** A `writer_checkpoint` was among the ops this call uploaded. */
   checkpointed: boolean;
+  /**
+   * Ops still queued after this call — nonzero when the batch was longer than
+   * {@link MAX_UPLOAD_BLOBS} blobs and got paged.
+   *
+   * The caller loops until it is 0; `Outbox.flush` is that loop. It is reported
+   * rather than hidden inside a loop here because a push that pages is a push
+   * whose later pages can fail separately, and a caller that cannot see the
+   * boundary cannot report progress or stop at one.
+   */
+  remaining: number;
 }
 
 /**
@@ -760,11 +806,22 @@ export class Client {
       if (this.st.sessionToken === null) throw new Error("not signed in: run `cli login` first");
       headers["Authorization"] = `Bearer ${this.st.sessionToken}`;
     }
-    const res = await this.doFetch(`${this.server}${path}`, {
-      method,
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    let res: Response;
+    try {
+      res = await this.doFetch(`${this.server}${path}`, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    } catch (err) {
+      // No HTTP answer at all: airport wifi, a dropped LTE hop, the server
+      // down. Named as its own class so callers can allow-list it — the outbox
+      // treats exactly this as "not right now" and everything else as a real
+      // failure, and a caller that had to recognise it by matching on
+      // `TypeError` would quietly swallow the client's own consistency errors,
+      // which are also plain `Error`s.
+      throw new NetworkError(`${method} ${path}: ${err instanceof Error ? err.message : String(err)}`, err);
+    }
     const text = await res.text();
     if (!res.ok) {
       let code = "";
@@ -1314,6 +1371,11 @@ export class Client {
     // verifies its stream, before a single byte is built.
     const blocked = await this.syncForAttestation();
 
+    // Settle any batch a previous push left in the air, BEFORE anything reads
+    // `pending` or the authoring head — both of them lie until it is settled,
+    // and acting on them is what appends an op twice.
+    this.reconcileInflight();
+
     const roster = await this.roster();
     const ids = roster.map((w) => w.writer_id).sort(compareUTF8);
     const rosterChanged = this.st.checkpointRoster === null || !sameStrings(ids, this.st.checkpointRoster);
@@ -1328,16 +1390,30 @@ export class Client {
       checkpointed = true;
     }
     if (this.st.pending.length === 0) {
-      return { blobs: 0, ops: 0, seqs: [], checkpointed: false };
+      return { blobs: 0, ops: 0, seqs: [], checkpointed: false, remaining: 0 };
     }
 
-    const ops = [...this.st.pending];
-    const head = this.authoringHead();
-    let blobs = this.buildBlobs(ops, head);
+    // An unsettled batch is RESENT in the grouping it was recorded with, never
+    // rebuilt from whatever `pending` holds now. The packer is greedy, so an op
+    // emitted since would join the first blob and change its bytes — and the
+    // server answers a changed blob at an applied counter with
+    // `409 chain_break`, which no later push can clear.
+    const flight = this.st.inflight;
+    let blobs = flight !== null && flight.length > 0 ? this.rebuildInflight(flight) : this.pageOfPending();
+    /** Blobs the server was already holding when it refused the straddle. */
+    let alreadyHeld: BuiltBlob[] = [];
     let seqs: bigint[];
     try {
       seqs = await this.upload(blobs);
     } catch (err) {
+      // `409 chain_break` is `oplog.ErrChainBreak` coming back: the bytes this
+      // device claims for a position are not the bytes stored there. It is the
+      // same condition as a break found while pulling, so it becomes the same
+      // error class — one class per meaning is what lets the halt surface and
+      // the outbox's no-blind-retry latch key on it without string matching.
+      if (err instanceof ApiError && err.status === 409 && err.code === "chain_break") {
+        throw new ChainBreakError(`the server refused this device's batch: ${err.detail}`);
+      }
       if (!(err instanceof ApiError) || err.status !== 409 || !isPartialResend(err)) throw err;
       // The partial-resend contract, quoted verbatim from `oplog/chain.go`: the
       // server refuses a straddling batch rather than trimming it, and the
@@ -1345,6 +1421,7 @@ export class Client {
       // already-stored rows are byte-identical to ours (we authored them), so
       // the survivors keep their counters and their prev_hash unchanged.
       const actual = await this.readChainHead(this.writerId, STREAM_HOT);
+      alreadyHeld = blobs.filter((b) => parseDecimal(b.wire.writer_counter) <= actual.counter);
       blobs = blobs.filter((b) => parseDecimal(b.wire.writer_counter) > actual.counter);
       const first = blobs[0];
       if (first === undefined) {
@@ -1359,24 +1436,173 @@ export class Client {
             `is ${hex(actual.hash)}`,
         );
       }
+      // The record now covers the SUFFIX, because that is what is in the air.
+      // Leaving the wider one would make the next launch try to resend rows the
+      // server has already answered for.
+      this.recordInflight(blobs);
       seqs = await this.upload(blobs);
     }
 
+    // Only now, with the server's answer in hand, is the flight over.
+    //
+    // `alreadyHeld` counts as settled on evidence, not on the server's say-so:
+    // the `prev_hash` check above establishes that the head the server reported
+    // hashes to the blob THIS DEVICE built, and a chain hash covers every blob
+    // beneath it. Leaving them queued would re-upload them at fresh counters on
+    // the next push, which is the double-append this whole path exists to stop.
+    const settled = [...alreadyHeld, ...blobs];
+    const sent = new Set(settled.flatMap((b) => b.ops.map((o) => o.op_id)));
     const last = blobs[blobs.length - 1];
     if (last !== undefined) this.st.authoredHead = { counter: last.counter, hash: last.hash };
-    this.st.pending = [];
-    this.st.checkpointRoster = ids;
-    // What was ACTUALLY attested, not what the log will look like afterwards.
-    // Recording the predicted post-upload heads instead — which an earlier
-    // draft did, to suppress churn — makes the gate compare against a fiction:
-    // the checkpoint in the log still says 0 for this device's own chain, the
-    // next push sees "no change", and the 0 is never upgraded. Churn is bounded
-    // by the `pending.length > 0` condition above, not by this.
-    if (checkpointed) this.st.checkpointHeads = attested;
+    this.st.pending = this.st.pending.filter((o) => !sent.has(o.op_id));
+    this.st.inflight = null;
+    // Both of these say "this device has attested those heads", so both are
+    // owed a checkpoint that actually went. A paged push whose checkpoint fell
+    // into a later page must not record the attestation of a blob still sitting
+    // in the outbox.
+    const checkpointLanded = checkpointed && settled.some((b) => b.ops.some((o) => o.type === "writer_checkpoint"));
+    if (checkpointLanded) {
+      this.st.checkpointRoster = ids;
+      // What was ACTUALLY attested, not what the log will look like afterwards.
+      // Recording the predicted post-upload heads instead — which an earlier
+      // draft did, to suppress churn — makes the gate compare against a fiction:
+      // the checkpoint in the log still says 0 for this device's own chain, the
+      // next push sees "no change", and the 0 is never upgraded. Churn is bounded
+      // by the `pending.length > 0` condition above, not by this.
+      this.st.checkpointHeads = attested;
+    }
     this.commit();
 
     await this.pull();
-    return { blobs: blobs.length, ops: ops.length, seqs, checkpointed };
+    return {
+      blobs: blobs.length,
+      ops: sent.size,
+      seqs,
+      checkpointed: checkpointLanded,
+      remaining: this.st.pending.length,
+    };
+  }
+
+  /**
+   * Turns the head of the outbox into one upload's worth of blobs and records
+   * the intent before returning it.
+   *
+   * The record is written here rather than at the call site so that no path can
+   * build a batch and reach {@link upload} without one: the thing that makes the
+   * ambiguous commit survivable is that the record exists BEFORE the request,
+   * and a guard that a future edit can step around is not a guard.
+   */
+  private pageOfPending(): BuiltBlob[] {
+    const blobs = this.buildBlobs(this.st.pending, this.authoringHead());
+    this.recordInflight(blobs);
+    return blobs;
+  }
+
+  /** Writes down what is about to be sent, durably, before it is sent. */
+  private recordInflight(blobs: readonly BuiltBlob[]): void {
+    this.st.inflight = blobs.map((b) => ({ counter: b.counter, hash: b.hash, opIds: b.ops.map((o) => o.op_id) }));
+    this.commit();
+  }
+
+  /**
+   * Decides what happened to the batch that was in the air when this device
+   * last stopped, and clears it from the outbox if it landed.
+   *
+   * # It is a measurement, not a flag
+   *
+   * The evidence is the PINNED head — a head this device pulled back and
+   * verified byte by byte, i.e. the server's own bytes re-hashed locally. It is
+   * compared against a hash this device wrote down before it sent anything.
+   * Those are two independent sources, which is the whole point: `authoredHead`
+   * and an emptied `pending` are both written after the request returns, so
+   * neither says anything about a request that never returned.
+   *
+   * Because a chain hash covers every blob before it, agreement at the tip is
+   * agreement about the whole prefix. Disagreement is this device's own chain
+   * forking — the one break it cannot blame on the server — and it stops here
+   * rather than uploading over it.
+   *
+   * A batch that did NOT land stays recorded, so the resend reproduces the same
+   * bytes at the same positions and the server's idempotent-replay contract
+   * (`oplog.AppendClient`) answers with the seqs it already assigned.
+   */
+  private reconcileInflight(): void {
+    const flight = this.st.inflight;
+    if (flight === null || flight.length === 0) {
+      if (flight !== null) {
+        this.st.inflight = null;
+        this.commit();
+      }
+      return;
+    }
+    const pinned = this.pinnedHead(this.writerId, STREAM_HOT);
+    const tail = flight[flight.length - 1]!;
+    if (pinned.counter > tail.counter) {
+      throw new ChainBreakError(
+        `this device's own chain is at counter ${pinned.counter} on the server, above the ${tail.counter} it has ` +
+          `ever authored: something else is writing as ${this.writerId}`,
+      );
+    }
+    const landed = flight.filter((b) => b.counter <= pinned.counter);
+    const tip = landed[landed.length - 1];
+    if (tip !== undefined) {
+      if (hex(tip.hash) !== hex(pinned.hash)) {
+        throw new ChainBreakError(
+          `this device's own chain forked at counter ${tip.counter}: it sent ${hex(tip.hash)} and the server ` +
+            `served ${hex(pinned.hash)}`,
+        );
+      }
+      const done = new Set(landed.flatMap((b) => b.opIds));
+      this.st.pending = this.st.pending.filter((o) => !done.has(o.op_id));
+      this.st.authoredHead = { counter: tip.counter, hash: tip.hash };
+    }
+    const stillFlying = flight.filter((b) => b.counter > pinned.counter);
+    this.st.inflight = stillFlying.length === 0 ? null : stillFlying;
+    this.commit();
+  }
+
+  /**
+   * Rebuilds a recorded batch byte for byte, and refuses to send it if it does
+   * not come out byte for byte.
+   *
+   * Storing the bytes instead would mean up to 8 MiB in a state file rewritten
+   * whole on every command, so the record keeps the GROUPING and this re-seals
+   * it. That is safe only if sealing is deterministic, which is a property this
+   * checks rather than assumes: every rebuilt blob is re-hashed and compared
+   * against the hash written down before the original send. If gzip settings,
+   * canonical JSON or the padding ladder ever stopped being deterministic, this
+   * throws instead of claiming a position with bytes nobody recorded.
+   */
+  private rebuildInflight(flight: readonly InflightBlob[]): BuiltBlob[] {
+    const byId = new Map(this.st.pending.map((o) => [o.op_id, o]));
+    const head = this.authoringHead();
+    const first = flight[0]!;
+    if (first.counter !== head.counter + 1n) {
+      throw new ChainBreakError(
+        `the batch in flight claims counter ${first.counter}, but this device's chain head is ${head.counter}`,
+      );
+    }
+    const out: BuiltBlob[] = [];
+    let prev = head;
+    for (const rec of flight) {
+      const ops = rec.opIds.map((id) => {
+        const op = byId.get(id);
+        if (op === undefined) {
+          throw new Error(`op ${id} is in the batch this device was uploading, but no longer in its outbox`);
+        }
+        return op;
+      });
+      const built = this.sealBatch(ops, rec.counter, prev.hash);
+      if (hex(built.hash) !== hex(rec.hash)) {
+        throw new Error(
+          `re-sealing counter ${rec.counter} produced ${hex(built.hash)}, but this device recorded ${hex(rec.hash)} ` +
+            `before it sent it: blob sealing is no longer deterministic`,
+        );
+      }
+      out.push(built);
+      prev = { counter: built.counter, hash: built.hash };
+    }
+    return out;
   }
 
   /**
@@ -1461,6 +1687,13 @@ export class Client {
    * batches** (that is a server-side rule, so that one email is one row); a
    * client always may, and a batch of small ops that shares one 1 KiB bucket is
    * the point of the ladder.
+   *
+   * It stops at {@link MAX_UPLOAD_BLOBS} and leaves the rest of `ops` for the
+   * next call — it does NOT refuse them. A week offline with a slow connection
+   * is the beta's ordinary case, and the earlier behaviour (throw
+   * `${n} blobs exceeds the 8 one upload may claim; push more often`) turned it
+   * into an outbox nothing could ever drain, since "push more often" is advice
+   * for a past that has already happened.
    */
   private buildBlobs(ops: readonly Op[], head: Head): BuiltBlob[] {
     const out: BuiltBlob[] = [];
@@ -1482,17 +1715,15 @@ export class Client {
         throw new RangeError(`op ${op.op_id} does not fit the largest size bucket on its own`);
       }
       flush();
+      // The page boundary. `op` was popped and never re-added, so it and
+      // everything after it stay in the outbox for the next call.
+      if (out.length === MAX_UPLOAD_BLOBS) return out;
       batch.push(op);
       if (framedSize(this.userId, this.writerId, prev.counter + 1n, batch) > MAX_BUCKET) {
         throw new RangeError(`op ${op.op_id} does not fit the largest size bucket on its own`);
       }
     }
     flush();
-    if (out.length > MAX_UPLOAD_BLOBS) {
-      throw new RangeError(
-        `${out.length} blobs exceeds the ${MAX_UPLOAD_BLOBS} one upload may claim; push more often`,
-      );
-    }
     return out;
   }
 

@@ -127,13 +127,49 @@ and the cursor still advances past it (spec §3.3:68). One bad blob must not
 strand a device. The two conditions that *do* stop a sync are a chain break and
 an unknown newer schema version; nothing else is ever promoted to them.
 
-### emit, checkpoint, push
+### emit, checkpoint, push — and the outbox
 
 `emit` appends a validated op to a pending batch. `push` seals the batch into
 padded blobs on the size-bucket ladder, chains them onto this writer's hot head,
 uploads, and then syncs so the ops are folded at the positions the server
 assigned. The ingest writer never batches — that is a server-side rule, so one
 email is one row — but a client always may.
+
+**`client_state.pending` is the outbox**, and there is deliberately no second
+queue beside it: `emit` appends and commits in one call, so an op is durable the
+instant it is authored, and a crash cannot leave it in one store and not the
+other. `outbox/outbox.ts` adds what a phone needs on top — the page loop, one
+flush at a time, and a latch that stops a hard stop being retried — and stores
+nothing of its own. `cli push` goes through it.
+
+**One `push` is one upload, and an upload claims at most 8 positions**
+(`api.maxUploadBlobs`; 8 top-bucket blobs base64'd always fit `maxUploadBytes`,
+which `api/sync_test.go` pins and `outbox.test.ts` re-measures). A longer batch
+is **paged**, not refused: `PushReport.remaining` says what is left and
+`Outbox.flush` loops. Refusing it — which this client used to do, with "push more
+often" — makes an outbox that a week offline can put permanently beyond draining.
+
+**A push writes down what it is about to upload, before it uploads it.**
+`POST /api/v1/sync` has an ambiguous outcome: the rows commit and then the answer
+is sent, so a process killed in between cannot tell whether they landed.
+Everything that records an upload — `authoredHead`, the emptied `pending` — is
+written *after* that answer, so none of it survives to describe the request that
+never returned. `ClientState.inflight` is written before it, and the next push
+settles it by **measurement**: the recorded hash of the last blob against the
+chain head the next sync verified. Two independent sources, one of them the
+server's own bytes re-hashed locally.
+
+Without that record the same interruption goes two ways, both permanent, both
+reproduced in `outbox/outbox.test.ts` by actually `SIGKILL`ing a child mid-upload:
+if the pre-push sync has caught up the ops are appended **a second time** at fresh
+counters, and if it has not, the greedy packer regroups them with whatever was
+emitted since and the server answers `409 chain_break` — which nothing clears,
+and which reaches the user as a tampering warning for the client's own fault.
+
+A resend rebuilds the recorded grouping rather than the bytes, re-hashes it, and
+refuses to send anything that does not reproduce the hash it wrote down. That is
+what makes the server's idempotent-replay contract (`oplog.AppendClient`) apply
+instead of its chain break.
 
 `push` emits a `writer_checkpoint` **without being asked** whenever the roster
 differs from the one it last checkpointed against, including the first time. A
