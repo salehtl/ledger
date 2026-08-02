@@ -96,6 +96,37 @@ const (
 	// MaxUnboundedPerBranch bounds how many unbounded quantifiers may appear in
 	// one alternation branch. See the polynomial-backtracking note above.
 	MaxUnboundedPerBranch = 1
+	// MaxRepetitionWidth bounds the BACKTRACKING WIDTH of one alternation
+	// branch: the number of distinct ways the bounded quantifiers and
+	// alternations along it can carve up the same input.
+	//
+	// This is the bound MaxBoundProduct is not. That one multiplies quantifier
+	// UPPER bounds and so bounds how LONG a match can be; this one multiplies
+	// the SIZE OF EACH CHOICE — (hi - lo + 1) per repetition, the branch count
+	// per alternation — and so bounds how many times the engine can re-split
+	// the same characters. See the ReDoS note above the reason codes.
+	//
+	// 1,024 is 5.1x the widest pattern the seed set ships (the ENBD credit
+	// anchor is exactly 200) and 16x below the smallest measured blow-up. It
+	// is also, independently, the widest pair MaxBoundProduct still lets you
+	// write instead of collapsing: {1,a}{1,b} collapses to {2,a+b}, and
+	// a + b <= 64 maximises a*b at 32*32. The full measured table lives in the
+	// TypeScript mirror's doc comment, which is the one a reader of the client
+	// finds first.
+	MaxRepetitionWidth = 1024
+)
+
+// Saturation caps for the length and width accumulators. Both rules report a
+// single yes/no, so the only thing an exact value would buy over "past the cap"
+// is an overflow: a{99999} nested ten deep is 10^49 and (?:(?:a{1,9}){9}){9} is
+// 9^81. Go's int would WRAP, and a wrapped product that lands back under the
+// limit is an accepted pattern. The TypeScript mirror saturates identically —
+// its Number would go to Infinity rather than wrap, so saturating in both is
+// what keeps them the same function rather than two that happen to agree on
+// small inputs.
+const (
+	lenCap   = 1 << 30
+	widthCap = MaxRepetitionWidth + 1
 )
 
 // Reason codes. These are the contract with the TypeScript mirror (Task 20),
@@ -125,6 +156,8 @@ const (
 	ReasonGroupUnboundedQuantifier       = "group_unbounded_quantifier"
 	ReasonUnboundedInsideQuantifiedGroup = "unbounded_inside_quantified_group"
 	ReasonMultipleUnboundedQuantifiers   = "multiple_unbounded_quantifiers"
+	ReasonNestedVariableRepetition       = "nested_variable_repetition"
+	ReasonRepetitionWidthTooLarge        = "repetition_width_too_large"
 	ReasonBoundProductTooLarge           = "bound_product_too_large"
 	ReasonMalformedRepetition            = "malformed_repetition"
 	ReasonEmptyCharClass                 = "empty_character_class"
@@ -148,7 +181,8 @@ func AllReasonCodes() []string {
 		ReasonNamedGroupJSSyntax, ReasonUnsupportedGroup, ReasonInvalidGroupName,
 		ReasonDuplicateGroupName, ReasonUnbalancedParen, ReasonBareDot,
 		ReasonGroupUnboundedQuantifier, ReasonUnboundedInsideQuantifiedGroup,
-		ReasonMultipleUnboundedQuantifiers, ReasonBoundProductTooLarge, ReasonMalformedRepetition, ReasonEmptyCharClass,
+		ReasonMultipleUnboundedQuantifiers, ReasonNestedVariableRepetition, ReasonRepetitionWidthTooLarge,
+		ReasonBoundProductTooLarge, ReasonMalformedRepetition, ReasonEmptyCharClass,
 		ReasonUnterminatedCharClass, ReasonClassLiteralBracket, ReasonFlagNotAllowed,
 		ReasonDuplicateFlag, ReasonNotCompilable,
 	}
@@ -302,7 +336,48 @@ type frame struct {
 	// maxUnbounded is the largest branchUnbounded of any branch that has
 	// already ended at a '|'. worstBranch combines the two.
 	maxUnbounded int
+
+	// The length and width accumulators below are the two ReDoS cost rules.
+	// They are kept per BRANCH and folded at every '|', for the same reason
+	// branchUnbounded is: a backtracking engine explores one branch at a time,
+	// so `a|bcd` is two alternatives rather than a four-rune atom.
+
+	// branchMin and branchMax are the match length in runes of the branch being
+	// scanned, saturating at lenCap.
+	branchMin, branchMax int
+	// min and max are folded across the branches already ended at a '|': the
+	// shortest and the longest this group can match.
+	min, max int
+	// folded records that at least one branch has been folded, so min is a
+	// measurement rather than its zero value.
+	folded bool
+	// branchWidth is the backtracking width of the branch being scanned: the
+	// product of every choice along it. width is the SUM of the widths of the
+	// branches already folded — alternatives add, they do not multiply.
+	branchWidth, width int
 }
+
+func newFrame() *frame { return &frame{best: 1, branchWidth: 1} }
+
+// endBranch closes the branch at a '|' (or at the group's end), folding it into
+// the frame's totals.
+func (f *frame) endBranch() {
+	f.maxUnbounded = f.worstBranch()
+	f.branchUnbounded = 0
+	if !f.folded || f.branchMin < f.min {
+		f.min = f.branchMin
+	}
+	if f.branchMax > f.max {
+		f.max = f.branchMax
+	}
+	f.folded = true
+	f.width = satAdd(f.width, f.branchWidth)
+	f.branchMin, f.branchMax, f.branchWidth = 0, 0, 1
+}
+
+// variable reports whether this group can match more than one LENGTH, which is
+// what makes repeating it explosive.
+func (f *frame) variable() bool { return f.min != f.max }
 
 // worstBranch is the number of unbounded quantifiers in this group's most
 // expensive alternation branch, including the branch still being scanned.
@@ -313,12 +388,6 @@ func (f *frame) worstBranch() int {
 		return f.branchUnbounded
 	}
 	return f.maxUnbounded
-}
-
-// endBranch closes the branch at a '|'.
-func (f *frame) endBranch() {
-	f.maxUnbounded = f.worstBranch()
-	f.branchUnbounded = 0
 }
 
 type patternScanner struct {
@@ -383,7 +452,7 @@ func (v *patternScanner) scan() {
 		return
 	}
 
-	v.stack = []*frame{{best: 1}}
+	v.stack = []*frame{newFrame()}
 	i := 0
 	for i < len(v.src) {
 		switch c := v.src[i]; {
@@ -401,6 +470,7 @@ func (v *patternScanner) scan() {
 			}
 			child := v.stack[len(v.stack)-1]
 			v.stack = v.stack[:len(v.stack)-1]
+			child.endBranch()
 			i = v.quantify(i+1, atomGroup, child)
 		case c == '.':
 			v.add(i, ReasonBareDot, `a bare '.' matches \r, U+2028 and U+2029 in Go but not in JavaScript; write [^\n]`)
@@ -428,10 +498,21 @@ func (v *patternScanner) scan() {
 		v.add(len(v.src), ReasonUnbalancedParen,
 			fmt.Sprintf("%d group(s) left open", len(v.stack)-1))
 	}
-	if v.stack[0].best > MaxBoundProduct {
+	root := v.stack[0]
+	root.endBranch()
+	if root.best > MaxBoundProduct {
 		v.addOnce(0, ReasonBoundProductTooLarge,
 			fmt.Sprintf("the product of {n,m} upper bounds along one nesting path is %d; the limit is %d",
-				v.stack[0].best, MaxBoundProduct))
+				root.best, MaxBoundProduct))
+	}
+	if root.width > MaxRepetitionWidth {
+		v.addOnce(0, ReasonRepetitionWidthTooLarge,
+			fmt.Sprintf("one alternation branch can split the same input %d different ways; the limit is %d. "+
+				"That is the number of paths a BACKTRACKING engine can try before it gives up, and it is not "+
+				"what MaxBoundProduct measures: eight sibling [a-z]{1,8} runs nest nothing and quantify no "+
+				"group, and took 7,140 ms on a 512-character body in Bun 1.3.14. Collapse adjacent runs — "+
+				"(?:X{1,4}){8} is X{8,32} — or make them fixed-width",
+				root.width, MaxRepetitionWidth))
 	}
 }
 
@@ -464,6 +545,24 @@ func (v *patternScanner) quantify(next int, kind atomKind, child *frame) int {
 				"this group is quantified and contains an unbounded quantifier; "+
 					"that is the (a+)+ nesting — bound the inner quantifier with {n,m}")
 		}
+	}
+
+	// The bounded analogue of the rule above. A group that can repeat MORE THAN
+	// ONCE re-splits its own contents on every repeat, so a variable-length
+	// interior is raised to the power of the repeat count. '?' and {0,1} are
+	// exempt because one repetition multiplies nothing — and that exemption is
+	// load-bearing rather than a nicety: ([0-9]{1,4})? is this dialect's own
+	// sanctioned rewrite for ([0-9]+)?, and a rule that refused it would make
+	// the ban above inexpressible.
+	if child != nil && q.present && !q.unbounded && q.max >= 2 && child.variable() {
+		v.add(next, ReasonNestedVariableRepetition,
+			fmt.Sprintf("this group repeats up to %d times and its contents match between %d and %d runes; "+
+				"a variable-length repetition inside a repetition is exponential in the repeat count in a "+
+				"BACKTRACKING engine, which RE2 is not and the device's is. MEASURED in Bun 1.3.14 on a "+
+				"512-rune subject: (?:[a-z0-9 ]{1,8}){8}z is 2,178 ms and (?:(?:[a-z]{1,4}){4}){4}z is "+
+				"1,948 ms, while (?:[a-z]{8}){8}z — same bound product, fixed-width interior — is 0.0 ms. "+
+				"Collapse it: (?:X{1,4}){8} is X{8,32}",
+				q.max, child.min, child.max))
 	}
 
 	if q.present && q.unbounded {
@@ -501,7 +600,69 @@ func (v *patternScanner) quantify(next int, kind atomKind, child *frame) int {
 	if prod > cur.best {
 		cur.best = prod
 	}
+
+	// Length and width. A simple atom is one rune wide and offers one choice; a
+	// group carries whatever its own branches folded to.
+	atomMin, atomMax, atomWidth := 1, 1, 1
+	if child != nil {
+		atomMin, atomMax, atomWidth = child.min, child.max, child.width
+	}
+	addMin, addMax, addWidth := atomMin, atomMax, atomWidth
+	if q.present {
+		if q.unbounded {
+			// Quadratic, not exponential, and already counted by
+			// MaxUnboundedPerBranch. Its LENGTH is still unbounded, which is
+			// what makes an enclosing group variable.
+			addMin, addMax = satMul(q.min, atomMin), lenCap
+		} else {
+			addMin, addMax = satMul(q.min, atomMin), satMul(q.max, atomMax)
+			// Repeating the atom q.max times re-splits its interior that many
+			// times, and the repetition count is itself a choice.
+			addWidth = satMul(satPow(atomWidth, q.max), q.max-q.min+1)
+		}
+	}
+	cur.branchMin = satAdd(cur.branchMin, addMin)
+	cur.branchMax = satAdd(cur.branchMax, addMax)
+	cur.branchWidth = satMul(cur.branchWidth, addWidth)
 	return after
+}
+
+func satAdd(a, b int) int {
+	if s := a + b; s <= lenCap {
+		return s
+	}
+	return lenCap
+}
+
+func satMul(a, b int) int {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > lenCap/b {
+		return lenCap
+	}
+	return a * b
+}
+
+// satPow is a^n, saturating at widthCap. n is a repeat count, so a^0 is 1.
+func satPow(a, n int) int {
+	if a <= 1 {
+		if a == 0 {
+			return 0
+		}
+		return 1 // a{99999} on a fixed-width atom must not loop 99,999 times
+	}
+	out := 1
+	for k := 0; k < n; k++ {
+		if out > widthCap/a {
+			return widthCap
+		}
+		out *= a
+		if out > widthCap {
+			return widthCap
+		}
+	}
+	return out
 }
 
 // mulCapped keeps the running product from overflowing on a pattern that is
@@ -520,7 +681,11 @@ func mulCapped(a, b int) int {
 type quant struct {
 	present   bool
 	unbounded bool
-	max       int
+	// min and max are the repetition's own bounds. min is read by the width
+	// rule, which counts (max - min + 1) alternatives per repetition; max is
+	// also the bound-product multiplier. For an unbounded form max is unset and
+	// only min is meaningful.
+	min, max int
 }
 
 // readQuant reads a quantifier at i, including its optional non-greedy '?'
@@ -530,10 +695,12 @@ func (v *patternScanner) readQuant(i int) (quant, int) {
 		return quant{}, i
 	}
 	switch v.src[i] {
-	case '*', '+':
-		return quant{present: true, unbounded: true}, v.skipLazy(i + 1)
+	case '*':
+		return quant{present: true, unbounded: true, min: 0}, v.skipLazy(i + 1)
+	case '+':
+		return quant{present: true, unbounded: true, min: 1}, v.skipLazy(i + 1)
 	case '?':
-		return quant{present: true, max: 1}, v.skipLazy(i + 1)
+		return quant{present: true, min: 0, max: 1}, v.skipLazy(i + 1)
 	case '{':
 		return v.readBraceQuant(i)
 	}
@@ -566,7 +733,7 @@ func (v *patternScanner) readBraceQuant(i int) (quant, int) {
 		return quant{}, i + 1
 	}
 	if j < len(v.src) && v.src[j] == '}' {
-		return quant{present: true, max: lo}, v.skipLazy(j + 1)
+		return quant{present: true, min: lo, max: lo}, v.skipLazy(j + 1)
 	}
 	if j >= len(v.src) || v.src[j] != ',' {
 		v.add(i, ReasonMalformedRepetition, "unterminated repetition")
@@ -582,7 +749,7 @@ func (v *patternScanner) readBraceQuant(i int) (quant, int) {
 		return quant{}, i + 1
 	}
 	if hiStart == j { // {n,}
-		return quant{present: true, unbounded: true}, v.skipLazy(j + 1)
+		return quant{present: true, unbounded: true, min: lo}, v.skipLazy(j + 1)
 	}
 	hi, err := strconv.Atoi(string(v.src[hiStart:j]))
 	if err != nil {
@@ -593,7 +760,7 @@ func (v *patternScanner) readBraceQuant(i int) (quant, int) {
 		v.add(i, ReasonMalformedRepetition, fmt.Sprintf("repetition {%d,%d} counts down", lo, hi))
 		return quant{}, v.skipLazy(j + 1)
 	}
-	return quant{present: true, max: hi}, v.skipLazy(j + 1)
+	return quant{present: true, min: lo, max: hi}, v.skipLazy(j + 1)
 }
 
 // escape validates the escape sequence starting at i (which points at the
@@ -697,7 +864,7 @@ func (v *patternScanner) charClass(i int) int {
 // frame, and returns the index just past the opener.
 func (v *patternScanner) openGroup(i int) int {
 	push := func(next int) int {
-		v.stack = append(v.stack, &frame{best: 1})
+		v.stack = append(v.stack, newFrame())
 		return next
 	}
 	capture := func() {

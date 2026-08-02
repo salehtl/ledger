@@ -89,7 +89,13 @@
  * None. `tmpl/dialect.ts` is pure and so is this; both reach Hermes.
  */
 
-import { MAX_UNBOUNDED_PER_BRANCH, compile as compileRegex, validatePattern } from "../tmpl/dialect";
+import {
+  MAX_REPETITION_WIDTH,
+  MAX_UNBOUNDED_PER_BRANCH,
+  Reason,
+  compile as compileRegex,
+  validatePattern,
+} from "../tmpl/dialect";
 import { canonical, runeLength, truncateRunes } from "./canon";
 
 /** How a pattern is matched. The dictionary may only ever use the first two. */
@@ -241,135 +247,31 @@ function hasLineBreak(s: string): boolean {
 }
 
 /**
- * Rejects a pattern containing a VARIABLE-LENGTH repetition inside a QUANTIFIED
- * GROUP — the one cost the dialect's bounds do not cover, measured rather than
- * argued.
+ * Where the nested-variable-repetition rule went.
  *
- * # Why this exists on top of `validatePattern`
+ * Task 20 measured it and implemented it HERE, as a device-side cost policy on
+ * top of `validatePattern`, deliberately keeping it out of `tmpl/dialect.ts`
+ * because that file is a two-engine agreement contract with a Go mirror and a
+ * committed conformance fixture. Its own note said what would happen if
+ * templates turned out to need it too: "it moves — in both languages, with the
+ * fixture regenerated."
  *
- * `tmpl/dialect.ts` bounds unbounded quantifiers (`MAX_UNBOUNDED_PER_BRANCH`)
- * and the product of `{n,m}` upper bounds along a nesting path
- * (`MAX_BOUND_PRODUCT` = 64). Neither bounds the number of ways a *bounded*
- * quantifier can split its input, and nesting one inside a repetition multiplies
- * that count. Measured here, in Bun 1.3.14, against a 512-rune subject — every
- * one of these is ACCEPTED by `validatePattern` today:
+ * They did, and it has. The same shapes reach a device as PUBLISHED TEMPLATES,
+ * which run against every incoming message on every device and server-side in
+ * ingest, so the bound belongs where publishing is gated. `tmpl/dialect.ts` now
+ * carries it as `nested_variable_repetition`, with a second rule
+ * (`repetition_width_too_large`) for the same explosion reached by
+ * CONCATENATION, which no nesting rule can see. Both are in
+ * `conformance/dialect/patterns.json`, so Go and TypeScript are held to the
+ * same answer.
  *
- * | pattern                          | bound product | time      |
- * |----------------------------------|---------------|-----------|
- * | `^(?:[a-z]{8}){8}z$`             | 64            | 0.7 ms    |
- * | `^[a-z]{1,64}z$`                 | 64            | 1.0 ms    |
- * | `^(?:[a-z0-9 ]{1,4}){8}z$`       | 32            | 0.9 ms    |
- * | `^(?:[a-z0-9 ]{1,8}){8}z$`       | 64            | **216 ms**|
- * | `^(?:(?:[a-z]{1,4}){4}){4}z$`    | 64            | **6,327 ms** |
- *
- * A 216 ms match is 13 minutes across a 3,683-row re-categorization pass, and
- * the 6.3-second one is a frozen phone. The rows that are cheap and the rows
- * that are catastrophic have the SAME bound product, so no tightening of that
- * number separates them: what separates them is whether a variable-length
- * repetition sits inside a repetition.
- *
- * # Why it is here and not in the dialect
- *
- * `tmpl/dialect.ts` is a two-engine AGREEMENT contract with a Go mirror and a
- * committed conformance fixture; changing it changes what the server may
- * publish. This is a device-side COST policy for user-authored rules, which the
- * server never sees. If a later measurement shows templates need it too, it
- * moves — in both languages, with the fixture regenerated.
- *
- * # And what it does not claim
- *
- * The times above are Bun's. Hermes is a different engine and nobody has
- * measured it. This rule is structural, so it does not inherit those numbers —
- * "a variable repetition inside a repetition is exponential in the repeat count"
- * is a property of backtracking, not of a build — but the residual is real and
- * recorded: a pattern this accepts could still be slower on Hermes than on Bun.
- * Task 28's device run is where that is measured.
+ * What is left here is the mapping from the dialect's reason code to this
+ * module's defect code, in {@link prepareRule}. There is deliberately no second
+ * implementation: two structural scanners for one rule is a rule that drifts,
+ * and this one already had — the copy here refused `([0-9]{1,4})?`, which is
+ * the dialect's own sanctioned rewrite for `([0-9]+)?`, so the same regex was
+ * legal in a template and illegal as a user rule.
  */
-export function nestedVariableRepetition(p: string): boolean {
-  const r = [...p];
-  const stack: Array<{ variable: boolean }> = [{ variable: false }];
-  const top = (): { variable: boolean } => stack[stack.length - 1]!;
-  let inClass = false;
-  for (let i = 0; i < r.length; i++) {
-    const c = r[i]!;
-    if (inClass) {
-      if (c === "\\") {
-        i++;
-        continue;
-      }
-      if (c !== "]") continue;
-      inClass = false;
-      i = mark(r, i + 1, top());
-      continue;
-    }
-    switch (c) {
-      case "\\":
-        i = mark(r, i + 2, top());
-        continue;
-      case "[":
-        inClass = true;
-        continue;
-      case "(":
-        stack.push({ variable: false });
-        continue;
-      case ")": {
-        const frame = stack.pop() ?? { variable: false };
-        const q = quantifierAt(r, i + 1);
-        if (q === null) {
-          // Not repeated: whatever variability it holds is still variability in
-          // the enclosing scope, but it is not multiplied by anything.
-          if (frame.variable) top().variable = true;
-          continue;
-        }
-        // The group repeats, so everything variable inside it multiplies.
-        if (frame.variable) return true;
-        i = q.end;
-        if (q.variable) top().variable = true;
-        continue;
-      }
-      default:
-        i = mark(r, i + 1, top());
-        continue;
-    }
-  }
-  return false;
-}
-
-/** Consumes a quantifier at `j`, recording variability, and returns the new index. */
-function mark(r: readonly string[], j: number, frame: { variable: boolean }): number {
-  const q = quantifierAt(r, j);
-  if (q === null) return j - 1;
-  if (q.variable) frame.variable = true;
-  return q.end;
-}
-
-/**
- * Reads a quantifier starting at `j`, or null. `end` is the index of its last
- * character; `variable` is whether it can consume a RANGE of lengths, which is
- * what multiplies the search space.
- *
- * `validatePattern` has already rejected a malformed `{`, so an unparseable one
- * here is treated as a literal brace rather than guessed at.
- */
-function quantifierAt(r: readonly string[], j: number): { end: number; variable: boolean } | null {
-  const c = r[j];
-  if (c === undefined) return null;
-  const lazy = (end: number): number => (r[end + 1] === "?" ? end + 1 : end);
-  if (c === "?" || c === "*" || c === "+") return { end: lazy(j), variable: true };
-  if (c !== "{") return null;
-  let k = j + 1;
-  let lo = "";
-  while (r[k] !== undefined && r[k]! >= "0" && r[k]! <= "9") lo += r[k++]!;
-  if (lo === "") return null;
-  if (r[k] === "}") return { end: lazy(k), variable: false };
-  if (r[k] !== ",") return null;
-  k++;
-  let hi = "";
-  while (r[k] !== undefined && r[k]! >= "0" && r[k]! <= "9") hi += r[k++]!;
-  if (r[k] !== "}") return null;
-  // `{n,}` is unbounded; `{n,m}` is variable when m > n.
-  return { end: lazy(k), variable: hi === "" || Number(hi) > Number(lo) };
-}
 
 /**
  * Orders one tier of patterns TOTALLY, so that two devices folding the same log
@@ -473,8 +375,17 @@ function prepareRule(r: UserRule, defects: Defect[]): Prepared | null {
   let re: RegExp | null = null;
   if (match === "regex") {
     const reasons = validatePattern(pattern, [...REGEX_FLAGS]);
-    if (reasons.length > 0) return bad("regex_rejected", reasons);
-    if (nestedVariableRepetition(pattern)) return bad("regex_nested_variable_repetition");
+    if (reasons.length > 0) {
+      // The cost rules keep their own defect code rather than folding into
+      // `regex_rejected`. They are the only refusals a user can act on — the
+      // pattern is well-formed and the fix is to collapse it, not to correct a
+      // syntax error — so the code the UI switches on has to stay distinct.
+      // `reasons` is carried either way, so nothing is lost.
+      const cost =
+        reasons.includes(Reason.NestedVariableRepetition) ||
+        reasons.includes(Reason.RepetitionWidthTooLarge);
+      return bad(cost ? "regex_nested_variable_repetition" : "regex_rejected", reasons);
+    }
     re = compileRegex(pattern, [...REGEX_FLAGS]);
   }
   return { id: r.id, pattern, match, category, priority: r.priority, re };
@@ -610,3 +521,5 @@ export function categorize(merchantRaw: string, prepared: PreparedRules): Decisi
  * to be read from.
  */
 export const REGEX_MAX_UNBOUNDED_PER_BRANCH = MAX_UNBOUNDED_PER_BRANCH;
+/** The other cost bound a rule author can hit, for the same reason. */
+export const REGEX_MAX_REPETITION_WIDTH = MAX_REPETITION_WIDTH;

@@ -63,6 +63,64 @@ export const MAX_BOUND_PRODUCT = 64;
  * `[0-9]+[0-9]+` is `[0-9]{2,}`.
  */
 export const MAX_UNBOUNDED_PER_BRANCH = 1;
+/**
+ * Bounds the BACKTRACKING WIDTH of one alternation branch: the number of
+ * distinct ways the bounded quantifiers and alternations along it can carve up
+ * the same input.
+ *
+ * This is the bound `MAX_BOUND_PRODUCT` is not. That one multiplies quantifier
+ * UPPER bounds and so bounds how LONG a match can be; this one multiplies the
+ * SIZE OF EACH CHOICE — `(hi - lo + 1)` per repetition, the branch count per
+ * alternation — and so bounds how many times the engine can re-split the same
+ * characters. Two patterns can score identically on the first and differ by
+ * four orders of magnitude on the second, which is exactly how a multi-second
+ * pattern passed a gate calibrated on the first. Measured in Bun 1.3.14 with
+ * `re.exec(subject)` — unanchored, `subject = "a".repeat(512)`, so every row
+ * FAILS to match, which is the case a backtracking engine pays for. Every one
+ * of these passed the dialect before this bound existed:
+ *
+ *     width      pattern                              time
+ *          1     (?:[a-z]{8}){8}z                      0.0 ms
+ *         64     [a-z]{1,64}z                          0.0 ms
+ *        256     (?:[a-z]{1,4}){4}z                    0.5 ms
+ *      1,024     (?:[a-z]{1,4}){5}z                    2.2 ms
+ *      4,096     (?:[a-z]{1,4}){6}z                    8.4 ms
+ *     16,384     (?:[a-z]{1,4}){7}z                   39.2 ms
+ *     65,536     (?:[a-z]{1,4}){8}z                  148.6 ms
+ * 16,777,216     (?:[a-z0-9 ]{1,8}){8}z             2,178 ms
+ * 16,777,216     [a-z]{1,8} x8, CONCATENATED        7,140 ms
+ * 4.3 x 10^9     (?:(?:[a-z]{1,4}){4}){4}z          1,948 ms
+ *
+ * Rows 1 and 8 have the SAME bound product of 64 — 0.0 ms and 2.2 seconds — so
+ * no tightening of that number could ever separate them. The LAST TWO ROWS are
+ * why this bound exists as well as `nested_variable_repetition`: eight sibling
+ * repetitions nest nothing and quantify no group, so no nesting rule can see
+ * them, and they are the same explosion — 7.1 seconds on a 512-character body,
+ * from a pattern published to every device.
+ *
+ * 1,024 is 5.1x the widest pattern this corpus ships — the ENBD credit anchor
+ * `(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n]
+ * (?:credited|deposited)[ \n](?:in)?to your account` is exactly 200: an
+ * optional three-letter currency (2), a `{0,24}` digit run (25), a two-way
+ * alternation (2) and an optional `in` (2) — and 16x below the smallest
+ * measured blow-up. It is also, independently, the widest pair
+ * `MAX_BOUND_PRODUCT` still lets you write instead of collapsing:
+ * `{1,a}{1,b}` collapses to `{2,a+b}`, and `a + b <= 64` maximises `a * b`
+ * at `32 * 32`.
+ *
+ * An UNBOUNDED quantifier contributes 1 here rather than infinity. It is not
+ * unbounded work — it is quadratic work, and it is bounded by
+ * `MAX_UNBOUNDED_PER_BRANCH` instead. Counting it as infinite would refuse
+ * `الدفع الى\n(?P<v>[^\n]+)`, which is a shipping seed.
+ *
+ * What this bound does NOT do is make an accepted pattern free. The widest one
+ * it permits, `[0-9]{1,32}[0-9]{1,32}z`, costs 1,858 ms against 2,000,000
+ * digits — `MaxBodyBytes`. That is the residual, it is linear in the body
+ * rather than quadratic, and it is ~1,000x cheaper than the residual the
+ * dialect already accepts for ONE unbounded quantifier (`[0-9]+z`, 17,935 ms
+ * on 200,000 digits). Both are recorded in the spec's residual section.
+ */
+export const MAX_REPETITION_WIDTH = 1024;
 
 /**
  * Reason codes. Identical strings to Go's, compared mechanically through
@@ -91,6 +149,8 @@ export const Reason = {
   GroupUnboundedQuantifier: "group_unbounded_quantifier",
   UnboundedInsideQuantifiedGroup: "unbounded_inside_quantified_group",
   MultipleUnboundedQuantifiers: "multiple_unbounded_quantifiers",
+  NestedVariableRepetition: "nested_variable_repetition",
+  RepetitionWidthTooLarge: "repetition_width_too_large",
   BoundProductTooLarge: "bound_product_too_large",
   MalformedRepetition: "malformed_repetition",
   EmptyCharClass: "empty_character_class",
@@ -230,6 +290,25 @@ interface Frame {
   branchUnbounded: number;
   /** The largest `branchUnbounded` of any branch already ended at a `|`. */
   maxUnbounded: number;
+
+  // The length and width accumulators below are what the two cost rules added
+  // for the ReDoS hole read. They are kept per BRANCH and folded at every `|`,
+  // for the same reason `branchUnbounded` is: a backtracking engine explores
+  // one branch at a time, so `a|bcd` is two alternatives rather than a
+  // four-rune atom.
+
+  /** Match length in runes of the branch being scanned, saturating at {@link LEN_CAP}. */
+  branchMin: number;
+  branchMax: number;
+  /** Folded across branches already ended at a `|`: the shortest and longest this group can match. */
+  min: number;
+  max: number;
+  /** True once a branch has been folded, so `min` is a measurement rather than its initial value. */
+  folded: boolean;
+  /** The backtracking width of the branch being scanned: the product of every choice along it. */
+  branchWidth: number;
+  /** The SUM of the widths of the branches already ended at a `|` — alternatives add, they do not multiply. */
+  width: number;
 }
 
 /**
@@ -241,13 +320,48 @@ function worstBranch(f: Frame): number {
   return Math.max(f.branchUnbounded, f.maxUnbounded);
 }
 
+/** Closes the branch at a `|` (or at the group's end), folding it into the frame's totals. */
+function endBranch(f: Frame): void {
+  f.maxUnbounded = worstBranch(f);
+  f.branchUnbounded = 0;
+  f.min = f.folded ? Math.min(f.min, f.branchMin) : f.branchMin;
+  f.max = Math.max(f.max, f.branchMax);
+  f.folded = true;
+  f.width = satAdd(f.width, f.branchWidth);
+  f.branchMin = 0;
+  f.branchMax = 0;
+  f.branchWidth = 1;
+}
+
+function newFrame(): Frame {
+  return {
+    hasUnbounded: false,
+    best: 1,
+    branchUnbounded: 0,
+    maxUnbounded: 0,
+    branchMin: 0,
+    branchMax: 0,
+    min: 0,
+    max: 0,
+    folded: false,
+    branchWidth: 1,
+    width: 0,
+  };
+}
+
+/** A group whose contents can match more than one LENGTH is what makes repeating it explosive. */
+function isVariable(f: Frame): boolean {
+  return f.min !== f.max;
+}
+
 interface Quant {
   present: boolean;
   unbounded: boolean;
+  min: number;
   max: number;
 }
 
-const NO_QUANT: Quant = { present: false, unbounded: false, max: 0 };
+const NO_QUANT: Quant = { present: false, unbounded: false, min: 1, max: 1 };
 
 class Scanner {
   readonly src: string[];
@@ -299,7 +413,7 @@ class Scanner {
       return;
     }
 
-    this.stack = [{ hasUnbounded: false, best: 1, branchUnbounded: 0, maxUnbounded: 0 }];
+    this.stack = [newFrame()];
     let i = 0;
     while (i < this.src.length) {
       const c = this.src[i]!;
@@ -316,6 +430,7 @@ class Scanner {
           continue;
         }
         const child = this.stack.pop()!;
+        endBranch(child);
         i = this.quantify(i + 1, "group", child);
       } else if (c === ".") {
         this.add(i, Reason.BareDot);
@@ -330,9 +445,7 @@ class Scanner {
         this.add(i, Reason.MalformedRepetition);
         i++;
       } else if (c === "|") {
-        const cur = this.top();
-        cur.maxUnbounded = worstBranch(cur);
-        cur.branchUnbounded = 0;
+        endBranch(this.top());
         i++;
       } else if (c === "^" || c === "$") {
         i++;
@@ -342,7 +455,10 @@ class Scanner {
     }
 
     if (this.stack.length > 1) this.add(this.src.length, Reason.UnbalancedParen);
-    if (this.stack[0]!.best > MAX_BOUND_PRODUCT) this.addOnce(Reason.BoundProductTooLarge);
+    const root = this.stack[0]!;
+    endBranch(root);
+    if (root.best > MAX_BOUND_PRODUCT) this.addOnce(Reason.BoundProductTooLarge);
+    if (root.width > MAX_REPETITION_WIDTH) this.addOnce(Reason.RepetitionWidthTooLarge);
   }
 
   /**
@@ -360,6 +476,17 @@ class Scanner {
     if (q.present && kind === "group") {
       if (q.unbounded) this.add(next, Reason.GroupUnboundedQuantifier);
       else if (childUnbounded) this.add(next, Reason.UnboundedInsideQuantifiedGroup);
+    }
+
+    // The bounded analogue of `unbounded_inside_quantified_group`. A group that
+    // can repeat MORE THAN ONCE re-splits its own contents on every repeat, so a
+    // variable-length interior is raised to the power of the repeat count. `?`
+    // and `{0,1}` are exempt because one repetition multiplies nothing — and
+    // that exemption is load-bearing rather than a nicety: `([0-9]{1,4})?` is
+    // this dialect's own sanctioned rewrite for `([0-9]+)?`, and a rule that
+    // refused it would make the ban above inexpressible.
+    if (child !== null && q.present && !q.unbounded && q.max >= 2 && isVariable(child)) {
+      this.add(next, Reason.NestedVariableRepetition);
     }
 
     if (q.present && q.unbounded) cur.hasUnbounded = true;
@@ -381,6 +508,34 @@ class Scanner {
     let prod = childBest;
     if (q.present && !q.unbounded) prod = mulCapped(childBest, q.max);
     if (prod > cur.best) cur.best = prod;
+
+    // Length and width. A simple atom is one rune wide and offers one choice;
+    // a group carries whatever its own branches folded to.
+    const atomMin = child ? child.min : 1;
+    const atomMax = child ? child.max : 1;
+    const atomWidth = child ? child.width : 1;
+
+    let addMin = atomMin;
+    let addMax = atomMax;
+    let addWidth = atomWidth;
+    if (q.present) {
+      if (q.unbounded) {
+        // Quadratic, not exponential, and already counted by
+        // MAX_UNBOUNDED_PER_BRANCH. Its LENGTH is still unbounded, which is what
+        // makes an enclosing group variable.
+        addMin = satMul(q.min, atomMin);
+        addMax = LEN_CAP;
+      } else {
+        addMin = satMul(q.min, atomMin);
+        addMax = satMul(q.max, atomMax);
+        // Repeating the atom `q.max` times re-splits its interior that many
+        // times, and the repetition count is itself a choice.
+        addWidth = satMul(satPow(atomWidth, q.max), q.max - q.min + 1);
+      }
+    }
+    cur.branchMin = satAdd(cur.branchMin, addMin);
+    cur.branchMax = satAdd(cur.branchMax, addMax);
+    cur.branchWidth = satMul(cur.branchWidth, addWidth);
     return after;
   }
 
@@ -389,10 +544,11 @@ class Scanner {
     if (i >= this.src.length) return [NO_QUANT, i];
     switch (this.src[i]) {
       case "*":
+        return [{ present: true, unbounded: true, min: 0, max: 0 }, this.skipLazy(i + 1)];
       case "+":
-        return [{ present: true, unbounded: true, max: 0 }, this.skipLazy(i + 1)];
+        return [{ present: true, unbounded: true, min: 1, max: 0 }, this.skipLazy(i + 1)];
       case "?":
-        return [{ present: true, unbounded: false, max: 1 }, this.skipLazy(i + 1)];
+        return [{ present: true, unbounded: false, min: 0, max: 1 }, this.skipLazy(i + 1)];
       case "{":
         return this.readBraceQuant(i);
       default:
@@ -419,7 +575,7 @@ class Scanner {
     }
     const lo = Number(this.src.slice(start, j).join(""));
     if (j < this.src.length && this.src[j] === "}") {
-      return [{ present: true, unbounded: false, max: lo }, this.skipLazy(j + 1)];
+      return [{ present: true, unbounded: false, min: lo, max: lo }, this.skipLazy(j + 1)];
     }
     if (j >= this.src.length || this.src[j] !== ",") {
       this.add(i, Reason.MalformedRepetition);
@@ -432,13 +588,13 @@ class Scanner {
       this.add(i, Reason.MalformedRepetition);
       return [NO_QUANT, i + 1];
     }
-    if (hiStart === j) return [{ present: true, unbounded: true, max: 0 }, this.skipLazy(j + 1)]; // {n,}
+    if (hiStart === j) return [{ present: true, unbounded: true, min: lo, max: 0 }, this.skipLazy(j + 1)]; // {n,}
     const hi = Number(this.src.slice(hiStart, j).join(""));
     if (hi < lo) {
       this.add(i, Reason.MalformedRepetition);
       return [NO_QUANT, this.skipLazy(j + 1)];
     }
-    return [{ present: true, unbounded: false, max: hi }, this.skipLazy(j + 1)];
+    return [{ present: true, unbounded: false, min: lo, max: hi }, this.skipLazy(j + 1)];
   }
 
   /** Validates the escape starting at `i` (which points at the backslash). */
@@ -520,7 +676,7 @@ class Scanner {
   /** Validates a group opener at `i`, pushes its frame, and returns the index just past the opener. */
   private openGroup(i: number): number {
     const push = (next: number): number => {
-      this.stack.push({ hasUnbounded: false, best: 1, branchUnbounded: 0, maxUnbounded: 0 });
+      this.stack.push(newFrame());
       return next;
     };
     const capture = (): void => {
@@ -581,6 +737,42 @@ class Scanner {
     this.names.add(name);
     return j + 1;
   }
+}
+
+/**
+ * Saturation caps for the length and width accumulators.
+ *
+ * Both are reported as a single yes/no, so the only thing an exact value would
+ * buy over "past the cap" is an overflow: `a{99999}` nested ten deep is
+ * 10^49 and `(?:(?:a{1,9}){9}){9}` is 9^81. `Number` would go to Infinity
+ * rather than wrap, but Go's int WOULD wrap, and a wrapped product that lands
+ * back under the limit is an accepted pattern. Saturating in both languages is
+ * what keeps them the same function.
+ */
+const LEN_CAP = 1 << 30;
+const WIDTH_CAP = MAX_REPETITION_WIDTH + 1;
+
+function satAdd(a: number, b: number): number {
+  const s = a + b;
+  return s > LEN_CAP ? LEN_CAP : s;
+}
+
+function satMul(a: number, b: number): number {
+  if (a === 0 || b === 0) return 0;
+  if (a > LEN_CAP / b) return LEN_CAP;
+  return a * b;
+}
+
+/** `a^n`, saturating at {@link WIDTH_CAP}. `n` is a repeat count, so `a^0` is 1. */
+function satPow(a: number, n: number): number {
+  if (a <= 1) return a === 0 ? 0 : 1; // `a{99999}` on a fixed-width atom must not loop 99,999 times
+  let out = 1;
+  for (let k = 0; k < n; k++) {
+    if (out > WIDTH_CAP / a) return WIDTH_CAP;
+    out *= a;
+    if (out > WIDTH_CAP) return WIDTH_CAP;
+  }
+  return out;
 }
 
 /** Keeps the running product from overflowing on a pattern that is rejected anyway (`a{99999}` nested ten deep). */

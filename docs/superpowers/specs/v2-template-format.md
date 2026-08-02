@@ -197,7 +197,9 @@ alternative.
 | `group_unbounded_quantifier` | `(ab)+c` | `(ab)?c`, `(ab){2,3}c` | an unbounded quantifier on a group is the catastrophic-backtracking shape |
 | `unbounded_inside_quantified_group` | `([0-9]+)?` | `([0-9]{1,4})?` | the `(a+)+` nesting that turns bounded work exponential |
 | `multiple_unbounded_quantifiers` | `[0-9]+[0-9]+z` | `[0-9]{2,}z` | the **polynomial** backtracking shape: `n^k` for `k` unbounded quantifiers that can consume the same characters. At most one per alternation branch. Measured in Bun 1.3.14: 86 ms on 800 characters for two, **88,191 ms on 400** for four, and 31,680 ms on 8,000 for `[^\n]+X[^\n]+Y`, which separates them with a mandatory literal. RE2 does not backtrack, so this is a client-side **cost** rule, not an engine divergence |
-| `bound_product_too_large` | `((a{4}){4}){5}` | `((a{4}){4}){4}` | the product of `{n,m}` upper bounds along any nesting path is capped at 64 |
+| `nested_variable_repetition` | `(?:[0-9]{1,4}){4}` | `[0-9]{4,16}` | the **bounded** analogue of `unbounded_inside_quantified_group`, and the hole it left. A group that can repeat **more than once** re-splits its own contents on every repeat, so a variable-length interior is raised to the power of the repeat count. Measured in Bun 1.3.14 on a 512-rune subject: `(?:[a-z0-9 ]{1,8}){8}z` is **2,178 ms** and `(?:(?:[a-z]{1,4}){4}){4}z` is **1,948 ms**, while `(?:[a-z]{8}){8}z` — *the same bound product of 64*, fixed-width interior — is 0.0 ms. That is why no tightening of `bound_product_too_large` separates them. `?` and `{0,1}` are exempt: one repetition multiplies nothing, and `([0-9]{1,4})?` is this table's own rewrite for `([0-9]+)?`. A client-side **cost** rule; RE2 does not backtrack |
+| `repetition_width_too_large` | `[0-9]{1,16}[0-9]{1,16}[0-9]{1,16}z` | `[0-9]{3,48}z` | the same explosion reached by **concatenation** rather than nesting, which no nesting rule can see: sibling runs nest nothing and quantify no group. Eight sibling `[a-z]{1,8}` runs took **7,140 ms** on a 512-character body, and `[0-9]{1,64}[0-9]{1,64}z` took **8,711 ms** at `MaxBodyBytes` — measured there, not extrapolated. The bound is the number of ways **one branch** can split the same input — `(hi - lo + 1)` per repetition, the branch count per alternation, `width ^ repeats` for a group — capped at **1,024**. Alternation branches *add*; concatenation *multiplies*. An unbounded quantifier counts 1, not infinity: it is quadratic, not exponential, and `multiple_unbounded_quantifiers` is its bound. 1,024 is exactly the widest collapsible pair `bound_product_too_large` still permits (`{1,a}{1,b}` collapses to `{2,a+b}`; `a+b ≤ 64` maximises `a·b` at `32·32`), and 5.1x the widest shipping seed, which is 200 |
+| `bound_product_too_large` | `((a{4}){4}){5}` | `((a{4}){4}){4}` | the product of `{n,m}` upper bounds along any nesting path is capped at 64. This bounds how **long** a match can be, not how many **ways** it can be assembled — see the two rows above |
 | `malformed_repetition` | `a{,3}` | `a{0,3}` | Go reads `a{,3}` as five literal characters; JS under `u` makes it a `SyntaxError`. A literal brace must be `\{` |
 | `empty_character_class` | `[]` | `[a]` | Go rejects `[]`; JS under `u` reads it as a class that never matches |
 | `unterminated_character_class` | `[abc` | `[abc]` | structural |
@@ -221,6 +223,14 @@ hard gate would have been unreachable. A blanket "no quantifier nested inside a
 quantified group" has the same defect, since `(?P<ccy>[A-Z]{3} )?` nests `{3}`
 inside a `?`. Hence the rules ban only **unbounded** quantifiers in both
 positions.
+
+**`nested_variable_repetition` narrows this, and does not undo it.** `(X)?` and
+`(X){0,1}` remain allowed whatever `X` is, because one repetition multiplies
+nothing — which is what keeps `([0-9]{1,4})?`, `(?P<ccy>[A-Z]{3} )?` and every
+v1 optional-currency-prefix shape expressible. What is now refused is a group
+that can repeat **two or more** times over a **variable-length** interior:
+`(?:[0-9]{1,4}){4}`, not `(?:[0-9]{4}){4}`. Every shipping seed passes, checked
+against all four seed definitions and the 7,004-message parity corpus.
 
 Everything else is allowed: literals, character classes, `\d \w \n \t \r \f \v
 \\ \. \( \)` and the other whitelisted escapes, `\xHH`, anchors, alternation,
@@ -256,10 +266,98 @@ Binding one of the two instead of collapsing them is not a fix and the rule
 does not accept it: `[0-9]{1,64}[0-9]+z` is still quadratic, with the bound as
 its constant — 73,810 ms on 51,200 characters.
 
-**What is still not bounded** is the cost of the one remaining unbounded
-quantifier, which is quadratic in any backtracking engine whenever the match
-fails: `[0-9]+z` took 17,935 ms on 200,000 digits. `MaxBodyBytes` is 2,000,000,
-so the dialect alone does not make a template cheap.
+### The bounded rules, and why a bound product is not a cost model
+
+Every rule above is about *unbounded* quantifiers. A pattern built entirely out
+of **bounded** ones was governed only by `bound_product_too_large`, and that
+number is a product of quantifier **upper bounds**: it bounds how *long* a match
+can be, not how many *ways* it can be assembled. Those are different quantities,
+and the gap between them is four orders of magnitude. Measured in Bun 1.3.14
+with `re.exec(subject)`, `subject = "a".repeat(512)` — a subject that **fails**
+to match, which is what a backtracking engine pays for — and every one of these
+**passed the dialect**:
+
+| pattern | bound product | width | anchored, n=512 | unanchored, n=512 |
+|---|---|---|---|---|
+| `(?:[a-z]{8}){8}z` | 64 | 1 | 0.0 ms | 0.0 ms |
+| `[a-z]{1,64}z` | 64 | 64 | 0.0 ms | 0.0 ms |
+| `(?:[a-z]{1,4}){4}z` | 16 | 256 | — | 0.5 ms |
+| `(?:[a-z]{1,4}){6}z` | 24 | 4,096 | — | 8.4 ms |
+| `(?:[a-z0-9 ]{1,4}){8}z` | 32 | 65,536 | 0.3 ms | **131 ms** |
+| `(?:[a-z0-9 ]{1,8}){8}z` | 64 | 16,777,216 | **54.9 ms** | **2,178 ms** |
+| `(?:(?:[a-z]{1,4}){4}){4}z` | 64 | 4.3 × 10⁹ | **2,147 ms** | **1,948 ms** |
+| `[a-z]{1,8}` ×8, concatenated | 8 | 16,777,216 | 16.3 ms | **7,140 ms** |
+
+Rows 1 and 6 have the *same bound product*. One is free and the other freezes
+the phone, so no tightening of that number could ever separate them — the limit
+measures something real, just not the thing that makes a regex explode. What
+separates them is **width**: the number of distinct ways one alternation branch
+can carve up the same input. Row 7 is also why *anchoring is not a defence*:
+`^…$` made it no cheaper at all.
+
+Two rules follow, and both are needed. `nested_variable_repetition` names the
+*shape* — a variable-length interior inside a group that repeats two or more
+times — and it is the rule Task 20 adopted for the categorization path.
+`repetition_width_too_large` bounds the *quantity*, because the last row above
+nests nothing and quantifies no group: eight sibling runs are the same
+explosion, reached by concatenation, and a nesting rule is structurally blind to
+them.
+
+**There is one implementation of the first rule, not two.** Task 20 wrote it
+inside `client/src/categorize/`, as a device-side cost policy over user-authored
+rules, and recorded that it would *move* if templates ever needed it. They do —
+a template is published to **every device** and also runs server-side in ingest,
+so a slow one is a fleet-wide denial of service triggered by ordinary bank mail.
+The rule now lives in the dialect, in both languages and in the conformance
+fixture, and the categorization path maps the dialect's reason code to its own
+defect code. Keeping the private copy would have kept a drift that had already
+appeared: it refused `([0-9]{1,4})?`, this dialect's own sanctioned rewrite for
+`([0-9]+)?`, so the same regex was legal in a template and illegal as a user
+rule.
+
+Width is defined per branch, and its arithmetic is the whole rule:
+
+- a repetition `{lo,hi}` offers `hi - lo + 1` alternatives (`?` is 2, `{n}` is 1);
+- concatenation **multiplies** — the engine tries every combination;
+- alternation **adds** — the engine explores one branch at a time;
+- a group repeated `n` times contributes `width ⁿ`;
+- an **unbounded** quantifier counts **1**, not infinity. It is quadratic, not
+  exponential, and `multiple_unbounded_quantifiers` is its bound. Counting it as
+  infinite would refuse `الدفع الى\n(?P<v>[^\n]+)`, a shipping seed.
+
+Both rules are **structural**: they count paths, not milliseconds. That is
+deliberate, because the timings above are Bun's and Phase 2 runs on Hermes,
+which nobody has measured. "A variable repetition inside a repetition is
+exponential in the repeat count" is a property of backtracking rather than of a
+build, so the rule transfers where the numbers do not.
+
+**Where 1,024 came from.** Three independent arguments landing in the same
+place, none of them a round number picked for looking safe:
+
+- the widest pattern the seed set actually ships is **200** — the ENBD credit
+  anchor, whose width is an optional currency (2) × a `{0,24}` digit run (25) ×
+  a two-way alternation (2) × an optional `in` (2). 1,024 is 5.1× that, and
+  `TestTheShippingSeedsHaveHeadroomUnderTheWidthBound` reads the seed JSON off
+  disk and re-measures it, so the next seed is checked too;
+- it is the widest *collapsible* pair `bound_product_too_large` still permits:
+  `{1,a}{1,b}` collapses to `{2,a+b}`, and `a + b ≤ 64` maximises `a·b` at
+  `32·32`. Anything wider than 1,024 was already expressible more cheaply;
+- the smallest measured blow-up in the table above is 16,384 wide at 39 ms.
+
+**What is still not bounded.** Two residuals, both measured at `MaxBodyBytes`
+(2,000,000), because a dialect that only proves things about 512-byte subjects
+proves nothing about mail:
+
+- the one remaining **unbounded** quantifier, which is quadratic in any
+  backtracking engine whenever the match fails: `[0-9]+z` took 17,935 ms on
+  200,000 digits;
+- the widest pattern the width bound **admits**: `[0-9]{1,32}[0-9]{1,32}z` costs
+  **1,858 ms** against 2,000,000 digits. That is linear in the body rather than
+  quadratic, and ~1,000× cheaper than the first residual, but it is not free —
+  the bound makes a template survivable, not fast. (The pattern one step over
+  the line, `[0-9]{1,64}[0-9]{1,64}z`, is 8,711 ms on the same subject.)
+
+So the dialect alone does not make a template cheap.
 
 What does is a property of the **templates**, and there are two ways to have it:
 a mandatory literal prefix, so the engine's prefix scan discards almost every

@@ -29,8 +29,11 @@ package tmpl
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -54,6 +57,7 @@ type dialectFixture struct {
 	Accepted      []acceptedCase     `json:"accepted"`
 	ToJS          []toJSCase         `json:"to_js"`
 	Canonical     canonicalCase      `json:"canonical"`
+	Corpus        corpusDigest       `json:"corpus"`
 	EngineNotes   []engineDivergence `json:"engine_notes"`
 }
 
@@ -62,11 +66,109 @@ type dialectLimits struct {
 	MaxCaptureGroups      int `json:"max_capture_groups"`
 	MaxBoundProduct       int `json:"max_bound_product"`
 	MaxUnboundedPerBranch int `json:"max_unbounded_per_branch"`
+	MaxRepetitionWidth    int `json:"max_repetition_width"`
 }
 
 type probeInput struct {
 	Name        string `json:"name"`
 	InputBase64 string `json:"input_base64"`
+}
+
+// corpusDigest is validator parity over a GENERATED corpus rather than over
+// hand-picked rows.
+//
+// Every other claim in this file is a pattern somebody chose, and the person
+// who chooses the rows is the person who wrote both validators — so the rows
+// agree where the author expected them to. That is the "true by construction"
+// shape. This one enumerates the cross product of a small grammar, runs the
+// validator over all of it, and records a hash: it agrees only if the two
+// implementations are the same FUNCTION over 9,324 shapes, not the same
+// intuition over sixty.
+//
+// It is a hash rather than the rows because the rows are ~400 KB. Checkpoints
+// exist so a failure is diagnosable: the TypeScript side compares those first
+// and names the first pattern that differs, and only falls back to "the digest
+// differs somewhere else" when they all match.
+type corpusDigest struct {
+	Spec        string             `json:"spec"`
+	Size        int                `json:"size"`
+	SHA256      string             `json:"sha256"`
+	Checkpoints []corpusCheckpoint `json:"checkpoints"`
+}
+
+type corpusCheckpoint struct {
+	Index   int      `json:"index"`
+	Pattern string   `json:"pattern"`
+	Codes   []string `json:"codes"`
+}
+
+// dialectCorpus is the generator, written as plain nested loops over literal
+// arrays so that the TypeScript mirror in client/src/tmpl/dialect.test.ts is a
+// transliteration rather than a reimplementation. The ORDER is part of the
+// contract: the digest is over the sequence.
+//
+// The alphabet is chosen for the cost rules — a fixed atom, a class, a negated
+// class, an escape, and one Arabic literal so that the two languages are shown
+// to agree on a non-ASCII pattern as well — crossed with every quantifier form
+// the dialect has an opinion about, then nested and repeated.
+func dialectCorpus() []string {
+	atoms := []string{`a`, `[a-z]`, `[^\n]`, `\n`, `م`}
+	quants := []string{``, `?`, `*`, `+`, `{2}`, `{1,4}`, `{0,2}`, `{2,}`, `{1,32}`}
+
+	var units []string
+	for _, a := range atoms {
+		for _, q := range quants {
+			units = append(units, a+q)
+		}
+	}
+	inner := append([]string(nil), units...)
+	for _, u := range units[:12] {
+		for _, v := range units[:12] {
+			inner = append(inner, u+v)
+			inner = append(inner, u+`|`+v)
+		}
+	}
+	var pats []string
+	for _, in := range inner {
+		pats = append(pats, in)
+		for _, q := range quants {
+			pats = append(pats, `(?:`+in+`)`+q)
+			pats = append(pats, `(?:(?:`+in+`)`+q+`){2}`)
+			pats = append(pats, `x(?:`+in+`)`+q+`y`)
+		}
+	}
+	return pats
+}
+
+// buildCorpusDigest runs the validator over dialectCorpus and hashes the
+// result. The hashed line is pattern, NUL, the codes joined by commas — NUL
+// because it cannot occur in a pattern, so no pattern/codes pair can be
+// confused with a different one that concatenates to the same bytes.
+func buildCorpusDigest() corpusDigest {
+	pats := dialectCorpus()
+	h := sha256.New()
+	d := corpusDigest{
+		Spec: "pats = dialectCorpus() in internal/v2/tmpl/conformance_test.go, transliterated in " +
+			"client/src/tmpl/dialect.test.ts. sha256 over, for each pattern in order: " +
+			"pattern + \"\\x00\" + ValidatePattern(pattern, []).codes.join(\",\") + \"\\n\", as UTF-8.",
+		Size: len(pats),
+	}
+	for i, p := range pats {
+		codes := Codes(ValidatePattern(p, nil))
+		fmt.Fprintf(h, "%s\x00%s\n", p, strings.Join(codes, ","))
+		if i%1000 == 0 {
+			d.Checkpoints = append(d.Checkpoints, corpusCheckpoint{Index: i, Pattern: p, Codes: nonNilCodes(codes)})
+		}
+	}
+	d.SHA256 = hex.EncodeToString(h.Sum(nil))
+	return d
+}
+
+func nonNilCodes(c []string) []string {
+	if c == nil {
+		return []string{}
+	}
+	return c
 }
 
 type rejectedCase struct {
@@ -91,10 +193,15 @@ type rejectedCase struct {
 }
 
 type acceptedCase struct {
-	Name       string        `json:"name"`
-	Pattern    string        `json:"pattern"`
-	JSPattern  string        `json:"js_pattern"`
-	Flags      []string      `json:"flags"`
+	Name      string   `json:"name"`
+	Pattern   string   `json:"pattern"`
+	JSPattern string   `json:"js_pattern"`
+	Flags     []string `json:"flags"`
+	// Why is carried only by the rows whose acceptance is itself the claim —
+	// the cost-bound boundary cases, where "this pattern is legal" is the
+	// measurement rather than a side effect of the rule it illustrates.
+	// omitempty, so the rewrite-of-* and seed-* rows stay as they were.
+	Why        string        `json:"why,omitempty"`
 	GroupNames []string      `json:"group_names"`
 	Probes     []probeResult `json:"probes"`
 }
@@ -143,6 +250,12 @@ func probeCorpus() []struct{ name, in string } {
 		{"dib-amount-no-currency", "المبلغ\n250,000.00"},
 		{"enbd-alert", "AED 250,000.00 has been withdrawn from your account"},
 		{"enbd-alert-lowercase", "aed 250,000.00 has been WITHDRAWN from your account"},
+		// The credit anchor is the widest pattern the seed set ships and the
+		// one closest to MaxRepetitionWidth, so it gets both of its optional
+		// arms exercised: the (?:in)?to that is absent here and present below,
+		// and both branches of (?:credited|deposited).
+		{"enbd-alert-credit", "AED 250,000.00 has been credited to your account"},
+		{"enbd-alert-deposited-into", "aed 1.00 has been DEPOSITED into your account"},
 		{"subject-last4", "account ending with 3701"},
 		{"carriage-return", "abc\rdef"},
 		{"line-separator", "abc\u2028def"},
@@ -204,12 +317,27 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 		// 2: Task 20 added the multiple_unbounded_quantifiers rule and with it
 		// max_unbounded_per_branch, and rewrote the escape_perl_space row's
 		// sanctioned rewrite, which the new rule refused.
-		SchemaVersion: 2,
+		//
+		// 3: the two BOUNDED cost rules — nested_variable_repetition and
+		// repetition_width_too_large — and with them max_repetition_width. Both
+		// close a ReDoS hole that MaxBoundProduct is structurally unable to see:
+		// (?:[a-z]{8}){8}z and (?:[a-z0-9 ]{1,8}){8}z score identically on it
+		// and cost 0.0 ms and 2,178 ms. No previously accepted pattern became
+		// rejected: all 72 patterns in seed/*.json and conformance/templates/
+		// were re-validated, every `accept` in the dialect table still passes,
+		// and the 7,004-message parity corpus still runs 5,719/0/0/0. The
+		// widest thing that ships measures 200 against a limit of 1,024.
+		//
+		// The row set also grew: eight boundary cases that straddle
+		// MaxRepetitionWidth by ONE, in both directions, so the constant is
+		// pinned rather than only the direction of the inequality.
+		SchemaVersion: 3,
 		Limits: dialectLimits{
 			MaxPatternRunes:       MaxPatternRunes,
 			MaxCaptureGroups:      MaxCaptureGroups,
 			MaxBoundProduct:       MaxBoundProduct,
 			MaxUnboundedPerBranch: MaxUnboundedPerBranch,
+			MaxRepetitionWidth:    MaxRepetitionWidth,
 		},
 		GoCompile: `regexp.Compile(flagsContain("i") ? "(?i)"+p : p)`,
 		JSCompile: `new RegExp(toJS(p), flags.join("") + "u")`,
@@ -219,6 +347,7 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 				"with SetEscapeHTML(false), while JSON.stringify does neither.",
 		},
 		EngineNotes: measuredDivergences(),
+		Corpus:      buildCorpusDigest(),
 	}
 
 	for _, p := range probeCorpus() {
@@ -244,7 +373,74 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 		f.Accepted = append(f.Accepted, acceptedCaseFor(t, "rewrite-of-"+r.code, r.accept, r.acceptFlags))
 	}
 
-	// The five seed shapes, which are the patterns Task 21 actually ships.
+	// The two BOUNDED cost rules are bounds on a NUMBER, and the row-per-rule
+	// table above states only their direction: every one of its rejects is
+	// orders of magnitude past the limit, so a mirror that used 4,096 or 900
+	// instead of 1,024 would reproduce it exactly. These straddle the limit by
+	// one on each side, in both engines, so the constant itself is the contract.
+	//
+	// They also pin the ARITHMETIC, which the limits block cannot: alternation
+	// branches sum where concatenation multiplies, an unbounded quantifier
+	// counts one rather than infinity, and a group repeated at most once
+	// multiplies nothing. A mirror that got any of those wrong lands on a
+	// different side of at least one of these rows.
+	for _, b := range []struct {
+		code string // "" means the pattern must be ACCEPTED
+		name string
+		pat  string
+		why  string
+	}{
+		{"", "width-exactly-at-the-limit", `[0-9]{1,32}[0-9]{1,32}z`,
+			"width 1,024 = MaxRepetitionWidth exactly, and 1,858 ms against 2,000,000 digits in " +
+				"Bun 1.3.14 — the most expensive pattern the dialect admits"},
+		{ReasonRepetitionWidthTooLarge, "width-one-over-the-limit", `[0-9]{1,25}[0-9]{1,41}z`,
+			"width 1,025: 25 x 41. One more than the row above, and the only difference between them"},
+		{"", "width-branches-sum-they-do-not-multiply", `x{0,24}x{0,19}|y{0,24}y{0,19}`,
+			"two branches of 500. A mirror that MULTIPLIED alternatives would see 250,000 and refuse it"},
+		{ReasonRepetitionWidthTooLarge, "width-branches-sum-they-are-not-maxed", `x{0,24}x{0,24}|y{0,24}y{0,24}`,
+			"two branches of 625 sum to 1,250. A mirror that took the MAX across branches would see " +
+				"625 and accept it"},
+		{"", "width-an-unbounded-quantifier-counts-one", `[^\n]+[a-z]{1,32}[a-z]{1,32}`,
+			"if + counted as infinity this would be refused, and the DIB merchant anchor with it"},
+		{ReasonNestedVariableRepetition, "nested-repeats-twice", `(?:[0-9]{1,4}){2}`,
+			"TWO is where a repetition starts multiplying. Width is only 16 here, so the width rule " +
+				"does not fire and this row isolates the nesting one"},
+		{"", "nested-repeats-at-most-once", `(?:[0-9]{1,4}){0,1}`,
+			"one repetition multiplies nothing. ([0-9]{1,4})? is the dialect's own rewrite for " +
+				"([0-9]+)?, so a mirror that refused this would make unbounded_inside_quantified_group " +
+				"inexpressible"},
+		{"", "nested-fixed-width-interior", `(?:[a-z]{8}){8}`,
+			"the SAME bound product of 64 as (?:[a-z0-9 ]{1,8}){8}, and 0.0 ms against the same subject"},
+		{ReasonNestedVariableRepetition, "nested-variability-from-an-unbounded-interior", `(?:a+){2}`,
+			"an UNBOUNDED interior makes its group variable, so BOTH codes are emitted and in this order. " +
+				"The verdict was never in doubt — unbounded_inside_quantified_group alone refuses it — but " +
+				"the code list is the contract, and a Go mutation that dropped the second code survived the " +
+				"entire suite until this row existed"},
+	} {
+		if b.code == "" {
+			if errs := ValidatePattern(b.pat, nil); len(errs) != 0 {
+				t.Fatalf("boundary case %s must be accepted: %v", b.name, Codes(errs))
+			}
+			c := acceptedCaseFor(t, b.name, b.pat, nil)
+			c.Why = b.why
+			f.Accepted = append(f.Accepted, c)
+			continue
+		}
+		errs := ValidatePattern(b.pat, nil)
+		if !hasCode(errs, b.code) {
+			t.Fatalf("boundary case %s must be rejected with %s: %v", b.name, b.code, Codes(errs))
+		}
+		f.Rejected = append(f.Rejected, rejectedCase{
+			Code:      b.code,
+			Pattern:   b.pat,
+			JSPattern: ToJS(b.pat),
+			Flags:     nonNil(nil),
+			Codes:     Codes(errs),
+			Why:       b.why,
+		})
+	}
+
+	// The seed shapes, which are the patterns Task 21 actually ships.
 	for _, s := range []struct {
 		name  string
 		pat   string
@@ -255,6 +451,15 @@ func buildDialectFixture(t *testing.T) dialectFixture {
 		{"seed-dib-merchant", `الدفع الى\n(?P<v>[^\n]+)`, nil},
 		{"seed-dib-card", `رقم البطاقة\n(?P<v>[^ \n]+)`, nil},
 		{"seed-enbd-alert-debit", `(?P<amt>(?:[A-Z]{3} )?[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:withdrawn|debited)[ \n]from your account`, []string{"i"}},
+		// Verbatim from seed/enbd.alert.v1.json, and the WIDEST pattern the seed
+		// set ships: 200, against a limit of 1,024. It is here because the two
+		// bounded cost rules are the only rules in this dialect that a real
+		// template can come close to failing, so the closest one is the row
+		// that has to be checked in both engines rather than only in Go.
+		{"seed-enbd-alert-credit-widest-shipping-pattern",
+			`(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\.[0-9]{2})[ \n]has been[ \n](?:credited|deposited)[ \n](?:in)?to your account`,
+			[]string{"i"}},
+		{"seed-dib-account-transfer", `المعاملة\n[^\n]*(?:TRNSFER|TRANSFER)`, nil},
 		{"seed-enbd-alert-last4", `account ending with (?P<v>[0-9]{4})`, []string{"i"}},
 		{"seed-dib-direction-override", `DEBIT$`, []string{"i"}},
 		// Not a seed, but the adversarial ToJS shape: an ESCAPED paren followed

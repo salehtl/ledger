@@ -1,12 +1,13 @@
 {
   "note": "Written by internal/v2/tmpl TestWriteDialectConformanceFixtures. Regenerate with LEDGER_WRITE_CONFORMANCE=1 go test ./internal/v2/tmpl/ -run TestWriteDialectConformanceFixtures; do not hand-edit. Patterns are plain JSON strings because a human ports the validator from this file; probe inputs and captured text are base64 because they deliberately contain CR, U+2028, U+2029, U+00A0, U+000B and U+FEFF, which is the point of them. `rejected` pins validator parity: the TypeScript validator must reject each pattern with the same reason codes. `accepted` pins ENGINE parity, which is the stronger claim: for each pattern, what Go's RE2 matched and captured on every probe input, which JavaScript must reproduce exactly.",
   "spec": "docs/superpowers/specs/v2-template-format.md",
-  "schema_version": 2,
+  "schema_version": 3,
   "limits": {
     "max_pattern_runes": 512,
     "max_capture_groups": 8,
     "max_bound_product": 64,
-    "max_unbounded_per_branch": 1
+    "max_unbounded_per_branch": 1,
+    "max_repetition_width": 1024
   },
   "js_compile": "new RegExp(toJS(p), flags.join(\"\") + \"u\")",
   "go_compile": "regexp.Compile(flagsContain(\"i\") ? \"(?i)\"+p : p)",
@@ -34,6 +35,14 @@
     {
       "name": "enbd-alert-lowercase",
       "input_base64": "YWVkIDI1MCwwMDAuMDAgaGFzIGJlZW4gV0lUSERSQVdOIGZyb20geW91ciBhY2NvdW50"
+    },
+    {
+      "name": "enbd-alert-credit",
+      "input_base64": "QUVEIDI1MCwwMDAuMDAgaGFzIGJlZW4gY3JlZGl0ZWQgdG8geW91ciBhY2NvdW50"
+    },
+    {
+      "name": "enbd-alert-deposited-into",
+      "input_base64": "YWVkIDEuMDAgaGFzIGJlZW4gREVQT1NJVEVEIGludG8geW91ciBhY2NvdW50"
     },
     {
       "name": "subject-last4",
@@ -339,6 +348,28 @@
       "why": "the POLYNOMIAL backtracking shape: n^k for k unbounded quantifiers that can consume the same characters. MEASURED in Bun 1.3.14: [0-9]+[0-9]+z is 86 ms on 800 characters, [0-9]+[0-9]+[0-9]+[0-9]+z is 88,191 ms on 400, and separating them with a mandatory literal does not help ([^\\n]+X[^\\n]+Y is 31,680 ms on 8,000). Go's RE2 does not backtrack and is unaffected, so this is a CLIENT-side cost rule, not an engine divergence"
     },
     {
+      "code": "nested_variable_repetition",
+      "pattern": "(?:[0-9]{1,4}){4}",
+      "js_pattern": "(?:[0-9]{1,4}){4}",
+      "flags": [],
+      "codes": [
+        "nested_variable_repetition"
+      ],
+      "js_syntax_error": false,
+      "why": "the BOUNDED analogue of unbounded_inside_quantified_group, and the hole it left: a group that repeats more than once re-splits its own contents on every repeat, so a variable-length interior is raised to the power of the repeat count. MEASURED in Bun 1.3.14 on a 512-rune subject: (?:[a-z0-9 ]{1,8}){8}z is 2,178 ms and (?:(?:[a-z]{1,4}){4}){4}z is 1,948 ms, while (?:[a-z]{8}){8}z — the SAME bound product of 64, fixed-width interior — is 0.0 ms, which is why no tightening of MaxBoundProduct separates them. '?' and {0,1} are exempt: one repetition multiplies nothing, and ([0-9]{1,4})? is this table's own rewrite for ([0-9]+)?. RE2 does not backtrack, so this is a client-side cost rule"
+    },
+    {
+      "code": "repetition_width_too_large",
+      "pattern": "[0-9]{1,16}[0-9]{1,16}[0-9]{1,16}z",
+      "js_pattern": "[0-9]{1,16}[0-9]{1,16}[0-9]{1,16}z",
+      "flags": [],
+      "codes": [
+        "repetition_width_too_large"
+      ],
+      "js_syntax_error": false,
+      "why": "the same explosion reached by CONCATENATION rather than nesting, which no nesting rule can see: three sibling runs nest nothing and quantify no group. MEASURED in Bun 1.3.14: eight sibling [a-z]{1,8} runs took 7,140 ms on a 512-character body, and [0-9]{1,64}[0-9]{1,64}z took 8,711 ms at MaxBodyBytes (2,000,000 digits) — measured there, not extrapolated from a smaller run. The bound is the number of ways one branch can split the same input, which is what MaxBoundProduct (a bound on match LENGTH) does not measure. 1,024 is exactly the widest collapsible pair MaxBoundProduct still permits: {1,a}{1,b} collapses to {2,a+b}, a+b <= 64 maximises a*b at 32*32; the widest pattern the seed set actually ships is 200, and the widest this rule ADMITS still costs 1,858 ms at MaxBodyBytes"
+    },
+    {
       "code": "bound_product_too_large",
       "pattern": "((a{4}){4}){5}",
       "js_pattern": "((a{4}){4}){5}",
@@ -430,6 +461,51 @@
       ],
       "js_syntax_error": true,
       "why": "the structural scanner is not a parser; Go's own compiler is the backstop"
+    },
+    {
+      "code": "repetition_width_too_large",
+      "pattern": "[0-9]{1,25}[0-9]{1,41}z",
+      "js_pattern": "[0-9]{1,25}[0-9]{1,41}z",
+      "flags": [],
+      "codes": [
+        "repetition_width_too_large"
+      ],
+      "js_syntax_error": false,
+      "why": "width 1,025: 25 x 41. One more than the row above, and the only difference between them"
+    },
+    {
+      "code": "repetition_width_too_large",
+      "pattern": "x{0,24}x{0,24}|y{0,24}y{0,24}",
+      "js_pattern": "x{0,24}x{0,24}|y{0,24}y{0,24}",
+      "flags": [],
+      "codes": [
+        "repetition_width_too_large"
+      ],
+      "js_syntax_error": false,
+      "why": "two branches of 625 sum to 1,250. A mirror that took the MAX across branches would see 625 and accept it"
+    },
+    {
+      "code": "nested_variable_repetition",
+      "pattern": "(?:[0-9]{1,4}){2}",
+      "js_pattern": "(?:[0-9]{1,4}){2}",
+      "flags": [],
+      "codes": [
+        "nested_variable_repetition"
+      ],
+      "js_syntax_error": false,
+      "why": "TWO is where a repetition starts multiplying. Width is only 16 here, so the width rule does not fire and this row isolates the nesting one"
+    },
+    {
+      "code": "nested_variable_repetition",
+      "pattern": "(?:a+){2}",
+      "js_pattern": "(?:a+){2}",
+      "flags": [],
+      "codes": [
+        "unbounded_inside_quantified_group",
+        "nested_variable_repetition"
+      ],
+      "js_syntax_error": false,
+      "why": "an UNBOUNDED interior makes its group variable, so BOTH codes are emitted and in this order. The verdict was never in doubt — unbounded_inside_quantified_group alone refuses it — but the code list is the contract, and a Go mutation that dropped the second code survived the entire suite until this row existed"
     }
   ],
   "accepted": [
@@ -472,6 +548,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": true,
           "text": "YQ==",
           "groups": {}
@@ -606,6 +694,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -730,6 +830,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -864,6 +976,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QUVEIDI1MA==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -988,6 +1112,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QUVE",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -1122,6 +1258,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "RA==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -1251,6 +1399,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -1375,6 +1535,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -1509,6 +1681,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -1638,6 +1822,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -1762,6 +1958,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -1898,6 +2106,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QUVE",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YWVk",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -2022,6 +2242,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -2167,6 +2399,22 @@
           "text": "Mg==",
           "groups": {
             "amt": "Mg=="
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "Mg==",
+          "groups": {
+            "amt": "Mg=="
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "MQ==",
+          "groups": {
+            "amt": "MQ=="
           }
         },
         {
@@ -2341,6 +2589,22 @@
           }
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "Mg==",
+          "groups": {
+            "amt": "Mg=="
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "MQ==",
+          "groups": {
+            "amt": "MQ=="
+          }
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "Mw==",
@@ -2505,6 +2769,22 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {
+            "a0": null
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "a0": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {
@@ -2690,6 +2970,24 @@
           }
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null,
+            "w": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null,
+            "w": null
+          }
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -2861,6 +3159,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "YQ==",
@@ -2985,6 +3295,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -3119,6 +3441,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "Yw==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "Yw==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "Yw==",
@@ -3243,6 +3577,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": true,
           "text": "",
           "groups": {}
@@ -3377,6 +3723,300 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "rewrite-of-nested_variable_repetition",
+      "pattern": "[0-9]{4,16}",
+      "js_pattern": "[0-9]{4,16}",
+      "flags": [],
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": true,
+          "text": "MjAyNg==",
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": true,
+          "text": "MzcwMQ==",
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": true,
+          "text": "MTIzNA==",
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": true,
+          "text": "MTIzNA==",
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "rewrite-of-repetition_width_too_large",
+      "pattern": "[0-9]{3,48}z",
+      "js_pattern": "[0-9]{3,48}z",
+      "flags": [],
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -3501,6 +4141,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -3635,6 +4287,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "YQ==",
@@ -3759,6 +4423,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": true,
           "text": "YQ==",
           "groups": {}
@@ -3893,6 +4569,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "YQ==",
@@ -4017,6 +4705,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QQ==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": true,
           "text": "YQ==",
           "groups": {}
@@ -4153,6 +4853,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -4279,6 +4991,18 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {}
@@ -4413,6 +5137,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "aA==",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YQ==",
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": true,
           "text": "YQ==",
@@ -4499,6 +5235,716 @@
       ]
     },
     {
+      "name": "width-exactly-at-the-limit",
+      "pattern": "[0-9]{1,32}[0-9]{1,32}z",
+      "js_pattern": "[0-9]{1,32}[0-9]{1,32}z",
+      "flags": [],
+      "why": "width 1,024 = MaxRepetitionWidth exactly, and 1,858 ms against 2,000,000 digits in Bun 1.3.14 — the most expensive pattern the dialect admits",
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "width-branches-sum-they-do-not-multiply",
+      "pattern": "x{0,24}x{0,19}|y{0,24}y{0,19}",
+      "js_pattern": "x{0,24}x{0,19}|y{0,24}y{0,19}",
+      "flags": [],
+      "why": "two branches of 500. A mirror that MULTIPLIED alternatives would see 250,000 and refuse it",
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": true,
+          "text": "",
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "width-an-unbounded-quantifier-counts-one",
+      "pattern": "[^\\n]+[a-z]{1,32}[a-z]{1,32}",
+      "js_pattern": "[^\\n]+[a-z]{1,32}[a-z]{1,32}",
+      "flags": [],
+      "why": "if + counted as infinity this would be refused, and the DIB merchant anchor with it",
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": true,
+          "text": "QUVEIDI1MCwwMDAuMDAgaGFzIGJlZW4gd2l0aGRyYXduIGZyb20geW91ciBhY2NvdW50",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "YWVkIDI1MCwwMDAuMDAgaGFzIGJlZW4gV0lUSERSQVdOIGZyb20geW91ciBhY2NvdW50",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QUVEIDI1MCwwMDAuMDAgaGFzIGJlZW4gY3JlZGl0ZWQgdG8geW91ciBhY2NvdW50",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YWVkIDEuMDAgaGFzIGJlZW4gREVQT1NJVEVEIGludG8geW91ciBhY2NvdW50",
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": true,
+          "text": "YWNjb3VudCBlbmRpbmcgd2l0aA==",
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": true,
+          "text": "YWJjDWRlZg==",
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": true,
+          "text": "YWJj4oCoZGVm",
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": true,
+          "text": "YWJj4oCpZGVm",
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": true,
+          "text": "YWJjwqBkZWY=",
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": true,
+          "text": "YWJjC2RlZg==",
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": true,
+          "text": "YWJj77u/ZGVm",
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": true,
+          "text": "4oSqZWx2aW4=",
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": true,
+          "text": "xb91Z2Fy",
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": true,
+          "text": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": true,
+          "text": "YWJj",
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "nested-repeats-at-most-once",
+      "pattern": "(?:[0-9]{1,4}){0,1}",
+      "js_pattern": "(?:[0-9]{1,4}){0,1}",
+      "flags": [],
+      "why": "one repetition multiplies nothing. ([0-9]{1,4})? is the dialect's own rewrite for ([0-9]+)?, so a mirror that refused this would make unbounded_inside_quantified_group inexpressible",
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": true,
+          "text": "",
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": true,
+          "text": "",
+          "groups": {}
+        }
+      ]
+    },
+    {
+      "name": "nested-fixed-width-interior",
+      "pattern": "(?:[a-z]{8}){8}",
+      "js_pattern": "(?:[a-z]{8}){8}",
+      "flags": [],
+      "why": "the SAME bound product of 64 as (?:[a-z0-9 ]{1,8}){8}, and 0.0 ms against the same subject",
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
       "name": "seed-dib-amount",
       "pattern": "المبلغ\\n(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})",
       "js_pattern": "المبلغ\\n(?<ccy>[A-Z]{3} )?(?<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})",
@@ -4555,6 +6001,24 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {
@@ -4748,6 +6212,22 @@
           }
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "d": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {
+            "d": null
+          }
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -4919,6 +6399,22 @@
           }
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -5083,6 +6579,22 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {
@@ -5263,6 +6775,22 @@
           }
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null
+          }
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -5377,6 +6905,359 @@
       ]
     },
     {
+      "name": "seed-enbd-alert-credit-widest-shipping-pattern",
+      "pattern": "(?P<ccy>[A-Z]{3} )?(?P<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:credited|deposited)[ \\n](?:in)?to your account",
+      "js_pattern": "(?<ccy>[A-Z]{3} )?(?<amt>[0-9][0-9,]{0,24}\\.[0-9]{2})[ \\n]has been[ \\n](?:credited|deposited)[ \\n](?:in)?to your account",
+      "flags": [
+        "i"
+      ],
+      "group_names": [
+        "ccy",
+        "amt"
+      ],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": true,
+          "text": "QUVEIDI1MCwwMDAuMDAgaGFzIGJlZW4gY3JlZGl0ZWQgdG8geW91ciBhY2NvdW50",
+          "groups": {
+            "amt": "MjUwLDAwMC4wMA==",
+            "ccy": "QUVEIA=="
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": true,
+          "text": "YWVkIDEuMDAgaGFzIGJlZW4gREVQT1NJVEVEIGludG8geW91ciBhY2NvdW50",
+          "groups": {
+            "amt": "MS4wMA==",
+            "ccy": "YWVkIA=="
+          }
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {
+            "amt": null,
+            "ccy": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "seed-dib-account-transfer",
+      "pattern": "المعاملة\\n[^\\n]*(?:TRNSFER|TRANSFER)",
+      "js_pattern": "المعاملة\\n[^\\n]*(?:TRNSFER|TRANSFER)",
+      "flags": [],
+      "group_names": [],
+      "probes": [
+        {
+          "input": "empty",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "ascii-amount",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-amount-no-currency",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "subject-last4",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "carriage-return",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "line-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "paragraph-separator",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "vertical-tab",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "zero-width-no-break-space",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "kelvin-sign",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "latin-small-long-s",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-card-block",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "dib-merchant-with-cr",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "repeated-a",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "metacharacters",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "trailing-newline",
+          "match": false,
+          "text": null,
+          "groups": {}
+        }
+      ]
+    },
+    {
       "name": "seed-enbd-alert-last4",
       "pattern": "account ending with (?P<v>[0-9]{4})",
       "js_pattern": "account ending with (?<v>[0-9]{4})",
@@ -5429,6 +7310,22 @@
         },
         {
           "input": "enbd-alert-lowercase",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {
+            "v": null
+          }
+        },
+        {
+          "input": "enbd-alert-deposited-into",
           "match": false,
           "text": null,
           "groups": {
@@ -5595,6 +7492,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -5724,6 +7633,18 @@
           "groups": {}
         },
         {
+          "input": "enbd-alert-credit",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
+          "input": "enbd-alert-deposited-into",
+          "match": false,
+          "text": null,
+          "groups": {}
+        },
+        {
           "input": "subject-last4",
           "match": false,
           "text": null,
@@ -5841,6 +7762,89 @@
     "definition_base64": "ewogICJpZCI6ICJkaWIuY2FyZC52MSIsCiAgInZlcnNpb24iOiAxLAogICJiYW5rIjogImRpYiIsCiAgIm5vcm1hbGl6ZXJfdmVyc2lvbiI6IDEsCiAgIm1hdGNoIjogewogICAgInNlbmRlcl9kb21haW4iOiBbImRpYi5hZSJdLAogICAgImJvZHlfY29udGFpbnMiOiBbItil2LTYudin2LEg2YXYtNiq2LHZitin2KoiXQogIH0sCiAgImRlZmF1bHRfY3VycmVuY3kiOiAiQUVEIiwKICAiZGF0ZV9mcm9tIjogImJvZHkiLAogICJleHRyYWN0IjogWwogICAgeyJmaWVsZCI6ImFtb3VudCIsInR5cGUiOiJhbW91bnQiLCJzb3VyY2UiOiJib2R5IiwKICAgICAicGF0dGVybnMiOlsi2KfZhNmF2KjZhNi6XFxuKD9QPGNjeT5bQS1aXXszfSApPyg/UDxhbXQ+WzAtOV1bMC05LF0qXFwuWzAtOV17Mn0pIl19LAogICAgeyJmaWVsZCI6ImRhdGUiLCJ0eXBlIjoiZGF0ZSIsInNvdXJjZSI6ImJvZHkiLAogICAgICJwYXR0ZXJucyI6WyLYqNiq2KfYsdmK2K4gKD9QPGQ+WzAtOV17Mn0tWzAtOV17Mn0tWzAtOV17NH0pIl0sCiAgICAgImxheW91dHMiOlsiREQtTU0tWVlZWSJdfSwKICAgIHsiZmllbGQiOiJtZXJjaGFudCIsInR5cGUiOiJ0ZXh0Iiwic291cmNlIjoiYm9keSIsCiAgICAgInBhdHRlcm5zIjpbItin2YTYr9mB2Lkg2KfZhNmJXFxuKD9QPHY+W15cXG5dKykiXX0sCiAgICB7ImZpZWxkIjoibGFzdDQiLCJ0eXBlIjoibGFzdDQiLCJzb3VyY2UiOiJib2R5IiwKICAgICAicGF0dGVybnMiOlsi2LHZgtmFINin2YTYqNi32KfZgtipXFxuKD9QPHY+W14gXFxuXSspIl19LAogICAgeyJmaWVsZCI6ImRpcmVjdGlvbiIsInR5cGUiOiJjb25zdCIsInNvdXJjZSI6ImJvZHkiLCJ2YWx1ZSI6ImRlYml0In0sCiAgICB7ImZpZWxkIjoiaXNfdHJhbnNmZXIiLCJ0eXBlIjoiZmxhZyIsInNvdXJjZSI6ImJvZHkiLCJ2YWx1ZSI6ImZhbHNlIn0KICBdLAogICJyZXF1aXJlZCI6IFsiYW1vdW50IiwiZGlyZWN0aW9uIl0KfQ==",
     "canonical_base64": "eyJiYW5rIjoiZGliIiwiZGF0ZV9mcm9tIjoiYm9keSIsImRlZmF1bHRfY3VycmVuY3kiOiJBRUQiLCJleHRyYWN0IjpbeyJmaWVsZCI6ImFtb3VudCIsImZsYWdzIjpbXSwibGF5b3V0cyI6W10sIm9uX21hdGNoIjp7fSwib3ZlcnJpZGUiOmZhbHNlLCJwYXR0ZXJucyI6WyLYp9mE2YXYqNmE2LpcXG4oP1A8Y2N5PltBLVpdezN9ICk/KD9QPGFtdD5bMC05XVswLTksXSpcXC5bMC05XXsyfSkiXSwic291cmNlIjoiYm9keSIsInR5cGUiOiJhbW91bnQiLCJ2YWx1ZSI6IiIsIndoeSI6IiJ9LHsiZmllbGQiOiJkYXRlIiwiZmxhZ3MiOltdLCJsYXlvdXRzIjpbIkRELU1NLVlZWVkiXSwib25fbWF0Y2giOnt9LCJvdmVycmlkZSI6ZmFsc2UsInBhdHRlcm5zIjpbItio2KrYp9ix2YrYriAoP1A8ZD5bMC05XXsyfS1bMC05XXsyfS1bMC05XXs0fSkiXSwic291cmNlIjoiYm9keSIsInR5cGUiOiJkYXRlIiwidmFsdWUiOiIiLCJ3aHkiOiIifSx7ImZpZWxkIjoibWVyY2hhbnQiLCJmbGFncyI6W10sImxheW91dHMiOltdLCJvbl9tYXRjaCI6e30sIm92ZXJyaWRlIjpmYWxzZSwicGF0dGVybnMiOlsi2KfZhNiv2YHYuSDYp9mE2YlcXG4oP1A8dj5bXlxcbl0rKSJdLCJzb3VyY2UiOiJib2R5IiwidHlwZSI6InRleHQiLCJ2YWx1ZSI6IiIsIndoeSI6IiJ9LHsiZmllbGQiOiJsYXN0NCIsImZsYWdzIjpbXSwibGF5b3V0cyI6W10sIm9uX21hdGNoIjp7fSwib3ZlcnJpZGUiOmZhbHNlLCJwYXR0ZXJucyI6WyLYsdmC2YUg2KfZhNio2LfYp9mC2KlcXG4oP1A8dj5bXiBcXG5dKykiXSwic291cmNlIjoiYm9keSIsInR5cGUiOiJsYXN0NCIsInZhbHVlIjoiIiwid2h5IjoiIn0seyJmaWVsZCI6ImRpcmVjdGlvbiIsImZsYWdzIjpbXSwibGF5b3V0cyI6W10sIm9uX21hdGNoIjp7fSwib3ZlcnJpZGUiOmZhbHNlLCJwYXR0ZXJucyI6W10sInNvdXJjZSI6ImJvZHkiLCJ0eXBlIjoiY29uc3QiLCJ2YWx1ZSI6ImRlYml0Iiwid2h5IjoiIn0seyJmaWVsZCI6ImlzX3RyYW5zZmVyIiwiZmxhZ3MiOltdLCJsYXlvdXRzIjpbXSwib25fbWF0Y2giOnt9LCJvdmVycmlkZSI6ZmFsc2UsInBhdHRlcm5zIjpbXSwic291cmNlIjoiYm9keSIsInR5cGUiOiJmbGFnIiwidmFsdWUiOiJmYWxzZSIsIndoeSI6IiJ9XSwiaWQiOiJkaWIuY2FyZC52MSIsIm1hdGNoIjp7ImJvZHlfY29udGFpbnMiOlsi2KXYtNi52KfYsSDZhdi02KrYsdmK2KfYqiJdLCJib2R5X25vdF9jb250YWlucyI6W10sInNlbmRlcl9kb21haW4iOlsiZGliLmFlIl0sInN1YmplY3RfY29udGFpbnMiOltdfSwibm9ybWFsaXplcl92ZXJzaW9uIjoxLCJyZXF1aXJlZCI6WyJhbW91bnQiLCJkaXJlY3Rpb24iXSwidmVyc2lvbiI6MX0=",
     "why": "Canonical() is key-sorted, total (no omitempty) and escaped exactly as JSON.stringify escapes: Go's encoding/json escapes &, < and > by default, and escapes U+2028/U+2029 even with SetEscapeHTML(false), while JSON.stringify does neither."
+  },
+  "corpus": {
+    "spec": "pats = dialectCorpus() in internal/v2/tmpl/conformance_test.go, transliterated in client/src/tmpl/dialect.test.ts. sha256 over, for each pattern in order: pattern + \"\\x00\" + ValidatePattern(pattern, []).codes.join(\",\") + \"\\n\", as UTF-8.",
+    "size": 9324,
+    "sha256": "2a19ef1a3326e387f7a85ef6f6d1d1dd16aa023beb7d05c5629621b65f2311f3",
+    "checkpoints": [
+      {
+        "index": 0,
+        "pattern": "a",
+        "codes": []
+      },
+      {
+        "index": 1000,
+        "pattern": "(?:(?:\\n{1,32}){0,2}){2}",
+        "codes": [
+          "nested_variable_repetition",
+          "nested_variable_repetition",
+          "bound_product_too_large",
+          "repetition_width_too_large"
+        ]
+      },
+      {
+        "index": 2000,
+        "pattern": "x(?:a?a?)+y",
+        "codes": [
+          "group_unbounded_quantifier"
+        ]
+      },
+      {
+        "index": 3000,
+        "pattern": "(?:a*a{2,})?",
+        "codes": [
+          "multiple_unbounded_quantifiers",
+          "unbounded_inside_quantified_group"
+        ]
+      },
+      {
+        "index": 4000,
+        "pattern": "x(?:a{2}|a){2,}y",
+        "codes": [
+          "group_unbounded_quantifier"
+        ]
+      },
+      {
+        "index": 5000,
+        "pattern": "(?:a{1,4}|a{0,2}){1,4}",
+        "codes": [
+          "nested_variable_repetition",
+          "repetition_width_too_large"
+        ]
+      },
+      {
+        "index": 6000,
+        "pattern": "(?:(?:a{2,}|a)*){2}",
+        "codes": [
+          "group_unbounded_quantifier",
+          "multiple_unbounded_quantifiers",
+          "unbounded_inside_quantified_group",
+          "nested_variable_repetition"
+        ]
+      },
+      {
+        "index": 7000,
+        "pattern": "a{1,32}|a{0,2}",
+        "codes": []
+      },
+      {
+        "index": 8000,
+        "pattern": "(?:(?:[a-z]?a){0,2}){2}",
+        "codes": [
+          "nested_variable_repetition",
+          "nested_variable_repetition"
+        ]
+      },
+      {
+        "index": 9000,
+        "pattern": "x(?:[a-z]*a{0,2})+y",
+        "codes": [
+          "group_unbounded_quantifier",
+          "multiple_unbounded_quantifiers"
+        ]
+      }
+    ]
   },
   "engine_notes": [
     {
