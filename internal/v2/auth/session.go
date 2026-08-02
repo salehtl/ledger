@@ -227,6 +227,51 @@ func (s *Sessions) deletedOrUnknown(ctx context.Context, tokenHash []byte) error
 	return ErrSessionAccountDeleted
 }
 
+// tombstoneGrace is how long a deleted-account tombstone is kept PAST the
+// expiry of the session it names.
+//
+// A row past its own expires_at already answers nothing (deletedOrUnknown
+// refuses it), so this is not a correctness window — it only bounds the table.
+// It is generous for that reason: the cost of keeping a row too long is a few
+// bytes, and the cost of dropping one too early is a device that never learns
+// its account is gone.
+const tombstoneGrace = 30 * 24 * time.Hour
+
+// ReapDeletedAccountTombstones deletes tombstones whose sessions expired more
+// than tombstoneGrace ago, and reports how many it removed.
+//
+// # Why this is here and not in the trigger that writes the table
+//
+// Because the clock is. 00021's BEFORE DELETE trigger used to end with
+// `DELETE … WHERE expires_at < now() - interval '30 days'` on POSTGRES's clock,
+// over rows whose expires_at came from Sessions.Now — two clocks deciding one
+// fact, which is exactly what that migration's own comment forbids. With
+// ledgerd's clock 31 days behind Postgres's it destroyed the row it had just
+// inserted, and a session live by the clock that decides answered 401 instead
+// of 410. See 00022_tombstone_sweep_leaves_the_trigger.sql.
+//
+// The bound below is s.now(), the same value deletedOrUnknown compares
+// expires_at against. One clock, one file, two lines apart.
+//
+// # Why not on the lookup path
+//
+// deletedOrUnknown runs on every unrecognized bearer token, so reaping there
+// would let anyone holding a socket make this server write. This is called from
+// cmd/ledgerd's hourly sweep loop instead: not attacker-triggerable, and it
+// still runs on a deployment where nobody deletes an account for a year.
+func (s *Sessions) ReapDeletedAccountTombstones(ctx context.Context) (int64, error) {
+	if s.Pool == nil {
+		return 0, errors.New("auth: Sessions.Pool is nil")
+	}
+	tag, err := s.Pool.Exec(ctx,
+		`DELETE FROM deleted_account_sessions WHERE expires_at < $1`,
+		s.now().Add(-tombstoneGrace))
+	if err != nil {
+		return 0, fmt.Errorf("auth: reap deleted-account tombstones: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Revoke kills one session. It is idempotent: revoking an already-revoked
 // session leaves the original revoked_at in place (the guard in the WHERE
 // clause), and revoking a token that was never issued is a no-op rather than

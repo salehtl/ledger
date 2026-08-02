@@ -74,10 +74,21 @@ listeners/loops until SIGINT/SIGTERM:
 - HTTP sync API on `server.http_listen` (plain HTTP, loopback-only — §2)
 - SMTP receiver on `mail.smtp_listen` (public `:25`, DKIM/ARC verified)
 - Admin console on `server.admin_listen`, **only if `LEDGER_ADMIN_TOKEN` is set**
-- Three hourly sweeps: quarantine expiry, donated-sample retention, dictionary
-  submission retention. Each runs once at startup and then hourly; each is its
-  own loop so one dying cannot stop the others. A sweep error is logged and the
-  loop continues.
+- Four hourly sweeps: quarantine expiry, donated-sample retention, dictionary
+  submission retention, and deleted-account tombstone retention. Each runs once
+  at startup and then hourly; each is its own loop so one dying cannot stop the
+  others. A sweep error is logged and the loop continues.
+
+  The tombstone sweep is the mildest of the four to lose — an unswept row still
+  answers correctly, because `auth.Sessions` judges its expiry on its own clock
+  — and it is a loop here rather than a `DELETE` inside 00021's trigger for
+  exactly that reason: **the clock that decides has to be the one doing the
+  deleting.** The trigger version ran on Postgres's clock over rows written from
+  ledgerd's, and on a box where the two disagreed by more than 30 days it
+  destroyed the tombstone it had just written, turning a deleted account into an
+  ordinary-looking 401 that no device will wipe on. See
+  `00022_tombstone_sweep_leaves_the_trigger.sql`. If ledgerd and Postgres ever
+  stop sharing a box, that is the property to keep in mind — not NTP.
 
 Health: `GET /api/v1/healthz` → `200 {"status":"ok","db":"ok"}`, or
 `503 {"status":"degraded","db":"down"}`. It is a 503 and not a sad-field 200
@@ -131,11 +142,24 @@ This gates **account creation only**; existing accounts sign in without one and
 never spend one. Single-use, redeemed in the same transaction as the account.
 The code goes to **stdout alone on its own line** and the warning goes to
 stderr, so `ledgerd mint-invite --note x | pbcopy` copies the code and not a
-sentence.
+sentence. That also means anything capturing stdout captures a live invitation:
+do not run it under `script`, `systemd-run`, `tee` into a file you keep, or a
+shell with `set -x`.
+
+The code is 24 characters of RFC 4648 base32 — **120 bits from `crypto/rand`**.
+That number is the entire gate: `403 not_invited` tells a caller whether the
+code they tried exists, so guessing is a perfectly-oracled search and only the
+size of the space stops it. `auth.TestMintedInviteCodesAreUnguessable` measures
+it (length, alphabet, per-position variation and pairwise independence across
+256 mints) rather than trusting the comment beside the constant.
 
 `--show` lists each row as `<hash-prefix>  minted <ts>  OUTSTANDING|redeemed …
 <note>`. A code redeemed by an account you later purged shows as "redeemed by a
-since-deleted account" (`ON DELETE SET NULL`).
+since-deleted account" (`ON DELETE SET NULL`) **and with an empty note**: the
+note is your free text about a person, so it is cleared by the same deletion
+(`00023_invite_note_dies_with_the_account.sql`). An *outstanding* code keeps its
+note — that is the question `--show` exists to answer. If you need a permanent
+record of who you invited, keep it somewhere that is not this database.
 
 ### `parse-rate` — the ship gate
 
@@ -362,7 +386,7 @@ not refuse for a reason the dry run could have found.
 | `templates` | operator-published parsers, not authored by users and shared by all of them |
 | `dict_entries` | the global merchant dictionary. Not justified by k-anonymity (k gates *publication*, not storage) — what makes it acceptable is that `ForgetSubmitter` destroys the pattern↔person link, leaving a string attributable to nobody |
 | `waitlist` | a bank name and a count, never linked to who asked |
-| `invite_codes` | `redeemed_by` is nulled by the schema; what survives is "some code was spent, and nobody knows by whom" |
+| `invite_codes` | the schema nulls both `redeemed_by` (FK `ON DELETE SET NULL`) and `note` (trigger, 00023), so what survives is a hash, `created_at` and `redeemed_at` — "some code was spent, and nobody knows by whom". The note used to survive, and it is your words about a person, so it was the one thing in the row that made that sentence false |
 | `deleted_account_sessions` | the tombstone that makes deleted devices get 410 and not 401 — it is *written by* the deletion, so it must survive one |
 | `goose_db_version` | the migration ledger |
 
