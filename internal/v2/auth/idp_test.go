@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ledger/internal/v2/pgtest"
 )
 
 // ---------------------------------------------------------------------------
@@ -805,9 +808,13 @@ func TestNonceBinding(t *testing.T) {
 		}
 	})
 
+	// `v` is an APPLE verifier (see verifierOn), so the claim it must be shown
+	// is the hash and not the challenge — see nonceClaimFor, and
+	// TestNonceClaimIsComparedPerProvider below, which is where the two
+	// providers' rules are pinned against a published vector.
 	t.Run("bound nonce matches", func(t *testing.T) {
-		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "n-abc123"}))
-		if _, err := v.Verify(bgctx, tok, VerifyOpts{Nonce: "n-abc123"}); err != nil {
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": appleNonceClaim(abcNonce)}))
+		if _, err := v.Verify(bgctx, tok, VerifyOpts{Nonce: abcNonce}); err != nil {
 			t.Fatalf("matching nonce rejected: %v", err)
 		}
 	})
@@ -815,25 +822,177 @@ func TestNonceBinding(t *testing.T) {
 	// The replay case: a token captured from someone else's sign-in carries
 	// THEIR nonce, so it is useless against a session bound to ours.
 	t.Run("captured token carries another sign-in's nonce", func(t *testing.T) {
-		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "someone-elses"}))
-		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: "n-abc123"}, ErrNonce)
+		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": appleNonceClaim("someone-elses")}))
+		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: abcNonce}, ErrNonce)
 	})
 
 	// The failure that would make the whole mechanism decorative: a token with
 	// NO nonce must not satisfy a caller that bound one.
 	t.Run("token with no nonce cannot satisfy a bound one", func(t *testing.T) {
 		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), nil))
-		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: "n-abc123"}, ErrNonce)
+		mustRejectOpts(t, v, tok, VerifyOpts{Nonce: abcNonce}, ErrNonce)
 	})
 
-	// A nonce on the token but none bound is accepted: Phase 1's clients do
-	// not yet round-trip one, and refusing would break them.
+	// A nonce on the token but none bound is accepted: the sign-in exchange
+	// does not round-trip one, and refusing would break it.
 	t.Run("unbound caller ignores a token nonce", func(t *testing.T) {
 		tok := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": "n-abc123"}))
 		if _, err := v.Verify(bgctx, tok, VerifyOpts{}); err != nil {
 			t.Fatalf("unbound verify rejected a token carrying a nonce: %v", err)
 		}
 	})
+}
+
+// abcNonce and appleClaimForABC are a PUBLISHED SHA-256 vector, not a value
+// this package computed. `app/src/auth/idp.test.ts` pins the identical pair for
+// the client's expectedNonceClaim, so the Go and TypeScript halves are shown to
+// agree on a number neither of them produced for the occasion — which is the
+// only way the two can be checked against each other with no device here.
+const (
+	abcNonce         = "abc"
+	appleClaimForABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+)
+
+// appleNonceClaim is the test's OWN statement of Apple's rule. It deliberately
+// does not call nonceClaimFor: a test that computes its expectation with the
+// function under test passes for any function at all, which is precisely the
+// "true by construction" shape this project keeps finding.
+func appleNonceClaim(nonce string) string {
+	sum := sha256.Sum256([]byte(nonce))
+	return hex.EncodeToString(sum[:])
+}
+
+// TestNonceClaimIsComparedPerProvider is the fix for the defect the client leg
+// found: Apple's `nonce` claim is the hex SHA-256 of what it was given and
+// Google's is the value itself, and comparing both against the raw challenge
+// meant an Apple account could never satisfy address rotation.
+//
+// The four cases are chosen so that INVERTING the branch fails two of them and
+// REMOVING it (comparing raw for both, the old behaviour) fails another two.
+// Nothing here passes for a verifier that accepts "raw or hashed": that
+// verifier would accept every one of the four, and the two refusals are what
+// say it does not.
+func TestNonceClaimIsComparedPerProvider(t *testing.T) {
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	apple := NewOIDCVerifier(IdPApple, testIssuer, j.url(), []string{testAudience}, c.now)
+	google := NewOIDCVerifier(IdPGoogle, testIssuer, j.url(), []string{testAudience}, c.now)
+
+	// The vector, asserted before it is used, so a broken expectation is a
+	// loud failure here rather than a silent one four subtests down.
+	if got := appleNonceClaim(abcNonce); got != appleClaimForABC {
+		t.Fatalf("the test's own SHA-256 of %q is %s, want the published vector %s", abcNonce, got, appleClaimForABC)
+	}
+
+	tokenWithClaim := func(nonce string) string {
+		return mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": nonce}))
+	}
+
+	t.Run("apple accepts the hashed claim", func(t *testing.T) {
+		if _, err := apple.Verify(bgctx, tokenWithClaim(appleClaimForABC), VerifyOpts{Nonce: abcNonce}); err != nil {
+			t.Fatalf("an Apple token carrying hex(sha256(challenge)) was refused: %v — "+
+				"this is the defect: no Apple account could rotate its address", err)
+		}
+	})
+
+	// Inverted dispatch case 1, and also the OLD behaviour: comparing raw for
+	// Apple is exactly what shipped, so this subtest is the regression.
+	t.Run("apple refuses the raw claim", func(t *testing.T) {
+		mustRejectOpts(t, apple, tokenWithClaim(abcNonce), VerifyOpts{Nonce: abcNonce}, ErrNonce)
+	})
+
+	t.Run("google accepts the raw claim", func(t *testing.T) {
+		if _, err := google.Verify(bgctx, tokenWithClaim(abcNonce), VerifyOpts{Nonce: abcNonce}); err != nil {
+			t.Fatalf("a Google token echoing the challenge verbatim was refused: %v", err)
+		}
+	})
+
+	// Inverted dispatch case 2. Together with the one above, a swapped branch
+	// cannot pass: it would hash for Google and not for Apple.
+	t.Run("google refuses the hashed claim", func(t *testing.T) {
+		mustRejectOpts(t, google, tokenWithClaim(appleClaimForABC), VerifyOpts{Nonce: abcNonce}, ErrNonce)
+	})
+
+	// The downgrade this must not become. One provider's assertion must not be
+	// interchangeable with the other's, so neither shape is universally
+	// acceptable — asserted as a property over both verifiers rather than
+	// trusted to the two refusals above being remembered.
+	t.Run("neither shape satisfies both providers", func(t *testing.T) {
+		for _, claim := range []string{abcNonce, appleClaimForABC} {
+			accepted := 0
+			for _, v := range []Verifier{apple, google} {
+				if _, err := v.Verify(bgctx, tokenWithClaim(claim), VerifyOpts{Nonce: abcNonce}); err == nil {
+					accepted++
+				}
+			}
+			if accepted != 1 {
+				t.Fatalf("claim %q was accepted by %d of the 2 providers, want exactly 1: "+
+					"a shape both accept makes an Apple challenge satisfiable by a Google token", claim, accepted)
+			}
+		}
+	})
+}
+
+// The freshness window and the identity comparison are the other two factors
+// of the re-authentication ceremony (spec §3.4). They have to keep working
+// unchanged now that the nonce is hashed for one provider, and the way they
+// would break is subtle: a dispatch that hashed the WRONG thing would refuse
+// with ErrNonce and never reach them, so "rotation still works for Google" is
+// not evidence that Apple's ceremony completes.
+//
+// So this walks the whole ceremony for BOTH providers against a real verifier:
+// bind the challenge, require the five-minute window, and resolve the identity
+// to the account the session names.
+func TestReauthCeremonyCompletesForBothProviders(t *testing.T) {
+	pool := pgtest.New(t)
+	k := testKeys()
+	j := newJWKS(t, k.rsa1)
+	c := newClock()
+	const maxAge = 5 * time.Minute
+
+	for _, tc := range []struct {
+		idp   string
+		claim string
+	}{
+		{IdPApple, appleClaimForABC},
+		{IdPGoogle, abcNonce},
+	} {
+		t.Run(tc.idp, func(t *testing.T) {
+			v := NewOIDCVerifier(tc.idp, testIssuer, j.url(), []string{testAudience}, c.now)
+			u := mustUpsert(t, pool, Identity{IdP: tc.idp, Subject: testSubject})
+
+			fresh := mint(t, k.rsa1, nil, goodClaims(c.now(), map[string]any{"nonce": tc.claim}))
+			id, err := v.Verify(bgctx, fresh, VerifyOpts{Nonce: abcNonce, MaxAge: maxAge})
+			if err != nil {
+				t.Fatalf("%s could not complete a re-authentication: %v", tc.idp, err)
+			}
+			same, err := IdentityMatchesUser(bgctx, pool, u, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !same {
+				t.Fatalf("%s: the verified identity did not resolve to the account it belongs to", tc.idp)
+			}
+
+			// The window still bites, with the nonce still correct — so this
+			// fails for staleness and not for a nonce mismatch.
+			stale := goodClaims(c.now().Add(-30*time.Minute), map[string]any{"nonce": tc.claim})
+			stale["exp"] = c.now().Add(time.Hour).Unix()
+			mustRejectOpts(t, v, mint(t, k.rsa1, nil, stale), VerifyOpts{Nonce: abcNonce, MaxAge: maxAge}, ErrStale)
+
+			// And the identity comparison still refuses a stranger, so a
+			// verified token is not on its own an authorization.
+			other := mustUpsert(t, pool, Identity{IdP: tc.idp, Subject: "someone-else-" + tc.idp})
+			same, err = IdentityMatchesUser(bgctx, pool, other, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if same {
+				t.Fatalf("%s: a token for %s authorized an action on another account", tc.idp, testSubject)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

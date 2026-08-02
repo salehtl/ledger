@@ -50,6 +50,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,7 +198,16 @@ type Identity struct {
 // extra parameter so a future binding (an `azp` check, a max token age) does
 // not change every call site again.
 type VerifyOpts struct {
-	// Nonce, when non-empty, must equal the token's `nonce` claim.
+	// Nonce, when non-empty, is the value that was SENT to the provider — the
+	// raw challenge, exactly as this server issued it. It is not the claim.
+	//
+	// The distinction is load bearing and cost a shipped defect: Apple's native
+	// flow puts the lower-case hex SHA-256 of what it was given into the claim,
+	// while Google echoes it verbatim, so "must equal the claim" is only true
+	// for one of the two providers. Callers pass the challenge and
+	// nonceClaimFor applies the provider's own rule; a caller that pre-hashed
+	// would be hashing on behalf of a provider it cannot see, and would break
+	// the moment it was pointed at the other one.
 	//
 	// Why it exists: an ID token with no nonce bound to it is a pure BEARER
 	// credential for the sign-in exchange. Anything that observes one inside
@@ -478,7 +488,8 @@ func (v *oidcVerifier) Verify(ctx context.Context, idToken string, opts VerifyOp
 	if !v.audienceAllowed(tok.Audience) {
 		return Identity{}, fmt.Errorf("%w: %s token aud %q names no configured client id", ErrAudience, v.idp, tok.Audience)
 	}
-	if opts.Nonce != "" && subtle.ConstantTimeCompare([]byte(tok.Nonce), []byte(opts.Nonce)) != 1 {
+	if want := nonceClaimFor(v.idp, opts.Nonce); want != "" &&
+		subtle.ConstantTimeCompare([]byte(tok.Nonce), []byte(want)) != 1 {
 		return Identity{}, ErrNonce
 	}
 	// Re-checked against the VERIFIED payload for the same reason the audience
@@ -567,7 +578,8 @@ func (v *oidcVerifier) checkClaims(c idClaims, opts VerifyOpts) error {
 	}
 	// Checked here too, not only against the verified token, so a token bound
 	// to someone else's sign-in is refused without spending a JWKS fetch.
-	if opts.Nonce != "" && subtle.ConstantTimeCompare([]byte(c.Nonce), []byte(opts.Nonce)) != 1 {
+	if want := nonceClaimFor(v.idp, opts.Nonce); want != "" &&
+		subtle.ConstantTimeCompare([]byte(c.Nonce), []byte(want)) != 1 {
 		return ErrNonce
 	}
 	if err := checkFreshness(iatOf(c.IssuedAt), opts.MaxAge, now); err != nil {
@@ -577,6 +589,54 @@ func (v *oidcVerifier) checkClaims(c idClaims, opts VerifyOpts) error {
 		return ErrNoSubject
 	}
 	return nil
+}
+
+// nonceClaimFor returns the value THIS provider's `nonce` claim will hold,
+// given the nonce that was sent to it. It is the whole per-provider branch, in
+// one function, consulted by both comparison sites above.
+//
+// # The two providers disagree, and the code did not know
+//
+//	Apple  — native Sign in with Apple hashes. The app hands
+//	         ASAuthorizationAppleIDRequest a nonce and the ID token comes back
+//	         carrying the LOWER-CASE HEX SHA-256 of that string.
+//	Google — echoes the `nonce` authorize parameter back verbatim.
+//
+// Until this existed, both were compared byte-for-byte against the raw value.
+// Google worked; Apple could not ever match, because no client can produce a
+// raw nonce whose SHA-256 is a value the server chose. The consequence was not
+// cosmetic: POST /api/v1/address/rotate binds a nonce, so an Apple account
+// could never rotate its inbound address, and any later path that binds one —
+// DELETE /api/v1/account is the next, and it is an App Store requirement —
+// would have inherited the same wall. Found by the client leg (Task 13), which
+// recorded it rather than "fixing" it on its own side; see
+// app/src/auth/idp.ts's expectedNonceClaim, which computes the same value from
+// the same rule and is pinned to the same published SHA-256 vector as the test
+// here, so the two implementations are shown to agree.
+//
+// # Two things this deliberately is not
+//
+// It is NOT "accept the raw value or the hash". That would let a Google token
+// satisfy an Apple challenge and an Apple token satisfy a Google one, which
+// widens what each provider's assertion can authorize — a downgrade wearing a
+// compatibility fix's clothes. Exactly one value is acceptable per verifier.
+//
+// And the provider is v.idp — fixed when the verifier was CONSTRUCTED, one
+// instance per provider for the life of the process (api.NewServer) — never a
+// claim read out of the token being checked. A branch selected by attacker-
+// supplied input is a branch the attacker chooses, and choosing the Google
+// branch is precisely how you would make an Apple challenge comparable to a raw
+// value again.
+//
+// An empty nonce means the caller bound none and is returned unchanged, so
+// "no binding requested" stays distinguishable from "binding requested" at
+// both call sites rather than turning into hex of the empty string.
+func nonceClaimFor(idp, nonce string) string {
+	if nonce == "" || idp != IdPApple {
+		return nonce
+	}
+	sum := sha256.Sum256([]byte(nonce))
+	return hex.EncodeToString(sum[:])
 }
 
 func iatOf(n *numericDate) time.Time {

@@ -29,11 +29,23 @@ package api
 // has no device key. Malware on an unlocked device that can sign cannot produce
 // an IdP assertion.
 //
-// What factor 2 does NOT prove, stated rather than implied: the exchange binds
-// no server-issued nonce, so "fresh" means the token was minted within the
-// window, not that it was minted FOR this action. A token captured inside that
-// window satisfies it. The fix is the same one handleExchange describes, in
-// both places; the window is what bounds the exposure until then.
+// What factor 2 does NOT prove, stated rather than implied: THIS ENDPOINT
+// binds no IdP nonce — VerifyOpts carries MaxAge and nothing else — so "fresh"
+// means the token was minted within the window, not that it was minted FOR
+// this action. A token captured inside that window satisfies it. The window is
+// what bounds the exposure until a nonce is bound here.
+//
+// Address rotation is the same ceremony and DOES bind one, because its
+// challenge is issued before the token exists (addresses.go). Deletion could
+// take the same step, and should: the nonce it already issues is an Ed25519
+// challenge for factor 3, and passing it as VerifyOpts.Nonce as well would cost
+// nothing here. It is not done in this commit because no client sends it yet —
+// Task 26 builds this screen — and a server that began requiring a nonce no
+// client supplies would make in-app account deletion impossible, which is the
+// one thing App Review 5.1.1(v) will not accept. When that client lands, this
+// is a one-line change and the per-provider hashing is already handled:
+// auth.nonceClaimFor applies Apple's hex-SHA-256 rule inside the verifier, so
+// the caller passes the raw challenge exactly as rotation does.
 //
 // # An account with no device key cannot delete itself here
 //

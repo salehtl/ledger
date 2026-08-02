@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -48,6 +50,73 @@ func (v *bindingVerifier) Verify(_ context.Context, idToken string, opts auth.Ve
 		sub = "sub-" + idToken
 	}
 	return auth.Identity{IdP: auth.IdPApple, Subject: sub, IssuedAt: iat}, nil
+}
+
+// appleShapedVerifier behaves the way a REAL Apple verifier now does: the
+// token's `nonce` claim is the lower-case hex SHA-256 of whatever was sent to
+// Apple, so the claim it holds is compared against a hash it recomputes from
+// `opts.Nonce` itself.
+//
+// It recomputes rather than being told, which is what makes the assertion
+// mean something: if handleAddressRotate passed a pre-hashed value, a
+// truncated one, or anything but the challenge verbatim, this recomputation
+// lands somewhere else and the rotation is refused.
+type appleShapedVerifier struct {
+	claim   string // what Apple put in the token
+	subject string
+}
+
+func (v *appleShapedVerifier) Verify(_ context.Context, _ string, opts auth.VerifyOpts) (auth.Identity, error) {
+	if opts.Nonce != "" {
+		sum := sha256.Sum256([]byte(opts.Nonce))
+		if subtle.ConstantTimeCompare([]byte(v.claim), []byte(hex.EncodeToString(sum[:]))) != 1 {
+			return auth.Identity{}, fmt.Errorf("%w: apple claim %q is not the hash of %q", auth.ErrNonce, v.claim, opts.Nonce)
+		}
+	}
+	return auth.Identity{IdP: auth.IdPApple, Subject: v.subject, IssuedAt: time.Now()}, nil
+}
+
+// An APPLE account can complete an address rotation.
+//
+// It could not before: Apple's `nonce` claim is the hex SHA-256 of what it was
+// given, the server compared the raw challenge byte-for-byte, and no client can
+// produce a raw nonce whose SHA-256 is a value the server chose. Found by the
+// client leg, which recorded it instead of relaxing its own check.
+//
+// The per-provider branch lives in the verifier (auth.nonceClaimFor), so what
+// this test pins is the API layer's half of the contract: the handler hands the
+// verifier the challenge VERBATIM and lets the provider's own rule apply.
+func TestAnAppleAccountCanCompleteAnAddressRotation(t *testing.T) {
+	h := newAddrHarness(t)
+	u, session, priv, _ := h.signedIn(t, "alice")
+	before := h.currentAddress(t, session)
+	local := strings.TrimSuffix(before.Address, apiSuffix)
+
+	nonce := h.rotationNonce(t, session)
+	challenge := base64.StdEncoding.EncodeToString(nonce)
+	// What Apple would put in the token, computed here from the challenge the
+	// server issued — the device's side of the exchange, in one line.
+	sum := sha256.Sum256([]byte(challenge))
+	h.srv.Verifiers[auth.IdPApple] = &appleShapedVerifier{
+		claim: hex.EncodeToString(sum[:]), subject: "sub-alice",
+	}
+
+	sig := ed25519.Sign(priv, addresses.RotationMessage(nonce, u, local))
+	rec := h.req(http.MethodPost, "/api/v1/address/rotate", session, RotateRequest{
+		IdP: "apple", IDToken: "alice",
+		Nonce: challenge,
+		Sig:   base64.StdEncoding.EncodeToString(sig),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("an Apple re-authentication was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[AddressResponse](t, rec)
+	if out.Address == before.Address {
+		t.Fatal("the rotation reported success without changing the address")
+	}
+	if out.RotatesFrom != before.Address {
+		t.Fatalf("RotatesFrom = %q, want the retired address %q", out.RotatesFrom, before.Address)
+	}
 }
 
 // The nonce the handler binds must be the one the CHALLENGE endpoint issued,

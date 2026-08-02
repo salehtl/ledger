@@ -118,36 +118,46 @@ export type NonceShape = "raw" | "sha256hex" | "other";
  * `AppleAuthentication.signInAsync({ nonce })`; Google echoes the `nonce`
  * authorize parameter verbatim.
  *
- * # What this costs on the re-auth paths, stated rather than papered over
+ * # The server agrees, and this is the shape both sides implement
  *
- * `internal/v2/auth/idp.go:481,570` compares `opts.Nonce` against the claim
- * with `subtle.ConstantTimeCompare` and **no per-provider branch**, and
- * `api/addresses.go` sets `opts.Nonce` to the raw challenge it issued. So on
- * `POST /api/v1/address/rotate` and `DELETE /api/v1/account`, an Apple
- * re-authentication presents `hex(sha256(C))` where the server expects `C`,
- * and it can never match: no client can produce a raw nonce whose SHA-256 is a
- * value chosen by someone else.
+ * This used to be a live defect and is recorded here because the shape of the
+ * agreement is the thing worth keeping. `internal/v2/auth/idp.go` compared
+ * `opts.Nonce` against the claim with **no per-provider branch** while
+ * `api/addresses.go` bound the raw challenge, so an Apple re-authentication
+ * presented `hex(sha256(C))` where the server expected `C` and could never
+ * match — no client can produce a raw nonce whose SHA-256 is a value someone
+ * else chose. Apple accounts could not rotate an inbound address at all.
  *
- * **The client is not the place to fix that, and must not try.** Relaxing the
- * server's comparison to make a client test pass is the failure mode the plan
- * names explicitly (Task 13 Step 2). The fix is one per-provider branch on the
- * server — `SHA-256(issued)` for Apple, `issued` for Google — which the plan
- * assigned to Task 6 Step 1 and which is not present in the tree. Until it
- * lands, Google is the only provider that can complete a re-authentication.
- * {@link APPLE_REAUTH_GAP} is that sentence in a form a test can assert.
+ * **The client was not the place to fix it and did not try.** Relaxing this
+ * check to make a client test pass is the failure mode the plan names
+ * explicitly (Task 13 Step 2). The fix is `auth.nonceClaimFor` on the server:
+ * one branch, inside the verifier, keyed on the provider the verifier was
+ * CONSTRUCTED for and never on anything in the token — `hex(sha256(issued))`
+ * for Apple, `issued` for Google, and deliberately not "either", which would
+ * let a Google token satisfy an Apple challenge.
+ *
+ * The two implementations are checked against each other by pinning the same
+ * published SHA-256 vector on both sides: `"abc"` →
+ * `ba7816bf…f20015ad`, asserted below and in
+ * `internal/v2/auth/idp_test.go`'s `TestNonceClaimIsComparedPerProvider`.
+ * {@link APPLE_REAUTH_GAP} states the rule in a form a test can assert.
  */
 export function expectedNonceClaim(idp: Idp, nonce: string): string {
   return idp === IDP_APPLE ? toHex(sha256(utf8Encode(nonce))) : nonce;
 }
 
 /**
- * The re-auth gap above, as a value, so a test can pin it and a screen can
- * explain it rather than showing a bare 403.
+ * The per-provider rule above, as a value, so a test can pin it.
+ *
+ * It is deliberately no longer phrased as a limitation a screen would render:
+ * the server hashes per provider now, so a string telling a user that Apple
+ * cannot rotate an address would be a lie shipped in the UI. The name is kept
+ * because it is what the fix is filed under on both sides.
  */
 export const APPLE_REAUTH_GAP =
-  "the server compares the re-authentication challenge to Apple's nonce claim byte for byte, " +
-  "and Apple's claim is the SHA-256 of what it was given, so Apple cannot complete an address " +
-  "rotation or an account deletion until the server hashes per provider";
+  "Apple's nonce claim is the SHA-256 of what it was given and Google's is the value itself, " +
+  "so the server compares a re-authentication challenge per provider (auth.nonceClaimFor): " +
+  "hex(SHA-256(challenge)) for Apple, the challenge for Google, and never either-or";
 
 /**
  * Which of the two shapes a claim is, **measured** rather than assumed.

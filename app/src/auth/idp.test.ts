@@ -101,12 +101,15 @@ describe("nonces", () => {
     expect(expectedNonceClaim(IDP_GOOGLE, "abc")).toBe("abc");
   });
 
-  test("Apple's expected claim is never the nonce itself — the re-auth gap, pinned", () => {
-    // This is the property that makes the server's raw comparison unsatisfiable
-    // for Apple on address rotation and account deletion. If a later commit
-    // makes this test fail, either Apple stopped hashing or somebody "fixed"
-    // the client to send the hash as the challenge — and the second one is a
-    // forged challenge, not a fix.
+  test("Apple's expected claim is never the nonce itself — the per-provider rule, pinned", () => {
+    // If a later commit makes this fail, either Apple stopped hashing or
+    // somebody "fixed" the client to send the hash as the challenge — and the
+    // second one is a forged challenge, not a fix.
+    //
+    // The server-side half of this rule is auth.nonceClaimFor, pinned against
+    // the same published vector by TestNonceClaimIsComparedPerProvider. The two
+    // must not drift: this claim is what Apple returns, that comparison is what
+    // accepts it, and an Apple account's address rotation needs both.
     const challenge = newNonce(fakeRandom(7));
     expect(expectedNonceClaim(IDP_APPLE, challenge)).not.toBe(challenge);
     expect(APPLE_REAUTH_GAP).toContain("SHA-256");

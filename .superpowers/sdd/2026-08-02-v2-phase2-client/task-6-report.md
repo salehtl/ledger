@@ -334,3 +334,130 @@ had staged.
    `.mutbak` in a `finally`, and the tree was verified clean (`gofmt -l` empty,
    `go build ./...` ok, no `.mutbak` remaining) before the final gate — but a
    future battery here should announce itself or run against a scratch clone.
+
+---
+
+# Follow-up: Apple's `nonce` claim is hashed (2026-08-02)
+
+Found by the client leg (Task 13, `c777f11`) while building sign-in, reported
+back as a Task 6 defect, and correct: **the per-provider nonce hash Step 1
+assigned to this task was not in the tree.**
+
+## The defect
+
+Native Sign in with Apple hashes: the ID token's `nonce` claim is the
+lower-case hex SHA-256 of the string handed to `ASAuthorizationAppleIDRequest`.
+Google echoes its `nonce` authorize parameter verbatim. `auth/idp.go` compared
+`opts.Nonce` to the claim byte-for-byte at both of its comparison sites with no
+provider branch, and `handleAddressRotate` — which this task taught to bind a
+nonce at all — passes the **raw** challenge. So an Apple token presented
+`hex(sha256(C))` where the server demanded `C`, and no client can produce a raw
+nonce whose SHA-256 is a value the server chose.
+
+**Consequence: an Apple account could never rotate its inbound address.** It
+was introduced by this task's own Step 1 — before it, rotation bound no nonce
+and Apple was unaffected — so it is a defect this task shipped and this task
+owns.
+
+## One correction to the report as filed
+
+Account deletion was **not** blocked. `handleDeleteAccount` passes
+`auth.VerifyOpts{MaxAge: reauthMaxAge}` and binds no nonce at all, so Apple
+completed it before this fix and completes it now; the existing deletion tests
+pass unchanged. The App Review exposure was real but latent rather than live:
+deletion is the same §3.4 ceremony and the next path that would bind a nonce,
+and it would have inherited the same wall the moment it did. `account.go` now
+says so at the point where a later task will make that change, and points at
+`nonceClaimFor` so the branch is not rediscovered.
+
+## The fix
+
+`auth.nonceClaimFor(idp, nonce)` — one function, consulted by **both**
+comparison sites (`Verify`'s post-JWKS check and `checkClaims`' pre-parse):
+
+- Apple → `hex(sha256(challenge))`
+- Google → the challenge itself
+- empty → empty, so "no binding requested" stays distinguishable
+
+The branch is in the **verifier**, not at the call sites, because the verifier
+is the per-provider object: every consumer of `VerifyOpts.Nonce` — present and
+future — gets the right rule without knowing Apple's convention, and there is
+one place to be wrong. The provider is `v.idp`, fixed at construction (one
+verifier per provider per process, `api.NewServer`), **never** read out of the
+token: a branch selected by attacker-supplied input is a branch the attacker
+chooses, and choosing Google's is exactly how you would make an Apple challenge
+comparable to a raw value again.
+
+`VerifyOpts.Nonce`'s contract changed from "must equal the claim" to "the value
+SENT to the provider", and its doc says why the distinction is load-bearing.
+
+## Every `VerifyOpts.Nonce` consumer, audited
+
+| site | binds a nonce? | effect of this change |
+|---|---|---|
+| `api/addresses.go` rotation | yes, the rotation challenge | **fixed** — Apple can now complete it |
+| `api/account.go` deletion | no (`MaxAge` only) | none; documented, with the one-line change named for Task 26 |
+| `api/sync.go` exchange | no (empty `VerifyOpts{}`) | none — `nonceClaimFor("")` returns `""`, so the unbound path is byte-identical and still Phase-4-blocking |
+| `auth/dev.go` `devVerifier` | ignores `VerifyOpts` entirely | none; `--dev-auth` has no claims to compare, which is why the e2e is unaffected |
+
+## Mirror grep
+
+`grep -rn "Nonce" --include=*.go internal/ cmd/ | grep -E "Compare|==|!="` gives
+five hits beyond the two fixed: `idp.go:471` is the parse-divergence tripwire
+comparing two parsers' views of the same claim (not a provider comparison, must
+stay exact), and `purge.go:1018`, `auth/writer.go:764`, `addresses.go:735` are
+Ed25519 challenge **length** checks. No other provider-nonce comparison exists
+in Go. In TypeScript the only one is `app/src/auth/idp.ts`, which was already
+correct and is what found this.
+
+## Tests
+
+- `TestNonceClaimIsComparedPerProvider` — four cases chosen so that **inverting**
+  the branch fails two and **removing** it fails two others, plus a fifth that
+  asserts *neither shape is accepted by both providers*, which is the property
+  that forbids the "accept raw or hashed" downgrade.
+- `TestReauthCeremonyCompletesForBothProviders` — the whole ceremony against a
+  real verifier for Apple **and** Google: nonce bound, `MaxAge: 5m` still bites
+  (asserted as `ErrStale`, so it fails for staleness and not a nonce mismatch),
+  and `IdentityMatchesUser` still resolves to the right account and still
+  refuses a stranger. This is the coordinator's "must keep working unchanged for
+  Google" check, run for both.
+- `TestAnAppleAccountCanCompleteAnAddressRotation` (api) — a fake that
+  **recomputes** Apple's hash from `opts.Nonce` rather than being told it, so
+  the handler passing anything but the challenge verbatim fails it.
+- The expected values are the **published** SHA-256 vector for `"abc"`, the same
+  one `app/src/auth/idp.test.ts` pins, so Go and TypeScript are checked against
+  a number neither computed for the occasion. `appleNonceClaim` in the test
+  deliberately does not call `nonceClaimFor`.
+- `TestNonceBinding`'s existing subtests encoded the raw convention against an
+  Apple verifier and were rewritten, not deleted; none was weakened.
+
+## Mutation score
+
+**6/7 caught**, plus one follow-up:
+
+| # | mutation | result |
+|---|---|---|
+| N1 | dispatch inverted | caught |
+| N2 | branch removed (the shipped defect, restored) | caught |
+| N3 | hash for every provider | caught |
+| N4 | accept raw **or** hashed, at `Verify` only | **survived — masked** |
+| N4b | accept raw **or** hashed, at **both** sites | caught |
+| N5 | upper-case hex | caught |
+| N6 | pre-parse left comparing raw | caught |
+| N7 | handler pre-hashes the challenge | caught (compile) |
+
+N4 survived because the strict pre-parse in `checkClaims` runs first and refuses
+the token before the relaxed post-verify check is ever reached — the redundancy
+is deliberate (the pre-parse exists to refuse without spending a JWKS fetch), so
+observable behaviour is unchanged and the mutant is masked rather than missed.
+That is a claim, so it was tested: **N4b**, the same relaxation applied to both
+sites — which is what an actual "accept either shape" change would look like —
+is caught by the `neither shape satisfies both providers` subtest.
+
+## Client-side marker
+
+`APPLE_REAUTH_GAP` said Apple "cannot complete an address rotation or an account
+deletion", which is now false and is a string a screen was invited to render to
+a user. It states the per-provider rule instead. Its test assertion
+(`toContain("SHA-256")`) still holds; no `app/` test was removed or weakened.
