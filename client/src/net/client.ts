@@ -84,6 +84,7 @@ import {
   type OpType,
 } from "../wire/op";
 import {
+  ROW_CHUNK,
   eachRowChunk,
   genesisHead,
   type ClientState,
@@ -372,6 +373,23 @@ export interface PushReport {
   checkpointed: boolean;
 }
 
+/**
+ * Where a chunked fold has got to, handed to
+ * {@link Client.materializeChunked}'s `between` at each chunk boundary.
+ *
+ * `rows` and `ops` are different counts and a progress bar must not swap them:
+ * one blob is one row and carries one *or more* ops, so `ops` is what a "12,904
+ * applied" line means and `rows / total` is the only honest fraction.
+ */
+export interface FoldProgress {
+  /** Chunks completed, 1-based. */
+  chunk: number;
+  rows: number;
+  ops: number;
+  /** Rows the store holds for this stream, read once before the walk. */
+  total: number;
+}
+
 export class Client {
   private readonly store: Store;
   /**
@@ -481,8 +499,186 @@ export class Client {
     return { state, ops };
   }
 
+  /**
+   * {@link materialize}, a chunk at a time, awaiting `between` after each chunk
+   * that is not the last.
+   *
+   * # Why this exists next to a method that already chunks
+   *
+   * `materialize()` already reads the log a chunk at a time, so its MEMORY is
+   * bounded. What it cannot do is give the runtime a turn: it is synchronous,
+   * so a 3,683-row fold is one uninterrupted slab of JS. Phase 0's post-mortem
+   * is explicit that the fix which shipped was chunking **with yields** and that
+   * the yield was the load-bearing half — it is what lets the collector run
+   * between chunks, and a synchronous `Store` (Decision 3) cannot express one.
+   *
+   * So this is the async twin, and it is a twin rather than a reimplementation:
+   * it walks the same {@link RowStore.range}, decodes with the same
+   * {@link decodeWireRow} and folds with the same `applyRows` as
+   * {@link materialize}. The only difference is the `await` between chunks.
+   *
+   * `between` is called exactly `ceil(rows / chunkSize) - 1` times, which is
+   * decided from {@link RowStore.count} rather than from "did the last chunk
+   * come back short" — a log whose length is an exact multiple of the chunk size
+   * would otherwise need one extra empty probe to discover it had finished, and
+   * would yield once more than there were gaps.
+   *
+   * # `keepOps` defaults to FALSE, and that is the memory fix
+   *
+   * `materialize()` returns every decoded op, because {@link checkAll} needs
+   * them — I9 and I10 re-fold from that list. It is therefore O(log) in decoded
+   * *payload* bytes, and a payload is the biggest thing a blob carries: keeping
+   * the list means keeping every inflated body's contents alive for the whole
+   * fold, which is precisely the shape Phase 0 froze on. Chunking the READ does
+   * not help if the decode's output is accumulated anyway.
+   *
+   * The engine does not need the list — it needs a state and a count — so the
+   * default here is to keep only the chunk in flight and return `ops: null`
+   * with `opsApplied` counted. A caller that genuinely needs the ops (the
+   * checker) asks for them and pays for them, at the call site, visibly.
+   *
+   * Nothing here retains a chunk otherwise. `store/store.test.ts`'s poisoning
+   * row store pins that for the synchronous path and `net/engine.test.ts` pins
+   * it for this one; the async version needs its own proof because an
+   * implementation that collected the chunks into one array and folded them
+   * after the loop would satisfy every count in this signature.
+   */
+  async materializeChunked(
+    opts: { between?: (p: FoldProgress) => Promise<void> | void; chunkSize?: number; keepOps?: boolean } = {},
+  ): Promise<{ state: State; ops: LogEntry[] | null; opsApplied: number; chunks: number; rows: number }> {
+    const limit = opts.chunkSize ?? ROW_CHUNK;
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error(`materializeChunked needs a positive integer chunk size, got ${String(limit)}`);
+    }
+    const keep = opts.keepOps === true;
+    const state = emptyState();
+    // One array either way, so the fold path is identical in both modes and the
+    // only difference is whether it is truncated between chunks. A second code
+    // path would be a second thing to be wrong.
+    const ops: LogEntry[] = [];
+    const total = this.rowStore.count(STREAM_HOT);
+    let after = 0n;
+    let chunks = 0;
+    let rows = 0;
+    let opsApplied = 0;
+    for (;;) {
+      const chunk = this.rowStore.range(STREAM_HOT, after, limit);
+      if (chunk.length === 0) break;
+      const last = chunk[chunk.length - 1];
+      if (last === undefined) break;
+      const next = parseDecimal(last.seq);
+      // The same progress guarantee `eachRowChunk` makes, for the same reason: a
+      // store answering with rows at or below the cursor it was given would spin
+      // here forever, and a hang on a phone is indistinguishable from the freeze
+      // this whole task exists to prevent.
+      if (next <= after) {
+        throw new Error(`${STREAM_HOT} rows: range() did not advance past seq ${after.toString(10)}`);
+      }
+      const before = ops.length;
+      applyRows(state, ops, this.userId, chunk.map(decodeWireRow));
+      opsApplied += ops.length - before;
+      if (!keep) ops.length = 0;
+      chunks++;
+      rows += chunk.length;
+      after = next;
+      if (rows >= total || chunk.length < limit) break;
+      await opts.between?.({ chunk: chunks, rows, ops: opsApplied, total });
+    }
+    state.cursors.cold = this.st.cursors.cold;
+    return { state, ops: keep ? ops : null, opsApplied, chunks, rows };
+  }
+
   state(): State {
     return this.materialize().state;
+  }
+
+  /**
+   * Heals a store holding verified rows ABOVE its persisted cursor, and returns
+   * what it healed.
+   *
+   * # The state this repairs, and why it is reachable at all
+   *
+   * {@link pull} step 4 persists a page's rows, the cursor and the pinned heads
+   * inside one {@link Store.transaction}. `sqliteStore` makes that genuinely
+   * atomic, so a device cannot reach this state. `fileStore` cannot — two files
+   * have no journal — so it keeps the *ordering* (rows first) and its residual
+   * crash window lands on the recoverable side: rows on disk, cursor behind
+   * them.
+   *
+   * "Recoverable" was, until this method, aspirational. What actually happened
+   * on the next run was that the fold consumed the stored rows (so the folded
+   * cursor sat at the last one), `pull` asked the server for everything after
+   * the *saved* cursor, and the same page came back — which the fold refuses:
+   *
+   *     ReplayOrderError: blob at seq 1 does not follow 3: one blob is one row, one seq
+   *
+   * That is Task 5's own recorded output, and its report names automatic
+   * reconciliation as Task 8's job. This is it.
+   *
+   * # It VERIFIES and it PINS — neither is optional
+   *
+   * Advancing the cursor alone would be worse than the break it fixes: the next
+   * page arrives at counter N+k+1 while the pinned head is still at N, which is
+   * a chain break this client can never clear. So the orphan rows are put back
+   * through exactly what {@link pull} puts a fetched page through — `verifyChain`
+   * against the pinned head for hot, the pinned per-blob hashes for cold — and
+   * the head is advanced with {@link headAfter} in the same transaction as the
+   * cursor. This is the `pin` step of `pull → verify → pin → fold → attest →
+   * push`, applied to rows that are already local.
+   *
+   * A chain break here is NOT swallowed: it means the rows on disk do not follow
+   * the head this client pinned, which no amount of resuming can repair.
+   *
+   * The walk is chunked and the head is threaded through each chunk, so a store
+   * whose cursor was lost entirely re-verifies the whole log at one chunk of
+   * memory rather than in one array.
+   */
+  reconcile(stream: Stream = STREAM_HOT): { rows: number; cursor: bigint } {
+    const start = this.st.cursors[stream];
+    let after = start;
+    let healed = 0;
+    for (;;) {
+      const raw = this.rowStore.range(stream, after, ROW_CHUNK);
+      if (raw.length === 0) break;
+      const rows = raw.map(decodeWireRow);
+      const last = rows[rows.length - 1];
+      if (last === undefined) break;
+      if (last.seq <= after) {
+        throw new Error(`${stream} rows: range() did not advance past seq ${after.toString(10)}`);
+      }
+      const groups = byChain(rows);
+      const pinnedBefore = new Map(this.st.pinnedHeads);
+      if (stream === STREAM_HOT) {
+        for (const [key, run] of groups) verifyChain(key, run, pinnedBefore.get(key) ?? genesisHead());
+      } else {
+        for (const [key, run] of groups) {
+          const pins = this.st.pinnedBlobHashes.get(key);
+          if (pins === undefined) {
+            throw new ChainBreakError(
+              `no cold hashes are pinned for (${key}), so the ${run.length} cold bod${run.length === 1 ? "y" : "ies"} ` +
+                `already on disk cannot be verified — run \`cli pull-cold-hashes\``,
+            );
+          }
+          verifyFetchedRange(pins, run);
+        }
+      }
+      // Pin and advance together, per chunk: an interrupted reconcile has to
+      // leave a state the next one can carry on from, and a cursor that ran
+      // ahead of the heads is the break this method exists to prevent.
+      this.store.transaction(() => {
+        this.st.cursors[stream] = last.seq;
+        if (stream === STREAM_HOT) {
+          for (const [key, run] of groups) {
+            this.st.pinnedHeads.set(key, headAfter(run, pinnedBefore.get(key) ?? genesisHead()));
+          }
+        }
+        this.commit();
+      });
+      healed += rows.length;
+      after = last.seq;
+      if (raw.length < ROW_CHUNK) break;
+    }
+    return { rows: healed, cursor: this.st.cursors[stream] };
   }
 
   /**
