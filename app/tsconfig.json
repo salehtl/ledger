@@ -1,0 +1,32 @@
+{
+  // `@types/bun` is deliberately in scope here, and it is a trade-off worth
+  // naming. `app/` imports `client/src/platform.ts`, whose `bunPlatform`
+  // really does call `new Bun.CryptoHasher(...)` — the file is the seam, so it
+  // necessarily contains the Bun path as well as the Hermes one. Without Bun's
+  // types in the program, `tsc` cannot check any file that imports the seam,
+  // which is every file that touches the client library.
+  //
+  // The cost is that `Buffer`, `process` and `Bun` are now *typed* inside
+  // `app/src` too, where none of them exist at runtime. The type system cannot
+  // express "available in this file but not that one", so the rule is enforced
+  // by measurement instead: `src/host-globals.test.ts` reads every file under
+  // `src/` and fails on a host global outside `src/platform/`.
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@ledger/client/*": ["../client/src/*"]
+    }
+  },
+  "include": ["index.ts", "src", "test"],
+  "exclude": ["node_modules", ".expo"]
+}
