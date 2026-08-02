@@ -1,0 +1,681 @@
+{
+  "note": "Go's own answers for the merchant dictionary's canonicalization, bounds and match semantics. Written by internal/v2/dict's TestWriteDictConformanceFixtures; read by client/src/categorize/conformance.test.ts. The `match` section is computed by Postgres using the same expression dict.List's AlsoMatches uses.",
+  "spec": "3.6",
+  "limits": {
+    "k": 3,
+    "min_contains_runes": 4,
+    "min_pattern_runes": 2,
+    "max_pattern_runes": 64,
+    "min_category_runes": 2,
+    "max_category_runes": 32
+  },
+  "space": [
+    {
+      "name": "tab",
+      "cp": 9,
+      "is_space": true
+    },
+    {
+      "name": "lf",
+      "cp": 10,
+      "is_space": true
+    },
+    {
+      "name": "vt",
+      "cp": 11,
+      "is_space": true
+    },
+    {
+      "name": "ff",
+      "cp": 12,
+      "is_space": true
+    },
+    {
+      "name": "cr",
+      "cp": 13,
+      "is_space": true
+    },
+    {
+      "name": "space",
+      "cp": 32,
+      "is_space": true
+    },
+    {
+      "name": "nel",
+      "cp": 133,
+      "is_space": true
+    },
+    {
+      "name": "nbsp",
+      "cp": 160,
+      "is_space": true
+    },
+    {
+      "name": "ogham space mark",
+      "cp": 5760,
+      "is_space": true
+    },
+    {
+      "name": "en quad",
+      "cp": 8192,
+      "is_space": true
+    },
+    {
+      "name": "hair space",
+      "cp": 8202,
+      "is_space": true
+    },
+    {
+      "name": "zero width space",
+      "cp": 8203,
+      "is_space": false
+    },
+    {
+      "name": "line separator",
+      "cp": 8232,
+      "is_space": true
+    },
+    {
+      "name": "paragraph separator",
+      "cp": 8233,
+      "is_space": true
+    },
+    {
+      "name": "narrow nbsp",
+      "cp": 8239,
+      "is_space": true
+    },
+    {
+      "name": "medium mathematical space",
+      "cp": 8287,
+      "is_space": true
+    },
+    {
+      "name": "ideographic space",
+      "cp": 12288,
+      "is_space": true
+    },
+    {
+      "name": "zwnbsp / bom",
+      "cp": 65279,
+      "is_space": false
+    },
+    {
+      "name": "latin a",
+      "cp": 97,
+      "is_space": false
+    }
+  ],
+  "lower": [
+    {
+      "name": "ascii",
+      "input_base64": "Q0FSUkVGT1VS",
+      "lower_base64": "Y2FycmVmb3Vy"
+    },
+    {
+      "name": "turkish dotted capital i",
+      "input_base64": "xLA=",
+      "lower_base64": "aQ=="
+    },
+    {
+      "name": "turkish dotless i",
+      "input_base64": "xLE=",
+      "lower_base64": "xLE="
+    },
+    {
+      "name": "greek word ending in sigma",
+      "input_base64": "zp/OlM6fzqM=",
+      "lower_base64": "zr/OtM6/z4M="
+    },
+    {
+      "name": "greek sigma alone",
+      "input_base64": "zqM=",
+      "lower_base64": "z4M="
+    },
+    {
+      "name": "kelvin sign",
+      "input_base64": "4oSq",
+      "lower_base64": "aw=="
+    },
+    {
+      "name": "angstrom sign",
+      "input_base64": "4oSr",
+      "lower_base64": "w6U="
+    },
+    {
+      "name": "capital sharp s",
+      "input_base64": "4bqe",
+      "lower_base64": "w58="
+    },
+    {
+      "name": "fullwidth carrefour",
+      "input_base64": "77yj77yh77yy77yy77yl77ym77yv77y177yy",
+      "lower_base64": "772D772B772S772S772F772G772P772V772S"
+    },
+    {
+      "name": "cyrillic es plus latin",
+      "input_base64": "0KFBUlJFRk9VUg==",
+      "lower_base64": "0YFhcnJlZm91cg=="
+    },
+    {
+      "name": "arabic (no case)",
+      "input_base64": "2YPYp9ix2YHZiNix",
+      "lower_base64": "2YPYp9ix2YHZiNix"
+    },
+    {
+      "name": "astral bold capitals",
+      "input_base64": "8J2QgPCdkIE=",
+      "lower_base64": "8J2QgPCdkIE="
+    },
+    {
+      "name": "already lower",
+      "input_base64": "Y2FycmVmb3Vy",
+      "lower_base64": "Y2FycmVmb3Vy"
+    }
+  ],
+  "canonical": [
+    {
+      "name": "plain",
+      "pattern_base64": "Q2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "R3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "padded and doubled spaces",
+      "pattern_base64": "ICBDQVJSRUZPVVIgICBIeXBlciA=",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3VyIGh5cGVy",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "nel between words",
+      "pattern_base64": "Y2FycmVmb3VywoVoeXBlcg==",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "bom between words",
+      "pattern_base64": "Y2FycmVmb3Vy77u/aHlwZXI=",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "nbsp between words",
+      "pattern_base64": "Y2FycmVmb3VywqBoeXBlcg==",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3VyIGh5cGVy",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "turkish dotted i",
+      "pattern_base64": "xLBTVEFOQlVM",
+      "match": "contains",
+      "category_base64": "dHJhdmVs",
+      "ok": true,
+      "canonical_pattern_base64": "aXN0YW5idWw=",
+      "canonical_match": "contains",
+      "canonical_category": "travel"
+    },
+    {
+      "name": "greek final sigma",
+      "pattern_base64": "zp/OlM6fzqM=",
+      "match": "contains",
+      "category_base64": "dHJhdmVs",
+      "ok": true,
+      "canonical_pattern_base64": "zr/OtM6/z4M=",
+      "canonical_match": "contains",
+      "canonical_category": "travel"
+    },
+    {
+      "name": "fullwidth",
+      "pattern_base64": "77yj77yh77yy77yy77yl77ym77yv77y177yy",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "772D772B772S772S772F772G772P772V772S",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "cyrillic homoglyph",
+      "pattern_base64": "0KFBUlJFRk9VUg==",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "0YFhcnJlZm91cg==",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "trailing dot",
+      "pattern_base64": "Y2FycmVmb3VyLg==",
+      "match": "contains",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3VyLg==",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "exact two runes",
+      "pattern_base64": "b24=",
+      "match": "exact",
+      "category_base64": "Y2hhcml0eQ==",
+      "ok": true,
+      "canonical_pattern_base64": "b24=",
+      "canonical_match": "exact",
+      "canonical_category": "charity"
+    },
+    {
+      "name": "contains two runes (the floor)",
+      "pattern_base64": "b24=",
+      "match": "contains",
+      "category_base64": "Y2hhcml0eQ==",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "contains three runes",
+      "pattern_base64": "bm9v",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "contains four runes",
+      "pattern_base64": "bm9vbg==",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": true,
+      "canonical_pattern_base64": "bm9vbg==",
+      "canonical_match": "contains",
+      "canonical_category": "shopping"
+    },
+    {
+      "name": "contains four astral runes",
+      "pattern_base64": "8J2QgPCdkIHwnZCC8J2Qgw==",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": true,
+      "canonical_pattern_base64": "8J2QgPCdkIHwnZCC8J2Qgw==",
+      "canonical_match": "contains",
+      "canonical_category": "shopping"
+    },
+    {
+      "name": "contains three astral runes",
+      "pattern_base64": "8J2QgPCdkIHwnZCC",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "64-rune pattern",
+      "pattern_base64": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": true,
+      "canonical_pattern_base64": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+      "canonical_match": "contains",
+      "canonical_category": "shopping"
+    },
+    {
+      "name": "65-rune pattern",
+      "pattern_base64": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "pure punctuation",
+      "pattern_base64": "LS0tLQ==",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "zero width space inside",
+      "pattern_base64": "Y2FycmXigItmb3Vy",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "two lines",
+      "pattern_base64": "Y2FycmVmb3VyCmh5cGVy",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "line separator",
+      "pattern_base64": "Y2FycmVmb3Vy4oCoaHlwZXI=",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "empty pattern",
+      "pattern_base64": "",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "whitespace-only pattern",
+      "pattern_base64": "ICAg",
+      "match": "contains",
+      "category_base64": "c2hvcHBpbmc=",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "regex match type",
+      "pattern_base64": "XmNhcnJlZm91cg==",
+      "match": "regex",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "unknown match type",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "starts_with",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "empty match type defaults to contains",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "",
+      "category_base64": "Z3JvY2VyaWVz",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "category with punctuation",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "R3JvY2VyaWVzICYgRnJlc2gh",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "category with ampersand",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "Zm9vZCAmIGRyaW5r",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "food \u0026 drink"
+    },
+    {
+      "name": "one-rune category",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "Zw==",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "33-rune category",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dn",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    },
+    {
+      "name": "32-rune category",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c=",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "gggggggggggggggggggggggggggggggg"
+    },
+    {
+      "name": "category leading digit",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "MXN0IGdyb2Nlcmllcw==",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "1st groceries"
+    },
+    {
+      "name": "category leading space",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "IGdyb2Nlcmllcw==",
+      "ok": true,
+      "canonical_pattern_base64": "Y2FycmVmb3Vy",
+      "canonical_match": "contains",
+      "canonical_category": "groceries"
+    },
+    {
+      "name": "multiline category",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "match": "contains",
+      "category_base64": "Z3JvCmNlcmllcw==",
+      "ok": false,
+      "canonical_pattern_base64": "",
+      "canonical_match": "",
+      "canonical_category": ""
+    }
+  ],
+  "match": [
+    {
+      "name": "contains hit",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "Y2FycmVmb3VyIGh5cGVyIG1hcmtldA==",
+      "matched": true
+    },
+    {
+      "name": "contains miss",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "bm9vbiBleHByZXNz",
+      "matched": false
+    },
+    {
+      "name": "contains at the very end",
+      "match": "contains",
+      "pattern_base64": "bWFya2V0",
+      "subject_base64": "Y2FycmVmb3VyIGh5cGVyIG1hcmtldA==",
+      "matched": true
+    },
+    {
+      "name": "contains whole subject",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "Y2FycmVmb3Vy",
+      "matched": true
+    },
+    {
+      "name": "contains longer than subject",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3VyIGh5cGVy",
+      "subject_base64": "Y2FycmVmb3Vy",
+      "matched": false
+    },
+    {
+      "name": "exact hit",
+      "match": "exact",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "Y2FycmVmb3Vy",
+      "matched": true
+    },
+    {
+      "name": "exact miss on prefix",
+      "match": "exact",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "Y2FycmVmb3VyIGh5cGVy",
+      "matched": false
+    },
+    {
+      "name": "exact miss on suffix",
+      "match": "exact",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "aHlwZXIgY2FycmVmb3Vy",
+      "matched": false
+    },
+    {
+      "name": "the short pattern against amazon",
+      "match": "contains",
+      "pattern_base64": "b24=",
+      "subject_base64": "YW1hem9u",
+      "matched": true
+    },
+    {
+      "name": "the short pattern against noon",
+      "match": "contains",
+      "pattern_base64": "b24=",
+      "subject_base64": "bm9vbg==",
+      "matched": true
+    },
+    {
+      "name": "the short pattern against talabat online",
+      "match": "contains",
+      "pattern_base64": "b24=",
+      "subject_base64": "dGFsYWJhdCBvbmxpbmU=",
+      "matched": true
+    },
+    {
+      "name": "cyrillic pattern against latin subject",
+      "match": "contains",
+      "pattern_base64": "0YFhcnJlZm91cg==",
+      "subject_base64": "Y2FycmVmb3VyIGh5cGVy",
+      "matched": false
+    },
+    {
+      "name": "latin pattern against cyrillic subject",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3Vy",
+      "subject_base64": "0YFhcnJlZm91ciBoeXBlcg==",
+      "matched": false
+    },
+    {
+      "name": "fullwidth pattern against ascii subject",
+      "match": "contains",
+      "pattern_base64": "772D772B772S772S772F772G772P772V772S",
+      "subject_base64": "Y2FycmVmb3Vy",
+      "matched": false
+    },
+    {
+      "name": "astral pattern hit",
+      "match": "contains",
+      "pattern_base64": "8J2QgPCdkIE=",
+      "subject_base64": "c2hvcCDwnZCA8J2QgfCdkII=",
+      "matched": true
+    },
+    {
+      "name": "astral pattern miss across a pair boundary",
+      "match": "contains",
+      "pattern_base64": "8J2QgfCdkIA=",
+      "subject_base64": "c2hvcCDwnZCA8J2QgfCdkII=",
+      "matched": false
+    },
+    {
+      "name": "arabic hit",
+      "match": "contains",
+      "pattern_base64": "2YPYp9ix2YHZiNix",
+      "subject_base64": "2YXYqtis2LEg2YPYp9ix2YHZiNix",
+      "matched": true
+    },
+    {
+      "name": "bom in subject only",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3VyaHlwZXI=",
+      "subject_base64": "Y2FycmVmb3Vy77u/aHlwZXI=",
+      "matched": false
+    },
+    {
+      "name": "bom in both",
+      "match": "contains",
+      "pattern_base64": "Y2FycmVmb3Vy77u/aHlwZXI=",
+      "subject_base64": "Y2FycmVmb3Vy77u/aHlwZXI=",
+      "matched": true
+    }
+  ],
+  "engine_notes": [
+    {
+      "subject": "U+0085",
+      "note": "whitespace to Go's unicode.IsSpace; NOT in JavaScript's \\s"
+    },
+    {
+      "subject": "U+FEFF",
+      "note": "in JavaScript's \\s; NOT whitespace to Go's unicode.IsSpace"
+    },
+    {
+      "subject": "U+0130",
+      "note": "strings.ToLower gives one code point; JavaScript's toLowerCase gives i + U+0307"
+    },
+    {
+      "subject": "final sigma",
+      "note": "strings.ToLower always gives U+03C3; JavaScript gives U+03C2 at a word end"
+    }
+  ]
+}
