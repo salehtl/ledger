@@ -1,7 +1,8 @@
 # Task 20 — Categorization: rules, the global dictionary, on-device matching
 
-**Commit:** `4abd77c` *feat(v2): on-device categorization, and the floor the dictionary publishes at*
-**Branch:** `v2` (parent `d296bc3`, compare-and-swap)
+**Commits:** `4abd77c` *feat(v2): on-device categorization, and the floor the dictionary publishes at*
+and `08cdf1e` *test(v2): drop two wall-clock ceilings from the categorization suite* (+ this report)
+**Branch:** `v2` (compare-and-swap onto `d296bc3` and `3391123`; `git show --stat` confirmed only my paths in each)
 **Status:** built, tested, committed. Two pieces deliberately not built (below), one wiring
 seam left open on purpose and named.
 
@@ -295,23 +296,30 @@ go test ./internal/v2/dict/ -count=1    ->  ok (32.5 s, includes the new fixture
 gofmt -l internal/v2/dict/              ->  clean
 ```
 
-Full gate, run in a `git archive` export of **`4abd77c`** with `client/node_modules` copied in,
-after `go clean -testcache`:
+Full gate, run in `git archive` exports with `client/node_modules` copied in, after
+`go clean -testcache`. Twice, because the first run was red and the reason mattered:
 
 ```
-bash scripts/v2-check.sh   ->  exit 1
-   go vet ./internal/v2/... ./cmd/ledgerd     clean
-   go test -count=1 ./internal/v2/... ./cmd/ledgerd   all packages ok
-   (cd client && bun run typecheck && bun test)  ->  2217 pass / 1 fail / 2218 across 27 files
+at 08cdf1e (final):   bash scripts/v2-check.sh
+                      -> v2-check: OK (go + client + conformance)      exit 0
+                         2245 pass / 0 fail / 2245 across 28 files
+                         (no skip line: the gate exports LEDGER_TEST_POSTGRES_URL,
+                          so the 37 e2e tests RAN rather than self-skipping)
+
+at 4abd77c (code):    bash scripts/v2-check.sh
+                      -> exit 1
+                         go vet + go test ./internal/v2/... ./cmd/ledgerd   all ok
+                         client: 2217 pass / 1 fail / 2218 across 27 files
 ```
 
-**The one failure is pre-existing and not mine**, and that was checked rather than asserted:
-`client/src/invariants/stream.test.ts` -> "a whole-log check holds a chunk, not the log" times
-out at its own 5,000 ms limit. It fails **identically in a clean archive of the parent commit
-`d296bc3`, with none of my files present** (12 pass / 1 fail, same test, same timeout). It is
-another session's file — the shared index has its deletion staged — and it is the same
-measurement-under-load family as the flake AGENT-RULES documents in `fx.test.ts`; the parent
-commit is literally titled "make the retention measurement survive a busy box".
+**That one failure was pre-existing and not mine**, and it was checked rather than asserted:
+`client/src/invariants/stream.test.ts` -> "a whole-log check holds a chunk, not the log" timed
+out at its own 5,000 ms limit. It failed **identically in a clean archive of the parent commit
+`d296bc3`, with none of my files present** (12 pass / 1 fail, same test, same timeout), which is
+how it was shown not to be mine. It is another session's file, in the same
+measurement-under-load family as the flake AGENT-RULES documents in `fx.test.ts` — and that
+session fixed it in `3391123` ("prove the projection streams, with a poisoning transaction
+source"), which is why the final run above is clean.
 
 Test-count property, same conditions on both sides (no `LEDGER_TEST_POSTGRES_URL`, so the 37
 e2e tests self-skip):
