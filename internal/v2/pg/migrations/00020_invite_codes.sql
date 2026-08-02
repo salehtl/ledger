@@ -41,6 +41,13 @@ CREATE TABLE invite_codes (
   -- gate whose audit trail is a slug is a gate nobody can audit six weeks
   -- later. It may be NULL: a code minted in a hurry with no note is better
   -- than a code not minted.
+  --
+  -- It is CLEARED when the account that spent the code is deleted — see
+  -- 00023_invite_note_dies_with_the_account.sql. Note that as written this
+  -- column is the reason the paragraph on redeemed_by below was, for two
+  -- migrations, not true of the row as a whole: "saleh's brother" beside a
+  -- redeemed_at IS a record of somebody, and the operator is exactly who can
+  -- read it. An OUTSTANDING code keeps its note.
   note text,
 
   created_at timestamptz NOT NULL,

@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +19,7 @@ import (
 
 	"ledger/internal/v2/admin"
 	"ledger/internal/v2/api"
+	"ledger/internal/v2/auth"
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/dict"
 	"ledger/internal/v2/ingest"
@@ -577,5 +581,139 @@ func TestTheSampleAdapterCarriesEveryField(t *testing.T) {
 	}
 	if !reflect.DeepEqual(toAdminSample(samples.Sample{}), admin.Sample{}) {
 		t.Fatal("toAdminSample does not map the zero sample to the zero sample")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The retention sweeps are WIRED, measured against the source of runServe
+// ---------------------------------------------------------------------------
+
+// Every start*Sweep in this package is started by runServe and awaited on
+// shutdown — read out of main.go's syntax tree, not out of a call the test
+// makes itself.
+//
+// The existing per-sweep tests (TestDictSweepIsWiredAndToleratesNoStore,
+// TestQuarantineSweepSurvivesAFailureAndStopsOnShutdown) call the starter
+// directly, so they measure the loop and say nothing at all about whether
+// runServe reaches it — which is the defect shape that has landed six times on
+// this branch: written, tested green, never wired. dict.ExpireStaleSubmissions
+// had a full test suite and no production caller for three tasks.
+//
+// This reads the real function. A sweep added and forgotten fails here, and so
+// does a sweep whose channel is never received (a shutdown that returns while
+// the loop is still mid-transaction).
+func TestEverySweepIsStartedAndAwaitedByRunServe(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Every declared sweep starter, discovered rather than listed: a list here
+	// would be one more thing to forget to update, which is the bug.
+	sweeps := map[string]bool{}
+	var runServe *ast.FuncDecl
+	for _, d := range file.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		if fn.Name.Name == "runServe" {
+			runServe = fn
+		}
+		if strings.HasPrefix(fn.Name.Name, "start") && strings.HasSuffix(fn.Name.Name, "Sweep") &&
+			fn.Name.Name != "startSweep" {
+			sweeps[fn.Name.Name] = true
+		}
+	}
+	if runServe == nil {
+		t.Fatal("main.go declares no runServe")
+	}
+	if len(sweeps) < 4 {
+		t.Fatalf("found %d sweep starters (%v); the four this binary runs are quarantine, "+
+			"donated samples, the dictionary and the deleted-account tombstone", len(sweeps), sweeps)
+	}
+	if !sweeps["startTombstoneSweep"] {
+		t.Fatal("startTombstoneSweep is gone: the deleted-account tombstone table is unbounded, " +
+			"and it must not go back into 00021's trigger — see 00022")
+	}
+
+	started := map[string]string{} // sweep func -> variable holding its channel
+	received := map[string]bool{}  // variables that appear in a <-x
+	ast.Inspect(runServe.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			if len(x.Lhs) != 1 || len(x.Rhs) != 1 {
+				return true
+			}
+			call, ok := x.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn, ok := call.Fun.(*ast.Ident)
+			if !ok || !sweeps[fn.Name] {
+				return true
+			}
+			lhs, ok := x.Lhs[0].(*ast.Ident)
+			if !ok {
+				return true
+			}
+			started[fn.Name] = lhs.Name
+		case *ast.UnaryExpr:
+			if x.Op != token.ARROW {
+				return true
+			}
+			if id, ok := x.X.(*ast.Ident); ok {
+				received[id.Name] = true
+			}
+		}
+		return true
+	})
+
+	for sweep := range sweeps {
+		v, ok := started[sweep]
+		if !ok {
+			t.Errorf("%s is never called by runServe: the loop is written, tested and dead", sweep)
+			continue
+		}
+		if !received[v] {
+			t.Errorf("runServe calls %s but never receives from %s: shutdown returns while the "+
+				"sweep may still be inside a transaction", sweep, v)
+		}
+	}
+}
+
+// The tombstone sweep survives a failing database and stops on shutdown, and a
+// deployment with no Sessions does not start one at all.
+//
+// It is the mildest of the four failures — an unswept tombstone still answers
+// correctly, because auth.Sessions judges expiry itself — so the thing that
+// actually matters here is that the failure is LOUD. A sweep that quietly stops
+// is how a table becomes a surprise.
+func TestTombstoneSweepSurvivesAFailureAndStopsOnShutdown(t *testing.T) {
+	select {
+	case <-startTombstoneSweep(context.Background(), nil):
+	case <-time.After(5 * time.Second):
+		t.Fatal("a nil Sessions must not start a sweep")
+	}
+
+	var logged strings.Builder
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(restore)
+
+	// A Sessions with no pool fails every sweep: an unreachable database, from
+	// here.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startTombstoneSweep(ctx, &auth.Sessions{})
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweep did not stop when the context was cancelled")
+	}
+	if !strings.Contains(logged.String(), "deleted-account tombstone sweep") {
+		t.Fatalf("a failed sweep must be loud, not swallowed: %q", logged.String())
 	}
 }

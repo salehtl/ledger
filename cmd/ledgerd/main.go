@@ -459,6 +459,16 @@ func runServe(cfg config.Config) error {
 	// cron nobody remembers to install.
 	dictSweepDone := startDictSweep(ctx, syncAPI.Dict)
 
+	// The deleted-account tombstone sweep. It used to be the last statement of
+	// 00021's BEFORE DELETE trigger, where it ran on POSTGRES's clock over rows
+	// carrying auth.Sessions' — two clocks deciding one fact, which deleted the
+	// tombstone it had just written and answered 401 where a device needed 410.
+	// It lives here now for the same reason the other three do: the alternative
+	// was the session-lookup path, which every unrecognized bearer token
+	// reaches, and a sweep an anonymous caller can trigger is a write an
+	// anonymous caller can trigger.
+	tombstoneSweepDone := startTombstoneSweep(ctx, syncAPI.Sessions)
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
@@ -528,6 +538,7 @@ func runServe(cfg config.Config) error {
 	<-sweepDone
 	<-sampleSweepDone
 	<-dictSweepDone
+	<-tombstoneSweepDone
 	return serveErr
 }
 
@@ -709,6 +720,33 @@ func startDictSweep(ctx context.Context, d *dict.Dict) <-chan struct{} {
 		}
 		return fmt.Sprintf("expired %d submitter identifier(s), reaped %d orphaned entry(s)",
 			expired, reaped), nil
+	})
+}
+
+// startTombstoneSweep bounds the deleted-account tombstone table
+// (00021_deleted_account_sessions.sql), reaping rows whose sessions expired
+// more than auth's grace ago.
+//
+// It is a FOURTH loop for the reason given on startSampleSweep, and it exists
+// at all because the sweep it replaces was a `DELETE … now() - interval
+// '30 days'` inside the BEFORE DELETE trigger — Postgres's clock judging rows
+// written from auth.Sessions'. See 00022_tombstone_sweep_leaves_the_trigger.sql.
+//
+// This one failing is the mildest of the four: the table only grows, and every
+// row in it still answers correctly because auth.Sessions.deletedOrUnknown
+// refuses anything past its own expires_at regardless of whether it was reaped.
+// It is logged loudly anyway — unbounded growth nobody is told about is how a
+// table becomes a surprise.
+func startTombstoneSweep(ctx context.Context, s *auth.Sessions) <-chan struct{} {
+	if s == nil {
+		return closedChan()
+	}
+	return startSweep(ctx, "deleted-account tombstone sweep", func(ctx context.Context) (string, error) {
+		n, err := s.ReapDeletedAccountTombstones(ctx)
+		if err != nil || n == 0 {
+			return "", err
+		}
+		return fmt.Sprintf("reaped %d expired deleted-account tombstone(s)", n), nil
 	})
 }
 

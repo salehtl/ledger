@@ -51,7 +51,12 @@ CREATE TABLE deleted_account_sessions (
   expires_at timestamptz NOT NULL
 );
 
--- Serves the sweep in the trigger below.
+-- Serves the retention sweep. NOTE: the sweep this originally served lived in
+-- the trigger below and was wrong — it ran on Postgres's clock over rows
+-- written from ledgerd's, and destroyed the row it had just inserted. It moved
+-- to auth.Sessions.ReapDeletedAccountTombstones in
+-- 00022_tombstone_sweep_leaves_the_trigger.sql, which is where the clock that
+-- decides already lives. The index still serves it.
 CREATE INDEX deleted_account_sessions_expiry_idx ON deleted_account_sessions (expires_at);
 
 -- +goose StatementBegin
@@ -81,11 +86,15 @@ BEGIN
   -- outcome we want. Filtering them out would trade a correct wipe for
   -- nothing.
 
-  -- The sweep, at the one moment that is not attacker-triggerable. The lookup
-  -- side runs on every unrecognized bearer token, so sweeping there would let
-  -- anyone with a socket make this server write; account deletion is rare and
-  -- authenticated by three factors. The margin is generous because a row past
-  -- its own expiry already answers nothing — this only bounds the table.
+  -- SUPERSEDED BY 00022. The sweep below reintroduced, thirty days downstream,
+  -- exactly the second clock the paragraph above rejects: `now()` is Postgres's
+  -- and `expires_at` is auth.Sessions'. Running after the INSERT in the same
+  -- invocation, it deleted the row it had just written whenever ledgerd's clock
+  -- was more than 30 days behind Postgres's, and every other account's row too.
+  -- 00022 replaces this function with the INSERT alone and moves the reaping to
+  -- auth.Sessions.ReapDeletedAccountTombstones, which judges on the clock that
+  -- already decides. This body is left intact as history — goose never re-runs
+  -- an applied migration, so editing it would fix nothing anywhere.
   DELETE FROM deleted_account_sessions WHERE expires_at < now() - interval '30 days';
 
   RETURN OLD;
