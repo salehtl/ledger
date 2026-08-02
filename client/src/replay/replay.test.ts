@@ -965,7 +965,16 @@ test("a posted_at whose canonical form cannot be read back is refused, not folde
   ]);
   expect([...s.txns.keys()]).toEqual(["t3"]);
   expect(kinds(s)).toEqual(["invalid_payload", "invalid_payload"]);
-  for (const a of s.anomalies) expect(a.detail).toContain("outside the range this wire format can carry");
+  // Matched on the invariant part of the message rather than its exact wording:
+  // the refusal moved UPSTREAM into `wire/op.ts`'s `canonicalTime`, which now
+  // refuses to hand back a canonical form outside the four-digit-year grammar
+  // instead of leaving each caller to re-check it. `instant`'s own guard below
+  // it is kept as defence in depth, so both spellings of the message are
+  // correct and this assertion holds under either.
+  for (const a of s.anomalies) {
+    expect(a.detail).toContain("canonicalises to");
+    expect(a.detail).toMatch(/outside the .*range this wire format/);
+  }
 });
 
 test("the fold survives an unreadable posted_at even when it is the only op", () => {

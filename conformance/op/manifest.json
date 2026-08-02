@@ -1,5 +1,5 @@
 {
-  "note": "Encoded by internal/v2/oplog TestWriteConformanceFixtures. parent_version is a raw JSON NUMBER on the wire and a decimal string in this manifest; money and counters are decimal strings on the wire. authored_at_cases pin PARSED INSTANTS, never strings: Go's RFC3339Nano trims trailing zeros where JavaScript's toISOString pads to three digits.",
+  "note": "Encoded by internal/v2/oplog TestWriteConformanceFixtures. parent_version is a raw JSON NUMBER on the wire and a decimal string in this manifest; money and counters are decimal strings on the wire. authored_at_cases pin PARSED INSTANTS: Go's RFC3339Nano trims trailing zeros where JavaScript's toISOString pads to three digits, so the two encoders are byte-different and instant-identical. expect_canonical_wire is the one exception — it is the string THIS executor writes, and the TypeScript side asserts it can READ it, which is how a canonical form outside the shared four-digit-year grammar (years 10000 and -1 are both reachable from a wire-legal input) becomes visible to the suite at all.",
   "schema_version": 1,
   "types": [
     "txn_ingested",
@@ -51,39 +51,78 @@
   "authored_at_cases": [
     {
       "wire": "2026-06-05T10:00:00Z",
-      "expect_unix_ms": "1780653600000"
+      "expect_unix_ms": "1780653600000",
+      "expect_canonical_wire": "2026-06-05T10:00:00Z"
     },
     {
       "wire": "2026-06-05T10:00:00.1Z",
-      "expect_unix_ms": "1780653600100"
+      "expect_unix_ms": "1780653600100",
+      "expect_canonical_wire": "2026-06-05T10:00:00.1Z"
     },
     {
       "wire": "2026-06-05T10:00:00.0015Z",
-      "expect_unix_ms": "1780653600001"
+      "expect_unix_ms": "1780653600001",
+      "expect_canonical_wire": "2026-06-05T10:00:00.001Z"
     },
     {
       "wire": "2026-06-05T10:00:00.0000015Z",
-      "expect_unix_ms": "1780653600000"
+      "expect_unix_ms": "1780653600000",
+      "expect_canonical_wire": "2026-06-05T10:00:00Z"
     },
     {
       "wire": "2026-06-05T14:00:00.5+04:00",
-      "expect_unix_ms": "1780653600500"
+      "expect_unix_ms": "1780653600500",
+      "expect_canonical_wire": "2026-06-05T10:00:00.5Z"
     },
     {
       "wire": "2026-06-05T10:00:00-00:00",
-      "expect_unix_ms": "1780653600000"
+      "expect_unix_ms": "1780653600000",
+      "expect_canonical_wire": "2026-06-05T10:00:00Z"
     },
     {
       "wire": "2026-06-05T10:00:00+23:59",
-      "expect_unix_ms": "1780567260000"
+      "expect_unix_ms": "1780567260000",
+      "expect_canonical_wire": "2026-06-04T10:01:00Z"
     },
     {
       "wire": "2024-02-29T00:00:00Z",
-      "expect_unix_ms": "1709164800000"
+      "expect_unix_ms": "1709164800000",
+      "expect_canonical_wire": "2024-02-29T00:00:00Z"
     },
     {
       "wire": "2000-02-29T00:00:00Z",
-      "expect_unix_ms": "951782400000"
+      "expect_unix_ms": "951782400000",
+      "expect_canonical_wire": "2000-02-29T00:00:00Z"
+    },
+    {
+      "wire": "0000-01-01T00:00:00Z",
+      "expect_unix_ms": "-62167219200000",
+      "expect_canonical_wire": "0000-01-01T00:00:00Z"
+    },
+    {
+      "wire": "9999-12-31T23:59:59.999Z",
+      "expect_unix_ms": "253402300799999",
+      "expect_canonical_wire": "9999-12-31T23:59:59.999Z"
+    },
+    {
+      "wire": "0000-02-29T00:00:00Z",
+      "expect_unix_ms": "-62162121600000",
+      "expect_canonical_wire": "0000-02-29T00:00:00Z"
+    },
+    {
+      "wire": "2026-06-05T10:00:00+05:45",
+      "expect_unix_ms": "1780632900000",
+      "expect_canonical_wire": "2026-06-05T04:15:00Z"
+    },
+    {
+      "wire": "2026-06-05T10:00:00-09:30",
+      "expect_unix_ms": "1780687800000",
+      "expect_canonical_wire": "2026-06-05T19:30:00Z"
+    },
+    {
+      "wire": "2026-06-05T10:00:00-23:59",
+      "expect_unix_ms": "1780739940000",
+      "expect_canonical_wire": "2026-06-06T09:59:00Z"
     }
   ],
   "parent_version_overflow_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2NhdGVnb3JpemVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBQMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOjkwMDcxOTkyNTQ3NDA5OTMsInBheWxvYWQiOnsiY2F0ZWdvcnkiOiJncm9jZXJpZXMifX1dfQ==",
@@ -105,6 +144,12 @@
     "0001-01-01T00:00:00Z",
     "2026-06-05",
     "June 5 2026",
-    ""
+    "",
+    "9999-12-31T23:59:59-23:59",
+    "0000-01-01T00:00:00+00:01",
+    "+010000-01-01T23:58:59.000Z",
+    "10000-01-01T23:58:59Z",
+    "-0001-12-31T23:59:00Z",
+    "2026-06-05T10:00:00-24:00"
   ]
 }

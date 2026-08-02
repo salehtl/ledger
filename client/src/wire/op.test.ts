@@ -15,6 +15,7 @@ import {
   isParentFree,
   kindOf,
   parseDecimal,
+  parseInstantMs,
   validateOp,
   type CheckpointHead,
   type Op,
@@ -35,7 +36,7 @@ const manifest: {
     parent_version: string | null;
     ingest_id: string;
   }[];
-  authored_at_cases: { wire: string; expect_unix_ms: string }[];
+  authored_at_cases: { wire: string; expect_unix_ms: string; expect_canonical_wire: string }[];
   authored_at_rejects: string[];
   parent_version_overflow_base64: string;
   parent_version_overflow: string;
@@ -207,6 +208,55 @@ test("authored_at is truncated to milliseconds, to the instants Go decoded", () 
     expect(String(authoredAtMs(ops[0]!))).toBe(c.expect_unix_ms);
     // And the decoded string carries no precision a Date cannot hold.
     expect(ops[0]!.authored_at).toBe(new Date(Number(c.expect_unix_ms)).toISOString());
+  }
+});
+
+test("this executor can read the timestamp string Go actually writes", () => {
+  // The direction the suite was missing entirely. Every timestamp assertion
+  // above compares parsed INSTANTS, which is right for the trailing-zero
+  // divergence and blind to a canonical form outside the shared grammar: the
+  // wire admits `9999-12-31T23:59:59-23:59`, whose UTC value is year 10000, and
+  // there Go writes `10000-01-01T23:58:59Z` while `toISOString` writes
+  // `+010000-01-01T23:58:59.000Z`. Neither side ever saw the other's string, so
+  // neither could notice. `expect_canonical_wire` carries Go's rendering and
+  // this reads it.
+  for (const c of manifest.authored_at_cases) {
+    expect(parseInstantMs(c.expect_canonical_wire)).toBe(Number(c.expect_unix_ms));
+    // Go's spelling is not this one — `.5Z` against `.500Z` — and that stays
+    // true; what is claimed is that each side can READ the other's.
+    expect(canonicalTime(c.expect_canonical_wire)).toBe(canonicalTime(c.wire));
+  }
+  // The divergence has to still be real, or the assertion above is vacuous.
+  expect(manifest.authored_at_cases.some((c) => c.expect_canonical_wire !== canonicalTime(c.wire))).toBe(true);
+});
+
+test("canonicalTime is CLOSED over the wire grammar, and idempotent", () => {
+  // Canonicalisation maps wire timestamps to wire timestamps. When it does not,
+  // "both executors read the same instant" says nothing about the value they
+  // STORE — which is how a wire-legal `posted_at` reached the replay state as
+  // `+010000-01-01T23:58:59.000Z` and threw out of the fold (see replay.ts's
+  // `instant`). Stated over the accept set Go publishes, so the two executors
+  // are closed over the same inputs.
+  for (const c of manifest.authored_at_cases) {
+    const canonical = canonicalTime(c.wire);
+    // Four year digits, named literally: this is the character the expanded
+    // form adds, and the assertion that dies if this executor's spelling moves.
+    expect(canonical).toMatch(/^[0-9]{4}-/);
+    expect(parseInstantMs(canonical)).toBe(Number(c.expect_unix_ms));
+    expect(canonicalTime(canonical)).toBe(canonical); // idempotent
+  }
+  // The boundary cases named, not just looped. The list is generated from Go's
+  // timeAcceptCases, so a case DELETED from the fixture takes both executors
+  // green together — a mutation run walked through exactly that hole by
+  // dropping the year-9999 case. Go names the same four.
+  const wires = manifest.authored_at_cases.map((c) => c.wire);
+  for (const must of [
+    "0000-01-01T00:00:00Z",
+    "9999-12-31T23:59:59.999Z",
+    "0000-02-29T00:00:00Z",
+    "2026-06-05T10:00:00-23:59",
+  ]) {
+    expect(wires).toContain(must);
   }
 });
 
@@ -447,6 +497,73 @@ test("every timestamp Go refuses is refused here too", () => {
     );
     expect(() => decodeBlobOps(blob)).toThrow(BlobDecodeError);
   }
+  // Named explicitly as well as looped, for the reason the parent-free set is:
+  // the list is GENERATED from Go's timeRejectCases, so deleting an entry and
+  // regenerating would take both executors green together. Go names the same
+  // six.
+  for (const must of [
+    "9999-12-31T23:59:59-23:59",
+    "0000-01-01T00:00:00+00:01",
+    "+010000-01-01T23:58:59.000Z",
+    "10000-01-01T23:58:59Z",
+    "-0001-12-31T23:59:00Z",
+    "2026-06-05T10:00:00-24:00",
+  ]) {
+    expect(manifest.authored_at_rejects).toContain(must);
+  }
+});
+
+test("the expanded-year range is refused, and it is refused as a RULE", () => {
+  // The divergence this test exists for, with both measured spellings.
+  //
+  // These two are wire-legal by every rule that existed: four digits of year, a
+  // real calendar date, an offset inside ±23:59. Their UTC value leaves years
+  // 0000-9999, which the grammar cannot express — and the executors do not
+  // agree on how to write that.
+  //
+  //   9999-12-31T23:59:59-23:59  Go: 10000-01-01T23:58:59Z  JS: +010000-01-01T23:58:59.000Z
+  //   0000-01-01T00:00:00+00:01  Go: -0001-12-31T23:59:00Z  JS: -000001-12-31T23:59:00.000Z
+  //
+  // Go ACCEPTED both and this executor refused them, so the op landed in one
+  // executor's log and in neither device's — and this side only refused as a
+  // by-product of `decodeOp` canonicalising before `validateOp` re-parses.
+  for (const [wire, jsSpelling] of [
+    ["9999-12-31T23:59:59-23:59", "+010000-01-01T23:58:59.000Z"],
+    ["0000-01-01T00:00:00+00:01", "-000001-12-31T23:59:00.000Z"],
+  ] as const) {
+    // The instant is readable; it is the canonical FORM that is not. Pinned so
+    // the test cannot pass for the wrong reason (e.g. the input being refused
+    // by shape, which would make the closure check vacuous).
+    expect(new Date(parseInstantMs(wire)).toISOString()).toBe(jsSpelling);
+    expect(() => canonicalTime(wire)).toThrow(BlobDecodeError);
+    // As a rule, not as an ordering accident: the refusal names the range.
+    expect(() => canonicalTime(wire)).toThrow(/four-digit-year range/);
+    // …and it holds on every path a timestamp enters or leaves by.
+    const blob = opsBlob(
+      `{"v":1,"kind":"ops","ops":[{"v":1,"type":"rate_set","op_id":"R1",` +
+        `"authored_at":${JSON.stringify(wire)},"parent_version":null,"payload":{}}]}`,
+    );
+    expect(() => decodeBlobOps(blob)).toThrow(BlobDecodeError);
+    expect(() => encodeBlobOps([{ ...rateOp(), authored_at: wire }])).toThrow();
+    expect(() => encodeRawBody({ ingest_id: ingestID, received_at: wire, raw: new Uint8Array([1]) })).toThrow();
+    expect(() =>
+      decodeRawBody(
+        opsBlob(
+          `{"v":1,"kind":"raw_body","ingest_id":"${ingestID}",` +
+            `"received_at":${JSON.stringify(wire)},"raw_base64":"aGk="}`,
+        ),
+      ),
+    ).toThrow(BlobDecodeError);
+  }
+
+  // The legal neighbours still pass, so what is refused is the range and not
+  // the millennium either side of it.
+  expect(canonicalTime("9999-12-31T23:59:59.999Z")).toBe("9999-12-31T23:59:59.999Z");
+  expect(canonicalTime("0000-01-01T00:00:00Z")).toBe("0000-01-01T00:00:00.000Z");
+  expect(canonicalTime("0000-02-29T00:00:00Z")).toBe("0000-02-29T00:00:00.000Z"); // year 0 is leap
+  // And an offset is bounded at ±23:59 in BOTH directions; only + was pinned.
+  expect(canonicalTime("2026-06-05T10:00:00-23:59")).toBe("2026-06-06T09:59:00.000Z");
+  expect(() => canonicalTime("2026-06-05T10:00:00-24:00")).toThrow(BlobDecodeError);
 });
 
 test("Date.parse's rollover never gets a say", () => {
