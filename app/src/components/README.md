@@ -91,6 +91,8 @@ Phase 0's >500 MB freeze was partly one unguarded full pass.
 | Component | Purpose | Use when | Do not use when |
 |---|---|---|---|
 | `screens/onboarding/NotInvitedView.tsx` | The closed beta's front door: explains the invite gate and takes a code. | The server answered `403 not_invited`. | Anywhere else — it is a state of the sign-in screen, not a route, so that a live ID token never travels through navigation params. |
+| `components/HaltBanner.tsx` | The non-dismissable wall spec §3.4 requires: sync has stopped and the app is not usable until it is fixed. | `surface().halt` is non-null. Render it **instead of** the navigator, at the root. | An unreadable blob (that is a dismissable banner, §3.3:74), or anything a user may continue past. There is no `onDismiss` prop, on purpose. |
+| `screens/settings/IntegrityScreen.tsx` | Everything the checker found that is not a wall: grouped notices with counts, the set-aside count, and a record of any halt. | Settings → Integrity, badged with `surface().badge`. | As a modal, or as a substitute for the halt — a notice list is never a stop, and a stop is never a row. |
 
 `app/src/app/Theme.tsx`, `Root.tsx` and `Navigation.tsx` are the shell, not
 shared components, and are documented in their own headers.
@@ -101,6 +103,23 @@ shared components, and are documented in their own headers.
 |---|---|
 | `src/screens/onboarding/SignInScreen.tsx` | **The initial route.** Sign in with Apple and Google. Holds no policy — everything it renders is decided in `src/auth/` and tested under `bun test`. Task 14's step machine wraps it. |
 | `src/screens/Shell.tsx` | **Temporary.** The shell smoke screen: reports whether the platform seam and the replay fold are live on the device. Task 14's onboarding replaces it. |
+
+### The invariant surfaces hold no policy
+
+`HaltBanner` and `IntegrityScreen` take `Halt` and `Surface` from
+`client/src/invariants/surface.ts` and render them. Which findings halt, which
+one is shown when several fire, what each says, what is routine and what the
+badge counts are all decided there and tested under `bun test` — because they
+are decisions about *correctness*, not about layout, and Phase 1 records the
+cost of getting one of them wrong: `I11_roster_checkpoint`'s benign "this device
+hasn't been vouched for yet" and its adversarial "the server is withholding data
+another of your devices has already seen" were once one message, and that
+collapse laundered a withholding attack into a notice.
+
+So neither component switches on an invariant id, and neither builds a sentence.
+A screen that re-derived its own wording would reopen the hole one layer up —
+which is why `HaltBanner.rn-test.tsx` asserts that **no invariant id or
+condition name reaches the glass** before the details are expanded.
 
 ### Two conventions the sign-in screen establishes
 
