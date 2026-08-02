@@ -596,21 +596,38 @@ describe("push", () => {
 
   test("a partially-applied batch is resent from the chain head, not retried whole", async () => {
     const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
-    const c = await loggedIn(srv, "dev-a");
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, writerId: "dev-a" });
+    await c.login("apple", "dev:alice");
 
     // The straddle, reproduced honestly. The server appends a batch atomically,
     // so the ONLY way a batch can be partly applied is a second batch that
     // overlaps a first one which committed while its answer was lost. Round 1
     // commits and 500s, so the client keeps its pending ops and does not know
     // the row is stored.
+    //
+    // Since `ClientState.inflight` landed, a client that still holds the record
+    // of round 1 resends round 1 VERBATIM and no straddle is reachable — see
+    // the test below. So this one drops the record between the rounds, which is
+    // what a state file written by an older build (the field is optional, and
+    // absent reads as null) or restored from a backup taken before the push
+    // looks like. The 409 handler is the floor under that case, and it stays
+    // under test.
     srv.dropNextUploadResponse = true;
     c.emit({ type: "txn_edited", payload: { fields: { merchant_raw: incompressible(700_000) } }, entity: { kind: "txn", id: "t1" }, parentVersion: 1 });
     await expect(c.push()).rejects.toThrow(/500/);
     expect(srv.rows.filter((r) => r.writer_id === "dev-a")).toHaveLength(1);
 
+    // The record of what was in the air, lost.
+    const lost = store.load();
+    expect(lost.inflight).not.toBeNull();
+    lost.inflight = null;
+    store.save(lost);
+
     // Round 2 adds a second op. The batch now spans counters 1..2, and blob 1
     // is BYTE-IDENTICAL to the stored one (its ops kept their ids and
-    // timestamps), which is exactly the straddle the 409 is for.
+    // timestamps, and each 700 KB op fills its own blob so the packer cannot
+    // regroup them), which is exactly the straddle the 409 is for.
     c.emit({ type: "txn_edited", payload: { fields: { merchant_raw: incompressible(700_000) } }, entity: { kind: "txn", id: "t2" }, parentVersion: 1 });
     const report = await c.push();
 

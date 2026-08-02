@@ -115,6 +115,56 @@ export interface WireRow {
   blob: string;
 }
 
+/**
+ * One blob of the batch a push is currently uploading.
+ *
+ * # Why the intent has to be durable, and why `authoredHead` is not enough
+ *
+ * `POST /api/v1/sync` has an ambiguous outcome: the server appends the batch in
+ * one transaction and then answers, so a process that dies — or a phone whose
+ * app is terminated — between the commit and the answer leaves a device that
+ * cannot tell whether its ops landed. Everything that recorded the upload
+ * (`authoredHead`, the emptied `pending`) is written AFTER the request returns,
+ * which is the step that failed, so on the next launch the device sees an
+ * untouched `pending` and re-derives a batch from it.
+ *
+ * Two things then go wrong, both measured in `outbox.test.ts` against the
+ * unguarded code:
+ *
+ *  1. If the pre-push sync has caught up, the counters have moved, so the SAME
+ *     ops are appended again at fresh positions — a permanent double-append in
+ *     an append-only log, and one that manufactures a `ForkNotice` against the
+ *     device's own edit.
+ *  2. If it has not (read-after-write lag), the ops are re-batched — the packer
+ *     is greedy, so an op emitted in the meantime joins the first blob — and the
+ *     server answers `409 chain_break: that position already holds different
+ *     bytes`. Nothing clears it: every later push rebuilds the same batch. The
+ *     device is wedged, showing the user a tampering warning for a fault that is
+ *     entirely its own.
+ *
+ * So a push records what it is about to send BEFORE it sends it. Recovery is
+ * then a measurement rather than a guess: the recorded hash of the last blob is
+ * compared against the chain head the next sync VERIFIES, which is an
+ * independent source (the server's bytes, re-hashed locally) rather than
+ * another local flag.
+ *
+ * The bytes themselves are not stored — up to 8 MiB in a state file that is
+ * rewritten whole on every command. `opIds` records the GROUPING instead, and
+ * the resend re-seals exactly those ops at exactly that counter. Sealing is
+ * deterministic (canonical JSON, fixed gzip settings, zero padding), so that
+ * reproduces the bytes; `Client.rebuildInflight` re-hashes and refuses to send
+ * anything whose hash does not match what was recorded, so the determinism is
+ * checked at runtime instead of assumed.
+ */
+export interface InflightBlob {
+  /** The writer counter this blob claims. */
+  counter: bigint;
+  /** The chain hash this device computed for it. */
+  hash: Uint8Array;
+  /** The ops it carries, in order. The grouping a resend must reproduce. */
+  opIds: string[];
+}
+
 export interface ClientState {
   /** Base URL of the server this profile talks to. */
   server: string;
@@ -146,11 +196,25 @@ export interface ClientState {
   /** Ops authored locally and not yet uploaded. They hold no `seq` yet. */
   pending: Op[];
   /**
+   * The batch a push has BUILT and is about to upload, or has uploaded without
+   * yet confirming — written BEFORE the request goes out and cleared only after
+   * the answer comes back.
+   *
+   * Null except inside that window. See {@link InflightBlob} for why the window
+   * needs a durable record at all.
+   */
+  inflight: InflightBlob[] | null;
+  /**
    * The head of OUR OWN chain as last uploaded, which is not the same thing as
    * the pinned head: between a successful upload and the pull that brings those
    * rows back, the server holds blobs this client has not verified. Counter
    * assignment reads whichever of the two is further along, so an upload
    * followed by a failed pull cannot reuse a counter.
+   *
+   * It is NOT a crash guard, and reading it as one is the defect
+   * {@link ClientState.inflight} exists to close: it is written only once the
+   * upload has SUCCEEDED, so it says nothing at all about the batch that was in
+   * flight when the process died.
    */
   authoredHead: Head | null;
   /** The roster, sorted, as of the last checkpoint this client wrote. */
@@ -179,6 +243,7 @@ export function emptyClientState(server = ""): ClientState {
     pinnedHeads: new Map(),
     pinnedBlobHashes: new Map(),
     pending: [],
+    inflight: null,
     authoredHead: null,
     checkpointRoster: null,
     checkpointHeads: null,
@@ -517,6 +582,13 @@ function unhex(s: unknown, what: string): Uint8Array {
   return platform().fromHex(s);
 }
 
+function requireStrings(v: unknown, what: string): string[] {
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
+    throw new Error(`${what} is not an array of strings: ${JSON.stringify(v)}`);
+  }
+  return v as string[];
+}
+
 /**
  * The persisted shape of {@link ClientState}.
  *
@@ -537,6 +609,16 @@ export interface WireState {
   pinned_heads: { chain: string; counter: string; hash: string }[];
   pinned_blob_hashes: { chain: string; entries: [string, string][] }[];
   pending: Op[];
+  /**
+   * Optional, and its ABSENCE is meaningful rather than merely tolerated: a
+   * state file written by a build that had no in-flight record was written by a
+   * build that also never left one behind, so `null` is the truth about it and
+   * not a default standing in for an unknown. That is why this is additive and
+   * does not bump {@link STATE_VERSION} — contrast the v1→v2 bump, which was
+   * needed because an old file loaded as "synced" over an empty log and the
+   * checker passed it vacuously.
+   */
+  inflight?: { counter: string; hash: string; op_ids: string[] }[] | null;
   authored_head: { counter: string; hash: string } | null;
   checkpoint_roster: string[] | null;
   checkpoint_heads: string | null;
@@ -562,6 +644,10 @@ export function encodeState(s: ClientState): WireState {
       entries: [...m].map(([counter, h]): [string, string] => [counter.toString(10), hex(h)]),
     })),
     pending: s.pending,
+    inflight:
+      s.inflight === null
+        ? null
+        : s.inflight.map((b) => ({ counter: b.counter.toString(10), hash: hex(b.hash), op_ids: [...b.opIds] })),
     authored_head:
       s.authoredHead === null ? null : { counter: s.authoredHead.counter.toString(10), hash: hex(s.authoredHead.hash) },
     checkpoint_roster: s.checkpointRoster,
@@ -603,6 +689,16 @@ export function decodeState(raw: unknown, where: string): ClientState {
     out.pinnedBlobHashes.set(p.chain, m);
   }
   out.pending = Array.isArray(d.pending) ? d.pending : [];
+  out.inflight = Array.isArray(d.inflight)
+    ? d.inflight.map((b) => ({
+        counter: parseDecimal(b.counter),
+        hash: unhex(b.hash, `${where}: inflight blob hash`),
+        // Refused rather than coerced: a resend re-seals exactly these ids in
+        // exactly this order, so a record this cannot read is a record that
+        // would produce different bytes at a claimed position.
+        opIds: requireStrings(b.op_ids, `${where}: inflight op ids`),
+      }))
+    : null;
   out.authoredHead =
     d.authored_head == null
       ? null
