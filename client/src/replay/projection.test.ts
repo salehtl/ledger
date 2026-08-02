@@ -423,6 +423,49 @@ test("project chunks at the given size and yields between chunks, never after th
   expect(readTxns(d).size).toBe(4);
 });
 
+test("project writes each chunk before it asks for the next", async () => {
+  // Task 5's poisoning technique, moved from the row store to the transaction
+  // source. An implementation that did `[...s.txns.values()]` and then wrote the
+  // array in slices reads the same transactions, produces the same counts, emits
+  // the same number of yields, and holds every one of them at once — which is
+  // the shape the chunking exists to forbid, and which every other test in this
+  // file is blind to.
+  //
+  // This one is here because it was MISSING: the memory measurement in
+  // `net/engine.test.ts` covers the fold, and when it was narrowed to
+  // `materializeChunked` the projection lost its only proof. A mutation that
+  // materialized the whole list survived until this existed.
+  const real = fixture();
+  let poisoned = 0;
+  const values = function* (): Generator<Txn> {
+    let previous: Txn | null = null;
+    for (const t of real.txns.values()) {
+      if (previous !== null) {
+        // The caller has moved on; whatever it kept is now worthless.
+        previous.amount_minor = -999_999n;
+        previous.category = "!!!! poisoned: this row was retained past its turn";
+        poisoned++;
+      }
+      previous = t;
+      yield t;
+    }
+  };
+  const hostile: State = {
+    ...real,
+    txns: { size: real.txns.size, values } as unknown as Map<string, Txn>,
+  };
+
+  const d = db();
+  await project(d, hostile, { chunkSize: 1 });
+  expect(poisoned).toBe(real.txns.size - 1);
+  const back = readTxns(d);
+  expect(back.size).toBe(real.txns.size);
+  for (const t of back.values()) {
+    expect(t.amount_minor).not.toBe(-999_999n);
+    expect(t.category).not.toBe("!!!! poisoned: this row was retained past its turn");
+  }
+});
+
 test("a chunk size that divides the row count exactly does not yield an extra time", async () => {
   // The off-by-one a "did the last chunk come back short?" implementation has:
   // with 4 rows at 4 per chunk it needs an extra empty probe to discover it
