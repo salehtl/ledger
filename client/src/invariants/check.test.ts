@@ -15,10 +15,15 @@ import {
 import {
   ANOMALY_KINDS,
   INVARIANT_IDS,
+  MAX_FINDINGS_PER_INVARIANT,
+  NOTICE_COUNTS,
   WRITER_KIND_DEVICE,
   WRITER_KIND_INGEST,
+  arrayChunks,
   checkAll,
+  checkAllStream,
   type CheckInput,
+  type Chunks,
   type SyncRow,
   type Violation,
   type Writer,
@@ -848,7 +853,9 @@ test("I11 clears for an enrolled writer that has never authored a blob", () => {
     counter: 0n,
     hash: "0".repeat(64),
   });
-  expect(checkAll(input)).toEqual([{ id: "I14_forks_surfaced", severity: "notice", detail: "1 fork, 0 anomalies" }]);
+  expect(checkAll(input)).toEqual([
+    { id: "I14_forks_surfaced", severity: "notice", kind: NOTICE_COUNTS, detail: "1 fork, 0 anomalies" },
+  ]);
 });
 
 test("I11 hard-stops when the checkpoint omits a live device writer", () => {
@@ -2110,4 +2117,251 @@ test("an op batch re-delivered at the same seq is quiet, and its anomaly is in t
   const vs = checkAll(input);
   expect(hardStops(vs)).toHaveLength(0);
   expect(find(vs, "I14_forks_surfaced")!.detail).toContain("duplicate_delivery");
+});
+
+// ---------------------------------------------------------------------------
+// The firing roster
+//
+// The one property this whole file is worth nothing without: **every invariant
+// can actually fail.** A check that cannot bite is worse than an absent one,
+// because it reports green — and this file is what everything downstream is
+// checked by, so a vacuous check here is a vacuous exit criterion.
+//
+// The tests above assert that one by one. This table asserts it as a SET, and
+// its last line is the load-bearing part: the ids in the table must be exactly
+// `INVARIANT_IDS`. An eighteenth invariant added without a fixture that makes it
+// fire therefore fails here rather than passing quietly forever.
+//
+// "Fires" is measured against the clean baseline rather than asserted: a finding
+// only counts if the healthy input does not already produce it. That is what
+// stops `I11`'s routine "no checkpoint yet" and `I14`'s unconditional count line
+// from certifying their own invariants as bitten.
+// ---------------------------------------------------------------------------
+
+interface Firing {
+  id: string;
+  what: string;
+  build: () => CheckInput;
+}
+
+const FIRING: Firing[] = [
+  {
+    id: "I1_stream_cursor_monotone",
+    what: "the server repeats a seq inside one page",
+    build: () => reseq(cleanInput(), [1n, 2n, 2n, 4n, 5n, 6n, 7n, 8n, 9n]),
+  },
+  {
+    id: "I2_writer_counters",
+    what: "the server drops one of a writer's blobs",
+    build: () => {
+      const input = cleanInput();
+      input.rows = input.rows.filter((r) => !(r.writer_id === "dev-a" && r.writer_counter === 3n));
+      return input;
+    },
+  },
+  {
+    id: "I3_chain",
+    what: "a blob's bytes no longer hash to the hash claimed for them",
+    build: () => {
+      const input = cleanInput();
+      flipPadding(input.rows[2]!.blob);
+      return input;
+    },
+  },
+  {
+    id: "I3b_cold_hash_list",
+    what: "a cold body is swapped after its hash was pinned",
+    build: () => {
+      const input = coldWindowInput([5n, 11n]);
+      flipPadding(input.rows[0]!.blob);
+      return input;
+    },
+  },
+  {
+    id: "I4_aad",
+    what: "two blobs of one writer are exchanged, so each is served where it was not sealed",
+    build: () => {
+      const input = cleanInput();
+      const a = input.rows.filter((r) => r.writer_id === "dev-a");
+      const [x, y] = [a[0]!, a[1]!];
+      [x.blob, y.blob] = [y.blob, x.blob];
+      x.blob_hash = chainHash(x.prev_hash, x.blob);
+      y.prev_hash = x.blob_hash;
+      y.blob_hash = chainHash(y.prev_hash, y.blob);
+      return input;
+    },
+  },
+  {
+    id: "I5_bucket",
+    what: "a blob is stored off the padding ladder",
+    build: () => {
+      const input = cleanInput();
+      input.rows[1]!.size_bucket = 12345;
+      return input;
+    },
+  },
+  {
+    id: "I6_schema_version",
+    what: "an op is from a newer schema version than this build",
+    build: () => {
+      const input = cleanInput();
+      input.ops[0]!.op.v = 2;
+      return input;
+    },
+  },
+  {
+    id: "I7_one_live_per_ingest",
+    what: "the live index points at a transaction that was superseded",
+    build: () => {
+      const input = cleanInput();
+      input.state.liveByIngestID.set(input.state.txns.get("t1")!.ingest_id, "t1");
+      return input;
+    },
+  },
+  {
+    id: "I8_split_sum",
+    what: "an applied split's parts no longer sum to the parent",
+    build: () => {
+      const input = cleanInput();
+      input.state.txns.get("t1")!.splits[0]!.amount_minor = 9999n;
+      return input;
+    },
+  },
+  {
+    id: "I9_version_contiguity",
+    what: "a materialized entity's version disagrees with its head",
+    build: () => {
+      const input = cleanInput();
+      input.state.txns.get("t2")!.version = 9;
+      return input;
+    },
+  },
+  {
+    id: "I10_fx_prefix_monotone",
+    what: "a frozen FX snapshot disagrees with a re-fold from position 0",
+    build: () => {
+      const input = cleanInput();
+      input.state.txns.get("t2")!.amount_home_minor = 1n;
+      return input;
+    },
+  },
+  {
+    id: "I11_roster_checkpoint",
+    what: "two devices are enrolled and no checkpoint cross-checks either",
+    build: () => cleanInput({ roster: [ingestWriter(), device("dev-a"), device("dev-b")] }),
+  },
+  {
+    id: "I12_money_shape",
+    what: "an amount is a JS number rather than a bigint",
+    build: () => {
+      const input = cleanInput();
+      (input.state.txns.get("t2") as unknown as { amount_minor: number }).amount_minor = 10000;
+      return input;
+    },
+  },
+  {
+    id: "I13_supersede_has_origin",
+    what: "a supersede names an ingest no txn_ingested introduced",
+    build: () => cleanInput({ plans: [...hotPlans(), { writer: "ingest", ops: [superseded("i-orphan", "orphan")] }] }),
+  },
+  {
+    id: "I14_forks_surfaced",
+    what: "the fold recorded an anomaly kind outside the frozen vocabulary",
+    build: () => {
+      const input = cleanInput();
+      input.state.anomalies.push({ kind: "made_up_kind", detail: "x", at_seq: 1n });
+      return input;
+    },
+  },
+  {
+    id: "I15_unreadable_set_aside",
+    what: "a set-aside record does not say where it came from",
+    build: () => {
+      const input = cleanInput();
+      input.state.unreadable.push({ writer_id: "", stream: "hot", writer_counter: 0n, seq: 1n, reason: "" });
+      return input;
+    },
+  },
+  {
+    id: "I16_cold_carries_no_ops",
+    what: "a cold blob carries an op list instead of a raw body",
+    build: () => {
+      const plans = coldPlans(4);
+      plans[2] = { writer: "ingest", ops: [categorized("t1", 1, "smuggled")] };
+      return assemble({ stream: "cold", plans });
+    },
+  },
+];
+
+test("every one of the seventeen has an input that makes it FIRE", () => {
+  // The baseline is what a HEALTHY account produces, keyed by id AND detail, so
+  // a routine notice cannot be mistaken for a finding.
+  const baseline = new Set(
+    [...checkAll(cleanInput()), ...checkAll(assemble({ stream: "cold", plans: coldPlans(4) }))].map(
+      (v) => `${v.id}|${v.detail}`,
+    ),
+  );
+  const silent: string[] = [];
+  for (const f of FIRING) {
+    const fresh = checkAll(f.build()).filter((v) => v.id === f.id && !baseline.has(`${v.id}|${v.detail}`));
+    if (fresh.length === 0) silent.push(`${f.id}: ${f.what}`);
+  }
+  expect(silent).toEqual([]);
+});
+
+test("the firing roster covers exactly the seventeen, so a new invariant cannot skip it", () => {
+  expect([...new Set(FIRING.map((f) => f.id))].sort()).toEqual([...INVARIANT_IDS].sort());
+});
+
+// ---------------------------------------------------------------------------
+// Streaming: the array front door is the streaming path
+// ---------------------------------------------------------------------------
+
+test("checkAllStream over chunked sources gives exactly what checkAll gives over arrays", () => {
+  // Chunked at 1, which is the smallest boundary there is: any check that
+  // depended on seeing a whole page at once shows up here as a difference.
+  for (const build of FIRING.map((f) => f.build).concat(() => cleanInput())) {
+    const input = build();
+    const streamed = checkAllStream({ ...input, rows: arrayChunks(input.rows, 1), ops: arrayChunks(input.ops, 1) });
+    expect(streamed).toEqual(checkAll(input));
+  }
+});
+
+test("a row source that is not re-iterable is a named hard stop, not a quiet green", () => {
+  // Eight of the seventeen take their own pass over the rows. A one-shot source
+  // leaves every pass after the first reading an empty log — which is the exact
+  // shape of a vacuous check: all eight report nothing and the run looks clean.
+  const input = cleanInput();
+  let served = false;
+  const once: Chunks<SyncRow> = {
+    each(fn) {
+      if (served) return;
+      served = true;
+      fn(input.rows);
+    },
+  };
+  const vs = checkAllStream({ ...input, rows: once, ops: arrayChunks(input.ops) });
+  expect(stopIDs(vs)).toContain("REITERABLE_SOURCE");
+  expect(find(vs, "REITERABLE_SOURCE")!.detail).toContain("not re-iterable");
+});
+
+test("no invariant contributes an unbounded number of findings, and truncation says so", () => {
+  // A hostile page can violate on every row. The report is what the device holds
+  // and what a person reads, so both are capped — and the cap announces itself,
+  // because a report that silently ends is indistinguishable from a clean one.
+  const input = cleanInput();
+  const broken: SyncRow[] = [];
+  for (let n = 0; n < MAX_FINDINGS_PER_INVARIANT * 3; n++) {
+    const r = input.rows[0]!;
+    broken.push({ ...r, seq: 1n, writer_counter: 99n, size_bucket: 12345 });
+  }
+  input.rows = broken;
+  const vs = checkAll(input);
+  for (const id of INVARIANT_IDS) {
+    expect(all(vs, id).length).toBeLessThanOrEqual(MAX_FINDINGS_PER_INVARIANT + 1);
+  }
+  const bucket = all(vs, "I5_bucket");
+  expect(bucket.length).toBe(MAX_FINDINGS_PER_INVARIANT + 1);
+  expect(bucket[bucket.length - 1]!.detail).toContain("further finding(s) from this invariant were not listed");
+  expect(bucket[bucket.length - 1]!.detail).toContain(`${MAX_FINDINGS_PER_INVARIANT * 2}`);
 });

@@ -38,6 +38,7 @@
  */
 
 import { INVARIANT_IDS, type Violation } from "../invariants/check";
+import { surface } from "../invariants/surface";
 import { Client, HardStopError, newEntityID, stateToJSON, summarize, unbase64 } from "../net/client";
 import { openStore } from "../store/open";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
@@ -173,8 +174,15 @@ global           --server <url> --state-dir <path> --profile <name>`;
 function printViolations(violations: readonly Violation[], asJSON: boolean): number {
   const stops = violations.filter((v) => v.severity === "hard_stop");
   const notices = violations.filter((v) => v.severity === "notice");
+  // The same classification the phone renders (`invariants/surface.ts`), printed
+  // here because this CLI is the only client that exists today — a halt lane
+  // whose only consumer is a test is the "written, tested green, never wired"
+  // shape this project has paid for six times. `unreadable` is not passed: it
+  // would mean re-folding the whole log for a banner whose count the `I15`
+  // notice already carries.
+  const ui = surface({ violations });
   if (asJSON) {
-    console.log(JSON.stringify({ checked: INVARIANT_IDS.length, violations }, null, 2));
+    console.log(JSON.stringify({ checked: INVARIANT_IDS.length, violations, surface: ui }, null, 2));
   } else {
     console.log(
       `invariants: ${INVARIANT_IDS.length} checked, ${stops.length} hard stop${stops.length === 1 ? "" : "s"}, ` +
@@ -190,6 +198,24 @@ function printViolations(violations: readonly Violation[], asJSON: boolean): num
     const label = (v: Violation): string => (v.kind === undefined ? v.id : `${v.id} (${v.kind})`);
     for (const v of stops) console.log(`  HARD STOP  ${label(v)}: ${v.detail}`);
     for (const v of notices) console.log(`  notice     ${label(v)}: ${v.detail}`);
+
+    // What a person is shown, under what an operator is shown. The halt is the
+    // full-screen, non-dismissable state on the phone; here it is the block a
+    // human reads instead of seventeen ids.
+    if (ui.halt !== null) {
+      console.log("");
+      console.log(`  ${ui.halt.title.toUpperCase()}  [${ui.halt.kind}, sync stopped]`);
+      console.log(`  ${ui.halt.body}`);
+      if (ui.halt.action !== null) console.log(`  → ${ui.halt.action}`);
+      for (const h of ui.halts.slice(1)) console.log(`  (also: ${h.title} [${h.kind}])`);
+    }
+    if (ui.notices.length > 0) {
+      console.log("");
+      console.log(`  Integrity (${ui.badge} needing attention)`);
+      for (const n of ui.notices) {
+        console.log(`    ${n.routine ? "routine  " : "         "}${n.title} — ${n.count}`);
+      }
+    }
   }
   return stops.length === 0 ? 0 : 1;
 }

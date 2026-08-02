@@ -46,11 +46,14 @@ import { platform } from "../platform";
 import {
   VIOLATION_ROSTER_COVERAGE,
   checkAll,
+  checkAllStream,
   type CheckInput,
   type SyncRow,
   type Violation,
   type Writer,
 } from "../invariants/check";
+import { storedOps, storedRows } from "../invariants/source";
+import { escapableDuringPush } from "../invariants/surface";
 import { fold, foldBlobs, type LogEntry } from "../replay/replay";
 import { emptyState, type State } from "../replay/state";
 import { MAX_BUCKET, STREAM_COLD, STREAM_HOT, openBlob, sealBlob, type Envelope, type Stream } from "../wire/blob";
@@ -493,20 +496,37 @@ export class Client {
    * rows it is handed start at 1.
    */
   check(stream: Stream = STREAM_HOT, roster: readonly Writer[] = []): Violation[] {
-    // Read a chunk at a time — and then, unlike the fold above, keep them all.
-    // `checkAll` is a whole-log API by construction: I2 walks counters across
-    // the run, I9/I10 re-fold from 0, I14 counts forks over everything. So the
-    // chunking bounds what the STORE holds, not what the checker does, and the
-    // honest statement is that `check` is O(log) in memory until the checker
-    // itself streams. That is Task 12's job (the checker on-device), and this
-    // comment is here so nobody reads the loop as a fix it is not.
-    const rows: SyncRow[] = [];
-    eachRowChunk(this.rowStore, stream, (chunk) => {
-      for (const r of chunk) rows.push(decodeWireRow(r));
+    // Nothing here builds an array of the log. `checkAllStream` takes the rows
+    // and the ops as re-iterable chunk sources, so a whole-log check holds one
+    // chunk of blobs at a time instead of all 3,683 — which at up to 1 MiB a
+    // blob is the >500 MB shape the Phase 0 device build froze on. Task 5 left
+    // this as the one remaining O(log) hold and named Task 12 as its owner.
+    const rows = storedRows(this.rowStore, stream, decodeWireRow);
+    const ops = storedOps(this.rowStore, this.userId, decodeWireRow);
+
+    // The state is folded a chunk at a time and the ops each chunk produced are
+    // DISCARDED (`applyRows` needs somewhere to put them; that somewhere is
+    // truncated per chunk). `materialize()` returns them instead, which is what
+    // makes it the array this method no longer builds.
+    const state = emptyState();
+    const spent: LogEntry[] = [];
+    eachRowChunk(this.rowStore, STREAM_HOT, (chunk) => {
+      spent.length = 0;
+      applyRows(state, spent, this.userId, chunk.map(decodeWireRow));
     });
-    const { state, ops } = this.materialize();
-    const last = rows[rows.length - 1];
-    return checkAll({
+    spent.length = 0;
+    state.cursors.cold = this.st.cursors.cold;
+
+    // The last row's seq, without decoding a blob to get it: I1 compares `next`
+    // against it, and a whole-log check resumes from 0, so the last row IS the
+    // cursor this pass would persist.
+    let next = 0n;
+    eachRowChunk(this.rowStore, stream, (chunk) => {
+      const last = chunk[chunk.length - 1];
+      if (last !== undefined) next = parseDecimal(last.seq);
+    });
+
+    return checkAllStream({
       userId: this.userId,
       stream,
       rows,
@@ -517,7 +537,7 @@ export class Client {
       pinnedHeads: new Map(),
       pinnedBlobHashes: this.st.pinnedBlobHashes,
       cursorBefore: 0n,
-      next: last === undefined ? 0n : last.seq,
+      next,
     });
   }
 
@@ -1199,10 +1219,11 @@ export class Client {
       await this.pull();
     } catch (err) {
       if (!(err instanceof HardStopError)) throw err;
-      const stops = err.violations.filter((v) => v.severity === "hard_stop");
-      const benign =
-        stops.length > 0 && stops.every((v) => v.id === ROSTER_CHECKPOINT && v.kind === VIOLATION_ROSTER_COVERAGE);
-      if (!benign) throw err;
+      // The predicate lives in `invariants/surface.ts`, which is also what the
+      // halt screens classify with: two copies of an allow-list are two things
+      // that can disagree, and the one that disagreed here laundered a
+      // withholding attack into a notice.
+      if (!escapableDuringPush(err.violations.filter((v) => v.severity === "hard_stop"))) throw err;
       blocked = true;
     }
     // Not inside the try: the cold hash list is verified by `verifyHashList`
