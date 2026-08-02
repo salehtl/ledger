@@ -5,7 +5,8 @@ Native components the plan names (`app/src/components/HaltBanner.tsx`,
 `app/src/screens/settings/IntegrityScreen.tsx`) are **specified, not written** —
 see "What is left, and why" at the end.
 
-**Commit:** see the end of this file.
+**Commit:** `306a3e9` — *feat(v2): stream the invariant checker, and give every
+hard stop a screen* (9 files; `git show --stat` confirmed only those nine).
 
 ---
 
@@ -281,8 +282,15 @@ ones", which is killed.
 - `cd client && bun test src/invariants src/cli src/store src/replay src/wire` —
   **479 pass, 0 fail** (13 more than the 466 baseline before the two
   mutation-driven tests).
-- `bash scripts/v2-check.sh` at my own commit, from a `git archive` export with
-  `client/node_modules` copied in — result recorded at the end of this file.
+- `bash scripts/v2-check.sh` at **commit `306a3e9`**, from a `git archive` export
+  with `client/node_modules` copied in, after `go clean -testcache`:
+  **`v2-check: OK (go + client + conformance)`**, and the script's OWN exit code
+  captured as `EXIT=0` (not a pipeline's). The client half of that run was
+  **2,094 pass / 0 fail / 0 skip across 21 files** — collected count up from the
+  plan's recorded 1,911 baseline and monotonically non-decreasing, and the e2e
+  files RAN rather than self-skipping (`test/e2e/exit.test.ts` printed its step
+  4 checkpoint, step 9 fork notice and step 10 snapshot; `LEDGER_TEST_POSTGRES_URL`
+  is exported by the gate).
 - No pre-existing test was removed, skipped or weakened. One existing assertion
   was **strengthened**: `checkAll(input)` equality now also pins
   `kind: NOTICE_COUNTS` on I14's count line.
