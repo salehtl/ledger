@@ -90,8 +90,8 @@
  */
 
 import { platform } from "../platform";
-import { fold, type LogEntry } from "../replay/replay";
-import { entityKey, type State } from "../replay/state";
+import { applyOp, type LogEntry } from "../replay/replay";
+import { emptyState, entityKey, type State } from "../replay/state";
 import { BUCKETS, aad, embeddedAAD, openBlob, type Stream } from "../wire/blob";
 import {
   ChainBreakError,
@@ -166,6 +166,46 @@ export const VIOLATION_ROSTER_COVERAGE = "roster_coverage";
 export const VIOLATION_CHAIN_WITHHELD = "chain_withheld";
 
 /**
+ * `I6_schema_version` / `I15_unreadable_set_aside`: an op or a blob is from a
+ * schema version newer than this build understands.
+ *
+ * Kinded because it is the one hard stop whose meaning to a USER is completely
+ * different from every other one: nothing is wrong with the data and nothing is
+ * wrong with the server — this app is behind. `surface.ts` turns it into "update
+ * the app" rather than into the tamper message, which is a distinction spec
+ * §3.3:68 makes and Task 12 Step 3 requires a test for.
+ */
+export const VIOLATION_NEWER_VERSION = "newer_version";
+
+/**
+ * A check threw, or the row source was not re-iterable: the state is
+ * UNCERTIFIED rather than known-bad.
+ *
+ * It is a hard stop for the same reason a chain break is — nothing downstream
+ * may treat this state as verified — but the copy a user gets says the checker
+ * could not finish, because "your data has been tampered with" would be a claim
+ * nothing measured.
+ */
+export const VIOLATION_CHECK_FAILED = "check_failed";
+
+/** `I11_roster_checkpoint`: no checkpoint exists yet and none is required. Routine. */
+export const NOTICE_NO_CHECKPOINT_YET = "no_checkpoint_yet";
+
+/**
+ * `I11_roster_checkpoint`: a checkpoint head on the stream this pull did not
+ * cover, so it was not cross-checked. Routine — spec §3.3:70 makes a hot-only
+ * pull the shipping mode, so this is emitted per device per stream on every
+ * healthy sync, and Phase 1's exit run drowned in them.
+ */
+export const NOTICE_OTHER_STREAM = "other_stream";
+
+/** `I14_forks_surfaced`: the unconditional fork/anomaly count line. Routine by construction. */
+export const NOTICE_COUNTS = "counts";
+
+/** `I15_unreadable_set_aside`: the "N blob(s) set aside" line — the third UI lane. */
+export const NOTICE_SET_ASIDE = "set_aside";
+
+/**
  * One op-log row as `GET /api/v1/sync` returns it, decoded.
  *
  * It is {@link ChainRow} plus the two fields the chain does not need and the
@@ -191,6 +231,121 @@ export interface Writer {
   kind: string;
   /** null while the writer is live. */
   revoked_at: string | null;
+}
+
+/**
+ * A re-iterable sequence delivered a chunk at a time, retaining nothing between
+ * chunks.
+ *
+ * This is what makes the checker streamable. `RowStore.range` is the only read
+ * path the store offers and `eachRowChunk(250)` is the sanctioned full pass, so
+ * a whole-log check that wanted an array would have to build one — which is
+ * exactly the >500 MB shape Phase 0 froze on, at up to 1 MiB per blob
+ * ({@link BUCKETS}).
+ *
+ * **`each` must be callable more than once and must yield the same sequence
+ * every time.** Several invariants need their own pass (I1 walks seqs, I3 walks
+ * the chain, I15 opens every blob), and none of them may lean on another's. A
+ * one-shot generator is therefore NOT a valid source; {@link arrayChunks} and
+ * the store-backed sources in `source.ts` are both re-iterable by construction,
+ * and `checkAllStream` asserts the row source is re-iterable rather than
+ * trusting it (see {@link REITERABLE}).
+ *
+ * A source must retain no chunk it has handed out, and no consumer here keeps
+ * one: `stream.test.ts` poisons every chunk once the next is requested and
+ * re-runs the whole checker over it.
+ */
+export interface Chunks<T> {
+  each(fn: (chunk: readonly T[]) => void): void;
+}
+
+/** The chunk size the store's full pass uses, and the one an array source mimics. */
+export const CHECK_CHUNK = 250;
+
+/**
+ * An in-memory array as a {@link Chunks}, sliced at {@link CHECK_CHUNK}.
+ *
+ * The array front door ({@link checkAll}) goes through this, so the array path
+ * and the streaming path are one implementation and cannot drift. It slices
+ * rather than handing the whole array over precisely so the array path exercises
+ * chunk boundaries too — a source that yielded one giant chunk would let a
+ * consumer that retains chunks pass every test.
+ */
+export function arrayChunks<T>(xs: readonly T[], limit: number = CHECK_CHUNK): Chunks<T> {
+  if (!Number.isInteger(limit) || limit <= 0) throw new Error(`arrayChunks needs a positive integer chunk size, got ${String(limit)}`);
+  return {
+    each(fn) {
+      if (!Array.isArray(xs)) {
+        // `checkAll` is handed junk in one test on purpose; a source that threw
+        // here would turn every check into "the check itself could not run"
+        // instead of the specific finding each one owes.
+        return;
+      }
+      for (let n = 0; n < xs.length; n += limit) fn(xs.slice(n, n + limit));
+    },
+  };
+}
+
+/** Walks every element of a source, flattened, with a running index. */
+function eachOf<T>(src: Chunks<T>, fn: (x: T, n: number) => void): void {
+  let n = 0;
+  src.each((chunk) => {
+    for (const x of chunk) fn(x, n++);
+  });
+}
+
+/**
+ * The cap on how many findings ONE invariant contributes to one report.
+ *
+ * Two reasons, and the second is the load-bearing one. A hostile page can make a
+ * per-row check fire on every row, and an unbounded `Violation[]` is then the
+ * retention the streaming exists to remove — the array would grow with the log
+ * even though nothing else does. And Phase 1's exit record says a notice list
+ * nobody reads is the same as no invariants, which is what an 8,000-line report
+ * is.
+ *
+ * Truncation is NEVER silent: {@link sink} appends a line naming exactly how
+ * many further findings that invariant had and at what severity, so the report
+ * still says "this is worse than what you can see" rather than quietly ending.
+ */
+export const MAX_FINDINGS_PER_INVARIANT = 64;
+
+interface Sink {
+  push(v: Violation): void;
+  /** True once nothing further will be listed — a scan may stop refining detail. */
+  readonly full: boolean;
+  take(id: string): Violation[];
+}
+
+function sink(): Sink {
+  const out: Violation[] = [];
+  let dropped = 0;
+  let droppedHardStops = 0;
+  return {
+    push(v) {
+      if (out.length < MAX_FINDINGS_PER_INVARIANT) {
+        out.push(v);
+        return;
+      }
+      dropped++;
+      if (v.severity === "hard_stop") droppedHardStops++;
+    },
+    get full() {
+      return out.length >= MAX_FINDINGS_PER_INVARIANT;
+    },
+    take(id) {
+      if (dropped === 0) return out;
+      const severity = droppedHardStops > 0 ? "hard_stop" : "notice";
+      out.push({
+        id,
+        severity,
+        detail:
+          `…and ${dropped} further finding(s) from this invariant were not listed (${droppedHardStops} of them hard stops); ` +
+          `the first ${MAX_FINDINGS_PER_INVARIANT} are above`,
+      });
+      return out;
+    },
+  };
 }
 
 export interface CheckInput {
@@ -225,6 +380,21 @@ export interface CheckInput {
   cursorBefore: bigint;
   /** The cursor the response tells the client to persist. */
   next: bigint;
+}
+
+/**
+ * {@link CheckInput} with the two unbounded fields as {@link Chunks} instead of
+ * arrays. **This is the real input type**; {@link CheckInput} is the array front
+ * door, and {@link checkAll} is one line over this.
+ *
+ * `rows` and `ops` are the only two fields that grow with the log. Everything
+ * else is bounded by something the device holds anyway: `state` by the entity
+ * count, `pinnedHeads`/`pinnedBlobHashes` by the chains, `roster` by the
+ * writers, and `hashList` by one response.
+ */
+export interface StreamCheckInput extends Omit<CheckInput, "rows" | "ops"> {
+  rows: Chunks<SyncRow>;
+  ops: Chunks<LogEntry>;
 }
 
 /**
@@ -267,6 +437,8 @@ const hard = (id: string, detail: string): Violation => ({ id, severity: "hard_s
 const note = (id: string, detail: string): Violation => ({ id, severity: "notice", detail });
 /** A hard stop that names WHICH condition under its id was hit; see {@link Violation.kind}. */
 const hardKind = (id: string, kind: string, detail: string): Violation => ({ id, severity: "hard_stop", detail, kind });
+/** A notice that names its condition, so a surface can group it without matching prose. */
+const noteKind = (id: string, kind: string, detail: string): Violation => ({ id, severity: "notice", detail, kind });
 
 const hex = (b: Uint8Array): string => platform().toHex(b);
 const text = (b: Uint8Array): string => platform().utf8Decode(b);
@@ -319,9 +491,17 @@ interface Refold {
   error: string | null;
 }
 
-function refold(input: CheckInput): Refold {
+function refold(input: StreamCheckInput): Refold {
   try {
-    return { state: fold(input.ops), error: null };
+    // `fold` folds INTO a state, so the re-fold is incremental by chunk and the
+    // ops are never all in hand at once. What it holds is the state, which is
+    // bounded by the entity count rather than by the log — the same thing the
+    // device holds anyway.
+    const state = emptyState();
+    input.ops.each((chunk) => {
+      for (const e of chunk) applyOp(state, e);
+    });
+    return { state, error: null };
   } catch (err) {
     return { state: null, error: msg(err) };
   }
@@ -429,16 +609,22 @@ const I1 = "I1_stream_cursor_monotone";
  * Detecting a genuinely dropped row is I2's job, against the per-(writer,
  * stream) chain, which IS contiguous (spec §3.3:65).
  */
-function checkStreamOrder(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkStreamOrder(i: StreamCheckInput): Violation[] {
+  const out = sink();
   let previous: bigint | null = null;
-  for (const [n, r] of i.rows.entries()) {
+  // The last row's seq, carried out of the pass rather than indexed out of an
+  // array — the one thing `next` has to be compared against.
+  let lastSeq: unknown = undefined;
+  let sawRow = false;
+  eachOf(i.rows, (r, n) => {
+    sawRow = true;
+    lastSeq = r.seq;
     if (r.stream !== i.stream) {
       out.push(hard(I1, `row ${n} is on stream ${JSON.stringify(r.stream)}, but this is a ${i.stream} pull`));
     }
     if (typeof r.seq !== "bigint") {
       out.push(hard(I1, `row ${n} has seq ${JSON.stringify(r.seq)}, which is not a bigint`));
-      continue;
+      return;
     }
     if (typeof i.cursorBefore !== "bigint") {
       // Reported, not skipped. A mistyped cursor silently disables the "no row
@@ -451,24 +637,23 @@ function checkStreamOrder(i: CheckInput): Violation[] {
       out.push(hard(I1, `row ${n} is at seq ${r.seq}, which does not follow ${previous}: the page is reordered or repeats a row`));
     }
     previous = r.seq;
-  }
+  });
 
   // `next` is what the client persists as its cursor. A `next` beyond the rows
   // actually delivered silently skips everything in between, forever.
-  const last = i.rows[i.rows.length - 1];
-  const want = last === undefined ? i.cursorBefore : last.seq;
+  const want: unknown = sawRow ? lastSeq : i.cursorBefore;
   if (typeof i.next !== "bigint") {
     out.push(hard(I1, `the response's next is ${JSON.stringify(i.next)}, which is not a bigint`));
   } else if (i.next !== want) {
     out.push(
       hard(
         I1,
-        `the response's next is ${i.next}, but the last row it delivered is at ${want} — ` +
+        `the response's next is ${i.next}, but the last row it delivered is at ${String(want)} — ` +
           `persisting that cursor would skip every row in between`,
       ),
     );
   }
-  return out;
+  return out.take(I1);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,44 +683,86 @@ const I2 = "I2_writer_counters";
  * row and I9/I10 compare state against ops and never rows against ops. That is
  * precisely the dropped-row detection §3.3:65 assigns to this invariant.
  */
-function checkWriterCounters(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
-  const hashes = byWriter(i.hashList);
-  const rows = byWriter(i.rows.filter((r) => r.stream === i.stream));
+function checkWriterCounters(i: StreamCheckInput): Violation[] {
+  const out = sink();
 
-  const runs: { writer: string; source: string; list: { writer_counter: bigint }[] }[] = [];
-  for (const [w, list] of hashes) runs.push({ writer: w, source: "hash list", list });
-  // Hot rows are checked ALWAYS, hash list or not. Cold rows are a window.
-  if (i.stream === "hot") for (const [w, list] of rows) runs.push({ writer: w, source: "rows", list });
-
-  for (const { writer: w, source, list } of runs) {
-    const key = safeChainKey(w, i.stream);
-    if (key === null) {
-      out.push(hard(I2, `a ${source} entry names writer ${JSON.stringify(w)}, which cannot be a chain key`));
-      continue;
-    }
-    let want = (i.pinnedHeads.get(key)?.counter ?? 0n) + 1n;
-    for (const [n, e] of list.entries()) {
-      if (typeof e.writer_counter !== "bigint") {
-        out.push(hard(I2, `(${key}) ${source} entry ${n} has counter ${JSON.stringify(e.writer_counter)}`));
-        continue;
-      }
-      if (e.writer_counter !== want) {
-        out.push(
-          hard(
-            I2,
-            `(${key}) ${source} entry ${n} has counter ${e.writer_counter} where ${want} is due — ` +
-              `a gap, a duplicate or a reordering, and each of the three means a row is missing or repeated`,
-          ),
-        );
-        // Resynchronised so one break is one violation rather than a cascade.
-        want = e.writer_counter + 1n;
-        continue;
-      }
-      want++;
-    }
+  /**
+   * One writer's run, walked incrementally. The whole per-writer state is an
+   * index and the next counter due, so the rows themselves are never grouped
+   * into lists — which is what `byWriter` over the whole log used to do.
+   */
+  interface Run {
+    key: ChainKey | null;
+    n: number;
+    want: bigint;
+    findings: Violation[];
   }
-  return out;
+  const start = (w: string, source: string): Run => {
+    const key = safeChainKey(w, i.stream);
+    const run: Run = { key, n: 0, want: 0n, findings: [] };
+    if (key === null) {
+      run.findings.push(hard(I2, `a ${source} entry names writer ${JSON.stringify(w)}, which cannot be a chain key`));
+      return run;
+    }
+    run.want = (i.pinnedHeads.get(key)?.counter ?? 0n) + 1n;
+    return run;
+  };
+  const step = (run: Run, source: string, counter: unknown): void => {
+    if (run.key === null) return;
+    const n = run.n++;
+    if (typeof counter !== "bigint") {
+      run.findings.push(hard(I2, `(${run.key}) ${source} entry ${n} has counter ${JSON.stringify(counter)}`));
+      return;
+    }
+    if (counter !== run.want) {
+      run.findings.push(
+        hard(
+          I2,
+          `(${run.key}) ${source} entry ${n} has counter ${counter} where ${run.want} is due — ` +
+            `a gap, a duplicate or a reordering, and each of the three means a row is missing or repeated`,
+        ),
+      );
+      // Resynchronised so one break is one violation rather than a cascade.
+      run.want = counter + 1n;
+      return;
+    }
+    run.want++;
+  };
+
+  // The hash list is one response's worth and is already an array; the ROWS are
+  // the unbounded side, and they are walked once, in order, with one `Run` per
+  // writer. Findings are buffered per writer and flushed in first-seen order so
+  // the report still reads run by run rather than interleaved by arrival.
+  const hashRuns = new Map<string, Run>();
+  for (const [w, list] of byWriter(i.hashList)) {
+    const run = start(w, "hash list");
+    hashRuns.set(w, run);
+    for (const e of list) step(run, "hash list", e.writer_counter);
+  }
+  for (const run of hashRuns.values()) for (const v of run.findings) out.push(v);
+
+  // Hot rows are checked ALWAYS, hash list or not. Cold rows are a window.
+  if (i.stream === "hot") {
+    const rowRuns = new Map<string, Run>();
+    eachOf(i.rows, (r) => {
+      if (r.stream !== i.stream) return;
+      const w = typeof r.writer_id === "string" ? r.writer_id : "";
+      let run = rowRuns.get(w);
+      if (run === undefined) {
+        run = start(w, "rows");
+        rowRuns.set(w, run);
+      }
+      step(run, "rows", r.writer_counter);
+      // Bounded even against a page that violates on every row: the per-writer
+      // buffer stops growing once nothing further would be listed anyway.
+      if (run.findings.length > MAX_FINDINGS_PER_INVARIANT) {
+        for (const v of run.findings) out.push(v);
+        run.findings = [];
+      }
+    });
+    for (const run of rowRuns.values()) for (const v of run.findings) out.push(v);
+  }
+  return out.take(I2);
 }
 
 // ---------------------------------------------------------------------------
@@ -560,48 +787,71 @@ const I3 = "I3_chain";
  * from genesis, verifies. Those are caught only against a head the verifier
  * already trusts — a persisted pinned head, or I11's checkpoint.
  */
-function checkChain(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
-  const byPosition = new Map<string, SyncRow>();
-  for (const r of i.rows) byPosition.set(`${r.writer_id}|${r.stream}|${r.writer_counter}`, r);
+function checkChain(i: StreamCheckInput): Violation[] {
+  const out = sink();
+  // The predecessor lookup, over a WINDOW rather than the whole log: the last
+  // {@link LINK_WINDOW} positions seen, as `position → blob_hash` (32 bytes),
+  // never the rows and never the blobs.
+  //
+  // What that window costs is stated precisely, because a checker that quietly
+  // stopped linking would be the worst kind of regression. A blob's predecessor
+  // is found here whenever it arrived within the last 512 rows — which covers
+  // every case that occurs: `GET /api/v1/sync` caps a page at 8 blobs, and a
+  // whole-log pass reads ascending by seq out of SQLite, so a predecessor is
+  // always within a handful of rows. Beyond the window the row falls through to
+  // the pinned-head and genesis branches below exactly as a row whose
+  // predecessor was not delivered does — and a page that reorders by more than
+  // 512 rows is already two hard stops from I1 and I2.
+  const recent = new Map<string, Uint8Array>();
+  const remember = (r: SyncRow, blobHash: Uint8Array): void => {
+    if (recent.size >= LINK_WINDOW) {
+      const oldest = recent.keys().next();
+      if (!oldest.done) recent.delete(oldest.value);
+    }
+    recent.set(`${r.writer_id}|${r.stream}|${r.writer_counter}`, blobHash);
+  };
 
-  for (const [n, r] of i.rows.entries()) {
+  eachOf(i.rows, (r, n) => {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     if (!(r.blob instanceof Uint8Array)) {
       out.push(hard(I3, `row ${n} ${where} carries no blob bytes to verify`));
-      continue;
+      return;
     }
     if (!is32(r.prev_hash) || !is32(r.blob_hash)) {
       out.push(hard(I3, `row ${n} ${where} has a prev_hash or blob_hash that is not 32 bytes`));
-      continue;
+      return;
     }
     const got = chainHash(r.prev_hash, r.blob);
     if (!equalBytes(got, r.blob_hash)) {
       out.push(hard(I3, `${where} claims hash ${hex(r.blob_hash)}, but its bytes hash to ${hex(got)}`));
     }
 
-    if (typeof r.writer_counter !== "bigint") continue;
-    const before = byPosition.get(`${r.writer_id}|${r.stream}|${r.writer_counter - 1n}`);
+    if (typeof r.writer_counter !== "bigint") return;
+    const before = recent.get(`${r.writer_id}|${r.stream}|${r.writer_counter - 1n}`);
+    remember(r, r.blob_hash);
     if (before !== undefined) {
-      if (!equalBytes(r.prev_hash, before.blob_hash)) {
-        out.push(hard(I3, `${where} links to ${hex(r.prev_hash)}, but the blob before it hashes to ${hex(before.blob_hash)}`));
+      if (!equalBytes(r.prev_hash, before)) {
+        out.push(hard(I3, `${where} links to ${hex(r.prev_hash)}, but the blob before it hashes to ${hex(before)}`));
       }
-      continue;
+      return;
     }
     if (r.writer_counter === 1n) {
       if (!equalBytes(r.prev_hash, ZERO_HASH)) {
         out.push(hard(I3, `${where} is the first blob of its chain but links to ${hex(r.prev_hash)}, not the genesis hash`));
       }
-      continue;
+      return;
     }
     const key = safeChainKey(r.writer_id, r.stream);
     const pinned = key === null ? undefined : i.pinnedHeads.get(key);
     if (pinned !== undefined && pinned.counter === r.writer_counter - 1n && !equalBytes(r.prev_hash, pinned.hash)) {
       out.push(hard(I3, `${where} links to ${hex(r.prev_hash)}, but the head this client pinned is ${hex(pinned.hash)}`));
     }
-  }
-  return out;
+  });
+  return out.take(I3);
 }
+
+/** How many positions {@link checkChain} keeps for its predecessor lookup. */
+const LINK_WINDOW = 512;
 
 // ---------------------------------------------------------------------------
 // I3b — the cold hash list, and the bodies checked against it
@@ -625,8 +875,8 @@ const I3B = "I3b_cold_hash_list";
  * `hot` too, for a client that has pruned local blobs — but the body check is
  * cold-only, because hot bodies are verified against their own chain by I2+I3.
  */
-function checkColdHashList(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkColdHashList(i: StreamCheckInput): Violation[] {
+  const out = sink();
 
   for (const [w, list] of byWriter(i.hashList)) {
     const key = safeChainKey(w, i.stream);
@@ -678,23 +928,23 @@ function checkColdHashList(i: CheckInput): Violation[] {
   // hash list gets its bodies cross-checked too. Only COLD treats an unpinned
   // body as a violation: a hot pull normally carries no hash list at all, and
   // its bodies are covered by I2's row contiguity plus I3's chain instead.
-  for (const r of i.rows) {
+  eachOf(i.rows, (r) => {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     const want = pinned.get(`${r.writer_id}|${r.writer_counter}`);
     if (want === undefined) {
-      if (i.stream !== "cold") continue;
+      if (i.stream !== "cold") return;
       // "I have no pin for this one" is exactly the answer a hostile server
       // wants, so an unpinned cold body is refused rather than accepted unverified.
       out.push(hard(I3B, `a cold body arrived at ${where}, whose hash was never pinned, so nothing can check it`));
-      continue;
+      return;
     }
-    if (!(r.blob instanceof Uint8Array) || !is32(r.prev_hash)) continue; // I3 reported it
+    if (!(r.blob instanceof Uint8Array) || !is32(r.prev_hash)) return; // I3 reported it
     const got = chainHash(r.prev_hash, r.blob);
     if (!equalBytes(got, want)) {
       out.push(hard(I3B, `the body at ${where} hashes to ${hex(got)}, but ${hex(want)} was pinned for it`));
     }
-  }
-  return out;
+  });
+  return out.take(I3B);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,29 +962,29 @@ const I4 = "I4_aad";
  * Phase 1 provides structurally. The AAD is cleartext framing in both phases, so
  * this check costs no key and does not change when sealing turns on.
  */
-function checkAAD(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
-  for (const [n, r] of i.rows.entries()) {
+function checkAAD(i: StreamCheckInput): Violation[] {
+  const out = sink();
+  eachOf(i.rows, (r, n) => {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     let want: Uint8Array;
     try {
       want = aad({ userId: i.userId, stream: r.stream, writerId: r.writer_id, writerCounter: r.writer_counter });
     } catch (err) {
       out.push(hard(I4, `row ${n} ${where} does not name a position a blob could be sealed at: ${msg(err)}`));
-      continue;
+      return;
     }
     let got: Uint8Array;
     try {
       got = embeddedAAD(r.blob);
     } catch (err) {
       out.push(hard(I4, `row ${n} ${where} carries no readable associated data: ${msg(err)}`));
-      continue;
+      return;
     }
     if (!equalBytes(got, want)) {
       out.push(hard(I4, `the blob served at ${where} was sealed as ${JSON.stringify(text(got))}, not ${JSON.stringify(text(want))}`));
     }
-  }
-  return out;
+  });
+  return out.take(I4);
 }
 
 // ---------------------------------------------------------------------------
@@ -749,20 +999,20 @@ const I5 = "I5_bucket";
  * leaking its content's size; a blob off the ladder either did not go through
  * the sealer or was edited after it did.
  */
-function checkBucket(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
-  for (const r of i.rows) {
+function checkBucket(i: StreamCheckInput): Violation[] {
+  const out = sink();
+  eachOf(i.rows, (r) => {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     if (typeof r.size_bucket !== "number" || !BUCKETS.includes(r.size_bucket)) {
       out.push(hard(I5, `${where} declares size_bucket ${JSON.stringify(r.size_bucket)}, which is not one of the seven buckets`));
-      continue;
+      return;
     }
     if (!(r.blob instanceof Uint8Array) || r.blob.length !== r.size_bucket) {
       const n = r.blob instanceof Uint8Array ? r.blob.length : "no";
       out.push(hard(I5, `${where} declares size_bucket ${r.size_bucket} but carries ${n} bytes`));
     }
-  }
-  return out;
+  });
+  return out.take(I5);
 }
 
 // ---------------------------------------------------------------------------
@@ -778,17 +1028,17 @@ const I6 = "I6_schema_version";
  * ops as folded — a re-assertion rather than a duplicate, because ops can also
  * be assembled in code (Task 14's `emit`) and never pass a decoder at all.
  */
-function checkSchemaVersion(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
-  for (const [n, e] of i.ops.entries()) {
+function checkSchemaVersion(i: StreamCheckInput): Violation[] {
+  const out = sink();
+  eachOf(i.ops, (e, n) => {
     const v = (e as { op?: { v?: unknown; op_id?: unknown } }).op?.v;
     if (typeof v !== "number" || !Number.isInteger(v)) {
       out.push(hard(I6, `op ${n} declares version ${JSON.stringify(v)}`));
     } else if (v > SCHEMA_VERSION) {
-      out.push(hard(I6, `op ${n} (${String(e.op.op_id)}) is v${v}, and this build supports v${SCHEMA_VERSION}`));
+      out.push(hardKind(I6, VIOLATION_NEWER_VERSION, `op ${n} (${String(e.op.op_id)}) is v${v}, and this build supports v${SCHEMA_VERSION}`));
     }
-  }
-  return out;
+  });
+  return out.take(I6);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,8 +1056,8 @@ const I7 = "I7_one_live_per_ingest";
  * §3.3:67 keys dedup on ingest identity, not on parse output). A retired row
  * staying visible in `txns` is correct and is not flagged.
  */
-function checkOneLivePerIngest(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkOneLivePerIngest(i: StreamCheckInput): Violation[] {
+  const out = sink();
   for (const [ingestID, txnID] of i.state.liveByIngestID) {
     const t = i.state.txns.get(txnID);
     if (t === undefined) {
@@ -834,7 +1084,7 @@ function checkOneLivePerIngest(i: CheckInput): Violation[] {
       );
     }
   }
-  return out;
+  return out.take(I7);
 }
 
 // ---------------------------------------------------------------------------
@@ -844,8 +1094,8 @@ function checkOneLivePerIngest(i: CheckInput): Violation[] {
 const I8 = "I8_split_sum";
 
 /** Every applied split's parts sum exactly to its parent's `amount_minor`. */
-function checkSplitSum(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkSplitSum(i: StreamCheckInput): Violation[] {
+  const out = sink();
   for (const [id, t] of i.state.txns) {
     if (!Array.isArray(t.splits) || t.splits.length === 0) continue;
     let sum = 0n;
@@ -866,7 +1116,7 @@ function checkSplitSum(i: CheckInput): Violation[] {
       out.push(hard(I8, `${id} is split into parts summing to ${sum}, but the transaction is ${t.amount_minor}`));
     }
   }
-  return out;
+  return out.take(I8);
 }
 
 // ---------------------------------------------------------------------------
@@ -903,8 +1153,8 @@ const I9 = "I9_version_contiguity";
  * an edit authored offline against the retired row still arrives and still has
  * to resolve.
  */
-function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
-  const out: Violation[] = [];
+function checkVersionContiguity(i: StreamCheckInput, r: Refold): Violation[] {
+  const out = sink();
   const materialized = new Map<string, { version: unknown; what: string }>();
   for (const [id, t] of i.state.txns) materialized.set(entityKey("txn", id), { version: t.version, what: `txn ${id}` });
   for (const [id, x] of i.state.rules) materialized.set(entityKey("rule", id), { version: x.version, what: `rule ${id}` });
@@ -929,7 +1179,7 @@ function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
     }
   }
 
-  if (r.state === null) return out; // I10 reports the re-fold failure
+  if (r.state === null) return out.take(I9); // I10 reports the re-fold failure
   // BOTH directions. A one-directional refold→state walk misses an entity the
   // state holds that the log never creates — which for a rule is missed
   // entirely, since I10's existence check only covers transactions. It is also
@@ -960,7 +1210,7 @@ function checkVersionContiguity(i: CheckInput, r: Refold): Violation[] {
       );
     }
   }
-  return out;
+  return out.take(I9);
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,11 +1253,11 @@ const I10 = "I10_fx_prefix_monotone";
  * Compared BOTH ways, which is also what makes `ops` being the whole history a
  * checked precondition rather than a documented one.
  */
-function checkFXPrefixMonotone(i: CheckInput, r: Refold): Violation[] {
+function checkFXPrefixMonotone(i: StreamCheckInput, r: Refold): Violation[] {
   if (r.state === null) {
     return [hard(I10, `the ops backing this state cannot be re-folded in the order given: ${r.error}`)];
   }
-  const out: Violation[] = [];
+  const out = sink();
   for (const id of i.state.txns.keys()) {
     if (!r.state.txns.has(id)) {
       out.push(hard(I10, `${id} is in the state but re-folding the op log from position 0 never creates it`));
@@ -1034,7 +1284,7 @@ function checkFXPrefixMonotone(i: CheckInput, r: Refold): Violation[] {
   if (diffs.length >= DIFF_LIMIT) {
     out.push(hard(I10, `…and further disagreements between the state and a re-fold of its own op log beyond the first ${DIFF_LIMIT}`));
   }
-  return out;
+  return out.take(I10);
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,15 +1383,29 @@ const I11 = "I11_roster_checkpoint";
  * existed before the checkpoint's own position, which this client has already
  * folded past, so "we have seen none of them" means the server withheld them.
  */
-function checkRosterCheckpoint(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkRosterCheckpoint(i: StreamCheckInput): Violation[] {
+  const out = sink();
   const roster = new Map(i.roster.map((w) => [w.writer_id, w]));
   const live = i.roster.filter((w) => w.revoked_at === null);
   const liveDevices = live.filter((w) => w.kind === WRITER_KIND_DEVICE);
 
+  // ONE row pass, shared by both halves of this check: the set of writers that
+  // actually served blobs, and the highest counter seen on each chain. Neither
+  // retains a row, and both are bounded by the number of writers — where
+  // `observedHead` used to re-scan every row per checkpoint head.
+  const rowWriters = new Set<string>();
+  const observed = new Map<ChainKey, bigint>();
+  eachOf(i.rows, (r) => {
+    if (typeof r.writer_id === "string") rowWriters.add(r.writer_id);
+    const key = safeChainKey(r.writer_id, r.stream);
+    if (key !== null && typeof r.writer_counter === "bigint" && r.writer_counter > (observed.get(key) ?? -1n)) {
+      observed.set(key, r.writer_counter);
+    }
+  });
+
   // A writer appending blobs the roster has never heard of is the same class of
   // omission, catchable without a checkpoint. A notice, for the race above.
-  for (const w of new Set(i.rows.map((r) => r.writer_id))) {
+  for (const w of rowWriters) {
     if (!roster.has(w)) {
       out.push(note(I11, `the server served blobs from writer ${JSON.stringify(w)}, which its own roster does not list`));
     }
@@ -1159,15 +1423,16 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
             `nothing cross-checks one device's chain against another's, so a withheld writer would be invisible`,
         ),
       );
-      return out;
+      return out.take(I11);
     }
     out.push(
-      note(
+      noteKind(
         I11,
+        NOTICE_NO_CHECKPOINT_YET,
         liveDevices.length === 1 ? "no checkpoint yet (single writer)" : "no checkpoint yet (no device writers enrolled)",
       ),
     );
-    return out;
+    return out.take(I11);
   }
 
   // Coverage is per (writer, STREAM), because a head that does not name a stream
@@ -1223,36 +1488,37 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
     }
     if (c.stream !== i.stream) {
       out.push(
-        note(
+        noteKind(
           I11,
+          NOTICE_OTHER_STREAM,
           `checkpoint head (${key}) claims counter ${c.counter} and was not cross-checked: this pull covered the ` +
             `${i.stream} stream only`,
         ),
       );
       continue;
     }
-    const observed = observedHead(i, key);
-    if (c.counter > observed) {
+    const observedCounter = observedHead(i, key, observed);
+    if (c.counter > observedCounter) {
       out.push(
         hardKind(
           I11,
           VIOLATION_CHAIN_WITHHELD,
           `checkpoint head (${key}) claims counter ${c.counter}, but the highest blob this client has ever seen on ` +
-            `that chain is ${observed} — the server is withholding rows a peer device has already witnessed`,
+            `that chain is ${observedCounter} — the server is withholding rows a peer device has already witnessed`,
         ),
       );
-    } else if (c.counter === 0n && observed > 0n) {
+    } else if (c.counter === 0n && observedCounter > 0n) {
       out.push(
         note(
           I11,
-          `checkpoint head (${key}) claims that chain is empty, but this client has verified ${observed} blob(s) on ` +
+          `checkpoint head (${key}) claims that chain is empty, but this client has verified ${observedCounter} blob(s) on ` +
             `it — the checkpoint provides NO trusted head for that chain, so a truncation of it would verify. ` +
             `Re-checkpoint from a device that has synced it`,
         ),
       );
     }
   }
-  return out;
+  return out.take(I11);
 }
 
 /**
@@ -1274,16 +1540,13 @@ function checkRosterCheckpoint(i: CheckInput): Violation[] {
  * of itself. Counting the pins can only LOWER a hard stop that was never true;
  * it can never hide a withholding, because a pin is something the server said.
  */
-function observedHead(i: CheckInput, key: ChainKey): bigint {
+function observedHead(i: StreamCheckInput, key: ChainKey, fromRows: ReadonlyMap<ChainKey, bigint>): bigint {
   let best = i.pinnedHeads.get(key)?.counter ?? 0n;
   for (const counter of i.pinnedBlobHashes.get(key)?.keys() ?? []) {
     if (typeof counter === "bigint" && counter > best) best = counter;
   }
-  for (const r of i.rows) {
-    if (safeChainKey(r.writer_id, r.stream) === key && typeof r.writer_counter === "bigint" && r.writer_counter > best) {
-      best = r.writer_counter;
-    }
-  }
+  const inRows = fromRows.get(key);
+  if (inRows !== undefined && inRows > best) best = inRows;
   for (const h of i.hashList) {
     if (safeChainKey(h.writer_id, i.stream) === key && typeof h.writer_counter === "bigint" && h.writer_counter > best) {
       best = h.writer_counter;
@@ -1328,8 +1591,8 @@ const I12 = "I12_money_shape";
  * distinguishing them — which is precisely the inference the decoder refuses to
  * let anyone make.
  */
-function checkMoneyShape(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkMoneyShape(i: StreamCheckInput): Violation[] {
+  const out = sink();
   for (const [id, t] of i.state.txns) {
     // Every branch below keys on this flag, so a non-boolean here does not just
     // mis-describe a row — a truthy string would read as unparsed and switch the
@@ -1384,7 +1647,7 @@ function checkMoneyShape(i: CheckInput): Violation[] {
       out.push(hard(I12, `the rate head for ${ccy} is ${rate}`));
     }
   }
-  return out;
+  return out.take(I12);
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,12 +1669,12 @@ const I13 = "I13_supersede_has_origin";
  * A notice, not a hard stop: the supersede still materializes a visible row, and
  * the missing origin is recoverable by syncing the blob that carries it.
  */
-function checkSupersedeHasOrigin(i: CheckInput, r: Refold): Violation[] {
-  const out: Violation[] = [];
+function checkSupersedeHasOrigin(i: StreamCheckInput, r: Refold): Violation[] {
+  const out = sink();
   const introduced = new Set<string>();
-  for (const e of i.ops) {
+  eachOf(i.ops, (e) => {
     const op = e.op;
-    if (op === undefined || op === null) continue;
+    if (op === undefined || op === null) return;
     if (op.type === "txn_ingested") {
       // An op being PRESENT is not an op having applied: a `txn_ingested` refused
       // as a duplicate_create or duplicate_ingest introduces nothing, and
@@ -1422,15 +1685,15 @@ function checkSupersedeHasOrigin(i: CheckInput, r: Refold): Violation[] {
       const applied =
         r.state === null || (typeof id === "string" && r.state.txns.get(id)?.ingest_id === op.ingest_id);
       if (typeof op.ingest_id === "string" && applied) introduced.add(op.ingest_id);
-      continue;
+      return;
     }
-    if (op.type !== "txn_superseded") continue;
+    if (op.type !== "txn_superseded") return;
     if (typeof op.ingest_id !== "string" || !introduced.has(op.ingest_id)) {
       const shown = typeof op.ingest_id === "string" ? `${op.ingest_id.slice(0, 12)}…` : JSON.stringify(op.ingest_id);
       out.push(note(I13, `${op.op_id} at seq ${e.seq} supersedes ingest ${shown}, which no earlier txn_ingested introduced`));
     }
-  }
-  return out;
+  });
+  return out.take(I13);
 }
 
 // ---------------------------------------------------------------------------
@@ -1475,8 +1738,8 @@ const I14 = "I14_forks_surfaced";
  * is a real defect, so the detail says so in as many words rather than raising a
  * severity the plan did not sanction.
  */
-function checkForksSurfaced(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkForksSurfaced(i: StreamCheckInput): Violation[] {
+  const out = sink();
   const forks = i.state.forks;
   const anomalies = i.state.anomalies;
 
@@ -1488,8 +1751,9 @@ function checkForksSurfaced(i: CheckInput): Violation[] {
     .join(", ");
   const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
   out.push(
-    note(
+    noteKind(
       I14,
+      NOTICE_COUNTS,
       `${plural(forks.length, "fork", "forks")}, ${plural(anomalies.length, "anomaly", "anomalies")}` +
         (breakdown === "" ? "" : ` (${breakdown})`),
     ),
@@ -1506,7 +1770,22 @@ function checkForksSurfaced(i: CheckInput): Violation[] {
     );
   }
 
-  const opIDs = new Set(i.ops.map((e) => e.op?.op_id).filter((x): x is string => typeof x === "string"));
+  // Only the op ids the forks NAME are looked for, so the pass keeps a set
+  // bounded by the fork count rather than by the log. Building a set of every
+  // op id — which is what this did — is O(log) retention for a question asked
+  // about at most two ids per fork.
+  const wanted = new Set<string>();
+  for (const f of forks) {
+    if (typeof f.winner_op === "string") wanted.add(f.winner_op);
+    if (typeof f.loser_op === "string") wanted.add(f.loser_op);
+  }
+  const opIDs = new Set<string>();
+  if (wanted.size > 0) {
+    eachOf(i.ops, (e) => {
+      const id = e.op?.op_id;
+      if (typeof id === "string" && wanted.has(id)) opIDs.add(id);
+    });
+  }
   for (const f of forks) {
     if (f.winner_op === f.loser_op) {
       out.push(
@@ -1557,7 +1836,7 @@ function checkForksSurfaced(i: CheckInput): Violation[] {
       ),
     );
   }
-  return out;
+  return out.take(I14);
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,8 +1862,8 @@ const I15 = "I15_unreadable_set_aside";
  * content and folded as if it were new, and the client would re-request the same
  * unreadable blob forever in the meantime.
  */
-function checkUnreadableSetAside(i: CheckInput): Violation[] {
-  const out: Violation[] = [];
+function checkUnreadableSetAside(i: StreamCheckInput): Violation[] {
+  const out = sink();
   const list = i.state.unreadable;
 
   // The FORWARD direction: every hot blob in this page that will not decode must
@@ -1598,7 +1877,7 @@ function checkUnreadableSetAside(i: CheckInput): Violation[] {
   // at all and is I4's or I5's finding, not a missing set-aside record.
   const setAside = new Set(list.map((u) => `${u.writer_id}|${u.stream}|${u.writer_counter}|${u.seq}`));
   if (i.stream === "hot") {
-    for (const r of i.rows) {
+    eachOf(i.rows, (r) => {
       let plaintext: Uint8Array;
       try {
         plaintext = openBlob(
@@ -1606,20 +1885,26 @@ function checkUnreadableSetAside(i: CheckInput): Violation[] {
           r.blob,
         );
       } catch {
-        continue;
+        return;
       }
       let reason: string;
       try {
         decodeBlobOps(plaintext);
-        continue; // it decodes, so nothing is owed
+        return; // it decodes, so nothing is owed
       } catch (err) {
         reason = msg(err);
         if (err instanceof UnknownNewerVersionError) {
           // Not a set-aside at all: an unknown newer version is one of the two
           // conditions spec §3.3:68 reserves a HARD STOP for, and the ops it
           // carries never reach `ops`, so I6 cannot see them either.
-          out.push(hard(I15, `the blob at ${at(r.writer_id, r.stream, r.writer_counter)} carries a newer schema version and must stop this sync: ${reason}`));
-          continue;
+          out.push(
+            hardKind(
+              I15,
+              VIOLATION_NEWER_VERSION,
+              `the blob at ${at(r.writer_id, r.stream, r.writer_counter)} carries a newer schema version and must stop this sync: ${reason}`,
+            ),
+          );
+          return;
         }
       }
       if (!setAside.has(`${r.writer_id}|${r.stream}|${r.writer_counter}|${r.seq}`)) {
@@ -1631,11 +1916,11 @@ function checkUnreadableSetAside(i: CheckInput): Violation[] {
           ),
         );
       }
-    }
+    });
   }
   if (list.length > 0) {
     const where = list.map((u) => `${at(u.writer_id, u.stream, u.writer_counter)} at seq ${String(u.seq)}`).join("; ");
-    out.push(note(I15, `${list.length} blob(s) set aside and not folded: ${where}`));
+    out.push(noteKind(I15, NOTICE_SET_ASIDE, `${list.length} blob(s) set aside and not folded: ${where}`));
   }
   for (const [n, u] of list.entries()) {
     if (
@@ -1672,7 +1957,7 @@ function checkUnreadableSetAside(i: CheckInput): Violation[] {
       );
     }
   }
-  return out;
+  return out.take(I15);
 }
 
 // ---------------------------------------------------------------------------
@@ -1696,10 +1981,10 @@ const I16 = "I16_cold_carries_no_ops";
  * declares itself something other than a raw record is a violation — otherwise
  * this check would relabel every corrupt cold blob as a smuggled op list.
  */
-function checkColdCarriesNoOps(i: CheckInput): Violation[] {
+function checkColdCarriesNoOps(i: StreamCheckInput): Violation[] {
   if (i.stream !== "cold") return [];
-  const out: Violation[] = [];
-  for (const r of i.rows) {
+  const out = sink();
+  eachOf(i.rows, (r) => {
     const where = at(r.writer_id, r.stream, r.writer_counter);
     let plaintext: Uint8Array;
     try {
@@ -1708,19 +1993,19 @@ function checkColdCarriesNoOps(i: CheckInput): Violation[] {
         r.blob,
       );
     } catch {
-      continue; // I4 / I5 / I15 own this blob; nothing here can be claimed about its kind
+      return; // I4 / I5 / I15 own this blob; nothing here can be claimed about its kind
     }
     try {
       JSON.parse(text(plaintext));
     } catch {
-      continue; // not even a JSON document: unreadable, not a smuggled op list
+      return; // not even a JSON document: unreadable, not a smuggled op list
     }
     let kind: string;
     try {
       kind = kindOf(plaintext);
     } catch (err) {
       out.push(hard(I16, `the cold blob at ${where} declares no usable kind: ${msg(err)}`));
-      continue;
+      return;
     }
     if (kind !== KIND_RAW_BODY) {
       out.push(
@@ -1730,7 +2015,7 @@ function checkColdCarriesNoOps(i: CheckInput): Violation[] {
             `cold blobs carry raw email bodies and nothing else, or a hot-only sync stops being a complete materialization`,
         ),
       );
-      continue;
+      return;
     }
     // The label is not the record. `kindOf` reads one field, so a body that says
     // `raw_body` and then carries something else entirely would pass a
@@ -1741,8 +2026,8 @@ function checkColdCarriesNoOps(i: CheckInput): Violation[] {
     } catch (err) {
       out.push(hard(I16, `the cold blob at ${where} says it is a ${KIND_RAW_BODY} but does not decode as one: ${msg(err)}`));
     }
-  }
-  return out;
+  });
+  return out.take(I16);
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,7 +2036,7 @@ function checkColdCarriesNoOps(i: CheckInput): Violation[] {
 
 interface Invariant {
   id: string;
-  run: (i: CheckInput, r: Refold) => Violation[];
+  run: (i: StreamCheckInput, r: Refold) => Violation[];
 }
 
 /**
@@ -1793,13 +2078,71 @@ export const INVARIANT_IDS: readonly string[] = CHECKS.map((c) => c.id);
  * nothing — and "the state could not be certified" is exactly a hard stop.
  */
 export function checkAll(input: CheckInput): Violation[] {
-  const r = refold(input);
+  return checkAllStream({
+    ...input,
+    rows: arrayChunks((input as { rows?: readonly SyncRow[] }).rows ?? []),
+    ops: arrayChunks((input as { ops?: readonly LogEntry[] }).ops ?? []),
+  });
+}
+
+/**
+ * A source that hands out the same sequence twice is the one precondition the
+ * streaming checks cannot verify for themselves — several of them take their
+ * own pass, and a one-shot generator would leave every pass after the first
+ * looking at an EMPTY log. Which is the vacuous-pass failure this whole file
+ * exists to prevent: eight of the seventeen would report nothing and be read as
+ * green.
+ *
+ * So it is measured, once, before anything is checked: two passes over the row
+ * source must agree on how many rows they saw. Cheap (a count, no retention),
+ * and it turns a silent green into a named hard stop.
+ */
+const REITERABLE = "REITERABLE_SOURCE";
+
+function countChunks<T>(src: Chunks<T>): number {
+  let n = 0;
+  src.each((chunk) => {
+    n += chunk.length;
+  });
+  return n;
+}
+
+/**
+ * Runs every invariant over a streamed log and returns everything found.
+ *
+ * The caller decides: `hard_stop` aborts the sync session, `notice` is printed.
+ * `surface.ts` turns this list into the three UI states spec §3.4 and §3.3:74
+ * require, and is where the {@link Violation.kind} distinction is acted on.
+ *
+ * It never throws. A check that does is converted into a `hard_stop` naming
+ * itself, because a checker that dies on broken input has told the caller
+ * nothing — and "the state could not be certified" is exactly a hard stop.
+ */
+export function checkAllStream(input: StreamCheckInput): Violation[] {
   const out: Violation[] = [];
+  try {
+    const first = countChunks(input.rows);
+    const second = countChunks(input.rows);
+    if (first !== second) {
+      out.push(
+        hardKind(
+          REITERABLE,
+          VIOLATION_CHECK_FAILED,
+          `the row source yielded ${first} rows and then ${second}: it is not re-iterable, so every check that takes ` +
+            `its own pass would be reading a different log from the one before it`,
+        ),
+      );
+    }
+  } catch (err) {
+    out.push(hardKind(REITERABLE, VIOLATION_CHECK_FAILED, `the row source could not be walked, so nothing below was checked against it: ${msg(err)}`));
+  }
+
+  const r = refold(input);
   for (const c of CHECKS) {
     try {
       out.push(...c.run(input, r));
     } catch (err) {
-      out.push(hard(c.id, `the check itself could not run, so this state is uncertified: ${msg(err)}`));
+      out.push(hardKind(c.id, VIOLATION_CHECK_FAILED, `the check itself could not run, so this state is uncertified: ${msg(err)}`));
     }
   }
   return out;
