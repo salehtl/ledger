@@ -90,7 +90,7 @@ Phase 0's >500 MB freeze was partly one unguarded full pass.
 
 | Component | Purpose | Use when | Do not use when |
 |---|---|---|---|
-| *(none yet)* | — | — | — |
+| `screens/onboarding/NotInvitedView.tsx` | The closed beta's front door: explains the invite gate and takes a code. | The server answered `403 not_invited`. | Anywhere else — it is a state of the sign-in screen, not a route, so that a live ID token never travels through navigation params. |
 
 `app/src/app/Theme.tsx`, `Root.tsx` and `Navigation.tsx` are the shell, not
 shared components, and are documented in their own headers.
@@ -99,4 +99,19 @@ shared components, and are documented in their own headers.
 
 | Screen | Status |
 |---|---|
+| `src/screens/onboarding/SignInScreen.tsx` | **The initial route.** Sign in with Apple and Google. Holds no policy — everything it renders is decided in `src/auth/` and tested under `bun test`. Task 14's step machine wraps it. |
 | `src/screens/Shell.tsx` | **Temporary.** The shell smoke screen: reports whether the platform seam and the replay fold are live on the device. Task 14's onboarding replaces it. |
+
+### Two conventions the sign-in screen establishes
+
+**A dependency the build does not have is rendered, disabled, with the reason on
+it.** The Google button and the "no server configured" banner are both that
+shape. The alternatives are worse in both directions: an omitted control is a
+missing feature nobody notices until App Review, and a live control over a
+missing client id fails at the single moment a finger lands on it. Make the
+absence loud, early, and visible at first paint.
+
+**A live credential never goes into navigation params.** The `403 not_invited`
+surface is a *state* of the sign-in screen rather than a pushed route,
+specifically because the parameter it would need is the ID token. Keep
+credentials in the reducer, where they stay in memory.
