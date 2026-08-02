@@ -1,5 +1,8 @@
 # `canonicalTime` — the dual-executor divergence, and the gate that could not see it
 
+**Commit:** `edcc71d` `fix(v2): close canonicalisation over the wire grammar in both executors`
+**Parent:** `19c921d`
+
 **Reported by:** Phase 2 Task 7 (§7.2 of `task-7-report.md`), recorded and deliberately not fixed
 because `wire/op.ts` sat outside that task's file list.
 
@@ -260,8 +263,21 @@ not deleted. Go gains two tests (`TestCanonicalTimeIsClosedOverTheWireGrammar`,
 `TestTheExpandedYearRangeIsRefusedByBothExecutors`) plus new assertions inside
 `TestOpConformanceManifestMatchesThisBuild`.
 
-- `go clean -testcache && bash scripts/v2-check.sh` — see the report reply for the exit code, taken
-  as the script's own status (not a pipeline's), in a `git archive` export of the commit.
+**The gate, at this commit.** `git archive edcc71d | tar -x`, `client/node_modules` symlinked,
+`go clean -testcache` then `bash scripts/v2-check.sh` with the output redirected to a file so the
+status captured is the **script's own** and not a pipeline's:
+
+```
+V2CHECK_EXIT=0
+v2-check: OK (go + client + conformance)
+27 Go packages ok, 0 FAIL lines
+1988 pass  0 fail  14308 expect() calls  (18 files, incl. the e2e round trip)
+```
+
+Run in an export of the commit rather than in the working tree, because three sessions are editing
+it — `client/src/store/store.test.ts` was mid-rewrite by another session and does not typecheck in
+the shared tree right now, which has nothing to do with this change and would have made a working-tree
+run unreadable.
 
 **`fx.test.ts`'s 5 s fold limit fired once, and it was load, not this change.** Another session was
 running four parallel `go test ./internal/v2/...` batteries at the time (load average 13.9). A/B'd
