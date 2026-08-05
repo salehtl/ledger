@@ -132,9 +132,21 @@ var ConsumedHeaders = []string{
 // review queue's usefulness for coverage, and that trade is a product decision
 // rather than a verification one.
 var DecodingHeaders = []string{
-	"Content-Type",
-	"Content-Transfer-Encoding",
+	HeaderContentType,
+	HeaderContentTransferEncoding,
 }
+
+// The [DecodingHeaders] by name. They are constants rather than string
+// literals at each use because the two are not interchangeable and a caller
+// has to be able to say which one it means: Content-Transfer-Encoding decides
+// the transfer decoding, which is the ONLY lever that can turn one run of
+// signed ASCII bytes into a different run of ASCII characters, and
+// Content-Type decides the leaf and the charset, which can only change how
+// NON-ASCII bytes read. See [Origin.TransferDecodingSigned].
+const (
+	HeaderContentType             = "Content-Type"
+	HeaderContentTransferEncoding = "Content-Transfer-Encoding"
+)
 
 // Coverage records what the signatures that VERIFIED actually signed.
 //

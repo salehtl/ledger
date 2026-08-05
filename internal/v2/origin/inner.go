@@ -93,6 +93,77 @@ type Origin struct {
 	Reason string
 }
 
+// unsignedDecodingSep joins and splits [Origin.UnsignedDecoding]. It is one
+// constant used by both directions so the field cannot be written in a form its
+// own reader does not understand — a header name contains no comma and no
+// space (RFC 5322 field-name is printable-US-ASCII minus colon and space), so
+// the round trip is total. TestUnsignedDecodingRoundTrips pins that.
+const unsignedDecodingSep = ", "
+
+// UnsignedDecodingHeaders is [Origin.UnsignedDecoding] read back as the list of
+// folded [DecodingHeaders] names it was built from. Empty when every decoding
+// header was signed material.
+func (o Origin) UnsignedDecodingHeaders() []string {
+	if o.UnsignedDecoding == "" {
+		return nil
+	}
+	return strings.Split(o.UnsignedDecoding, unsignedDecodingSep)
+}
+
+// TransferDecodingSigned reports whether a signature that VERIFIED covered
+// Content-Transfer-Encoding — that is, whether the transfer decoding applied to
+// the body is the one the signer chose.
+//
+// # Why this one header gets its own question
+//
+// The two [DecodingHeaders] are not equally dangerous, and the difference is
+// what makes a narrower gate than "any of them is unsigned" defensible.
+//
+// Content-Type chooses the MIME leaf and the charset. Every charset a mail
+// decoder accepts agrees with US-ASCII on the low 128, so a Content-Type
+// rewrite cannot change what a run of ASCII digits says; it can only change how
+// non-ASCII bytes read, or which bytes are text at all. A non-ASCII literal
+// surviving the decode is therefore a direct measurement that no such rewrite
+// happened.
+//
+// Content-Transfer-Encoding chooses the transfer decoding, and that DOES
+// rewrite ASCII. Flipping an identity encoding (7bit/8bit/binary) to
+// quoted-printable turns the signed ASCII text "=31=30=30.00" into "100.00"
+// while leaving raw UTF-8 bytes — Arabic included — untouched, because
+// quoted-printable only consumes '='. So a non-ASCII literal is NOT a witness
+// against a transfer-encoding rewrite: it survives the attack intact. No choice
+// of literal fixes that, which is why this is a separate condition rather than
+// a stronger witness.
+//
+// # Why it also reads DKIM
+//
+// An empty UnsignedDecoding means "every decoding header is signed material",
+// and on every path [ResolveWithEnvelope] takes that is true: a zero [Coverage]
+// covers nothing, so a message with no passing DKIM signature reports BOTH
+// names. But Origin is a plain struct, and a hand-built or reconstructed one
+// carries the empty string by default — which would read as all-signed. Two
+// production sites already reconstruct an Origin from stored facts that do not
+// include coverage (ingest.storedOrigin and ingest.recordedOrigin), and both
+// have to remember to re-derive this field.
+//
+// Requiring DKIM == SigPass makes that a property of the type rather than of
+// two callers remembering. It excludes nothing real: UnsignedDecoding can only
+// be empty because a DKIM signature verified and named both headers, so on any
+// Origin the resolver produced the two conditions are already inseparable.
+// Coverage comes from DKIM alone — an ARC-attested message with no passing DKIM
+// reports both headers unsigned — so there is no second verdict to consult.
+func (o Origin) TransferDecodingSigned() bool {
+	if o.DKIM != SigPass {
+		return false
+	}
+	for _, h := range o.UnsignedDecodingHeaders() {
+		if strings.EqualFold(h, HeaderContentTransferEncoding) {
+			return false
+		}
+	}
+	return true
+}
+
 // Resolve decides a message's origin from its bytes alone, taking the envelope
 // sender from the Return-Path header.
 //
@@ -190,7 +261,7 @@ func ResolveWithEnvelope(ctx context.Context, raw []byte, envelopeFrom string, l
 	o.DKIM = dk.DKIM
 	// Set before any of the returns below, because every one of them produces
 	// an Origin somebody downstream reads.
-	o.UnsignedDecoding = strings.Join(dk.Coverage.Uncovered(DecodingHeaders...), ", ")
+	o.UnsignedDecoding = strings.Join(dk.Coverage.Uncovered(DecodingHeaders...), unsignedDecodingSep)
 
 	chain, chainErr := arc.Verify(ctx, raw, lookupTXT)
 	o.ARC = arcResult(chain.Status)

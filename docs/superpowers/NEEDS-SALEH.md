@@ -238,7 +238,14 @@ up to date while you get on with your day.
 - **Something narrower**, if you want it: e.g. auto-trust DIB only when the
   decoded text still contains the expected Arabic gate literal, which is what
   actually breaks under tampering. More code, keeps most of the convenience.
-  I have not built this; say the word and I will.
+  ~~I have not built this; say the word and I will.~~ **BUILT 2026-08-05** —
+  `ingest.decodeWitnessed`. One caveat worth your attention: it restores
+  auto-trust for DIB **card** mail only. `dib.account.v1` gates purely by
+  EXCLUSION (`body_not_contains`), and an absence cannot witness a decode, so
+  account and transfer alerts still need confirming. Closing that means adding
+  a positive Arabic literal to a published template — a version bump plus a
+  corpus-gate re-run — so it is a second decision rather than a follow-up.
+  See `.superpowers/sdd/2026-08-02-v2-phase2-client/fe-dib-guardrail-report.md`.
 
 I would not make this call for you. It trades a real, demonstrated integrity
 risk against the core daily experience of the product, and which way that goes

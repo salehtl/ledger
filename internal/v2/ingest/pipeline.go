@@ -46,6 +46,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -605,11 +606,13 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, o 
 	// mitigation §2 already names for this whole class — the review queue, not
 	// cryptography.
 	//
-	// The cost is real and it is not small: on a bank whose signer omits one of
-	// these fields, EVERY message needs review. That is the honest price of
-	// §3.2's "header fields are never trusted unverified" for a sender who
-	// leaves the decoder unsigned, and the lever for changing it is
-	// origin.DecodingHeaders, where the trade is documented.
+	// Denied UNLESS the decoded text carries its own evidence that it decoded
+	// the way the signer meant it to — see decodeWitnessed, which is the one
+	// narrow exception and is the operator's decision of 2026-08-05 (item 0 of
+	// docs/superpowers/NEEDS-SALEH.md). Without that exception the price is the
+	// whole product for a DIB user: d=dib.ae omits Content-Type, so EVERY
+	// message from it needs review. The lever for the blunt version of this
+	// trade is still origin.DecodingHeaders, where it is documented.
 	unsignedDecoding := o.UnsignedDecoding != ""
 
 	defs, err := p.templatesFor(ctx, domain)
@@ -643,9 +646,14 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, o 
 				// nothing about the template failed.
 				continue
 			}
+			// def and res.Text, not a re-derivation of either: the
+			// witness has to be measured on the SAME definition that won and
+			// the SAME string c.Execute just read, or it is a statement about
+			// a different document.
+			mistrusted := unsignedDecoding && !decodeWitnessed(o, def, res.Text)
 			return tierResult{
 				tier: diag.TierTemplate, ext: ext,
-				needsReview: unattestedForward || unsignedDecoding, unparsed: false,
+				needsReview: unattestedForward || mistrusted, unparsed: false,
 				matched: true, templateID: def.ID, templateVersion: def.Version,
 				emptyGroups: ext.EmptyGroups,
 			}, nil
@@ -681,6 +689,66 @@ func (p *Pipeline) parse(ctx context.Context, domain string, res norm.Result, o 
 	// exists nowhere answers nothing.
 	out.ext.PostedAt = res.EmailDate
 	return out, nil
+}
+
+// decodeWitnessed reports whether a template hit may be auto-trusted even
+// though a header that decided how the body decodes went unsigned.
+//
+// This is the narrow guardrail Saleh chose on 2026-08-05 over the two blunt
+// alternatives — confirm every DIB transaction by hand, or drop Content-Type
+// from origin.DecodingHeaders and accept the constructed attack. The reasoning
+// of record is item 0 of docs/superpowers/NEEDS-SALEH.md; the mechanism is
+// stated here because this is where it decides something.
+//
+// # The property
+//
+// An untampered decode auto-trusts. A tampered one does not. Three conditions,
+// and each one closes a way the other two can be satisfied by an attacker:
+//
+//  1. The transfer decoding was signed (origin.Origin.TransferDecodingSigned).
+//     An unsigned Content-Transfer-Encoding lets one run of signed ASCII bytes
+//     be read as different ASCII characters — "Amount =31=30=30.00" is 900.00
+//     as literal text and 100.00 under quoted-printable — and NO choice of
+//     literal witnesses that, because a non-ASCII literal survives the flip
+//     untouched. This is the condition that keeps that construction in review.
+//     It is also the condition that makes the exception exist at all: d=dib.ae
+//     signs Content-Transfer-Encoding and omits Content-Type, which is the
+//     shape this guardrail is for.
+//
+//  2. The definition declares at least one witness literal
+//     (tmpl.Definition.DecodeWitnesses — a body gate literal with a non-ASCII
+//     rune in it). A template with no such literal has nothing to check, and a
+//     message with nothing to check goes to review. FAIL CLOSED: this is the
+//     default for every template in the corpus except dib.card.v1, and it is
+//     why an unwitnessed template hit is exactly as reviewed as it was before.
+//
+//  3. Every one of those literals is present in decoded — which must be the
+//     text the extraction actually read, never the raw bytes and never another
+//     decoded string such as the subject. Checking a string the template did
+//     not extract from would make this true of a document nobody parsed.
+//
+// # On condition 3 being redundant with the gate
+//
+// It is, today: tmpl.Compiled.gate already refuses a message whose body lacks a
+// body_contains literal, so a definition cannot win with its witness missing.
+// The redundancy is deliberate and it is not the safety property — conditions
+// 1 and 2 are. It is here so that this function states its own precondition
+// instead of inheriting it from a gate two packages away, which is what would
+// silently widen auto-trust if body_contains ever became advisory.
+func decodeWitnessed(o origin.Origin, def tmpl.Definition, decoded string) bool {
+	if !o.TransferDecodingSigned() {
+		return false
+	}
+	witnesses := def.DecodeWitnesses()
+	if len(witnesses) == 0 {
+		return false
+	}
+	for _, w := range witnesses {
+		if !strings.Contains(decoded, w) {
+			return false
+		}
+	}
+	return true
 }
 
 // templatesFor returns the published templates that accept mail signed by
