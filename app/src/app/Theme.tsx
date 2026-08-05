@@ -92,6 +92,16 @@ export const type = {
   input: { fontSize: INPUT_FONT_MIN, lineHeight: 22, fontWeight: "400" },
   label: { fontSize: 13, lineHeight: 18, fontWeight: "500" },
   mono: { fontSize: 13, lineHeight: 18, fontWeight: "400", fontFamily: "Menlo" },
+  /**
+   * The inbound address, and nothing else.
+   *
+   * A 26-character base32 local part is the hardest string in this product to
+   * read: no word shapes, no rhythm, and `0`/`O` and `1`/`l` next to each other.
+   * {@link type.mono} is 13 pt because it labels things; this is 20 pt because
+   * somebody may have to read it aloud or copy it onto a laptop by eye when the
+   * QR is not an option. Monospaced so the columns line up while they do.
+   */
+  address: { fontSize: 20, lineHeight: 28, fontWeight: "500", fontFamily: "Menlo" },
 } as const;
 
 /**

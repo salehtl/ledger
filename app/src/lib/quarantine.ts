@@ -14,6 +14,17 @@ export interface QuarantineItem {
   dkim: string;
   arc: string;
   sizeBucket: number;
+  /**
+   * The raw message, base64, present ONLY when the page was fetched with
+   * `include_blob=1` and the server's byte budget stretched to it.
+   *
+   * Optional rather than nullable so that the default listing - which is every
+   * caller except the onboarding verification step - is unchanged, and so that
+   * "the server did not send it" and "the server sent an empty one" stay
+   * distinguishable. It is untrusted content: see `lib/verificationCode.ts` for
+   * the only sanctioned way to read anything out of it.
+   */
+  blob?: string;
 }
 
 export interface QuarantineCursor {

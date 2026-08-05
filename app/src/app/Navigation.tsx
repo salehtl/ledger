@@ -33,6 +33,12 @@ import { pickCSVDocument } from "../screens/import/native.ts";
 import { ReprocessScreen } from "../screens/settings/ReprocessScreen.tsx";
 import { BudgetScreen } from "../screens/budget/BudgetScreen.tsx";
 import { BankScreen } from "../screens/onboarding/BankScreen.tsx";
+import { AddressScreen } from "../screens/onboarding/AddressScreen.tsx";
+import { VerificationScreen } from "../screens/onboarding/VerificationScreen.tsx";
+import { RotateAddressScreen } from "../screens/settings/RotateAddressScreen.tsx";
+import { copyToClipboard, openLink } from "../components/native.ts";
+import { rotateAddress } from "../account/address.ts";
+import { firstMailAt } from "../lib/onboarding.ts";
 import { ExportScreen } from "../screens/settings/ExportScreen.tsx";
 import { DeleteAccountScreen } from "../screens/settings/DeleteAccountScreen.tsx";
 import { SecurityScreen } from "../screens/settings/SecurityScreen.tsx";
@@ -67,6 +73,13 @@ export type RootStackParamList = {
   Export: undefined;
   DeleteAccount: undefined;
   Security: undefined;
+  /**
+   * The inbound address: read it, copy it, scan it, and rotate it. Named for
+   * what it shows rather than for the destructive thing it also offers, because
+   * a user who just wants to re-read their own address has to be able to find
+   * it without going near a screen called "rotate".
+   */
+  InboundAddress: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -150,7 +163,35 @@ export function Navigation() {
             })}
             onFactsChange={(f) => saveLocalRecord(signInDeps.secrets, f)}
             commitOps={(ops) => runtime.commitOnboardingOps(ops)}
-            screens={{ bank: ({ advance }) => <BankScreen waitlist={runtime.waitlist} onSelect={(bank) => advance({ type: "bank_picked", bank })} onInviteDonation={() => navigation.navigate("Review")} /> }}
+            /*
+              Every slot the shell has a screen for is filled here, and this is
+              the ONLY place they are constructed. `address` in particular:
+              until it existed, onboarding dead-ended on the launch where the
+              user signs in, because `bootstrap` had already run against a
+              signed-out client and `inboundAddress` was therefore null with
+              nothing on the device permitted to fake one. The screen performs
+              the read itself, and `GET /api/v1/address` mints on first read.
+
+              `forwarding` is deliberately NOT filled. Its instructions have to
+              come from Task 2's measured record of what actually works in
+              Gmail, that measurement has not been made, and writing them from
+              memory is the one thing the task forbids. The shell's placeholder
+              says so and lets the user carry on, which is honest and is a
+              device-local fact it is allowed to advance over.
+            */
+            screens={{
+              bank: ({ advance }) => <BankScreen waitlist={runtime.waitlist} onSelect={(bank) => advance({ type: "bank_picked", bank })} onInviteDonation={() => navigation.navigate("Review")} />,
+              address: ({ advance }) => <AddressScreen source={runtime.address} copy={copyToClipboard} onIssued={(address) => advance({ type: "address_issued", address })} />,
+              verification: ({ advance }) => (
+                <VerificationScreen
+                  source={runtime.quarantine}
+                  copy={copyToClipboard}
+                  openLink={openLink}
+                  firstMailAt={() => firstMailAt(runtime.client.state())}
+                  onConfirmed={(at) => advance({ type: "first_mail_confirmed", at })}
+                />
+              ),
+            }}
             onDone={() => navigation.replace("Transactions")}
             onSignedOut={() => navigation.replace("SignIn")}
           />
@@ -171,6 +212,7 @@ export function Navigation() {
             onExport={() => navigation.navigate("Export")}
             onDeleteAccount={() => navigation.navigate("DeleteAccount")}
             onSecurity={() => navigation.navigate("Security")}
+            onAddress={() => navigation.navigate("InboundAddress")}
           />
         )}
       </Stack.Screen>
@@ -194,6 +236,30 @@ export function Navigation() {
       </Stack.Screen>
       <Stack.Screen name="Security">
         {() => <SecurityScreen identity={runtime.deviceIdentity()} />}
+      </Stack.Screen>
+      {/*
+        Rotation carries the same three factors as account deletion (spec 3.4),
+        so it is composed the same way: the screen owns no credential handling,
+        `rotateAddress` owns all three, and the IdP authenticator comes from the
+        same `signInDeps` the delete route uses. `currentAddress` is left unset
+        so the signature is always taken over the address the SERVER currently
+        holds, not over whatever this screen last rendered.
+      */}
+      <Stack.Screen name="InboundAddress">
+        {({ navigation }) => (
+          <RotateAddressScreen
+            source={runtime.address}
+            copy={copyToClipboard}
+            rotate={() => rotateAddress({
+              server: runtime.server,
+              token: () => runtime.client.sessionToken,
+              userId: () => runtime.store.load().userId,
+              secrets: runtime.secrets,
+              authenticator: signInDeps.apple,
+            })}
+            onClose={() => navigation.goBack()}
+          />
+        )}
       </Stack.Screen>
       {/*
         Two endings erase this device - `204` and `410 account_deleted` - and

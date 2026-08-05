@@ -23,19 +23,26 @@
  * that one halt into a *wait* with its own copy; every other hard stop is
  * handed on with the library's own words, unaltered.
  *
- * # The steps this build does not have yet
+ * # The slots, and the one that is still empty
  *
- * Tasks 15, 16 and 17 own the bank picker, the address and forwarding screens
- * and the quarantine lane. They are **not written here**: a screen written
- * blind against an API nobody has run is the "written, tested green, never
- * wired" defect this project has paid for six times. Instead each is a named
- * slot — `screens.bank`, `screens.address`, … — and an unfilled slot renders a
- * placeholder saying which task owns it.
+ * Each step is a named slot — `screens.bank`, `screens.address`, … — and
+ * `app/src/app/Navigation.tsx` is the only place that fills them. `bank`,
+ * `address` and `verification` are filled there today.
  *
- * A placeholder may advance the machine **only over a device-local fact**. The
- * address and the first confirmed email are server and log truth, and a
- * placeholder that faked one would put the machine past a step that never
- * happened.
+ * **`forwarding` is deliberately still a placeholder.** Its content is
+ * provider-specific instructions, which the plan requires be written from Task
+ * 2's *measured* record of what actually works in Gmail — global forward versus
+ * filter, and whether a manual forward is needed at all. That measurement has
+ * not been made, and writing the steps from memory is the specific thing the
+ * task forbids. A screen written blind against a flow nobody has run is the
+ * "written, tested green, never wired" defect this project has paid for six
+ * times, one step worse: it would be confidently wrong on the glass.
+ *
+ * A placeholder may advance the machine **only over a device-local fact**.
+ * "I have set up the forward" is one — nothing can observe a Gmail filter, so
+ * the user's word is the only evidence there will ever be. The address and the
+ * first confirmed email are server and log truth, and a placeholder that faked
+ * one would put the machine past a step that never happened.
  */
 
 import { useEffect, useMemo, useReducer, type ReactElement } from "react";
@@ -173,21 +180,27 @@ const PENDING: Record<"bank" | "address" | "forwarding" | "verification", Pendin
     body: "ledger reads three banks today. If yours is not one of them you can join the waitlist and, if you want to, donate one email so it can be added.",
     advance: { type: "bank_picked", bank: "unspecified" },
   },
+  // Built. Reached only when a caller renders the shell without filling the
+  // slot, so the words describe THAT rather than an unbuilt step - saying "not
+  // built yet" about a screen that exists is how a placeholder outlives its
+  // reason and starts lying.
   address: {
     title: "Your inbound address",
-    owner: "Task 15 builds the address screen, the QR code and rotation.",
+    owner: "AddressScreen is not wired into this render. Navigation.tsx supplies it in the app.",
     body: "ledger gives you an address of your own to forward bank mail to. It is minted by the server on first read, so nothing on this device can stand in for it.",
     advance: null,
   },
+  // NOT built, and the reason is a missing measurement rather than missing
+  // time. See the file header.
   forwarding: {
     title: "Forward your bank mail",
-    owner: "Task 15 builds the forwarding instructions from Task 2's measured record.",
-    body: "You set a rule in your mail provider so bank alerts are copied to your ledger address. Nothing here can watch that rule — the proof is mail arriving.",
+    owner: "Provider-specific steps are written from Task 2's measured Gmail record. That measurement does not exist yet, so ledger will not guess at menus it has not seen.",
+    body: "Set a rule in your mail provider so bank alerts are copied to your ledger address, then carry on. Nothing here can watch that rule — the proof is mail arriving, which is the next step.",
     advance: { type: "forwarding_declared" },
   },
   verification: {
     title: QUARANTINE_HELD.title,
-    owner: "Task 15 reads the code out of the held message; Task 17 builds the quarantine lane.",
+    owner: "VerificationScreen is not wired into this render. Navigation.tsx supplies it in the app.",
     body: QUARANTINE_HELD.body,
     advance: null,
   },
@@ -237,7 +250,9 @@ function PendingStep({
           backgroundColor: t.colors.surface,
         }}
       >
-        <Text style={[t.type.heading, { color: t.colors.warning }]}>This step is not built yet</Text>
+        <Text style={[t.type.heading, { color: t.colors.warning }]}>
+          {screen === "forwarding" ? "This step is not written yet" : "This step was not supplied to the shell"}
+        </Text>
         <Text style={[t.type.label, { color: t.colors.textMuted }]}>{spec.owner}</Text>
       </View>
 

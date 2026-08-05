@@ -69,9 +69,11 @@ export interface TransactionsScreenProps {
   onExport?: () => void;
   onDeleteAccount?: () => void;
   onSecurity?: () => void;
+  /** Settings -> Inbound address: shows the address, and rotates it. */
+  onAddress?: () => void;
 }
 
-export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarantine, onCurrencies, onImport, onReprocess, onBudget, onExport, onDeleteAccount, onSecurity }: TransactionsScreenProps) {
+export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarantine, onCurrencies, onImport, onReprocess, onBudget, onExport, onDeleteAccount, onSecurity, onAddress }: TransactionsScreenProps) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
@@ -157,6 +159,7 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
           {onImport !== undefined && <Pressable accessibilityRole="button" testID="open-import" onPress={onImport}><Text style={[t.type.label, { color: t.colors.accent }]}>Import statement</Text></Pressable>}
           {onReprocess !== undefined && <Pressable accessibilityRole="button" testID="open-reprocess" onPress={onReprocess}><Text style={[t.type.label, { color: t.colors.accent }]}>Re-check past mail</Text></Pressable>}
           {onBudget !== undefined && <Pressable accessibilityRole="button" testID="open-budget" onPress={onBudget}><Text style={[t.type.label, { color: t.colors.accent }]}>50 / 30 / 20</Text></Pressable>}
+          {onAddress !== undefined && <Pressable accessibilityRole="button" testID="open-address" onPress={onAddress}><Text style={[t.type.label, { color: t.colors.accent }]}>Inbound address</Text></Pressable>}
           {onExport !== undefined && <Pressable accessibilityRole="button" testID="open-export" onPress={onExport}><Text style={[t.type.label, { color: t.colors.accent }]}>Export</Text></Pressable>}
           {onSecurity !== undefined && <Pressable accessibilityRole="button" testID="open-security" onPress={onSecurity}><Text style={[t.type.label, { color: t.colors.accent }]}>Security</Text></Pressable>}
           {onDeleteAccount !== undefined && <Pressable accessibilityRole="button" testID="open-delete-account" onPress={onDeleteAccount}><Text style={[t.type.label, { color: t.colors.danger }]}>Delete account</Text></Pressable>}

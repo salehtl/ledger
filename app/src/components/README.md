@@ -95,6 +95,7 @@ Phase 0's >500 MB freeze was partly one unguarded full pass.
 | `screens/onboarding/HomeCurrencyScreen.tsx` | The one-shot, irreversible home-currency picker. | Onboarding, once. | Ever again. It refuses when the log already carries a currency, and Settings must never offer it (§3.7). |
 | `components/HaltBanner.tsx` | The non-dismissable wall spec §3.4 requires: sync has stopped and the app is not usable until it is fixed. | `surface().halt` is non-null. Render it **instead of** the navigator, at the root. | An unreadable blob (that is a dismissable banner, §3.3:74), or anything a user may continue past. There is no `onDismiss` prop, on purpose. |
 | `screens/settings/IntegrityScreen.tsx` | Everything the checker found that is not a wall: grouped notices with counts, the set-aside count, and a record of any halt. | Settings → Integrity, badged with `surface().badge`. | As a modal, or as a substitute for the halt — a notice list is never a stop, and a stop is never a row. |
+| `components/AddressCard.tsx` | The inbound address: the string at 20 pt monospace, a full-width copy target, a QR, and the predecessor's grace deadline when the server sent one. | Anywhere the address is shown — onboarding's address step and Settings → Inbound address both use exactly this. | To show an address you assembled yourself. It renders an `AddressRecord` from `lib/address.ts` and nothing else, so what the eye reads and what the clipboard holds cannot differ. |
 
 `app/src/app/Theme.tsx`, `Root.tsx` and `Navigation.tsx` are the shell, not
 shared components, and are documented in their own headers.
@@ -104,7 +105,10 @@ shared components, and are documented in their own headers.
 | Screen | Status |
 |---|---|
 | `src/screens/onboarding/SignInScreen.tsx` | **The initial route.** Sign in with Apple and Google. Holds no policy — everything it renders is decided in `src/auth/` and tested under `bun test`. Hands off to `OnboardingShell` with the account id, or `null` for a session already on the device. |
-| `src/screens/onboarding/OnboardingShell.tsx` | **The route after sign-in.** One screen, not a stack: the step is derived from facts by `lib/onboarding.ts`, so a cold launch resumes with nothing to restore. Slots for Tasks 15–17; an unfilled slot names the task that owns it. |
+| `src/screens/onboarding/OnboardingShell.tsx` | **The route after sign-in.** One screen, not a stack: the step is derived from facts by `lib/onboarding.ts`, so a cold launch resumes with nothing to restore. `bank`, `address` and `verification` are filled by `Navigation.tsx`; `forwarding` is still a placeholder because its instructions must come from Task 2's measured Gmail record, which does not exist. |
+| `src/screens/onboarding/AddressScreen.tsx` | The inbound-address step. Performs `GET /api/v1/address` itself — the endpoint mints on first read — and advances only on a press, never on arrival. |
+| `src/screens/onboarding/VerificationScreen.tsx` | Google's held confirmation code and the first real bank email, both read out of the quarantine lane. Advances on a **transaction in the log**, never on a 200 from confirm. |
+| `src/screens/settings/RotateAddressScreen.tsx` | Settings → Inbound address: the address again (the onboarding step is skipped on later launches), plus the three-factor rotation and every consequence §3.2 names. |
 | `src/screens/onboarding/HomeCurrencyScreen.tsx` | The home-currency picker. Two-step, acknowledged, and irreversible. |
 | `src/screens/Shell.tsx` | **Temporary.** The shell smoke screen: reports whether the platform seam and the replay fold are live on the device. Task 18's transactions list replaces it. |
 
@@ -155,6 +159,47 @@ acknowledgement. A confirmation that arrives after the action is a receipt, and
 a toast is not a warning. `HomeCurrencyScreen` is the reference.
 
 **A step another task owns is a named slot, not a stub screen.** The shell
-renders a placeholder saying which task owns it, and a placeholder may advance
+renders a placeholder saying why it is empty, and a placeholder may advance
 the flow only over a **device-local** fact — never over one the server or the
 log produces, which nothing on the device may stand in for.
+
+### Three conventions the address and verification screens add
+
+**A screen that produces server truth performs the read itself.** The address
+step was blocked not by the state machine — the `address_issued` milestone has
+existed since Task 14 — but because the only fetch lived in `bootstrap`, which
+runs before there is a session. Anything whose milestone is server truth needs a
+path to that truth from the step itself, or the step is a dead end on exactly
+the launch where it matters.
+
+**Arriving is not the same as being ready.** `AddressScreen` does not report the
+address the instant it loads: the milestone is satisfied the moment
+`inboundAddress` is non-null, so reporting on arrival renders the screen for one
+frame and hands the user nothing. The press is the event.
+
+**A milestone the log owns is re-read from the log, not inferred from a 200.**
+`VerificationScreen` calls `firstMailAt()` after a confirmation and advances only
+if the fold answers with a timestamp. A `POST /api/v1/quarantine/confirm` that
+re-ingested nothing is a successful request and not a completed step.
+
+### Reading untrusted content on the glass
+
+Onboarding necessarily renders part of a **quarantined** message (plan Decision
+7: Gmail's confirmation is signed by `google.com`, a forwarder domain, so it is
+held forever by design). The rules that keeps safe, all in
+`lib/verificationCode.ts`:
+
+- patterns over that content are **literal-anchored, with no unbounded
+  quantifier**, and adjacent classes are disjoint so a match is deterministic
+  rather than merely bounded;
+- the scan covers **at most the first 8192 characters**, with a wall-clock
+  tripwire that stops it rather than merely reporting;
+- anything offered as an *action* has its meaning fixed by the pattern — the
+  code is nine digits, and the link's scheme, host and path prefix are literals,
+  so a surfaced link can only point at `mail-settings.google.com`;
+- the raw body may be shown as a fallback, capped and explicitly labelled
+  untrusted, through `<Text>`, which interprets no markup;
+- a **trust decision** is never made from message content: the bank half renders
+  `trustBasis(item)` — the verified signing domain, or a prominent
+  unauthenticated state — and the API deliberately does not even send the
+  subject.
