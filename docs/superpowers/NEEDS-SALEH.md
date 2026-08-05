@@ -26,6 +26,20 @@ Phase 2 ships an app to real alphas' phones. That needs a paid Apple Developer
 account ($99/yr). Enrolment is **not instant** — individual accounts are usually
 same-day but can take up to ~2 business days, and Apple sometimes asks for ID.
 
+> **SUPERSEDED 2026-08-05: a Mac IS available.** Saleh remotes into `dinosaur`
+> *from* a Mac and can run an iOS simulator. The bullets below are true of this
+> Linux box and false of the operator, so the constraint they describe is gone:
+> local `expo prebuild` + Xcode works, EAS Build is optional rather than the
+> only path, and Task 29's two-device scenario can use a simulator as device B
+> (it tests correctness, not timing).
+>
+> **The one thing a simulator must NOT be used for is Tasks 1 / 1b / 28.** A
+> simulator executes natively on the Mac's CPU, so its crypto and fold timings
+> measure a laptop, not a phone — a fast number there is worse than no number.
+> Those need the real iPhone, and Decision 11's floor-device cap is unchanged.
+>
+> Kept below as the reasoning of record.
+
 **There is no Mac on this box.** That is a real constraint the Phase 2 plan had
 to design around, not an inconvenience:
 
@@ -161,7 +175,24 @@ Not blocking today, but they shape tasks:
   dormant" rather than ship a recovery-phrase screen that lies to the user in
   Phase 2. Agree or overrule.
 
-## 0. DECIDE FIRST: all DIB mail currently needs review
+## 0. ~~DECIDE FIRST~~ — **DECIDED 2026-08-05. Building the narrow guardrail.**
+
+> Saleh: *"the app should parse the mail in the received mailbox. however it
+> should have guardrails that prevent it from injection attacks."*
+>
+> That is the third option below. **Auto-trust DIB when the decoded text still
+> contains the expected Arabic gate literal; route to review when it does not.**
+> Chosen on the measurement, not on taste: all eight measured rewrites that
+> actually changed the decode also destroyed that literal, so the literal is a
+> direct witness of an untampered decode rather than a proxy for one.
+>
+> Explicitly NOT chosen: dropping `Content-Type` from `DecodingHeaders`
+> wholesale (restores auto-trust but accepts the constructed attack), and
+> leaving the current confirm-everything behaviour standing.
+>
+> The section below is kept verbatim as the reasoning of record.
+
+
 
 This is shipped behaviour right now (`712667b`) and it changes what the app
 feels like, so it should be your first call.
