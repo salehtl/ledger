@@ -34,14 +34,17 @@ describe("persisted bootstrap", () => {
   });
 
   test("a complete returning account runs audit and reaches ready", async () => {
+    let syncs = 0;
     let audits = 0;
     const facts = { inboundAddress: "u@in.example", firstMailConfirmedAt: "2026-08-03T00:00:00Z", homeCurrency: "AED" };
     const runtime = {
       client: { sessionToken: "held", userId: "user-1" },
+      dictionary: { sync: async () => { syncs++; } },
       runAudit: async () => { audits++; },
       onboardingFacts: async () => facts,
     } as never;
     expect(await bootstrapRuntime(runtime, { refresh: async () => {}, wipe: async () => {} })).toEqual({ step: "ready", userId: "user-1", facts });
+    expect(syncs).toBe(1);
     expect(audits).toBe(1);
   });
 });
