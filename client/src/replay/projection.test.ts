@@ -568,6 +568,61 @@ test("literal v1 projection is unusable and is fully rebuilt at the current vers
   expect(readRateUpdatedAt(d).get("USD")).toBe("2026-08-01T00:00:00.000Z");
 });
 
+test("a pre-v4 database is migrated by ensureProjection, and project() backfills exact split home amounts on the repair pass", async () => {
+  // This is what every existing device looks like the instant it opens a
+  // build that bumped PROJECTION_VERSION to 4, before any sync has re-run
+  // project(): `txn_split` predates `amount_home_minor` entirely (the column
+  // does not exist, not merely NULL), because the table already existed under
+  // the old schema and `CREATE TABLE IF NOT EXISTS` is a no-op against it.
+  //
+  // Deleting the `ALTER TABLE txn_split ADD COLUMN amount_home_minor` line at
+  // `projection.ts` leaves the OTHER 18 tests in this suite green, because
+  // every one of them starts from a database `txn_split` never existed on —
+  // `CREATE TABLE IF NOT EXISTS` then creates it WITH the column for free, and
+  // the migration path goes completely unexercised. This test starts from the
+  // pre-existing table on purpose so removing the ALTER breaks it.
+  const d = db();
+  d.exec(`
+    CREATE TABLE txn_split (txn_id TEXT NOT NULL, idx INTEGER NOT NULL, category TEXT NOT NULL, amount_minor TEXT NOT NULL, PRIMARY KEY (txn_id, idx));
+    CREATE TABLE projection_meta (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, cursor_hot TEXT NOT NULL, cursor_cold TEXT NOT NULL, home_currency TEXT, complete INTEGER NOT NULL);
+    INSERT INTO txn_split (txn_id, idx, category, amount_minor) VALUES ('old', 0, 'groceries', '100');
+    INSERT INTO projection_meta VALUES (1, 3, '5', '0', 'AED', 1);
+  `);
+
+  ensureProjection(d);
+  const cols = d
+    .prepare("PRAGMA table_info(txn_split)")
+    .all()
+    .map((r) => String((r as Record<string, unknown>)["name"]));
+  expect(cols).toContain("amount_home_minor");
+  const old = d.prepare("SELECT amount_home_minor FROM txn_split WHERE txn_id = 'old'").all()[0] as Record<string, unknown>;
+  expect(old["amount_home_minor"]).toBeNull();
+  // The version is what keeps this unusable, not a broken schema — the ALTER
+  // makes the table READABLE, it does not make the stale data trustworthy.
+  expect(projectionIsUsable(d)).toBe(false);
+
+  // The repair: a real project() run on up-to-date state must not merely avoid
+  // throwing "no such column" — it must actually populate the new column
+  // exactly, the same guarantee `projectionMatchesState` proves for a database
+  // that never had the old schema.
+  const s = fixture();
+  await project(d, s);
+  expect(readMeta(d)?.version).toBe(PROJECTION_VERSION);
+  expect(projectionIsUsable(d)).toBe(true);
+  const t1Home = s.txns.get("t1")?.amount_home_minor;
+  if (t1Home === null || t1Home === undefined) throw new Error("hostile fixture lost t1 home snapshot");
+  const parts = d
+    .prepare("SELECT amount_home_minor FROM txn_split WHERE txn_id = 't1' ORDER BY idx")
+    .all()
+    .map((r) => (r as Record<string, unknown>)["amount_home_minor"]);
+  expect(parts.length).toBeGreaterThan(0);
+  expect(parts.every((p) => p !== null)).toBe(true);
+  expect(parts.map((p) => BigInt(String(p))).reduce((sum, a) => sum + a, 0n)).toBe(t1Home);
+  // The old, pre-migration split row is gone: project() is a full replace, so
+  // the migrated-but-stale row does not survive alongside the fresh ones.
+  expect(d.prepare("SELECT count(*) AS n FROM txn_split WHERE txn_id = 'old'").all()[0]).toEqual({ n: 0 });
+});
+
 test("the indices the list, review and budget screens need are actually created", () => {
   // Written, tested green, never wired is this project's second-most-expensive
   // defect shape. An index in a schema string nobody executed is exactly that.

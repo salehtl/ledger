@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { bunDriver } from "@ledger/client/store/driver.ts";
 import type { SqlDriver } from "@ledger/client/store/driver.ts";
-import { ensureProjection } from "@ledger/client/replay/projection.ts";
+import { ensureProjection, PROJECTION_VERSION } from "@ledger/client/replay/projection.ts";
 import { DEFAULT_BUDGET_MAPPING, sqlBudgetSource, type BudgetMapping } from "./source.ts";
 
 function setup() {
   const db = bunDriver(":memory:"); ensureProjection(db);
-  db.prepare("INSERT INTO projection_meta (id,version,cursor_hot,cursor_cold,home_currency,complete) VALUES (1,1,'0','0','AED',1)").run();
+  // `version` MUST be the live PROJECTION_VERSION, not a hardcoded literal: a
+  // stale literal here would silently pass every test above `projectionIsUsable`'s
+  // gate whether or not that gate actually fires, which is exactly the "true by
+  // construction" trap AGENT-RULES warns about — see the "refuses to read a
+  // stale or incomplete projection" test below for the case that gate exists for.
+  db.prepare(`INSERT INTO projection_meta (id,version,cursor_hot,cursor_cold,home_currency,complete) VALUES (1,${PROJECTION_VERSION},'0','0','AED',1)`).run();
   const add = (id: string, opts: { amount?: string; home?: string | null; direction?: string; category?: string | null; unparsed?: number; review?: number; posted?: string } = {}) => db.prepare(`INSERT INTO txn
     (id,ingest_id,amount_minor,currency,direction,posted_at,merchant_raw,last4,category,needs_review,provenance,amount_home_minor,unparsed,tier,parse_error,superseded_by,possible_duplicate_of,version)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`).run(id, id.padEnd(64, "a"), opts.amount ?? "100", opts.unparsed ? "" : "AED", opts.direction ?? (opts.unparsed ? "" : "debit"), opts.posted ?? "2026-08-01T00:00:00.000Z", "m", "", opts.category ?? null, opts.review ?? 0, "ingest", opts.home === undefined ? "100" : opts.home, opts.unparsed ?? 0, opts.unparsed ? "none" : "template", opts.unparsed ? "no_match" : null, null, null);
@@ -72,5 +77,54 @@ describe("sqlBudgetSource", () => {
     };
     expect(sqlBudgetSource(measured).read(Date.now()).buckets.need).toBe(500n);
     expect(aggregateRows).toBe(1);
+  });
+
+  test("a usable projection reports usable: true and a real snapshot", () => {
+    const { db, add } = setup(); add("g", { home: "500", category: "groceries" });
+    const got = sqlBudgetSource(db).read(Date.now());
+    expect(got.usable).toBe(true);
+    expect(got.buckets.need).toBe(500n);
+  });
+
+  test("refuses to read a stale-version projection rather than showing zeros as fact", () => {
+    // Exactly the recritic's W7: a device that has not re-projected since the
+    // build bumped PROJECTION_VERSION. A split transaction whose home amount
+    // is frozen and real must not report as zero spending with no disclosure.
+    const { db, add } = setup();
+    add("g", { home: "100000", category: "groceries" });
+    const put = db.prepare("INSERT INTO txn_split (txn_id,idx,category,amount_minor,amount_home_minor) VALUES (?,?,?,?,?)");
+    put.run("g", 0, "groceries", "100000", "100000");
+    db.prepare("UPDATE projection_meta SET version = ? WHERE id = 1").run(PROJECTION_VERSION - 1);
+
+    const got = sqlBudgetSource(db).read(Date.now());
+    expect(got.usable).toBe(false);
+    expect(got.buckets).toEqual({ need: 0n, want: 0n, saving: 0n });
+    expect(got.income).toBe(0n);
+    expect(got.unassigned).toBe(0n);
+    expect(got.confirmedTransactions).toBe(0);
+    expect(got.excluded).toEqual({ missingHomeRate: 0, unparsed: 0, unresolvedDuplicates: 0, sameDuplicates: 0 });
+    // The home currency is still known — an unusable projection is a "come back
+    // in a moment" state, not amnesia about what currency the user set.
+    expect(got.homeCurrency).toBe("AED");
+  });
+
+  test("refuses to read an incomplete projection (complete=0) rather than presenting a partial log as the 50/30/20", () => {
+    // The recritic's W8: an interrupted projection whose `complete` flag exists
+    // precisely to make the partial state visible.
+    const { db, add } = setup();
+    add("g", { home: "500", category: "groceries" });
+    db.prepare("UPDATE projection_meta SET complete = 0 WHERE id = 1").run();
+    const got = sqlBudgetSource(db).read(Date.now());
+    expect(got.usable).toBe(false);
+    expect(got.buckets.need).toBe(0n);
+  });
+
+  test("an unusable projection with no meta row at all still reports usable: false, not a throw", () => {
+    const db = bunDriver(":memory:");
+    ensureProjection(db);
+    const got = sqlBudgetSource(db).read(Date.now());
+    expect(got.usable).toBe(false);
+    expect(got.homeCurrency).toBeNull();
+    expect(got.buckets).toEqual({ need: 0n, want: 0n, saving: 0n });
   });
 });

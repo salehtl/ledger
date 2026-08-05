@@ -294,6 +294,85 @@ describe("ordering and paging", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Recovery: the "newer" direction that lets a scrolled-past row come back.
+//
+// `MAX_RETAINED_TXNS` (150) is bigger than this fixture's 9 rows on purpose —
+// the fixture is what proves the SQL is exactly right, at a size a human can
+// verify by eye. The bound itself, at its real size, is `transactions.window.
+// test.ts`'s job. What matters here is that `listTransactions(..., {direction:
+// "newer"})` is the true inverse of the default "older" page: same predicate,
+// flipped; same tiebreak, flipped; and — the part a same-shaped-but-wrong query
+// would get subtly wrong — the SAME rows a forward page from further up would
+// have produced, not merely "some rows above the cursor".
+// ---------------------------------------------------------------------------
+
+describe("recovery: the \"newer\" direction", () => {
+  test("buildTxnQuery flips the comparison and the order, and keeps the tiebreak", () => {
+    const cursor = cursorOf(all[2] as Txn);
+    const { sql, params } = buildTxnQuery(EMPTY_FILTERS, { limit: 10, after: cursor, direction: "newer" });
+    expect(sql).toContain("ORDER BY posted_at ASC, id ASC");
+    expect(sql).toContain("posted_at > ? OR (posted_at = ? AND id > ?)");
+    expect(params.slice(0, 3)).toEqual([cursor.posted_at, cursor.posted_at, cursor.id]);
+  });
+
+  test("a \"newer\" page needs a cursor: it recovers above a known boundary, it does not start a fresh list", () => {
+    expect(() => buildTxnQuery(EMPTY_FILTERS, { limit: 10, after: null, direction: "newer" })).toThrow();
+    expect(() => listTransactions(db, EMPTY_FILTERS, { limit: 10, after: null, direction: "newer" })).toThrow();
+  });
+
+  test("the \"next\" cursor of a \"newer\" page points at the NEWEST row returned, not the one nearest the original boundary", () => {
+    // The boundary for CONTINUING to page upward has to be the far edge of what
+    // was just fetched (the newest row in the batch) — pointing it at the near
+    // edge (nearest the original cursor) would refetch an already-returned row
+    // forever instead of making progress toward the true top of the list.
+    const cursor = cursorOf(all[4] as Txn);
+    const page = listTransactions(db, EMPTY_FILTERS, { limit: 2, after: cursor, direction: "newer" });
+    expect(page.rows.length).toBe(2);
+    expect(page.next).not.toBeNull();
+    expect(page.next).toEqual(cursorOf(page.rows[0] as Txn));
+    expect(page.next).not.toEqual(cursorOf(page.rows[1] as Txn));
+  });
+
+  test("a \"newer\" page reproduces, id for id and in the same newest-first order, exactly what an \"older\" page from further up produced", () => {
+    const full = all.map((t) => t.id);
+    const topFour = listTransactions(db, EMPTY_FILTERS, { limit: 4, after: null }).rows.map((t) => t.id);
+    expect(topFour).toEqual(full.slice(0, 4));
+    const recovered = listTransactions(db, EMPTY_FILTERS, { limit: 4, after: cursorOf(all[4] as Txn), direction: "newer" }).rows.map(
+      (t) => t.id,
+    );
+    expect(recovered).toEqual(topFour);
+  });
+
+  test("a full scroll-down-then-scroll-back-up simulation recovers every id that head-eviction dropped, in order — end to end, through the real SQL", () => {
+    // This is the actual defect, reproduced against the real query rather than
+    // against the pure `retainTxnWindow` helper: page down with a small bound,
+    // evict from the head exactly as the screen does, then page back up with
+    // "newer" and confirm the full original order comes back exactly, not
+    // approximately.
+    const full = all.map((t) => t.id);
+    const bound = 3;
+    let cursor: ReturnType<typeof cursorOf> | null = null;
+    let rows: Txn[] = [];
+    for (let guard = 0; guard < 20; guard++) {
+      const page = listTransactions(db, EMPTY_FILTERS, { limit: bound, after: cursor });
+      rows = (rows.length === 0 ? page.rows : [...rows, ...page.rows]).slice(-bound);
+      cursor = page.next;
+      if (cursor === null) break;
+    }
+    // Only the tail survived the head-eviction, exactly as `retainTxnWindow`
+    // would leave it once the account outgrew the bound.
+    expect(rows.map((t) => t.id)).toEqual(full.slice(-bound));
+
+    for (let guard = 0; guard < 20 && rows.length < full.length; guard++) {
+      const page = listTransactions(db, EMPTY_FILTERS, { limit: bound, after: cursorOf(rows[0] as Txn), direction: "newer" });
+      if (page.rows.length === 0) break;
+      rows = [...page.rows, ...rows];
+    }
+    expect(rows.map((t) => t.id)).toEqual(full);
+  });
+});
+
 describe("filters", () => {
   const ids = (f: Parameters<typeof listTransactions>[1]) =>
     listTransactions(db, f, { limit: 100, after: null }).rows.map((t) => t.id);

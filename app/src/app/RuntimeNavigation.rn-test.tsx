@@ -26,7 +26,7 @@ it("mounts a complete returning account directly on Transactions with its runtim
       onProgress({ total: 1, examined: 1, emitted: 0, unavailable: 1 });
       return { total: 1, examined: 1, emitted: 0, unavailable: 1, cancelled: false };
     } },
-    budget: { read: () => ({ homeCurrency: "AED", buckets: { need: 100n, want: 50n, saving: 25n }, income: 1000n, unassigned: 0n, confirmedTransactions: 2, historyDays: 3, warming: true, excluded: { missingHomeRate: 1, unparsed: 1, unresolvedDuplicates: 0, sameDuplicates: 0 } }) },
+    budget: { read: () => ({ usable: true, homeCurrency: "AED", buckets: { need: 100n, want: 50n, saving: 25n }, income: 1000n, unassigned: 0n, confirmedTransactions: 2, historyDays: 3, warming: true, excluded: { missingHomeRate: 1, unparsed: 1, unresolvedDuplicates: 0, sameDuplicates: 0 } }) },
     deviceIdentity: () => null,
     dispose: async () => {}, wipeAccount: async () => {},
   } as unknown as AppRuntime;

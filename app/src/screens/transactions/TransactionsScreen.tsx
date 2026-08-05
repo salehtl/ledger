@@ -37,10 +37,12 @@ import type { Txn } from "@ledger/client/replay/state.ts";
 import { INPUT_FONT_MIN, TOUCH_TARGET_MIN, useTheme } from "../../app/Theme.tsx";
 import {
   EMPTY_FILTERS,
+  cursorOf,
   filtersActive,
   txnTotals,
   withFilterToggled,
   MAX_RETAINED_TXNS,
+  prependTxnWindow,
   retainTxnWindow,
   TXN_PAGE_SIZE,
   type ChipDimension,
@@ -91,14 +93,23 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
   const facets = useMemo(() => source?.facets() ?? { categories: [], currencies: [] }, [source]);
 
   const load = useCallback(
-    (from: TxnCursor | null, replace: boolean) => {
+    (from: TxnCursor | null, mode: "replace" | "append" | "prepend") => {
       if (source === null || loading.current) return;
       loading.current = true;
       try {
-        const page = source.list(filters, { limit: PAGE_SIZE, after: from });
-        setRows((prev) => retainTxnWindow(prev, page.rows, replace));
-        setCursor(page.next);
-        setExhausted(page.next === null);
+        const page = source.list(filters, { limit: PAGE_SIZE, after: from, direction: mode === "prepend" ? "newer" : "older" });
+        if (mode === "prepend") {
+          // The recovery path: `from` was the cursor of the row currently at
+          // the top of `rows`, so this re-fetches whatever `retainTxnWindow`
+          // evicted from the front — see `lib/transactions.ts`'s module doc.
+          // The bottom cursor/exhausted state is untouched; this direction
+          // never affects "is there more below".
+          setRows((prev) => prependTxnWindow(prev, page.rows));
+        } else {
+          setRows((prev) => retainTxnWindow(prev, page.rows, mode === "replace"));
+          setCursor(page.next);
+          setExhausted(page.next === null);
+        }
         setError(null);
       } catch (e) {
         // A projection written by an older build, or a column that will not
@@ -117,7 +128,7 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
     setRows([]);
     setCursor(null);
     setExhausted(false);
-    load(null, true);
+    load(null, "replace");
   }, [load]);
 
   const totals = useMemo(() => txnTotals(rows), [rows]);
@@ -242,7 +253,17 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: t.colors.hairline, marginLeft: t.space.lg }} />}
         onEndReachedThreshold={0.5}
         onEndReached={() => {
-          if (cursor !== null) load(cursor, false);
+          if (cursor !== null) load(cursor, "append");
+        }}
+        onStartReachedThreshold={0.5}
+        onStartReached={() => {
+          // Scrolling back up toward rows `retainTxnWindow` evicted from the
+          // front. `rows[0]`'s own cursor is the boundary to recover above —
+          // recomputed fresh from state every time, so this is correct
+          // whether zero rows were evicted (the fetch just returns none) or
+          // many pages were.
+          const top = rows[0];
+          if (top !== undefined) load(cursorOf(top), "prepend");
         }}
         ListEmptyComponent={
           <Text testID="txn-empty" style={[t.type.body, { color: t.colors.textMuted, padding: t.space.lg }]}>
