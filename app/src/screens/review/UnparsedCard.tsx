@@ -45,11 +45,20 @@ export interface UnparsedCardProps {
   homeCurrency: string | null;
   onSave: (fields: ManualEntryFields) => void;
   onDismiss: () => void;
+  /**
+   * Send the layout only — one ingest identifier the server already holds, no
+   * body. Absent when this build has no sample lane.
+   */
+  onReport?: () => void;
+  /** Open the donation sheet for this message. Absent for the same reason. */
+  onDonate?: () => void;
+  /** The result of the last content-free report, shown next to its button. */
+  sampleNote?: string | null;
 }
 
 type RawState = { kind: "loading" } | { kind: "absent"; why: string } | { kind: "have"; message: RawMessage };
 
-export function UnparsedCard({ item, categories, raw, homeCurrency, onSave, onDismiss }: UnparsedCardProps) {
+export function UnparsedCard({ item, categories, raw, homeCurrency, onSave, onDismiss, onReport, onDonate, sampleNote }: UnparsedCardProps) {
   const t = useTheme();
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState(homeCurrency ?? "");
@@ -200,6 +209,36 @@ export function UnparsedCard({ item, categories, raw, homeCurrency, onSave, onDi
         />
         <Button label="Not a transaction" onPress={onDismiss} note="Keeps the message, takes it off this list." />
       </View>
+
+      {/*
+        The sample lane. Two separate offers, never one: the default sends the
+        LAYOUT and nothing else, and the donation sends the whole email behind
+        its own preview and consent. Collapsing them into one button would make
+        the content-free default indistinguishable from the disclosure.
+      */}
+      {onReport === undefined && onDonate === undefined ? null : (
+        <View testID="unparsed-samples" style={{ gap: t.space.sm }}>
+          <View style={{ height: 1, backgroundColor: t.colors.hairline }} />
+          <Text style={[t.type.heading, { color: t.colors.text }]}>Help ledger read this bank</Text>
+          {onReport === undefined ? null : (
+            <Button
+              label="Tell the operator this layout failed"
+              onPress={onReport}
+              note="Sends the message's identifier only — no amounts, no merchant, no text."
+            />
+          )}
+          {sampleNote == null ? null : (
+            <Text accessibilityRole="alert" style={[t.type.label, { color: t.colors.textMuted }]}>{sampleNote}</Text>
+          )}
+          {onDonate === undefined ? null : (
+            <Button
+              label="Donate this email…"
+              onPress={onDonate}
+              note="Shows you the exact message first. Sends the complete email, and only if you agree."
+            />
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 }

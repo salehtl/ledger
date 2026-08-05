@@ -54,6 +54,16 @@ export type UndoEntry =
   | { kind: "confirm"; item: ReviewItem; previousCategory: string | null; label: string }
   | { kind: "dismiss"; key: string; item: ReviewItem | null; fork: ForkItem | null; lane: Lane; label: string };
 
+/**
+ * The rule a confirmation just wrote back, offered for optional sharing.
+ *
+ * Set only when {@link confirmOps} actually emitted a `rule_added` — a
+ * merchant the user has already ruled on emits none, so the offer does not
+ * reappear for a decision that is not new — and only when a dictionary
+ * submitter exists to share it with.
+ */
+export type ShareableEntry = { pattern: string; match: "exact" | "contains"; category: string };
+
 export interface ManualEntryFields {
   amountMinor: bigint;
   currency: string;
@@ -77,6 +87,9 @@ export interface ReviewQueue {
   error: string | null;
   dismissError: () => void;
   undo: UndoEntry | null;
+  /** A just-written rule the user may opt into sharing. Null unless one exists. */
+  share: ShareableEntry | null;
+  dismissShare: () => void;
   confirm: (item: ReviewItem, category: string | null) => Promise<void>;
   skip: (item: ReviewItem) => void;
   dismiss: (item: ReviewItem, answer: Disposition) => Promise<void>;
@@ -98,6 +111,7 @@ export function useReviewQueue(deps: ReviewDeps): ReviewQueue {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [undo, setUndo] = useState<UndoEntry | null>(null);
+  const [share, setShare] = useState<ShareableEntry | null>(null);
   const [skipped, setSkipped] = useState<string[]>([]);
   /**
    * Cards answered in this session, remembered only so the deck advances
@@ -185,11 +199,20 @@ export function useReviewQueue(deps: ReviewDeps): ReviewQueue {
         await push(specs);
         setAnswered((a) => [...a, item.key]);
         setUndo({ kind: "confirm", item, previousCategory: item.txn.category, label: "Confirmed" });
+        // The write-back rule, if this confirmation produced one, is the entry
+        // the dictionary opt-in offers. Read off the specs that were actually
+        // emitted rather than recomputed here, so the offer cannot describe an
+        // entry the log does not contain.
+        const written = specs.find((spec) => spec.type === "rule_added");
+        if (written !== undefined && deps.dictionary !== null) {
+          const p = written.payload as ShareableEntry;
+          setShare({ pattern: p.pattern, match: p.match, category: p.category });
+        }
       } catch (err) {
         setError(messageOf(err));
       }
     },
-    [source, writer, rules, deps.newID, push],
+    [source, writer, rules, deps.newID, deps.dictionary, push],
   );
 
   const saveManualEntry = useCallback(
@@ -302,6 +325,8 @@ export function useReviewQueue(deps: ReviewDeps): ReviewQueue {
     error,
     dismissError: () => setError(null),
     undo,
+    share,
+    dismissShare: () => setShare(null),
     confirm,
     skip,
     dismiss,

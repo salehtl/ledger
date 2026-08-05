@@ -52,7 +52,7 @@ it("queues category and learned rule in one durable batch and pending settles ac
     categories: async () => ["Food"], rules: async () => [], version: async () => 1,
     dismiss: async () => {}, restore: async () => {},
   };
-  const deps: ReviewDeps = { source, writer, raw: null, dictionary: null, newID: () => "rule-1" };
+  const deps: ReviewDeps = { source, writer, raw: null, dictionary: null, samples: null, newID: () => "rule-1" };
 
   const first = await render(<Harness deps={deps} />);
   await waitFor(() => expect(screen.getByText("confirm item")).toBeTruthy());
