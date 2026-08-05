@@ -97,4 +97,20 @@ if [[ ! -d client/node_modules ]]; then
 fi
 (cd client && bun run typecheck && bun test src/diag/structure.test.ts && bun test)
 
-echo "v2-check: OK (go + client + conformance)"
+# The Expo React Native app. Phase 2 tasks 3 and 9-27 built every screen of
+# this app and, until now, nothing here checked any of it: the client/ step
+# above only covers the shared TypeScript executor, not the app that consumes
+# it. Measured before this step existed: the gate reported exit 0 while
+# `cd app && bun test` alone gave 518 pass / 1 fail (bootstrap.test.ts, a
+# stale test fixture that didn't know about a dictionary sync call a prior
+# task had wired into bootstrap). That is exactly the failure mode this step
+# closes — code landing in app/ with nothing to catch it. Same rule as
+# client/: no `bun install` here, so a missing app/node_modules is a hard
+# failure with the fix named rather than a gate that mutates the tree to pass.
+if [[ ! -d app/node_modules ]]; then
+	echo "v2-check: app/node_modules is missing; run (cd app && bun install)" >&2
+	exit 1
+fi
+(cd app && bun run typecheck && bun test)
+
+echo "v2-check: OK (go + client + app + conformance)"
