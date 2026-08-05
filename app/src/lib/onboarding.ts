@@ -321,6 +321,27 @@ export function homeCurrencyOf(s: Pick<State, "homeCurrency">): string | null {
 }
 
 /**
+ * When the earliest transaction in the log was posted, or null for an empty
+ * log. **This is the `first_mail_confirmed` fact**, and it is read from the
+ * folded log for the same reason the home currency is: it is the only thing on
+ * the device that can say a genuine bank email actually became a transaction.
+ *
+ * It lives here rather than inside `AppRuntime.onboardingFacts()` because two
+ * callers need it and they must not disagree — the launch read, and the
+ * verification screen, which re-reads it after a `quarantine.confirm()` to
+ * decide whether that confirmation actually produced anything. A screen that
+ * advanced the machine on "the confirm call returned 200" instead would walk
+ * past a step that never happened.
+ */
+export function firstMailAt(s: Pick<State, "txns">): string | null {
+  let earliest: string | null = null;
+  for (const t of s.txns.values()) {
+    if (earliest === null || t.posted_at.localeCompare(earliest) < 0) earliest = t.posted_at;
+  }
+  return earliest;
+}
+
+/**
  * Where the device-local half is kept.
  *
  * The {@link SecretStore} is the one durable key-value store this app has:

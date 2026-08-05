@@ -40,7 +40,14 @@ module.exports = {
   // dependencies, so they must be transformed rather than mocked — a component
   // test that stubs the hash is a component test that proves nothing about the
   // hash.
+  //
+  // `react-native-qrcode-svg` is listed for the same reason and not as a
+  // convenience: it ships `src/index.js` as ESM *with JSX*, so without the
+  // transform the address screen cannot be mounted at all — and an address
+  // screen no test can mount is the "written, tested green, never wired" shape
+  // with the test missing too. Metro applies the same transform on the device,
+  // so this keeps the two resolutions in step rather than mocking the QR away.
   transformIgnorePatterns: [
-    "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-reanimated|react-native-worklets|@noble/.*|fflate|ulid))",
+    "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-qrcode-svg|react-native-reanimated|react-native-worklets|@noble/.*|fflate|ulid))",
   ],
 };

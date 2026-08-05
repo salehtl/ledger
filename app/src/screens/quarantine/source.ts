@@ -17,8 +17,21 @@ export interface QuarantinePage {
   complete: boolean;
 }
 
+export interface QuarantineListOptions {
+  /**
+   * Ask for the raw message bytes (`?include_blob=1`).
+   *
+   * Off by default and it must stay that way: the server documents the default
+   * listing as "cheap" precisely because a held message can be a megabyte, and
+   * the ONE caller that needs bodies is onboarding's verification step, which
+   * has to read Gmail's confirmation code out of a message the product refuses
+   * to trust (plan Decision 7).
+   */
+  includeBlob?: boolean;
+}
+
 export interface QuarantineSource {
-  list(cursor?: QuarantineCursor): Promise<QuarantinePage>;
+  list(cursor?: QuarantineCursor, options?: QuarantineListOptions): Promise<QuarantinePage>;
   confirm(domain: string, scope: TrustScope, onPage?: (report: ReingestReport) => void): Promise<ConfirmResult>;
 }
 
@@ -48,6 +61,7 @@ function item(raw: unknown): QuarantineItem {
     deleteAfter: r.delete_after == null ? null : text(r.delete_after, "delete_after"), outerDomain: text(r.outer_domain, "outer_domain"),
     innerDomain: text(r.inner_domain, "inner_domain"), attested: r.attested === true, attestedBy: text(r.attested_by, "attested_by"),
     dkim: text(r.dkim, "dkim"), arc: text(r.arc, "arc"), sizeBucket: integer(r.size_bucket, "size_bucket"),
+    ...(typeof r.blob === "string" && r.blob !== "" ? { blob: r.blob } : {}),
   };
 }
 
@@ -71,8 +85,9 @@ export function createQuarantineSource(opts: QuarantineSourceOptions): Quarantin
   };
 
   return {
-    async list(cursor = {}) {
+    async list(cursor = {}, options = {}) {
       const q = new URLSearchParams();
+      if (options.includeBlob === true) q.set("include_blob", "1");
       if (cursor.after !== undefined) q.set("after", cursor.after);
       if (cursor.afterId !== undefined) q.set("after_id", cursor.afterId);
       if (cursor.removedAfter !== undefined) q.set("removed_after", cursor.removedAfter);

@@ -25,6 +25,8 @@ import { dictionarySubmitter } from "../dictionary/submission.ts";
 import { sqliteDictionarySource, type DictionarySource } from "../dictionary/source.ts";
 import type { RawMessageSource } from "../screens/review/deps.ts";
 import { deviceIdentity, type DeviceIdentity } from "../security/model.ts";
+import { addressSource, type AddressSource } from "../account/address.ts";
+import { firstMailAt } from "../lib/onboarding.ts";
 
 export const PRODUCT_DATABASE = "ledger.db";
 
@@ -53,6 +55,13 @@ export interface AppRuntime {
   readonly txns: TxnSource;
   readonly review: ReviewSource;
   readonly quarantine: QuarantineSource;
+  /**
+   * `GET /api/v1/address`. The ONE place the app reads the inbound address:
+   * `onboardingFacts()` below calls it, and so does the address screen. It used
+   * to be an inline fetch here and nowhere else, which is why the screen that
+   * needed it had no way to refresh without a second copy of the request.
+   */
+  readonly address: AddressSource;
   readonly currencies: CurrencySource;
   readonly importIO: ImportIO;
   readonly reprocess: { start(onProgress: (p: ReprocessProgress) => void, cancelled: () => boolean): Promise<ReprocessResult> };
@@ -95,6 +104,11 @@ export function createRuntime(deps: RuntimeDeps): AppRuntime {
     token: () => client.sessionToken,
     ...(deps.fetch === undefined ? {} : { fetch: (request) => deps.fetch!(request) }),
     sync: () => coordinator.run("refresh"),
+  });
+  const address = addressSource({
+    server: deps.server,
+    token: () => client.sessionToken,
+    ...(deps.fetch === undefined ? {} : { fetch: (request: Request) => deps.fetch!(request) }),
   });
   const currencies = sqlCurrencySource(db, outbox);
   const budget = sqlBudgetSource(db);
@@ -161,6 +175,7 @@ export function createRuntime(deps: RuntimeDeps): AppRuntime {
     txns,
     review,
     quarantine,
+    address,
     currencies,
     importIO,
     reprocess,
@@ -185,18 +200,20 @@ export function createRuntime(deps: RuntimeDeps): AppRuntime {
       if (auditDue(db, client.cursor("hot"), Date.now()) === null) return;
       await sync.audit(deps.auditConditions ?? (() => ({ mainsPower: false, foreground: true, thermal: "nominal", busy: false })));
     },
+    /**
+     * The launch read of every fact `resumeFacts` needs.
+     *
+     * The address is `address.current()` and not a second fetch written here.
+     * That matters beyond tidiness: the inline version threw an error with a
+     * hard-coded `code: ""`, so a `410 account_deleted` on this endpoint
+     * matched neither arm of `bootstrap.classify` and a device whose account
+     * had been deleted elsewhere reported a fatal open instead of wiping.
+     * `ApiError` carries the server's own code.
+     */
     async onboardingFacts() {
       const state = client.state();
-      let inboundAddress: string | null = null;
-      if (client.sessionToken !== null) {
-        const response = await (deps.fetch ?? fetch)(new Request(new URL("/api/v1/address", deps.server), { headers: { authorization: `Bearer ${client.sessionToken}` } }));
-        if (!response.ok) throw Object.assign(new Error(`address refresh failed: ${response.status}`), { status: response.status, code: "" });
-        const body = await response.json() as { address?: unknown };
-        if (typeof body.address !== "string" || body.address === "") throw new Error("address refresh returned no address");
-        inboundAddress = body.address;
-      }
-      const first = [...state.txns.values()].sort((a, b) => a.posted_at.localeCompare(b.posted_at))[0];
-      return { inboundAddress, firstMailConfirmedAt: first?.posted_at ?? null, homeCurrency: state.homeCurrency };
+      const inboundAddress = client.sessionToken === null ? null : (await address.current()).address;
+      return { inboundAddress, firstMailConfirmedAt: firstMailAt(state), homeCurrency: state.homeCurrency };
     },
     async commitOnboardingOps(ops: readonly OpSpec[]): Promise<void> {
       outbox.enqueueMany(ops);
