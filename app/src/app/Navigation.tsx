@@ -40,7 +40,7 @@ import { sqlExportSource, exportAndShare } from "../account/export.ts";
 import { nativeExportIO } from "../account/native.ts";
 import { deleteAccount } from "../account/deletion.ts";
 import { useTheme } from "./Theme.tsx";
-import { useBootstrap, useRuntime } from "./RuntimeProvider.tsx";
+import { useAccountWipe, useBootstrap, useRuntime } from "./RuntimeProvider.tsx";
 
 export type RootStackParamList = {
   SignIn: undefined;
@@ -75,6 +75,7 @@ export function Navigation() {
   const t = useTheme();
   const runtime = useRuntime();
   const bootstrap = useBootstrap();
+  const wipeAccount = useAccountWipe();
   /**
    * Built once. `deviceSignInDeps` allocates objects and touches no native
    * module until something is pressed, but rebuilding it per render would hand
@@ -194,8 +195,15 @@ export function Navigation() {
       <Stack.Screen name="Security">
         {() => <SecurityScreen identity={runtime.deviceIdentity()} />}
       </Stack.Screen>
+      {/*
+        Two endings erase this device - `204` and `410 account_deleted` - and
+        BOTH must leave the signed-in graph. `deleteAccount` returns on those
+        two and throws on everything else, so the reset below covers the 410
+        that arrives on the user's *other* device: it used to wipe, throw, skip
+        this reset, and leave the delete screen saying the data was still here.
+      */}
       <Stack.Screen name="DeleteAccount">
-        {({ navigation }) => <DeleteAccountScreen onExport={() => navigation.navigate("Export")} remove={async () => { await deleteAccount({ server: runtime.server, userId: () => runtime.store.load().userId, secrets: runtime.secrets, authenticator: signInDeps.apple, wipe: () => runtime.wipeAccount() }); navigation.reset({ index: 0, routes: [{ name: "SignIn" }] }); }} />}
+        {({ navigation }) => <DeleteAccountScreen onExport={() => navigation.navigate("Export")} remove={async () => { const result = await deleteAccount({ server: runtime.server, userId: () => runtime.store.load().userId, secrets: runtime.secrets, authenticator: signInDeps.apple, wipe: wipeAccount }); navigation.reset({ index: 0, routes: [{ name: "SignIn" }] }); return result; }} />}
       </Stack.Screen>
       <Stack.Screen name="Review">
         {({ navigation }) => <ReviewScreen deps={{ source: runtime.review, writer: runtime.outbox, raw: runtime.rawMessages, dictionary: runtime.dictionary, samples: runtime.samples, newID: runtime.newId }} onClose={() => navigation.goBack()} />}
