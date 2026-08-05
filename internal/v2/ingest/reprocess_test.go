@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,14 @@ import (
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/tmpl"
 )
+
+// newerVersion is one past whatever this build understands. Written as
+// arithmetic on oplog.SchemaVersion rather than as a literal: these tests
+// assert "a version this build does not know is a hard stop", and a literal
+// silently becomes an assertion about a version the build DOES know the moment
+// SchemaVersion is bumped -- which is exactly how the v1->v2 bump left these
+// blob version tests checking for the opposite of their names.
+func newerVersion() string { return strconv.Itoa(oplog.SchemaVersion + 1) }
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -421,6 +430,7 @@ func TestReprocessSupersedeRecomputesFXAtItsOwnPosition(t *testing.T) {
 		"merchant_raw": true, "last4": true, "is_transfer": true, "tier": true,
 		"needs_review": true, "unparsed": true, "template_id": true,
 		"template_version": true, "normalizer_version": true,
+		"verified_origin_domain": true,
 	}
 	for k := range raw2 {
 		if !allowed[k] {
@@ -1754,7 +1764,7 @@ func TestReprocessSkipsAClientBlobThisBuildCannotRead(t *testing.T) {
 	// The framing version is frozen and still v1 — this is not an unopenable
 	// blob, it is a perfectly stored one whose CONTENTS are a schema newer than
 	// this build. That is the only shape the upload path can produce.
-	r.appendClientBlob("device-ahead", []byte(`{"v":2,"kind":"ops","ops":[]}`))
+	r.appendClientBlob("device-ahead", []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[]}`))
 
 	r.publish(amountTemplate(2, chargedPattern))
 	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
@@ -1827,7 +1837,7 @@ func TestReprocessFailsOnAServerBlobThisBuildCannotRead(t *testing.T) {
 	raw := r.trusted(reprocessBody)
 	r.mustDeliver(raw, "alerts@bank.example")
 
-	r.rewriteHotBlob(1, []byte(`{"v":2,"kind":"ops","ops":[]}`))
+	r.rewriteHotBlob(1, []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[]}`))
 
 	r.publish(amountTemplate(2, chargedPattern))
 	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
