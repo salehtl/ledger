@@ -350,6 +350,58 @@ them this task's to close:
 
 ## 10. Verification
 
-`go clean -testcache && bash scripts/v2-check.sh` — see the reply for the exit
-code and the commit it was measured at. `app`: 579 `bun test` + 88 jest,
-0 failures.
+**`bash scripts/v2-check.sh` → exit 0**, at commit `bafb7ba`, in a `git archive`
+export of that commit at `/tmp/w5-verify` with `client/node_modules` and
+`app/node_modules` hardlink-copied in. Final line:
+`v2-check: OK (go + client + app + conformance)`. Zero failing tests in the
+whole run.
+
+Captured as `bash scripts/v2-check.sh > log 2>&1; echo $?` — the script's own
+status, never a pipeline's.
+
+In the worktree: `app` is 580 `bun test` across 40 files and 88 jest across 16
+suites, 0 failures, `tsc --noEmit` clean.
+
+## 11. Two things about the box, not about the code
+
+Recorded because both cost a full gate run and the next agent will hit them.
+
+### The disk was 100% full
+
+The first gate run failed with 8 client failures that looked like real defects:
+`engine.test.ts`'s "a SIGKILL mid-sync resumes to the identical state" reported
+`kill.rows.jsonl: line 88 is not JSON (Unterminated string)`, and every
+`roundtrip.test.ts` case died with `ledgerd exited with 1 before it was ready`
+under Postgres `FATAL: could not write init file`.
+
+Neither was a defect. `df -h /` said **80 MB free of 75 G**. A truncated JSONL
+line and "could not write init file" are both what running out of disk looks
+like from inside a test.
+
+Freed 15 G by deleting finished agents' scratch — `/tmp/ledger-appgate-mut.*`
+(3.4 G), `/tmp/ledger-task10-mut.*`, the `/tmp/*-go-cache` and `/tmp/task*-go*`
+dirs from earlier tasks, `/tmp/ledger-engine-*` leftovers and a stale
+`bunx-wrangler` cache. **Nothing under `/var/lib/ledger`, `/var/backups`,
+`/root/.cache/go-build`, `/tmp/claude-0` or any checkout's `node_modules` was
+touched, and no service was restarted.** These scratch directories accumulate
+per task and nothing prunes them; worth a look before assuming a red gate is
+code.
+
+### A `git archive` export is not a git repo, and `go build` cares
+
+AGENT-RULES requires verifying in a `git archive` export. In one, all 32 e2e
+cases that boot a real `ledgerd` fail identically:
+
+```
+go build -o …/ledgerd ./cmd/ledgerd
+error obtaining VCS status: exit status 128
+        Use -buildvcs=false to disable VCS stamping.
+```
+
+`client/test/e2e/harness.ts:274` shells out to `go build` from `repoPath()`, and
+Go's default VCS stamping needs a repository there. Everything else in the gate
+passes, so the failure looks localised and specific rather than structural.
+
+Fix used: `printf 'node_modules/\n' > .gitignore && git init -q` inside the
+export before running the gate. `GOFLAGS=-buildvcs=false` also works but changes
+what is built; the `git init` keeps the build identical.
