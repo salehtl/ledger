@@ -167,6 +167,21 @@ export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignIn
    * the first attempt and the invite retry are one code path. The ref keys on
    * the state object's identity — the reducer makes a new one per transition
    * — so a resubmitted code runs again and a re-render does not.
+   *
+   * # Enrolment is part of it, not a step after it
+   *
+   * `exchanged` is dispatched only once this device can also AUTHOR. Until
+   * this existed the screen dispatched `exchanged` on the session alone and
+   * navigated on, and the account it navigated into could not write a single
+   * op — no edit, no category, no home currency — because nothing in `app/`
+   * had ever called `Client.enroll`. Reversing the order (navigate, then
+   * enrol) would put the failure on a screen that has already moved on.
+   *
+   * A failure here is a `failed` dispatch like any other, so the user is left
+   * on this screen with a true sentence and both buttons live. Pressing one
+   * again re-runs the whole thing; `ensureDeviceWriter` is idempotent, so the
+   * retry adopts this device's existing writer id rather than minting a
+   * second. Nothing retries on its own.
    */
   const handled = useRef<SignInState | null>(null);
   useEffect(() => {
@@ -181,13 +196,18 @@ export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignIn
       return;
     }
     let live = true;
+    const enrollDevice = deps.enrollDevice;
     exchangeOnce(backend, state.idp, state.idToken, state.inviteCode)
+      .then(async (userId) => {
+        if (enrollDevice !== null) await enrollDevice();
+        return userId;
+      })
       .then((userId) => live && dispatch({ type: "exchanged", userId }))
       .catch((e) => live && dispatch({ type: "failed", failure: classifyFailure(e) }));
     return () => {
       live = false;
     };
-  }, [state, deps.backend]);
+  }, [state, deps.backend, deps.enrollDevice]);
 
   const start = useCallback(
     async (auth: IdpAuthenticator) => {

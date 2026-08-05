@@ -15,7 +15,7 @@
 
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { useMemo } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
 import { deviceSignInDeps } from "../auth/native.ts";
 import { hasSession } from "../auth/session.ts";
@@ -45,8 +45,9 @@ import { SecurityScreen } from "../screens/settings/SecurityScreen.tsx";
 import { sqlExportSource, exportAndShare } from "../account/export.ts";
 import { nativeExportIO } from "../account/native.ts";
 import { deleteAccount, deletionResultCopy } from "../account/deletion.ts";
-import { useTheme } from "./Theme.tsx";
-import { useAccountWipe, useBootstrap, useRuntime } from "./RuntimeProvider.tsx";
+import { TOUCH_TARGET_MIN, useTheme } from "./Theme.tsx";
+import { useAccountWipe, useBootstrap, useBootstrapRetry, useRuntime } from "./RuntimeProvider.tsx";
+import type { EnrollmentCopy } from "../auth/enrollment.ts";
 
 export type RootStackParamList = {
   /**
@@ -101,6 +102,7 @@ export function Navigation() {
   const runtime = useRuntime();
   const bootstrap = useBootstrap();
   const wipeAccount = useAccountWipe();
+  const retryBootstrap = useBootstrapRetry();
   /**
    * Built once. `deviceSignInDeps` allocates objects and touches no native
    * module until something is pressed, but rebuilding it per render would hand
@@ -113,12 +115,23 @@ export function Navigation() {
    * says so on the glass rather than failing at tap time.
    */
   const signInDeps = useMemo(
-    () => deviceSignInDeps({ backend: runtime.client, secrets: runtime.secrets }),
+    () => deviceSignInDeps({ backend: runtime.client, secrets: runtime.secrets, enrollDevice: () => runtime.ensureDeviceWriter() }),
     [runtime],
   );
 
   if (bootstrap.step === "opening") {
     return <View testID="bootstrap-opening" style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: t.colors.bg }}><ActivityIndicator color={t.colors.accent} /></View>;
+  }
+  /*
+    Not the fatal wall. This account opened fine; the one thing missing is that
+    this phone is not yet registered as one that can make changes, and for
+    every transient cause of that — offline, a server that was down for a
+    minute — pressing the button below fixes it. It is rendered above the
+    navigator, like the fatal wall, because a device that cannot author must
+    not be walked into screens whose controls all fail on touch.
+  */
+  if (bootstrap.step === "unenrolled") {
+    return <UnenrolledWall copy={bootstrap.copy} onRetry={retryBootstrap} />;
   }
   if (bootstrap.step === "fatal" || bootstrap.step === "halted") {
     const detail = bootstrap.step === "fatal" ? bootstrap.error.message : bootstrap.reason;
@@ -307,5 +320,51 @@ export function Navigation() {
       </Stack.Screen>
       <Stack.Screen name="Shell" component={Shell} />
     </Stack.Navigator>
+  );
+}
+
+/**
+ * "You are signed in, and this phone cannot make changes yet."
+ *
+ * Every sentence on it comes from `enrollmentCopy`, which is where the honesty
+ * of this screen is tested. The button is rendered only when trying again
+ * could plausibly work: for a `403 registration_rejected` or a lost key it
+ * would fail identically every time, and a button that always fails is worse
+ * than none. There is deliberately no automatic retry — the state this
+ * replaces was a wall carrying the words "run `cli enroll --writer <id>`".
+ */
+function UnenrolledWall({ copy, onRetry }: { copy: EnrollmentCopy; onRetry: () => void }) {
+  const t = useTheme();
+  return (
+    <View
+      testID="bootstrap-unenrolled"
+      style={{ flex: 1, gap: t.space.lg, padding: t.space.xl, justifyContent: "center", backgroundColor: t.colors.bg }}
+    >
+      <Text accessibilityRole="alert" style={[t.type.title, { color: t.colors.text }]}>
+        {copy.title}
+      </Text>
+      <Text style={[t.type.body, { color: t.colors.text }]}>{copy.body}</Text>
+      {copy.retry && (
+        <Pressable
+          testID="enrollment-retry"
+          accessibilityRole="button"
+          accessibilityLabel="Try again"
+          onPress={onRetry}
+          hitSlop={t.space.md}
+          style={({ pressed }) => ({
+            minHeight: TOUCH_TARGET_MIN,
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: t.radius.md,
+            borderWidth: 1,
+            borderColor: t.colors.hairline,
+            backgroundColor: t.colors.surface,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Text style={[t.type.heading, { color: t.colors.accent }]}>Try again</Text>
+        </Pressable>
+      )}
+    </View>
   );
 }

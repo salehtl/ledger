@@ -92,6 +92,7 @@ function deps(overrides: Partial<SignInDeps> = {}): SignInDeps {
     apple: unusedAuthenticator(),
     google: null,
     backend: null,
+    enrollDevice: null,
     secrets: memSecretStore(),
     newNonce: () => "unused",
     ...overrides,

@@ -31,6 +31,7 @@
 import { SECRET_SESSION } from "@ledger/client/store/sqlite.ts";
 import type { SecretStore } from "@ledger/client/store/store.ts";
 
+import { enrollmentCopy, isEnrollmentError, type EnrollmentKind } from "./enrollment.ts";
 import { NonceMismatchError, UserCancelledError, type Idp } from "./idp.ts";
 
 // ---------------------------------------------------------------------------
@@ -68,12 +69,23 @@ export type AuthFailureKind =
   | "bad_request"
   | "nonce_mismatch"
   | "offline"
+  /**
+   * The IdP said yes and the exchange returned a session, and then this device
+   * could not be registered as one that can make changes.
+   *
+   * Its own kind, and not folded into `unknown`, because the two halves of
+   * "signing in" fail differently and a user told "sign-in failed" after a
+   * successful sign-in has been told something false. See `enrollment.ts`.
+   */
+  | "enrollment"
   | "unknown";
 
 export interface AuthFailure {
   kind: AuthFailureKind;
   /** For a log and for the report screen's small print. Never the only copy. */
   detail: string;
+  /** Set only for `kind: "enrollment"`; picks which sentence is true. */
+  enrollment?: EnrollmentKind;
 }
 
 /**
@@ -114,6 +126,12 @@ export function mayWipeLocalData(err: unknown): boolean {
 export function classifyFailure(err: unknown): AuthFailure {
   if (err instanceof UserCancelledError) return { kind: "cancelled", detail: err.message };
   if (err instanceof NonceMismatchError) return { kind: "nonce_mismatch", detail: err.message };
+  // Before the status arm: an `EnrollmentError` carries the cause's status
+  // (403 for a registration refusal, 429 for a rate limit), and reading that
+  // status here would file it as an invite problem or a generic failure.
+  // `ensureDeviceWriter` deliberately lets 401 and 410 past unwrapped, so
+  // those still reach the arms below.
+  if (isEnrollmentError(err)) return { kind: "enrollment", detail: err.message, enrollment: err.enrollmentKind };
 
   const http = httpShape(err);
   if (http === null) {
@@ -181,6 +199,10 @@ export function failureCopy(failure: AuthFailure): { title: string; body: string
       };
     case "offline":
       return { title: "No connection", body: "ledger could not reach the server. Try again when you are online.", retry: true };
+    case "enrollment":
+      // Delegated, not restated: the launch wall renders the same sentences
+      // from the same function, and two copies of this text would drift.
+      return enrollmentCopy(failure.enrollment ?? "unavailable");
     case "bad_request":
     case "unknown":
       return { title: "Sign-in failed", body: "Something went wrong that ledger did not expect.", retry: true };
