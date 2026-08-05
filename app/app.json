@@ -8,7 +8,7 @@
     "scheme": "ledger",
     "newArchEnabled": true,
     "ios": {
-      "bundleIdentifier": "com.salehtl.ledger",
+      "bundleIdentifier": "ae.sirdab.ledger",
       "supportsTablet": false,
       "requireFullScreen": true,
       "infoPlist": {

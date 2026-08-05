@@ -188,6 +188,14 @@ export const VIOLATION_NEWER_VERSION = "newer_version";
  */
 export const VIOLATION_CHECK_FAILED = "check_failed";
 
+/**
+ * `I11_roster_checkpoint`: the checkpoint itself is malformed or makes an
+ * impossible claim. This is server-supplied attestation data that contradicts
+ * its own shape, so it belongs in the tampered lane rather than the benign
+ * "this device has not been vouched for yet" lane used by ordinary coverage.
+ */
+export const VIOLATION_CHECKPOINT_INVALID = "checkpoint_invalid";
+
 /** `I11_roster_checkpoint`: no checkpoint exists yet and none is required. Routine. */
 export const NOTICE_NO_CHECKPOINT_YET = "no_checkpoint_yet";
 
@@ -410,6 +418,7 @@ export const ANOMALY_KINDS: ReadonlySet<string> = new Set([
   "duplicate_create",
   "duplicate_delivery",
   "duplicate_ingest",
+  "duplicate_disposition_mismatch",
   "edit_of_superseded",
   "entity_kind_mismatch",
   "future_parent",
@@ -1083,6 +1092,13 @@ function checkOneLivePerIngest(i: StreamCheckInput): Violation[] {
         ),
       );
     }
+    const disposition = t.duplicate_disposition ?? null;
+    if (disposition !== null && disposition !== "same" && disposition !== "different") {
+      out.push(note(I14, `${id} has invalid duplicate disposition ${JSON.stringify(disposition)}`));
+    }
+    if (disposition !== null && t.possible_duplicate_of === null) {
+      out.push(note(I14, `${id} has duplicate disposition ${disposition} but no possible_duplicate_of counterpart`));
+    }
   }
   return out.take(I7);
 }
@@ -1255,7 +1271,11 @@ const I10 = "I10_fx_prefix_monotone";
  */
 function checkFXPrefixMonotone(i: StreamCheckInput, r: Refold): Violation[] {
   if (r.state === null) {
-    return [hard(I10, `the ops backing this state cannot be re-folded in the order given: ${r.error}`)];
+    // The checker failed to obtain an independent state to compare. That is
+    // UNCERTIFIED, not evidence that the device's materialized state is wrong:
+    // no comparison happened. Kind it explicitly so the surface cannot turn a
+    // broken check into the "records don't add up" claim.
+    return [hardKind(I10, VIOLATION_CHECK_FAILED, `the ops backing this state cannot be re-folded in the order given: ${r.error}`)];
   }
   const out = sink();
   for (const id of i.state.txns.keys()) {
@@ -1471,20 +1491,20 @@ function checkRosterCheckpoint(i: StreamCheckInput): Violation[] {
     }
     const key = safeChainKey(c.writer_id, c.stream);
     if (key === null) {
-      out.push(hard(I11, `a checkpoint head names (${c.writer_id}, ${c.stream}), which cannot be a chain key`));
+      out.push(hardKind(I11, VIOLATION_CHECKPOINT_INVALID, `a checkpoint head names (${c.writer_id}, ${c.stream}), which cannot be a chain key`));
       continue;
     }
     if (typeof c.counter !== "bigint") {
       // Reported rather than skipped: a mistyped counter is a checkpoint that
       // cannot be compared, and silently not comparing it is how the whole
       // cross-check goes missing without anyone noticing.
-      out.push(hard(I11, `checkpoint head (${key}) has counter ${JSON.stringify(c.counter)}, which is not a bigint and cannot be compared`));
+      out.push(hardKind(I11, VIOLATION_CHECKPOINT_INVALID, `checkpoint head (${key}) has counter ${JSON.stringify(c.counter)}, which is not a bigint and cannot be compared`));
       continue;
     }
     if (c.counter === 0n && !/^0{64}$/.test(c.hash)) {
       // Counter 0 is the head of an EMPTY chain, whose hash is genesis by
       // definition. Anything else is a head claiming to be nothing and something.
-      out.push(hard(I11, `checkpoint head (${key}) is at counter 0 but names hash ${c.hash}, not the genesis hash`));
+      out.push(hardKind(I11, VIOLATION_CHECKPOINT_INVALID, `checkpoint head (${key}) is at counter 0 but names hash ${c.hash}, not the genesis hash`));
     }
     if (c.stream !== i.stream) {
       out.push(

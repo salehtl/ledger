@@ -19,6 +19,7 @@ import { StatusBar } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { Navigation } from "./Navigation.tsx";
+import { RuntimeProvider } from "./RuntimeProvider.tsx";
 import { ThemeProvider, useTheme } from "./Theme.tsx";
 
 function ThemedContainer() {
@@ -41,7 +42,9 @@ function ThemedContainer() {
     <>
       <StatusBar barStyle={t.scheme === "dark" ? "light-content" : "dark-content"} backgroundColor={t.colors.bg} />
       <NavigationContainer theme={navTheme}>
-        <Navigation />
+        <RuntimeProvider>
+          <Navigation />
+        </RuntimeProvider>
       </NavigationContainer>
     </>
   );

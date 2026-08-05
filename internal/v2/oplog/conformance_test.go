@@ -186,15 +186,18 @@ type timeCase struct {
 }
 
 type opManifest struct {
-	Note                   string     `json:"note"`
-	SchemaVersion          int        `json:"schema_version"`
-	Types                  []string   `json:"types"`
-	ParentFree             []string   `json:"parent_free"`
-	GoldenOpsBase64        string     `json:"golden_ops_base64"`
-	GoldenRawBodyBase64    string     `json:"golden_raw_body_base64"`
-	GoldenCheckpointBase64 string     `json:"golden_checkpoint_base64"`
-	ExpectOps              []opExpect `json:"expect_ops"`
-	AuthoredAtCases        []timeCase `json:"authored_at_cases"`
+	Note                                string            `json:"note"`
+	SchemaVersion                       int               `json:"schema_version"`
+	Types                               []string          `json:"types"`
+	ParentFree                          []string          `json:"parent_free"`
+	GoldenOpsBase64                     string            `json:"golden_ops_base64"`
+	GoldenRawBodyBase64                 string            `json:"golden_raw_body_base64"`
+	GoldenCheckpointBase64              string            `json:"golden_checkpoint_base64"`
+	DuplicateDispositionBase64          string            `json:"duplicate_disposition_base64"`
+	VerifiedOriginBase64                string            `json:"verified_origin_base64"`
+	DuplicateDispositionInvalidPayloads []json.RawMessage `json:"duplicate_disposition_invalid_payloads"`
+	ExpectOps                           []opExpect        `json:"expect_ops"`
+	AuthoredAtCases                     []timeCase        `json:"authored_at_cases"`
 	// ParentVersionOverflowBase64 is an op blob this executor accepts and the
 	// TypeScript one must REFUSE: parent_version is a raw JSON number on the
 	// frozen wire, so an int64 above 2^53 is expressible here and is already
@@ -301,7 +304,7 @@ func goldenOps() []Op {
 		// A create carrying an ingest_id: the only op shape in which that field
 		// appears on the wire at all.
 		{
-			V:          SchemaVersion,
+			V:          1,
 			Type:       OpTxnIngested,
 			OpID:       "01J000000000000000000000I1",
 			AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
@@ -312,7 +315,7 @@ func goldenOps() []Op {
 		// A causal op with a parent version, which the wire carries as a raw
 		// JSON number.
 		{
-			V:             SchemaVersion,
+			V:             1,
 			Type:          OpTxnCategorized,
 			OpID:          "01J000000000000000000000A1",
 			AuthoredAt:    time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
@@ -322,13 +325,26 @@ func goldenOps() []Op {
 		},
 		// A parent-free fact: no entity, null parent_version.
 		{
-			V:          SchemaVersion,
+			V:          1,
 			Type:       OpRateSet,
 			OpID:       "01J000000000000000000000R1",
 			AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
 			Payload:    json.RawMessage(`{"currency":"USD","rate_micro":"3672500"}`),
 		},
 	}
+}
+
+func duplicateDispositionOps() []Op {
+	parent := int64(3)
+	return []Op{{V: 2, Type: OpTxnDuplicateDisposition, OpID: "01J000000000000000000000D1",
+		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC), Entity: &EntityRef{Kind: "txn", ID: "T1"},
+		ParentVersion: &parent, Payload: json.RawMessage(`{"other_txn_id":"T0","disposition":"same"}`)}}
+}
+
+func verifiedOriginOps() []Op {
+	return []Op{{V: 2, Type: OpTxnIngested, OpID: "01J000000000000000000000O1",
+		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC), Entity: &EntityRef{Kind: "txn", ID: "T2"},
+		IngestID: strings.Repeat("a", 64), Payload: json.RawMessage(`{"amount_minor":"1","currency":"AED","direction":"debit","posted_at":"2026-06-05T10:00:00Z","merchant_raw":"BANK","last4":"","needs_review":false,"unparsed":false,"tier":"template","verified_origin_domain":"bank.example"}`)}}
 }
 
 func mustEncodeBlob(t *testing.T, ops []Op) []byte {
@@ -591,10 +607,18 @@ func TestWriteConformanceFixtures(t *testing.T) {
 			"the string THIS executor writes, and the TypeScript side asserts it can READ it, which " +
 			"is how a canonical form outside the shared four-digit-year grammar (years 10000 and -1 " +
 			"are both reachable from a wire-legal input) becomes visible to the suite at all.",
-		SchemaVersion:          SchemaVersion,
-		GoldenOpsBase64:        base64.StdEncoding.EncodeToString(ops),
-		GoldenRawBodyBase64:    base64.StdEncoding.EncodeToString(raw),
-		GoldenCheckpointBase64: base64.StdEncoding.EncodeToString(checkpoint),
+		SchemaVersion:              SchemaVersion,
+		GoldenOpsBase64:            base64.StdEncoding.EncodeToString(ops),
+		GoldenRawBodyBase64:        base64.StdEncoding.EncodeToString(raw),
+		GoldenCheckpointBase64:     base64.StdEncoding.EncodeToString(checkpoint),
+		DuplicateDispositionBase64: base64.StdEncoding.EncodeToString(mustEncodeBlob(t, duplicateDispositionOps())),
+		VerifiedOriginBase64:       base64.StdEncoding.EncodeToString(mustEncodeBlob(t, verifiedOriginOps())),
+		DuplicateDispositionInvalidPayloads: []json.RawMessage{
+			json.RawMessage(`{}`), json.RawMessage(`{"other_txn_id":"T0"}`),
+			json.RawMessage(`{"other_txn_id":"","disposition":"same"}`), json.RawMessage(`{"other_txn_id":7,"disposition":"same"}`),
+			json.RawMessage(`{"other_txn_id":"T0","disposition":"merge"}`), json.RawMessage(`{"other_txn_id":"T0","disposition":7}`),
+			json.RawMessage(`null`), json.RawMessage(`[]`),
+		},
 	}
 	for _, ty := range Types {
 		opMan.Types = append(opMan.Types, string(ty))
@@ -862,6 +886,25 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 	man := readOpManifest(t)
 	if man.SchemaVersion != SchemaVersion {
 		t.Fatalf("manifest is for schema v%d, this build is v%d", man.SchemaVersion, SchemaVersion)
+	}
+	duplicateBytes, err := base64.StdEncoding.DecodeString(man.DuplicateDispositionBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateOps, err := DecodeBlob(duplicateBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(duplicateOps) != 1 || duplicateOps[0].Type != OpTxnDuplicateDisposition {
+		t.Fatalf("duplicate disposition fixture decoded as %#v", duplicateOps)
+	}
+	baseInvalid := duplicateDispositionOps()[0]
+	for _, payload := range man.DuplicateDispositionInvalidPayloads {
+		bad := baseInvalid
+		bad.Payload = payload
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("Go accepted shared invalid duplicate-disposition payload %s", payload)
+		}
 	}
 	if len(man.Types) != len(Types) {
 		t.Fatalf("manifest lists %d op types, this build has %d", len(man.Types), len(Types))

@@ -343,7 +343,7 @@ func (p *Pipeline) promoteHeld(ctx context.Context, userID uuid.UUID,
 		Raw:          it.Blob,
 		ReceivedAt:   it.ReceivedAt,
 	}
-	if err := p.appendOps(ctx, d, it.IngestID, it.ReceivedAt, res, tr); err != nil {
+	if err := p.appendOps(ctx, d, it.IngestID, it.ReceivedAt, res, tr, dec.Domain); err != nil {
 		return err
 	}
 	// The message is in the log from here on, so it is counted here rather than
@@ -553,6 +553,7 @@ func (p *Pipeline) reprocessOne(ctx context.Context, userID uuid.UUID, ingestID,
 	if err != nil {
 		return fmt.Errorf("ingest: reprocess: %s…: %w", short, err)
 	}
+	next.VerifiedOriginDomain = dec.Domain
 
 	rec := p.reprocessRecord(userID, ingestID, *o, res, tr, diag.OutcomeUnchanged)
 	changed := changedFields(*prev, next)

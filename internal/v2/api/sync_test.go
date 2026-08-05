@@ -24,6 +24,7 @@ import (
 	"ledger/internal/v2/config"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/pgtest"
+	"ledger/internal/v2/tmpl"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
@@ -91,6 +92,7 @@ func newHarness(t *testing.T) *harness {
 		Sessions:  &auth.Sessions{Pool: pool, TTL: time.Hour},
 		Writers:   &auth.Writers{Pool: pool},
 		Appender:  &oplog.Appender{Pool: pool},
+		Templates: &tmpl.Store{Pool: pool},
 		Verifiers: map[string]auth.Verifier{auth.IdPApple: apple},
 		Logf:      func(string, ...any) {},
 	}

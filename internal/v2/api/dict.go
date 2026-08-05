@@ -9,11 +9,9 @@ package api
 // distribution: the server publishes, every client receives the identical
 // bytes, and matching runs on-device.
 //
-// It is the only part of the dictionary a client can reach. There is no
-// submission endpoint in Phase 1 — spec §3.6's opt-in confirmations arrive with
-// the Phase 2 client, and internal/v2/dict.Submit is the call that will serve
-// it — and there is deliberately no moderation route here: that lives on the
-// tailnet-bound admin listener (internal/v2/admin), never on the public API.
+// POST /api/v1/dictionary/submissions is the deliberately opt-in write side.
+// There is no moderation route here: that lives on the tailnet-bound admin
+// listener (internal/v2/admin), never on the public API.
 //
 // # What it must never carry
 //
@@ -37,6 +35,7 @@ package api
 // user's own merchants.
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -44,6 +43,38 @@ import (
 
 	"ledger/internal/v2/dict"
 )
+
+type dictionarySubmissionRequest struct {
+	Pattern  string `json:"pattern"`
+	Match    string `json:"match"`
+	Category string `json:"category"`
+}
+
+func (s *Server) handleDictionarySubmission(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	var req dictionarySubmissionRequest
+	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
+		return
+	}
+	entry, err := dict.Canonicalize(dict.Entry{Pattern: req.Pattern, Match: req.Match, Category: req.Category})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !s.DictionaryPerUser.Allow(userID.String()) || !s.DictionaryPerEntry.Allow(entry.Pattern+"\x00"+entry.Match+"\x00"+entry.Category) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many dictionary submissions; try again shortly")
+		return
+	}
+	err = s.Dict.SubmitMatched(r.Context(), userID, entry.Pattern, entry.Match, entry.Category)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, dict.ErrInvalidEntry):
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+	default:
+		s.logf("api: POST /api/v1/dictionary/submissions: %v", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "")
+	}
+}
 
 // DictionaryEntry is one published mapping.
 type DictionaryEntry struct {

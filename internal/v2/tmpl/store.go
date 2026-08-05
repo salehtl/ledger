@@ -199,6 +199,9 @@ func (s *Store) Publish(ctx context.Context, d Definition) error {
 			return fmt.Errorf("tmpl: publish %s version %d: %w", d.ID, d.Version, err)
 		}
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO template_publication_log (template_id, template_version, action, created_at) VALUES ($1,$2,'published',$3)`, d.ID, d.Version, now); err != nil {
+		return fmt.Errorf("tmpl: record publication of %s version %d: %w", d.ID, d.Version, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		// A unique violation can also surface at COMMIT rather than at INSERT
 		// (a deferred check, or the index wait resolving in the loser's
@@ -256,6 +259,109 @@ func (s *Store) Published(ctx context.Context) ([]Definition, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("tmpl: read published templates: %w", err)
+	}
+	return out, nil
+}
+
+// PublicationDelta is the global device distribution cursor. Since zero is a
+// snapshot of the current published set; later cursors contain the last change
+// per template id, including honest removals.
+type PublicationDelta struct {
+	Version   int64
+	Templates []Definition
+	Removed   []string
+}
+
+var ErrPublicationCursor = errors.New("tmpl: publication cursor is ahead of current")
+
+func (s *Store) PublicationSince(ctx context.Context, since int64) (PublicationDelta, error) {
+	if err := s.check(); err != nil {
+		return PublicationDelta{}, err
+	}
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return PublicationDelta{}, fmt.Errorf("tmpl: begin publication snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var out PublicationDelta
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(seq),0) FROM template_publication_log`).Scan(&out.Version); err != nil {
+		return out, fmt.Errorf("tmpl: read publication cursor: %w", err)
+	}
+	if since > out.Version {
+		return out, fmt.Errorf("%w: %d > %d", ErrPublicationCursor, since, out.Version)
+	}
+	if since == 0 {
+		rows, err := tx.Query(ctx, `SELECT id, version, definition FROM templates WHERE status=$1 ORDER BY id`, StatusPublished)
+		if err != nil {
+			return out, fmt.Errorf("tmpl: read publication snapshot: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var version int
+			var raw []byte
+			if err := rows.Scan(&id, &version, &raw); err != nil {
+				rows.Close()
+				return out, err
+			}
+			d, err := ParseDefinition(raw)
+			if err != nil {
+				rows.Close()
+				return out, fmt.Errorf("tmpl: publication %s: %w", id, err)
+			}
+			out.Templates = append(out.Templates, d)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return out, err
+		}
+		rows.Close()
+		out.Removed = []string{}
+		if err := tx.Commit(ctx); err != nil {
+			return out, fmt.Errorf("tmpl: commit publication snapshot: %w", err)
+		}
+		return out, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT e.template_id, e.template_version, e.action, t.definition
+		FROM (SELECT DISTINCT ON (template_id) template_id, template_version, action, seq
+		      FROM template_publication_log WHERE seq > $1 AND seq <= $2 ORDER BY template_id, seq DESC) e
+		LEFT JOIN templates t ON t.id=e.template_id AND t.version=e.template_version
+		ORDER BY e.template_id`, since, out.Version)
+	if err != nil {
+		return out, fmt.Errorf("tmpl: read publication delta: %w", err)
+	}
+	defer rows.Close()
+	out.Templates = []Definition{}
+	out.Removed = []string{}
+	for rows.Next() {
+		var id, action string
+		var version *int
+		var raw []byte
+		if err := rows.Scan(&id, &version, &action, &raw); err != nil {
+			return out, err
+		}
+		if action == "removed" {
+			out.Removed = append(out.Removed, id)
+			continue
+		}
+		if version == nil || raw == nil {
+			return out, fmt.Errorf("tmpl: publication %s has no definition", id)
+		}
+		d, err := ParseDefinition(raw)
+		if err != nil {
+			return out, fmt.Errorf("tmpl: publication %s: %w", id, err)
+		}
+		if err := ValidateForPublish(d); err != nil {
+			return out, fmt.Errorf("tmpl: publication %s invalid: %w", id, err)
+		}
+		out.Templates = append(out.Templates, d)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return out, fmt.Errorf("tmpl: commit publication delta: %w", err)
 	}
 	return out, nil
 }
@@ -379,6 +485,9 @@ func (s *Store) SetStatus(ctx context.Context, id string, version int, status st
 			id, StatusPublished, StatusRetired, version); err != nil {
 			return fmt.Errorf("tmpl: retire the live version of %s: %w", id, err)
 		}
+		if _, err := tx.Exec(ctx, `INSERT INTO template_publication_log (template_id, template_version, action, created_at) VALUES ($1,$2,'published',$3)`, id, version, now); err != nil {
+			return fmt.Errorf("tmpl: record publication of %s version %d: %w", id, version, err)
+		}
 		// published_at records the FIRST time this version went live and is not
 		// reset by a re-promotion: it is the answer to "when could this parser
 		// have produced a transaction", which a later promotion does not change.
@@ -403,6 +512,11 @@ func (s *Store) SetStatus(ctx context.Context, id string, version int, status st
 		if _, err := tx.Exec(ctx,
 			`UPDATE templates SET status = $3 WHERE id = $1 AND version = $2`, id, version, status); err != nil {
 			return fmt.Errorf("tmpl: set status of %s version %d: %w", id, version, err)
+		}
+		if current == StatusPublished {
+			if _, err := tx.Exec(ctx, `INSERT INTO template_publication_log (template_id, action, created_at) VALUES ($1,'removed',$2)`, id, now); err != nil {
+				return fmt.Errorf("tmpl: record removal of %s: %w", id, err)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

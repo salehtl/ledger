@@ -17,6 +17,7 @@ import {
   INVARIANT_IDS,
   MAX_FINDINGS_PER_INVARIANT,
   NOTICE_COUNTS,
+  VIOLATION_CHECKPOINT_INVALID,
   WRITER_KIND_DEVICE,
   WRITER_KIND_INGEST,
   arrayChunks,
@@ -666,7 +667,7 @@ test("I5 accepts every rung of the ladder", () => {
 
 test("I6 fires on an op from a newer schema version", () => {
   const input = cleanInput();
-  input.ops[0]!.op.v = 2;
+  input.ops[0]!.op.v = 3;
   expect(stopIDs(checkAll(input))).toContain("I6_schema_version");
 });
 
@@ -894,7 +895,11 @@ test("I11 hard-stops on a counter-0 checkpoint head whose hash is not genesis", 
     ],
     roster,
   });
-  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.severity === "hard_stop" && v.detail.includes("genesis"))).toBe(true);
+  expect(
+    all(checkAll(input), "I11_roster_checkpoint").some(
+      (v) => v.severity === "hard_stop" && v.kind === VIOLATION_CHECKPOINT_INVALID && v.detail.includes("genesis"),
+    ),
+  ).toBe(true);
 });
 
 test("I11 hard-stops when the checkpoint names no head for the INGEST chain", () => {
@@ -1139,7 +1144,11 @@ test("I11 surfaces a genesis claim against a cold chain the client has hash-list
 test("I11 fires when a checkpoint counter is not a bigint", () => {
   const input = cleanInput({ plans: [...hotPlans(), checkpointPlan("dev-a", defaultRoster())] });
   (input.state.checkpoints[0] as unknown as { counter: string }).counter = "6";
-  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.detail.includes("not a bigint"))).toBe(true);
+  expect(
+    all(checkAll(input), "I11_roster_checkpoint").some(
+      (v) => v.kind === VIOLATION_CHECKPOINT_INVALID && v.detail.includes("not a bigint"),
+    ),
+  ).toBe(true);
 });
 
 test("I11 notices a blob from a writer the roster does not list", () => {
@@ -1340,7 +1349,7 @@ test("the anomaly vocabulary is pinned against replay.ts itself", async () => {
   // when the engine grows a new refusal.
   const src = await Bun.file(`${import.meta.dir}/../replay/replay.ts`).text();
   const fromSource = new Set([...src.matchAll(/anomaly\(\s*s,\s*[^,]+,\s*"([a-z_]+)"/g)].map((m) => m[1]!));
-  expect(fromSource.size).toBe(20);
+  expect(fromSource.size).toBe(21);
   expect([...ANOMALY_KINDS].sort()).toEqual([...fromSource].sort());
 });
 
@@ -1477,7 +1486,11 @@ test("I10 fires when the op log creates a transaction the state has dropped", ()
 test("I11 fires on a checkpoint head that names no usable chain", () => {
   const input = cleanInput();
   input.state.checkpoints = [{ writer_id: "", stream: "hot", counter: 1n, hash: "0".repeat(64) }];
-  expect(all(checkAll(input), "I11_roster_checkpoint").some((v) => v.detail.includes("cannot be a chain key"))).toBe(true);
+  expect(
+    all(checkAll(input), "I11_roster_checkpoint").some(
+      (v) => v.kind === VIOLATION_CHECKPOINT_INVALID && v.detail.includes("cannot be a chain key"),
+    ),
+  ).toBe(true);
 });
 
 /**
@@ -2205,7 +2218,7 @@ const FIRING: Firing[] = [
     what: "an op is from a newer schema version than this build",
     build: () => {
       const input = cleanInput();
-      input.ops[0]!.op.v = 2;
+      input.ops[0]!.op.v = 3;
       return input;
     },
   },
@@ -2343,6 +2356,63 @@ test("a row source that is not re-iterable is a named hard stop, not a quiet gre
   const vs = checkAllStream({ ...input, rows: once, ops: arrayChunks(input.ops) });
   expect(stopIDs(vs)).toContain("REITERABLE_SOURCE");
   expect(find(vs, "REITERABLE_SOURCE")!.detail).toContain("not re-iterable");
+});
+
+test("a failure during the checker refold is an uncertified hard stop, never a throw", () => {
+  const input = cleanInput();
+  let failed = false;
+  const failsOnRefold: Chunks<LogEntry> = {
+    each(fn) {
+      // Re-iterability measures rows; the first ops pass belongs to refold(),
+      // outside the per-invariant CHECKS[].run catch boundary. Fail ONCE, then
+      // serve normally: otherwise a later per-check catch could emit the same
+      // fixture text and make this assertion pass while refold swallowed its
+      // own failure.
+      if (!failed) {
+        failed = true;
+        throw new Error("poisoned refold source");
+      }
+      fn(input.ops);
+    },
+  };
+
+  let vs: Violation[] | undefined;
+  expect(() => {
+    vs = checkAllStream({ ...input, rows: arrayChunks(input.rows), ops: failsOnRefold });
+  }).not.toThrow();
+  expect(
+    vs!.some(
+      (v) =>
+        v.id === "I10_fx_prefix_monotone" &&
+        v.severity === "hard_stop" &&
+        v.kind === "check_failed" &&
+        v.detail.includes("poisoned refold source"),
+    ),
+  ).toBe(true);
+});
+
+test("a failure inside an individual invariant is an uncertified hard stop", () => {
+  const input = cleanInput();
+  let pass = 0;
+  const failsInFirstRowCheck: Chunks<SyncRow> = {
+    each(fn) {
+      pass++;
+      if (pass === 3) throw new Error("poisoned invariant source");
+      fn(input.rows);
+    },
+  };
+  let vs: Violation[] | undefined;
+  expect(() => {
+    vs = checkAllStream({ ...input, rows: failsInFirstRowCheck, ops: arrayChunks(input.ops) });
+  }).not.toThrow();
+  expect(
+    vs!.some(
+      (v) =>
+        v.severity === "hard_stop" &&
+        v.kind === "check_failed" &&
+        v.detail.includes("poisoned invariant source"),
+    ),
+  ).toBe(true);
 });
 
 test("no invariant contributes an unbounded number of findings, and truncation says so", () => {

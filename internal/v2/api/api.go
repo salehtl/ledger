@@ -170,6 +170,7 @@ import (
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/samples"
 	"ledger/internal/v2/smtpd"
+	"ledger/internal/v2/tmpl"
 )
 
 // Request-shaping limits. They bound what one caller can make the server hold
@@ -262,6 +263,13 @@ const (
 	sampleBurst   = 60
 	sampleMaxKeys = 4096
 
+	// Dictionary confirmations share the samples shape: deliberate bursts while
+	// clearing review, then silence. Bound both one account and one merchant so
+	// neither a stolen session nor many sessions can churn rows without limit.
+	dictionaryRate    = sampleRate
+	dictionaryBurst   = sampleBurst
+	dictionaryMaxKeys = 4096
+
 	// The push budget covers registration, both deletes and nothing else. It
 	// was the ONE session-authenticated write endpoint in this API with no
 	// limiter, which read as a decision and was not one: a single session could
@@ -323,10 +331,12 @@ type Server struct {
 	// LEDGER_DICT_HMAC_KEY cannot count submitters at all, and a dictionary
 	// route that answers 500 is one a client retries forever.
 	//
-	// Only the READ side is reachable from this listener. Moderation is
-	// internal/v2/admin's, on the tailnet-bound listener; there is no route
-	// here that can approve anything.
+	// Distribution and opt-in submission are reachable here. Moderation is
+	// internal/v2/admin's, on the tailnet-bound listener; no public route can
+	// approve anything.
 	Dict *dict.Dict
+	// Templates is the global published template delta feed.
+	Templates *tmpl.Store
 
 	// Deletion owns the account-deletion challenge lane (spec §3.10). Unlike
 	// Addresses, Quarantine and Dict, it is NEVER left nil and its routes are
@@ -399,7 +409,9 @@ type Server struct {
 	// cannot parse and the user may then donate one of those messages — and a
 	// caller who can spend an unlimited number of the cheap calls is not
 	// meaningfully limited on the expensive one.
-	SamplesPerUser *Limiter
+	SamplesPerUser     *Limiter
+	DictionaryPerUser  *Limiter
+	DictionaryPerEntry *Limiter
 	// PushPerUser covers push-token registration and both deletes on ONE
 	// budget, for the reason the two above share: they are one flow, and a
 	// caller who can register without limit is not limited by a bounded delete.
@@ -525,6 +537,7 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 	} else {
 		s.Dict = &dict.Dict{Pool: pool, Now: now}
 	}
+	s.Templates = &tmpl.Store{Pool: pool, Now: now}
 	// The backup relay's shared secret (spec §3.2). relay.enabled asks for the
 	// two relay routes; without the token they cannot be served, and answering
 	// that with a warning would leave an operator believing they had a relay
@@ -596,6 +609,12 @@ func (s *Server) Handler() http.Handler {
 	if s.SamplesPerUser == nil {
 		s.SamplesPerUser = NewLimiter(sampleRate, sampleBurst, sampleMaxKeys, s.now)
 	}
+	if s.DictionaryPerUser == nil {
+		s.DictionaryPerUser = NewLimiter(dictionaryRate, dictionaryBurst, dictionaryMaxKeys, s.now)
+	}
+	if s.DictionaryPerEntry == nil {
+		s.DictionaryPerEntry = NewLimiter(dictionaryRate, dictionaryBurst, dictionaryMaxKeys, s.now)
+	}
 	if s.AccountPerUser == nil {
 		s.AccountPerUser = NewLimiter(accountRate, accountBurst, accountMaxKeys, s.now)
 	}
@@ -661,8 +680,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/push/tokens", s.requireSession(s.handleListPushTokens))
 	mux.HandleFunc("DELETE /api/v1/push/tokens", s.requireSession(s.handleDeleteAllPushTokens))
 	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
+	mux.HandleFunc("POST /api/v1/waitlist", s.requireSession(s.handleWaitlist))
 	if s.Dict != nil {
 		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))
+		mux.HandleFunc("POST /api/v1/dictionary/submissions", s.requireSession(s.handleDictionarySubmission))
+	}
+	if s.Templates != nil {
+		mux.HandleFunc("GET /api/v1/templates", s.requireSession(s.handleTemplates))
 	}
 	if s.Samples != nil {
 		mux.HandleFunc("POST /api/v1/samples/report", s.requireSession(s.handleReport))

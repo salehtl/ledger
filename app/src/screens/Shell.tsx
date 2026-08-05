@@ -1,5 +1,11 @@
 /**
- * The shell smoke screen — **temporary**, and replaced by Task 14's onboarding.
+ * The shell smoke screen — **temporary**.
+ *
+ * Task 14 landed the onboarding flow in front of it (`SignIn → Onboarding →
+ * Shell`), so this is no longer the first thing after sign-in; it is what
+ * "finished onboarding" currently lands on, and Task 18's transactions list
+ * replaces it. It is kept rather than deleted because it is still the only
+ * thing on the device that reports whether the two seams below are live.
  *
  * Task 3 Step 1 asks for "a throwaway import of `fold` from
  * `@ledger/client/replay/replay.ts` that type-checks and bundles". A throwaway

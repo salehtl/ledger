@@ -78,6 +78,7 @@ export LEDGER_TEST_POSTGRES_URL
 # unnoticed on every one of those tasks.
 go vet ./internal/v2/... ./cmd/ledgerd
 go test -count=1 ./internal/v2/... ./cmd/ledgerd
+go test -count=1 ./internal/importer
 
 # The TypeScript executor. `bun install` is not run here: a gate that mutates
 # the working tree to make itself pass is not a gate, so a missing
@@ -94,6 +95,6 @@ if [[ ! -d client/node_modules ]]; then
 	echo "v2-check: client/node_modules is missing; run (cd client && bun install)" >&2
 	exit 1
 fi
-(cd client && bun run typecheck && bun test)
+(cd client && bun run typecheck && bun test src/diag/structure.test.ts && bun test)
 
 echo "v2-check: OK (go + client + conformance)"

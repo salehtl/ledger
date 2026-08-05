@@ -91,6 +91,8 @@ Phase 0's >500 MB freeze was partly one unguarded full pass.
 | Component | Purpose | Use when | Do not use when |
 |---|---|---|---|
 | `screens/onboarding/NotInvitedView.tsx` | The closed beta's front door: explains the invite gate and takes a code. | The server answered `403 not_invited`. | Anywhere else — it is a state of the sign-in screen, not a route, so that a live ID token never travels through navigation params. |
+| `screens/onboarding/OnboardingShell.tsx` | Routes the onboarding step derived from `lib/onboarding.ts`, and holds the two stop states. | The one route between sign-in and the product. | As a place to put a step's content — register it in `screens` instead, so the shell keeps holding no product logic. |
+| `screens/onboarding/HomeCurrencyScreen.tsx` | The one-shot, irreversible home-currency picker. | Onboarding, once. | Ever again. It refuses when the log already carries a currency, and Settings must never offer it (§3.7). |
 | `components/HaltBanner.tsx` | The non-dismissable wall spec §3.4 requires: sync has stopped and the app is not usable until it is fixed. | `surface().halt` is non-null. Render it **instead of** the navigator, at the root. | An unreadable blob (that is a dismissable banner, §3.3:74), or anything a user may continue past. There is no `onDismiss` prop, on purpose. |
 | `screens/settings/IntegrityScreen.tsx` | Everything the checker found that is not a wall: grouped notices with counts, the set-aside count, and a record of any halt. | Settings → Integrity, badged with `surface().badge`. | As a modal, or as a substitute for the halt — a notice list is never a stop, and a stop is never a row. |
 
@@ -101,8 +103,10 @@ shared components, and are documented in their own headers.
 
 | Screen | Status |
 |---|---|
-| `src/screens/onboarding/SignInScreen.tsx` | **The initial route.** Sign in with Apple and Google. Holds no policy — everything it renders is decided in `src/auth/` and tested under `bun test`. Task 14's step machine wraps it. |
-| `src/screens/Shell.tsx` | **Temporary.** The shell smoke screen: reports whether the platform seam and the replay fold are live on the device. Task 14's onboarding replaces it. |
+| `src/screens/onboarding/SignInScreen.tsx` | **The initial route.** Sign in with Apple and Google. Holds no policy — everything it renders is decided in `src/auth/` and tested under `bun test`. Hands off to `OnboardingShell` with the account id, or `null` for a session already on the device. |
+| `src/screens/onboarding/OnboardingShell.tsx` | **The route after sign-in.** One screen, not a stack: the step is derived from facts by `lib/onboarding.ts`, so a cold launch resumes with nothing to restore. Slots for Tasks 15–17; an unfilled slot names the task that owns it. |
+| `src/screens/onboarding/HomeCurrencyScreen.tsx` | The home-currency picker. Two-step, acknowledged, and irreversible. |
+| `src/screens/Shell.tsx` | **Temporary.** The shell smoke screen: reports whether the platform seam and the replay fold are live on the device. Task 18's transactions list replaces it. |
 
 ### The invariant surfaces hold no policy
 
@@ -134,3 +138,23 @@ absence loud, early, and visible at first paint.
 surface is a *state* of the sign-in screen rather than a pushed route,
 specifically because the parameter it would need is the ID token. Keep
 credentials in the reducer, where they stay in memory.
+
+### Three conventions the onboarding shell adds
+
+**A step is derived from facts, never stored as a number.** `lib/onboarding.ts`
+walks a milestone table and returns the longest unbroken prefix; the screens are
+a `switch` over the answer. A persisted cursor can disagree with reality, and
+the dangerous direction is a device that thinks it has not set a home currency
+when the log says it has — which is a permanent `home_currency_reset` anomaly.
+Anything with a resumable multi-step flow follows this shape.
+
+**An irreversible action is armed, echoed and acknowledged — before the tap.**
+The consequence is on screen at first paint, the choice is echoed back on a
+second surface, and the confirm control is inert until an explicit
+acknowledgement. A confirmation that arrives after the action is a receipt, and
+a toast is not a warning. `HomeCurrencyScreen` is the reference.
+
+**A step another task owns is a named slot, not a stub screen.** The shell
+renders a placeholder saying which task owns it, and a placeholder may advance
+the flow only over a **device-local** fact — never over one the server or the
+log produces, which nothing on the device may stand in for.

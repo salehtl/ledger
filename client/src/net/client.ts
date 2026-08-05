@@ -223,6 +223,19 @@ export const MAX_UPLOAD_BLOBS = 8;
  */
 export const MAX_UPLOAD_BYTES = 12 << 20;
 
+/**
+ * Rows per page of {@link Client.pullColdRange}, when the caller names none.
+ *
+ * Much smaller than a hot page, and for a reason that is about bytes rather
+ * than rows: a cold body is a whole email and rides the 1 MiB bucket, so a
+ * hot-sized page of 250 would be a quarter of a gigabyte in the worst case. The
+ * server's own byte budget (`api.go`'s `pullByteBudget`, 4 MiB) cuts a page
+ * short before that, which is why this number is a *floor* on the round trips
+ * and not a bound on the memory — the bound is the server's, and this loop
+ * follows `next` rather than assuming the page it asked for is the page it got.
+ */
+export const COLD_RANGE_ROWS = 16;
+
 /** `oplog.TypeFlagEdit` — the only type flag a device may submit. */
 const TYPE_FLAG_EDIT = "edit";
 
@@ -501,6 +514,16 @@ export class Client {
     return this.st.cursors[stream];
   }
 
+  /** Furthest global seq whose compact hash metadata this device has pinned. */
+  hashCursor(stream: Stream): bigint {
+    return this.st.hashCursors[stream];
+  }
+
+  /** The verified row store for device-local snapshot/audit bindings. */
+  rows(): RowStore {
+    return this.rowStore;
+  }
+
   pinnedHead(writerId: string, stream: Stream): Head {
     return this.st.pinnedHeads.get(chainKey(writerId, stream)) ?? genesisHead();
   }
@@ -590,25 +613,26 @@ export class Client {
    * after the loop would satisfy every count in this signature.
    */
   async materializeChunked(
-    opts: { between?: (p: FoldProgress) => Promise<void> | void; chunkSize?: number; keepOps?: boolean } = {},
+    opts: { between?: (p: FoldProgress) => Promise<void> | void; chunkSize?: number; keepOps?: boolean; initialState?: State; afterSeq?: bigint; upToSeq?: bigint } = {},
   ): Promise<{ state: State; ops: LogEntry[] | null; opsApplied: number; chunks: number; rows: number }> {
     const limit = opts.chunkSize ?? ROW_CHUNK;
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new Error(`materializeChunked needs a positive integer chunk size, got ${String(limit)}`);
     }
     const keep = opts.keepOps === true;
-    const state = emptyState();
+    const state = opts.initialState ?? emptyState();
     // One array either way, so the fold path is identical in both modes and the
     // only difference is whether it is truncated between chunks. A second code
     // path would be a second thing to be wrong.
     const ops: LogEntry[] = [];
     const total = this.rowStore.count(STREAM_HOT);
-    let after = 0n;
+    let after = opts.afterSeq ?? 0n;
     let chunks = 0;
     let rows = 0;
     let opsApplied = 0;
     for (;;) {
-      const chunk = this.rowStore.range(STREAM_HOT, after, limit);
+      const raw = this.rowStore.range(STREAM_HOT, after, limit);
+      const chunk = opts.upToSeq === undefined ? raw : raw.filter((row) => parseDecimal(row.seq) <= opts.upToSeq!);
       if (chunk.length === 0) break;
       const last = chunk[chunk.length - 1];
       if (last === undefined) break;
@@ -627,6 +651,7 @@ export class Client {
       chunks++;
       rows += chunk.length;
       after = next;
+      if (opts.upToSeq !== undefined && (next >= opts.upToSeq || chunk.length < raw.length)) break;
       if (rows >= total || chunk.length < limit) break;
       await opts.between?.({ chunk: chunks, rows, ops: opsApplied, total });
     }
@@ -1146,10 +1171,11 @@ export class Client {
    * cannot simply pass a stream here: it owes a separate pinned-head-for-hot
    * that `pull` does not treat as the body chain's head, exactly as cold has.
    */
-  async pullColdHashes(opts: { limit?: number } = {}): Promise<{ pinned: number; heads: Map<ChainKey, Head> }> {
+  async pullColdHashes(opts: { limit?: number; /** Checked before every request and after every committed page. */ cancelled?: () => boolean } = {}): Promise<{ pinned: number; heads: Map<ChainKey, Head> }> {
     const stream = STREAM_COLD;
     let pinned = 0;
     for (;;) {
+      if (opts.cancelled?.()) return { pinned, heads: new Map(this.st.pinnedHeads) };
       const before = this.st.hashCursors[stream];
       const q = new URLSearchParams({ stream, after: before.toString(10) });
       if (opts.limit !== undefined) q.set("limit", String(opts.limit));
@@ -1193,9 +1219,189 @@ export class Client {
       }
       this.st.hashCursors[stream] = next;
       this.commit();
+      if (opts.cancelled?.()) return { pinned, heads: new Map(this.st.pinnedHeads) };
       if (res.complete === true || list.length === 0) break;
     }
     return { pinned, heads: new Map(this.st.pinnedHeads) };
+  }
+
+  /**
+   * Fetches cold BODIES for a `seq` range, verified against the pinned per-blob
+   * hashes, and hands each page to `onPage` before it asks for the next one.
+   *
+   * # Why this is not {@link pull}
+   *
+   * `pull` walks a stream forward from a persisted cursor and persists a new one
+   * per page. That is the right shape for the hot stream, which a device holds
+   * in full, and the wrong shape for the cold stream, which spec §3.3:70 makes a
+   * lazily-synced **window**: a device fetches the last ninety days, and later
+   * fetches an arbitrary older range because a template was fixed and a
+   * transaction needs re-reading. Those fetches are not a prefix of anything, so
+   * there is no cursor whose advance would describe them.
+   *
+   * **So this method deliberately touches neither cursor and pins no head.** The
+   * cold body cursor keeps meaning "the contiguous prefix of bodies I hold", the
+   * hash cursor keeps meaning "how far the pinned hash list runs", and a range
+   * fetch is neither. What makes the fetched bytes trustworthy is not a cursor
+   * but {@link verifyFetchedRange} against hashes {@link pullColdHashes} pinned
+   * earlier — which is the whole of §3.3:72 a body fetch can lean on, and which
+   * works precisely because the pins outlive the bodies.
+   *
+   * # Nothing is persisted over an uncertified page
+   *
+   * Per page: verify against the pins, then run {@link checkAll} over the page,
+   * then `onPage`, and only then append. A page that fails any of those three
+   * leaves the store exactly as it was, so a body with one flipped byte is
+   * refused and **persists nothing** (spec §3.3:72; Phase 1's exit test step 11
+   * proves the server half). `checkAll` runs on every page rather than only on a
+   * refusal because it is the one thing that catches an op list smuggled onto
+   * the cold stream (I16) — a body that hashes correctly can still be the wrong
+   * *kind* of thing, and `verifyFetchedRange` has no opinion about kinds.
+   *
+   * The roster is deliberately not fetched and the state deliberately empty: no
+   * cold check reads either (a cold row is never folded — see {@link applyRows}),
+   * and a round trip per page for something nothing reads is a round trip that
+   * buys an attacker a way to make a body fetch fail.
+   *
+   * # Paging, and the cap
+   *
+   * A range wider than one page is **paged**, never demanded in one request.
+   * `GET /api/v1/sync` clamps `limit` to its own maximum and cuts a page short
+   * on a byte budget besides (`api.go`'s `maxPullLimit` / `pullByteBudget`), so
+   * the number of rows that come back is the server's decision and this loop
+   * never assumes it got what it asked for: it follows `next` until the range is
+   * covered. A caller that asked for the whole range at once would be relying on
+   * a limit the server does not honour.
+   *
+   * `POST /api/v1/sync`'s 8-blob / 12 MiB cap cannot be reached from here — the
+   * cold stream is written by the server's ingest writer alone and `handleUpload`
+   * refuses `stream=cold` outright — so there is nothing on this path to page an
+   * upload against.
+   *
+   * @returns the number of rows delivered **within the range**, and the pages it took.
+   */
+  async pullColdRange(opts: {
+    fromSeq: bigint;
+    toSeq: bigint;
+    limit?: number;
+    /** Append the rows to the row store. `false` is a read that leaves no trace. */
+    persist?: boolean;
+    /**
+     * Called with each verified page, in range order, **before the next request
+     * goes out**. A caller that accumulates these has turned a bounded walk into
+     * an unbounded one; see `cold.ts` for what consuming one looks like.
+     */
+    onPage?: (rows: readonly SyncRow[]) => void | Promise<void>;
+    /** Called only after this verified page has been durably appended. */
+    onPersisted?: (rows: readonly SyncRow[]) => void | Promise<void>;
+    /** Checked before every request and after every delivered page. */
+    cancelled?: () => boolean;
+  }): Promise<{ pages: number; rows: number }> {
+    const stream = STREAM_COLD;
+    const { fromSeq, toSeq } = opts;
+    if (fromSeq < 1n) throw new Error(`pullColdRange: fromSeq must be at least 1, got ${fromSeq}`);
+    if (toSeq < fromSeq) throw new Error(`pullColdRange: toSeq ${toSeq} is below fromSeq ${fromSeq}`);
+    const limit = opts.limit ?? COLD_RANGE_ROWS;
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error(`pullColdRange needs a positive integer limit, got ${String(opts.limit)}`);
+    }
+
+    let after = fromSeq - 1n;
+    let pages = 0;
+    let rows = 0;
+    for (;;) {
+      if (opts.cancelled?.()) return { pages, rows };
+      const q = new URLSearchParams({ stream, after: after.toString(10), limit: String(limit) });
+      const res = await this.request<PullResponse>("GET", `/api/v1/sync?${q.toString()}`);
+      if (decodeStream(res.stream, "response stream") !== stream) {
+        throw new ProtocolError(`asked for the ${stream} stream and the server answered ${res.stream}`);
+      }
+      const wire = res.rows ?? [];
+      const page = wire.map(decodeWireRow);
+      const next = parseDecimal(res.next);
+      pages++;
+      if (page.length === 0) break;
+
+      // The progress guarantee, and it has to be explicit for the same reason
+      // `pullColdHashes` needs one: no cursor is persisted here, so nothing
+      // downstream would ever notice a `next` that does not move. A server
+      // answering `{rows: [...], next: <unchanged>, complete: false}` would spin
+      // this loop forever, re-fetching the same megabytes.
+      if (next <= after) {
+        throw new ProtocolError(
+          `the cold range returned ${page.length} row(s) but its next cursor ${next} does not advance past ${after}`,
+        );
+      }
+
+      const asInput = (): CheckInput => ({
+        userId: this.userId,
+        stream,
+        rows: page,
+        hashList: [],
+        ops: [],
+        state: emptyState(),
+        roster: [],
+        pinnedHeads: new Map(this.st.pinnedHeads),
+        pinnedBlobHashes: this.st.pinnedBlobHashes,
+        cursorBefore: after,
+        next,
+      });
+
+      // 1. Verify, before anything is opened. Same attribution as `pull`: the
+      //    chain check refuses first because it is cheap and strictly stronger,
+      //    and the checker is then run over the same page purely to name which
+      //    invariant the refusal belongs to — `I3b_cold_hash_list`, here.
+      try {
+        for (const [key, run] of byChain(page)) {
+          const pins = this.st.pinnedBlobHashes.get(key);
+          if (pins === undefined) {
+            throw new ChainBreakError(
+              `no cold hashes are pinned for (${key}), so none of its bodies can be verified — ` +
+                `pin the hash list before fetching a cold range`,
+            );
+          }
+          verifyFetchedRange(pins, run);
+        }
+      } catch (err) {
+        if (!(err instanceof ChainBreakError)) throw err;
+        const attributed = checkAll(asInput());
+        if (attributed.some((v) => v.severity === "hard_stop")) throw new HardStopError(attributed, err);
+        throw err;
+      }
+
+      // 2. Check the whole page — including the kind of thing each body is.
+      const violations = checkAll(asInput());
+      if (violations.some((v) => v.severity === "hard_stop")) throw new HardStopError(violations);
+
+      // 3. Hand over exactly the rows the caller asked for. A page can overshoot
+      //    `toSeq` because `seq` is one order across BOTH streams (Decision 13),
+      //    so a row count cannot be derived from a seq range. The overshoot is
+      //    checked — the server sent it — and then dropped.
+      const wanted: SyncRow[] = [];
+      const wantedWire: WireRow[] = [];
+      for (let i = 0; i < page.length; i++) {
+        const r = page[i] as SyncRow;
+        if (r.seq > toSeq) break;
+        wanted.push(r);
+        wantedWire.push(wire[i] as WireRow);
+      }
+      if (wanted.length > 0) {
+        await opts.onPage?.(wanted);
+        if (opts.persist !== false) {
+          this.store.transaction(() => {
+            this.rowStore.append(stream, wantedWire);
+          });
+          await opts.onPersisted?.(wanted);
+        }
+        rows += wanted.length;
+      }
+
+      if (opts.cancelled?.()) return { pages, rows };
+
+      after = next;
+      if (res.complete === true || next >= toSeq) break;
+    }
+    return { pages, rows };
   }
 
   // -- authoring ----------------------------------------------------------
@@ -1206,6 +1412,40 @@ export class Client {
    * permanent.
    */
   emit(spec: { type: string; payload: unknown; entity?: EntityRef; parentVersion?: number | null; ingestId?: string }): Op {
+    return this.emitMany([spec])[0] as Op;
+  }
+
+  /**
+   * Appends a group of locally-authored ops with one durable state write.
+   *
+   * Review confirmations deliberately author a transaction edit and a learned
+   * rule together. Building every op before touching `pending` means a bad
+   * later spec cannot leave the earlier half queued; saving the complete next
+   * state once means a restart observes either the whole group or none of it.
+   */
+  emitMany(
+    specs: readonly { type: string; payload: unknown; entity?: EntityRef; parentVersion?: number | null; ingestId?: string }[],
+  ): Op[] {
+    const ops = specs.map((spec) => this.buildAuthoredOp(spec));
+    if (ops.length === 0) return [];
+    const previous = this.st.pending;
+    this.st.pending = [...previous, ...ops];
+    try {
+      this.commit();
+    } catch (err) {
+      this.st.pending = previous;
+      throw err;
+    }
+    return ops;
+  }
+
+  private buildAuthoredOp(spec: {
+    type: string;
+    payload: unknown;
+    entity?: EntityRef;
+    parentVersion?: number | null;
+    ingestId?: string;
+  }): Op {
     if (!isOpType(spec.type)) throw new Error(`unknown op type ${JSON.stringify(spec.type)}`);
     const op: Op = {
       v: SCHEMA_VERSION,
@@ -1220,8 +1460,6 @@ export class Client {
     if (spec.entity !== undefined) op.entity = spec.entity;
     if (spec.ingestId !== undefined && spec.ingestId !== "") op.ingest_id = spec.ingestId;
     validateOp(op);
-    this.st.pending.push(op);
-    this.commit();
     return op;
   }
 
@@ -1734,6 +1972,32 @@ export class Client {
     return out;
   }
 
+  /**
+   * Measures how the current durable outbox will be packed, using the exact
+   * production framing/sealing path without changing the queue or chain head.
+   * Import uses this before upload so its "few blobs" claim is an observation,
+   * not an estimator over a different representation.
+   */
+  previewPendingUpload(): { requests: number; blobs: number; sizes: number[] } {
+    let remaining = [...this.st.pending];
+    let head = this.authoringHead();
+    let requests = 0;
+    const sizes: number[] = [];
+    while (remaining.length > 0) {
+      const page = this.buildBlobs(remaining, head);
+      if (page.length === 0) throw new Error("pending upload packer made no progress");
+      requests++;
+      let consumed = 0;
+      for (const blob of page) {
+        consumed += blob.ops.length;
+        sizes.push(blob.wire.size_bucket);
+        head = { counter: blob.counter, hash: blob.hash };
+      }
+      remaining = remaining.slice(consumed);
+    }
+    return { requests, blobs: sizes.length, sizes };
+  }
+
   private sealBatch(ops: readonly Op[], counter: bigint, prevHash: Uint8Array): BuiltBlob {
     const env: Envelope = { userId: this.userId, stream: STREAM_HOT, writerId: this.writerId, writerCounter: counter };
     const bytes = sealBlob(env, encodeBlobOps([...ops]));
@@ -1880,7 +2144,7 @@ function requireWriterID(id: string): void {
  *
  * The stored form is not changed by the move to the seam: a state file written
  * by the `node:crypto` build still loads, and one written here still loads under
- * that build. `client.test.ts` pins the encoding.
+ * that build. `store/store.test.ts`'s fixtures are the standing proof.
  */
 function b64urlToBytes(s: string): Uint8Array {
   const std = s.replace(/-/g, "+").replace(/_/g, "/");

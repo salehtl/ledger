@@ -14,14 +14,18 @@
 # default and ledgerd refuses to start without it. Override with
 # LEDGER_MAIL_DOMAIN. Closes spec §6's open question; plan task D1.
 #
-# DNS as configured (Cloudflare, verified 2026-08-01):
-#   in.sirdab.ae  MX 10 -> _dc-mx.<hash>.in.sirdab.ae -> 178.104.132.41
-#   in.sirdab.ae  MX 20 -> mx2.sirdab.ae (DOES NOT RESOLVE — relay VPS unprovisioned)
-# The priority-10 host is a Cloudflare "direct connect" record auto-created
-# because mx1.sirdab.ae is proxied; Cloudflare does not proxy SMTP, so the
-# _dc-mx record bypasses the proxy and points at the origin. Mail therefore
-# reaches this box today, but the arrangement is implicit — D1 should set
-# mx1 to DNS-only so the MX names a host we control the meaning of.
+# DNS as configured (Cloudflare, re-verified 2026-08-01 after the operator
+# set both api and mx1 to DNS-only):
+#   in.sirdab.ae  MX 10 -> mx1.sirdab.ae -> 178.104.132.41   (direct, correct)
+#   in.sirdab.ae  MX 20 -> mx2.sirdab.ae (DOES NOT RESOLVE — relay VPS deferred)
+#   api.sirdab.ae            -> 178.104.132.41   (unproxied, required by D4)
+# api must stay unproxied: Cloudflare in front of it would break autocert's
+# challenge and would collapse the per-IP sign-in limiter to one key, since
+# every request would arrive from a Cloudflare address.
+# The MX 20 entry is a dead end until the relay exists. Harmless while mx1 is
+# up; the moment mx1 is down — exactly when a backup MX earns its keep —
+# senders retry a non-resolving host instead of failing over. D3 provisions it
+# or D1 removes the record.
 domain             = "sirdab.ae"
 smtp_listen        = ":25"        # SMTP receiver bind address (LEDGER_SMTP_LISTEN)
 max_message_bytes  = 1000000      # DATA cap in bytes. NOT 1 MiB: spec §3.2 says 1 MB, but the binding limit is

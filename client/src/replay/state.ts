@@ -151,6 +151,10 @@ export interface Txn {
    * fingerprints still match.
    */
   possible_duplicate_of: string | null;
+  /** Server-attested template origin; absent on schema-v1 transactions. */
+  verified_origin_domain?: string | null;
+  /** Durable v2 answer to the heuristic notice; absent/null means unanswered. */
+  duplicate_disposition?: "same" | "different" | null;
   version: number;
 }
 
@@ -234,6 +238,8 @@ export interface State {
    * "no rate was ever set".
    */
   rates: Map<string, bigint | null>;
+  /** Canonical authored_at of the positional op that installed each explicit rate head. */
+  rateUpdatedAt: Map<string, string>;
   /** currency → live txn ids whose snapshot is still null. Task 12 drains these. */
   pendingByCurrency: Map<string, Set<string>>;
   /** The heads from the LATEST `writer_checkpoint`; earlier ones are history. */
@@ -287,6 +293,7 @@ export function emptyState(): State {
     rules: new Map(),
     homeCurrency: null,
     rates: new Map(),
+    rateUpdatedAt: new Map(),
     pendingByCurrency: new Map(),
     checkpoints: [],
     forks: [],
@@ -400,6 +407,15 @@ export function fingerprint(t: Txn): string {
   // it no matter what a merchant contains. That matters because `|` is not
   // escaped (below) — a discriminator that relied on a prefix no merchant
   // happens to spell would be a rule a user could break by typing.
+  //
+  // "The unparsed form emits exactly one separator" is the half of that argument
+  // this line does not prove on its own, and it is not free: it holds because
+  // `validateOp` in `wire/op.ts` requires `ingest_id` to be 64 LOWER-CASE HEX
+  // characters on `txn_ingested` and `txn_superseded` (`isSHA256Hex`), and hex
+  // cannot contain a `|`. Weaken that check to "a non-empty string" and an op
+  // assembled in code with `ingest_id = "1|debit|ACME|2026-01-01"` lands in the
+  // five-segment parsed namespace and collides with a real row. The dependency
+  // is written out at the check itself; do not relax one without the other.
   if (t.unparsed) return `unparsed|${t.ingest_id}`;
   return `${t.last4}|${t.amount_minor}|${t.direction}|${t.merchant_raw}|${utcDay(parseInstantMs(t.posted_at))}`;
 }

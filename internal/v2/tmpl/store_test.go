@@ -175,6 +175,71 @@ func TestOnlyOneTemplateVersionCanBePublished(t *testing.T) {
 	}
 }
 
+func TestPublicationSinceIsAnHonestGlobalDelta(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	card := mustLoad(t, "testdata/dib.card.v1.json")
+	if err := s.Publish(ctx, card); err != nil {
+		t.Fatal(err)
+	}
+
+	initial, err := s.PublicationSince(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(initial.Templates) != 1 || initial.Templates[0].Version != 1 || len(initial.Removed) != 0 {
+		t.Fatalf("initial delta = %+v", initial)
+	}
+
+	// A draft is deliberately absent from both a full snapshot and later deltas.
+	draft := mustLoad(t, "testdata/enbd.alert.v1.json")
+	raw, err := draft.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO templates (id,version,bank,normalizer_version,definition,status,created_at) VALUES ($1,$2,$3,$4,$5,'draft',now())`, draft.ID, draft.Version, draft.Bank, draft.NormalizerVersion, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := card
+	v2.Version = 2
+	if err := s.Publish(ctx, v2); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.PublicationSince(ctx, initial.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Templates) != 1 || updated.Templates[0].Version != 2 || len(updated.Removed) != 0 {
+		t.Fatalf("update delta = %+v", updated)
+	}
+
+	if err := s.SetStatus(ctx, card.ID, 2, StatusRetired); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.PublicationSince(ctx, updated.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed.Templates) != 0 || len(removed.Removed) != 1 || removed.Removed[0] != card.ID {
+		t.Fatalf("removal delta = %+v", removed)
+	}
+	final, err := s.PublicationSince(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.Templates) != 0 {
+		t.Fatalf("snapshot leaked draft or retired templates: %+v", final.Templates)
+	}
+}
+
+func TestPublicationSinceRejectsAFutureCursor(t *testing.T) {
+	s, _ := newStore(t)
+	if _, err := s.PublicationSince(context.Background(), 1); !errors.Is(err, ErrPublicationCursor) {
+		t.Fatalf("future cursor error = %v, want ErrPublicationCursor", err)
+	}
+}
+
 func TestPublishedRoundTripsTheDefinitionByteForByte(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()

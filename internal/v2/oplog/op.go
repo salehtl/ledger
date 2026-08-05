@@ -85,7 +85,7 @@ import (
 
 // SchemaVersion is the op schema this build understands. It versions the OPS;
 // blob.Version versions the framing around them.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Blob kinds. KindOf reports which one a decoded blob claims to be.
 const (
@@ -103,26 +103,34 @@ var ErrUnknownNewerVersion = errors.New("op schema version newer than supported"
 type OpType string
 
 const (
-	OpTxnIngested      OpType = "txn_ingested"
-	OpTxnSuperseded    OpType = "txn_superseded"
-	OpTxnCategorized   OpType = "txn_categorized"
-	OpTxnSplit         OpType = "txn_split"
-	OpTxnEdited        OpType = "txn_edited"
-	OpRuleAdded        OpType = "rule_added"
-	OpRateSet          OpType = "rate_set"
-	OpRateUnset        OpType = "rate_unset"
-	OpHomeCurrencySet  OpType = "home_currency_set"
-	OpWriterCheckpoint OpType = "writer_checkpoint"
+	OpTxnIngested             OpType = "txn_ingested"
+	OpTxnSuperseded           OpType = "txn_superseded"
+	OpTxnCategorized          OpType = "txn_categorized"
+	OpTxnSplit                OpType = "txn_split"
+	OpTxnEdited               OpType = "txn_edited"
+	OpTxnDuplicateDisposition OpType = "txn_duplicate_disposition"
+	OpRuleAdded               OpType = "rule_added"
+	OpRateSet                 OpType = "rate_set"
+	OpRateUnset               OpType = "rate_unset"
+	OpHomeCurrencySet         OpType = "home_currency_set"
+	OpWriterCheckpoint        OpType = "writer_checkpoint"
 )
 
 // Types lists every op type at SchemaVersion, in wire order.
 var Types = []OpType{
-	OpTxnIngested, OpTxnSuperseded, OpTxnCategorized, OpTxnSplit, OpTxnEdited,
+	OpTxnIngested, OpTxnSuperseded, OpTxnCategorized, OpTxnSplit, OpTxnEdited, OpTxnDuplicateDisposition,
 	OpRuleAdded, OpRateSet, OpRateUnset, OpHomeCurrencySet, OpWriterCheckpoint,
 }
 
 // Valid reports whether t is a type this schema version defines.
 func (t OpType) Valid() bool { return slices.Contains(Types, t) }
+
+func (t OpType) minVersion() int {
+	if t == OpTxnDuplicateDisposition {
+		return 2
+	}
+	return 1
+}
 
 // ParentFree reports whether t is an append-only fact rather than a mutation of
 // a versioned entity. Parent-free ops name no entity, carry no parent_version,
@@ -196,6 +204,9 @@ func (o Op) Validate() error {
 	if !o.Type.Valid() {
 		return fmt.Errorf("op %s: unknown type %q", o.OpID, o.Type)
 	}
+	if o.V < o.Type.minVersion() {
+		return fmt.Errorf("op %s: type %q requires schema v%d", o.OpID, o.Type, o.Type.minVersion())
+	}
 	if o.OpID == "" {
 		return fmt.Errorf("op of type %s: op_id is empty", o.Type)
 	}
@@ -251,6 +262,28 @@ func (o Op) Validate() error {
 	}
 	if !json.Valid(o.Payload) {
 		return fmt.Errorf("op %s: payload is not valid JSON", o.OpID)
+	}
+	if o.Type == OpTxnDuplicateDisposition {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(o.Payload, &fields); err != nil {
+			return fmt.Errorf("op %s: duplicate disposition payload: %w", o.OpID, err)
+		}
+		if _, ok := fields["disposition"]; !ok {
+			return fmt.Errorf("op %s: duplicate disposition needs disposition", o.OpID)
+		}
+		var p struct {
+			OtherTxnID  string  `json:"other_txn_id"`
+			Disposition *string `json:"disposition"`
+		}
+		if err := json.Unmarshal(o.Payload, &p); err != nil {
+			return fmt.Errorf("op %s: duplicate disposition payload: %w", o.OpID, err)
+		}
+		if p.OtherTxnID == "" {
+			return fmt.Errorf("op %s: duplicate disposition needs other_txn_id", o.OpID)
+		}
+		if p.Disposition != nil && *p.Disposition != "same" && *p.Disposition != "different" {
+			return fmt.Errorf("op %s: duplicate disposition must be same, different, or null", o.OpID)
+		}
 	}
 	return nil
 }
@@ -407,6 +440,7 @@ type blobHeader struct {
 // first: an invalid op that reaches the log is permanent, because the log is
 // append-only.
 func EncodeBlob(ops []Op) ([]byte, error) {
+	version := 1
 	out := make([]Op, len(ops))
 	for i, o := range ops {
 		if err := o.Validate(); err != nil {
@@ -418,8 +452,11 @@ func EncodeBlob(ops []Op) ([]byte, error) {
 		}
 		o.AuthoredAt = ct
 		out[i] = o
+		if o.V > version {
+			version = o.V
+		}
 	}
-	return json.Marshal(opBlob{V: SchemaVersion, Kind: KindOps, Ops: out})
+	return json.Marshal(opBlob{V: version, Kind: KindOps, Ops: out})
 }
 
 // DecodeBlob decodes a hot-stream blob body. It refuses a raw-body blob
@@ -508,7 +545,7 @@ func (r *RawBody) UnmarshalJSON(b []byte) error {
 // EncodeRawBody encodes a cold-stream record.
 func EncodeRawBody(r RawBody) ([]byte, error) {
 	if r.V == 0 {
-		r.V = SchemaVersion
+		r.V = 1 // raw-body shape did not change with the op-schema v2 addition
 	}
 	if r.V > SchemaVersion || r.V < 1 {
 		return nil, fmt.Errorf("oplog: raw body version %d is not valid", r.V)

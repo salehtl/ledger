@@ -71,6 +71,30 @@ test("the op type set and the parent-free set match Go's", () => {
   expect(manifest.parent_free).toEqual(["rate_set", "rate_unset", "home_currency_set", "writer_checkpoint"]);
 });
 
+test("the shared schema-v2 duplicate disposition fixture decodes", () => {
+  const bytes = new Uint8Array(Buffer.from(manifest.duplicate_disposition_base64, "base64"));
+  const [op] = decodeBlobOps(bytes);
+  expect(op?.type).toBe("txn_duplicate_disposition");
+  expect(op?.payload).toEqual({ other_txn_id: "T0", disposition: "same" });
+});
+
+test("both TS wire directions refuse every shared malformed duplicate disposition", () => {
+  for (const [index, payload] of (manifest.duplicate_disposition_invalid_payloads as unknown[]).entries()) {
+    const op: Op = {
+      v: 2, type: "txn_duplicate_disposition", op_id: `invalid-${index}`,
+      authored_at: "2026-06-05T10:00:00Z", entity: { kind: "txn", id: "T1" }, parent_version: 1, payload,
+    };
+    expect(() => encodeBlobOps([op])).toThrow();
+    const body = opsBlob(JSON.stringify({ v: 2, kind: "ops", ops: [op] }));
+    expect(() => decodeBlobOps(body)).toThrow(BlobDecodeError);
+  }
+});
+
+test("the shared schema-v2 verified origin fixture is preserved", () => {
+  const [op] = decodeBlobOps(new Uint8Array(Buffer.from(manifest.verified_origin_base64, "base64")));
+  expect((op?.payload as Record<string, unknown>).verified_origin_domain).toBe("bank.example");
+});
+
 // ---------------------------------------------------------------------------
 // Decoding what Go encoded
 // ---------------------------------------------------------------------------
@@ -336,11 +360,11 @@ test("FX conversion must be BigInt: the intermediate product overflows 2^53", ()
 // ---------------------------------------------------------------------------
 
 test("an unknown newer version hard-stops, at the blob level and the op level", () => {
-  expect(() => decodeBlobOps(opsBlob(`{"v":2,"kind":"ops","ops":[]}`))).toThrow(UnknownNewerVersionError);
+  expect(() => decodeBlobOps(opsBlob(`{"v":3,"kind":"ops","ops":[]}`))).toThrow(UnknownNewerVersionError);
   expect(() =>
     decodeBlobOps(
       opsBlob(
-        `{"v":1,"kind":"ops","ops":[{"v":2,"type":"rate_set","op_id":"R1",` +
+        `{"v":1,"kind":"ops","ops":[{"v":3,"type":"rate_set","op_id":"R1",` +
           `"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{}}]}`,
       ),
     ),
@@ -477,7 +501,7 @@ test("encodeBlobOps refuses to write an op the log could never take back", () =>
   expect(() => encodeBlobOps([{ ...rateOp(), op_id: "" }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), authored_at: "whenever" }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), payload: undefined }])).toThrow();
-  expect(() => encodeBlobOps([{ ...rateOp(), v: 2 }])).toThrow(UnknownNewerVersionError);
+  expect(() => encodeBlobOps([{ ...rateOp(), v: 3 }])).toThrow(UnknownNewerVersionError);
 });
 
 // ---------------------------------------------------------------------------

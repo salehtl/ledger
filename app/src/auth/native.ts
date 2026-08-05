@@ -265,12 +265,16 @@ export interface SignInDeps {
  * all already implemented and tested in `client/src/net/client.ts`. Do not
  * write a second one.
  */
-export function deviceSignInDeps(backend: ExchangeBackend | null = null): SignInDeps {
+export function deviceSignInDeps(
+  input: ExchangeBackend | null | { backend: ExchangeBackend; secrets: SecretStore } = null,
+): SignInDeps {
+  const backend = input !== null && typeof input === "object" && "backend" in input ? input.backend : input;
+  const secrets = input !== null && typeof input === "object" && "secrets" in input ? input.secrets : keychainSecretStore();
   return {
     apple: appleAuthenticator(),
     google: googleAuthenticator(),
     backend,
-    secrets: keychainSecretStore(),
+    secrets,
     // One RNG for the whole app: `src/platform/index.ts` installs it over
     // `expo-crypto` before anything else runs, and `ulid`'s own detection was
     // pointed at it for exactly this reason.
