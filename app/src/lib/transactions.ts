@@ -69,6 +69,63 @@ export function retainTxnWindow(previous: readonly Txn[], next: readonly Txn[], 
 export function prependTxnWindow(previous: readonly Txn[], newer: readonly Txn[]): Txn[] {
   return [...newer, ...previous].slice(0, MAX_RETAINED_TXNS);
 }
+
+/**
+ * Everything the list's window IS: the retained rows and the keyset state that
+ * says where to continue from.
+ *
+ * They are one value, and {@link advanceTxnWindow} is the only thing that moves
+ * them, because the defect that outlived two rounds of fixes lived precisely in
+ * the gap between them. Both window helpers above were individually correct and
+ * separately mutation-tested; the row loss came from `cursor` being a *second*
+ * piece of state that the prepend path did not update. Keeping the pair in one
+ * reducer means "which row is the bottom of the window" has exactly one answer
+ * and it is computed from the rows themselves, not remembered alongside them.
+ */
+export interface TxnWindow {
+  rows: Txn[];
+  /** Where an `append` continues from. `null` means "nothing below this window". */
+  cursor: TxnCursor | null;
+  /** `true` only when the list has genuinely reached the end of the account. */
+  exhausted: boolean;
+}
+
+export const EMPTY_TXN_WINDOW: TxnWindow = { rows: [], cursor: null, exhausted: false };
+
+/**
+ * Folds one loaded page into the window.
+ *
+ * The `prepend` arm is the one with teeth. {@link prependTxnWindow} holds the
+ * memory bound by evicting from the TAIL, which means a recovery scroll makes
+ * rows below the window unloaded again — so `cursor` must be rewound to the row
+ * that is now the bottom, and `exhausted` must go back to false even if the
+ * list had previously reached the very end of the account.
+ *
+ * Without that rewind the sequence down -> up -> down skips exactly as many
+ * rows as the prepend evicted, silently; and if the first pass had reached the
+ * end, `cursor` was `null` and `onEndReached` became a permanent no-op, so the
+ * evicted tail was unreachable for the life of the screen.
+ */
+export function advanceTxnWindow(prev: TxnWindow, page: TxnPage, mode: "replace" | "append" | "prepend"): TxnWindow {
+  if (mode !== "prepend") {
+    return {
+      rows: retainTxnWindow(prev.rows, page.rows, mode === "replace"),
+      cursor: page.next,
+      exhausted: page.next === null,
+    };
+  }
+  const rows = prependTxnWindow(prev.rows, page.rows);
+  // The question asked of the ROWS themselves — "is the bottom row still the
+  // bottom row?" — rather than of an arithmetic identity over lengths. A count
+  // of evicted rows is derived from the same expression that produced them and
+  // is one off-by-one away from silently skipping a single row, which is the
+  // failure this module's own header warns about ("loses exactly one of them
+  // and loses it quietly").
+  const tail = rows[rows.length - 1];
+  const before = prev.rows[prev.rows.length - 1];
+  if (tail === undefined || before === undefined || tail.id === before.id) return { ...prev, rows };
+  return { rows, cursor: cursorOf(tail), exhausted: false };
+}
 import type { SqlDriver } from "@ledger/client/store/driver.ts";
 import { parseDecimal } from "@ledger/client/wire/op.ts";
 

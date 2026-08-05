@@ -33,6 +33,27 @@ async function failure(response: Response): Promise<AccountRequestError> {
 export class UnconfirmedDeletionError extends Error { constructor(readonly status: number) { super(`account deletion returned ${status}, want 204`); this.name = "UnconfirmedDeletionError"; } }
 
 /**
+ * The server confirmed the deletion and the LOCAL erase then failed.
+ *
+ * `opts.wipe()` closes the driver, deletes the database file and purges the
+ * Keychain, and any of the three can reject. Before this class existed that
+ * rejection travelled as a plain error and `deletionFailureCopy`'s fallthrough
+ * told the user "Your account was not deleted. Your data remains on this
+ * device." — two claims, both false, on the one irreversible operation in the
+ * product: the account WAS deleted, and the local database may be partly gone.
+ *
+ * It carries the confirmed outcome so the copy can say what is actually true,
+ * and it is an error rather than a result because this device is not clean and
+ * the user has something to do about it.
+ */
+export class LocalWipeError extends Error {
+  constructor(readonly outcome: DeletionOutcome, override readonly cause: unknown) {
+    super(`the account was deleted on the server but this device could not finish erasing its copy: ${String(cause)}`);
+    this.name = "LocalWipeError";
+  }
+}
+
+/**
  * How a deletion ended, for the two endings that erase this device.
  *
  *  - `deleted` - this device asked, the server answered `204`, the account is gone.
@@ -59,21 +80,26 @@ export type AccountFetch = (input: RequestInfo | URL, init?: RequestInit) => Pro
 export interface DeleteAccountOptions { server: string; userId: () => string | null; secrets: SecretStore; authenticator: IdpAuthenticator; wipe(): Promise<void>; fetch?: AccountFetch; }
 export async function deleteAccount(opts: DeleteAccountOptions): Promise<DeletionResult> {
   let wiped = false;
-  const wipe = async (): Promise<void> => { await opts.wipe(); wiped = true; };
+  // A wipe that throws is NOT "nothing happened": the server has already
+  // confirmed, so the outcome is carried into the error rather than lost.
+  const wipe = async (outcome: DeletionOutcome): Promise<void> => {
+    try { await opts.wipe(); } catch (cause) { throw new LocalWipeError(outcome, cause); }
+    wiped = true;
+  };
   const token = opts.secrets.get(SECRET_SESSION); const writerId = opts.secrets.get(SECRET_WRITER_ID); const userId = opts.userId();
   if (!token || !writerId || !userId) throw new Error("account deletion requires a session, user id, and enrolled device key");
   const seedText = opts.secrets.get(`${SECRET_WRITER}${writerId}`); if (!seedText) throw new Error("this device's signing key is unavailable");
   const request = opts.fetch ?? fetch; const auth = { authorization: `Bearer ${token}` };
   const challenge = await request(new URL("/api/v1/account/challenge", opts.server), { method: "POST", headers: auth });
-  if (!challenge.ok) { const error = await failure(challenge); if (!mayWipeLocalData(error)) throw error; await wipe(); return { outcome: "already_deleted", wiped }; }
+  if (!challenge.ok) { const error = await failure(challenge); if (!mayWipeLocalData(error)) throw error; await wipe("already_deleted"); return { outcome: "already_deleted", wiped }; }
   const doc = await challenge.json() as { nonce?: unknown }; if (typeof doc.nonce !== "string") throw new Error("account challenge returned no nonce");
   const nonce = fromBase64(doc.nonce); if (nonce.length !== 32) throw new Error("account challenge nonce is not 32 bytes");
   const credential = await opts.authenticator.authenticate(doc.nonce);
   const sig = toBase64(ed25519Sign(fromBase64(seedText), deletionMessage(nonce, userId)));
   const response = await request(new URL("/api/v1/account", opts.server), { method: "DELETE", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ idp: opts.authenticator.idp, id_token: credential.idToken, nonce: doc.nonce, sig }) });
-  if (!response.ok) { const error = await failure(response); if (!mayWipeLocalData(error)) throw error; await wipe(); return { outcome: "already_deleted", wiped }; }
+  if (!response.ok) { const error = await failure(response); if (!mayWipeLocalData(error)) throw error; await wipe("already_deleted"); return { outcome: "already_deleted", wiped }; }
   if (response.status !== 204) throw new UnconfirmedDeletionError(response.status);
-  await wipe();
+  await wipe("deleted");
   return { outcome: "deleted", wiped };
 }
 
@@ -100,6 +126,10 @@ export function deletionResultCopy(result: DeletionResult): DeletionCopy {
 }
 
 export function deletionFailureCopy(error: unknown): DeletionCopy {
+  // First, because it is the one failure where the account really is gone. It
+  // used to fall through to the sentence below and tell the user the opposite
+  // of what happened, twice.
+  if (error instanceof LocalWipeError) return { wiped: false, body: `Your account is deleted. Everything the server held for you is gone and it cannot be brought back. This device could not finish erasing its own copy, so some of your ledger may still be stored here — delete and reinstall ledger to remove it.` };
   if (error instanceof UnconfirmedDeletionError) return { wiped: false, body: `ledger could not confirm the deletion: the server answered ${error.status} instead of 204. Nothing on this device was erased, and your account may or may not still exist. Try again, and check before assuming it is gone.` };
   const status = typeof (error as { status?: unknown } | null)?.status === "number" ? (error as { status: number }).status : 0;
   if (status === 401) return { wiped: false, body: "Your sign-in expired before anything was deleted. Your account and everything on this device are untouched. Sign in again and retry." };

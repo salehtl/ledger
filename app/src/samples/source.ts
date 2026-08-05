@@ -1,5 +1,6 @@
 import type { ColdSync } from "../sync/cold.ts";
-import { DONATION_CONSENT, donationPreview, donationRequest, type DonationPreview } from "../lib/redaction.ts";
+import { normalizeBankName } from "../lib/bank.ts";
+import { donationPreview, donationRequest, type DonationPreview } from "../lib/redaction.ts";
 
 export const SUPPORTED_TEMPLATE_IDS = ["dib.card.v1", "dib.account.v1", "enbd.transfer.v1", "enbd.alert.v1"] as const;
 export const SUPPORTED_BANKS = [
@@ -23,13 +24,35 @@ export const SAMPLE_DISCLOSURE = "A donated sample is one complete email of your
 export type SampleFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export interface WaitlistSource { join(bank: string): Promise<void>; }
 
+/**
+ * A name this client refused before the request. Its `message` is already the
+ * sentence to render — {@link normalizeBankName} names what is allowed — so the
+ * screen shows it verbatim rather than substituting a generic apology.
+ */
+export class BankNameError extends Error {
+  constructor(reason: string) { super(reason); this.name = "BankNameError"; }
+}
+
 export function waitlistSource(server: string, token: () => string | null, request: SampleFetch = fetch): WaitlistSource {
   return { async join(raw: string) {
-    const bank = raw.trim();
-    if (bank === "" || [...bank].length > 64 || /[\u0000-\u001f\u007f]/.test(bank)) throw new Error("enter a bank name of at most 64 characters");
+    // The server's grammar, checked HERE, so a name it cannot store is refused
+    // with the rule attached instead of arriving as a 400 the user cannot act
+    // on. The check this replaces accepted any <=64-CODE-POINT non-control
+    // string — a strictly wider set than the server's <=64-BYTE ASCII shape,
+    // and "Mashreq (UAE)" sat in the gap. See lib/bank.ts.
+    const name = normalizeBankName(raw);
+    if (!name.ok) throw new BankNameError(name.reason);
     const session = token(); if (session === null) throw new Error("sign in before joining the waitlist");
-    const response = await request(new URL("/api/v1/waitlist", server), { method: "POST", headers: { authorization: `Bearer ${session}`, "content-type": "application/json" }, body: JSON.stringify({ bank }) });
-    if (response.status !== 204) throw Object.assign(new Error(`waitlist request failed: ${response.status}`), { status: response.status });
+    // The folded form, which is byte-for-byte what the server stores: it folds
+    // again, and folding an already-folded name is a no-op.
+    const response = await request(new URL("/api/v1/waitlist", server), { method: "POST", headers: { authorization: `Bearer ${session}`, "content-type": "application/json" }, body: JSON.stringify({ bank: name.bank }) });
+    if (response.status !== 204) {
+      // The server's own refusal text names the specific problem. It was being
+      // discarded in favour of the status code.
+      let detail = "";
+      try { const body = await response.json() as { detail?: unknown }; if (typeof body.detail === "string") detail = body.detail; } catch { /* a body is optional */ }
+      throw Object.assign(new Error(detail === "" ? `waitlist request failed: ${response.status}` : detail), { status: response.status });
+    }
   } };
 }
 
@@ -42,4 +65,7 @@ export class SampleSource {
   donate(preview: DonationPreview, consent: string | null): Promise<void> { return this.post("/api/v1/samples/donate", donationRequest(preview, consent)); }
 }
 
-export function donationConsent(): typeof DONATION_CONSENT { return DONATION_CONSENT; }
+// `donationConsent()` used to sit here and had no caller outside its own test.
+// `DonateSheet.tsx` and `lib/redaction.ts` both import `DONATION_CONSENT`
+// directly, which is the constant this returned, so the accessor was a second
+// name for one value and nothing more.

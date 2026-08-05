@@ -1,0 +1,200 @@
+{
+  "why": [
+    "The bank-name grammar is enforced in three places: admin.NormalizeBank (Go),",
+    "waitlist_bank_is_bounded (the CHECK in 00012_waitlist.sql), and",
+    "app/src/lib/bank.ts (the client, so a user is refused BEFORE the request",
+    "with a message naming the rule instead of after it with a generic 400).",
+    "",
+    "They disagreed. The client accepted any non-control string of <= 64 CODE",
+    "POINTS while the server accepted a narrow ASCII shape measured in BYTES, so",
+    "'Mashreq (UAE)' was a 400 that surfaced as 'Could not add that bank. Try",
+    "again.' on a step the user could not get past. This file is what stops the",
+    "two drifting again: internal/v2/admin/waitlist_test.go and",
+    "app/src/lib/bank.test.ts both drive every case below, and a grammar change",
+    "made to one side only fails the other side's suite.",
+    "",
+    "'normalized' is the stored form and is asserted only when ok is true."
+  ],
+  "cases": [
+    {
+      "name": "a supported bank, as the picker sends it",
+      "input": "Dubai Islamic Bank",
+      "ok": true,
+      "normalized": "dubai islamic bank"
+    },
+    {
+      "name": "the waitlist sentinel itself",
+      "input": "other",
+      "ok": true,
+      "normalized": "other"
+    },
+    {
+      "name": "the plain form of the name that used to strand the user",
+      "input": "Mashreq",
+      "ok": true,
+      "normalized": "mashreq"
+    },
+    {
+      "name": "ampersand, the M&S case the Go comment names",
+      "input": "M&S Bank",
+      "ok": true,
+      "normalized": "m&s bank"
+    },
+    {
+      "name": "apostrophe and full stop together",
+      "input": "St. George's Bank",
+      "ok": true,
+      "normalized": "st. george's bank"
+    },
+    {
+      "name": "hyphen",
+      "input": "Al-Rajhi",
+      "ok": true,
+      "normalized": "al-rajhi"
+    },
+    {
+      "name": "digits are part of the grammar",
+      "input": "Bank 21",
+      "ok": true,
+      "normalized": "bank 21"
+    },
+    {
+      "name": "surrounding and repeated whitespace collapses",
+      "input": "   Emirates    NBD  ",
+      "ok": true,
+      "normalized": "emirates nbd"
+    },
+    {
+      "name": "a tab is whitespace on both sides",
+      "input": "Emirates\tNBD",
+      "ok": true,
+      "normalized": "emirates nbd"
+    },
+    {
+      "name": "a non-breaking space is whitespace on both sides",
+      "input": "Emirates\u00a0NBD",
+      "ok": true,
+      "normalized": "emirates nbd"
+    },
+    {
+      "name": "NEL (U+0085) is Go whitespace and is NOT in JavaScript's \\s class",
+      "input": "Emirates\u0085NBD",
+      "ok": true,
+      "normalized": "emirates nbd"
+    },
+    {
+      "name": "an ideographic space is whitespace on both sides",
+      "input": "Emirates\u3000NBD",
+      "ok": true,
+      "normalized": "emirates nbd"
+    },
+    {
+      "name": "a newline is whitespace, so this is two words and not a control refusal",
+      "input": "Mashreq\nBank",
+      "ok": true,
+      "normalized": "mashreq bank"
+    },
+    {
+      "name": "exactly 64 bytes is accepted",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true,
+      "normalized": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "a single character is a legal name",
+      "input": "X",
+      "ok": true,
+      "normalized": "x"
+    },
+    {
+      "name": "65 bytes is not",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false
+    },
+    {
+      "name": "the reported hard stop: parentheses are not in the grammar",
+      "input": "Mashreq (UAE)",
+      "ok": false
+    },
+    {
+      "name": "an en dash is not a hyphen",
+      "input": "Standard Chartered \u2013 UAE",
+      "ok": false
+    },
+    {
+      "name": "a slash is not in the grammar",
+      "input": "Emirates NBD / ENBD",
+      "ok": false
+    },
+    {
+      "name": "Arabic is refused, as 00012_waitlist.sql states outright",
+      "input": "\u0628\u0646\u0643 \u062f\u0628\u064a",
+      "ok": false
+    },
+    {
+      "name": "the byte-vs-codepoint trap: 33 code points, 66 bytes",
+      "input": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "ok": false
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "ok": false
+    },
+    {
+      "name": "whitespace only",
+      "input": "   ",
+      "ok": false
+    },
+    {
+      "name": "punctuation alone cannot start a name",
+      "input": "&&&",
+      "ok": false
+    },
+    {
+      "name": "a name may not end on punctuation",
+      "input": "mashreq-",
+      "ok": false
+    },
+    {
+      "name": "a name may not begin on punctuation",
+      "input": "-mashreq",
+      "ok": false
+    },
+    {
+      "name": "a pasted transaction line: shape passes, the decimal amount does not",
+      "input": "AED 25.00 STARBUCKS",
+      "ok": false
+    },
+    {
+      "name": "a decimal anywhere in the string is refused",
+      "input": "Bank 1.5",
+      "ok": false
+    },
+    {
+      "name": "a NUL is not whitespace and is not in the grammar",
+      "input": "Mash\u0000req",
+      "ok": false
+    },
+    {
+      "name": "an ESC is not whitespace and is not in the grammar",
+      "input": "Mash\u001breq",
+      "ok": false
+    },
+    {
+      "name": "an underscore is not in the grammar",
+      "input": "mashreq_bank",
+      "ok": false
+    },
+    {
+      "name": "a comma is not in the grammar",
+      "input": "Mashreq, UAE",
+      "ok": false
+    },
+    {
+      "name": "an emoji is not a bank",
+      "input": "\ud83c\udfe6 Mashreq",
+      "ok": false
+    }
+  ]
+}

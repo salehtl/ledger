@@ -44,12 +44,24 @@ import { DeleteAccountScreen } from "../screens/settings/DeleteAccountScreen.tsx
 import { SecurityScreen } from "../screens/settings/SecurityScreen.tsx";
 import { sqlExportSource, exportAndShare } from "../account/export.ts";
 import { nativeExportIO } from "../account/native.ts";
-import { deleteAccount } from "../account/deletion.ts";
+import { deleteAccount, deletionResultCopy } from "../account/deletion.ts";
 import { useTheme } from "./Theme.tsx";
 import { useAccountWipe, useBootstrap, useRuntime } from "./RuntimeProvider.tsx";
 
 export type RootStackParamList = {
-  SignIn: undefined;
+  /**
+   * `notice` is what the previous screen needs the user to READ after it has
+   * been unmounted.
+   *
+   * Account deletion is the only thing that sets it, and it exists because
+   * `navigation.reset` tears `DeleteAccountScreen` down before any state it
+   * sets can paint: the confirmation sentence for the two endings that erase
+   * the device (`204` and `410 account_deleted`) was therefore rendered
+   * nowhere at all, and a user who pressed "Delete my account permanently" was
+   * dropped at the sign-in screen with no word about whether anything had
+   * happened. A route param survives the reset; screen state does not.
+   */
+  SignIn: { notice?: string } | undefined;
   /**
    * `userId` is the account the exchange returned, or **null** when a session
    * was already on this device and no exchange happened this launch. The
@@ -128,9 +140,10 @@ export function Navigation() {
         and `expo-secure-store` — has to be loaded by a test to render it.
       */}
       <Stack.Screen name="SignIn">
-        {({ navigation }) => (
+        {({ navigation, route }) => (
           <SignInScreen
             deps={signInDeps}
+            notice={route.params?.notice ?? null}
             onSignedIn={(userId) => navigation.replace("Onboarding", { userId })}
             onSkip={() => navigation.navigate("Shell")}
           />
@@ -269,7 +282,15 @@ export function Navigation() {
         this reset, and leave the delete screen saying the data was still here.
       */}
       <Stack.Screen name="DeleteAccount">
-        {({ navigation }) => <DeleteAccountScreen onExport={() => navigation.navigate("Export")} remove={async () => { const result = await deleteAccount({ server: runtime.server, userId: () => runtime.store.load().userId, secrets: runtime.secrets, authenticator: signInDeps.apple, wipe: wipeAccount }); navigation.reset({ index: 0, routes: [{ name: "SignIn" }] }); return result; }} />}
+        {({ navigation }) => <DeleteAccountScreen onExport={() => navigation.navigate("Export")} remove={async () => {
+          const result = await deleteAccount({ server: runtime.server, userId: () => runtime.store.load().userId, secrets: runtime.secrets, authenticator: signInDeps.apple, wipe: wipeAccount });
+          // The outcome sentence travels WITH the reset. Setting it on the
+          // delete screen instead put it on a component this line has already
+          // unmounted, so `deletionResultCopy`'s two branches — the whole point
+          // of making that copy truthful — reached no user at all.
+          navigation.reset({ index: 0, routes: [{ name: "SignIn", params: { notice: deletionResultCopy(result).body } }] });
+          return result;
+        }} />}
       </Stack.Screen>
       <Stack.Screen name="Review">
         {({ navigation }) => <ReviewScreen deps={{ source: runtime.review, writer: runtime.outbox, raw: runtime.rawMessages, dictionary: runtime.dictionary, samples: runtime.samples, newID: runtime.newId }} onClose={() => navigation.goBack()} />}

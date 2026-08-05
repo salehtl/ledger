@@ -1,7 +1,10 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +136,70 @@ func TestTheDatabaseRefusesABankNameGoWouldRefuse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "waitlist_bank_is_bounded") {
 		t.Fatalf("refused by something other than the grammar CHECK: %v", err)
+	}
+}
+
+// bankNameCase is one row of the shared client/server conformance fixture. Both
+// this package and app/src/lib/bank.test.ts read the SAME file, so a grammar
+// change made to one side and not the other fails the other side's suite. See
+// testdata/bank_names.json's own "why" for the defect it closes.
+type bankNameCase struct {
+	Name       string `json:"name"`
+	Input      string `json:"input"`
+	OK         bool   `json:"ok"`
+	Normalized string `json:"normalized"`
+}
+
+// The client half of the grammar must accept and reject exactly what this half
+// does.
+//
+// The disagreement this closes was not theoretical: the client accepted any
+// non-control string of at most 64 CODE POINTS, this accepts a narrow ASCII
+// shape of at most 64 BYTES, and the gap between them was a 400 the user saw
+// as "Could not add that bank. Try again." on the onboarding step that gates
+// every later step. "Mashreq (UAE)" is the reported one and is in the fixture.
+//
+// This drives NormalizeBank rather than the regexps directly: the accepted set
+// is the whole function -- fold, length, amount, shape, in that order -- and a
+// table run against bankRe alone would agree with a client that skipped the
+// byte-length check entirely.
+func TestTheClientAndServerAgreeOnWhatABankNameIs(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "bank_names.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cases []bankNameCase `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	// A fixture with only accepted cases (or only refused ones) proves nothing
+	// about where the boundary is; both verdicts have to be populated for the
+	// table to be able to fail in either direction.
+	accepted, refused := 0, 0
+	for _, c := range doc.Cases {
+		if c.OK {
+			accepted++
+		} else {
+			refused++
+		}
+	}
+	if accepted < 5 || refused < 5 {
+		t.Fatalf("the shared fixture must exercise both verdicts: %d accepted, %d refused", accepted, refused)
+	}
+
+	for _, c := range doc.Cases {
+		got, err := NormalizeBank(c.Input)
+		switch {
+		case c.OK && err != nil:
+			t.Errorf("%s: NormalizeBank(%q) = %v, want %q", c.Name, c.Input, err, c.Normalized)
+		case c.OK && got != c.Normalized:
+			t.Errorf("%s: NormalizeBank(%q) = %q, want %q", c.Name, c.Input, got, c.Normalized)
+		case !c.OK && err == nil:
+			t.Errorf("%s: NormalizeBank(%q) = %q, want ErrInvalidBank", c.Name, c.Input, got)
+		case !c.OK && !errors.Is(err, ErrInvalidBank):
+			t.Errorf("%s: NormalizeBank(%q) refused with %v, want ErrInvalidBank", c.Name, c.Input, err)
+		}
 	}
 }

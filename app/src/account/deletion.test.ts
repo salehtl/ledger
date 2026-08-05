@@ -5,7 +5,7 @@ import { memSecretStore } from "@ledger/client/store/store.ts";
 import { IDP_GOOGLE } from "../auth/idp.ts";
 import { SECRET_WRITER_ID } from "../auth/keys.ts";
 import { toBase64, utf8Decode } from "../platform/bytes.ts";
-import { deleteAccount, deletionFailureCopy, deletionMessage, deletionResultCopy, UnconfirmedDeletionError, type AccountFetch, type DeletionCopy, type DeleteAccountOptions } from "./deletion.ts";
+import { deleteAccount, deletionFailureCopy, deletionMessage, deletionResultCopy, LocalWipeError, UnconfirmedDeletionError, type AccountFetch, type DeletionCopy, type DeleteAccountOptions } from "./deletion.ts";
 
 const USER = "123e4567-e89b-42d3-a456-426614174000";
 const NONCE = new Uint8Array(32).map((_, i) => i);
@@ -46,6 +46,45 @@ describe("account deletion", () => {
       let call = 0; const f = fixture(async () => ++call === 1 ? response(200, { nonce: toBase64(NONCE) }) : response(status, { ok: true }));
       await expect(deleteAccount(f.opts)).rejects.toBeInstanceOf(UnconfirmedDeletionError);
       expect(f.wiped).toBe(0);
+    }
+  });
+
+  /**
+   * The ninth ending the eight-case table below cannot express.
+   *
+   * `opts.wipe()` closes the driver, deletes the database file and purges the
+   * Keychain, and any of the three can reject. Before `LocalWipeError` existed
+   * that rejection reached `deletionFailureCopy`'s fallthrough and the user was
+   * told "Your account was not deleted. Your data remains on this device." -
+   * both claims false, on the one irreversible operation in the product. It was
+   * covered by none of the eight cases, because every one of them has a wipe
+   * that succeeds.
+   *
+   * It is a THIRD state, not a rephrasing of either: the server erased and this
+   * device did not, so neither "erased" nor "intact" is the truth and the table
+   * below is deliberately not stretched to hold it.
+   */
+  test("a wipe that throws after a confirmed deletion says something TRUE", async () => {
+    for (const [name, fetcher] of [
+      ["204", (() => { let c = 0; return async () => ++c === 1 ? response(200, { nonce: toBase64(NONCE) }) : response(204); })()],
+      ["410 account_deleted", (async () => response(410, { error: "account_deleted" })) as AccountFetch],
+    ] as [string, AccountFetch][]) {
+      const f = fixture(fetcher);
+      const opts = { ...f.opts, wipe: async () => { throw new Error("the database file is locked"); } };
+      let copy: DeletionCopy;
+      let thrown: unknown = null;
+      try { copy = deletionResultCopy(await deleteAccount(opts)); } catch (error) { thrown = error; copy = deletionFailureCopy(error); }
+
+      expect({ case: name, kind: thrown instanceof LocalWipeError }).toEqual({ case: name, kind: true });
+      // The outcome the server actually gave is carried through, not discarded.
+      expect({ case: name, outcome: (thrown as LocalWipeError).outcome }).toEqual({ case: name, outcome: name === "204" ? "deleted" : "already_deleted" });
+      // Nothing on this device is claimed to be clean...
+      expect({ case: name, wiped: copy.wiped }).toEqual({ case: name, wiped: false });
+      // ...and nothing claims the account survived.
+      expect({ case: name, lies: /was not deleted|remains on this device|are untouched/.test(copy.body) }).toEqual({ case: name, lies: false });
+      // What it does say: the account is gone, and there is something left here.
+      expect({ case: name, gone: /Your account is deleted/.test(copy.body) }).toEqual({ case: name, gone: true });
+      expect({ case: name, act: /reinstall/.test(copy.body) }).toEqual({ case: name, act: true });
     }
   });
 
