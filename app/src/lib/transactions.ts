@@ -40,8 +40,34 @@ import type { ForkNotice, Split, Txn } from "@ledger/client/replay/state.ts";
 
 export const TXN_PAGE_SIZE = 50;
 export const MAX_RETAINED_TXNS = TXN_PAGE_SIZE * 3;
+/**
+ * Appends a page loaded going OLDER (`onEndReached`, scrolling down) and
+ * trims from the FRONT.
+ *
+ * The front holds the earliest-loaded rows — the newest transactions, since
+ * the list is newest-first — which is exactly what {@link prependTxnWindow}
+ * exists to make recoverable: this function alone made the drop permanent,
+ * because there was no reverse query to undo it. Keeping both functions is
+ * the fix, not deleting this one — the memory bound a >500 MB freeze forced
+ * on this screen (see the module doc) still has to hold.
+ */
 export function retainTxnWindow(previous: readonly Txn[], next: readonly Txn[], replace: boolean): Txn[] {
   return (replace ? [...next] : [...previous, ...next]).slice(-MAX_RETAINED_TXNS);
+}
+/**
+ * Prepends a page loaded going NEWER (`onStartReached`, scrolling back up
+ * toward rows {@link retainTxnWindow} evicted from the front) and trims from
+ * the TAIL.
+ *
+ * This is the recovery path, and it is the mirror image of
+ * {@link retainTxnWindow} on purpose: growing toward the top evicts from the
+ * bottom — the end the user just scrolled away from — rather than leaving
+ * scrolled-past rows unreachable forever. The bound stays exactly
+ * {@link MAX_RETAINED_TXNS}; only which end pays for it changes with the
+ * direction of travel.
+ */
+export function prependTxnWindow(previous: readonly Txn[], newer: readonly Txn[]): Txn[] {
+  return [...newer, ...previous].slice(0, MAX_RETAINED_TXNS);
 }
 import type { SqlDriver } from "@ledger/client/store/driver.ts";
 import { parseDecimal } from "@ledger/client/wire/op.ts";
@@ -129,9 +155,20 @@ export function cursorOf(t: Txn): TxnCursor {
   return { posted_at: t.posted_at, id: t.id };
 }
 
+/**
+ * "older" (the default) pages backward in time from `after` — `onEndReached`,
+ * the original forward-scrolling direction. "newer" pages forward in time
+ * from `after` instead: the recovery direction, used to re-fetch rows
+ * {@link retainTxnWindow}'s bound evicted from the front of the retained
+ * window so scrolling back up is not scrolling into a hole.
+ */
+export type TxnPageDirection = "older" | "newer";
+
 export interface TxnPageOptions {
   limit: number;
   after: TxnCursor | null;
+  /** @default "older" */
+  direction?: TxnPageDirection;
 }
 
 export interface TxnPage {
@@ -155,6 +192,10 @@ export interface TxnPage {
 export function buildTxnQuery(f: TxnFilters, opts: TxnPageOptions): { sql: string; params: unknown[] } {
   if (!Number.isInteger(opts.limit) || opts.limit <= 0) {
     throw new Error(`a page needs a positive integer limit, got ${String(opts.limit)}`);
+  }
+  const direction = opts.direction ?? "older";
+  if (direction === "newer" && opts.after === null) {
+    throw new Error('a "newer" page needs a cursor to page forward from — it recovers rows above a known boundary, it does not start a fresh list');
   }
   const where: string[] = [];
   const params: unknown[] = [];
@@ -196,15 +237,23 @@ export function buildTxnQuery(f: TxnFilters, opts: TxnPageOptions): { sql: strin
   }
   if (opts.after !== null) {
     // The row-value form `(a, b) < (?, ?)` needs SQLite 3.15; this spells it out
-    // so the query does not depend on the driver's build.
-    where.push("(posted_at < ? OR (posted_at = ? AND id < ?))");
+    // so the query does not depend on the driver's build. "newer" flips the
+    // comparison to `>` — the recovery direction, strictly above the boundary
+    // rather than strictly below it.
+    where.push(direction === "older" ? "(posted_at < ? OR (posted_at = ? AND id < ?))" : "(posted_at > ? OR (posted_at = ? AND id > ?))");
     params.push(opts.after.posted_at, opts.after.posted_at, opts.after.id);
   }
 
+  // "older" orders newest-first, the list's natural order, so the page is
+  // usable as-is. "newer" orders oldest-first-of-the-recovered-set — nearest
+  // the boundary first — so the row closest to the boundary is what LIMIT
+  // keeps when there are more than `limit` rows to recover; `listTransactions`
+  // reverses the page back to newest-first before it reaches the screen.
+  const order = direction === "older" ? "posted_at DESC, id DESC" : "posted_at ASC, id ASC";
   const sql =
     `SELECT ${TXN_COLUMNS} FROM txn` +
     (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "") +
-    " ORDER BY posted_at DESC, id DESC LIMIT ?";
+    ` ORDER BY ${order} LIMIT ?`;
   params.push(opts.limit + 1);
   return { sql, params };
 }
@@ -224,9 +273,17 @@ export function listTransactions(db: SqlDriver, f: TxnFilters, opts: TxnPageOpti
   const page = hasMore ? raw.slice(0, opts.limit) : raw;
   const ids = page.map((r) => String((r as Record<string, unknown>)["id"]));
   const splits = readSplits(db, ids);
-  const rows = page.map((r) => decodeTxnRow(r, splits.get(String((r as Record<string, unknown>)["id"])) ?? []));
-  const last = rows[rows.length - 1];
-  return { rows, next: hasMore && last !== undefined ? cursorOf(last) : null };
+  let rows = page.map((r) => decodeTxnRow(r, splits.get(String((r as Record<string, unknown>)["id"])) ?? []));
+  // "newer" fetched oldest-of-the-recovered-set first (nearest the boundary);
+  // flip it back to the list's one true order — newest first — before it
+  // reaches a caller. Nothing downstream of this function ever sees the
+  // ascending order the recovery query needed internally.
+  if (opts.direction === "newer") rows = rows.reverse();
+  // For "older", `next` is the oldest row kept — continue below it. For
+  // "newer", it is the newest row kept — continue above it, chasing whatever
+  // {@link prependTxnWindow}'s bound has not yet recovered.
+  const boundary = opts.direction === "newer" ? rows[0] : rows[rows.length - 1];
+  return { rows, next: hasMore && boundary !== undefined ? cursorOf(boundary) : null };
 }
 
 /** One transaction by id, with its splits, or `null`. */
