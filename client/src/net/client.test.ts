@@ -39,6 +39,8 @@ interface FakeOpts {
   dropWriterCounter?: bigint;
   /** Answer the hash list with a cursor that never advances. */
   stallHashCursor?: boolean;
+  /** Answer a cold body page with rows but an unchanged cursor. */
+  stallColdCursor?: boolean;
   /** Writers the roster starts with. */
   writers?: { writer_id: string; kind: string; revoked_at: string | null }[];
 }
@@ -65,18 +67,15 @@ class FakeServer {
    */
   readonly laggingSeqs = new Set<bigint>();
   private seq = 0n;
-  private readonly server: ReturnType<typeof Bun.serve>;
-  readonly url: string;
+  readonly url = "https://fake.ledger.invalid";
+  readonly fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+    this.handle(input instanceof Request ? input : new Request(String(input), init))) as typeof fetch;
 
   constructor(private readonly opts: FakeOpts = {}) {
     this.writers = opts.writers ?? [];
-    this.server = Bun.serve({ port: 0, fetch: (req) => this.handle(req) });
-    this.url = `http://127.0.0.1:${this.server.port}`;
   }
 
-  stop(): void {
-    this.server.stop(true);
-  }
+  stop(): void {}
 
   head(writerId: string, stream: Stream): { counter: bigint; hash: Uint8Array } {
     let out = { counter: 0n, hash: ZERO_HASH };
@@ -186,7 +185,12 @@ class FakeServer {
       const all = this.visibleBodies(stream).filter((r) => r.seq > after);
       const page = all.slice(0, limit);
       const last = page[page.length - 1];
-      const next = last === undefined ? after : last.seq;
+      const next =
+        this.opts.stallColdCursor === true && stream === STREAM_COLD
+          ? after
+          : last === undefined
+            ? after
+            : last.seq;
       const maxSeq = this.visibleBodies(stream).reduce((m, r) => (r.seq > m ? r.seq : m), 0n);
       return this.json({ stream, rows: page.map((r) => this.wire(r)), next: next.toString(10), complete: next >= maxSeq });
     }
@@ -194,12 +198,14 @@ class FakeServer {
       const stream = (url.searchParams.get("stream") ?? "") as Stream;
       const after = BigInt(url.searchParams.get("after") ?? "0");
       const all = this.visible(stream).filter((r) => r.seq > after);
+      const limit = Number(url.searchParams.get("limit") ?? "100");
+      const page = all.slice(0, limit);
       const maxSeq = this.visible(stream).reduce((m, r) => (r.seq > m ? r.seq : m), 0n);
-      const last = all[all.length - 1];
+      const last = page[page.length - 1];
       const next = this.opts.stallHashCursor === true ? after : last === undefined ? after : last.seq;
       return this.json({
         stream,
-        hashes: all.map((r) => ({
+        hashes: page.map((r) => ({
           seq: r.seq.toString(10),
           writer_id: r.writer_id,
           writer_counter: r.writer_counter.toString(10),
@@ -378,7 +384,12 @@ function seedIngest(srv: FakeServer, n: number, opts: { cold?: boolean; corruptA
 }
 
 async function loggedIn(srv: FakeServer, writerId?: string): Promise<Client> {
-  const c = new Client({ store: openMemStore(), server: srv.url, ...(writerId === undefined ? {} : { writerId }) });
+  const c = new Client({
+    store: openMemStore(),
+    server: srv.url,
+    fetch: srv.fetch,
+    ...(writerId === undefined ? {} : { writerId }),
+  });
   await c.login("apple", "dev:alice");
   return c;
 }
@@ -467,6 +478,26 @@ describe("pull", () => {
     expect(c.cursor("hot")).toBe(0n);
   });
 
+  test("cold hash cancellation is observed after one durable verified page", async () => {
+    const srv = serve();
+    seedIngest(srv, 4, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    let checks = 0;
+
+    const report = await c.pullColdHashes({ limit: 1, cancelled: () => ++checks >= 2 });
+
+    expect(report.pinned).toBe(1);
+    expect(c.pinnedHead(INGEST, STREAM_COLD).counter).toBe(1n);
+    expect(store.load().hashCursors.cold).toBeLessThan(8n);
+    // Cancellation retains the complete first page as useful durable evidence;
+    // resuming continues from its committed cursor rather than starting over.
+    const resumed = await c.pullColdHashes({ limit: 1 });
+    expect(resumed.pinned).toBe(3);
+    expect(c.pinnedHead(INGEST, STREAM_COLD).counter).toBe(4n);
+  });
+
   test("a cold body that does not match its pinned hash is refused", async () => {
     const srv = serve();
     seedIngest(srv, 2, { cold: true });
@@ -483,6 +514,197 @@ describe("pull", () => {
 
     await expect(c.pull({ stream: STREAM_COLD })).rejects.toThrow(/hashes to .*, but .* was pinned/);
     expect(c.cursor("cold")).toBe(0n);
+  });
+
+  test("a cold range is paged, bounded, persisted, and does not advance either cursor", async () => {
+    const srv = serve();
+    seedIngest(srv, 4, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    await c.pullColdHashes();
+
+    const delivered: bigint[][] = [];
+    const report = await c.pullColdRange({
+      fromSeq: 2n,
+      toSeq: 6n,
+      limit: 2,
+      onPage: (rows) => {
+        delivered.push(rows.map((r) => r.seq));
+      },
+    });
+
+    expect(report).toEqual({ pages: 2, rows: 3 });
+    expect(delivered).toEqual([[2n, 4n], [6n]]);
+    expect(store.rows().range(STREAM_COLD, 0n, 10).map((r) => r.seq)).toEqual(["2", "4", "6"]);
+    expect(c.cursor(STREAM_COLD)).toBe(0n);
+    expect(store.load().hashCursors.cold).toBe(8n);
+    expect(c.cursor(STREAM_HOT)).toBe(0n);
+    expect(store.load().hashCursors.hot).toBe(0n);
+  });
+
+  test("the post-persist callback cannot observe a page before its row-store commit", async () => {
+    const srv = serve();
+    seedIngest(srv, 2, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    await c.pullColdHashes();
+    const observed: number[] = [];
+    await c.pullColdRange({
+      fromSeq: 2n,
+      toSeq: 4n,
+      onPersisted: () => {
+        observed.push(store.rows().count(STREAM_COLD));
+      },
+    });
+    expect(observed).toEqual([2]);
+  });
+
+  test("a tampered cold range persists no part of its failing page", async () => {
+    const srv = serve();
+    seedIngest(srv, 2, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    await c.pullColdHashes();
+
+    const target = srv.rows.find((r) => r.stream === STREAM_COLD && r.writer_counter === 2n);
+    if (target === undefined) throw new Error("no second cold row to corrupt");
+    target.blob = target.blob.slice();
+    const last = target.blob.length - 1;
+    target.blob[last] = (target.blob[last] ?? 0) ^ 1;
+
+    await expect(c.pullColdRange({ fromSeq: 2n, toSeq: 4n })).rejects.toThrow(/pinned/);
+    expect(store.rows().count(STREAM_COLD)).toBe(0);
+    expect(c.cursor(STREAM_COLD)).toBe(0n);
+  });
+
+  test("a cold range callback failure leaves rows and client state unchanged", async () => {
+    const srv = serve();
+    seedIngest(srv, 3, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    await c.pullColdHashes();
+    const stateBefore = store.load();
+    const rowsBefore = store.rows().range(STREAM_COLD, 0n, 10);
+
+    await expect(
+      c.pullColdRange({
+        fromSeq: 2n,
+        toSeq: 6n,
+        onPage: () => {
+          throw new Error("consumer refused page");
+        },
+      }),
+    ).rejects.toThrow("consumer refused page");
+
+    expect(store.load()).toEqual(stateBefore);
+    expect(store.rows().range(STREAM_COLD, 0n, 10)).toEqual(rowsBefore);
+  });
+
+  test("persist false delivers verified pages while leaving rows and both cursors unchanged", async () => {
+    const srv = serve();
+    seedIngest(srv, 3, { cold: true });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    await c.pullColdHashes();
+    const stateBefore = store.load();
+    const rowsBefore = store.rows().range(STREAM_COLD, 0n, 10);
+    const delivered: bigint[][] = [];
+
+    const report = await c.pullColdRange({
+      fromSeq: 2n,
+      toSeq: 6n,
+      limit: 2,
+      persist: false,
+      onPage: (rows) => {
+        delivered.push(rows.map((r) => r.seq));
+      },
+    });
+
+    expect(report).toEqual({ pages: 2, rows: 3 });
+    expect(delivered).toEqual([[2n, 4n], [6n]]);
+    expect(store.load()).toEqual(stateBefore);
+    expect(store.rows().range(STREAM_COLD, 0n, 10)).toEqual(rowsBefore);
+    expect(c.cursor(STREAM_HOT)).toBe(stateBefore.cursors.hot);
+    expect(c.cursor(STREAM_COLD)).toBe(stateBefore.cursors.cold);
+  });
+
+  test("cold range cancellation is observed between pages", async () => {
+    const srv = serve(); seedIngest(srv, 4, { cold: true }); const c = await loggedIn(srv); await c.pullColdHashes();
+    let stop = false; let delivered = 0;
+    const report = await c.pullColdRange({ fromSeq: 2n, toSeq: 8n, limit: 1, cancelled: () => stop, onPage: (rows) => { delivered += rows.length; stop = true; } });
+    expect(report).toEqual({ pages: 1, rows: 1 });
+    expect(delivered).toBe(1);
+  });
+
+  test("a cold range refuses a non-advancing page instead of looping", async () => {
+    const srv = serve({ stallColdCursor: true });
+    seedIngest(srv, 1, { cold: true });
+    const c = await loggedIn(srv);
+    await c.pullColdHashes();
+
+    await expect(c.pullColdRange({ fromSeq: 2n, toSeq: 2n })).rejects.toThrow(/does not advance past/);
+  });
+});
+
+describe("authoring", () => {
+  test("emitMany persists a complete group and rejects a bad group without its first half", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const store = openMemStore();
+    const c = new Client({ store, server: srv.url, writerId: "dev-a", fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+
+    expect(() =>
+      c.emitMany([
+        { type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } },
+        { type: "not_an_op", payload: {} },
+      ]),
+    ).toThrow(/unknown op type/);
+    expect(c.pending).toHaveLength(0);
+    expect(new Client({ store, server: srv.url, fetch: srv.fetch }).pending).toHaveLength(0);
+
+    const authored = c.emitMany([
+      { type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } },
+      { type: "rate_set", payload: { currency: "EUR", rate_micro: "3900000" } },
+    ]);
+    expect(authored).toHaveLength(2);
+    expect(new Client({ store, server: srv.url, fetch: srv.fetch }).pending.map((op) => op.op_id)).toEqual(
+      authored.map((op) => op.op_id),
+    );
+  });
+
+  test("emitMany rolls live state back when the one durable save fails", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const inner = openMemStore();
+    let fail = false;
+    const store: Store = {
+      location: inner.location,
+      load: () => inner.load(),
+      save: (state) => { if (fail) throw new Error("disk full"); inner.save(state); },
+      rows: () => inner.rows(),
+      transaction: (fn) => inner.transaction(fn),
+    };
+    const c = new Client({ store, server: srv.url, writerId: "dev-a", fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+    c.emit({ type: "rate_set", payload: { currency: "GBP", rate_micro: "4600000" } });
+    const before = c.pending.map((op) => op.op_id);
+
+    fail = true;
+    expect(() => c.emitMany([
+      { type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } },
+      { type: "rate_set", payload: { currency: "EUR", rate_micro: "3900000" } },
+    ])).toThrow("disk full");
+    expect(c.pending.map((op) => op.op_id)).toEqual(before);
+    expect(new Client({ store: inner, server: srv.url, fetch: srv.fetch }).pending.map((op) => op.op_id)).toEqual(before);
+
+    fail = false;
+    c.emit({ type: "rate_set", payload: { currency: "JPY", rate_micro: "24500" } });
+    const types = new Client({ store: inner, server: srv.url, fetch: srv.fetch }).pending.map((op) => (op.payload as { currency?: string }).currency);
+    expect(types).toEqual(["GBP", "JPY"]);
   });
 });
 
@@ -597,7 +819,7 @@ describe("push", () => {
   test("a partially-applied batch is resent from the chain head, not retried whole", async () => {
     const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
     const store = openMemStore();
-    const c = new Client({ store, server: srv.url, writerId: "dev-a" });
+    const c = new Client({ store, server: srv.url, writerId: "dev-a", fetch: srv.fetch });
     await c.login("apple", "dev:alice");
 
     // The straddle, reproduced honestly. The server appends a batch atomically,
@@ -737,7 +959,7 @@ describe("state", () => {
       rows: () => inner.rows(),
       transaction: (fn) => inner.transaction(fn),
     };
-    const c = new Client({ store, server: srv.url });
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
     await c.login("apple", "dev:alice");
 
     fail = true;
@@ -747,7 +969,7 @@ describe("state", () => {
 
     // …and the resume: the next run pulls the same page, once.
     fail = false;
-    const again = new Client({ store, server: srv.url });
+    const again = new Client({ store, server: srv.url, fetch: srv.fetch });
     await again.pull();
     expect(inner.rows().count(STREAM_HOT)).toBe(3);
     expect(inner.load().cursors.hot).toBe(3n);
@@ -757,7 +979,7 @@ describe("state", () => {
     const srv = serve();
     seedIngest(srv, 2);
     const store = openMemStore();
-    const c = new Client({ store, server: srv.url });
+    const c = new Client({ store, server: srv.url, fetch: srv.fetch });
     await c.login("apple", "dev:alice");
     await c.pull();
     const before = JSON.stringify(store.load(), (_k, v) => (typeof v === "bigint" ? v.toString() : v));

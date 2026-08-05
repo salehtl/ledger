@@ -173,7 +173,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, use
 	// against the AUTHENTICATED payload; it is re-checked below against the
 	// Identity, so a Verifier implementation that ignored the option cannot
 	// silently turn this endpoint back into a session-plus-key one.
-	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{MaxAge: reauthMaxAge})
+	// Bind the fresh provider credential to the server-issued deletion
+	// challenge. The challenge is consumed below, so a caller cannot choose a
+	// nonce that merely happens to match their own token.
+	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{Nonce: req.Nonce, MaxAge: reauthMaxAge})
 	if err != nil {
 		if errors.Is(err, auth.ErrNotConfigured) || errors.Is(err, auth.ErrKeySetUnavailable) {
 			// A fact about the server, not the credential. Answering 403 would

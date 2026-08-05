@@ -60,6 +60,7 @@ import {
   decodeCheckpointPayload,
   parseDecimal,
   parseInstantMs,
+  showValue,
   validateOp,
   type Op,
   type OpType,
@@ -179,7 +180,10 @@ export function foldBlobs(blobs: PositionedBlob[], s: State = emptyState()): Sta
         stream: b.pos.stream,
         writer_counter: b.pos.writer_counter,
         seq: b.pos.seq,
-        reason: (err as Error).message,
+        // `state.unreadable` is materialized state the invariant checker reads
+        // and `serializeState` witnesses, so the same rule applies here as to an
+        // anomaly detail: never an engine's own wording. See {@link reasonOf}.
+        reason: describe(err, (n) => `the blob could not be decoded (${n}) — a fault in the decoder, not a claim about the blob`),
       });
       continue;
     }
@@ -191,27 +195,68 @@ export function foldBlobs(blobs: PositionedBlob[], s: State = emptyState()): Sta
 /**
  * Applies one op at its position. Mutates `s`.
  *
- * Throws only for the two hard stops — an unknown newer schema version, and a
- * caller folding out of order. Everything else that can go wrong with an op is
+ * # The exit contract, which is the whole point of this function
+ *
+ * `applyOp` leaves by exactly one of three doors: it returns, it throws
+ * {@link ReplayOrderError}, or it throws {@link UnknownNewerVersionError}.
+ * **Nothing else may ever come out of it.** Both hard stops describe the
+ * *caller's* situation — a position the fold cannot use, and a log this build
+ * must not interpret — and both are unreachable from a well-formed sync of a
+ * log this build understands. Everything that can be wrong with an OP is
  * recorded in `s.anomalies` and the fold continues.
+ *
+ * That contract is not decoration. A device folds its whole log on every sync,
+ * so an error escaping here is not one lost op: the same prefix is re-folded on
+ * every subsequent attempt and the device can never sync again. Task 7 found one
+ * instance (`BlobDecodeError` from `fingerprint`, thrown inside `createTxn`,
+ * which is not a `PayloadError` and so went straight past the catch below) and
+ * closed the instance. The class is closed here instead, in two halves that have
+ * to hold together:
+ *
+ *   1. **Building an error message cannot itself throw.** Every diagnostic on
+ *      this path renders values through {@link showValue}, never
+ *      `JSON.stringify` — which raises `TypeError` on a `bigint`, i.e. the
+ *      message *about* a bad value threw a different error than the one it was
+ *      being built for, before the `PayloadError` even existed. Money in
+ *      `client/src` is `bigint` throughout, so `{ amount_minor: 25000n }` where
+ *      the wire wants `"25000"` is the single likeliest mistake in every op this
+ *      client assembles in code, and a fuzz over 654 payload variants escaped 22
+ *      times on exactly that shape. Interpolating an op field that has not been
+ *      through `validateOp` yet goes through {@link str} for the same reason: a
+ *      `symbol` in `op.op_id` makes a plain template literal throw.
+ *   2. **The catch is total anyway.** Half 1 is a claim about code that will be
+ *      edited; half 2 holds even when someone forgets it. Anything from
+ *      `dispatch` that is not one of the two hard stops becomes an
+ *      `invalid_payload` anomaly.
+ *
+ * Half 2 is deliberately *not* a licence to skip half 1. An engine fault
+ * recorded as `invalid_payload` is a fault mis-attributed to the user's log, and
+ * the anomaly detail says as much in words so a reader is not misled.
  */
 export function applyOp(s: State, e: LogEntry): void {
   const { op, seq, writer_id } = e;
   if (typeof seq !== "bigint" || seq < 1n) {
-    throw new ReplayOrderError(`seq must be a positive bigint, got ${String(seq)}`);
+    throw new ReplayOrderError(`seq must be a positive bigint, got ${showValue(seq)}`);
+  }
+  // Same class as a bad seq — the caller handed the fold a position it cannot
+  // use — and it has to be checked before the first `op.` below, which would
+  // otherwise throw a bare TypeError out of a function that promises not to.
+  // Unreachable from the wire: `decodeBlobOps` never yields a non-object op.
+  if (typeof op !== "object" || op === null) {
+    throw new ReplayOrderError(`the entry at seq ${seq} carries ${showValue(op)} where an op belongs`);
   }
   if (seq < s.cursors.hot) {
     throw new ReplayOrderError(
-      `op ${op.op_id} arrives at seq ${seq}, behind the folded prefix at ${s.cursors.hot}: replay folds by seq`,
+      `op ${str(op.op_id)} arrives at seq ${seq}, behind the folded prefix at ${s.cursors.hot}: replay folds by seq`,
     );
   }
   if (typeof writer_id !== "string" || writer_id === "") {
-    throw new ReplayOrderError(`op ${op.op_id} at seq ${seq} names no writer, so no fork involving it can be resolved`);
+    throw new ReplayOrderError(`op ${str(op.op_id)} at seq ${seq} names no writer, so no fork involving it can be resolved`);
   }
   // Checked before validateOp so an op that is BOTH newer and malformed still
   // hard-stops rather than being set aside as an anomaly.
   if (typeof op.v === "number" && op.v > SCHEMA_VERSION) {
-    throw new UnknownNewerVersionError(`op ${op.op_id} is v${op.v}, this build supports v${SCHEMA_VERSION}`);
+    throw new UnknownNewerVersionError(`op ${str(op.op_id)} is v${op.v}, this build supports v${SCHEMA_VERSION}`);
   }
 
   if (seq > s.cursors.hot) {
@@ -224,7 +269,7 @@ export function applyOp(s: State, e: LogEntry): void {
     // page takes the entity to a version nothing authored and forks it against
     // ITSELF, complete with a notice naming one op as both winner and loser.
     // A well-behaved caller resumes from `seq > cursor` and never sees this.
-    anomaly(s, seq, "duplicate_delivery", `${op.op_id} was already applied at seq ${seq}`);
+    anomaly(s, seq, "duplicate_delivery", `${str(op.op_id)} was already applied at seq ${seq}`);
     return;
   }
   s.appliedAtCursor.add(op.op_id);
@@ -237,18 +282,116 @@ export function applyOp(s: State, e: LogEntry): void {
     validateOp(op);
   } catch (err) {
     if (err instanceof UnknownNewerVersionError) throw err;
-    anomaly(s, seq, "invalid_op", `${op.type} ${op.op_id}: ${(err as Error).message}`);
+    // `str` on both, because this is the ONE anomaly raised while the op is
+    // still unvalidated: `op.type` and `op.op_id` are whatever the caller put
+    // there, and a `symbol` in either makes the interpolation below throw.
+    anomaly(s, seq, "invalid_op", `${str(op.type)} ${str(op.op_id)}: ${reasonOf(err)}`);
     return;
   }
 
+  // Past validateOp, `op.type`, `op.op_id` and `op.entity` are strings, which is
+  // what every message built below this line relies on.
   try {
     dispatch(s, e);
   } catch (err) {
-    if (err instanceof PayloadError) {
-      anomaly(s, seq, "invalid_payload", `${op.type} ${op.op_id}: ${err.message}`);
-      return;
-    }
-    throw err;
+    // The two hard stops keep propagating. Neither is thrown by anything under
+    // `dispatch` today; catching them here is what keeps that true if one ever
+    // is, rather than quietly downgrading a stop-the-world condition to a note.
+    if (err instanceof UnknownNewerVersionError || err instanceof ReplayOrderError) throw err;
+    anomaly(s, seq, "invalid_payload", `${op.type} ${op.op_id}: ${reasonOf(err)}`);
+    return;
+  }
+}
+
+/**
+ * Interpolates a value that the surrounding message assumes is a string but
+ * which has not been checked yet.
+ *
+ * A string passes through UNCHANGED, so every existing message reads exactly as
+ * it did; anything else is rendered by {@link showValue}. The case that matters
+ * is `symbol`: `` `${Symbol()}` `` throws `TypeError`, and an op assembled in
+ * code can carry one in `op_id` or `type`.
+ */
+function str(v: unknown): string {
+  return typeof v === "string" ? v : showValue(v);
+}
+
+/**
+ * What an escaped error contributes to an anomaly detail. Total, and
+ * deterministic across executors.
+ *
+ * # Why an error's own `message` is not simply used
+ *
+ * A {@link PayloadError} — and every error `validateOp` raises — carries a
+ * message written in this codebase, so it says something true about the op and
+ * it reads identically wherever it is folded. A native `TypeError` does not: its
+ * wording is the **engine's**, and JavaScriptCore, V8 and Hermes do not agree on
+ * it. An anomaly detail is materialized state that `serializeState` witnesses,
+ * so two replicas folding the same log must produce the same bytes; letting an
+ * engine's phrasing into that state would make the fold's output depend on which
+ * runtime ran it, which is the one thing this engine exists to prevent.
+ *
+ * So the native error classes are answered with a fixed sentence plus the class
+ * NAME — stable, because it is a property of the class rather than of the
+ * runtime's phrasing — and everything else keeps its message.
+ *
+ * The sentence names the failure as an engine fault rather than a bad payload,
+ * because it is filed under `invalid_payload`: that kind is
+ * `ANOMALY_KINDS`-frozen and shared with genuine data conditions, so the
+ * detail is the only place the difference can be told. See the task report for
+ * the contract a dedicated kind would need.
+ */
+function reasonOf(err: unknown): string {
+  return describe(err, (n) => `the fold could not apply this op (${n}) — a fault in the replay engine, not a claim about the log`);
+}
+
+/**
+ * `err`'s own message when it wrote one, and `fault(className)` when the message
+ * is the runtime's rather than this codebase's. Cannot throw, for any `err`.
+ */
+function describe(err: unknown, fault: (name: string) => string): string {
+  if (!isEngineFault(err)) {
+    const m = messageOf(err);
+    if (m !== undefined) return m;
+  }
+  return fault(errorName(err));
+}
+
+/**
+ * True for the errors a JavaScript runtime raises on its own behalf. Being
+ * `instanceof` one of these is not proof the engine raised it, but this codebase
+ * throws none of them, so the test is exact here and stays exact as long as that
+ * remains true.
+ */
+function isEngineFault(err: unknown): boolean {
+  return (
+    err instanceof TypeError ||
+    err instanceof RangeError ||
+    err instanceof ReferenceError ||
+    err instanceof SyntaxError ||
+    err instanceof EvalError ||
+    err instanceof URIError
+  );
+}
+
+/** An error's own message, or `undefined` when it has no usable one. Cannot throw. */
+function messageOf(err: unknown): string | undefined {
+  try {
+    const m: unknown = (err as { message?: unknown } | null | undefined)?.message;
+    return typeof m === "string" ? m : undefined;
+  } catch {
+    // A `message` getter that throws, or a revoked Proxy.
+    return undefined;
+  }
+}
+
+/** An error's class name, or `typeof` when it does not have a usable one. Cannot throw. */
+function errorName(err: unknown): string {
+  try {
+    const n: unknown = (err as { name?: unknown } | null | undefined)?.name;
+    return typeof n === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(n) ? n : typeof err;
+  } catch {
+    return "unknown";
   }
 }
 
@@ -321,6 +464,7 @@ function applyRateSet(s: State, e: LogEntry): void {
     return;
   }
   onRateSet(s, ccy, micro);
+  s.rateUpdatedAt.set(ccy, canonicalTime(e.op.authored_at));
 }
 
 function applyRateUnset(s: State, e: LogEntry): void {
@@ -340,6 +484,7 @@ function applyRateUnset(s: State, e: LogEntry): void {
   // Present-and-null, not deleted: "unset" is a live fact at this position, and
   // transactions frozen before it stay frozen (spec §3.7:127).
   onRateUnset(s, ccy);
+  s.rateUpdatedAt.set(ccy, canonicalTime(e.op.authored_at));
 }
 
 function applyCheckpoint(s: State, e: LogEntry): void {
@@ -347,7 +492,9 @@ function applyCheckpoint(s: State, e: LogEntry): void {
   try {
     heads = decodeCheckpointPayload(e.op.payload);
   } catch (err) {
-    throw new PayloadError((err as Error).message);
+    // Total rather than `(err as Error).message`, which itself throws when a
+    // non-object is thrown; see {@link reasonOf}.
+    throw new PayloadError(reasonOf(err));
   }
   s.checkpoints = heads.map((h) => ({
     writer_id: h.writer_id,
@@ -364,7 +511,7 @@ function applyCheckpoint(s: State, e: LogEntry): void {
 /** Op types that may create an entity (`parent_version === null`). */
 const CREATES: ReadonlySet<OpType> = new Set<OpType>(["txn_ingested", "txn_superseded", "rule_added"]);
 /** Op types that may edit one (`parent_version !== null`). */
-const EDITS: ReadonlySet<OpType> = new Set<OpType>(["txn_categorized", "txn_split", "txn_edited", "rule_added"]);
+const EDITS: ReadonlySet<OpType> = new Set<OpType>(["txn_categorized", "txn_split", "txn_edited", "txn_duplicate_disposition", "rule_added"]);
 
 /**
  * The entity kind each op type is allowed to name.
@@ -382,6 +529,7 @@ const ENTITY_KIND: Partial<Record<OpType, string>> = {
   txn_categorized: "txn",
   txn_split: "txn",
   txn_edited: "txn",
+  txn_duplicate_disposition: "txn",
   rule_added: "rule",
 };
 
@@ -579,6 +727,8 @@ function createTxn(s: State, e: LogEntry, p: TxnPayload, superseding: boolean): 
     splits: [],
     superseded_by: null,
     possible_duplicate_of: null,
+    duplicate_disposition: null,
+    verified_origin_domain: p.verified_origin_domain ?? null,
     version: 1,
   };
   s.txns.set(id, t);
@@ -618,6 +768,16 @@ function precheck(s: State, e: LogEntry, payload: Payload): boolean {
     return false;
   }
   const parts = (payload as SplitPayload).parts;
+  if (t.unparsed) {
+    // An unparsed row carries `amount_minor: 0n`, so the sum check below is
+    // satisfied by `parts: []` and by nothing else — a zero-part split lands,
+    // consumes a version and changes nothing, which is the "written, applied,
+    // invisible" shape §2 forbids. Every non-empty split is refused anyway
+    // (parts are positive, so they cannot sum to zero); this only makes the
+    // empty one say why, and states the real rule: there is no amount to split.
+    anomaly(s, e.seq, "split_sum", `${e.op.op_id} splits ${t.id}, which is unparsed and has no amount to split`);
+    return false;
+  }
   const sum = parts.reduce((acc, p) => acc + p.amount_minor, 0n);
   if (sum !== t.amount_minor) {
     anomaly(s, e.seq, "split_sum", `${e.op.op_id} splits ${t.id} into ${sum}, but it is ${t.amount_minor}`);
@@ -662,7 +822,7 @@ function edit(s: State, e: LogEntry, payload: Payload, version: number): void {
     case "txn_categorized": {
       const p = payload as CategorizePayload;
       t.category = p.category;
-      t.needs_review = p.needs_review;
+      setNeedsReview(s, t, p.needs_review, seq);
       return;
     }
     case "txn_split": {
@@ -674,11 +834,76 @@ function edit(s: State, e: LogEntry, payload: Payload, version: number): void {
       applyTxnEdit(s, t, payload as EditPayload, seq);
       return;
     }
+    case "txn_duplicate_disposition": {
+      const p = payload as DuplicateDispositionPayload;
+      if (t.possible_duplicate_of !== p.other_txn_id) {
+        anomaly(s, seq, "duplicate_disposition_mismatch", `${t.id}: disposition names ${p.other_txn_id}, notice names ${String(t.possible_duplicate_of)}`);
+        return;
+      }
+      t.duplicate_disposition = p.disposition;
+      return;
+    }
     default:
       // Unreachable: EDITS gates entry and rule_added returned above. Recorded
       // rather than thrown, because a fold that crashes strands a device.
       anomaly(s, seq, "unhandled_op", `${op.type} ${op.op_id} reached the edit path with no handler`);
   }
+}
+
+/**
+ * The one place `needs_review` is written after a row is created, and the only
+ * thing keeping rule 4 of the unparsed contract true for the whole log.
+ *
+ * # Why a decode-time rule was not enough
+ *
+ * `decodeTxnPayload` refuses `unparsed: true` with `needs_review: false` on the
+ * stated grounds that the review queue is the ONLY surface such a row has:
+ * `countsTowardMoney` excludes it from every total, it has no amount, no
+ * currency and no direction to show, and no list of transactions will carry it.
+ * That refusal covered the create and nothing else. A later `txn_categorized` —
+ * whose payload decoder defaults `needs_review` to **false**, so the ordinary
+ * "categorise and dismiss" review action does it without asking — wrote the flag
+ * straight onto the row. The transaction then appeared on no surface at all: not
+ * in money, not in review, no anomaly, and `I12_money_shape` never looks at
+ * `needs_review`. A retained message shown to nobody is the silent loss §2 exists
+ * to forbid, and it was reachable by a user tapping a button.
+ *
+ * So the rule is enforced where the state changes rather than only where it is
+ * born: an op may set `needs_review` on an unparsed row to `true` (a no-op) and
+ * may not clear it. The refusal is an `unsupported_edit_field` anomaly, exactly
+ * like `amount_home_minor` on an unparsed row a few lines below — same kind, same
+ * reason, same shape: a field whose value is dictated by the parse, on a row the
+ * parse could not read. The rest of the op still applies; a category set on an
+ * unparsed row is a real user intent and is kept.
+ *
+ * # The half of this that is NOT here
+ *
+ * This makes the bad state unreachable through the engine. It does not
+ * independently *measure* that the state is good, and a rule enforced only by
+ * the code that could break it is the shape AGENT-RULES calls "true by
+ * construction". The independent measurement belongs in
+ * `invariants/check.ts:I12_money_shape`, whose unparsed branch already asserts
+ * the empty money shape and should assert `needs_review === true` beside it, as
+ * a hard stop. That file is owned elsewhere; the contract is written up in the
+ * task report.
+ *
+ * # If the product decides dismissal should be allowed
+ *
+ * Then rule 4 stops being a rule and both halves have to go in one commit: the
+ * decoder's refusal, and this. What must not happen is one of them alone, which
+ * leaves a row that is legal to reach and illegal to create.
+ */
+function setNeedsReview(s: State, t: Txn, want: boolean, seq: bigint): void {
+  if (t.unparsed && !want) {
+    anomaly(
+      s,
+      seq,
+      "unsupported_edit_field",
+      `${t.id}: needs_review cannot be cleared on an unparsed transaction — the review queue is the only surface it has`,
+    );
+    return;
+  }
+  t.needs_review = want;
 }
 
 function applyTxnEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
@@ -694,7 +919,9 @@ function applyTxnEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
   if (p.last4 !== undefined) t.last4 = p.last4;
   if (p.posted_at !== undefined) t.posted_at = p.posted_at;
   if (p.category !== undefined) t.category = p.category;
-  if (p.needs_review !== undefined) t.needs_review = p.needs_review;
+  // Same guard as `txn_categorized`: two op types can clear this flag and a rule
+  // enforced on one of them is not enforced. See {@link setNeedsReview}.
+  if (p.needs_review !== undefined) setNeedsReview(s, t, p.needs_review, seq);
   if (p.amount_home_minor !== undefined) {
     if (t.unparsed) {
       // §3.7:137's explicit recompute is a user's decision about a conversion,
@@ -714,9 +941,14 @@ function applyTxnEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
       }
     }
   }
+  if (p.possible_duplicate_of !== undefined) {
+    t.possible_duplicate_of = p.possible_duplicate_of;
+    t.duplicate_disposition = null;
+  }
   if (fingerprint(t) !== before && t.superseded_by === null) {
     unindexFingerprintAt(s, before, t.id);
     t.possible_duplicate_of = null;
+    t.duplicate_disposition = null;
     indexFingerprint(s, t, seq);
   }
 }
@@ -747,6 +979,7 @@ function indexFingerprint(s: State, t: Txn, seq: bigint): void {
     // Both stay live and fully visible: genuine same-card same-day duplicate
     // purchases exist, so this can only ever be a review item.
     t.possible_duplicate_of = other;
+    t.duplicate_disposition = null;
     anomaly(s, seq, "possible_duplicate", `${t.id} matches ${other} on ${fp}`);
   }
   bucket.push(t.id);
@@ -787,6 +1020,7 @@ interface TxnPayload {
   unparsed: boolean;
   tier: ParseTier;
   parse_error: string | null;
+  verified_origin_domain?: string;
 }
 interface CategorizePayload {
   category: string | null;
@@ -802,7 +1036,12 @@ interface EditPayload {
   category?: string | null;
   needs_review?: boolean;
   amount_home_minor?: bigint | null;
+  possible_duplicate_of?: string | null;
   rejected: string[];
+}
+interface DuplicateDispositionPayload {
+  other_txn_id: string;
+  disposition: "same" | "different" | null;
 }
 interface RulePayload {
   pattern: string;
@@ -810,20 +1049,27 @@ interface RulePayload {
   category: string;
   priority: number;
 }
-type Payload = TxnPayload | CategorizePayload | SplitPayload | EditPayload | RulePayload;
+type Payload = TxnPayload | CategorizePayload | SplitPayload | EditPayload | DuplicateDispositionPayload | RulePayload;
 
 function decodePayload(op: Op): Payload {
   const p = payloadObject(op);
   switch (op.type) {
     case "txn_ingested":
     case "txn_superseded":
-      return decodeTxnPayload(p);
+      return decodeTxnPayload(p, op.v);
     case "txn_categorized":
       return { category: optionalCategory(p["category"]), needs_review: bool(p["needs_review"], false) };
     case "txn_split":
       return { parts: decodeParts(p["parts"]) };
     case "txn_edited":
       return decodeEditPayload(p);
+    case "txn_duplicate_disposition": {
+      const disposition = p["disposition"];
+      if (disposition !== null && disposition !== "same" && disposition !== "different") {
+        throw new PayloadError("disposition must be same, different, or null");
+      }
+      return { other_txn_id: requiredString(p["other_txn_id"], "other_txn_id"), disposition } as DuplicateDispositionPayload;
+    }
     case "rule_added":
       return {
         pattern: requiredString(p["pattern"], "pattern"),
@@ -867,7 +1113,10 @@ function decodePayload(op: Op): Payload {
  *     transaction and reports nothing extracted.
  *   - **`needs_review` may not be false on an unparsed row.** It is the only
  *     surface such a row has; one that opted out of review would be a message
- *     retained, per §2, and then shown to nobody.
+ *     retained, per §2, and then shown to nobody. This rule is the one that has
+ *     a life after the create — a later `txn_categorized` or `txn_edited` can
+ *     clear the flag — so it is enforced on those paths too, in
+ *     {@link setNeedsReview}. Changing it here means changing it there.
  *
  * The converse of the third rule does **not** hold and must not be enforced:
  * `tier: "none"` with `unparsed: false` is every client-authored op — a CSV
@@ -879,7 +1128,10 @@ function decodePayload(op: Op): Payload {
  * no amount would be telling the truth, and refusing it would cost the review
  * queue the one useful thing it had.
  */
-function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
+function decodeTxnPayload(p: Record<string, unknown>, schemaVersion: number): TxnPayload {
+  if (schemaVersion < 2 && p["verified_origin_domain"] !== undefined) {
+    throw new PayloadError("verified_origin_domain requires schema v2");
+  }
   const category = optionalCategory(p["category"]);
   const tier = tierOf(p["tier"]);
   // Absent means PARSED. A writer that omits the flag is claiming money, which
@@ -887,6 +1139,7 @@ function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
   // op a client authors, carries a real amount.
   const unparsed = bool(p["unparsed"], false);
   const parse_error = parseErrorOf(p["parse_error"]);
+  const verifiedOrigin = optionalString(p["verified_origin_domain"], "verified_origin_domain");
   const common = {
     posted_at: instant(p["posted_at"], "posted_at"),
     merchant_raw: optionalString(p["merchant_raw"], "merchant_raw") ?? "",
@@ -895,11 +1148,12 @@ function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
     unparsed,
     tier,
     parse_error,
+    ...(verifiedOrigin === undefined ? {} : { verified_origin_domain: verifiedOrigin }),
   };
 
   if (unparsed) {
     if (tier !== "none") {
-      throw new PayloadError(`unparsed is true but tier is ${JSON.stringify(tier)}: nothing was extracted, so no tier produced it`);
+      throw new PayloadError(`unparsed is true but tier is ${showValue(tier)}: nothing was extracted, so no tier produced it`);
     }
     const amount = parseMoney(p["amount_minor"] ?? "0", "amount_minor");
     if (amount !== 0n) {
@@ -907,11 +1161,11 @@ function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
     }
     const ccy = p["currency"];
     if (ccy !== undefined && ccy !== "") {
-      throw new PayloadError(`unparsed is true but currency is ${JSON.stringify(ccy)}: an unparsed message carries no currency`);
+      throw new PayloadError(`unparsed is true but currency is ${showValue(ccy)}: an unparsed message carries no currency`);
     }
     const dir = p["direction"];
     if (dir !== undefined && dir !== "") {
-      throw new PayloadError(`unparsed is true but direction is ${JSON.stringify(dir)}: an unparsed message carries no direction`);
+      throw new PayloadError(`unparsed is true but direction is ${showValue(dir)}: an unparsed message carries no direction`);
     }
     if (bool(p["needs_review"], true) !== true) {
       throw new PayloadError("unparsed is true but needs_review is false: an unparsed message is a review item");
@@ -920,7 +1174,7 @@ function decodeTxnPayload(p: Record<string, unknown>): TxnPayload {
   }
 
   if (parse_error !== null) {
-    throw new PayloadError(`parse_error is ${JSON.stringify(parse_error)} on a row that is not unparsed`);
+    throw new PayloadError(`parse_error is ${showValue(parse_error)} on a row that is not unparsed`);
   }
   return {
     ...common,
@@ -939,7 +1193,7 @@ const TIERS: ReadonlySet<string> = new Set(["template", "heuristic", "none"]);
 function tierOf(v: unknown): ParseTier {
   if (v === undefined) return "none";
   if (typeof v !== "string" || !TIERS.has(v)) {
-    throw new PayloadError(`tier must be template|heuristic|none, got ${JSON.stringify(v)}`);
+    throw new PayloadError(`tier must be template|heuristic|none, got ${showValue(v)}`);
   }
   return v as ParseTier;
 }
@@ -968,9 +1222,9 @@ const PARSE_ERROR_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 
 function parseErrorOf(v: unknown): string | null {
   if (v === undefined || v === null || v === "") return null;
-  if (typeof v !== "string") throw new PayloadError(`parse_error must be a string or null, got ${JSON.stringify(v)}`);
+  if (typeof v !== "string") throw new PayloadError(`parse_error must be a string or null, got ${showValue(v)}`);
   if (!PARSE_ERROR_TOKEN.test(v)) {
-    throw new PayloadError(`parse_error ${JSON.stringify(v)} is not a lower-snake token: a reason is a code, never message text`);
+    throw new PayloadError(`parse_error ${showValue(v)} is not a lower-snake token: a reason is a code, never message text`);
   }
   return v;
 }
@@ -999,6 +1253,13 @@ function decodeEditPayload(p: Record<string, unknown>): EditPayload {
   if (p["needs_review"] !== undefined) out.needs_review = bool(p["needs_review"], false);
   if (p["amount_home_minor"] !== undefined) {
     out.amount_home_minor = p["amount_home_minor"] === null ? null : positiveMoney(p["amount_home_minor"], "amount_home_minor");
+  }
+  if (p["possible_duplicate_of"] !== undefined) {
+    const duplicate = p["possible_duplicate_of"];
+    if (duplicate !== null && (typeof duplicate !== "string" || duplicate === "")) {
+      throw new PayloadError("possible_duplicate_of must be a non-empty string or null");
+    }
+    out.possible_duplicate_of = duplicate as string | null;
   }
   return out;
 }
@@ -1031,12 +1292,12 @@ function parseMoney(v: unknown, what: string): bigint {
   if (typeof v !== "string") {
     // The decimal-string rule, enforced rather than documented: JSON.parse of a
     // number is a float64, so accepting one here would silently round.
-    throw new PayloadError(`${what} must be a decimal-integer string, got ${JSON.stringify(v)}`);
+    throw new PayloadError(`${what} must be a decimal-integer string, got ${showValue(v)}`);
   }
   try {
     return parseDecimal(v);
   } catch (err) {
-    throw new PayloadError(`${what}: ${(err as Error).message}`);
+    throw new PayloadError(`${what}: ${reasonOf(err)}`);
   }
 }
 
@@ -1052,13 +1313,13 @@ function parseMoney(v: unknown, what: string): bigint {
 function currencyOf(p: Record<string, unknown>, key: string): string {
   const v = p[key];
   if (typeof v !== "string" || !/^[A-Za-z]{3}$/.test(v)) {
-    throw new PayloadError(`${key} must be a three-letter currency code, got ${JSON.stringify(v)}`);
+    throw new PayloadError(`${key} must be a three-letter currency code, got ${showValue(v)}`);
   }
   return v.toUpperCase();
 }
 
 function direction(v: unknown): "debit" | "credit" {
-  if (v !== "debit" && v !== "credit") throw new PayloadError(`direction must be debit or credit, got ${JSON.stringify(v)}`);
+  if (v !== "debit" && v !== "credit") throw new PayloadError(`direction must be debit or credit, got ${showValue(v)}`);
   return v;
 }
 
@@ -1090,50 +1351,50 @@ function direction(v: unknown): "debit" | "credit" {
  * drift from whatever `canonicalTime` actually produces.
  */
 function instant(v: unknown, what: string): string {
-  if (typeof v !== "string") throw new PayloadError(`${what} must be an RFC3339 timestamp, got ${JSON.stringify(v)}`);
+  if (typeof v !== "string") throw new PayloadError(`${what} must be an RFC3339 timestamp, got ${showValue(v)}`);
   let canonical: string;
   try {
     parseInstantMs(v);
     canonical = canonicalTime(v);
   } catch (err) {
-    throw new PayloadError(`${what}: ${(err as Error).message}`);
+    throw new PayloadError(`${what}: ${reasonOf(err)}`);
   }
   try {
     parseInstantMs(canonical);
   } catch {
-    throw new PayloadError(`${what} ${JSON.stringify(v)} canonicalises to ${JSON.stringify(canonical)}, which is outside the range this wire format can carry`);
+    throw new PayloadError(`${what} ${showValue(v)} canonicalises to ${showValue(canonical)}, which is outside the range this wire format can carry`);
   }
   return canonical;
 }
 
 function requiredString(v: unknown, what: string): string {
-  if (typeof v !== "string" || v === "") throw new PayloadError(`${what} is ${JSON.stringify(v)}`);
+  if (typeof v !== "string" || v === "") throw new PayloadError(`${what} is ${showValue(v)}`);
   return v;
 }
 
 function optionalString(v: unknown, what: string): string | undefined {
   if (v === undefined) return undefined;
-  if (typeof v !== "string") throw new PayloadError(`${what} must be a string, got ${JSON.stringify(v)}`);
+  if (typeof v !== "string") throw new PayloadError(`${what} must be a string, got ${showValue(v)}`);
   return v;
 }
 
 /** `""` and `null` are the same thing: uncategorized. */
 function optionalCategory(v: unknown): string | null {
   if (v === undefined || v === null || v === "") return null;
-  if (typeof v !== "string") throw new PayloadError(`category must be a string or null, got ${JSON.stringify(v)}`);
+  if (typeof v !== "string") throw new PayloadError(`category must be a string or null, got ${showValue(v)}`);
   return v;
 }
 
 function bool(v: unknown, fallback: boolean): boolean {
   if (v === undefined) return fallback;
-  if (typeof v !== "boolean") throw new PayloadError(`want a boolean, got ${JSON.stringify(v)}`);
+  if (typeof v !== "boolean") throw new PayloadError(`want a boolean, got ${showValue(v)}`);
   return v;
 }
 
 const MATCH_TYPES = new Set(["contains", "exact", "regex"]);
 
 function matchType(v: unknown): string {
-  if (typeof v !== "string" || !MATCH_TYPES.has(v)) throw new PayloadError(`match must be contains|exact|regex, got ${JSON.stringify(v)}`);
+  if (typeof v !== "string" || !MATCH_TYPES.has(v)) throw new PayloadError(`match must be contains|exact|regex, got ${showValue(v)}`);
   return v;
 }
 
@@ -1144,7 +1405,7 @@ function matchType(v: unknown): string {
  * explicit rather than assumed.
  */
 function intField(v: unknown, what: string): number {
-  if (typeof v !== "number" || !Number.isSafeInteger(v)) throw new PayloadError(`${what} must be an integer, got ${JSON.stringify(v)}`);
+  if (typeof v !== "number" || !Number.isSafeInteger(v)) throw new PayloadError(`${what} must be an integer, got ${showValue(v)}`);
   return v;
 }
 

@@ -2,7 +2,7 @@ package importer
 
 import (
 	"fmt"
-	"strconv"
+	"math/big"
 	"strings"
 	"time"
 
@@ -110,12 +110,43 @@ func (m MapConfig) ParseAmount(raw map[string]string) (int64, string, error) {
 	clean := func(s string) string {
 		return strings.ReplaceAll(strings.TrimSpace(s), ",", "")
 	}
-	// Round float → fils: multiply by 100, round half-up.
-	toFils := func(f float64) int64 {
-		if f < 0 {
-			return int64(-f*100 + 0.5)
+	// Decimal text → fils, round half-up, without a float. Imports are exactly
+	// where values above 2^53 occur; parsing through float64 changes the ledger.
+	toFils := func(v string) (int64, bool, error) {
+		sign := int64(1)
+		if strings.HasPrefix(v, "-") {
+			sign = -1
+			v = v[1:]
+		} else if strings.HasPrefix(v, "+") {
+			v = v[1:]
 		}
-		return int64(f*100 + 0.5)
+		parts := strings.Split(v, ".")
+		if len(parts) > 2 || parts[0] == "" {
+			return 0, false, fmt.Errorf("invalid decimal")
+		}
+		frac := ""
+		if len(parts) == 2 {
+			frac = parts[1]
+		}
+		for _, s := range []string{parts[0], frac} {
+			for _, r := range s {
+				if r < '0' || r > '9' {
+					return 0, false, fmt.Errorf("invalid decimal")
+				}
+			}
+		}
+		padded := frac + "000"
+		minor := new(big.Int)
+		if _, ok := minor.SetString(parts[0]+padded[:2], 10); !ok {
+			return 0, false, fmt.Errorf("invalid decimal")
+		}
+		if padded[2] >= '5' {
+			minor.Add(minor, big.NewInt(1))
+		}
+		if !minor.IsInt64() {
+			return 0, false, fmt.Errorf("amount exceeds int64 minor units")
+		}
+		return minor.Int64(), sign < 0, nil
 	}
 
 	switch m.DirectionMode {
@@ -124,31 +155,31 @@ func (m MapConfig) ParseAmount(raw map[string]string) (int64, string, error) {
 		if v == "" {
 			return 0, "", fmt.Errorf("amount column %q is empty", m.Columns.Amount)
 		}
-		f, err := strconv.ParseFloat(v, 64)
+		f, neg, err := toFils(v)
 		if err != nil {
 			return 0, "", fmt.Errorf("parse amount %q: %w", v, err)
 		}
-		if f < 0 {
-			return toFils(f), "debit", nil
+		if neg {
+			return f, "debit", nil
 		}
-		return toFils(f), "credit", nil
+		return f, "credit", nil
 
 	case "columns":
 		dv := clean(raw[m.Columns.Debit])
 		cv := clean(raw[m.Columns.Credit])
 		if dv != "" && dv != "0" && dv != "0.00" {
-			f, err := strconv.ParseFloat(dv, 64)
+			f, _, err := toFils(dv)
 			if err != nil {
 				return 0, "", fmt.Errorf("parse debit column %q: %w", dv, err)
 			}
-			return toFils(f), "debit", nil
+			return f, "debit", nil
 		}
 		if cv != "" && cv != "0" && cv != "0.00" {
-			f, err := strconv.ParseFloat(cv, 64)
+			f, _, err := toFils(cv)
 			if err != nil {
 				return 0, "", fmt.Errorf("parse credit column %q: %w", cv, err)
 			}
-			return toFils(f), "credit", nil
+			return f, "credit", nil
 		}
 		return 0, "", fmt.Errorf("both debit (%q) and credit (%q) columns are empty or zero", m.Columns.Debit, m.Columns.Credit)
 

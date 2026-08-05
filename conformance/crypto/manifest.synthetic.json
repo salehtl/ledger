@@ -1,0 +1,113 @@
+{
+  "count": 400,
+  "record_size": 1024,
+  "envelope_version": 2,
+  "stream": "hot",
+  "writer_id": "ingest",
+  "user_id": "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+  "recipient_pub": "26801b4beacec5bfee18a067a0d61398f121856291d8a0e8d392849dcaaf1a20",
+  "aad_template": "6f9619ff-8b86-d011-b42d-00cf4fc964ff|hot|ingest|\u003ccounter\u003e",
+  "synthetic": true,
+  "check": {
+    "salt": "683378db2c47faa7c66d798f9cd46d09424a0b894538ea516fddc54898548b79",
+    "digest_alg": "sha256",
+    "preimage": "sha256(salt_bytes || utf8(month) || repeat[ 0x1F || utf8(bucket) || 0x1F || utf8(decimal minor-unit total) ]) over buckets sorted by byte order",
+    "months": {
+      "2026-01": {
+        "blind": "996b9a7b956900a6ac7480e4a47088eeabce3eb58686fd6368cb192e3452976e",
+        "home": "ce1f81d78e14ee8463e70cbc64e6757d181ba7cb83750af59531745284d21f28"
+      },
+      "2026-02": {
+        "blind": "69fa0e5a90ed9b32af4b010fc393813c15c1243e7bd4aea54579418ea25061a5",
+        "home": "4421eea17b4ac75d548eeb03de642aa610225ece72f1c6ec54f0bfddb40df601"
+      },
+      "2026-03": {
+        "blind": "07cc103e307052119062aaa422db74b5d1e4137192a51fdcbf859e780bcccf79",
+        "home": "aa5dc486f7e5e5712c33f52b456017f628099c274e600b47bd1c602ca6458980"
+      },
+      "2026-04": {
+        "blind": "cc11da1bf79cad60783d7454813a154952bd23240be539a385191e52c4253633",
+        "home": "dd07e691cf5a5b0eeeabeac98459b9f499aab22d4657347b56398df1894e3868"
+      },
+      "2026-05": {
+        "blind": "a38713cc0fa67682266ea3b65e6f4317873d4607de715efbcaee17fd1f7ff01e",
+        "home": "451b659b70b28d19e9b49a550aba0409e7bd93a3139024827fda9baffdbb62cd"
+      },
+      "2026-06": {
+        "blind": "24d82fe3a6c678634c71a42855285990d766a2db8ad89be2aa48dc57b8d9c124",
+        "home": "941b3ba9db60ca6d96e5d5c8823102b0ae47e970e34efefccc5d5597f06a6355"
+      },
+      "2026-07": {
+        "blind": "bb095a74eb64fa32b41cc991d4dc6680307e7c80be4359b9e1ddf8da554759b4",
+        "home": "56010f3ecb81c59040a8640a23f5e71bf996fd6e2fb0c0c9a8dc1cc7405d7a45"
+      },
+      "2026-08": {
+        "blind": "b4ab365f654f8085382c4420009e58cbbc614a60265164ee63d88fbaa5fff184",
+        "home": "4b7f8bbb2b6521382d3c4a3e1cce28c0074e9d08ed390c86b2b623365a94e7fb"
+      },
+      "2026-09": {
+        "blind": "8633ba68e57e162aa4bd375eba87d4d9bfa67cab848526d6b012c1ba3f4f6246",
+        "home": "42f62248deea056d916808c979e2d42e27b2dce675cf0c99e93e3e4b0874adc3"
+      },
+      "2026-10": {
+        "blind": "a9d513d7d290305dc106e8c1472f77c9d3bfc982afe27e86bdfac79b1c5ed00f",
+        "home": "e1dab128b0d3436029f60ed5a2d3273722d7f9e0060017ecb1aad07ee90ab3ff"
+      },
+      "2026-11": {
+        "blind": "70af2601295ba485f4ec732c19133973470153f294c751a1f5775adfe28f2ae9",
+        "home": "20709fd06003d74b90d93b3535f573103b76cbb43e09169a132b441d9914dd3f"
+      },
+      "2026-12": {
+        "blind": "6b15c6b29346952d96606d5509a1e1ef1f44660b84287cf35a4398d2b6e1306c",
+        "home": "7261a8b93652d7f501d29e36fcc9b392ba7798b556869ffc53adf79b2f0dac85"
+      }
+    },
+    "home_currency": "AED",
+    "rates": {
+      "EUR": "3980000",
+      "GBP": "4650000",
+      "USD": "3672500"
+    },
+    "home_null_count": 0,
+    "self_test": {
+      "salt_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "month": "2026-06",
+      "buckets": [
+        [
+          "need",
+          "123456"
+        ],
+        [
+          "saving",
+          "0"
+        ],
+        [
+          "uncategorized",
+          "-77"
+        ],
+        [
+          "want",
+          "98765"
+        ]
+      ],
+      "digest": "fc1d10ac7f31641657435829c66a3b95e1fb76c056c41c675ac2565accbde4ce"
+    }
+  },
+  "ops": {
+    "total": 435,
+    "by_type": {
+      "home_currency_set": 1,
+      "rate_set": 10,
+      "txn_categorized": 20,
+      "txn_ingested": 400,
+      "txn_superseded": 4
+    },
+    "currencies": {
+      "AED": 251,
+      "EUR": 47,
+      "GBP": 49,
+      "USD": 53
+    },
+    "seed": 20260802
+  }
+}

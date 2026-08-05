@@ -345,7 +345,7 @@ func (p *Pipeline) Deliver(ctx context.Context, d smtpd.Delivery) error {
 	tr.apply(&rec)
 
 	// --- 8. Append ----------------------------------------------------------
-	if err := p.appendOps(ctx, d, ingestID, receivedAt, res, tr); err != nil {
+	if err := p.appendOps(ctx, d, ingestID, receivedAt, res, tr, dec.Domain); err != nil {
 		return err
 	}
 
@@ -730,19 +730,20 @@ func (p *Pipeline) compile(d tmpl.Definition) (*tmpl.Compiled, error) {
 // JavaScript, where JSON.parse of a number is a float64, and an amount past
 // 2^53 would round silently on one side of the contract and not the other.
 type txnPayload struct {
-	AmountMinor       string `json:"amount_minor"`
-	Currency          string `json:"currency"`
-	Direction         string `json:"direction"`
-	PostedAt          string `json:"posted_at"`
-	MerchantRaw       string `json:"merchant_raw"`
-	Last4             string `json:"last4"`
-	IsTransfer        bool   `json:"is_transfer"`
-	Tier              string `json:"tier"`
-	NeedsReview       bool   `json:"needs_review"`
-	Unparsed          bool   `json:"unparsed"`
-	TemplateID        string `json:"template_id,omitempty"`
-	TemplateVersion   int    `json:"template_version,omitempty"`
-	NormalizerVersion int    `json:"normalizer_version"`
+	AmountMinor          string `json:"amount_minor"`
+	Currency             string `json:"currency"`
+	Direction            string `json:"direction"`
+	PostedAt             string `json:"posted_at"`
+	MerchantRaw          string `json:"merchant_raw"`
+	Last4                string `json:"last4"`
+	IsTransfer           bool   `json:"is_transfer"`
+	Tier                 string `json:"tier"`
+	NeedsReview          bool   `json:"needs_review"`
+	Unparsed             bool   `json:"unparsed"`
+	TemplateID           string `json:"template_id,omitempty"`
+	TemplateVersion      int    `json:"template_version,omitempty"`
+	NormalizerVersion    int    `json:"normalizer_version"`
+	VerifiedOriginDomain string `json:"verified_origin_domain,omitempty"`
 }
 
 // appendOps writes the two blobs this message produces.
@@ -756,13 +757,14 @@ type txnPayload struct {
 // what lets a client that syncs only the hot stream materialize completely,
 // which is the whole reason the split exists.
 func (p *Pipeline) appendOps(ctx context.Context, d smtpd.Delivery, ingestID []byte,
-	receivedAt time.Time, res norm.Result, tr tierResult) error {
+	receivedAt time.Time, res norm.Result, tr tierResult, verifiedOriginDomain string) error {
 	idHex := hex.EncodeToString(ingestID)
 
 	tp, err := txnPayloadOf(res, tr, receivedAt)
 	if err != nil {
 		return fmt.Errorf("%w (user %s)", err, d.UserID)
 	}
+	tp.VerifiedOriginDomain = verifiedOriginDomain
 	payload, err := json.Marshal(tp)
 	if err != nil {
 		return fmt.Errorf("ingest: encode payload: %w", err)

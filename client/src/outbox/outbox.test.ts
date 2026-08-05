@@ -763,6 +763,9 @@ describe("paging", () => {
       emit: () => {
         throw new Error("not used");
       },
+      emitMany: () => {
+        throw new Error("not used");
+      },
       push: () => {
         const next = plan.shift();
         if (next === undefined) throw new Error("the loop asked for a fourth page");
@@ -839,6 +842,9 @@ describe("paging", () => {
     const stuck: Pusher = {
       pending: [fixedOp("rate_set", { currency: "USD", rate_micro: "1" })],
       emit: () => {
+        throw new Error("not used");
+      },
+      emitMany: () => {
         throw new Error("not used");
       },
       push: () => {

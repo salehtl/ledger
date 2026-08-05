@@ -61,6 +61,7 @@ var modeHandlers = map[string]func(config.Config) error{
 	"record-consent":  runRecordConsent,
 	"parse-rate":      runParseRate,
 	"mint-invite":     runMintInvite,
+	"load-corpus":     runLoadCorpus,
 }
 
 // checkModeHandlers panics if modeHandlers and config.Modes() ever name
@@ -149,6 +150,7 @@ func parseArgs(argv []string) (args, error) {
 		"record-consent|mint-invite: list what is on file and write nothing")
 	fs.StringVar(&out.invite.Note, "note", "",
 		"mint-invite: the operator's own words about who this code is for")
+	registerLoadCorpusFlags(fs, &out.user) // load-corpus's own flags; see loadcorpus.go
 	fs.StringVar(&out.verify.From, "from", "",
 		"verify|parse-rate: window start, as an RFC3339 instant")
 	fs.StringVar(&out.verify.To, "to", "",

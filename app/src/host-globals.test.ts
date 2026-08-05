@@ -36,6 +36,10 @@ const SRC = new URL(".", import.meta.url).pathname;
  * this checker from reading the tree.
  */
 const EXEMPT_DIRS = ["platform"];
+// Expo's compiler replaces the exact `process.env.EXPO_PUBLIC_*` expression at
+// build time. Config is the single, audited exception; no `process` reaches the
+// emitted Hermes bundle from this expression.
+const EXEMPT_FILES = ["app/config.ts"];
 const isTest = (rel: string) => rel.endsWith(".test.ts") || rel.endsWith(".test.tsx");
 
 const FORBIDDEN: { name: string; re: RegExp }[] = [
@@ -63,7 +67,7 @@ function walk(dir: string, rel = ""): { path: string; rel: string }[] {
 }
 
 describe("app/src does not use host globals Hermes lacks", () => {
-  const files = walk(SRC).filter((f) => !isTest(f.rel));
+  const files = walk(SRC).filter((f) => !isTest(f.rel) && !EXEMPT_FILES.includes(f.rel));
 
   // A checker that found no files to check is a checker that passes for the
   // wrong reason — this is the same "true by construction" trap the project's

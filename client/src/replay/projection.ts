@@ -63,7 +63,7 @@ import type { Anomaly, ForkNotice, ParseTier, Rule, Split, State, Txn } from "./
  * information that is not recomputable from the log, so a migration would be
  * code with no reason to exist and one more thing that can be wrong.
  */
-export const PROJECTION_VERSION = 1;
+export const PROJECTION_VERSION = 4;
 
 /**
  * Rows written per transaction, and per yield.
@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS txn (
   parse_error           TEXT,
   superseded_by         TEXT,
   possible_duplicate_of TEXT,
+  duplicate_disposition TEXT CHECK (duplicate_disposition IN ('same','different') OR duplicate_disposition IS NULL),
+  verified_origin_domain TEXT,
   version               INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS txn_posted_at    ON txn (posted_at);
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS txn_split (
   idx          INTEGER NOT NULL,
   category     TEXT    NOT NULL,
   amount_minor TEXT    NOT NULL,
+  amount_home_minor TEXT,
   PRIMARY KEY (txn_id, idx)
 );
 
@@ -120,7 +123,8 @@ CREATE TABLE IF NOT EXISTS rule (
 
 CREATE TABLE IF NOT EXISTS rate (
   currency   TEXT PRIMARY KEY,
-  rate_micro TEXT
+  rate_micro TEXT,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fork_notice (
@@ -206,12 +210,12 @@ function prepare(db: SqlDriver): Stmts {
     txn: db.prepare(
       `INSERT INTO txn (id, ingest_id, amount_minor, currency, direction, posted_at, merchant_raw, last4,
                         category, needs_review, provenance, amount_home_minor, unparsed, tier, parse_error,
-                        superseded_by, possible_duplicate_of, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        superseded_by, possible_duplicate_of, duplicate_disposition, verified_origin_domain, version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
-    split: db.prepare("INSERT INTO txn_split (txn_id, idx, category, amount_minor) VALUES (?, ?, ?, ?)"),
+    split: db.prepare("INSERT INTO txn_split (txn_id, idx, category, amount_minor, amount_home_minor) VALUES (?, ?, ?, ?, ?)"),
     rule: db.prepare("INSERT INTO rule (id, pattern, match, category, priority, version) VALUES (?, ?, ?, ?, ?, ?)"),
-    rate: db.prepare("INSERT INTO rate (currency, rate_micro) VALUES (?, ?)"),
+    rate: db.prepare("INSERT INTO rate (currency, rate_micro, updated_at) VALUES (?, ?, ?)"),
     fork: db.prepare(
       "INSERT INTO fork_notice (idx, entity_kind, entity_id, winner_op, loser_op, at_seq) VALUES (?, ?, ?, ?, ?, ?)",
     ),
@@ -228,6 +232,16 @@ function prepare(db: SqlDriver): Stmts {
 /** Creates the tables if they are not there. Idempotent, and safe to call often. */
 export function ensureProjection(db: SqlDriver): void {
   db.exec(PROJECTION_SCHEMA);
+  // `rate` predates updated_at. It is derived data, so adding the nullable
+  // column only makes the old projection writable long enough for `project`
+  // to replace it under the bumped projection version.
+  const columns = db.prepare("PRAGMA table_info(rate)").all().map((raw) => String((raw as Record<string, unknown>)["name"]));
+  if (!columns.includes("updated_at")) db.exec("ALTER TABLE rate ADD COLUMN updated_at TEXT");
+  const txnColumns = db.prepare("PRAGMA table_info(txn)").all().map((raw) => String((raw as Record<string, unknown>)["name"]));
+  if (!txnColumns.includes("duplicate_disposition")) db.exec("ALTER TABLE txn ADD COLUMN duplicate_disposition TEXT");
+  if (!txnColumns.includes("verified_origin_domain")) db.exec("ALTER TABLE txn ADD COLUMN verified_origin_domain TEXT");
+  const splitColumns = db.prepare("PRAGMA table_info(txn_split)").all().map((raw) => String((raw as Record<string, unknown>)["name"]));
+  if (!splitColumns.includes("amount_home_minor")) db.exec("ALTER TABLE txn_split ADD COLUMN amount_home_minor TEXT");
 }
 
 /**
@@ -276,7 +290,7 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
     db.transaction(() => {
       for (const t of batch) {
         writeTxn(st, t);
-        writeSplits(st, t.id, t.splits);
+        writeSplits(st, t);
         report.splits += t.splits.length;
       }
     });
@@ -298,7 +312,7 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
       // A key present with `null` is a live `rate_unset`, which is NOT the same
       // as an absent key ("no rate was ever set"). The row exists with a NULL
       // `rate_micro` so that distinction survives the projection.
-      st.rate.run(ccy, micro === null ? null : micro.toString(10));
+      st.rate.run(ccy, micro === null ? null : micro.toString(10), s.rateUpdatedAt.get(ccy) ?? null);
       report.rates++;
     }
     for (const [i, f] of s.forks.entries()) {
@@ -344,16 +358,26 @@ function writeTxn(st: Stmts, t: Txn): void {
     t.parse_error,
     t.superseded_by,
     t.possible_duplicate_of,
+    t.duplicate_disposition ?? null,
+    t.verified_origin_domain ?? null,
     t.version,
   );
 }
 
-function writeSplits(st: Stmts, txnID: string, splits: readonly Split[]): void {
+function writeSplits(st: Stmts, txn: Txn): void {
   // The index is stored because a split list is a SEQUENCE — `serializeState`
   // leaves it in order on purpose — and a projection that read it back in
   // whatever order SQLite chose would compare equal on sums while disagreeing
   // on the thing the user typed.
-  for (const [i, p] of splits.entries()) st.split.run(txnID, i, p.category, p.amount_minor.toString(10));
+  const nativeTotal = txn.splits.reduce((sum, part) => sum + part.amount_minor, 0n);
+  let cumulative = 0n; let prior = 0n;
+  for (const [i, p] of txn.splits.entries()) {
+    cumulative += p.amount_minor;
+    const through = txn.amount_home_minor === null || nativeTotal <= 0n ? null : txn.amount_home_minor * cumulative / nativeTotal;
+    const home = through === null ? null : through - prior;
+    if (through !== null) prior = through;
+    st.split.run(txn.id, i, p.category, p.amount_minor.toString(10), home === null ? null : home.toString(10));
+  }
 }
 
 function writeRule(st: Stmts, id: string, r: Rule): void {
@@ -372,10 +396,20 @@ function writeAnomaly(st: Stmts, idx: number, a: Anomaly): void {
 // Reading it back
 // ---------------------------------------------------------------------------
 
-const TXN_COLUMNS =
+/**
+ * The `txn` columns {@link decodeTxnRow} expects, in its order.
+ *
+ * Exported because a screen reads a WINDOW of this table rather than the whole
+ * of it — `readTxns` is a test accessor and a small-account convenience, and a
+ * list that called it would be the read-all-then-render shape the chunking rules
+ * forbid. A caller composing its own `SELECT … WHERE … LIMIT …` needs the same
+ * column list and the same decoder, or it certifies its own reading of the rows
+ * rather than the projection's.
+ */
+export const TXN_COLUMNS =
   "id, ingest_id, amount_minor, currency, direction, posted_at, merchant_raw, last4, category, " +
   "needs_review, provenance, amount_home_minor, unparsed, tier, parse_error, superseded_by, " +
-  "possible_duplicate_of, version";
+  "possible_duplicate_of, duplicate_disposition, verified_origin_domain, version";
 
 /**
  * Reads the meta row, or `null` when the projection has never been written.
@@ -425,32 +459,55 @@ export function readTxns(db: SqlDriver): Map<string, Txn> {
   }
   const out = new Map<string, Txn>();
   for (const raw of db.prepare(`SELECT ${TXN_COLUMNS} FROM txn`).all()) {
-    const r = raw as Record<string, unknown>;
-    const id = text(r["id"], "id");
-    out.set(id, {
-      id,
-      ingest_id: text(r["ingest_id"], "ingest_id"),
-      amount_minor: parseDecimal(text(r["amount_minor"], "amount_minor")),
-      currency: text(r["currency"], "currency"),
-      direction: direction(r["direction"]),
-      posted_at: text(r["posted_at"], "posted_at"),
-      merchant_raw: text(r["merchant_raw"], "merchant_raw"),
-      last4: text(r["last4"], "last4"),
-      category: r["category"] === null ? null : text(r["category"], "category"),
-      needs_review: num(r["needs_review"], "needs_review") !== 0,
-      unparsed: num(r["unparsed"], "unparsed") !== 0,
-      tier: tier(r["tier"]),
-      parse_error: r["parse_error"] === null ? null : text(r["parse_error"], "parse_error"),
-      provenance: provenance(r["provenance"]),
-      amount_home_minor: r["amount_home_minor"] === null ? null : parseDecimal(text(r["amount_home_minor"], "amount_home_minor")),
-      splits: splits.get(id) ?? [],
-      superseded_by: r["superseded_by"] === null ? null : text(r["superseded_by"], "superseded_by"),
-      possible_duplicate_of:
-        r["possible_duplicate_of"] === null ? null : text(r["possible_duplicate_of"], "possible_duplicate_of"),
-      version: num(r["version"], "version"),
-    });
+    const t = decodeTxnRow(raw, splits.get(text((raw as Record<string, unknown>)["id"], "id")) ?? []);
+    out.set(t.id, t);
   }
   return out;
+}
+
+/**
+ * One `txn` row, re-validated column by column, as a {@link Txn}.
+ *
+ * Every column is checked on the way out for the reason `store/sqlite.ts`'s
+ * `toWireRow` does it: this reads bytes that have been on disk, and a type
+ * confusion reaching the UI as a money value is a silent wrong number rather
+ * than a loud failure.
+ *
+ * `splits` is passed in rather than queried here because a caller reading a page
+ * of rows fetches the whole page's split parts in one statement; a per-row query
+ * would be the N+1 a windowed list exists to avoid.
+ */
+export function decodeTxnRow(raw: unknown, splits: readonly Split[]): Txn {
+  const r = raw as Record<string, unknown>;
+  return {
+    id: text(r["id"], "id"),
+    ingest_id: text(r["ingest_id"], "ingest_id"),
+    amount_minor: parseDecimal(text(r["amount_minor"], "amount_minor")),
+    currency: text(r["currency"], "currency"),
+    direction: direction(r["direction"]),
+    posted_at: text(r["posted_at"], "posted_at"),
+    merchant_raw: text(r["merchant_raw"], "merchant_raw"),
+    last4: text(r["last4"], "last4"),
+    category: r["category"] === null ? null : text(r["category"], "category"),
+    needs_review: num(r["needs_review"], "needs_review") !== 0,
+    unparsed: num(r["unparsed"], "unparsed") !== 0,
+    tier: tier(r["tier"]),
+    parse_error: r["parse_error"] === null ? null : text(r["parse_error"], "parse_error"),
+    provenance: provenance(r["provenance"]),
+    amount_home_minor: r["amount_home_minor"] === null ? null : parseDecimal(text(r["amount_home_minor"], "amount_home_minor")),
+    splits: [...splits],
+    superseded_by: r["superseded_by"] === null ? null : text(r["superseded_by"], "superseded_by"),
+    possible_duplicate_of:
+      r["possible_duplicate_of"] === null ? null : text(r["possible_duplicate_of"], "possible_duplicate_of"),
+    duplicate_disposition: r["duplicate_disposition"] === null ? null : duplicateDisposition(r["duplicate_disposition"]),
+    verified_origin_domain: r["verified_origin_domain"] === null ? null : text(r["verified_origin_domain"], "verified_origin_domain"),
+    version: num(r["version"], "version"),
+  };
+}
+
+function duplicateDisposition(value: unknown): "same" | "different" {
+  if (value === "same" || value === "different") return value;
+  throw new Error(`duplicate_disposition is ${String(value)}`);
 }
 
 /** Every projected rule, by id. */
@@ -480,6 +537,17 @@ export function readRates(db: SqlDriver): Map<string, bigint | null> {
       text(r["currency"], "currency"),
       r["rate_micro"] === null ? null : parseDecimal(text(r["rate_micro"], "rate_micro")),
     );
+  }
+  return out;
+}
+
+/** Canonical authored time of each explicit projected rate head. */
+export function readRateUpdatedAt(db: SqlDriver): Map<string, string> {
+  ensureProjection(db);
+  const out = new Map<string, string>();
+  for (const raw of db.prepare("SELECT currency, updated_at FROM rate WHERE updated_at IS NOT NULL").all()) {
+    const r = raw as Record<string, unknown>;
+    out.set(text(r["currency"], "currency"), text(r["updated_at"], "updated_at"));
   }
   return out;
 }

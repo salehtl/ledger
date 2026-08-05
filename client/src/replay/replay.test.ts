@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   UnknownNewerVersionError,
+  SCHEMA_VERSION,
   encodeBlobOps,
   encodeCheckpointPayload,
   type CheckpointHead,
@@ -619,6 +620,24 @@ test("a fingerprint collision becomes a review notice, never a discard", () => {
   expect(kinds(s)).toContain("possible_duplicate");
 });
 
+test("schema-v2 duplicate dispositions distinguish both answers and undo", () => {
+  let s = fold([at(1n, ingested("i1", "t1")), at(2n, ingested("i2", "t2"))]);
+  const edit = (disposition: "same" | "different" | null, parent: number, id: string): LogEntry => ({
+    seq: BigInt(parent + 2), writer_id: "device-a", op: {
+      v: 2, type: "txn_duplicate_disposition", op_id: id, authored_at: `2026-06-05T10:0${parent}:00.000Z`,
+      entity: { kind: "txn", id: "t2" }, parent_version: parent,
+      payload: { other_txn_id: "t1", disposition },
+    },
+  });
+  s = fold([edit("same", 1, "same")], s);
+  expect(s.txns.get("t2")?.duplicate_disposition).toBe("same");
+  s = fold([edit("different", 2, "different")], s);
+  expect(s.txns.get("t2")?.duplicate_disposition).toBe("different");
+  s = fold([edit(null, 3, "undo")], s);
+  expect(s.txns.get("t2")?.duplicate_disposition).toBeNull();
+  expect(s.forks).toHaveLength(0);
+});
+
 test("a three-way collision names the EARLIEST live match, not just any of them", () => {
   // Which row the notice points at is part of what the user sees, so it has to
   // be a function of the log rather than of iteration order.
@@ -1072,6 +1091,7 @@ test("the head rate is positional: the last rate_set by seq wins, whatever its a
     at(3n, rateSet("USD", "3600000", "dev-b", "2026-01-01T00:00:00Z")),
   ]);
   expect(s.rates.get("USD")).toBe(3600000n);
+  expect(s.rateUpdatedAt.get("USD")).toBe("2026-01-01T00:00:00.000Z");
   expect(s.forks).toHaveLength(0); // parent-free ops have no fork to arbitrate
 });
 
@@ -1083,6 +1103,7 @@ test("rate_unset leaves a live null head, not a missing one", () => {
   ]);
   expect(s.rates.has("USD")).toBe(true);
   expect(s.rates.get("USD")).toBeNull();
+  expect(s.rateUpdatedAt.get("USD")).toBe("2026-01-01T00:02:00.000Z");
 });
 
 test("home_currency_set is one-shot; a second one is an anomaly, not a re-denomination", () => {
@@ -1220,13 +1241,13 @@ test("provenance comes from the writer the blob was attributed to, never the pay
 
 test("an op from an unknown newer schema version hard-stops the fold", () => {
   const newer = ingested("i1", "t1");
-  newer.op.v = 2;
+  newer.op.v = SCHEMA_VERSION + 1;
   expect(() => fold([at(1n, newer)])).toThrow(UnknownNewerVersionError);
 });
 
 test("an unknown newer version inside a blob hard-stops, and does not become a set-aside", () => {
   const s = emptyState();
-  const body = new TextEncoder().encode(`{"v":1,"kind":"ops","ops":[{"v":2,"type":"txn_ingested"}]}`);
+  const body = new TextEncoder().encode(`{"v":1,"kind":"ops","ops":[{"v":3,"type":"txn_ingested"}]}`);
   expect(() =>
     foldBlobs([{ pos: { writer_id: "ingest", stream: "hot", writer_counter: 1n, seq: 1n }, body }], s),
   ).toThrow(UnknownNewerVersionError);
@@ -1618,4 +1639,3 @@ function buildSampleLog(): LogEntry[] {
   emit(homeCurrency("USD", "dev-a", tick())); // home_currency_reset
   return out;
 }
-

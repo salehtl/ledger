@@ -1,0 +1,8 @@
+import { describe, expect, test } from "bun:test";
+import { DICTIONARY_CONSENT, dictionarySubmitter } from "./submission.ts";
+
+describe("dictionary contribution", () => {
+  test("consent states the bounded linkage, k=3 deletion, retention, and opt-in", () => { expect(DICTIONARY_CONSENT).toContain("operator can try its short user list"); expect(DICTIONARY_CONSENT).toContain("three users"); expect(DICTIONARY_CONSENT).toContain("deleted"); expect(DICTIONARY_CONSENT).toContain("retention"); expect(DICTIONARY_CONSENT).toContain("optional and off by default"); });
+  test("posts only the selected entry under session auth", async () => { let seen: { url: string; init?: RequestInit } | null = null; const s = dictionarySubmitter("https://ledger.test", () => "session", async (input, init) => { seen = { url: String(input), ...(init === undefined ? {} : { init }) }; return new Response(null, { status: 204 }); }); await s.submit({ pattern: "carrefour", match: "exact", category: "Groceries" }); expect(seen!.url).toBe("https://ledger.test/api/v1/dictionary/submissions"); expect(seen!.init?.method).toBe("POST"); expect(seen!.init?.headers).toEqual({ authorization: "Bearer session", "content-type": "application/json" }); expect(JSON.parse(String(seen!.init?.body))).toEqual({ pattern: "carrefour", match: "exact", category: "Groceries" }); });
+  test("never sends without a session", async () => { let calls = 0; const s = dictionarySubmitter("https://ledger.test", () => null, async () => { calls++; return new Response(null, { status: 204 }); }); await expect(s.submit({ pattern: "shop", match: "exact", category: "Other" })).rejects.toThrow(/sign in/); expect(calls).toBe(0); });
+});

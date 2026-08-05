@@ -10,6 +10,28 @@ import (
 
 func ingestID() string { return strings.Repeat("a", 64) }
 
+func TestDuplicateDispositionRequiresSchemaV2AndClosedPayload(t *testing.T) {
+	parent := int64(1)
+	base := Op{V: 2, Type: OpTxnDuplicateDisposition, OpID: "01J000000000000000000000D1",
+		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC), Entity: &EntityRef{Kind: "txn", ID: "T2"},
+		ParentVersion: &parent, Payload: json.RawMessage(`{"other_txn_id":"T1","disposition":"same"}`)}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	v1 := base
+	v1.V = 1
+	if err := v1.Validate(); err == nil {
+		t.Fatal("schema v1 must not accept the v2 op")
+	}
+	for _, payload := range []string{`{"other_txn_id":"T1"}`, `{"other_txn_id":"","disposition":"same"}`, `{"other_txn_id":"T1","disposition":"maybe"}`} {
+		bad := base
+		bad.Payload = json.RawMessage(payload)
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("accepted payload %s", payload)
+		}
+	}
+}
+
 func txnOp() Op {
 	return Op{
 		V:          SchemaVersion,

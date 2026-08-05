@@ -547,13 +547,18 @@ RETURNING source, distinct_submitter_count, approved, published_at IS NOT NULL`
 // When the count does reach K the identifiers that produced it are deleted in
 // the same transaction, and the count survives as the frozen aggregate.
 func (d *Dict) Submit(ctx context.Context, userID uuid.UUID, pattern, category string) error {
+	return d.SubmitMatched(ctx, userID, pattern, MatchContains, category)
+}
+
+// SubmitMatched is Submit with the client's explicit non-regex match mode.
+func (d *Dict) SubmitMatched(ctx context.Context, userID uuid.UUID, pattern, match, category string) error {
 	if err := d.checkKey(); err != nil {
 		return err
 	}
 	if userID == uuid.Nil {
 		return fmt.Errorf("%w: submitter is the nil uuid", ErrInvalidEntry)
 	}
-	e, err := Canonicalize(Entry{Pattern: pattern, Category: category})
+	e, err := Canonicalize(Entry{Pattern: pattern, Match: match, Category: category})
 	if err != nil {
 		return err
 	}

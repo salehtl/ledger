@@ -10,6 +10,7 @@ import {
   readForks,
   readMeta,
   readRates,
+  readRateUpdatedAt,
   readRules,
   readTxns,
 } from "./projection";
@@ -248,6 +249,8 @@ const TXN_FIELDS: readonly (keyof Txn)[] = [
   "splits",
   "superseded_by",
   "possible_duplicate_of",
+  "duplicate_disposition",
+  "verified_origin_domain",
   "version",
 ];
 
@@ -306,6 +309,7 @@ test("projectionMatchesState: rules, rates, forks and anomalies round-trip too",
 
   expect(readRules(d)).toEqual(s.rules);
   expect(readRates(d)).toEqual(s.rates);
+  expect(readRateUpdatedAt(d)).toEqual(s.rateUpdatedAt);
   expect(readForks(d)).toEqual(s.forks);
   expect(readAnomalies(d)).toEqual(s.anomalies);
   expect(readMeta(d)).toEqual({
@@ -357,6 +361,14 @@ test("money survives the round trip past 2^53, as bigint and never as number", a
     .all()
     .map((r) => (r as Record<string, unknown>)["t"]);
   expect(splitTypes).toEqual(["text"]);
+  const t1 = s.txns.get("t1");
+  const t1Home = t1?.amount_home_minor;
+  if (t1Home === null || t1Home === undefined) throw new Error("hostile fixture lost t1 home snapshot");
+  const projectedHomeParts = d
+    .prepare("SELECT amount_home_minor FROM txn_split WHERE txn_id = 't1' ORDER BY idx")
+    .all()
+    .map((r) => BigInt(String((r as Record<string, unknown>)["amount_home_minor"])));
+  expect(projectedHomeParts.reduce((sum, amount) => sum + amount, 0n)).toBe(t1Home);
   const rateTypes = d
     .prepare("SELECT DISTINCT typeof(rate_micro) AS t FROM rate")
     .all()
@@ -533,6 +545,27 @@ test("ensureProjection is idempotent and readMeta on a fresh database is null, n
   ensureProjection(d);
   expect(readMeta(d)).toBeNull();
   expect(projectionIsUsable(d)).toBe(false);
+});
+
+test("literal v1 projection is unusable and is fully rebuilt at the current version", async () => {
+  const d = db();
+  d.exec(`
+    CREATE TABLE rate (currency TEXT PRIMARY KEY, rate_micro TEXT);
+    CREATE TABLE projection_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, cursor_hot TEXT NOT NULL,
+      cursor_cold TEXT NOT NULL, home_currency TEXT, complete INTEGER NOT NULL);
+    INSERT INTO rate VALUES ('USD', '3672500');
+    INSERT INTO projection_meta VALUES (1, 1, '9', '0', 'AED', 1);
+  `);
+  expect(PROJECTION_VERSION).toBe(4);
+  expect(projectionIsUsable(d)).toBe(false);
+  const state = emptyState();
+  state.homeCurrency = "AED";
+  state.rates.set("USD", 3_672_500n);
+  state.rateUpdatedAt.set("USD", "2026-08-01T00:00:00.000Z");
+  await project(d, state);
+  expect(readMeta(d)?.version).toBe(PROJECTION_VERSION);
+  expect(projectionIsUsable(d)).toBe(true);
+  expect(readRateUpdatedAt(d).get("USD")).toBe("2026-08-01T00:00:00.000Z");
 });
 
 test("the indices the list, review and budget screens need are actually created", () => {

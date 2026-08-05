@@ -84,6 +84,8 @@ import { Client, HardStopError, type PullReport } from "./client";
 import type { Violation } from "../invariants/check";
 import { ProjectionCancelled, ensureProjection, project, type ProjectReport } from "../replay/projection";
 import type { State } from "../replay/state";
+import { ensureSnapshot, loadSnapshot, rowStoreBinding, saveSnapshot } from "../replay/snapshot";
+import { runAudit, type AuditResult, type DeviceConditions } from "../replay/audit";
 import type { SqlDriver } from "../store/driver";
 import { STREAM_HOT, type Stream } from "../wire/blob";
 
@@ -235,6 +237,7 @@ export class SyncEngine {
           setTimeout(resolve, 0);
         }));
     ensureProjection(db);
+    ensureSnapshot(db);
   }
 
   /** A snapshot. Mutating it changes nothing; subscribe for updates. */
@@ -276,6 +279,38 @@ export class SyncEngine {
 
   get halted(): string | null {
     return this.haltReason;
+  }
+
+  /** Cooperatively stop and wait until the active chunk reaches a safe boundary. */
+  async quiesce(reason: string): Promise<void> {
+    this.halt(reason);
+    const running = this.inFlight;
+    if (running !== null) {
+      try {
+        await running;
+      } catch {
+        // Teardown waits for completion, but the original caller owns the error.
+      }
+    }
+  }
+
+  async audit(conditions: () => DeviceConditions): Promise<AuditResult> {
+    const result = await runAudit(this.db, {
+      conditions,
+      binding: rowStoreBinding(this.client.rows()),
+      yield: this.yieldToLoop,
+      refold: async (upToSeq, between) => {
+        const got = await this.client.materializeChunked({
+          chunkSize: this.chunkSize,
+          keepOps: false,
+          upToSeq,
+          between: async (p) => between({ chunk: p.chunk, rows: p.rows, total: p.total, elapsedMs: 0 }),
+        });
+        return got.state;
+      },
+    });
+    if (result.outcome === "mismatch" && result.state !== null) await this.projectInto(result.state);
+    return result;
   }
 
   /**
@@ -322,9 +357,10 @@ export class SyncEngine {
       this.checkHalt();
 
       // 4-5. FOLD, then PROJECT. Both chunked, both yielding.
-      let folded = await this.fold();
+      let folded = await this.fold(true);
       out.applied = folded.ops;
       await this.projectInto(folded.state);
+      this.saveFoldSnapshot(folded.state);
 
       // 6-7. ATTEST, then PUSH.
       if (opts.push !== false && !this.pushedToHeal) {
@@ -341,6 +377,7 @@ export class SyncEngine {
           out.applied = folded.ops;
           out.pulled += Math.max(0, folded.rows - before);
           await this.projectInto(folded.state);
+          this.saveFoldSnapshot(folded.state);
         }
       }
 
@@ -412,14 +449,16 @@ export class SyncEngine {
   }
 
   /** Step 4. `CHUNK_SIZE` rows per chunk, one yield between chunks. */
-  private async fold(): Promise<{ state: State; ops: number; rows: number }> {
+  private async fold(allowSnapshot = false): Promise<{ state: State; ops: number; rows: number }> {
     this.publish({ phase: "folding", chunk: 0 });
+    const snapshot = allowSnapshot ? loadSnapshot(this.db, rowStoreBinding(this.client.rows())) : null;
     const got = await this.client.materializeChunked({
       chunkSize: this.chunkSize,
       // The engine wants a state and a count, never the op list. Asking for the
       // list would keep every inflated payload alive for the whole fold, which
       // is the retention `rssIsBoundedAcrossChunks` measures the absence of.
       keepOps: false,
+      ...(snapshot === null ? {} : { initialState: snapshot.state, afterSeq: snapshot.cursor.hot }),
       between: async (p) => {
         this.publish({ chunk: p.chunk, rowsTotal: p.total, opsApplied: p.ops });
         this.checkHalt();
@@ -428,6 +467,19 @@ export class SyncEngine {
     });
     this.publish({ chunk: got.chunks, rowsTotal: got.rows, opsApplied: got.opsApplied });
     return { state: got.state, ops: got.opsApplied, rows: got.rows };
+  }
+
+  private saveFoldSnapshot(state: State): void {
+    try {
+      saveSnapshot(
+        this.db,
+        state,
+        { hot: this.client.cursor(STREAM_HOT), cold: this.client.cursor("cold") },
+        rowStoreBinding(this.client.rows()),
+      );
+    } catch {
+      // The projection is usable; snapshot events record cache failures.
+    }
   }
 
   /** Step 5. Same chunk size, same yield. */

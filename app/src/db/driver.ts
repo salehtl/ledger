@@ -150,3 +150,9 @@ export function expoDriver(name: string): SqlDriver {
     },
   };
 }
+
+/** Deletes the database plus SQLite-managed WAL/SHM artifacts after close. */
+export async function deleteLedgerDatabase(name: string): Promise<void> {
+  if (handle?.name === name) throw new Error("sqlite: close the database before deleting it");
+  await SQLite.deleteDatabaseAsync(name);
+}

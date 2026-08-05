@@ -63,7 +63,7 @@
 import { platform } from "../platform";
 
 /** The op schema this build understands. `blob.ts`'s VERSION versions the framing. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const KIND_OPS = "ops";
 export const KIND_RAW_BODY = "raw_body";
@@ -75,6 +75,7 @@ export type OpType =
   | "txn_categorized"
   | "txn_split"
   | "txn_edited"
+  | "txn_duplicate_disposition"
   | "rule_added"
   | "rate_set"
   | "rate_unset"
@@ -88,6 +89,7 @@ export const OP_TYPES: readonly OpType[] = [
   "txn_categorized",
   "txn_split",
   "txn_edited",
+  "txn_duplicate_disposition",
   "rule_added",
   "rate_set",
   "rate_unset",
@@ -114,6 +116,10 @@ const PARENT_FREE: ReadonlySet<string> = new Set<OpType>([
 
 export function isOpType(s: unknown): s is OpType {
   return typeof s === "string" && OP_TYPE_SET.has(s);
+}
+
+export function opMinVersion(type: OpType): number {
+  return type === "txn_duplicate_disposition" ? 2 : 1;
 }
 
 export function isParentFree(t: OpType): boolean {
@@ -200,6 +206,132 @@ export class InvalidEnvelopeError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/** Beyond this many characters a rendered value is truncated. */
+const SHOW_LIMIT = 512;
+
+/**
+ * Beyond this much nesting a value is described rather than rendered.
+ *
+ * Not a stack-safety limit — JavaScriptCore's `JSON.stringify` is iterative and
+ * handles ~50,000 levels — but a COST limit, which is a different claim and one
+ * that had to be measured rather than assumed. `JSON.stringify` **with a
+ * replacer** is quadratic in nesting depth: on this runtime a 5,000-deep array
+ * costs 20ms, 20,000-deep costs 313ms and 50,000-deep costs 1.4s, against 7ms
+ * for the same 20,000 without the replacer, and the replacer is not optional
+ * because it is what makes a nested `bigint` renderable at all. Width is linear
+ * and fine (200,000 flat elements in 53ms), so depth is the only axis guarded.
+ *
+ * It matters because a diagnostic is built while something is already going
+ * wrong, once per bad op, inside a fold of a whole log. A payload nested a few
+ * thousand deep is well within what a blob can carry, and "the error path is
+ * where the device spends its afternoon" is a poor answer for a phone.
+ *
+ * 24 is far above anything the op vocabulary nests (a split part is 3) and far
+ * below where the cost curve bends.
+ */
+const SHOW_MAX_DEPTH = 24;
+
+/**
+ * Renders an arbitrary value for an error message. **This function cannot
+ * throw**, and it is how every diagnostic in this file and in the replay engine
+ * is built — `JSON.stringify` is not used in a message anywhere below.
+ *
+ * # Why `JSON.stringify` in a message was a fold-crashing bug
+ *
+ * `JSON.stringify(25000n)` raises `TypeError: Do not know how to serialize a
+ * BigInt`. So the message *about* a bad value threw a DIFFERENT error than the
+ * one it was being built for. `replay.ts` constructs every `PayloadError` that
+ * way and `applyOp` catches `PayloadError`, so the `TypeError` escaped the fold
+ * and stranded the device — the same shape as the `BlobDecodeError` escape Task
+ * 7 fixed one instance of. It is not reachable from the wire (`parseBody`'s
+ * reviver can never produce a `bigint`) and it is reachable from an op assembled
+ * in code, which is what the `validateOp` call inside `applyOp` exists to catch.
+ * Money in `client/src` is `bigint` throughout and every client-authored op — a
+ * transaction edit, a review action, a CSV import row — builds its payload in
+ * code, so `{ amount_minor: 25000n }` where the wire wants `"25000"` is the
+ * single most likely mistake on that path. Its punishment has to be an
+ * `invalid_payload` anomaly, never an unsyncable device.
+ *
+ * `String(v)` is not the fix either, in either direction: `String(Symbol())`
+ * works but `` `${Symbol()}` `` throws, and `String(Object.create(null))` throws
+ * because there is no `toString` to call.
+ *
+ * # The contract
+ *
+ *   - **Total.** Every path returns a string, including for a cycle, a throwing
+ *     `toJSON` or getter, a revoked `Proxy` and a structure deeper than any
+ *     serializer will walk. The fallback uses only `typeof`, which cannot throw
+ *     for any input at all.
+ *   - **Identical output wherever `JSON.stringify` had one**, so no existing
+ *     message moves: a string keeps its quotes, `undefined` still reads
+ *     `undefined`, `NaN` still reads `null`. The one deliberate departure is a
+ *     value nested past {@link SHOW_MAX_DEPTH}, which is described instead.
+ *   - **Deterministic.** Anomaly details are materialized state (`serializeState`
+ *     witnesses them), so two replicas folding the same op must produce the same
+ *     message text. Nothing here reads a clock, a random source or an address.
+ *   - **Bounded in output AND in work.** The output cap is because an unbounded
+ *     value would ride from a payload into an anomaly detail and stay in state
+ *     for the life of the log. The work cap is {@link SHOW_MAX_DEPTH}, and it is
+ *     separate because capping the output does not cap the cost of producing it.
+ */
+export function showValue(v: unknown): string {
+  try {
+    // Top-level `bigint` is spelled with the JS literal suffix so a diagnostic
+    // can distinguish 25000n from the "25000" the wire actually wants — which is
+    // the whole point of the message it appears in.
+    if (typeof v === "bigint") return `${v}n`;
+    if (!shallowEnough(v)) return `[deeply nested ${typeof v}]`;
+    const s = JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? `${x}n` : x));
+    if (typeof s === "string") return s.length > SHOW_LIMIT ? `${s.slice(0, SHOW_LIMIT)}…` : s;
+    // JSON has no form for these three and returns `undefined` rather than
+    // throwing; the type name is the whole diagnostic.
+    return v === undefined ? "undefined" : `[${typeof v}]`;
+  } catch {
+    return `[unreadable ${typeof v}]`;
+  }
+}
+
+/**
+ * Whether `v` nests no deeper than {@link SHOW_MAX_DEPTH}.
+ *
+ * Iterative with an explicit stack, so the guard against a deep structure is not
+ * itself a deep recursion. Depth-first, so a deep branch is found by the depth
+ * cap rather than after the whole structure has been walked, and there is no
+ * node budget: a budget would be a hole an adversary orders their keys around,
+ * and the walk is linear in nodes, which is the same order as the serialization
+ * it is protecting.
+ *
+ * Anything that throws while being walked — a getter, a `Proxy` trap, a revoked
+ * `Proxy` — returns `true` rather than `false`: it is not a DEPTH problem, and
+ * `JSON.stringify` is about to throw on it anyway, which {@link showValue}
+ * catches. Answering "shallow" here keeps this function's meaning exactly one
+ * thing.
+ */
+function shallowEnough(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return true;
+  const stack: unknown[] = [v];
+  const depth: number[] = [0];
+  while (stack.length > 0) {
+    const x = stack.pop();
+    const d = depth.pop()!;
+    if (typeof x !== "object" || x === null) continue;
+    if (d >= SHOW_MAX_DEPTH) return false;
+    try {
+      for (const k of Object.keys(x)) {
+        stack.push((x as Record<string, unknown>)[k]);
+        depth.push(d + 1);
+      }
+    } catch {
+      return true;
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Scalars
 // ---------------------------------------------------------------------------
 
@@ -213,7 +345,7 @@ export class InvalidEnvelopeError extends Error {
  */
 export function parseDecimal(s: unknown): bigint {
   if (typeof s !== "string" || !/^[0-9]+$/.test(s)) {
-    throw new BlobDecodeError(`want a decimal-integer string, got ${JSON.stringify(s)}`);
+    throw new BlobDecodeError(`want a decimal-integer string, got ${showValue(s)}`);
   }
   return BigInt(s);
 }
@@ -279,10 +411,10 @@ const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
  */
 export function parseInstantMs(s: unknown): number {
   if (typeof s !== "string") {
-    throw new BlobDecodeError(`want an RFC3339 timestamp, got ${JSON.stringify(s)}`);
+    throw new BlobDecodeError(`want an RFC3339 timestamp, got ${showValue(s)}`);
   }
   const m = RFC3339.exec(s);
-  if (m === null) throw new BlobDecodeError(`want an RFC3339 timestamp, got ${JSON.stringify(s)}`);
+  if (m === null) throw new BlobDecodeError(`want an RFC3339 timestamp, got ${showValue(s)}`);
   const [, year, month, day, hour, minute, second, fraction, sign, offHour, offMinute] = m as unknown as string[];
   const y = Number(year);
   const mo = Number(month);
@@ -290,19 +422,19 @@ export function parseInstantMs(s: unknown): number {
   const h = Number(hour);
   const mi = Number(minute);
   const sec = Number(second);
-  if (mo < 1 || mo > 12) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has month ${mo}`);
-  if (d < 1 || d > daysInMonth(y, mo)) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has day ${d}`);
+  if (mo < 1 || mo > 12) throw new BlobDecodeError(`timestamp ${showValue(s)} has month ${mo}`);
+  if (d < 1 || d > daysInMonth(y, mo)) throw new BlobDecodeError(`timestamp ${showValue(s)} has day ${d}`);
   // Hour 24 is the one Date.parse rolls into the next day. No leap seconds: Go
   // refuses :60 and so must this.
-  if (h > 23) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has hour ${h}`);
-  if (mi > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has minute ${mi}`);
-  if (sec > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has second ${sec}`);
+  if (h > 23) throw new BlobDecodeError(`timestamp ${showValue(s)} has hour ${h}`);
+  if (mi > 59) throw new BlobDecodeError(`timestamp ${showValue(s)} has minute ${mi}`);
+  if (sec > 59) throw new BlobDecodeError(`timestamp ${showValue(s)} has second ${sec}`);
 
   let offsetMinutes = 0;
   if (sign !== undefined) {
     const oh = Number(offHour);
     const om = Number(offMinute);
-    if (oh > 23 || om > 59) throw new BlobDecodeError(`timestamp ${JSON.stringify(s)} has an out-of-range UTC offset`);
+    if (oh > 23 || om > 59) throw new BlobDecodeError(`timestamp ${showValue(s)} has an out-of-range UTC offset`);
     offsetMinutes = (sign === "-" ? -1 : 1) * (oh * 60 + om);
   }
 
@@ -314,7 +446,7 @@ export function parseInstantMs(s: unknown): number {
   date.setUTCFullYear(y, mo - 1, d);
   date.setUTCHours(h, mi, sec, ms);
   const epoch = date.getTime() - offsetMinutes * 60_000;
-  if (Number.isNaN(epoch)) throw new BlobDecodeError(`unparseable timestamp ${JSON.stringify(s)}`);
+  if (Number.isNaN(epoch)) throw new BlobDecodeError(`unparseable timestamp ${showValue(s)}`);
   if (epoch === GO_ZERO_TIME_MS) throw new BlobDecodeError("timestamp is the zero time");
   return epoch;
 }
@@ -355,7 +487,7 @@ export function canonicalTime(s: string): string {
   const canonical = new Date(parseInstantMs(s)).toISOString();
   if (!RFC3339.test(canonical)) {
     throw new BlobDecodeError(
-      `timestamp ${JSON.stringify(s)} canonicalises to ${JSON.stringify(canonical)}, ` +
+      `timestamp ${showValue(s)} canonicalises to ${showValue(canonical)}, ` +
         "which is outside the four-digit-year range this wire format carries",
     );
   }
@@ -423,8 +555,19 @@ function parseBody(bytes: Uint8Array, what: string): ParsedBody {
   let doc: unknown;
   try {
     doc = JSON.parse(text, reviver as (key: string, value: unknown) => unknown);
-  } catch (e) {
-    throw new BlobDecodeError(`${what}: ${(e as Error).message}`);
+  } catch {
+    // The engine's own wording is deliberately dropped. `JSON.parse` failures
+    // are phrased differently by every runtime — JavaScriptCore says
+    // `JSON Parse error: Unexpected identifier "not"` where V8 says
+    // `Unexpected token 'o', "not json" is not valid JSON` — and this message
+    // does not stay in a log line: `foldBlobs` writes it into
+    // `state.unreadable[].reason`, which is MATERIALIZED STATE that
+    // `serializeState` witnesses. Two replicas folding the same corrupt blob
+    // would then hold different states and report a divergence that is really a
+    // difference of runtime, for the most ordinary failure there is. The byte
+    // count is the deterministic half of the diagnostic and is kept; the blob
+    // itself is retained, so nothing about it is unrecoverable.
+    throw new BlobDecodeError(`${what}: body is not valid JSON (${bytes.length} bytes)`);
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
     throw new BlobDecodeError(`${what}: body is not a JSON object`);
@@ -465,7 +608,7 @@ function requireIntegerLiteral(literals: NumberLiterals, holder: object, key: st
 function readVersion(doc: Record<string, unknown>, what: string): number {
   const v = doc["v"];
   if (typeof v !== "number" || !Number.isInteger(v)) {
-    throw new BlobDecodeError(`${what}: version is ${JSON.stringify(v)}`);
+    throw new BlobDecodeError(`${what}: version is ${showValue(v)}`);
   }
   if (v > SCHEMA_VERSION) {
     throw new UnknownNewerVersionError(`${what} is v${v}, this build supports v${SCHEMA_VERSION}`);
@@ -486,7 +629,7 @@ export function kindOf(bytes: Uint8Array): BlobKind {
   const kind = parseBody(bytes, "blob").doc["kind"];
   if (kind === KIND_OPS || kind === KIND_RAW_BODY) return kind;
   if (kind === undefined || kind === "") throw new BlobDecodeError("blob has no kind");
-  throw new BlobDecodeError(`blob kind is ${JSON.stringify(kind)}`);
+  throw new BlobDecodeError(`blob kind is ${showValue(kind)}`);
 }
 
 /**
@@ -503,7 +646,7 @@ export function decodeBlobOps(bytes: Uint8Array): Op[] {
   requireIntegerLiteral(literals, doc, "v", "op blob");
   readVersion(doc, "op blob");
   if (doc["kind"] !== KIND_OPS) {
-    throw new BlobDecodeError(`blob kind is ${JSON.stringify(doc["kind"])}, not ${JSON.stringify(KIND_OPS)}`);
+    throw new BlobDecodeError(`blob kind is ${showValue(doc["kind"])}, not ${showValue(KIND_OPS)}`);
   }
   const raw = doc["ops"];
   // Absent or null is zero ops, matching Go: a nil slice unmarshals from a
@@ -525,7 +668,7 @@ function decodeOp(raw: unknown, i: number, literals: NumberLiterals): Op {
   requireIntegerLiteral(literals, o, "parent_version", `op ${i}`);
   const v = o["v"];
   if (typeof v !== "number" || !Number.isInteger(v)) {
-    throw new BlobDecodeError(`op ${i}: version is ${JSON.stringify(v)}`);
+    throw new BlobDecodeError(`op ${i}: version is ${showValue(v)}`);
   }
   if (v > SCHEMA_VERSION) {
     throw new UnknownNewerVersionError(`op ${i} is v${v}, this build supports v${SCHEMA_VERSION}`);
@@ -567,10 +710,12 @@ function decodeOp(raw: unknown, i: number, literals: NumberLiterals): Op {
  * engine, but a payload that is not even present must never reach it.
  */
 export function validateOp(o: Op): void {
-  if (typeof o.v !== "number" || !Number.isInteger(o.v)) throw new Error(`version is ${JSON.stringify(o.v)}`);
+  if (typeof o.v !== "number" || !Number.isInteger(o.v)) throw new Error(`version is ${showValue(o.v)}`);
   if (o.v > SCHEMA_VERSION) throw new UnknownNewerVersionError(`op ${o.op_id} is v${o.v}`);
   if (o.v < 1) throw new Error(`version ${o.v} is not valid`);
-  if (!isOpType(o.type)) throw new Error(`unknown type ${JSON.stringify(o.type)}`);
+  if (!isOpType(o.type)) throw new Error(`unknown type ${showValue(o.type)}`);
+  if (o.v < opMinVersion(o.type)) throw new Error(`type ${o.type} requires schema v${opMinVersion(o.type)}`);
+  if (o.type === "txn_duplicate_disposition") validateDuplicateDispositionPayload(o.payload);
   if (typeof o.op_id !== "string" || o.op_id === "") throw new Error("op_id is empty");
   // Throws on a missing, malformed or zero timestamp — and on one whose
   // canonical form is not itself a wire timestamp, which is what `Op.Validate`
@@ -591,7 +736,7 @@ export function validateOp(o: Op): void {
     }
     if (o.parent_version !== null && o.parent_version !== undefined) {
       const pv = o.parent_version;
-      if (typeof pv !== "number" || !Number.isInteger(pv)) throw new Error(`parent_version is ${JSON.stringify(pv)}`);
+      if (typeof pv !== "number" || !Number.isInteger(pv)) throw new Error(`parent_version is ${showValue(pv)}`);
       if (pv < 0) throw new Error(`parent_version ${pv} is negative`);
       // Go's parent_version is an int64 and the wire carries it as a raw JSON
       // number, so a value above 2^53 is representable there and NOT here —
@@ -606,16 +751,53 @@ export function validateOp(o: Op): void {
   if (o.type === "txn_ingested" || o.type === "txn_superseded") {
     // The ingest id joins a hot op to its cold raw body. Without it that join is
     // unrecoverable, since the cold stream is fetched separately.
+    //
+    // # This check is load-bearing for something outside this file
+    //
+    // `replay/state.ts:fingerprint` keys an UNPARSED row as
+    // `unparsed|${ingest_id}` and a parsed one as
+    // `last4|amount|direction|merchant|day`. Those two namespaces are disjoint
+    // by SEPARATOR COUNT and by nothing else — `|` is deliberately unescaped
+    // there — so the argument is "the parsed form always emits four separators,
+    // the unparsed form always emits exactly one". The second half of that
+    // sentence is true only because 64 lower-case hex characters cannot contain
+    // a `|`, which is what `isSHA256Hex` enforces, here, on the only two op
+    // types that carry an ingest id.
+    //
+    // Relax this to any non-empty string and an op assembled in code with
+    // `ingest_id = "1|debit|ACME|2026-01-01"` fingerprints as
+    // `unparsed|1|debit|ACME|2026-01-01` — five segments, i.e. inside the parsed
+    // namespace — and collides with a real transaction whose `last4` is
+    // `unparsed`. The collision is only ever a `possible_duplicate` notice, but
+    // it is a notice on the review queue for a row that has nothing to do with
+    // it, and it would be reachable by a user typing a merchant name. If this
+    // check ever has to move, the fingerprint's disjointness argument moves with
+    // it (see the matching note in `state.ts`).
     if (!isSHA256Hex(o.ingest_id)) {
-      throw new Error(`${o.type} needs a 64-hex-char ingest_id, got ${JSON.stringify(o.ingest_id)}`);
+      throw new Error(`${o.type} needs a 64-hex-char ingest_id, got ${showValue(o.ingest_id)}`);
     }
   } else if (o.ingest_id !== undefined && o.ingest_id !== "") {
     // ingest_id is omitted when empty, so an unchecked value is junk riding into
     // a frozen wire model, and a future reader that joins on it joins to nothing.
-    throw new Error(`${o.type} must not carry an ingest_id, got ${JSON.stringify(o.ingest_id)}`);
+    throw new Error(`${o.type} must not carry an ingest_id, got ${showValue(o.ingest_id)}`);
   }
 
   if (o.payload === undefined) throw new Error("payload is empty");
+}
+
+function validateDuplicateDispositionPayload(payload: unknown): void {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("duplicate disposition payload must be an object");
+  }
+  const p = payload as Record<string, unknown>;
+  if (typeof p["other_txn_id"] !== "string" || p["other_txn_id"] === "") {
+    throw new Error("duplicate disposition needs other_txn_id");
+  }
+  if (!("disposition" in p)) throw new Error("duplicate disposition needs disposition");
+  const disposition = p["disposition"];
+  if (disposition !== null && disposition !== "same" && disposition !== "different") {
+    throw new Error("duplicate disposition must be same, different, or null");
+  }
 }
 
 /**
@@ -650,7 +832,8 @@ export function encodeBlobOps(ops: Op[]): Uint8Array {
     wire["payload"] = o.payload;
     return wire;
   });
-  return platform().utf8Encode(JSON.stringify({ v: SCHEMA_VERSION, kind: KIND_OPS, ops: out }));
+  const version = ops.reduce((max, op) => Math.max(max, op.v), 1);
+  return platform().utf8Encode(JSON.stringify({ v: version, kind: KIND_OPS, ops: out }));
 }
 
 /**
@@ -666,15 +849,15 @@ export function decodeRawBody(bytes: Uint8Array): RawBodyRecord {
   requireIntegerLiteral(literals, doc, "v", "raw body");
   readVersion(doc, "raw body");
   if (doc["kind"] !== KIND_RAW_BODY) {
-    throw new BlobDecodeError(`blob kind is ${JSON.stringify(doc["kind"])}, not ${JSON.stringify(KIND_RAW_BODY)}`);
+    throw new BlobDecodeError(`blob kind is ${showValue(doc["kind"])}, not ${showValue(KIND_RAW_BODY)}`);
   }
   const ingestID = doc["ingest_id"];
   if (!isSHA256Hex(ingestID)) {
-    throw new BlobDecodeError(`raw body has no usable ingest_id: ${JSON.stringify(ingestID)}`);
+    throw new BlobDecodeError(`raw body has no usable ingest_id: ${showValue(ingestID)}`);
   }
   const receivedAt = doc["received_at"];
   if (typeof receivedAt !== "string") {
-    throw new BlobDecodeError(`raw body received_at is ${JSON.stringify(receivedAt)}`);
+    throw new BlobDecodeError(`raw body received_at is ${showValue(receivedAt)}`);
   }
   // Checked as `canonicalTime`, not merely `parseInstantMs`. Go's
   // `RawBody.UnmarshalJSON` routes received_at through `parseWireTime`, which
@@ -690,11 +873,11 @@ export function decodeRawBody(bytes: Uint8Array): RawBodyRecord {
 /** Encodes a cold-stream record. Mirrors `oplog.EncodeRawBody`, field order included. */
 export function encodeRawBody(r: RawBodyRecord): Uint8Array {
   if (!isSHA256Hex(r.ingest_id)) {
-    throw new Error(`raw body needs a 64-hex-char ingest_id, got ${JSON.stringify(r.ingest_id)}`);
+    throw new Error(`raw body needs a 64-hex-char ingest_id, got ${showValue(r.ingest_id)}`);
   }
   return platform().utf8Encode(
     JSON.stringify({
-      v: SCHEMA_VERSION,
+      v: 1, // raw-body shape is still v1; schema v2 added only an op type
       kind: KIND_RAW_BODY,
       ingest_id: r.ingest_id,
       received_at: canonicalTime(r.received_at),
@@ -771,11 +954,11 @@ function compareHeads(a: CheckpointHead, b: CheckpointHead): number {
 function validateHead(h: CheckpointHead): void {
   if (typeof h.writer_id !== "string" || h.writer_id === "") throw new Error("checkpoint head has no writer_id");
   if (typeof h.stream !== "string" || h.stream === "") {
-    throw new Error(`checkpoint head for ${JSON.stringify(h.writer_id)} names no stream`);
+    throw new Error(`checkpoint head for ${showValue(h.writer_id)} names no stream`);
   }
   parseDecimal(h.counter);
   if (!isSHA256Hex(h.hash)) {
-    throw new Error(`checkpoint head for ${JSON.stringify(h.writer_id)} has hash ${JSON.stringify(h.hash)}, want 64 hex chars`);
+    throw new Error(`checkpoint head for ${showValue(h.writer_id)} has hash ${showValue(h.hash)}, want 64 hex chars`);
   }
 }
 

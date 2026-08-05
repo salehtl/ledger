@@ -94,6 +94,7 @@ export interface OpSpec {
 export interface Pusher {
   readonly pending: readonly Op[];
   emit(spec: OpSpec): Op;
+  emitMany(specs: readonly OpSpec[]): Op[];
   push(): Promise<PushReport>;
 }
 
@@ -124,6 +125,11 @@ export class Outbox {
    */
   enqueue(spec: OpSpec): Op {
     return this.client.emit(spec);
+  }
+
+  /** Queues a logical group with one durable write, or queues none of it. */
+  enqueueMany(specs: readonly OpSpec[]): Op[] {
+    return this.client.emitMany(specs);
   }
 
   /**

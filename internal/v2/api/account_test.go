@@ -161,6 +161,10 @@ func TestDeleteAccountRequiresFreshnessOfTheVerifierToo(t *testing.T) {
 	if h.apple.lastOpts.MaxAge != reauthMaxAge {
 		t.Fatalf("verifier was asked for MaxAge %v, want %v", h.apple.lastOpts.MaxAge, reauthMaxAge)
 	}
+	wantNonce := base64.StdEncoding.EncodeToString(nonce)
+	if h.apple.lastOpts.Nonce != wantNonce {
+		t.Fatalf("verifier was asked for nonce %q, want server challenge %q", h.apple.lastOpts.Nonce, wantNonce)
+	}
 }
 
 // A genuine, fresh token for a DIFFERENT account is not re-authentication for

@@ -1,12 +1,13 @@
 {
   "note": "Encoded by internal/v2/oplog TestWriteConformanceFixtures. parent_version is a raw JSON NUMBER on the wire and a decimal string in this manifest; money and counters are decimal strings on the wire. authored_at_cases pin PARSED INSTANTS: Go's RFC3339Nano trims trailing zeros where JavaScript's toISOString pads to three digits, so the two encoders are byte-different and instant-identical. expect_canonical_wire is the one exception — it is the string THIS executor writes, and the TypeScript side asserts it can READ it, which is how a canonical form outside the shared four-digit-year grammar (years 10000 and -1 are both reachable from a wire-legal input) becomes visible to the suite at all.",
-  "schema_version": 1,
+  "schema_version": 2,
   "types": [
     "txn_ingested",
     "txn_superseded",
     "txn_categorized",
     "txn_split",
     "txn_edited",
+    "txn_duplicate_disposition",
     "rule_added",
     "rate_set",
     "rate_unset",
@@ -18,6 +19,18 @@
     "rate_unset",
     "home_currency_set",
     "writer_checkpoint"
+  ],
+  "duplicate_disposition_base64": "eyJ2IjoyLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoyLCJ0eXBlIjoidHhuX2R1cGxpY2F0ZV9kaXNwb3NpdGlvbiIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwRDEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDBaIiwiZW50aXR5Ijp7ImtpbmQiOiJ0eG4iLCJpZCI6IlQxIn0sInBhcmVudF92ZXJzaW9uIjozLCJwYXlsb2FkIjp7Im90aGVyX3R4bl9pZCI6IlQwIiwiZGlzcG9zaXRpb24iOiJzYW1lIn19XX0=",
+  "verified_origin_base64": "eyJ2IjoyLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoyLCJ0eXBlIjoidHhuX2luZ2VzdGVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBPMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDIifSwicGFyZW50X3ZlcnNpb24iOm51bGwsImluZ2VzdF9pZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwYXlsb2FkIjp7ImFtb3VudF9taW5vciI6IjEiLCJjdXJyZW5jeSI6IkFFRCIsImRpcmVjdGlvbiI6ImRlYml0IiwicG9zdGVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJtZXJjaGFudF9yYXciOiJCQU5LIiwibGFzdDQiOiIiLCJuZWVkc19yZXZpZXciOmZhbHNlLCJ1bnBhcnNlZCI6ZmFsc2UsInRpZXIiOiJ0ZW1wbGF0ZSIsInZlcmlmaWVkX29yaWdpbl9kb21haW4iOiJiYW5rLmV4YW1wbGUifX1dfQ==",
+  "duplicate_disposition_invalid_payloads": [
+    {},
+    {"other_txn_id":"T0"},
+    {"other_txn_id":"","disposition":"same"},
+    {"other_txn_id":7,"disposition":"same"},
+    {"other_txn_id":"T0","disposition":"merge"},
+    {"other_txn_id":"T0","disposition":7},
+    null,
+    []
   ],
   "golden_ops_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2luZ2VzdGVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBJMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOm51bGwsImluZ2VzdF9pZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwYXlsb2FkIjp7ImFtb3VudF9taW5vciI6IjI1MDAwIiwiY3VycmVuY3kiOiJBRUQifX0seyJ2IjoxLCJ0eXBlIjoidHhuX2NhdGVnb3JpemVkIiwib3BfaWQiOiIwMUowMDAwMDAwMDAwMDAwMDAwMDAwMDBBMSIsImF1dGhvcmVkX2F0IjoiMjAyNi0wNi0wNVQxMDowMDowMFoiLCJlbnRpdHkiOnsia2luZCI6InR4biIsImlkIjoiVDEifSwicGFyZW50X3ZlcnNpb24iOjMsInBheWxvYWQiOnsiY2F0ZWdvcnkiOiJncm9jZXJpZXMifX0seyJ2IjoxLCJ0eXBlIjoicmF0ZV9zZXQiLCJvcF9pZCI6IjAxSjAwMDAwMDAwMDAwMDAwMDAwMDAwMFIxIiwiYXV0aG9yZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInBhcmVudF92ZXJzaW9uIjpudWxsLCJwYXlsb2FkIjp7ImN1cnJlbmN5IjoiVVNEIiwicmF0ZV9taWNybyI6IjM2NzI1MDAifX1dfQ==",
   "golden_raw_body_base64": "eyJ2IjoxLCJraW5kIjoicmF3X2JvZHkiLCJpbmdlc3RfaWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicmVjZWl2ZWRfYXQiOiIyMDI2LTA2LTA1VDEwOjAwOjAwWiIsInJhd19iYXNlNjQiOiJhR2s9In0=",

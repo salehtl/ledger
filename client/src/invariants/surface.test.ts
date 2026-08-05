@@ -16,6 +16,7 @@ import {
   NOTICE_OTHER_STREAM,
   NOTICE_SET_ASIDE,
   VIOLATION_CHAIN_WITHHELD,
+  VIOLATION_CHECKPOINT_INVALID,
   VIOLATION_CHECK_FAILED,
   VIOLATION_NEWER_VERSION,
   VIOLATION_ROSTER_COVERAGE,
@@ -91,6 +92,20 @@ test("when both I11 conditions fire, the user is told about the WITHHOLDING", ()
   expect(s.halts.map((h) => h.kind)).toEqual([HALT_CHAIN_WITHHELD, HALT_NOT_VOUCHED_FOR]);
 });
 
+test("a malformed or forged checkpoint is tampered, never benign coverage", () => {
+  const malformed = stop(ROSTER, VIOLATION_CHECKPOINT_INVALID);
+  expect(haltKindOf(malformed)).toBe(HALT_TAMPERED);
+  expect(surface({ violations: [malformed] }).halt!.kind).toBe(HALT_TAMPERED);
+
+  // A benign coverage stop may co-occur, but cannot hide the invalid
+  // attestation behind the lowest-priority onboarding-style copy.
+  const s = surface({
+    violations: [stop(ROSTER, VIOLATION_ROSTER_COVERAGE), malformed],
+  });
+  expect(s.halt!.kind).toBe(HALT_TAMPERED);
+  expect(s.halts.map((h) => h.kind)).toEqual([HALT_TAMPERED, HALT_NOT_VOUCHED_FOR]);
+});
+
 test("a checkpoint that names an enrolled-but-silent writer at counter 0 is not an error to suppress", () => {
   // Two contracts of Task 11 that LOOK like bugs and are not: a checkpoint names
   // every roster writer including one that has authored nothing, and a
@@ -138,6 +153,7 @@ test("every invariant id and every exported kind lands in a lane that has copy",
     undefined,
     VIOLATION_ROSTER_COVERAGE,
     VIOLATION_CHAIN_WITHHELD,
+    VIOLATION_CHECKPOINT_INVALID,
     VIOLATION_NEWER_VERSION,
     VIOLATION_CHECK_FAILED,
   ];
