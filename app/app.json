@@ -8,11 +8,6 @@
     "scheme": "ledger",
     "newArchEnabled": true,
     "icon": "./assets/icon.png",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "bundleIdentifier": "ae.sirdab.ledger",
       "supportsTablet": false,
@@ -25,7 +20,17 @@
       "expo-sqlite",
       "expo-secure-store",
       "expo-apple-authentication",
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
       [
         "expo-notifications",
         {
