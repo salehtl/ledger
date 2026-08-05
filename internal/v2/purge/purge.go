@@ -127,6 +127,15 @@ var notUserLinked = []string{
 	// Operator-published parse templates. Not authored by users and shared by
 	// all of them.
 	"public.templates",
+	// The publish/remove delta channel over public.templates, which devices
+	// poll to learn what changed since their cursor. Every column describes an
+	// OPERATOR action on a shared template — template id, version, action,
+	// timestamp — and none of them names or derives from a user. It survives a
+	// purge for the same reason public.templates does: deleting a row here
+	// would not erase anything about the deleted account, it would tear a hole
+	// in a monotonic sequence every OTHER device reads by. See
+	// 00024_template_publication_log.sql.
+	"public.template_publication_log",
 	// The global merchant dictionary.
 	//
 	// The justification is NOT k-anonymity, and an earlier version of this

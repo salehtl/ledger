@@ -21,10 +21,12 @@ test("normalization is exact bigint money and maps categories", () => {
 test("shared Go/TypeScript import conformance vectors", () => {
   for (const vector of vectors) {
     const rawMap = vector.map;
-    const m: ImportMap = { columns: rawMap.columns, categories: rawMap.categories, dateFormat: rawMap.date_format as ImportMap["dateFormat"], currency: rawMap.currency, directionMode: rawMap.direction_mode as ImportMap["directionMode"] };
+    // Spread rather than assign: `categories` is absent from most vectors, and
+    // exactOptionalPropertyTypes refuses an explicit `undefined` for it.
+    const m: ImportMap = { columns: rawMap.columns, ...("categories" in rawMap ? { categories: rawMap.categories } : {}), dateFormat: rawMap.date_format as ImportMap["dateFormat"], currency: rawMap.currency, directionMode: rawMap.direction_mode as ImportMap["directionMode"] };
     const result = normalizeRows([vector.raw], m)[0]!;
     if ("error" in vector) { expect(result.ok).toBe(false); if (!result.ok) expect(result.error).toContain(vector.error); continue; }
     expect(result.ok).toBe(true);
-    if (result.ok) expect({ posted_at: result.row.postedAt.replace(".000Z", "Z"), merchant_raw: result.row.merchantRaw, amount_minor: result.row.amountMinor.toString(10), currency: result.row.currency, direction: result.row.direction, category: result.row.category ?? "" }).toEqual(vector.expected);
+    if (result.ok) expect({ posted_at: result.row.postedAt.replace(".000Z", "Z"), merchant_raw: result.row.merchantRaw, amount_minor: result.row.amountMinor.toString(10), currency: result.row.currency, direction: result.row.direction, category: result.row.category ?? "" }).toEqual(vector.expected as { posted_at: string; merchant_raw: string; amount_minor: string; currency: string; direction: "debit" | "credit"; category: string });
   }
 });
