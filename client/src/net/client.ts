@@ -483,8 +483,22 @@ export class Client {
     return this.st.userId;
   }
 
+  /**
+   * The writer this profile authors as.
+   *
+   * The message on the throw used to read "no writer selected: run `cli enroll
+   * --writer <id>`", and it was not confined to a terminal: it is raised by
+   * every write path, so a phone whose device writer had not been enrolled
+   * showed a full-screen wall instructing its owner to run a command-line
+   * tool they do not have. A product surface must never say that. It now
+   * describes the situation and nothing else — `app/src/auth/enrollment.ts`
+   * turns it into a sentence for a person, and the CLI's own `enroll`
+   * subcommand is documented in `USAGE` where an operator will look for it.
+   */
   get writerId(): string {
-    if (this.st.writerId === null) throw new Error("no writer selected: run `cli enroll --writer <id>`");
+    if (this.st.writerId === null) {
+      throw new Error("this device is not set up to make changes yet: no writer is enrolled for it");
+    }
     return this.st.writerId;
   }
 

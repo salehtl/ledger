@@ -25,6 +25,7 @@ import { dictionarySubmitter } from "../dictionary/submission.ts";
 import { sqliteDictionarySource, type DictionarySource } from "../dictionary/source.ts";
 import type { RawMessageSource } from "../screens/review/deps.ts";
 import { deviceIdentity, type DeviceIdentity } from "../security/model.ts";
+import { ensureDeviceWriter, type EnrollmentOutcome } from "../auth/enrollment.ts";
 import { addressSource, type AddressSource } from "../account/address.ts";
 import { firstMailAt } from "../lib/onboarding.ts";
 
@@ -73,6 +74,18 @@ export interface AppRuntime {
   readonly accountEpoch: number;
   readonly newId: () => string;
   deviceIdentity(): DeviceIdentity | null;
+  /**
+   * Makes this device able to author, and says what it had to do.
+   *
+   * Composed here because enrolment needs three things this graph owns and no
+   * screen does: the one `Client`, the persisted `ClientState` behind it
+   * (`store.load()`, not the folded projection `client.state()` returns), and
+   * the Keychain that `account/deletion.ts` and `account/address.ts` read the
+   * writer id and seed back out of. Called from `bootstrap.ts` on every launch
+   * and from the sign-in screen the moment an exchange succeeds; it is
+   * idempotent and the already-enrolled case makes no network call.
+   */
+  ensureDeviceWriter(): Promise<EnrollmentOutcome>;
   dispose(): Promise<void>;
   wipeAccount(): Promise<void>;
   runAudit(): Promise<void>;
@@ -187,6 +200,13 @@ export function createRuntime(deps: RuntimeDeps): AppRuntime {
     accountEpoch: 0,
     newId: deps.newId ?? newEntityID,
     deviceIdentity: () => deviceIdentity(store.load()),
+    ensureDeviceWriter: () =>
+      ensureDeviceWriter({
+        secrets: deps.secrets,
+        state: () => store.load(),
+        client,
+        mint: deps.newId ?? newEntityID,
+      }),
     async dispose(): Promise<void> {
       await shutDown();
     },

@@ -1,10 +1,20 @@
 import type { Client } from "@ledger/client/net/client.ts";
 import { clearSession, mayWipeLocalData } from "../auth/session.ts";
+import { enrollmentFailureCopy, isEnrollmentError, type EnrollmentCopy } from "../auth/enrollment.ts";
 import type { AppRuntime } from "./runtime.ts";
 
 export type BootstrapState =
   | { step: "opening" }
   | { step: "signed_out" }
+  /**
+   * Signed in, and this device is not able to author.
+   *
+   * A state of its own rather than `fatal`, because it is neither fatal nor a
+   * lie: the account is fine, the data is fine, and the one missing thing is
+   * recoverable by pressing something once there is a connection. Routing it
+   * through `fatal` is what put "run `cli enroll --writer`" on a phone.
+   */
+  | { step: "unenrolled"; copy: EnrollmentCopy }
   | { step: "onboarding"; userId: string; facts?: Awaited<ReturnType<AppRuntime["onboardingFacts"]>> }
   | { step: "ready"; userId: string; facts: Awaited<ReturnType<AppRuntime["onboardingFacts"]>> }
   | { step: "halted"; reason: string }
@@ -28,6 +38,22 @@ export async function bootstrapRuntime(
   if (persisted.step !== "onboarding") return persisted;
   let state: BootstrapState;
   try {
+    /**
+     * BEFORE the first sync, and before anything else that could author.
+     *
+     * The launch sync is the first thing that reads `Client.writerId`, so a
+     * device with no writer failed here with "no writer selected" and the app
+     * showed that as an unrecoverable open failure. It is also the correct
+     * order on its own merits: a push that ran first would have to be
+     * abandoned mid-flight.
+     *
+     * `ensureDeviceWriter` is idempotent and free on the already-enrolled
+     * path, which is what makes an unconditional call on every launch the
+     * right shape — the alternative, "enrol only when signing in", leaves
+     * every device that signed in before this existed permanently unable to
+     * write.
+     */
+    await runtime.ensureDeviceWriter();
     await (deps.refresh?.() ?? runtime.coordinator.run("launch").then(() => {}));
     await runtime.runAudit();
     const facts = await runtime.onboardingFacts();
@@ -37,7 +63,12 @@ export async function bootstrapRuntime(
         : { ...persisted, facts };
   } catch (error) {
     const forced = await classify(runtime, deps, error);
-    return forced ?? { step: "fatal", error: error instanceof Error ? error : new Error(String(error)) };
+    if (forced !== null) return forced;
+    // Checked AFTER `classify`, never before: a 401 or a 410 raised while
+    // enrolling is still a session answer, and `EnrollmentError` carries the
+    // status through precisely so this order works.
+    if (isEnrollmentError(error)) return { step: "unenrolled", copy: enrollmentFailureCopy(error) };
+    return { step: "fatal", error: error instanceof Error ? error : new Error(String(error)) };
   }
   /**
    * The dictionary refresh runs AFTER the state is decided, and its failure is

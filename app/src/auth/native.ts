@@ -237,6 +237,21 @@ export interface SignInDeps {
   google: IdpAuthenticator | null;
   /** `null` until a `Client` exists to talk to — see below. */
   backend: ExchangeBackend | null;
+  /**
+   * Registers this device as one that can make changes, run the instant an
+   * exchange succeeds.
+   *
+   * It is a dependency of sign-in rather than something the screen reaches for
+   * because establishing a session and becoming able to author are one act
+   * from the user's side: a device with a session and no writer can read and
+   * nothing else, which is a state no user should ever be able to reach.
+   *
+   * `null` only in a build with no backend, where no exchange happens either.
+   * `runtime.ensureDeviceWriter()` is the production implementation and is
+   * idempotent, so a retry after a failure re-uses this device's one writer id
+   * rather than minting a second.
+   */
+  enrollDevice: (() => Promise<unknown>) | null;
   secrets: SecretStore;
   newNonce: () => string;
 }
@@ -264,16 +279,28 @@ export interface SignInDeps {
  * `Client.enroll(writerId)` — challenge, `registrationMessage`, strict base64,
  * all already implemented and tested in `client/src/net/client.ts`. Do not
  * write a second one.
+ *
+ * **That URL now exists** (`app/config.ts`'s `serverURL`), `Navigation.tsx`
+ * passes the real `Client` as `backend`, and the enrolment sentence above is
+ * implemented in `auth/enrollment.ts` and reached through
+ * {@link SignInDeps.enrollDevice}. It stayed unwired for one task longer than
+ * the backend did, which meant a device could sign in and then author nothing;
+ * see that module's header.
  */
 export function deviceSignInDeps(
-  input: ExchangeBackend | null | { backend: ExchangeBackend; secrets: SecretStore } = null,
+  input:
+    | ExchangeBackend
+    | null
+    | { backend: ExchangeBackend; secrets: SecretStore; enrollDevice?: () => Promise<unknown> } = null,
 ): SignInDeps {
-  const backend = input !== null && typeof input === "object" && "backend" in input ? input.backend : input;
-  const secrets = input !== null && typeof input === "object" && "secrets" in input ? input.secrets : keychainSecretStore();
+  const bag = input !== null && typeof input === "object" && "backend" in input ? input : null;
+  const backend: ExchangeBackend | null = bag !== null ? bag.backend : (input as ExchangeBackend | null);
+  const secrets = bag !== null ? bag.secrets : keychainSecretStore();
   return {
     apple: appleAuthenticator(),
     google: googleAuthenticator(),
     backend,
+    enrollDevice: bag?.enrollDevice ?? null,
     secrets,
     // One RNG for the whole app: `src/platform/index.ts` installs it over
     // `expo-crypto` before anything else runs, and `ulid`'s own detection was

@@ -243,6 +243,13 @@ describe("production runtime graph", () => {
     state.sessionToken = "held";
     state.userId = "user-1";
     state.writers.set("dev-a", { x: "A".repeat(43), d: "B".repeat(43) });
+    // An ENROLLED device, which is what this case is about: `bootstrapRuntime`
+    // now ensures the device writer before it syncs, and an unenrolled fixture
+    // would stop at that step instead of reaching the 401/410 it measures.
+    // `writer_id` in the Keychain and `writerId` in the state are the pair
+    // `ensureDeviceWriter` takes as "already done, no network".
+    state.writerId = "dev-a";
+    secrets.set("writer_id", "dev-a");
     state.pending.push({ v: 1, type: "rate_set", op_id: "op-pending", authored_at: "2026-08-03T00:00:00.000Z", parent_version: null, payload: { currency: "USD", rate_micro: "3672500" } });
     seeded.save(state);
     seeded.rows().append(STREAM_HOT, [{ seq: "1", stream: STREAM_HOT, writer_id: "ingest", writer_counter: "1", type_flag: "ingest", size_bucket: 256, blob_hash: "d".repeat(64), prev_hash: "0".repeat(64), created_at: "2026-08-03T00:00:00.000Z", blob: "D".repeat(256) }]);
