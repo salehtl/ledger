@@ -31,14 +31,20 @@
  * left live: a live button over a missing client id fails at the one moment a
  * user touches it, and an omitted one is a missing feature nobody notices
  * until review.
+ *
+ * # The development-only third way in
+ *
+ * See {@link devSignInPanel}. It is additive: not one line of the Apple or
+ * Google path below branches on it, and it establishes its session through the
+ * same reducer, the same `exchangeOnce` and the same invite handling as they do.
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type ComponentType } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TOUCH_TARGET_MIN, useTheme } from "../../app/Theme.tsx";
-import { runIdpFlow, type Idp, type IdpAuthenticator } from "../../auth/idp.ts";
+import { IDP_APPLE, runIdpFlow, type Idp, type IdpAuthenticator } from "../../auth/idp.ts";
 import type { SignInDeps } from "../../auth/native.ts";
 import {
   classifyFailure,
@@ -50,6 +56,48 @@ import {
   type SignInState,
 } from "../../auth/session.ts";
 import { NotInvitedView } from "./NotInvitedView.tsx";
+import type { DevSignInPanelProps } from "./DevSignInPanel.tsx";
+
+/**
+ * The **one** gate on the development sign-in path, and the only place
+ * `__DEV__` is read for it.
+ *
+ * # Why a `require` inside a ternary, and not an import plus `{__DEV__ && …}`
+ *
+ * Both forms hide the control. Only this one removes it. Metro replaces the
+ * `__DEV__` identifier with `false` in a production build and constant-folds
+ * what is left, so in production this function's body is `return null`, the
+ * `require` never survives to dependency collection, and `DevSignInPanel.tsx`
+ * and `auth/devAuth.ts` are not in the bundle at all — no control, no copy, no
+ * `"dev:"` prefix, nothing to find. A static import would keep both modules in
+ * the graph with only the JSX folded away, which is a bypass that ships and is
+ * merely not rendered.
+ *
+ * # Why it cannot be turned on at build time
+ *
+ * `__DEV__` is set by the bundler from its own dev/production mode: `expo
+ * start` makes it true, `expo export` and every release build make it false.
+ * There is no environment variable, no `app.json` key and no CLI flag that
+ * makes a production bundle report `true`. That is the whole reason an
+ * `EXPO_PUBLIC_*` flag is NOT used here, alone or in combination: an
+ * `EXPO_PUBLIC_*` value is inlined from whatever environment ran the build, so
+ * it is exactly one `export` away from being on in a shipped binary, and adding
+ * it would only add a way to turn the path *off* in development — which is not
+ * a safety property anyone needs.
+ *
+ * # Called during render, deliberately
+ *
+ * A module-scope `const` would read `__DEV__` once at import and could then
+ * only be exercised by re-evaluating this module — which, under jest, means a
+ * second copy of React and an "invalid hook call" instead of a test. Read here,
+ * the gate is observable by a mounted render in both directions, which is what
+ * `DevSignIn.rn-test.tsx` asserts and what the mutation battery in
+ * `dev-signin-report.md` kills. In production it costs nothing: the whole body
+ * is folded to `null`.
+ */
+function devSignInPanel(): ComponentType<DevSignInPanelProps> | null {
+  return __DEV__ ? (require("./DevSignInPanel.tsx") as typeof import("./DevSignInPanel.tsx")).DevSignInPanel : null;
+}
 
 export interface SignInScreenProps {
   deps: SignInDeps;
@@ -154,6 +202,27 @@ export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignIn
     [deps],
   );
 
+  /**
+   * The development identity, entering the machine at exactly the point a real
+   * provider's answer enters it.
+   *
+   * `press` then `authenticated` are the same two transitions `start` produces,
+   * so everything downstream — the `exchanging` effect, `exchangeOnce`, the
+   * `403 not_invited` routing into {@link NotInvitedView}, every failure in the
+   * taxonomy — is the one code path, not a copy. In particular there is no
+   * branch here that skips the invite gate: a dev sign-in is a different
+   * *identity*, and creating an account with it still needs a code.
+   *
+   * `IDP_APPLE` because `--dev-auth` installs the dev verifier for BOTH
+   * providers (`api.NewServer`), so the choice is free, and Apple is the
+   * provider this build actually ships — sending `"google"` would exercise a
+   * provider string the real app never sends.
+   */
+  const startDev = useCallback((idToken: string) => {
+    dispatch({ type: "press", idp: IDP_APPLE });
+    dispatch({ type: "authenticated", idp: IDP_APPLE, idToken });
+  }, []);
+
   if (restored || state.step === "signed_in") {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: t.space.lg, padding: t.space.lg, backgroundColor: t.colors.bg }}>
@@ -180,6 +249,7 @@ export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignIn
   const activeIdp = state.step === "authenticating" || state.step === "exchanging" ? state.idp : null;
   const failure = state.step === "idle" ? state.failure : null;
   const copy = failure === null ? null : failureCopy(failure);
+  const DevSignIn = devSignInPanel();
 
   return (
     <ScrollView
@@ -263,6 +333,15 @@ export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignIn
           }}
         />
       </View>
+
+      {/*
+        Below the real providers, never above them. In a production bundle this
+        whole expression is `null && …` and `DevSignInPanel.tsx` is not in the
+        graph at all — see `devSignInPanel`.
+      */}
+      {DevSignIn !== null && (
+        <DevSignIn disabled={busy || deps.backend === null} onSignIn={startDev} />
+      )}
 
       <View style={{ flex: 1 }} />
 
