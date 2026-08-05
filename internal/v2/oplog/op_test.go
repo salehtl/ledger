@@ -3,12 +3,21 @@ package oplog
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 func ingestID() string { return strings.Repeat("a", 64) }
+
+// newerVersion is one past whatever this build understands. Written as
+// arithmetic on SchemaVersion rather than as a literal: these tests assert
+// "a version this build does not know is a hard stop", and a literal silently
+// becomes an assertion about a version the build DOES know the moment
+// SchemaVersion is bumped -- which is exactly how the v1->v2 bump left three of
+// them testing the opposite of their names.
+func newerVersion() string { return strconv.Itoa(SchemaVersion + 1) }
 
 func TestDuplicateDispositionRequiresSchemaV2AndClosedPayload(t *testing.T) {
 	parent := int64(1)
@@ -58,7 +67,7 @@ func rateOp() Op {
 }
 
 func TestDecodeBlobRejectsUnknownNewerVersion(t *testing.T) {
-	_, err := DecodeBlob([]byte(`{"v":2,"kind":"ops","ops":[]}`))
+	_, err := DecodeBlob([]byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[]}`))
 	if !errors.Is(err, ErrUnknownNewerVersion) {
 		t.Fatalf("want ErrUnknownNewerVersion, got %v", err)
 	}
@@ -68,7 +77,8 @@ func TestDecodeBlobRejectsANewerOpInsideAKnownBlob(t *testing.T) {
 	// The hard stop has to reach the op, not just the envelope: a v1 blob may
 	// carry an op the client cannot interpret, and guessing is worse than
 	// stopping (spec §3.3:68).
-	b := []byte(`{"v":1,"kind":"ops","ops":[{"v":2,"type":"txn_ingested","op_id":"x",` +
+	b := []byte(`{"v":` + strconv.Itoa(SchemaVersion) + `,"kind":"ops","ops":[{"v":` + newerVersion() +
+		`,"type":"txn_ingested","op_id":"x",` +
 		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{}}]}`)
 	if _, err := DecodeBlob(b); !errors.Is(err, ErrUnknownNewerVersion) {
 		t.Fatalf("want ErrUnknownNewerVersion, got %v", err)
@@ -415,14 +425,14 @@ func TestValidateRejectsIngestIDOnNonIngestOps(t *testing.T) {
 }
 
 func TestDecodeRawBodyRejectsBadVersions(t *testing.T) {
-	for _, v := range []string{"0", "-5", "2"} {
+	for _, v := range []string{"0", "-5"} {
 		b := []byte(`{"v":` + v + `,"kind":"raw_body","ingest_id":"` + ingestID() +
 			`","received_at":"2026-06-05T10:00:00Z","raw_base64":"aGk="}`)
 		if _, err := DecodeRawBody(b); err == nil {
 			t.Fatalf("raw body v%s must be rejected", v)
 		}
 	}
-	b := []byte(`{"v":2,"kind":"raw_body","ingest_id":"` + ingestID() +
+	b := []byte(`{"v":` + newerVersion() + `,"kind":"raw_body","ingest_id":"` + ingestID() +
 		`","received_at":"2026-06-05T10:00:00Z","raw_base64":"aGk="}`)
 	if _, err := DecodeRawBody(b); !errors.Is(err, ErrUnknownNewerVersion) {
 		t.Fatalf("a newer raw body must hard-stop like a newer op blob, got %v", err)

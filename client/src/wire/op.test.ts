@@ -40,6 +40,9 @@ const manifest: {
   authored_at_rejects: string[];
   parent_version_overflow_base64: string;
   parent_version_overflow: string;
+  duplicate_disposition_base64: string;
+  duplicate_disposition_invalid_payloads: unknown[];
+  verified_origin_base64: string;
 } = await Bun.file(`${import.meta.dir}/../../../conformance/op/manifest.json`).json();
 
 const goldenOps = new Uint8Array(Buffer.from(manifest.golden_ops_base64, "base64"));

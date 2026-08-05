@@ -71,9 +71,16 @@ func TestModesIsTheExactSetInOrder(t *testing.T) {
 	// it with Phase 2's Task 6, and is the third of the same shape: account
 	// creation is gated on a single-use code, and without a command to mint one
 	// a freshly deployed ledgerd lets nobody sign up at all.
+	// "load-corpus" is the fourth, and the only one that is not a production
+	// path: Task 1 and Task 28 both measure a cold restore of ~3,683 ingest
+	// singletons, and no other command can create them (SMTP delivery is the
+	// only producer, the sync upload caps at 8 blobs, and a client authoring as
+	// `ingest` gets a 403). It is listed here for the same reason as the rest —
+	// so that adding a mode is a decision somebody wrote down.
 	want := []string{
 		"serve", "relay", "verify", "seed-dictionary", "seed-templates",
 		"purge-user", "record-consent", "parse-rate", "mint-invite",
+		"load-corpus",
 	}
 	got := Modes()
 	if len(got) != len(want) {
