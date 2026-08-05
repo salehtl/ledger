@@ -32,18 +32,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import type { Txn } from "@ledger/client/replay/state.ts";
-
 import { INPUT_FONT_MIN, TOUCH_TARGET_MIN, useTheme } from "../../app/Theme.tsx";
 import {
   EMPTY_FILTERS,
+  EMPTY_TXN_WINDOW,
+  advanceTxnWindow,
   cursorOf,
   filtersActive,
   txnTotals,
   withFilterToggled,
   MAX_RETAINED_TXNS,
-  prependTxnWindow,
-  retainTxnWindow,
   TXN_PAGE_SIZE,
   type ChipDimension,
   type TxnCursor,
@@ -79,9 +77,17 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const [filters, setFilters] = useState<TxnFilters>(EMPTY_FILTERS);
-  const [rows, setRows] = useState<Txn[]>([]);
-  const [cursor, setCursor] = useState<TxnCursor | null>(null);
-  const [exhausted, setExhausted] = useState(false);
+  /**
+   * The rows AND the keyset state, as one value.
+   *
+   * They were three `useState`s, and the row-loss defect lived in the gap: the
+   * prepend path updated `rows` and left `cursor` pointing at a row eviction
+   * had just unloaded, so down -> up -> down skipped a whole page. Every
+   * transition now goes through `advanceTxnWindow`, which cannot update one
+   * without considering the other.
+   */
+  const [txnWindow, setTxnWindow] = useState(EMPTY_TXN_WINDOW);
+  const { rows, cursor, exhausted } = txnWindow;
   const [error, setError] = useState<string | null>(null);
   /**
    * A ref rather than state: a second `onEndReached` arriving in the same frame
@@ -98,18 +104,12 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
       loading.current = true;
       try {
         const page = source.list(filters, { limit: PAGE_SIZE, after: from, direction: mode === "prepend" ? "newer" : "older" });
-        if (mode === "prepend") {
-          // The recovery path: `from` was the cursor of the row currently at
-          // the top of `rows`, so this re-fetches whatever `retainTxnWindow`
-          // evicted from the front — see `lib/transactions.ts`'s module doc.
-          // The bottom cursor/exhausted state is untouched; this direction
-          // never affects "is there more below".
-          setRows((prev) => prependTxnWindow(prev, page.rows));
-        } else {
-          setRows((prev) => retainTxnWindow(prev, page.rows, mode === "replace"));
-          setCursor(page.next);
-          setExhausted(page.next === null);
-        }
+        // One transition for all three modes. `prepend` — the recovery path,
+        // where `from` was the cursor of the row currently at the top of `rows`
+        // — evicts from the TAIL to hold the memory bound, so it must rewind
+        // the bottom cursor as well as grow the top. That is the whole reason
+        // this is one reducer over one value rather than three setters.
+        setTxnWindow((prev) => advanceTxnWindow(prev, page, mode));
         setError(null);
       } catch (e) {
         // A projection written by an older build, or a column that will not
@@ -125,9 +125,7 @@ export function TransactionsScreen({ source, onOpen, nowIso, onReview, onQuarant
   // Re-run from the top whenever the query changes. `load` closes over
   // `filters`, so this fires exactly when the SQL would be different.
   useEffect(() => {
-    setRows([]);
-    setCursor(null);
-    setExhausted(false);
+    setTxnWindow(EMPTY_TXN_WINDOW);
     load(null, "replace");
   }, [load]);
 

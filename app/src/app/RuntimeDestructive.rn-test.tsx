@@ -27,7 +27,30 @@ import { toBase64 } from "../platform/bytes.ts";
 import { Navigation } from "./Navigation.tsx";
 import { RuntimeProvider, useAccountWipe } from "./RuntimeProvider.tsx";
 import { ThemeProvider } from "./Theme.tsx";
+import { deletionResultCopy } from "../account/deletion.ts";
 import type { AppRuntime } from "./runtime.ts";
+
+/**
+ * The Apple authenticator, and ONLY the Apple authenticator.
+ *
+ * Deletion carries three factors (spec 3.4), and the third is a fresh IdP
+ * credential. A `410` on the challenge short-circuits before that round trip,
+ * which is why the 410 case below needs no mock — but the `204` case, the one a
+ * user reaches deliberately, does, and jest cannot open Apple's sheet. Only the
+ * authenticator is replaced: `deviceSignInDeps` is otherwise the real one, so
+ * the Keychain seam, the nonce and the signature over `deletionMessage` are all
+ * still the production code paths.
+ */
+jest.mock("../auth/native.ts", () => {
+  const actual = jest.requireActual("../auth/native.ts") as typeof import("../auth/native.ts");
+  return {
+    ...actual,
+    deviceSignInDeps: (options: Parameters<typeof actual.deviceSignInDeps>[0]) => ({
+      ...actual.deviceSignInDeps(options),
+      apple: { idp: "apple" as const, isAvailable: async () => true, authenticate: async () => ({ idToken: "fresh-apple-token", email: null }) },
+    }),
+  };
+});
 
 const USER = "123e4567-e89b-42d3-a456-426614174000";
 const SEED = toBase64(new Uint8Array(32).fill(7));
@@ -139,6 +162,80 @@ it("410 account_deleted wipes this device AND leaves the signed-in graph", async
   expect(secrets.held()).toBe(0);
   expect(screen.queryByTestId("delete-account-screen")).toBeNull();
   expect(urls[0]).toContain("/api/v1/account/challenge");
+
+  // AND the user is told what happened, ON THE SCREEN THEY ENDED UP ON.
+  // `deletionResultCopy`'s 410 sentence used to be set on `DeleteAccountScreen`
+  // AFTER `navigation.reset` had unmounted it, so it rendered nowhere at all:
+  // the truthful copy was real and invisible, and pressing "Delete my account
+  // permanently" dropped the user at sign-in with no confirmation of anything.
+  // Asserted from the tree after the reset, not from a setter having been
+  // called.
+  const notice = screen.getByTestId("sign-in-notice");
+  expect(String(notice.props.children ?? "")).toBeTruthy();
+  expect(screen.getByText(deletionResultCopy({ outcome: "already_deleted", wiped: true }).body)).toBeTruthy();
+  await mounted.unmount();
+});
+
+/**
+ * The other erasing ending, and the one a user actually reaches on purpose.
+ *
+ * A `204` is the deliberate deletion. It has the same shape of defect as the
+ * 410 above — reset first, copy second, copy never seen — so it is asserted the
+ * same way: the sentence is read out of the rendered tree AFTER the navigator
+ * has thrown the delete screen away.
+ */
+it("a 204 wipes, leaves the signed-in graph, and CONFIRMS it on the screen the user lands on", async () => {
+  let wipes = 0;
+  const secrets = fakeSecrets();
+  serveDeletion([{ ok: true, status: 200, body: { nonce: btoa(String.fromCharCode(...new Uint8Array(32))) } }, { ok: true, status: 204, body: null }]);
+  const mounted = await mount(makeRuntime(secrets.store, { wipeAccount: async () => { wipes++; secrets.purge(); } }));
+  fireEvent.press(screen.getByTestId("open-delete-account"));
+  await waitFor(() => expect(screen.getByTestId("delete-account-screen")).toBeTruthy());
+  fireEvent.press(screen.getByText("Continue to delete"));
+  await waitFor(() => expect(screen.getByText("Delete my account permanently")).toBeTruthy());
+  fireEvent.press(screen.getByText("Delete my account permanently"));
+
+  await waitFor(() => expect(screen.getByTestId("sign-in-apple")).toBeTruthy());
+  expect(wipes).toBe(1);
+  expect(screen.queryByTestId("delete-account-screen")).toBeNull();
+  const said = screen.getByText(deletionResultCopy({ outcome: "deleted", wiped: true }).body);
+  expect(said).toBeTruthy();
+  // The 204 sentence, not the 410 one: they are different facts and the user is
+  // owed the one that happened.
+  expect(screen.queryByText(deletionResultCopy({ outcome: "already_deleted", wiped: true }).body)).toBeNull();
+  await mounted.unmount();
+});
+
+/**
+ * The wipe itself failing after the server confirmed.
+ *
+ * `wipeAccount()` closes the driver, deletes the database file and purges the
+ * Keychain; any of the three can reject. That rejection used to travel as a
+ * plain error into `deletionFailureCopy`'s fallthrough, which says "Your
+ * account was not deleted. Your data remains on this device." — both false. The
+ * account is gone and the local copy is in an unknown state, and the user has
+ * something to do about it.
+ */
+it("a wipe that throws after a 204 says the account IS gone and this device may not be clean", async () => {
+  const secrets = fakeSecrets();
+  serveDeletion([{ ok: true, status: 200, body: { nonce: btoa(String.fromCharCode(...new Uint8Array(32))) } }, { ok: true, status: 204, body: null }]);
+  const mounted = await mount(makeRuntime(secrets.store, { wipeAccount: async () => { throw new Error("database file is locked"); } }));
+  fireEvent.press(screen.getByTestId("open-delete-account"));
+  await waitFor(() => expect(screen.getByTestId("delete-account-screen")).toBeTruthy());
+  fireEvent.press(screen.getByText("Continue to delete"));
+  await waitFor(() => expect(screen.getByText("Delete my account permanently")).toBeTruthy());
+  await act(async () => { fireEvent.press(screen.getByText("Delete my account permanently")); });
+
+  // The reset is skipped, correctly: this device is not clean, so the user has
+  // to see the message rather than be swept to sign-in.
+  await waitFor(() => expect(screen.getByTestId("delete-account-notice")).toBeTruthy());
+  expect(screen.getByTestId("delete-account-screen")).toBeTruthy();
+  const said = String(screen.getByTestId("delete-account-notice").props.children);
+  expect(said).toMatch(/Your account is deleted/);
+  expect(said).toMatch(/reinstall/);
+  // The two false claims the fallthrough used to make.
+  expect(said).not.toMatch(/was not deleted/);
+  expect(said).not.toMatch(/Your data remains on this device/);
   await mounted.unmount();
 });
 

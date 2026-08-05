@@ -54,6 +54,17 @@ import { NotInvitedView } from "./NotInvitedView.tsx";
 export interface SignInScreenProps {
   deps: SignInDeps;
   /**
+   * A sentence from the screen that sent the user here, rendered above
+   * everything else.
+   *
+   * Account deletion is its only source today, and it is a prop rather than
+   * state because the screen that has something to say has already been
+   * unmounted by `navigation.reset` before it could say it. Shown even while a
+   * session is being restored, since arriving here at all is the exceptional
+   * case worth explaining.
+   */
+  notice?: string | null;
+  /**
    * Called once there is a session. `null` means one was already on this
    * device and no exchange happened — the user id is in the store, and this
    * screen deliberately does not open the store to read it.
@@ -71,7 +82,7 @@ export interface SignInScreenProps {
   onSkip?: () => void;
 }
 
-export function SignInScreen({ deps, onSignedIn, onSkip }: SignInScreenProps) {
+export function SignInScreen({ deps, onSignedIn, onSkip, notice = null }: SignInScreenProps) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const [state, dispatch] = useReducer(signInReducer, undefined, initialSignInState);
@@ -145,7 +156,8 @@ export function SignInScreen({ deps, onSignedIn, onSkip }: SignInScreenProps) {
 
   if (restored || state.step === "signed_in") {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: t.colors.bg }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: t.space.lg, padding: t.space.lg, backgroundColor: t.colors.bg }}>
+        {notice !== null && <Banner testID="sign-in-notice" tone="warning" title="Account deleted" body={notice} />}
         <ActivityIndicator color={t.colors.accent} />
       </View>
     );
@@ -210,6 +222,15 @@ export function SignInScreen({ deps, onSignedIn, onSkip }: SignInScreenProps) {
             </Pressable>
           )}
         </View>
+      )}
+
+      {/*
+        Above the failure banner and above the provider buttons: it is the
+        answer to "did the thing I just pressed do anything", and a user who has
+        to scroll to find that has not been told.
+      */}
+      {notice !== null && (
+        <Banner testID="sign-in-notice" tone="warning" title="Account deleted" body={notice} />
       )}
 
       {copy !== null && (

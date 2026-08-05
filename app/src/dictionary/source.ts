@@ -61,7 +61,6 @@ export interface DictionaryWriter {
 export interface DictionarySource extends ReviewDictionary {
   sync(): Promise<void>;
   categoryFor(merchant: string): string | null;
-  version(): bigint;
   /** Applies rules + dictionary to still-uncategorized rows. Returns what it did. */
   recategorize(opts?: ProposeOptions): Promise<ProposeReport>;
 }
@@ -100,7 +99,6 @@ export function sqliteDictionarySource(options: {
   let head: ReturnType<SqlDriver["prepare"]> | null = null;
 
   return {
-    version: () => dictionaryCursor(db),
     submit: (entry) => options.submitter.submit(entry),
 
     async sync() {

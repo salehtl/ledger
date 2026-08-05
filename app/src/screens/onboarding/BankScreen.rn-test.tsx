@@ -15,6 +15,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ThemeProvider } from "../../app/Theme.tsx";
 import { emptyFacts, onboardingReducer, stepFor } from "../../lib/onboarding.ts";
 import { SUPPORTED_BANKS, WAITLIST_BANK } from "../../samples/source.ts";
+import { BANK_NAME_RULE } from "../../lib/bank.ts";
 import { BankScreen } from "./BankScreen.tsx";
 
 const METRICS = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } };
@@ -59,14 +60,77 @@ it("advances the step machine past bank when a waitlist join succeeds", async ()
   expect(stepFor(onboardingReducer(before, { type: "bank_picked", bank: m.picked[0]! }))).toBe("bank_picked");
 });
 
-it("does not advance, and does not invite a donation, when the join fails", async () => {
-  const m = await mount({ join: async () => { throw new Error("500"); } });
+/**
+ * The waitlist is a demand counter and may never decide whether onboarding
+ * continues.
+ *
+ * This test asserted the OPPOSITE before: that a failed join left the user on
+ * this screen. That was the reviewer's must-fix — a user whose request 500s, or
+ * who is offline, or whose name the server refuses for a reason this build does
+ * not know about, was stranded on the bank step behind "Could not add that
+ * bank. Try again." on a step that gates every later step. Retrying could not
+ * help them.
+ */
+it("advances anyway when the join fails, and says so honestly", async () => {
+  const m = await mount({ join: async () => { throw new Error("the server is unreachable"); } });
   await userEvent.type(screen.getByLabelText("Bank name"), "Mashreq");
   await userEvent.press(screen.getByTestId("bank-request"));
 
-  await waitFor(() => expect(screen.getByText("Could not add that bank. Try again.")).toBeTruthy());
+  await waitFor(() => expect(m.picked).toEqual([WAITLIST_BANK]));
+  expect(m.invitations).toEqual([1]);
+  const said = screen.getByTestId("bank-message").props.children as string;
+  // It does not claim the bank was recorded, and it carries the server's own
+  // reason rather than a generic apology.
+  expect(said).toContain("could not record");
+  expect(said).toContain("the server is unreachable");
+  expect(said).not.toContain("Added to the bank request list");
+});
+
+/**
+ * The reported hard stop, at the screen.
+ *
+ * `Mashreq (UAE)` is <= 64 code points and control-character free, so the old
+ * client sent it; the server's grammar has no parentheses, so it came back
+ * `400 invalid_bank` and surfaced as "Try again." Now it never leaves the
+ * device, and what the user is told is what they are allowed to type.
+ */
+it("refuses a name the server cannot store BEFORE the request, naming what is allowed", async () => {
+  const m = await mount();
+  await userEvent.type(screen.getByLabelText("Bank name"), "Mashreq (UAE)");
+  await userEvent.press(screen.getByTestId("bank-request"));
+
+  await waitFor(() => expect(screen.getByTestId("bank-message")).toBeTruthy());
+  // No request was made at all: the refusal is local.
+  expect(m.joined).toEqual([]);
+  expect(String(screen.getByTestId("bank-message").props.children)).toContain(BANK_NAME_RULE);
+  // Correctable, so the step is held rather than spent: the user is one edit
+  // from giving a demand signal, and "Continue without adding it" is on screen
+  // for them if they would rather not. (The corrected spelling succeeding is
+  // the first test in this file.)
   expect(m.picked).toEqual([]);
-  expect(m.invitations).toEqual([]);
+  expect(screen.getByTestId("bank-skip")).toBeTruthy();
+});
+
+/**
+ * The escape hatch, which is what makes the grammar not a dead end for names it
+ * genuinely cannot represent — Arabic, an en dash, a Turkish dotted I. Those
+ * users were invited too, and no amount of retyping helps them.
+ */
+it("continues past the step with no request at all", async () => {
+  const m = await mount();
+  await userEvent.type(screen.getByLabelText("Bank name"), "\u0628\u0646\u0643 \u062f\u0628\u064a");
+  await userEvent.press(screen.getByTestId("bank-skip"));
+
+  expect(m.joined).toEqual([]);
+  expect(m.picked).toEqual([WAITLIST_BANK]);
+  expect(m.invitations).toEqual([1]);
+});
+
+/** The rule is on screen before anything has been refused. */
+it("shows what a bank name may contain without waiting to be told no", async () => {
+  await mount();
+  expect(screen.getByTestId("bank-name-rule").props.children).toBe(BANK_NAME_RULE);
+  expect(screen.queryByTestId("bank-message")).toBeNull();
 });
 
 it("picks a supported bank by its id without touching the waitlist", async () => {

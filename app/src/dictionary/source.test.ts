@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { bunDriver, type SqlDriver } from "@ledger/client/store/driver.ts";
 import { ensureProjection, PROJECTION_VERSION } from "@ledger/client/replay/projection.ts";
 import type { OpSpec } from "@ledger/client/outbox/outbox.ts";
+import { dictionaryCursor } from "@ledger/client/categorize/dictionary.ts";
 import { sqliteDictionarySource, type DictionaryWriter } from "./source.ts";
 
 type Round = { version: string; entries: unknown[]; removed: unknown[] };
@@ -66,10 +67,10 @@ describe("device dictionary", () => {
     const f = feed(TWO_ROUNDS);
     const source = sqliteDictionarySource({ db, server: "https://ledger.test", token: () => "session", submitter: { submit: async () => {} }, fetch: f.fetch });
     await source.sync();
-    expect(source.version()).toBe(1n);
+    expect(dictionaryCursor(db)).toBe(1n);
     expect(source.categoryFor("City Market")).toBe("groceries");
     await source.sync();
-    expect(source.version()).toBe(2n);
+    expect(dictionaryCursor(db)).toBe(2n);
     expect(source.categoryFor("City Market")).toBe("general");
     db.close();
   });
