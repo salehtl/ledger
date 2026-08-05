@@ -6,6 +6,18 @@ export const SUPPORTED_BANKS = [
   { id: "dib", name: "Dubai Islamic Bank", templateIds: SUPPORTED_TEMPLATE_IDS.filter((id) => id.startsWith("dib.")) },
   { id: "enbd", name: "Emirates NBD", templateIds: SUPPORTED_TEMPLATE_IDS.filter((id) => id.startsWith("enbd.")) },
 ] as const;
+/**
+ * The bank a waitlist entry records in the onboarding facts.
+ *
+ * `lib/onboarding.ts` gates `bank_picked` on `facts.bank !== null` and calls
+ * this "the sentinel a waitlist entry uses". Without it a user whose bank is
+ * unsupported — the exact user the waitlist exists for — cannot leave the bank
+ * step at all, because the only other way to set `bank` is to claim a bank they
+ * do not have. The value matches the one `admin.NormalizeBank`'s refusal message
+ * names ("send a value from the onboarding picker, or \"other\"").
+ */
+export const WAITLIST_BANK = "other";
+
 export const SAMPLE_DISCLOSURE = "A donated sample is one complete email of yours — amounts, merchants, card digits, headers, everything. The operator can read it for up to 180 days. Only donate after checking the exact message below.";
 
 export type SampleFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

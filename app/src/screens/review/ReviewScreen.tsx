@@ -4,8 +4,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TOUCH_TARGET_MIN, useTheme } from "../../app/Theme.tsx";
 import { LANES, LANE_TITLE, type Lane } from "../../lib/review.ts";
+import { DictionaryConsentScreen } from "../settings/DictionaryConsentScreen.tsx";
 import { ConfirmCard } from "./ConfirmCard.tsx";
 import type { ReviewDeps } from "./deps.ts";
+import { DonateSheet } from "./DonateSheet.tsx";
 import { formatMoney } from "./format.ts";
 import { Button, Field } from "./parts.tsx";
 import { SwipeCard } from "./SwipeCard.tsx";
@@ -19,8 +21,43 @@ export function ReviewScreen({ deps, onClose }: { deps: ReviewDeps; onClose: () 
   const item = queue.items[0] ?? null;
   const fork = queue.forks[0] ?? null;
   const [selected, setSelected] = useState<string | null>(null);
+  /** The ingest id whose donation sheet is open, or null. */
+  const [donating, setDonating] = useState<string | null>(null);
+  const [sampleNote, setSampleNote] = useState<string | null>(null);
 
-  useEffect(() => setSelected(item?.txn.category ?? null), [item?.key, item?.txn.category]);
+  /**
+   * The card starts on the answer this device already knows.
+   *
+   * A row that carries a category keeps it, untouched. A row that does NOT is
+   * where the dictionary and the user's own rules get to speak: `categoryFor`
+   * is consulted only in that branch, so a published entry can never overwrite
+   * a decision the user made. The suggestion is reconciled against the
+   * categories already in this account case-insensitively — the dictionary
+   * publishes canonical lower-case labels, and selecting "groceries" beside an
+   * existing "Groceries" would quietly fork the category list.
+   */
+  useEffect(() => {
+    if (item === null) { setSelected(null); return; }
+    if (item.txn.category !== null) { setSelected(item.txn.category); return; }
+    const suggested = deps.dictionary?.categoryFor(item.txn.merchant_raw) ?? null;
+    if (suggested === null) { setSelected(null); return; }
+    const folded = suggested.toLocaleLowerCase("en-US");
+    setSelected(queue.categories.find((c) => c.toLocaleLowerCase("en-US") === folded) ?? suggested);
+  }, [item?.key, item?.txn.category, item?.txn.merchant_raw, deps.dictionary, queue.categories]);
+
+  if (donating !== null && deps.samples !== null) {
+    return <DonateSheet source={deps.samples} ingestId={donating} onDone={() => setDonating(null)} onCancel={() => setDonating(null)} />;
+  }
+  if (queue.share !== null && deps.dictionary !== null) {
+    return <DictionaryConsentScreen submitter={deps.dictionary} entry={queue.share} onDone={queue.dismissShare} onDismiss={queue.dismissShare} />;
+  }
+
+  const report = async (ingestId: string) => {
+    if (deps.samples === null) return;
+    setSampleNote(null);
+    try { await deps.samples.report(ingestId); setSampleNote("Sent. Only the message identifier left this device."); }
+    catch { setSampleNote("Could not send that. Nothing left this device."); }
+  };
 
   return (
     <View style={{ flex: 1, paddingTop: insets.top + t.space.md, backgroundColor: t.colors.bg }}>
@@ -48,7 +85,7 @@ export function ReviewScreen({ deps, onClose }: { deps: ReviewDeps; onClose: () 
           <Button label="Got it" tone="primary" onPress={() => void queue.acknowledgeFork(fork)} />
         </ScrollView>
       ) : item === null ? <Empty /> : queue.lane === "unparsed" ? (
-        <UnparsedCard item={item} categories={queue.categories} raw={deps.raw} homeCurrency={null} onSave={(fields) => void queue.saveManualEntry(item, fields)} onDismiss={() => void queue.dismiss(item, "not_transaction")} />
+        <UnparsedCard item={item} categories={queue.categories} raw={deps.raw} homeCurrency={null} onSave={(fields) => void queue.saveManualEntry(item, fields)} onDismiss={() => void queue.dismiss(item, "not_transaction")} sampleNote={sampleNote} {...(deps.samples === null ? {} : { onReport: () => void report(item.txn.ingest_id), onDonate: () => { setSampleNote(null); setDonating(item.txn.ingest_id); } })} />
       ) : queue.lane === "duplicate" ? (
         <ScrollView contentContainerStyle={{ padding: t.space.lg, gap: t.space.lg }}>
           <Text style={[t.type.heading, { color: t.colors.text }]}>Do these look like the same purchase?</Text>

@@ -107,7 +107,11 @@ export function createRuntime(deps: RuntimeDeps): AppRuntime {
   const waitlist = deps.fetch === undefined ? waitlistSource(deps.server, () => client.sessionToken) : waitlistSource(deps.server, () => client.sessionToken, deps.fetch);
   const samples = new SampleSource({ server: deps.server, token: () => client.sessionToken, cold, ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }) });
   const submitter = deps.fetch === undefined ? dictionarySubmitter(deps.server, () => client.sessionToken) : dictionarySubmitter(deps.server, () => client.sessionToken, deps.fetch);
-  const dictionary = sqliteDictionarySource({ db, server: deps.server, token: () => client.sessionToken, submitter, ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }) });
+  // `writer: outbox` is what makes the dictionary a *re-categorizer* rather than
+  // a store: `recategorize()` emits `txn_categorized` for rows that still have
+  // no category, which is plan Task 20 Step 2 and the only reason a published
+  // entry ever reaches a transaction.
+  const dictionary = sqliteDictionarySource({ db, server: deps.server, token: () => client.sessionToken, submitter, writer: outbox, ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }) });
   const rawMessages: RawMessageSource = { async read(ingestID) { const bytes = await cold.fetchBody(ingestID); return bytes === null ? null : { text: new TextDecoder().decode(bytes), receivedAt: new Date().toISOString() }; } };
   let templateVersion = 0n;
   const templates = new Map<string, Awaited<ReturnType<typeof fetchTemplates>>["templates"][number]>();

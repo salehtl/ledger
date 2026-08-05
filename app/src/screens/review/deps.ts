@@ -14,10 +14,11 @@
  *    verified lazy window and Task 24's reprocessing reader. The contract is
  *    defined so those tasks have something to satisfy; until then the unparsed
  *    card says the message is not on this device rather than pretending.
- *  - {@link DictionarySubmitter} — `POST /api/v1/dictionary/submissions` does
- *    not exist (Task 20 Step 3 adds it). The opt-in is rendered off and
- *    disabled with that as its reason, because an opt-in that silently posted
- *    nowhere would be a consent dialog for a thing that does not happen.
+ *  - {@link ReviewDictionary} — present in the product build (Task 20 wired
+ *    `POST /api/v1/dictionary/submissions` and the device dictionary behind
+ *    it). It stays nullable because a build without a server has no dictionary
+ *    to read and nowhere to submit, and an opt-in that silently posted nowhere
+ *    would be a consent dialog for a thing that does not happen.
  *
  * The other two — the store and the writer — exist but are constructed by Task
  * 8's engine, which the navigator does not yet hold.
@@ -26,6 +27,7 @@
 import type { OpSpec } from "@ledger/client/outbox/outbox.ts";
 import type { Op } from "@ledger/client/wire/op.ts";
 
+import type { DonationPreview } from "../../lib/redaction.ts";
 import type { ReviewSource } from "../../db/reviewQueue.ts";
 
 /**
@@ -74,11 +76,46 @@ export interface DictionarySubmitter {
   submit(entry: { pattern: string; match: "exact" | "contains"; category: string }): Promise<void>;
 }
 
+/**
+ * What the queue asks the device's dictionary for, in both directions.
+ *
+ * `categoryFor` is the READ half and it is what makes a published entry (or the
+ * user's own earlier rule) visible on a card: an uncategorized row arrives with
+ * the answer already selected instead of the user re-deciding a merchant they
+ * have decided before. It is consulted ONLY when `txn.category` is null — a row
+ * that already carries a category is never re-decided by this screen, which is
+ * plan Task 20 Step 2's "never rewrite a user’s own decision" at the one place
+ * a user could watch it happen.
+ *
+ * `sqliteDictionarySource` satisfies it structurally; a build without a
+ * dictionary passes `null` and the card simply starts empty.
+ */
+export interface ReviewDictionary extends DictionarySubmitter {
+  categoryFor(merchant: string): string | null;
+}
+
+/**
+ * The sample lane, as the unparsed card offers it.
+ *
+ * Two separate things, and the difference is the whole point of §3.5's consent
+ * argument: `report` is CONTENT-FREE — one ingest identifier the server already
+ * holds, no body — and `preview`/`donate` send the complete email, which is why
+ * they are gated behind a preview of the exact bytes and an explicit consent
+ * string. `SampleSource` satisfies this structurally.
+ */
+export interface SampleDonor {
+  report(ingestId: string): Promise<void>;
+  preview(ingestId: string): Promise<DonationPreview>;
+  donate(preview: DonationPreview, consent: string | null): Promise<void>;
+}
+
 export interface ReviewDeps {
   source: ReviewSource | null;
   writer: ReviewWriter | null;
   raw: RawMessageSource | null;
-  dictionary: DictionarySubmitter | null;
+  dictionary: ReviewDictionary | null;
+  /** The donation lane. `null` in a build with no server to report to. */
+  samples: SampleDonor | null;
   /** A ULID source for new entity ids. Injected so a test can pin them. */
   newID: () => string;
 }

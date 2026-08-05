@@ -198,7 +198,7 @@ export function Navigation() {
         {({ navigation }) => <DeleteAccountScreen onExport={() => navigation.navigate("Export")} remove={async () => { await deleteAccount({ server: runtime.server, userId: () => runtime.store.load().userId, secrets: runtime.secrets, authenticator: signInDeps.apple, wipe: () => runtime.wipeAccount() }); navigation.reset({ index: 0, routes: [{ name: "SignIn" }] }); }} />}
       </Stack.Screen>
       <Stack.Screen name="Review">
-        {({ navigation }) => <ReviewScreen deps={{ source: runtime.review, writer: runtime.outbox, raw: runtime.rawMessages, dictionary: runtime.dictionary, newID: runtime.newId }} onClose={() => navigation.goBack()} />}
+        {({ navigation }) => <ReviewScreen deps={{ source: runtime.review, writer: runtime.outbox, raw: runtime.rawMessages, dictionary: runtime.dictionary, samples: runtime.samples, newID: runtime.newId }} onClose={() => navigation.goBack()} />}
       </Stack.Screen>
       <Stack.Screen name="TransactionDetail">
         {({ navigation, route }) => (
