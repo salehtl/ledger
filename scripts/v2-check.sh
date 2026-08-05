@@ -107,10 +107,17 @@ fi
 # closes — code landing in app/ with nothing to catch it. Same rule as
 # client/: no `bun install` here, so a missing app/node_modules is a hard
 # failure with the fix named rather than a gate that mutates the tree to pass.
+#
+# The 13 *.rn-test.tsx mounted-component tests run under jest, not bun test.
+# They were landing ungated until now — bun test covers *.test.ts but not the
+# React Native mounted renders in *.rn-test.tsx, including
+# RuntimeNavigation.rn-test.tsx which verifies the app wires into itself. That
+# is a second hole of exactly this shape: code shipping with nothing to catch
+# it. Both test suites run via `test:all` in app/package.json.
 if [[ ! -d app/node_modules ]]; then
 	echo "v2-check: app/node_modules is missing; run (cd app && bun install)" >&2
 	exit 1
 fi
-(cd app && bun run typecheck && bun test)
+(cd app && bun run typecheck && bun run test:all)
 
 echo "v2-check: OK (go + client + app + conformance)"
