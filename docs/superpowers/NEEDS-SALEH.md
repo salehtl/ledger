@@ -45,20 +45,35 @@ The app shell exists now (`app/`), and it builds and bundles. Three things in it
 are placeholders that only you can replace, and all three are portal work rather
 than code:
 
-- **The bundle identifier.** `app/app.json` currently says
-  `com.salehtl.ledger`. It has to match the Apple App ID you create, and it
-  cannot change afterwards without a new App Store record — so if you want
-  something else, say so before the App ID is registered.
-- **An Apple App ID with the "Sign in with Apple" capability enabled**, plus a
-  Services ID if any web leg is used. Native Sign in with Apple is the
-  App-Store-expected path and the app has `expo-apple-authentication` pinned
-  for it.
-- **A Google Cloud OAuth client ID of type iOS**, bound to that same bundle
-  identifier. It produces a *reversed client ID* which has to go into
-  `app.json` as a `CFBundleURLTypes` entry. **That entry is deliberately absent
-  rather than filled with a plausible-looking placeholder**, because a
-  placeholder builds and installs fine and fails only at the moment a user taps
-  "Sign in with Google".
+- ~~**The bundle identifier.**~~ **SETTLED.** `app/app.json:11` is
+  `ae.sirdab.ledger`, and the explicit Apple App ID was **registered under
+  exactly that on 2026-08-05** with **Sign in with Apple** and **Push
+  Notifications** enabled. It cannot change now without a new App Store record.
+- ~~**An Apple App ID with "Sign in with Apple"**~~ **DONE, see above.** A
+  Services ID is still needed only if a web leg is ever added; the beta uses
+  native Sign in with Apple (`expo-apple-authentication`), which is the
+  App-Store-expected path.
+- ~~**A Google Cloud OAuth client ID of type iOS.**~~ **DEFERRED past the beta,
+  decided 2026-08-05. The beta is Sign in with Apple ONLY.** The client is
+  iOS-only, so every beta user has an Apple ID and Apple alone covers all of
+  them; Google buys no coverage and costs a portal credential plus a second
+  issuer in the session and deletion contracts.
+
+  **This costs nothing to defer and nothing to reverse.** `GOOGLE_IOS_CLIENT_ID`
+  is already `null`, `googleConfig()` already returns `null`, and callers already
+  branch on that **before** rendering a button — so an unconfigured build simply
+  has no Google button. Nothing is stubbed, disabled or dead-coded. To turn it on
+  later: register the client, then fill the id in `app/src/auth/idp.ts` and its
+  reversed form as a `CFBundleURLTypes` scheme in `app.json`. A test reads
+  `app.json` and fails if those two ever disagree, so a half-fill is caught here
+  rather than under a user's thumb.
+
+  Not chosen: building our own email/password auth for the beta. It would add
+  credential storage, reset and verification flows, and a replacement for the
+  fresh-`id_token` factor in account deletion — new attack surface in the one
+  area of this codebase that has already produced two Criticals (a DoS on the
+  global sign-in limiter, and an Ed25519 identity point accepted as a public
+  key). Revisit when Android or a web leg makes it actually necessary.
 
 **Sign-in itself is now built** (`app/src/auth/`, `app/src/screens/onboarding/`)
 and the two placeholders above are wired so they cannot be half-filled:
