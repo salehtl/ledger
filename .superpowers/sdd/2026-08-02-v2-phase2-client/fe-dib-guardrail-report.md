@@ -236,16 +236,28 @@ decision it is byte-indistinguishable from it.
 
 ## 7. Verification
 
-`go clean -testcache && bash scripts/v2-check.sh` — **exit 1**, in
-`app/src/screens/transactions/TransactionsScreen.rn-test.tsx`, which is another
-session's **untracked** in-progress file (`?? ` in `git status`; no commit
-touches it) testing RN list windowing. My change touches no file under `app/` or
-`client/`. The Go step is fully green — 28 `ok  ledger/...` packages, no `FAIL`
-— and the `client/` step reports `0 fail`.
+**`bash scripts/v2-check.sh` at commit `54a86a3`, in a clean `git archive`
+export with `client/node_modules` and `app/node_modules` copied in: exit 0.**
+(`v2-check: OK (go + client + app + conformance)`.) Exit code captured from the
+script itself, not from a pipeline.
 
-Verified at my own commit in a clean `git archive` export with
-`client/node_modules` and `app/node_modules` copied in — see §8 for the export
-result, which does not contain the other session's untracked file.
+In the **working tree** the same script exits 1, in
+`app/src/screens/transactions/TransactionsScreen.rn-test.tsx` — another
+session's **untracked**, in-progress RN list-windowing test (`?? ` in
+`git status`; present in no commit, which is why the export above does not
+contain it and does not run it). This change touches no file under `app/` or
+`client/`. Even in that run the Go step is fully green — 28 `ok  ledger/...`
+packages, no `FAIL` — and the `client/` step reports `0 fail`.
+
+Two notes on the export, so the next person does not lose the time:
+
+- `git archive` output is not a git repository, so `go build` refuses with
+  `error obtaining VCS status: exit status 128` and
+  `client/test/e2e/roundtrip.test.ts` fails at `boot()`. `git init` + one commit
+  in the export directory (or `-buildvcs=false`) fixes it. That failure is the
+  export method, not the code — the first export run reported 32 failures, all
+  of them this.
+- `client/src/replay/fx.test.ts`'s 5s limit did not trip in either run.
 
 Also run separately, all green:
 
