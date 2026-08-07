@@ -167,16 +167,24 @@ CREATE TABLE IF NOT EXISTS ai_suggestions (
   created_at    TEXT NOT NULL
 );
 
--- v3: per-category budgeting target (envelope depth). One target per category.
+-- v3: per-category budgeting target (envelope depth), effective-dated. A row
+-- applies from effective_month onward until a later row supersedes it, so a
+-- target set once carries forward and an edit made in month M never changes
+-- any month before M. target_type 'none' is a tombstone meaning "no target
+-- from this month on" — removal writes one of these instead of deleting,
+-- because deleting would let the previous version resurrect.
 CREATE TABLE IF NOT EXISTS category_targets (
-  category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
-  target_type TEXT NOT NULL,                    -- 'set_aside' | 'refill' | 'save_by_date'
-  amount_fils INTEGER NOT NULL,                 -- AED fils
-  cadence     TEXT NOT NULL DEFAULT 'monthly',  -- 'weekly' | 'monthly' | 'yearly'
-  due_date    TEXT,                             -- 'YYYY-MM-DD'; save_by_date only
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
+  id              INTEGER PRIMARY KEY,
+  category_id     INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  effective_month TEXT NOT NULL,                -- 'YYYY-MM'
+  target_type     TEXT NOT NULL,                -- 'set_aside'|'refill'|'save_by_date'|'none'
+  amount_fils     INTEGER NOT NULL,             -- AED fils; 0 for a tombstone
+  cadence         TEXT NOT NULL DEFAULT 'monthly',
+  due_date        TEXT,                         -- 'YYYY-MM-DD'; save_by_date only
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_target_cat_month ON category_targets(category_id, effective_month);
 
 -- v3: per-month envelope assignments ("give every dirham a job").
 CREATE TABLE IF NOT EXISTS envelope_assignments (
