@@ -269,6 +269,7 @@ func (s *Server) routes(webFS fs.FS) {
 	s.mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.handlePushUnsubscribe)
 	s.mux.HandleFunc("GET /api/push/vapid-public", s.handleVapidPublicKey)
+	s.mux.HandleFunc("POST /api/push/test", s.handlePushTest)
 	// Unknown /api/* paths return 404 so the SPA fallback never swallows them.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

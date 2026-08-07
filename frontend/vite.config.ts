@@ -89,6 +89,10 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
+        // Web Push handlers live in a plain file in public/ so the generated
+        // service worker (and its precache + update-prompt flow) stays
+        // untouched; injectManifest would mean reimplementing both.
+        importScripts: ["push-sw.js"],
         // Precache only what a cold offline start needs: app code + latin
         // fonts. Marketing/link-preview images and non-latin font subsets
         // (never fetched at runtime thanks to unicode-range) stay

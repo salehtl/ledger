@@ -69,6 +69,30 @@ To stop serving: `sudo tailscale serve --https=8443 off`.
 On a phone joined to the tailnet, open `https://dinosaur.<tailnet>.ts.net/`.
 Expect the XP-styled placeholder card showing `health: ok (db: ok)`.
 
+## 5. Web Push (VAPID)
+
+Push is off until both VAPID vars are set; the server logs which state it is in
+at startup (`push: VAPID enabled` / `push: disabled`).
+
+```bash
+ledger vapid-keys | sudo tee -a /etc/ledger/ledger.env   # prints both vars
+sudo chmod 0600 /etc/ledger/ledger.env
+sudo systemctl restart ledger
+curl -s localhost:8080/api/push/vapid-public             # sanity check
+```
+
+Generate the keypair **once**: regenerating invalidates every stored
+subscription, and each device has to re-enable push by hand.
+
+Then, on the phone: Settings → Notifications → "Enable on this device", and
+"Send test" to confirm delivery end to end.
+
+On iOS this only works from a PWA **installed to the Home Screen** (Safari →
+Share → Add to Home Screen). Web Push never fires in a plain Safari tab, no
+matter how the server is configured. Delivery goes via Apple's push service, so
+notifications still arrive when the phone is off the tailnet — but tapping one
+through to the app needs the tailnet.
+
 ## Logs & ops
 
 ```bash
@@ -84,7 +108,7 @@ sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F).db'"
 
 Backups contain financial data — encrypt them if they leave the box (Milestone 8 covers Litestream + encryption).
 
-## 5. Dedicated mailbox (Milestone 2 — ingest)
+## 6. Dedicated mailbox (Milestone 2 — ingest)
 
 ledger reads a **dedicated mailbox** that contains *only* forwarded bank mail, so its
 credential can never reach your personal email (§9). Recommended: a fresh Gmail.

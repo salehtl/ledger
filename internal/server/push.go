@@ -65,6 +65,19 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePushTest delivers one notification to every registered subscription.
+// Every other push depends on a real budget threshold being crossed or a bill
+// falling due, so without this there is no way to tell a broken delivery chain
+// (permission, subscription, service worker) from simply having nothing to say.
+func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
+	if s.pushSender == nil || s.pushStore == nil {
+		http.Error(w, "push not configured", http.StatusServiceUnavailable)
+		return
+	}
+	s.pushAll("ledger", "Test notification — push is working.")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleVapidPublicKey(w http.ResponseWriter, r *http.Request) {
 	if s.pushSender == nil {
 		http.Error(w, "push not configured", http.StatusServiceUnavailable)
