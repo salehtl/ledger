@@ -373,15 +373,50 @@ export interface TrustBasis {
 }
 
 /**
+ * How `origin.Resolve` spells a domain nothing attested.
+ *
+ * `Origin.Outer` carries this prefix unless DKIM passed, an ARC chain sealed the
+ * message, or a proved relay handed it over — the envelope's `MAIL FROM` is a
+ * string the SENDER types, and prefixing it is precisely what stops an envelope
+ * claim being compared against an allowlist (`internal/v2/origin/trust.go`).
+ *
+ * `diag.go` enforces the invariant, and there is a CHECK constraint behind that.
+ * It is restated HERE anyway, because the alternative is a security surface
+ * whose safety depends on a rule kept three packages away in another language:
+ * a client that renders whatever `outer_domain` holds is one schema change away
+ * from putting `unverified:dib-alerts.ae` under the words "Verified signing
+ * domain".
+ */
+export const UNVERIFIED_PREFIX = "unverified:";
+
+/**
  * The verified signing domain, or a prominent unauthenticated state — §3.2:55's
  * exact requirement, and the only thing a "trust this sender" control may render
  * about a held message.
+ *
+ * Three ways to be unauthenticated, and all three land in the same place rather
+ * than in three near-miss states:
+ *
+ *  1. `attested` is not `true`. Decoded as `=== true`, so a field this build
+ *     failed to read can never read as verified.
+ *  2. The domain to be shown carries {@link UNVERIFIED_PREFIX} — an
+ *     envelope-derived name the sender asserted and nothing checked.
+ *  3. `attested` is `true` and yet there is no domain at all. The Go validator
+ *     does not exclude this pair, and rendering it produced a blank name under
+ *     "Verified signing domain" next to a disabled button: incoherent rather
+ *     than exploitable, but a security screen has no business showing a state it
+ *     cannot explain.
  */
 export function trustBasis(item: QuarantineItem): TrustBasis {
-  if (!item.attested) {
-    return { authenticated: false, label: "Unauthenticated", domain: null, source: "No verified origin" };
-  }
+  const unauthenticated: TrustBasis = {
+    authenticated: false,
+    label: "Unauthenticated",
+    domain: null,
+    source: "No verified origin",
+  };
+  if (!item.attested) return unauthenticated;
   const domain = item.innerDomain !== "" ? item.innerDomain : item.outerDomain;
+  if (domain === "" || domain.startsWith(UNVERIFIED_PREFIX)) return unauthenticated;
   return { authenticated: true, label: domain, domain, source: item.attestedBy || "Verified signature" };
 }
 
@@ -404,10 +439,18 @@ export function deletionNotice(item: QuarantineItem, nowMs: number): string | nu
   return days === 0 ? "Scheduled for deletion today" : `Scheduled for deletion in ${days} day${days === 1 ? "" : "s"}`;
 }
 
-/** Which (domain, scope) pair confirming this item would send, or null. */
+/**
+ * Which (domain, scope) pair confirming this item would send, or null.
+ *
+ * It refuses everything {@link trustBasis} calls unauthenticated, and it refuses
+ * an `unverified:`-prefixed domain in EITHER scope rather than only in the one
+ * that happened to be shown — this is the layer that decides what is sent, so it
+ * checks for itself instead of trusting the layer that decides what is drawn.
+ */
 export function trustRequest(item: QuarantineItem): { domain: string; scope: TrustScope } | null {
-  if (!item.attested) return null;
-  if (item.innerDomain !== "") return { domain: item.innerDomain, scope: "inner" };
-  if (item.outerDomain !== "") return { domain: item.outerDomain, scope: "outer" };
+  if (!trustBasis(item).authenticated) return null;
+  const usable = (d: string): boolean => d !== "" && !d.startsWith(UNVERIFIED_PREFIX);
+  if (usable(item.innerDomain)) return { domain: item.innerDomain, scope: "inner" };
+  if (usable(item.outerDomain)) return { domain: item.outerDomain, scope: "outer" };
   return null;
 }

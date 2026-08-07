@@ -28,7 +28,9 @@ const VERIFIED = {
   outer_domain: "google.com",
   inner_domain: "dib.ae",
   attested: true,
-  attested_by: "dkim:dib.ae",
+  // The server constrains this to "direct_dkim" or "arc" (quarantine.go:119).
+  // A fixture spelling it any other way pins a value production cannot produce.
+  attested_by: "direct_dkim",
   dkim: "pass",
   arc: "pass",
   size_bucket: 2,
@@ -88,7 +90,7 @@ describe("Quarantine", () => {
     // The INNER origin — the bank's own verified domain — not the forwarder it
     // arrived through, and not anything the message said about itself.
     expect(await screen.findByTestId("quarantine-basis-q1")).toHaveTextContent("dib.ae");
-    expect(screen.getByText("Verification: dkim:dib.ae")).toBeInTheDocument();
+    expect(screen.getByText("Verification: direct_dkim")).toBeInTheDocument();
   });
 
   it("states the unauthenticated case rather than showing a domain", async () => {
@@ -99,6 +101,32 @@ describe("Quarantine", () => {
     expect(basis.className).toContain("text-bad");
     // §2: nothing is dropped without a user-visible notice.
     expect(screen.getByText("Scheduled for deletion in 2 days")).toBeInTheDocument();
+  });
+
+  it("refuses an unverified: domain even when the item claims to be attested", async () => {
+    const user = userEvent.setup();
+    // `origin.Resolve` prefixes a domain nothing attested, because the envelope
+    // `MAIL FROM` is a string the sender types. The Go side keeps `attested` and
+    // the prefix consistent; this asserts the CLIENT refuses on its own, so the
+    // claim on this screen does not depend on a rule three packages away.
+    const spoofed = { ...VERIFIED, id: "q3", inner_domain: "", outer_domain: "unverified:dib.ae" };
+    const doFetch = stub({ list: { items: [spoofed], action_needed: 1, expiring_soon: 0 } });
+    mount(doFetch);
+    const basis = await screen.findByTestId("quarantine-basis-q3");
+    expect(basis).toHaveTextContent("Unauthenticated");
+    expect(basis).not.toHaveTextContent("dib.ae");
+    await user.click(screen.getByTestId("quarantine-row-q3"));
+    expect(await screen.findByRole("button", { name: "Cannot trust unauthenticated mail" })).toBeDisabled();
+    expect(doFetch.mock.calls.some(([u]) => String(u).includes("/confirm"))).toBe(false);
+  });
+
+  it("refuses an attested item that names no domain at all", async () => {
+    // Not excluded by the Go validator. It used to render a blank name under
+    // "Verified signing domain" beside a disabled button — a state the screen
+    // could not explain, which is not a state a security surface may show.
+    const nameless = { ...VERIFIED, id: "q4", inner_domain: "", outer_domain: "" };
+    mount(stub({ list: { items: [nameless], action_needed: 1, expiring_soon: 0 } }));
+    expect(await screen.findByTestId("quarantine-basis-q4")).toHaveTextContent("Unauthenticated");
   });
 
   it("refuses the decision for an unauthenticated sender", async () => {

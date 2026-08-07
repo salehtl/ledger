@@ -72,6 +72,22 @@ describe("serializeFilters", () => {
     );
   });
 
+  it("spells the uncategorized sentinel as U+0000, asserted by code point rather than by eye", () => {
+    // The sentinel used to be written as a LITERAL NUL byte in the source, which
+    // makes git classify the whole module as binary -- `queries.ts | Bin 9166 ->
+    // 11811 bytes` -- so every change to this file, including a whole screen's
+    // data path, silently disappears from review. `\u0000` is the same character
+    // and leaves the file readable.
+    //
+    // Asserted by CODE POINT because the failure that would matter is invisible:
+    // replacing the literal with `" null"` or `"null"` changes what the cache
+    // keys on and would pass every other test in this file.
+    const key = serializeFilters({ ...EMPTY_FILTERS, categories: [null] });
+    const sentinel = key.split("|")[1] ?? "";
+    expect(sentinel.codePointAt(0)).toBe(0);
+    expect(sentinel).toBe("\u0000null");
+  });
+
   it("ignores a whitespace-only search, which is what filtersActive already ignores", () => {
     expect(serializeFilters({ ...EMPTY_FILTERS, query: "  " })).toBe(serializeFilters(EMPTY_FILTERS));
   });

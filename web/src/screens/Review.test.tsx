@@ -106,14 +106,49 @@ interface Recorder extends Writer {
   queued: OpSpec[];
 }
 
+/**
+ * A writer that behaves like the real `Outbox`, which means `pending` GROWS.
+ *
+ * The first version of this double kept `pending` frozen at whatever it was
+ * constructed with. That made every test here pass for a reason outside this
+ * screen: react-query's structural sharing keeps `feed.data`'s identity across a
+ * refetch, so the `settledBy` memo never recomputed and the deck's consistency
+ * rested on a library behaviour rather than on the code. `Client.emit` commits
+ * the op before it returns and `Outbox.pending` is a live read of the client's
+ * queue, so an enqueue that did not show up in `pending` is a double that cannot
+ * reproduce the bug `settledBy` exists to prevent.
+ *
+ * The ops are built the way `Client.emitMany` builds them — the `OpSpec`'s
+ * `parentVersion`/`entity` become the op's `parent_version`/`entity`, which is
+ * exactly what `settledBy` and `nextParentVersion` read.
+ */
 function recorder(pending: Op[] = []): Recorder {
   const queued: OpSpec[] = [];
+  let live: Op[] = [...pending];
+  let n = 0;
   return {
     queued,
     get pending() {
-      return pending;
+      return live;
     },
-    enqueueMany: (specs) => void queued.push(...specs),
+    enqueueMany: (specs) => {
+      queued.push(...specs);
+      for (const spec of specs) {
+        // REPLACED, not mutated: `Client.emitMany` does
+        // `this.st.pending = [...previous, ...ops]`, so the array identity
+        // changes on every enqueue. A double that pushed in place would hide
+        // any memo that (wrongly or rightly) depends on that identity.
+        live = [...live, {
+          v: 1,
+          type: spec.type as Op["type"],
+          op_id: `emitted-${++n}`,
+          authored_at: "2026-07-20T00:00:00.000Z",
+          parent_version: spec.parentVersion ?? null,
+          payload: spec.payload,
+          ...(spec.entity === undefined ? {} : { entity: spec.entity }),
+        }];
+      }
+    },
     flush: async () => undefined,
   };
 }
@@ -182,6 +217,37 @@ describe("Review", () => {
       type: "rule_added",
       payload: { match: "exact", category: "Groceries", priority: 0 },
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("undoes a confirm with a compensating op that does not fork against itself", async () => {
+    const user = userEvent.setup();
+    const writer = recorder();
+    mount(await projection(), writer);
+    await screen.findByText("SPINNEYS");
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(writer.queued.length).toBe(3));
+
+    // The log is append-only: this is a compensating op, not a deletion, and the
+    // rule write-back is deliberately NOT retracted.
+    expect(writer.queued.map((s) => s.type)).toEqual(["txn_categorized", "rule_added", "txn_categorized"]);
+    expect(writer.queued[2]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "t2" },
+      payload: { category: null, needs_review: true },
+    });
+    // THE assertion. The confirm named parent 1; the projection has not folded,
+    // so it still says 1. An undo naming 1 as well would be a true concurrent
+    // fork against the user's own confirm — and inside one millisecond, or on a
+    // tie, the LATER op is the one replay discards, so the undo would silently
+    // vanish and the queue would show a fork notice for a fork nobody made.
+    expect(writer.queued[0]!.parentVersion).toBe(1);
+    expect(writer.queued[2]!.parentVersion).toBe(2);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

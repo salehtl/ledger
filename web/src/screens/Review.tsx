@@ -72,14 +72,33 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
 
   const feed = useReviewFeed(source, "needs_review");
 
-  const items = useMemo(() => {
-    const rows = feed.data?.items ?? [];
-    const settlement = settledBy(writer?.pending ?? []);
-    return rows.filter((i) => !isSettled(i.txn, settlement));
-  }, [feed.data, writer]);
+  /**
+   * Every row the lane page returned, adapted, in the page's own order.
+   *
+   * The settled filter is applied AFTER this and never to it, and the two must
+   * not be swapped. Card ids are positions in this array; if they were positions
+   * in the filtered one, confirming a card would renumber every card behind it,
+   * and the undo toast — which holds the card object it committed — would look
+   * up an id that now means a different transaction, or no transaction at all.
+   */
+  const page = useMemo(() => feed.data?.items ?? [], [feed.data]);
+  const allRows = useMemo(() => deckRows(page, homeCurrency), [page, homeCurrency]);
+  const byCard = useMemo(() => new Map(allRows.map((r) => [r.card.ID, r])), [allRows]);
 
-  const rows = useMemo(() => deckRows(items, homeCurrency), [items, homeCurrency]);
-  const byCard = useMemo(() => new Map(rows.map((r) => [r.card.ID, r])), [rows]);
+  /**
+   * What the deck is handed: the page minus what the outbox has already
+   * answered.
+   *
+   * `writer.pending` is read rather than `writer`, because `Client.emitMany`
+   * REPLACES the array (`this.st.pending = [...previous, ...ops]`) while the
+   * outbox object itself is memoised for the tab's lifetime — a memo keyed on
+   * the writer would never recompute, and the filter would only ever be correct
+   * by accident of react-query's structural sharing.
+   */
+  const rows = useMemo(() => {
+    const settlement = settledBy(writer?.pending ?? []);
+    return allRows.filter((r) => !isSettled(r.item.txn, settlement));
+  }, [allRows, writer?.pending]);
   const categories = useMemo(() => deckCategories(feed.data?.categories ?? []), [feed.data]);
 
   /**
@@ -190,7 +209,13 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
 
       {!feed.isPending && !feed.isError && rows.length > 0 && (
         <SwipeDeck
-          key={deckKey("needs_review", items)}
+          // Keyed on the RAW page, not on `rows`. `SwipeDeck` freezes its list
+          // at mount, so the key is what decides when it re-freezes — and a key
+          // that moved every time the outbox grew would remount the deck on
+          // every confirm, which resets the index and takes the undo toast's
+          // commit record with it. The raw page changes only when a sync folds
+          // something, which is exactly when a re-freeze is right.
+          key={deckKey("needs_review", page)}
           transactions={rows.map((r) => r.card)}
           categories={categories}
           config={config}
@@ -219,7 +244,11 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
           ]
             .filter((s): s is string => s !== null)
             .join(" · ")}
-          {" — still waiting, and reachable from Transactions."}
+          {/* "visible in", not "reachable from": those rows can be FILTERED to
+              in Transactions, but there is no control anywhere that answers
+              them yet, and naming an action the code does not honour is the
+              thing this line exists to avoid. */}
+          {" — still waiting, visible in Transactions."}
         </p>
       )}
 
