@@ -33,6 +33,28 @@
  * landing (e.g. before signing out), and the visibility/close paths are the
  * last-resort nets.
  *
+ * # `db.export()` frees every prepared statement — this is NOT a snapshot read
+ *
+ * sql.js's `Database.export()` is not a side-effect-free copy: internally
+ * (`sql-wasm.js`'s `exportDatabase`) it calls `.free()` on every statement it
+ * has ever prepared, `sqlite3_close_v2`s the connection, and reopens a fresh
+ * one from the just-exported bytes. `sqliteStore` prepares its statements
+ * ONCE, at construction, and reuses those same `SqlStatement` objects for the
+ * store's entire lifetime — so an export mid-session (which is exactly what
+ * the 500ms debounce does) would otherwise invalidate every one of them, and
+ * the *next* write through the store fails with sql.js's own `"Statement
+ * closed"` error. `prepare()` therefore holds a mutable wrapper (`raw` is
+ * reassignable, not the statement identity `sqliteStore` sees — the
+ * `SqlStatement` object returned to the caller never changes) and every
+ * export re-prepares each held statement from its recorded SQL text
+ * immediately afterward, before control returns to any other synchronous
+ * code (JS has no concurrent access to interleave here, so there is no
+ * window where a caller could observe a freed statement). This is why
+ * `prepare()` cannot just close over a local `raw` variable: `run`/`all` read
+ * `stmt.raw` off the wrapper on every call, so swapping that field after an
+ * export is enough to keep the *same* `SqlStatement` object the store is
+ * holding fully working.
+ *
  * # The in-memory fallback is not test scaffolding
  *
  * `indexedDB` is undefined in two real situations this driver must survive:
@@ -47,6 +69,19 @@
  * upgrade elsewhere) by rejecting rather than leaving the promise pending
  * forever, which would otherwise hang `openBrowserDriver` indefinitely.
  *
+ * Once a driver has degraded to the in-memory fallback — whether because
+ * `indexedDB` never existed, or because a *load* failed partway through open
+ * — every SAVE for the rest of that driver's life also routes straight to
+ * memory, without even attempting IndexedDB again. This is load-bearing, not
+ * just consistent: if a transient load failure were treated as unrelated to
+ * later saves, a driver could open on an EMPTY in-memory database (because it
+ * could not read the real bytes), the user could write real data into that
+ * empty database, and a subsequent save — with IndexedDB now working again —
+ * would silently overwrite the user's actual persisted bytes with the empty
+ * database's contents. Routing every save through the same degraded state the
+ * load discovered is what makes that impossible: once this driver can no
+ * longer vouch for what is in IndexedDB, it never touches it again.
+ *
  * Rather than special-case any of these, the driver checks once for
  * `indexedDB` (and again on any IDB failure) and falls back to an in-process
  * `Map` keyed by name — which is exactly right for private browsing (nothing
@@ -58,12 +93,13 @@
  * not have.
  *
  * KNOWN COVERAGE GAP: every test in this project runs under jsdom, which has
- * no `indexedDB` at all — so every existing test (`driver.test.ts`,
- * `store-conformance.test.ts`) exercises the in-memory fallback exclusively.
- * The real-IndexedDB path (`openIdb`/`idbLoad`/`idbSave`, including the
- * `onblocked`/error-degradation handling above) has zero test coverage as of
- * this task and needs a real-browser harness (e.g. `web/harness/`, WebKit or
- * Chromium) to close.
+ * no real `indexedDB` implementation — so every existing test that does not
+ * install its own fake exercises the in-memory fallback exclusively. A fake
+ * `indexedDB` (see `driver.test.ts`'s degraded-load test) covers the
+ * load-failure-routes-saves-to-memory path, but the *happy* real-IndexedDB
+ * path — a load and save that both genuinely succeed against a real browser
+ * IndexedDB — has zero coverage as of this task and needs a real-browser
+ * harness (e.g. `web/harness/`, WebKit or Chromium) to close.
  *
  * # The bigint trap
  *
@@ -154,36 +190,51 @@ async function idbSave(name: string, bytes: Uint8Array): Promise<void> {
 }
 
 /**
+ * Whether a driver has given up on real IndexedDB for the rest of its
+ * session. `usingMemory` starts `false` and only ever flips to `true` — see
+ * the module doc's "not just consistent" paragraph for why a save must check
+ * this BEFORE attempting IndexedDB rather than only reacting to its own
+ * failures: a load failure alone must be enough to route every later save to
+ * memory too, or a good IndexedDB copy can be silently overwritten by an
+ * empty one.
+ */
+interface FallbackState {
+  usingMemory: boolean;
+}
+
+/**
  * Loads prior bytes for `name`, degrading to the in-memory fallback both when
  * `indexedDB` is absent and when a present `indexedDB` fails (private
- * browsing quirks, `onblocked`, quota). `noteDegraded` is called in the
- * latter two cases so the caller can mark the driver's `location` as
- * ephemeral — see the module doc.
+ * browsing quirks, `onblocked`, quota). Mutates `state.usingMemory` in the
+ * latter two cases.
  */
-async function loadBytes(name: string, noteDegraded: () => void): Promise<Uint8Array | null> {
+async function loadBytes(name: string, state: FallbackState): Promise<Uint8Array | null> {
   if (!hasIndexedDb()) {
-    noteDegraded();
+    state.usingMemory = true;
     return memoryBytes.get(name) ?? null;
   }
   try {
     return await idbLoad(name);
   } catch {
-    noteDegraded();
+    state.usingMemory = true;
     return memoryBytes.get(name) ?? null;
   }
 }
 
-/** The save-side counterpart of {@link loadBytes}. */
-async function saveBytes(name: string, bytes: Uint8Array, noteDegraded: () => void): Promise<void> {
-  if (!hasIndexedDb()) {
-    noteDegraded();
+/**
+ * The save-side counterpart of {@link loadBytes}. Checked BEFORE attempting
+ * IndexedDB, not just on failure: once `state.usingMemory` is set (by a prior
+ * load OR save), every further save stays on memory — see {@link FallbackState}.
+ */
+async function saveBytes(name: string, bytes: Uint8Array, state: FallbackState): Promise<void> {
+  if (state.usingMemory) {
     memoryBytes.set(name, bytes);
     return;
   }
   try {
     await idbSave(name, bytes);
   } catch {
-    noteDegraded();
+    state.usingMemory = true;
     memoryBytes.set(name, bytes);
   }
 }
@@ -202,12 +253,17 @@ function isNode(): boolean {
 }
 
 /**
- * A `SqlStatement` plus the sql.js handle it owns, so `close()` can free
- * every statement a caller forgot to (`expo-sqlite` requires the equivalent;
- * see `client/src/store/driver.ts`'s doc comment).
+ * A `SqlStatement` plus the sql.js handle it currently owns, so `close()` can
+ * free every statement a caller forgot to (`expo-sqlite` requires the
+ * equivalent; see `client/src/store/driver.ts`'s doc comment) — and so a
+ * `db.export()` can swap in a freshly re-prepared handle without changing
+ * which OBJECT `sqliteStore` is holding. `raw` is mutable and `sql` is kept
+ * for exactly that re-prepare; see the module doc's "export() frees every
+ * prepared statement" section.
  */
 interface HeldStatement extends SqlStatement {
-  readonly raw: Statement;
+  sql: string;
+  raw: Statement;
 }
 
 /**
@@ -220,23 +276,14 @@ interface HeldStatement extends SqlStatement {
 export async function openBrowserDriver(name: string): Promise<SqlDriver & { flush(): Promise<void> }> {
   const SQL = await initSqlJs(isNode() ? {} : { locateFile: () => wasmUrl });
 
-  // Whether this driver has fallen back to the in-memory store, for
-  // `location` — see the module doc's "in-memory fallback" section. Starts
-  // at whatever `loadBytes` discovers on open (unavailable, or a failed
-  // open/read) and can flip true later if a write degrades too; it never
-  // flips back, since a driver that has proven it cannot trust `indexedDB`
-  // has no way to know a later attempt would succeed, and claiming real
-  // persistence again would be the misleading state this flag exists to rule
-  // out.
-  let usingMemory = false;
-  const noteDegraded = (): void => {
-    usingMemory = true;
-  };
+  // See `FallbackState`'s own doc: starts `false`, flips permanently `true`
+  // the moment either a load or a save cannot trust IndexedDB.
+  const fallback: FallbackState = { usingMemory: false };
 
-  const priorBytes = await loadBytes(name, noteDegraded);
+  const priorBytes = await loadBytes(name, fallback);
   const db: Database = new SQL.Database(priorBytes ?? undefined);
 
-  const held = new Set<Statement>();
+  const held = new Set<HeldStatement>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
   // Set by any mutation, cleared once it has been exported and handed to
@@ -246,10 +293,28 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
   // debounce: the flag is set synchronously by the mutation itself.
   let dirty = false;
 
+  /**
+   * Re-prepares every statement `sqliteStore` still holds, after a
+   * `db.export()` has freed the old handles out from under them. Swaps only
+   * `stmt.raw` — the `HeldStatement` objects themselves are exactly the
+   * `SqlStatement`s `prepare()` handed back, so this is invisible to the
+   * caller. Must run synchronously, immediately after `export()`, with no
+   * `await` in between: JS has no other code running in that window, so
+   * there is no way for a caller to observe a freed statement if (and only
+   * if) nothing yields between `db.export()` and this call.
+   */
+  const reprepareHeld = (): void => {
+    for (const stmt of held) {
+      stmt.raw = db.prepare(stmt.sql);
+    }
+  };
+
   const persistNow = async (): Promise<void> => {
     if (closed || !dirty) return;
     dirty = false;
-    await saveBytes(name, db.export(), noteDegraded);
+    const bytes = db.export();
+    reprepareHeld();
+    await saveBytes(name, bytes, fallback);
   };
 
   const scheduleFlush = (): void => {
@@ -279,14 +344,20 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
   // BEGIN/COMMIT, so a re-entrant call is refused outright rather than
   // silently joining the outer transaction, which would be a passing test
   // today and a wrong-on-the-day-someone-relies-on-it bug tomorrow.
+  //
+  // Independently checked against every real caller: `sqliteStore`'s own
+  // `atomic()` flattens nesting itself with a depth counter BEFORE ever
+  // calling `db.transaction()` a second time, and `projection.ts`'s three
+  // `db.transaction()` calls in `project()` run sequentially, never nested.
+  // Nothing in this codebase relies on the old silent-join behaviour.
   let inTransaction = false;
 
   const driver: SqlDriver & { flush(): Promise<void> } = {
-    // A getter, not a plain field: `usingMemory` can flip true after open
-    // (a write degrading mid-session), and `location` should reflect that
-    // the moment it happens rather than freeze the answer from open time.
+    // A getter, not a plain field: `fallback.usingMemory` can flip true after
+    // open (a write degrading mid-session), and `location` should reflect
+    // that the moment it happens rather than freeze the answer from open time.
     get location(): string {
-      return `${usingMemory ? "sqljs-memory" : "sqljs"}:${name}`;
+      return `${fallback.usingMemory ? "sqljs-memory" : "sqljs"}:${name}`;
     },
 
     exec(sql: string): void {
@@ -295,29 +366,29 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
     },
 
     prepare(sql: string): SqlStatement {
-      const raw = db.prepare(sql);
-      held.add(raw);
       const stmt: HeldStatement = {
-        raw,
+        sql,
+        raw: db.prepare(sql),
         run(...args: unknown[]): void {
-          raw.run(args as (string | number | Uint8Array | null)[]);
+          stmt.raw.run(args as (string | number | Uint8Array | null)[]);
           markDirty();
         },
         all(...args: unknown[]): unknown[] {
-          raw.bind(args as (string | number | Uint8Array | null)[]);
+          stmt.raw.bind(args as (string | number | Uint8Array | null)[]);
           const rows: unknown[] = [];
           try {
-            while (raw.step()) rows.push(raw.getAsObject());
+            while (stmt.raw.step()) rows.push(stmt.raw.getAsObject());
           } finally {
             // In a `finally` so a SQL error mid-iteration still resets the
             // statement — otherwise the bound-parameter buffers sql.js
             // allocated for this call leak until the next `bind()` reclaims
             // them, and the statement is left unusable for its next caller.
-            raw.reset();
+            stmt.raw.reset();
           }
           return rows;
         },
       };
+      held.add(stmt);
       return stmt;
     },
 
@@ -368,13 +439,20 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
       // browsing, where nothing should outlive the tab anyway) completes
       // synchronously within that call, and a real IndexedDB write is
       // best-effort beyond that point, same as it would be on an abrupt tab
-      // kill regardless of what this function does.
+      // kill regardless of what this function does. No `reprepareHeld()` is
+      // needed here (unlike `persistNow`) — this driver is shutting down for
+      // good, so the statements this export just freed are about to be freed
+      // again below regardless.
       if (dirty) {
         const bytes = db.export();
         dirty = false;
-        void saveBytes(name, bytes, noteDegraded);
+        void saveBytes(name, bytes, fallback);
       }
-      for (const raw of held) raw.free();
+      // `raw.free()` on a statement `export()` already freed is a documented
+      // no-op in sql.js (finalizing an already-finalized/NULL statement
+      // pointer), so this loop is safe to run unconditionally rather than
+      // branch on whether the export above happened to run.
+      for (const stmt of held) stmt.raw.free();
       held.clear();
       db.close();
     },

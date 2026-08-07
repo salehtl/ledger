@@ -71,4 +71,50 @@ describe("sqliteStore over openBrowserDriver", () => {
 
     driver.close();
   });
+
+  // Regression for the round-2 CRITICAL: sql.js's `Database.export()` frees
+  // every statement it has ever prepared and reopens a fresh connection.
+  // `sqliteStore` prepares its statements ONCE at construction
+  // (client/src/store/sqlite.ts's `stmts`) and reuses those exact objects for
+  // its whole lifetime — so the driver's 500ms debounced auto-persist, which
+  // calls `db.export()` internally, used to invalidate every one of them:
+  //
+  //   store.save({...s, server: "http://dev-1.test"}); // schedules the debounce
+  //   await sleep(700);                                 // export runs, frees every statement
+  //   store.save({...s, server: "http://dev-2.test"});  // -> Error: Statement closed
+  //
+  // This is the exact shape: write, wait past the debounce so the export
+  // actually runs, then write AGAIN through the SAME store (so the SAME
+  // `SqlStatement` objects `sqliteStore` prepared at construction are reused)
+  // and assert the second write succeeds and lands. A test that only reads
+  // after the flush (as the earlier "save() then reopen" test above does)
+  // does not exercise this — the bug is specifically in writing again through
+  // an already-exported store, in the same process, without ever reopening.
+  it(
+    "a second save() through the same store succeeds after the debounced auto-persist has fired",
+    async () => {
+      const driver = await openBrowserDriver(`conformance-debounce-${crypto.randomUUID()}`);
+      const store = sqliteStore(driver, { secrets: memSecretStore(), server: "http://server.test" });
+
+      const first = store.load();
+      first.server = "http://dev-1.test";
+      store.save(first); // schedules the 500ms debounce; not awaited, not flushed
+
+      // Past the 500ms debounce, so the auto-persist (db.export() + IDB/memory
+      // write) has actually run by the time we write again.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      const second = store.load();
+      second.server = "http://dev-2.test";
+      // Before the fix: throws sql.js's own "Statement closed", because the
+      // debounced export freed `stmts.writeState`/`stmts.readState` out from
+      // under `sqliteStore` and nothing re-prepared them.
+      expect(() => store.save(second)).not.toThrow();
+
+      expect(store.load().server).toBe("http://dev-2.test");
+
+      driver.close();
+    },
+    2000,
+  );
 });

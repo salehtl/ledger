@@ -134,4 +134,113 @@ describe("openBrowserDriver", () => {
     expect(driver.location).toMatch(/^sqljs-memory:/);
     driver.close();
   });
+
+  // Regression for the round-2 IMPORTANT: `saveBytes` used to branch only on
+  // whether `indexedDB` exists, never on whether THIS driver had already
+  // given up on it. So a transient LOAD failure (indexedDB present, but the
+  // read errors — `onblocked`, a Safari quirk, anything) opened an empty
+  // in-memory database, and a LATER save — with indexedDB now answering
+  // again — went ahead and overwrote the user's real bytes with that empty
+  // database. This test installs a fake `indexedDB` whose `get` always fails
+  // but whose `put` always succeeds (i.e. "IDB basically works, but reading
+  // back this one time did not"), opens a driver over it, writes, flushes,
+  // and asserts the ORIGINAL bytes sitting in the fake store are untouched —
+  // the write must have gone to the in-memory fallback instead, because a
+  // load failure already proved this driver cannot trust what's in IndexedDB.
+  it("does not let a degraded load's later save overwrite existing IndexedDB bytes", async () => {
+    const name = `driver-degrade-${crypto.randomUUID()}`;
+    const originalBytes = new Uint8Array([9, 9, 9]); // sentinel: "real, pre-existing data"
+    const stored = new Map<string, Uint8Array>([[name, originalBytes]]);
+
+    const fake = fakeIndexedDb(stored, { failGet: true });
+    const realIndexedDb = (globalThis as { indexedDB?: IDBFactory }).indexedDB;
+    Object.defineProperty(globalThis, "indexedDB", { value: fake, configurable: true });
+
+    try {
+      const driver = await openBrowserDriver(name);
+      expect(driver.location).toMatch(/^sqljs-memory:/); // the failed load already degraded it
+
+      driver.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+      driver.prepare("INSERT INTO t (id) VALUES (?)").run("x");
+      await driver.flush();
+
+      // The fake's `put` succeeds — so if the save routed to IndexedDB despite
+      // the earlier load failure, `stored` would now hold new (non-sentinel)
+      // bytes for `name`. It must still hold exactly what it started with.
+      expect(stored.get(name)).toBe(originalBytes);
+
+      driver.close();
+    } finally {
+      if (realIndexedDb === undefined) {
+        delete (globalThis as { indexedDB?: IDBFactory }).indexedDB;
+      } else {
+        Object.defineProperty(globalThis, "indexedDB", { value: realIndexedDb, configurable: true });
+      }
+    }
+  });
 });
+
+/**
+ * A minimal fake `indexedDB` covering exactly what driver.ts calls
+ * (`open`/`onupgradeneeded`/`onsuccess`/`onerror`, one object store's
+ * `get`/`put`, a transaction's `oncomplete`/`onerror`/`onabort`). `get`
+ * always fails when `failGet` is set, everything else succeeds — enough to
+ * simulate "IndexedDB is present and writable, but this one read failed"
+ * without pulling in a full IndexedDB polyfill for one test.
+ */
+function fakeIndexedDb(existing: Map<string, Uint8Array>, opts: { failGet: boolean }): IDBFactory {
+  interface FakeRequest {
+    onsuccess?: (() => void) | null;
+    onerror?: (() => void) | null;
+    result?: unknown;
+    error?: unknown;
+  }
+
+  const open = (): FakeRequest & { onupgradeneeded?: (() => void) | null; onblocked?: (() => void) | null } => {
+    const req: FakeRequest & { onupgradeneeded?: (() => void) | null; onblocked?: (() => void) | null } = {};
+    queueMicrotask(() => {
+      req.result = {
+        close(): void {
+          // no-op: the fake has nothing to release
+        },
+        transaction() {
+          const tx: {
+            objectStore: () => { get: (key: string) => FakeRequest; put: (value: Uint8Array, key: string) => object };
+            oncomplete?: (() => void) | null;
+            onerror?: (() => void) | null;
+            onabort?: (() => void) | null;
+          } = {
+            objectStore: () => storeApi,
+          };
+          const storeApi = {
+            get(key: string): FakeRequest {
+              const getReq: FakeRequest = {};
+              queueMicrotask(() => {
+                if (opts.failGet) {
+                  getReq.error = new Error("simulated get failure");
+                  getReq.onerror?.();
+                } else {
+                  getReq.result = existing.get(key);
+                  getReq.onsuccess?.();
+                }
+              });
+              return getReq;
+            },
+            put(value: Uint8Array, key: string): object {
+              queueMicrotask(() => {
+                existing.set(key, value);
+                tx.oncomplete?.();
+              });
+              return {};
+            },
+          };
+          return tx;
+        },
+      };
+      req.onsuccess?.();
+    });
+    return req;
+  };
+
+  return { open } as unknown as IDBFactory;
+}
