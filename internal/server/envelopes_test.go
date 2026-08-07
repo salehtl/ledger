@@ -164,7 +164,7 @@ func TestEnvelopesAutoAssign(t *testing.T) {
 	// A target on the need envelope is funded first; the leftover seeds all
 	// three buckets pro-rata.
 	if err := st.UpsertCategoryTarget(store.CategoryTargetRow{
-		CategoryID: cats[0], TargetType: "set_aside", AmountFils: 500_00,
+		CategoryID: cats[0], EffectiveMonth: "2026-07", TargetType: "set_aside", AmountFils: 500_00,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestEnvelopesOverspendSettlesForItsExactCost(t *testing.T) {
 func TestEnvelopesAutoAssignConcurrentRTANonNegative(t *testing.T) {
 	srv, st, cats := newEnvelopeTestServer(t)
 	if err := st.UpsertCategoryTarget(store.CategoryTargetRow{
-		CategoryID: cats[0], TargetType: "set_aside", AmountFils: 500_00,
+		CategoryID: cats[0], EffectiveMonth: "2026-07", TargetType: "set_aside", AmountFils: 500_00,
 	}); err != nil {
 		t.Fatal(err)
 	}

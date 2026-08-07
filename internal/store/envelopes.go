@@ -38,6 +38,10 @@ func validMonth(month string) bool {
 	return mm >= 1 && mm <= 12
 }
 
+// ValidMonth reports whether s is a 'YYYY-MM' month string. Exported for
+// handlers that must validate a month before it reaches a store method.
+func ValidMonth(s string) bool { return validMonth(s) }
+
 // rowQuerier is the QueryRow slice of *sql.DB / *sql.Tx, so validation helpers
 // run inside or outside an explicit transaction.
 type rowQuerier interface {

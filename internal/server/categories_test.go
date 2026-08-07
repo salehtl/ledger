@@ -354,7 +354,7 @@ func TestDeleteCategoryBlockedByTarget(t *testing.T) {
 		t.Fatalf("InsertCategory: %v", err)
 	}
 	if err := st.UpsertCategoryTarget(store.CategoryTargetRow{
-		CategoryID: id, TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
+		CategoryID: id, EffectiveMonth: "2026-07", TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
 	}); err != nil {
 		t.Fatalf("UpsertCategoryTarget: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestDeleteCategoryBlockedByTarget(t *testing.T) {
 		t.Fatalf("unexpected 409 body: %+v", resp)
 	}
 	// The target survived intact.
-	if _, ok, err := st.SelectCategoryTarget(id); err != nil || !ok {
+	if _, ok, err := st.SelectCategoryTargetForMonth(id, "2026-07"); err != nil || !ok {
 		t.Fatalf("target after blocked delete: ok=%v err=%v, want it intact", ok, err)
 	}
 }
