@@ -97,10 +97,18 @@ driver; the store interface was already abstracted for this.
 
 ## Open decisions (before implementation starts)
 
-1. **Fork or evolve `frontend/`?** Proposed: a new `web/` at the repo root,
-   seeded from `frontend/`, so `main` keeps serving the single-user instance
-   untouched until migration (spec §5). Deciding otherwise means the two
-   products share a tree and diverge under every merge.
+1. ~~**Fork or evolve `frontend/`?**~~ **DECIDED 2026-08-07: fork.** `web/` is an
+   exact copy of `frontend/`'s 436 tracked files, so `main` keeps serving the
+   single-user instance untouched until migration (spec §5). **The design
+   aesthetic is carried over wholesale and is not up for redesign** — same
+   Tailwind v4 tokens, Geist/Geist Mono, dither-kit charts, `lib/motion.ts` as
+   the single source of truth for every duration and curve, the same component
+   catalogue and its 44px/16px mobile conventions, the same Storybook and
+   `harness/`. Screens get rewired from REST-against-the-v1-Go-server to
+   local-first replay against `client/src`; they do not get restyled.
+   Two edits were needed to stop the fork colliding with v1: the package name
+   (`ledger-v2-web`) and `build.outDir` (see `web/vite.config.ts`, which would
+   otherwise have overwritten v1's committed embed artifact).
 2. **Does the crypto gate keep a hard-stop shape?** It should — the question it
    asks (can a phone restore 3,700 singleton blobs fast enough) is unchanged; only
    the runtime is. Re-run Task 1b's fold benchmark under Safari on the operator's

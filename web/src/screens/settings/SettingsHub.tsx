@@ -1,0 +1,229 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronRight } from "../../components/ui/PixelIcon";
+import { getAccounts, getJSON, getProjects, getRates } from "../../api/client";
+import type { AppSettings, BudgetConfig, Category, Rule } from "../../api/types";
+import { Switch } from "../../components/ui/Switch";
+import { SectionLabel } from "../../components/ui/SectionLabel";
+import { Card } from "../../components/ui/Card";
+import { Pressable } from "../../components/ui/Pressable";
+import { loadSwipeConfig } from "../../lib/swipe";
+import { loadFontScale } from "../../lib/fontScale";
+import { useIngestHealth } from "../../hooks/useIngestHealth";
+import { ingestStatusLabel } from "../../lib/ingestHealth";
+import {
+  fire,
+  isHapticsEnabled,
+  setHapticsEnabled,
+  isSoundEnabled,
+  setSoundEnabled,
+} from "../../lib/feedback";
+import {
+  budgetSplitLabel,
+  categorizationSummary,
+  currenciesLabel,
+  fontScaleLabel,
+  notifySummary,
+  scheduledSummary,
+  swipeSummary,
+} from "../../lib/settingsSummary";
+
+export type SettingsPageId =
+  | "budget"
+  | "categorization"
+  | "ai"
+  | "swipe"
+  | "currencies"
+  | "accounts"
+  | "categories"
+  | "rules"
+  | "textsize"
+  | "ingest"
+  | "notifications";
+
+/** A drill-in row: label on the left, current-state preview + chevron on the right. */
+function HubRow({
+  label,
+  value,
+  tone = "default",
+  onClick,
+}: {
+  label: string;
+  value?: string;
+  tone?: "default" | "danger";
+  onClick: () => void;
+}) {
+  return (
+    <Pressable
+      onClick={onClick}
+      className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left hover:bg-surface-2/50"
+    >
+      <span className={tone === "danger" ? "text-bad" : undefined}>{label}</span>
+      <span className="flex items-center gap-2 text-muted min-w-0">
+        {value !== undefined && <span className="truncate text-xs">{value}</span>}
+        <ChevronRight size={16} aria-hidden className="shrink-0" />
+      </span>
+    </Pressable>
+  );
+}
+
+/** An inline toggle row: label on the left, switch on the right. */
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium cursor-pointer select-none">
+      <span>{label}</span>
+      <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </label>
+  );
+}
+
+/** Eyebrow-labeled group of rows. */
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <SectionLabel as="h2" className="px-1">{label}</SectionLabel>
+      <Card className="!p-0 divide-y divide-border overflow-hidden">
+        {children}
+      </Card>
+    </section>
+  );
+}
+
+export function SettingsHub({
+  onOpen,
+  onClear,
+  onOpenProjects,
+  onOpenAccounts,
+  onOpenRecurring,
+}: {
+  onOpen: (page: SettingsPageId) => void;
+  onClear: () => void;
+  /** Projects lives at the AppShell level (overlay, not a Settings page) so
+   *  Task 9's Home project cards can deep-link into a specific project. */
+  onOpenProjects: () => void;
+  /** Accounts and Recurring are AppShell-level drill-ins too (also reachable
+   *  from Home); optional so standalone Settings tests don't need stubs. */
+  onOpenAccounts?: () => void;
+  onOpenRecurring?: () => void;
+}) {
+  const budget = useQuery({ queryKey: ["budget"], queryFn: () => getJSON<BudgetConfig>("/api/budget") });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
+  const cats = useQuery({ queryKey: ["categories"], queryFn: () => getJSON<Category[]>("/api/categories") });
+  const rules = useQuery({ queryKey: ["rules"], queryFn: () => getJSON<Rule[]>("/api/rules") });
+  const rates = useQuery({ queryKey: ["rates"], queryFn: getRates });
+  const health = useIngestHealth();
+  const accounts = useQuery({ queryKey: ["accounts"], queryFn: getAccounts });
+  const projects = useQuery({ queryKey: ["projects", "all"], queryFn: () => getProjects(true) });
+  const scheduled = useQuery({
+    queryKey: ["scheduled"],
+    queryFn: () => getJSON<{ status: string }[]>("/api/scheduled"),
+  });
+  const notify = useQuery({
+    queryKey: ["settings-notifications"],
+    queryFn: () => getJSON<{ notify_thresholds: boolean; notify_upcoming_days: number }>("/api/settings/notifications"),
+  });
+  const swipe = loadSwipeConfig();
+  const [haptics, setHaptics] = useState(isHapticsEnabled());
+  const [sound, setSound] = useState(isSoundEnabled());
+
+  const count = (n?: number) => (n === undefined ? undefined : String(n));
+  const activeProjects = projects.data?.filter((p) => p.status === "active").length ?? 0;
+
+  return (
+    <div className="space-y-6">
+      <Group label="Plan">
+        <HubRow
+          label="Budget & income"
+          value={budget.data ? budgetSplitLabel(budget.data) : undefined}
+          onClick={() => onOpen("budget")}
+        />
+        {onOpenRecurring && (
+          <HubRow label="Recurring bills" value={scheduledSummary(scheduled.data)} onClick={onOpenRecurring} />
+        )}
+        {onOpenAccounts && (
+          <HubRow
+            label="Accounts"
+            value={
+              accounts.data && accounts.data.length > 0
+                ? `${accounts.data.length} account${accounts.data.length === 1 ? "" : "s"}`
+                : undefined
+            }
+            onClick={onOpenAccounts}
+          />
+        )}
+      </Group>
+
+      <Group label="Automation">
+        <HubRow
+          label="Categorization"
+          value={settings.data ? categorizationSummary(settings.data) : undefined}
+          onClick={() => onOpen("categorization")}
+        />
+        <HubRow label="Swipe actions" value={swipeSummary(swipe)} onClick={() => onOpen("swipe")} />
+        <HubRow
+          label="Email ingest"
+          value={health.data?.ingest ? ingestStatusLabel(health.data.ingest.status) : undefined}
+          onClick={() => onOpen("ingest")}
+        />
+        <HubRow
+          label="AI & API usage"
+          value={settings.data ? (settings.data.ai_enabled ? "On" : "Off") : undefined}
+          onClick={() => onOpen("ai")}
+        />
+      </Group>
+
+      <Group label="Device">
+        <HubRow label="Notifications" value={notify.data ? notifySummary(notify.data) : undefined} onClick={() => onOpen("notifications")} />
+        <HubRow label="Text size" value={fontScaleLabel(loadFontScale())} onClick={() => onOpen("textsize")} />
+        <ToggleRow
+          label="Haptics"
+          checked={haptics}
+          onChange={(v) => {
+            setHapticsEnabled(v);
+            setHaptics(v);
+            if (v) fire("selection"); // confirm with a tick when switching on
+          }}
+        />
+        <ToggleRow
+          label="Sound"
+          checked={sound}
+          onChange={(v) => {
+            setSoundEnabled(v);
+            setSound(v);
+            if (v) fire("selection"); // let the user hear it immediately
+          }}
+        />
+      </Group>
+
+      <Group label="Library">
+        <HubRow
+          label="Projects"
+          value={activeProjects > 0 ? `${activeProjects} active` : undefined}
+          onClick={onOpenProjects}
+        />
+        <HubRow label="Categories" value={count(cats.data?.length)} onClick={() => onOpen("categories")} />
+        <HubRow label="Rules" value={count(rules.data?.length)} onClick={() => onOpen("rules")} />
+        <HubRow
+          label="Currencies"
+          value={rates.data?.rates ? currenciesLabel(rates.data) : undefined}
+          onClick={() => onOpen("currencies")}
+        />
+        <HubRow label="Transfers" value="net matching pairs" onClick={() => onOpen("accounts")} />
+      </Group>
+
+      <Group label="Danger zone">
+        <HubRow label="Clear all categorization" tone="danger" onClick={onClear} />
+      </Group>
+
+      <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+    </div>
+  );
+}

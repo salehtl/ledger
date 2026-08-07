@@ -1,0 +1,346 @@
+@import "tailwindcss";
+
+/* Design tokens (Tailwind v4 CSS-first config). */
+@theme {
+  /* Two-color press: paper, ink, one vermilion spot. Named roles are kept from
+     the previous Material palette so no utility class has to change; only the
+     values are new. See docs/superpowers/specs/2026-07-27-ui-overhaul-design.md */
+  --color-bg: #f2f1ef;          /* paper */
+  --color-surface: #f2f1ef;     /* same paper — the tonal ladder is gone */
+  --color-surface-2: #e3e2de;   /* track: progress/dither backing only */
+  --color-border: #d6d5d1;      /* hairline rule */
+  --color-fg: #16161a;          /* ink */
+  --color-muted: #5e5e63;       /* ink, low emphasis */
+
+  --color-accent: #c93d26;      /* the one spot ink, as a FILL. 5.03:1 with white. */
+  --color-accent-fg: #ffffff;
+
+  --color-hero: #16161a;        /* hero panel prints in ink, not in spot */
+  --color-hero-fg: #f2f1ef;
+
+  /* Semantic colours are retired everywhere except the progress/pace bar, whose
+     three states outgrew the two a texture has (see the pace inks below).
+     Elsewhere over-budget is still a texture change, and `bad` keeps a red
+     because negative money reads as red in .money-neg. */
+  --color-good: #16161a;
+  /* Warn is full-strength ink, not muted — a contrast audit found it was
+     byte-identical to --color-muted, so every warning rendered *quieter* than
+     body text. This design moves meaning to the label, not to a hue: a
+     warning is emphasised by being full-strength ink (same value as
+     --color-fg) rather than by a warning colour. Never a new hue, never the
+     rationed spot ink. */
+  --color-warn: #16161a;
+  /* Negative money prints in the spot ink's TEXT register, not its fill. On
+     light paper #c93d26 is only 4.45:1; #b8331d is 5.27:1. Never use this as a
+     fill behind text — --color-accent is that fill. The one non-text use is
+     --color-pace-exceeded below: a dotted bar carries no text, and the bar has
+     to match the `text-bad` verdict label printed beside it. */
+  --color-bad: #b8331d;
+
+
+  /* Buckets alias the palette rather than repeating a hex: a bucket and a
+     project painted "amber" must be the same amber, and the only way to
+     guarantee that is for one of them not to hold a value. Hue carries bucket
+     identity; dither density is a separate state channel (solid at or over
+     budget, dotted otherwise) — see lib/ditherColor.ts's bucketDensity. */
+  --color-need:     var(--color-amber);
+  --color-want:     var(--color-lilac);
+  --color-save:     var(--color-sage);
+  /* A transfer is a real destination, not an "other" — it gets a hue. */
+  --color-transfer: var(--color-azure);
+
+  /* shadcn token names, aliased onto our palette — dither-kit's vendored chrome
+     (tooltip, axes, grid) is written against these. */
+  --color-foreground: #16161a;
+  --color-muted-foreground: #5e5e63;
+  --color-popover: #f2f1ef;
+  --color-popover-foreground: #16161a;
+
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Monospaced figures — money, counts, percentages, labels, dates (via .tnum
+     and directly). Geist Mono does far more than figures in this design: every
+     non-prose string is mono. */
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --radius: 2px;                /* one sharp radius, everywhere — including former circles */
+}
+
+/* Motion tokens — strong custom easings (Emil Kowalski's craft bar). Built-in
+   CSS easings are too weak; these give entrances/exits intentional punch.
+
+   NOT authoritative any more. Since the Framer migration every curve the app
+   actually animates with is interpolated in JS from `lib/motion.ts`, which
+   never reads the stylesheet; after `.stagger-item`/`.row-in` were retired
+   nothing in this file consumes these. They stay as the published token names
+   the component catalog documents, and because a future CSS-only decoration
+   should reach for the same curves rather than invent one. If you change a
+   number here, change its tuple in `lib/motion.ts` too — the JS is what
+   ships. */
+:root {
+  /* ── Categorical palette ────────────────────────────────────────────────
+     Deliberately NOT in @theme. These are consumed only through runtime
+     `var(--color-…)` strings (projectColor(), bucketColor()), which Tailwind
+     cannot see, so inside @theme it tree-shakes every one nothing references
+     at build time — which shipped `rose` and all six deep steps with no light
+     value, making those marks vanish on paper. A plain :root can't be shaken.
+     The bucket aliases stay in @theme because bg-need/-want/-save are real
+     utilities. Values mirror dither-kit/palette.ts; tokens.test.ts asserts it. */
+  --color-azure: #1660a0;
+  --color-amber: #b5771e;
+  --color-lilac: #7556a5;
+  --color-sage:  #409457;
+  --color-rose:  #c5646e;
+  --color-slate: #76767e;
+
+  /* Six more hues, filling the widest gaps on the wheel above, added when
+     categories gained their own colour and 21 of them needed more than 12
+     slots. The original six are untouched: they are stored on project rows.
+     tokens.test.ts asserts every one of the 24 clears 3:1 on --color-bg — the
+     ratios below are no longer hand-measured prose. */
+  --color-ochre:  #c36a47;
+  --color-moss:   #88891c;
+  --color-teal:   #00877a;
+  --color-sky:    #00768c;
+  --color-indigo: #505ba9;
+  --color-orchid: #a45892;
+
+  /* A second, deeper step per hue — separated on lightness, the axis that
+     survives red-green colour blindness. Projects and categories draw from all
+     twenty-four; the bucket aliases below only ever use the base steps. */
+  --color-azure-deep: #003c6c;
+  --color-amber-deep: #855405;
+  --color-lilac-deep: #51317c;
+  --color-sage-deep:  #0d6d32;
+  --color-rose-deep:  #9a3d49;
+  --color-slate-deep: #515159;
+  --color-ochre-deep:  #98441f;
+  --color-moss-deep:   #626200;
+  --color-teal-deep:   #005d54;
+  --color-sky-deep:    #004e5e;
+  --color-indigo-deep: #2f3580;
+  --color-orchid-deep: #7b336b;
+
+  /* ── Pace inks ──────────────────────────────────────────────────────────
+     The one ramp a progress/pace bar's dots travel: ink while inside pace,
+     amber-orange once past pace, the negative-money red once past budget.
+     This is the single exception to "over is a texture change, never a hue"
+     (see --color-warn): a pace bar has *three* states, and texture only has
+     two, so the middle state had nowhere to go. Scoped to the bar — the
+     verdict *labels* beside it still take their emphasis from ink weight.
+     Not in @theme: consumed only as runtime `var()` strings from ProgressBar,
+     which Tailwind can't see, so @theme would tree-shake them away.
+     `--color-pace-over` is warmer and lighter than the rationed spot ink so
+     the two never read as the same signal at a glance. */
+  --color-pace-under: var(--color-fg);
+  --color-pace-over: #c0641a;
+  --color-pace-exceeded: var(--color-bad);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* entering/exiting UI */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement   */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);   /* iOS-like sheet curve  */
+}
+
+/* The first-paint list stagger and the inline-add row entry used to live here
+   as `.stagger-item` / `.row-in` — six `:nth-child` delay rules plus a capped
+   seventh, and a second `@keyframes` block to strip the translate under
+   reduced motion. All of it is now three props on an `m.li`/`m.div`
+   (screens/Home.tsx, screens/Transactions.tsx, screens/CategoryManager.tsx);
+   the cap survives as `Math.min(i * 0.04, 0.24)` and the reduced-motion
+   override is handled globally by `MotionConfig reducedMotion="user"`. */
+
+/* Pixel-art spinner — see components/ui/PixelSpinner.tsx.
+
+   One of exactly two animations the Framer migration left in CSS, and the
+   only one Framer could not express at all. The eight cells share a single
+   keyframe and are phase-shifted by *negative* `animation-delay` — each cell
+   starts mid-cycle, already partway through the fade, which is what makes the
+   brightness appear to travel round a ring of stationary blocks. Framer has
+   no negative-delay equivalent: `delay` only ever postpones a start, so the
+   same effect would need eight independently-scheduled JS animation loops
+   kept in phase with each other, to replace one declaration. The other
+   exemption is the skeleton pulse; components/Skeleton.tsx carries the
+   general ruling for indefinite opacity loops.
+
+   Nothing rotates. Rotating the pixel Loader2 glyph was a no-op: it is
+   four-fold symmetric, so the 90° steps that keep a pixel grid sharp mapped it
+   exactly onto itself and it looked frozen; off-axis rotation would move but
+   antialiases the grid. Instead eight fixed blocks each run this fade, phase
+   -shifted a step apart, so the brightness travels round the ring.
+
+   `steps(8, end)` quantises the fade into eight discrete levels — a comet
+   trail rather than a smooth ramp. A continuous fade reads vector, not pixel.
+
+   800ms: a brisk spinner makes a wait feel shorter than a languid one does. */
+@keyframes pixel-spin-trail { from { opacity: 1; } to { opacity: 0.15; } }
+.pixel-spinner-cell { animation: pixel-spin-trail 800ms steps(8, end) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  /* Deliberately still animating. Reduced motion asks for less *movement*, not
+     less comprehension, and this is pure opacity — there is nothing travelling
+     across the screen to trigger on. Killing it outright (as the old rotating
+     spinner had to) leaves a wait with no indication it is still working. */
+  .pixel-spinner-cell { animation-duration: 1600ms; }
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans);
+       -webkit-text-size-adjust: 100%; }
+/* The document itself never scrolls — the shell is a flex column and <main> is
+   the scroller. Without this, iOS still rubber-bands the root: a drag on any
+   `position: fixed` overlay chains to the *root* scroller rather than to the
+   overlay's DOM ancestor, so <main>'s overscroll-contain never saw the gesture
+   and an open bottom sheet could be dragged around the screen along with the
+   top bar, exposing an unscrimmed strip above it. */
+html, body { overscroll-behavior: none; }
+/* iOS Safari paints a gray flash box on tapped links/buttons; the Pressable
+   primitive's whileTap scale and haptics are the feedback channel, so kill
+   the default highlight. */
+html { -webkit-tap-highlight-color: transparent; }
+
+/* No `.hover-gated` utility here, on purpose — sticky hover on touch is
+   already handled, and a second mechanism would be dead weight that reads
+   like it is doing something.
+
+   Tailwind v4 changed the `hover:` variant to compile to
+   `@media (hover: hover) { &:hover { … } }`. Verified against this app's own
+   build output, not just the changelog: every `hover:` selector Tailwind
+   emits for this codebase sits inside a single `@media (hover:hover)` block,
+   and none sits outside one. iOS Safari reports `hover: none`, so a tap there
+   never enters a hover state that could stick.
+
+   Worth recording what the utility would have been, because it is the obvious
+   thing to reach for and it is wrong twice over: `.hover-gated:hover { color:
+   inherit }` does not restore the un-hovered colour, it inherits the parent's
+   — which on `text-muted hover:text-fg` controls would have made the hovered
+   state *brighter* than the resting one, the precise bug it was meant to fix.
+
+   If a hover state ever does stick on a touch device, suspect a `:hover` rule
+   written by hand outside Tailwind's variant, not this file. */
+
+/* Backstop against iOS zoom-on-focus: Safari zooms the viewport onto any
+   focused control whose font-size is under 16px. Shared Input/Select set
+   text-base explicitly; this element-level rule (which any utility class
+   outranks) only catches future controls that forget. */
+input, select, textarea { font-size: max(16px, 1rem); }
+
+/* Bottom inset shared by a sheet and its action rail: the home-indicator strip,
+   floored at a plain gutter. Dialog pins it to `1rem` inline while the software
+   keyboard is up, since the keyboard already covers the indicator. */
+:root { --sheet-inset-bottom: max(1rem, env(safe-area-inset-bottom)); }
+.sheet-panel { padding-bottom: var(--sheet-inset-bottom); }
+/* …but not when the sheet has a sticky action rail. `sticky bottom: 0` resolves
+   against this scroll container's CONTENT box, so padding-bottom here lifts the
+   rail off the sheet's bottom edge and over the last row of content. The rail
+   carries the inset itself instead (see DialogFooter). */
+.sheet-panel:has([data-dialog-footer]) { padding-bottom: 0; }
+
+/* The one shadow in the app. A sheet must read as above the page; nothing else
+   is elevated — separation everywhere else is a 1px --color-border hairline. */
+.shadow-1 {
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.10);
+}
+/* Monospaced tabular figures for money/counts/percentages everywhere. */
+.tnum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Rolling number (odometer) — see components/RollingNumber.tsx. Wheels roll on
+   mount and on value change; transform-only so rolls stay composited and a
+   mid-roll retarget transitions smoothly instead of restarting. All cells are
+   bottom-aligned 1lh boxes so wheel columns and static separators share a
+   baseline. The row scales down (never up) when the value would overflow.
+   Timing (duration, easing, stagger, reduced motion) lives in
+   RollingNumber.tsx via Framer Motion, not here. */
+.rolling-number { display: block; overflow: hidden; }
+.rolling-row {
+  display: inline-block; white-space: nowrap;
+  transform-origin: left center;
+}
+.rolling-cell { display: inline-block; height: 1lh; vertical-align: bottom; }
+.rolling-wheel { overflow: hidden; }
+.rolling-wheel-track { display: block; }
+.rolling-wheel-digit { display: block; height: 1lh; }
+.money-neg { color: var(--color-bad); }
+.money-zero { color: var(--color-muted); }
+
+/* A CSS stand-in for the canvas dither, for DOM fills (ProgressBar). Two
+   alpha tiers on a 2px grid, matching dither-paint's OFF_TIER relationship —
+   a family resemblance to the canvas, not a pixel match. */
+.dither-mask {
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  mask-image: radial-gradient(circle at 50% 50%, #000 0.6px, rgb(0 0 0 / 0.4) 0.7px);
+  -webkit-mask-size: 2px 2px;
+  mask-size: 2px 2px;
+}
+
+/* ---- Dark theme (automatic, follows the OS) ----
+   Overrides the same CSS vars the light @theme set; utilities pick these up
+   with no markup changes. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #141416;
+    --color-surface: #141416;
+    --color-surface-2: #232326;
+    --color-border: #2b2b2f;
+    --color-fg: #ecebe8;
+    --color-muted: #8b8b8f;
+
+    /* Spot stays #c93d26 in dark, 5.03:1 behind white — legal as a fill,
+       under AA as text. Never use it for a label in dark. */
+    --color-accent: #c93d26;
+    --color-accent-fg: #ffffff;
+
+    --color-hero: #ecebe8;
+    --color-hero-fg: #141416;
+
+    --color-good: #ecebe8;
+    /* Same ruling as light: full-strength ink (--color-fg), not muted. */
+    --color-warn: #ecebe8;
+    /* The spot ink has two values in dark, the way a press runs a tint of the
+       same plate: #c93d26 is the FILL (behind white), #f0866f is the TEXT tint.
+       .money-neg paints negative amounts with this token, and #c93d26 would be
+       5.03:1 here — sub-AA for text. #f0866f is 7.31:1. Never widen this to
+       fills. Unchanged by the Task 12 contrast audit. */
+    --color-bad: #f0866f;
+
+    /* Same twelve hues, re-stepped for the dark ground. The bucket aliases
+       above are inherited — only the palette values change per theme. */
+    --color-azure: #2c72b3;
+    --color-amber: #c58632;
+    --color-lilac: #8365b5;
+    --color-sage:  #53a768;
+    --color-rose:  #cc6a74;
+    --color-slate: #7f7f87;
+    --color-ochre:  #cd7350;
+    --color-moss:   #979831;
+    --color-teal:   #009c8c;
+    --color-sky:    #0089a3;
+    --color-indigo: #606cbc;
+    --color-orchid: #ae619b;
+
+    /* On near-black the base is already the dark end, so the second step goes
+       lighter — a deeper one would collapse into the ground. */
+    --color-azure-deep: #4f94d7;
+    --color-amber-deep: #eaa858;
+    --color-lilac-deep: #a486d9;
+    --color-sage-deep:  #76ca89;
+    --color-rose-deep:  #f28c95;
+    --color-slate-deep: #a0a0a9;
+    --color-ochre-deep:  #f39571;
+    --color-moss-deep:   #b9bb56;
+    --color-teal-deep:   #23c1af;
+    --color-sky-deep:    #00adcd;
+    --color-indigo-deep: #7f8ee1;
+    --color-orchid-deep: #d282be;
+
+    /* Re-stepped for the dark ground like the palette above; the under/
+       exceeded ends are aliases and inherit. Deliberately *not* lightened as
+       far as the palette's dark steps go: --color-bad is the light salmon
+       #f0866f here, and a bright orange landed within 1.05:1 of it — two
+       warm stops the eye reads as one. This sits 1.4:1 below it, so the ramp
+       still separates on lightness, the axis that survives colour blindness. */
+    --color-pace-over: #c4741f;
+
+    --color-foreground: #ecebe8;
+    --color-muted-foreground: #8b8b8f;
+    --color-popover: #141416;
+    --color-popover-foreground: #ecebe8;
+  }
+}
