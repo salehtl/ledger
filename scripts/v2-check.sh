@@ -108,4 +108,17 @@ if [[ ! -d web/node_modules ]]; then
 fi
 (cd web && bun run test)
 
+# `bun run build` (`tsc -b && vite build`), not just `bun run test`: it is the
+# only thing that exercises the two guards that keep client/'s engine safe to
+# import from a browser bundle. `tsc -b` is TYPECHECK-ONLY, so it is the only
+# path that can catch a stray `Bun.*` reference under web/src (there is
+# nothing for it to resolve against — see web/tsconfig.json's "paths"
+# comment). The bundler guard — a hard failure if anyone imports
+# `@ledger/client/platform` or `@ledger/client/store/open` into browser code,
+# because those statically pull in `node:zlib`/`node:crypto`/`bun:sqlite` — is
+# `vite build`'s job (see vite.config.ts's alias comment); `bun run test`
+# never runs Rollup, so it cannot see that failure either. Task 3 added this
+# line after finding the gap.
+(cd web && bun run build)
+
 echo "v2-check: OK (go + client + web + conformance)"
