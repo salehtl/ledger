@@ -31,6 +31,7 @@ import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Switch } from "../../components/ui/Switch";
+import { isEnrollmentError } from "../../v2/session";
 import {
   comparisonCode,
   decodeEnrolmentRequest,
@@ -38,7 +39,46 @@ import {
   type EnrolmentRequest,
   type KeyHistoryEntry,
 } from "../../v2/deviceEnrolment";
-import { enrollmentFailureCopy } from "../../v2/enrollment";
+
+/**
+ * A failure of the APPROVAL, said to the person doing the approving.
+ *
+ * `enrollmentCopy` is deliberately not reused here, and the reason is the whole
+ * of this function: every sentence in it is written from the point of view of
+ * the device being ADDED. Its `rejected` arm says "this device cannot make
+ * changes until a device that is already signed in approves it — use the code
+ * below". On this screen all three clauses are false: this device is enrolled,
+ * it is the approver, and there is no code below. Correct copy shown to the
+ * wrong person is still a sentence the code does not make true.
+ *
+ * The `rejected` arm may not claim a reason — `handleRegister` answers every
+ * refusal with the same bodyless 403 — so it names the likely causes as
+ * likelihoods and gives the one action that clears most of them: a fresh code.
+ */
+function refusalCopy(error: unknown): string {
+  const kind = isEnrollmentError(error) ? error.enrollmentKind : "unavailable";
+  switch (kind) {
+    case "offline":
+      return "That device was not added: ledger could not reach the server. Nothing was changed. Try again when you are online.";
+    case "rate_limited":
+      return "That device was not added: too many attempts in a row. Wait a minute and try again.";
+    case "rejected":
+      return (
+        "That device was not added. The server refuses without saying why — the likeliest causes are that its code " +
+        "is stale, or that it is already added. Get a fresh code from that device and try again."
+      );
+    case "revoked":
+    case "key_lost":
+      // Reachable through `approveDevice`'s own refusal when this device holds
+      // no enrolled writer, and through a 403 for a signing key the server no
+      // longer accepts. Either way the fault is on THIS side of the pair.
+      return "That device was not added, because this device can no longer sign for changes on this account. Approve from a device that still can.";
+    case "misconfigured":
+      return "That device was not added: this copy of ledger is not set up correctly. Nothing you do here will fix it — this is ours to repair.";
+    case "unavailable":
+      return "That device was not added: the server could not be asked just now. Nothing was changed. Try again in a moment.";
+  }
+}
 
 export interface ApproveDevicePanelProps {
   /** `V2Handle.keyHistory`. */
@@ -93,8 +133,7 @@ export function ApproveDevicePanel({ loadKeyHistory, approve }: ApproveDevicePan
       await approve(request);
       setPhase("done");
     } catch (error) {
-      const copy = enrollmentFailureCopy(error);
-      setFailure(`${copy.title}. ${copy.body}`);
+      setFailure(refusalCopy(error));
       setPhase("entering");
     }
   }, [approve, request]);
@@ -161,7 +200,7 @@ export function ApproveDevicePanel({ loadKeyHistory, approve }: ApproveDevicePan
                   {check}
                 </p>
                 <p className="text-sm leading-relaxed text-muted">
-                  The device you are adding is showing eight characters of its own. They must be identical. If they
+                  The device you are adding is showing ten characters of its own. They must be identical. If they
                   are not, stop — the code was changed on its way here.
                 </p>
                 <label className="flex items-center gap-3 text-sm leading-relaxed">
@@ -170,7 +209,7 @@ export function ApproveDevicePanel({ loadKeyHistory, approve }: ApproveDevicePan
                     data-testid="comparison-confirm"
                     onChange={(e) => setConfirmed(e.target.checked)}
                   />
-                  <span>The other device shows the same eight characters.</span>
+                  <span>The other device shows the same ten characters.</span>
                 </label>
               </>
             ) : (

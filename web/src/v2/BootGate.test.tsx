@@ -218,7 +218,7 @@ describe("BootGate", () => {
     expect(await screen.findByText(/needs approval/i)).toBeInTheDocument();
     expect(await screen.findByTestId("enrolment-code")).toHaveTextContent("ledger-device-1:web-2:");
     // Computed on this device, from the key history it fetched itself.
-    expect(await screen.findByText(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/)).toBeInTheDocument();
+    expect(await screen.findByText(/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /check again/i })).toBeInTheDocument();
   });

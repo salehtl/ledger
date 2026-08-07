@@ -116,7 +116,7 @@ export function PendingDevicePanel({ request, loadKeyHistory, onRecheck, copy = 
         <Card className="space-y-3">
           <p className="text-sm leading-relaxed">
             On a device already signed in to this account, open <strong>Settings &rsaquo; Add a device</strong>,
-            paste the code, and check that it shows the same eight characters as below.
+            paste the code, and check that it shows the same ten characters as below.
           </p>
           <div data-testid="comparison-code" className="space-y-1">
             {check === null ? (

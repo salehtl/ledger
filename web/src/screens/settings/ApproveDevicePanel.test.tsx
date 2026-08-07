@@ -100,7 +100,15 @@ describe("ApproveDevicePanel", () => {
     expect(screen.getByTestId("approve-device")).toBeDisabled();
   });
 
-  it("reports a refusal in the words the enrolment copy owns, and stays usable", async () => {
+  /**
+   * The refusal is written for the APPROVER. `enrollmentCopy`'s `rejected` arm
+   * is written for the device being added — "this device cannot make changes
+   * until a device that is already signed in approves it, use the code below" —
+   * and on this screen every clause of it is false. Asserting the borrowed copy
+   * is what would lock the wrong sentence in, so this asserts the panel's own
+   * and asserts the borrowed one is absent.
+   */
+  it("reports a refusal in words true for the person approving, and stays usable", async () => {
     mount({
       approve: async () => {
         throw new EnrollmentError("rejected", "403");
@@ -109,7 +117,26 @@ describe("ApproveDevicePanel", () => {
     await userEvent.type(screen.getByTestId("device-code-input"), CODE);
     await userEvent.click(await screen.findByTestId("comparison-confirm"));
     await userEvent.click(screen.getByTestId("approve-device"));
-    expect(await screen.findByTestId("approve-failure")).toHaveTextContent(/needs approval/i);
+    const note = await screen.findByTestId("approve-failure");
+    expect(note).toHaveTextContent(/That device was not added/i);
+    expect(note).toHaveTextContent(/get a fresh code from that device/i);
+    // The enrolling device's sentences, which would be false here.
+    expect(note).not.toHaveTextContent(/needs approval/i);
+    expect(note).not.toHaveTextContent(/code below/i);
     expect(screen.getByTestId("approve-device")).toBeEnabled();
+  });
+
+  it("says the connection failed when that is what happened, and never blames the code", async () => {
+    mount({
+      approve: async () => {
+        throw new EnrollmentError("offline", "no connection");
+      },
+    });
+    await userEvent.type(screen.getByTestId("device-code-input"), CODE);
+    await userEvent.click(await screen.findByTestId("comparison-confirm"));
+    await userEvent.click(screen.getByTestId("approve-device"));
+    const note = await screen.findByTestId("approve-failure");
+    expect(note).toHaveTextContent(/could not reach the server/i);
+    expect(note).not.toHaveTextContent(/fresh code/i);
   });
 });

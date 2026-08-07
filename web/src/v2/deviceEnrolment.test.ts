@@ -61,8 +61,8 @@ describe("the transfer code", () => {
 });
 
 describe("the comparison code", () => {
-  it("is eight characters from an unambiguous alphabet, grouped", () => {
-    expect(comparisonCode(REQ, LOG)).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
+  it("is ten characters — 50 bits — from an unambiguous alphabet, grouped", () => {
+    expect(comparisonCode(REQ, LOG)).toMatch(/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/);
   });
 
   it("is the same on both devices for the same log and the same key", () => {
@@ -99,5 +99,19 @@ describe("the comparison code", () => {
 
   it("is a full sha256 underneath, truncated only for display", () => {
     expect(comparisonDigest(REQ, LOG)).toHaveLength(32);
+  });
+
+  /**
+   * The width is a security parameter, not a layout choice. In the
+   * malicious-server model the attacker controls both the key it substitutes
+   * and the key history it serves each device, so it can grind for a collision
+   * offline with nothing to commit against: 8 characters (40 bits) is hours on
+   * a GPU, 10 (50 bits) is not. Pinned so a "tidier" 8 cannot come back
+   * without this test failing and the reasoning above being read.
+   */
+  it("carries 50 bits, which is the number the grinding analysis chose", () => {
+    const code = comparisonCode(REQ, LOG);
+    expect(code.replace("-", "")).toHaveLength(10);
+    expect(10 * Math.log2(32)).toBe(50);
   });
 });
