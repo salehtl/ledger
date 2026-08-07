@@ -27,8 +27,10 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
   // queries pending-but-not-fetching where isLoading lies.
   if (envelopes.isPending || upcoming.isPending || networth.isPending) {
     return (
-      <Card className="!p-0 px-4 py-1.5">
-        <Skeleton rows={3} />
+      <Card padding="none">
+        <div className="px-4 py-1.5">
+          <Skeleton rows={3} />
+        </div>
       </Card>
     );
   }
@@ -38,7 +40,10 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
   const series = networth.data?.months ?? [];
   const worth = isFlatZero(series) ? null : deltaSummary(series.map((m) => m.networth_fils));
 
-  const row = "w-full min-h-11 py-2 flex items-center justify-between gap-3 text-left";
+  // px-4 matches the inset every other card on Home uses. It lives on the row
+  // rather than the Card so the divide-y hairlines stay full-bleed — the
+  // list-card idiom (see Card's `padding` prop).
+  const row = "w-full min-h-11 px-4 py-2 flex items-center justify-between gap-3 text-left";
   const label = "text-sm font-medium shrink-0";
   // No `shrink-0` here: the bill row puts a merchant label through this style,
   // and a real one ("DEWA utility bill — Dubai Electricity & Water Authority")
@@ -48,7 +53,7 @@ export function PocketStrip({ onOpenPlan, onOpenRecurring, onOpenReports, month 
   const meta = "font-mono text-[10px] tracking-[0.04em] text-muted tnum";
 
   return (
-    <Card className="!p-0 px-4">
+    <Card padding="none">
       <div className="divide-y divide-border">
         <Pressable className={row} onClick={onOpenPlan} aria-label="Open Plan">
           <span className={label}>Ready to assign</span>

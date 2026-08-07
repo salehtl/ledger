@@ -354,7 +354,14 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 ### Card
 - **Purpose:** the paper content surface (`bg-surface`, card radius,
   `border border-border`, `p-4`) — bounded by a hairline, not a shadow.
-  `className="!p-0"` + an inner `divide-y` list is the list-card idiom.
+- **List-card idiom:** `padding="none"` + an inner `divide-y` list whose rows
+  each carry their own `px-4`. The hairlines then run edge to edge while the
+  content keeps the same 16px inset every other card uses.
+- **Don't** reach for `className="!p-0"` to opt out of padding. It is
+  `padding: 0 !important`, so it outranks any padding utility sitting beside
+  it: `className="!p-0 px-4"` reads as "unpadded card, 16px inset" and
+  silently renders content flush against the border. `padding="none"` leaves
+  the caller's own utilities winnable.
 - **Don't:** inline `bg-surface rounded-[var(--radius)] border border-border`.
 
 ### Pill
