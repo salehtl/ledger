@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 
-import { V2_QUERY_ROOT, invalidateAfterSync, v2Keys } from "./queries";
+import { V2_QUERY_ROOT, invalidateAfterSync, serializeFilters, v2Keys } from "./queries";
+import { EMPTY_FILTERS } from "./sources/transactions";
 
 describe("v2Keys", () => {
   it("prefixes every key with the v2 root, so one invalidation reaches all of them", () => {
@@ -49,5 +50,29 @@ describe("invalidateAfterSync", () => {
     qc.setQueryData(v2Keys.budget("2026-08"), { spent: 12_345n });
     await invalidateAfterSync(qc);
     expect(qc.getQueryData(v2Keys.budget("2026-08"))).toEqual({ spent: 12_345n });
+  });
+});
+
+describe("serializeFilters", () => {
+  it("is stable however the user reached the same selection", () => {
+    const a = { ...EMPTY_FILTERS, categories: ["dining", null, "groceries"], flags: ["split" as const, "needs_review" as const] };
+    const b = { ...EMPTY_FILTERS, categories: [null, "groceries", "dining"], flags: ["needs_review" as const, "split" as const] };
+    expect(serializeFilters(a)).toBe(serializeFilters(b));
+    expect(v2Keys.transactions({ extra: serializeFilters(a) })).toEqual(
+      v2Keys.transactions({ extra: serializeFilters(b) }),
+    );
+  });
+
+  it("separates a selected null category from a selected literal", () => {
+    // "Uncategorized" is a real value, not the absence of one, and a key that
+    // collapsed it into a category literally named "null" would serve one
+    // list's rows to the other.
+    expect(serializeFilters({ ...EMPTY_FILTERS, categories: [null] })).not.toBe(
+      serializeFilters({ ...EMPTY_FILTERS, categories: ["null"] }),
+    );
+  });
+
+  it("ignores a whitespace-only search, which is what filtersActive already ignores", () => {
+    expect(serializeFilters({ ...EMPTY_FILTERS, query: "  " })).toBe(serializeFilters(EMPTY_FILTERS));
   });
 });

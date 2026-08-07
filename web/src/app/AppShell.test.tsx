@@ -69,8 +69,11 @@ describe("AppShell", () => {
     wrap();
     await screen.findByRole("button", { name: /home/i });
     const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } };
+    // The shell's own review-badge query, not Home's: Home reads the local
+    // projection now (Task 8) and never fetches. This still asserts what the
+    // test is about — a pull invalidates and the queries below it refetch.
     const summaryCalls = () =>
-      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/summary")).length;
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/transactions")).length;
     await waitFor(() => expect(summaryCalls()).toBeGreaterThan(0));
     const before = summaryCalls();
 
