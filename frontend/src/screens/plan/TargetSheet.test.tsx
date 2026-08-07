@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MotionProvider } from "../../app/MotionProvider";
 import { ToastProvider } from "../../components/Toast";
-import type { Envelope } from "../../api/types";
+import type { Envelope } from "../../lib/envelope";
 import { TargetSheet } from "./TargetSheet";
 
 const envelope = {

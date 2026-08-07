@@ -1,6 +1,8 @@
 package budget
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"ledger/internal/store"
@@ -319,6 +321,53 @@ func TestTargetCreatedMidMonth(t *testing.T) {
 	s = mustCompute(t, "2026-07", 0, rows, targets)
 	if tg := envByID(t, s, 1).Target; tg.NeededFils != 100000 || tg.StillNeededFils != 100000 {
 		t.Errorf("set_aside needed/still = %d/%d, want 100000/100000", tg.NeededFils, tg.StillNeededFils)
+	}
+}
+
+// EffectiveMonth rides through to the wire shape, and it reports the month the
+// target was ORIGINALLY set in — not the month being viewed. That is the whole
+// point: the store resolves the version in force, and a later month inheriting
+// it must still be able to say where it came from, so the UI can distinguish
+// "set here" from "carried forward".
+func TestTargetStatusReportsEffectiveMonth(t *testing.T) {
+	rows := []store.EnvelopeMonthRow{row(1, "rent", "need", 0, 0, 0)}
+	// Set in May, viewed in August: nothing superseded it, so the store hands
+	// ComputeEnvelopes the May version.
+	targets := []store.CategoryTargetRow{{
+		CategoryID: 1, EffectiveMonth: "2026-05",
+		TargetType: "refill", AmountFils: 100000, Cadence: "monthly",
+	}}
+	tg := envByID(t, mustCompute(t, "2026-08", 0, rows, targets), 1).Target
+	if tg == nil {
+		t.Fatal("target missing")
+	}
+	if tg.EffectiveMonth != "2026-05" {
+		t.Errorf("effective_month = %q, want %q (the month it was set, not the month viewed)",
+			tg.EffectiveMonth, "2026-05")
+	}
+
+	// A version set in the viewed month reports that month.
+	targets[0].EffectiveMonth = "2026-08"
+	if tg := envByID(t, mustCompute(t, "2026-08", 0, rows, targets), 1).Target; tg.EffectiveMonth != "2026-08" {
+		t.Errorf("effective_month = %q, want %q", tg.EffectiveMonth, "2026-08")
+	}
+}
+
+// The JSON field is present (not omitempty) so the frontend type is honest:
+// EnvelopeTargetInfo.effective_month is the only place the client learns which
+// month a target came from.
+func TestTargetStatusEffectiveMonthSerialized(t *testing.T) {
+	rows := []store.EnvelopeMonthRow{row(1, "rent", "need", 0, 0, 0)}
+	targets := []store.CategoryTargetRow{{
+		CategoryID: 1, EffectiveMonth: "2026-05",
+		TargetType: "refill", AmountFils: 100000, Cadence: "monthly",
+	}}
+	b, err := json.Marshal(envByID(t, mustCompute(t, "2026-08", 0, rows, targets), 1).Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"effective_month":"2026-05"`) {
+		t.Errorf("target JSON = %s, want an effective_month of 2026-05", b)
 	}
 }
 
