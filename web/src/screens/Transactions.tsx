@@ -1,11 +1,18 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { m } from "motion/react";
+import { useQueryClient } from "@tanstack/react-query";
+import { newEntityID } from "@ledger/client/net/client";
+import type { Txn } from "@ledger/client/replay/state";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { Dialog, DialogFooter } from "../components/ui/Dialog";
 import { Input } from "../components/ui/Field";
+import { Switch } from "../components/ui/Switch";
 import { Skeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { Pressable } from "../components/ui/Pressable";
+import { useToast } from "../components/Toast";
 import { ProjectionTxnRow } from "../components/transactions/ProjectionTxnRow";
 import { ProjectionFilterBar } from "../components/transactions/ProjectionFilterBar";
 import { AlertTriangle, ListOrdered, Search, SlidersHorizontal } from "../components/ui/PixelIcon";
@@ -13,15 +20,24 @@ import { useFirstReveal } from "../hooks/useFirstReveal";
 import { DUR, EASE_OUT } from "../lib/motion";
 import { formatMinor } from "../lib/minorMoney";
 import { fire } from "../lib/feedback";
+import { deckCategories } from "../v2/reviewDeck";
+import {
+  categorizeOps,
+  categoryIsUsable,
+  ruleTargetOf,
+  type ReviewSource,
+} from "../v2/sources/review";
 import {
   EMPTY_FILTERS,
   filtersActive,
+  txnAmountLabel,
   txnTotals,
   type TxnFilters,
   type TxnFlag,
   type TxnSource,
 } from "../v2/sources/transactions";
-import { useTxnFacets, useTxnList, useTxnSource } from "../v2/queries";
+import { useCategoryChoices, useReviewSource, useTxnFacets, useTxnList, useTxnSource, v2Keys } from "../v2/queries";
+import { useWriter, type Writer } from "../v2/writer";
 
 /**
  * The transaction list, on the local projection.
@@ -31,12 +47,24 @@ import { useTxnFacets, useTxnList, useTxnSource } from "../v2/queries";
  * The list, its search, its filters and its totals all read
  * `v2/sources/transactions.ts`, which reads the SQLite projection. Everything
  * that was a WRITE against a v1 endpoint is gone from this screen rather than
- * stubbed — categorize, archive/restore, split, rename-merchant, link-refund,
+ * stubbed — archive/restore, split, rename-merchant, link-refund,
  * add-transaction, view-source-email and the CSV export all POSTed or GETed
  * routes `ledgerd` does not serve. In v2 each of those is an *op* authored
- * through the outbox, which Task 9 wires up starting with categorize; a swipe
- * action that looked live and silently did nothing would be worse than its
- * absence.
+ * through the outbox, and only the ops that exist are offered; a swipe action
+ * that looked live and silently did nothing would be worse than its absence.
+ *
+ * # Categorising, and why it had to live here too
+ *
+ * Opening a row opens a category sheet, and that is the one write this screen
+ * does have. It is not a convenience: the review deck is fed by the
+ * `needs_review` lane, and a template-tier parse is *trusted*, so it is never
+ * flagged — the operator's own DIB alert matched `dib.card.v1` with no empty
+ * capture groups. A cleanly parsed transaction was therefore visible on this
+ * screen and categorisable on none.
+ *
+ * The ops are authored by `sources/review.ts`'s `categorizeOps`, the same
+ * function the deck commits through, so there is one answer to "what does a
+ * categorisation record" rather than two that drift.
  *
  * The one filter that changed meaning is the segmented control's fourth
  * segment: v1 had "Archived", and there is no archive op, so the segments are
@@ -71,13 +99,23 @@ const SEGMENT_FLAG: Record<Segment, TxnFlag | null> = {
   unparsed: "unparsed",
 };
 
-export function Transactions({ from, to, source: injected }: {
+export function Transactions({ from, to, source: injected, reviewSource: injectedReview, writer: injectedWriter }: {
   from?: string;
   to?: string;
   /** Test seam: a source over a projection this test built. */
   source?: TxnSource;
+  /** Test seam: the source the category sheet reads its grid, rules and versions from. */
+  reviewSource?: ReviewSource;
+  /** Test seam: a writer that records what the screen would append. */
+  writer?: Writer;
 }) {
   const source = useTxnSource(injected);
+  const reviewSource = useReviewSource(injectedReview);
+  const writer = useWriter(injectedWriter);
+  const qc = useQueryClient();
+  const toast = useToast();
+  const choices = useCategoryChoices(reviewSource);
+  const [editing, setEditing] = useState<Txn | null>(null);
   const [segment, setSegment] = useState<Segment>("all");
   const [search, setSearch] = useState("");
   const [chips, setChips] = useState<TxnFilters>(EMPTY_FILTERS);
@@ -104,6 +142,62 @@ export function Transactions({ from, to, source: injected }: {
   const totals = useMemo(() => txnTotals(rows), [rows]);
   const firstReveal = useFirstReveal(rows.length > 0);
   const activeChips = filtersActive(chips);
+
+  /**
+   * Records one categorisation.
+   *
+   * The parent version comes from a FRESH read of the projection plus whatever
+   * this device has already queued for the row — never from `txn`, which is the
+   * object the list rendered and can be minutes old. An op naming a stale parent
+   * is a fork against yourself, and inside one millisecond the later op is the
+   * one replay discards. The deck does exactly this, deliberately; so does this.
+   */
+  const commit = useCallback(
+    async (txn: Txn, category: string, makeRule: boolean): Promise<void> => {
+      if (reviewSource === null || writer === null) return;
+      const head = await reviewSource.version(txn.id);
+      writer.enqueueMany(
+        categorizeOps({
+          txn,
+          category,
+          makeRule,
+          // A row the projection no longer knows about cannot be categorised at
+          // a guessed version; its own version is the only defensible fallback.
+          projectedVersion: head ?? txn.version,
+          pending: writer.pending,
+          rules: choices.data?.rules ?? [],
+          newID: newEntityID,
+        }),
+      );
+      setEditing(null);
+      await qc.invalidateQueries({ queryKey: v2Keys.all });
+      // Not awaited: the ops are already durable — `Client.emit` commits before
+      // it returns — and a list that stalled on the network would be unusable
+      // exactly where this app is used.
+      writer.flush().catch(() => {
+        toast.show({ message: "Saved on this device — it will sync when you're back online" });
+      });
+    },
+    [reviewSource, writer, choices.data, qc, toast],
+  );
+
+  /**
+   * The names the sheet offers.
+   *
+   * `deckCategories` is the deck's own grid builder: this user's categories
+   * first, then the default mapping's names for the buckets they have not
+   * filled, so a new account's sheet is not empty. Reused rather than rebuilt so
+   * the two screens never offer different vocabularies for the same log.
+   */
+  const categoryNames = useMemo(
+    () => deckCategories(choices.data?.categories ?? []).map((c) => c.Name),
+    [choices.data],
+  );
+
+  // No writer, no local ledger to append to — so the rows do not open a sheet
+  // at all. A control that answered and dropped the answer is the failure this
+  // screen's header is about.
+  const canCategorize = reviewSource !== null && writer !== null;
 
   // No v2 runtime and no injected source. NOT a v1 fallback — see Home.tsx's
   // header for why there is no correct one.
@@ -202,7 +296,10 @@ export function Transactions({ from, to, source: injected }: {
                   transition={{ duration: DUR.sheet, ease: EASE_OUT, delay: Math.min(i * 0.04, 0.24) }}
                 >
                   <div className="px-4">
-                    <ProjectionTxnRow txn={t} />
+                    <ProjectionTxnRow
+                      txn={t}
+                      onOpen={canCategorize ? (row) => { fire("selection"); setEditing(row); } : undefined}
+                    />
                   </div>
                 </m.li>
               ))}
@@ -223,6 +320,100 @@ export function Transactions({ from, to, source: injected }: {
           )}
         </>
       )}
+
+      {editing !== null && (
+        <CategorySheet
+          txn={editing}
+          categories={categoryNames}
+          onClose={() => setEditing(null)}
+          onSave={(category, makeRule) => void commit(editing, category, makeRule)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Pick a category for one transaction, and optionally rule on the merchant.
+ *
+ * Local to this screen rather than shared: `components/transactions/
+ * CategorizeSheet.tsx` is v1's, typed on `api/types`' `Txn` whose money is a
+ * `number` of fils, and it fetches projects from a v1 route. Mapping the
+ * projection's `bigint` into it would be a `Number()` on money, which is the one
+ * thing this codebase will not do.
+ *
+ * The current category is preselected, so re-categorising reads as a change
+ * rather than a blank form.
+ */
+function CategorySheet({ txn, categories, onClose, onSave }: {
+  txn: Txn;
+  categories: readonly string[];
+  onClose: () => void;
+  onSave: (category: string, makeRule: boolean) => void;
+}) {
+  const [picked, setPicked] = useState<string | null>(txn.category);
+  const [makeRule, setMakeRule] = useState(true);
+  const amount = txnAmountLabel(txn);
+  // The row's own category may predate the grid (a rule wrote it, or it came
+  // from an import), and a sheet that could not show the current answer would
+  // look like it had none.
+  const options = useMemo(() => {
+    const known = txn.category;
+    if (known === null || categories.some((c) => c.toLowerCase() === known.toLowerCase())) return categories;
+    return [known, ...categories];
+  }, [categories, txn.category]);
+
+  // Offered only when a rule could actually be written: `ruleTargetOf` is null
+  // when the merchant string is too short to carry an `exact` pattern, and the
+  // switch must not promise something `categorizeOps` would then drop.
+  const ruleable = ruleTargetOf(txn.merchant_raw) !== null;
+  const usable = picked !== null && categoryIsUsable(picked);
+
+  return (
+    <Dialog title="Categorize" onClose={onClose}>
+      <p className="mb-3 truncate text-sm text-muted">
+        {txn.merchant_raw === "" ? "—" : txn.merchant_raw} · <span className="tnum">{amount.text}</span>
+        {txn.currency === "" ? "" : ` ${txn.currency}`}
+      </p>
+
+      <div className="flex flex-wrap gap-2">
+        {options.map((name) => {
+          const selected = picked === name;
+          return (
+            <Pressable
+              key={name}
+              aria-pressed={selected}
+              onClick={() => setPicked(selected ? null : name)}
+              className={`min-h-11 px-3.5 rounded-[var(--radius)] text-sm font-medium inline-flex items-center transition-colors ${
+                selected ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg"
+              }`}
+            >
+              {name}
+            </Pressable>
+          );
+        })}
+      </div>
+
+      {ruleable && (
+        <label className="my-4 flex items-center justify-between gap-3 text-sm">
+          <span className="min-w-0">Always use this category for “{txn.merchant_raw}”</span>
+          <Switch checked={usable && makeRule} disabled={!usable} onChange={(e) => setMakeRule(e.target.checked)} />
+        </label>
+      )}
+
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        {/* Disabled until a category is chosen: clearing one back to
+            uncategorised is a `txn_categorized` with a null payload, and this
+            screen does not offer it, so the button must not look like it does. */}
+        <Button
+          variant="primary"
+          disabled={!usable}
+          onClick={() => { if (picked !== null && usable) onSave(picked, makeRule && ruleable); }}
+        >
+          Save
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

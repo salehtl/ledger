@@ -743,6 +743,33 @@ export function confirmOps(args: ConfirmArgs): OpSpec[] {
   return specs;
 }
 
+export interface CategorizeArgs extends ConfirmArgs {
+  /**
+   * Whether the merchant write-back is wanted — the deck's "always use this
+   * category for this merchant" switch, and the same switch on the transaction
+   * list's sheet.
+   */
+  makeRule: boolean;
+}
+
+/**
+ * What ONE categorisation records, wherever it was given.
+ *
+ * There are two entry points now — the review deck answers the `needs_review`
+ * lane, and the transaction list answers everything else, which is the only way
+ * a template-tier parse (trusted, never flagged) can be categorised at all. They
+ * go through this one function rather than each assembling the group, because
+ * two spellings of "how a categorisation is recorded" is two things to keep in
+ * agreement forever: the op kinds, the parent-version arithmetic, the rule
+ * dedupe, and the fact that dropping the rule is a FILTER on the group rather
+ * than a different call — the rule's shape stays in {@link confirmOps} either
+ * way.
+ */
+export function categorizeOps(args: CategorizeArgs): OpSpec[] {
+  const specs = confirmOps(args);
+  return args.makeRule ? specs : specs.filter((s) => s.type !== "rule_added");
+}
+
 export interface UndoConfirmArgs {
   txn: Txn;
   projectedVersion: number;

@@ -50,7 +50,7 @@ import { loadSwipeConfig } from "../lib/swipe";
 import { formatMinor } from "../lib/minorMoney";
 import { cardIdSource, deckCategories, deckRows, type DeckRow } from "../v2/reviewDeck";
 import { useHomeCurrency, useReviewFeed, useReviewSource, useTxnSource, v2Keys } from "../v2/queries";
-import { confirmOps, isSettled, settledBy, undoConfirmOps, type ReviewSource } from "../v2/sources/review";
+import { categorizeOps, isSettled, settledBy, undoConfirmOps, type ReviewSource } from "../v2/sources/review";
 import { useWriter, type Writer } from "../v2/writer";
 
 export interface ReviewProps {
@@ -141,9 +141,14 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
       if (row === undefined) throw new Error("the deck committed a card this screen does not hold");
       if (source === null || writer === null) throw new Error("no local ledger is open");
       const head = await source.version(row.item.txn.id);
-      const specs = confirmOps({
+      const specs = categorizeOps({
         txn: row.item.txn,
         category: category.Name,
+        // The sheet's "remember this merchant" switch. Dropping the spec rather
+        // than not asking for it keeps the rule's shape in one place — see
+        // `categorizeOps`, which the transaction list's sheet also authors
+        // through.
+        makeRule,
         // A row the projection no longer knows about cannot be confirmed at a
         // guessed version; its own version is the only defensible fallback.
         projectedVersion: head ?? row.item.txn.version,
@@ -151,9 +156,7 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
         rules: feed.data?.rules ?? [],
         newID: newEntityID,
       });
-      // The sheet's "remember this merchant" switch. Dropping the spec rather
-      // than not asking for it keeps the rule's shape in one place.
-      writer.enqueueMany(makeRule ? specs : specs.filter((s) => s.type !== "rule_added"));
+      writer.enqueueMany(specs);
       await qc.invalidateQueries({ queryKey: v2Keys.all });
       // Not awaited: the ops are already durable, and a deck that stalled on the
       // network would be unusable exactly where this queue is used.

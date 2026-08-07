@@ -107,6 +107,13 @@ export const v2Keys = {
   /** One lane's whole feed: its page, the counts, the categories and the rules. */
   reviewLane: (lane: string) => [V2_QUERY_ROOT, "review", lane] as const,
   quarantine: () => [V2_QUERY_ROOT, "quarantine"] as const,
+  /**
+   * The category grid and the materialised rules, which any screen that can
+   * author a categorisation needs. Not under `review`: the review deck and the
+   * transaction list both read it, and nesting it under one screen's family
+   * would make the other's invalidation look accidental.
+   */
+  categories: () => [V2_QUERY_ROOT, "categories"] as const,
   /** `GET /api/v1/address` — server truth, not the projection. */
   address: () => [V2_QUERY_ROOT, "address"] as const,
 } as const;
@@ -260,6 +267,35 @@ export function useReviewFeed(source: ReviewSource | null, lane: Lane): UseQuery
         source!.rules(),
       ]);
       return { counts, items, forks, money, categories, rules };
+    },
+    enabled: source !== null,
+  });
+}
+
+/** Everything a categorisation control needs that is not the transaction itself. */
+export interface CategoryChoices {
+  /** The categories this user actually uses, most-used first. */
+  categories: string[];
+  /** Every materialised rule, so a merchant categorised twice does not write the same rule twice. */
+  rules: Rule[];
+}
+
+/**
+ * The category grid and the rule set, for a screen that can author a
+ * categorisation but is not the review deck.
+ *
+ * Two reads under one key rather than two queries, for the reason
+ * {@link useReviewFeed} states: they are one control, and two keys would let the
+ * grid render against a different pass of the projection than the rule
+ * write-back is deduplicated against.
+ */
+export function useCategoryChoices(source: ReviewSource | null): UseQueryResult<CategoryChoices> {
+  return useQuery({
+    ...PROJECTION_QUERY,
+    queryKey: v2Keys.categories(),
+    queryFn: async (): Promise<CategoryChoices> => {
+      const [categories, rules] = await Promise.all([source!.categories(), source!.rules()]);
+      return { categories, rules };
     },
     enabled: source !== null,
   });

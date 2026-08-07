@@ -13,6 +13,7 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { Transactions } from "./Transactions";
 import { MotionProvider } from "../app/MotionProvider";
+import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { sqlTxnSource } from "../v2/sources/transactions";
 
@@ -28,7 +29,12 @@ function wrap(db: SqlDriver | null, props: { from?: string; to?: string } = {}) 
   return render(
     <MotionProvider>
       <QueryClientProvider client={qc}>
-        {db === null ? <Transactions {...props} /> : <Transactions {...props} source={sqlTxnSource(db)} />}
+        {/* The screen can author a categorisation now, so it takes a toast for
+            a flush that fails offline. No writer is injected here: these tests
+            are about the list, and without one no row opens a sheet. */}
+        <ToastProvider>
+          {db === null ? <Transactions {...props} /> : <Transactions {...props} source={sqlTxnSource(db)} />}
+        </ToastProvider>
       </QueryClientProvider>
     </MotionProvider>,
   );
