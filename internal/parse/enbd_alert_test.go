@@ -45,6 +45,27 @@ func TestENBDAlertWithdrawal(t *testing.T) {
 	}
 }
 
+// Aug-2026 body shape, redacted. ENBD says "deducted ... for issuance of X" for
+// bank-initiated debits (transfers, fees) rather than "withdrawn".
+const enbdAlertDeduction = `Dear Customer,
+AED 1,500.00 has been deducted from your account 067XXX00XXX01 for issuance of Telegraphic Transfer. The available balance is AED 900.00.`
+
+func TestENBDAlertDeduction(t *testing.T) {
+	got, err := ENBDAlertParser{}.Parse(enbdAlertSubject, enbdAlertDeduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AmountFils != 150_000 {
+		t.Errorf("AmountFils = %d, want 150000", got.AmountFils)
+	}
+	if got.Direction != DirectionDebit {
+		t.Errorf("Direction = %q, want debit", got.Direction)
+	}
+	if got.Last4 != "9999" {
+		t.Errorf("Last4 = %q, want 9999", got.Last4)
+	}
+}
+
 func TestENBDAlertCredit(t *testing.T) {
 	got, err := ENBDAlertParser{}.Parse(enbdAlertSubject,
 		"Dear Customer, AED 1,500.00 has been credited to your account 067XXX00XXX01.")
