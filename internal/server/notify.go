@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -122,7 +123,13 @@ func (s *Server) pushAll(title, body string) {
 	}
 	for _, sub := range subs {
 		go func(p store.PushSubRow) {
-			_ = s.pushSender.Send(context.Background(), p.Endpoint, p.P256dh, p.Auth, payload)
+			// Log failures. Discarding this error hid a 403 BadJwtToken that
+			// made every push to an iPhone fail silently: the endpoint still
+			// answered 204 and nothing appeared in the log, so a broken
+			// delivery chain was indistinguishable from having nothing to say.
+			if err := s.pushSender.Send(context.Background(), p.Endpoint, p.P256dh, p.Auth, payload); err != nil {
+				log.Printf("push: send failed for %.40s...: %v", p.Endpoint, err)
+			}
 		}(sub)
 	}
 }
