@@ -46,6 +46,12 @@ interface Rig {
   confirmStatus: number;
   confirmCalls: { domain: string; scope: string }[];
   syncs: number;
+  /**
+   * What the log starts saying, then what a confirm makes it say — because that
+   * is the real sequence: the transaction does not exist until the confirm's
+   * re-ingest has run and a pull has landed it.
+   */
+  logAtAfterConfirm: string | null;
 }
 
 function mount(over: Partial<Rig> = {}) {
@@ -56,6 +62,7 @@ function mount(over: Partial<Rig> = {}) {
     confirmStatus: 200,
     confirmCalls: [],
     syncs: 0,
+    logAtAfterConfirm: null,
     ...over,
   };
 
@@ -67,6 +74,7 @@ function mount(over: Partial<Rig> = {}) {
     if (url.includes("/api/v1/quarantine/confirm")) {
       const body = JSON.parse(String(init?.body)) as { domain: string; scope: string };
       rig.confirmCalls.push(body);
+      if (rig.logAtAfterConfirm !== null) rig.logAt = rig.logAtAfterConfirm;
       if (rig.confirmStatus !== 200) {
         return json({ error: "rate_limited", detail: "too many sender confirmations" }, rig.confirmStatus);
       }
@@ -174,6 +182,50 @@ describe("Verification", () => {
     }
   });
 
+  it("does not advance past an unfiled remainder, even when the log says the step is done", async () => {
+    const user = userEvent.setup();
+    // The successful path: the transaction IS in the log, so round 1's code
+    // would advance — unmounting the only control that can file the rest.
+    const { rig, onConfirmed } = mount({
+      logAt: null,
+      logAtAfterConfirm: "2026-08-07T10:01:00Z",
+      // Never drains: every round reports the same remainder.
+      reingest: { examined: 500, appended: 500, superseded: 0, unchanged: 0, failed: 0, remaining: 7 },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /this is my bank/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("verification-partial")).toBeTruthy();
+    });
+    expect(onConfirmed).not.toHaveBeenCalled();
+    // Bounded: a server that never makes progress does not get spun on.
+    expect(rig.confirmCalls.length).toBeLessThanOrEqual(4);
+    expect(screen.getByTestId("verification-partial").textContent).toMatch(/setup will wait here/i);
+  });
+
+  it("drains the batch across rounds and only then advances", async () => {
+    const user = userEvent.setup();
+    const remainders = [12, 5, 0];
+    const { rig, onConfirmed } = mount({ logAt: null, logAtAfterConfirm: "2026-08-07T10:01:00Z" });
+    let round = 0;
+    Object.defineProperty(rig, "reingest", {
+      get() {
+        const remaining = remainders[Math.min(round, remainders.length - 1)] ?? 0;
+        round += 1;
+        return { examined: 500, appended: 500, superseded: 0, unchanged: 0, failed: 0, remaining };
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /this is my bank/i }));
+
+    await waitFor(() => {
+      expect(onConfirmed).toHaveBeenCalledWith("2026-08-07T10:01:00Z");
+    });
+    expect(rig.confirmCalls).toHaveLength(3);
+    expect(screen.queryByTestId("verification-partial")).toBeNull();
+  });
+
   it("surfaces a partial re-ingest and can continue the batch after the item has left the lane", async () => {
     const user = userEvent.setup();
     const { rig } = mount({
@@ -186,14 +238,17 @@ describe("Verification", () => {
     expect(partial.textContent).toMatch(/7 messages/);
 
     // The confirmed item is gone from the lane, so the notice is the ONLY thing
-    // left that can offer to file the rest.
+    // left that can offer to file the rest — and it is still on screen, which is
+    // the whole point.
     rig.items = [];
+    const before = rig.confirmCalls.length;
     await user.click(within(partial).getByRole("button", { name: /file the rest/i }));
 
     await waitFor(() => {
-      expect(rig.confirmCalls).toHaveLength(2);
+      expect(rig.confirmCalls.length).toBeGreaterThan(before);
     });
-    expect(rig.confirmCalls[1]).toEqual({ domain: "dib.ae", scope: "inner" });
+    // Always the server's normalized spelling, never the item's outer domain.
+    expect(rig.confirmCalls.every((c) => c.domain === "dib.ae" && c.scope === "inner")).toBe(true);
   });
 
   it("tells a rate-limited user to wait rather than to try again", async () => {

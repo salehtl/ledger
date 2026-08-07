@@ -109,8 +109,14 @@ type Phase =
   | { kind: "created"; adding: boolean; added: boolean; note: string | null }
   /** `not_invited`. `failure` carries a LATER failure of the retry, if any. */
   | { kind: "not_invited"; failure: PasskeyFailureKind | null }
-  /** This profile holds another account's database. Only a wipe clears it. */
-  | { kind: "account_mismatch"; bound: string; offered: string; wiping: boolean };
+  /**
+   * This profile holds another account's database. Only a wipe clears it.
+   *
+   * `unsynced` is the count of locally-authored ops that have never reached the
+   * server — see the screen for why it is the difference between an honest
+   * button and a destructive one.
+   */
+  | { kind: "account_mismatch"; bound: string; offered: string; unsynced: number; wiping: boolean; armed: boolean };
 
 export function Welcome({
   handle,
@@ -139,7 +145,26 @@ export function Welcome({
    */
   const fail = useCallback((error: unknown, from: Phase): void => {
     if (isAccountMismatch(error)) {
-      setPhase({ kind: "account_mismatch", bound: error.boundUserId, offered: error.offeredUserId, wiping: false });
+      // Counted BEFORE the wipe is ever offered. `Client.pending` is the outbox
+      // — ops this device authored that have not reached the server — and it is
+      // persisted only in the local store, which is what the wipe destroys.
+      let unsynced = 0;
+      try {
+        unsynced = handle.client.pending.length;
+      } catch {
+        // A store that cannot be read is one whose contents cannot be vouched
+        // for either. Treating that as "nothing unsynced" would be the same
+        // false reassurance by another route, so it counts as unknown-and-risky.
+        unsynced = -1;
+      }
+      setPhase({
+        kind: "account_mismatch",
+        bound: error.boundUserId,
+        offered: error.offeredUserId,
+        unsynced,
+        wiping: false,
+        armed: false,
+      });
       return;
     }
     const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
@@ -153,7 +178,7 @@ export function Welcome({
     }
     setFailure(kind);
     setPhase({ kind: "idle" });
-  }, []);
+  }, [handle]);
 
   const create = useCallback(async () => {
     const from = phase;
@@ -257,13 +282,68 @@ export function Welcome({
             of them together — sync positions from one account applied to another&rsquo;s records would corrupt
             both. So it refused rather than letting you in.
           </p>
+          {/*
+            The narrow truth, and only the narrow truth. This used to say the
+            other account's records were "untouched on the server" full stop,
+            which is false for anything authored offline and never pushed:
+            `Client.pending` lives ONLY in the local store, and the wipe deletes
+            that store unconditionally. On a money app that made a destructive
+            button carry a reassurance it could not honour.
+          */}
           <p>
-            Clearing this browser&rsquo;s ledger data lets you sign in. It removes only what is stored{" "}
-            <em>here</em>: the other account, its records and everything you have recorded for it are untouched on
-            the server, and signing in as that account on its own device brings it all back.
+            Clearing this browser&rsquo;s ledger data lets you sign in. Anything the other account has{" "}
+            <strong>already synced</strong> is safe on the server — signing in as that account on a device it has
+            a passkey for brings it all back.
           </p>
         </Notice>
-        <Button variant="danger" disabled={phase.wiping} onClick={() => void startFresh()}>
+
+        {phase.unsynced !== 0 && (
+          <Notice
+            tone="danger"
+            announce
+            title={
+              phase.unsynced < 0
+                ? "ledger cannot tell whether there is unsent work here"
+                : `${String(phase.unsynced)} ${phase.unsynced === 1 ? "change has" : "changes have"} never been sent to the server`
+            }
+            testId="unsynced-warning"
+          >
+            <p>
+              {phase.unsynced < 0
+                ? "This browser's ledger data could not be read well enough to say whether it holds anything the server has not received. Clearing it would destroy anything that is there."
+                : `Those ${phase.unsynced === 1 ? "was" : "were"} recorded on this device for the other account and exist nowhere else. Clearing this browser's data deletes ${phase.unsynced === 1 ? "it" : "them"} permanently — no copy is kept, and the operator cannot restore ${phase.unsynced === 1 ? "it" : "them"}.`}
+            </p>
+            <p>
+              The way to keep {phase.unsynced === 1 ? "it" : "them"} is to go back and sign in as the other account
+              first, on a device holding its passkey. Once it has synced, this data is safe to clear.
+            </p>
+            {/*
+              An explicit acknowledgement, not a second confirm dialog: the
+              consequence is unrecoverable and the user should have to say they
+              understand it rather than merely tap past it. Same argument as the
+              home-currency step.
+            */}
+            <label className="min-h-11 flex items-center gap-3 text-sm leading-relaxed">
+              <input
+                type="checkbox"
+                className="w-5 h-5 accent-[var(--color-accent)] rounded-[var(--radius)]"
+                aria-label="I understand this unsent work will be destroyed"
+                checked={phase.armed}
+                disabled={phase.wiping}
+                onChange={() =>
+                  setPhase((p) => (p.kind === "account_mismatch" ? { ...p, armed: !p.armed } : p))
+                }
+              />
+              <span>I understand this unsent work will be destroyed.</span>
+            </label>
+          </Notice>
+        )}
+
+        <Button
+          variant="danger"
+          disabled={phase.wiping || (phase.unsynced !== 0 && !phase.armed)}
+          onClick={() => void startFresh()}
+        >
           {phase.wiping ? "Clearing…" : "Clear this browser's data and start fresh"}
         </Button>
         <Button variant="ghost" disabled={phase.wiping} onClick={() => setPhase({ kind: "idle" })}>

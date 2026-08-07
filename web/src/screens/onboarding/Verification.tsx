@@ -102,6 +102,18 @@ import { Notice, Step } from "./Shell";
  */
 export const VERIFICATION_POLL_MS = 15_000;
 
+/**
+ * How many bounded re-ingest batches one tap may chain.
+ *
+ * Each round is up to 500 messages through the parse cascade, synchronously,
+ * inside one request — the most expensive thing a session can ask this API to do
+ * — and the route's per-user budget will refuse a caller that keeps asking. Four
+ * rounds is 2,000 messages, comfortably past any real beta backlog, and a
+ * remainder past that stays on screen with a control rather than being retried
+ * forever.
+ */
+export const MAX_CONFIRM_ROUNDS = 4;
+
 export interface VerificationProps {
   client: TokenSource;
   /** Folds the log. The ONLY thing that may say the first mail is confirmed. */
@@ -142,6 +154,11 @@ export function Verification({
   const live = useRef(true);
   /** `onConfirmed` is a step transition; firing it twice dispatches into a dead tree. */
   const advanced = useRef(false);
+  /** One round of watching at a time. See {@link watch}. */
+  const inFlight = useRef(false);
+  /** Read by {@link watch}, which must not advance past an unfiled remainder. */
+  const partialRef = useRef<{ domain: string; scope: TrustScope; remaining: number } | null>(null);
+  partialRef.current = partial;
 
   useEffect(() => {
     live.current = true;
@@ -179,20 +196,43 @@ export function Verification({
    * goes first; the lane read second, because a promoted message leaves the lane
    * and the screen must stop offering to confirm it; the fact last, because it
    * is the only thing allowed to end this step.
+   *
+   * # Two things it refuses to do
+   *
+   * **It will not run twice at once.** The sync layer coalesces, so there was no
+   * fetch storm, but two overlapping `readQuarantine` calls are last-write-wins
+   * and a slow page landing after a fast one briefly resurrects an item that has
+   * already been promoted — an offer to confirm mail that is no longer held.
+   * It self-corrected on the next tick, which is exactly the kind of flicker
+   * nobody can reproduce on purpose.
+   *
+   * **It will not advance while a remainder is outstanding.** See
+   * {@link confirm}: advancing there unmounts the only control in the product
+   * that can file the rest of a bounded batch.
    */
   const watch = useCallback(async () => {
-    if (advanced.current) return;
+    if (advanced.current || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
     try {
-      await io.current.sync?.();
-    } catch {
-      // A failed pull is not a failed step. The next tick tries again.
+      try {
+        await io.current.sync?.();
+      } catch {
+        // A failed pull is not a failed step. The next tick tries again.
+      }
+      await load();
+      if (advanced.current || !live.current) return;
+      // Held mail this user has already vouched for is still unfiled, and this
+      // screen is the only place it can be filed from.
+      if (partialRef.current !== null) return;
+      const at = io.current.firstMailAt();
+      if (at === null) return;
+      advanced.current = true;
+      io.current.onConfirmed(at);
+    } finally {
+      inFlight.current = false;
+      if (live.current) setBusy(false);
     }
-    await load();
-    if (advanced.current || !live.current) return;
-    const at = io.current.firstMailAt();
-    if (at === null) return;
-    advanced.current = true;
-    io.current.onConfirmed(at);
   }, [load]);
 
   useEffect(() => {
@@ -239,53 +279,103 @@ export function Verification({
   };
 
   /**
-   * Trusts one origin and files what that released.
+   * Trusts one origin and files **everything** that released.
    *
-   * It does NOT decide whether the step is over — {@link watch} does, on the
-   * loop. All this adds is immediacy: one round of watching right now rather
-   * than up to `pollMs` later.
+   * # Why this loops rather than confirming once
+   *
+   * `handleConfirmSender` re-ingests a bounded batch and reports the rest as
+   * `remaining`. Round 1 surfaced that remainder in a notice with a "File the
+   * rest" control — which was right, and still lost the mail, because the very
+   * next thing this function did was call {@link watch}, and a successful watch
+   * ADVANCES THE STEP. The notice and its control unmounted with the screen, and
+   * nothing outside `screens/onboarding/` reads the quarantine lane, so the
+   * remainder sat until it expired. That is the defect the notice was added to
+   * fix, reappearing on the path where everything went right.
+   *
+   * So the batch is drained here, before the step is allowed to end, and
+   * {@link watch} additionally refuses to advance while `partial` is non-null —
+   * belt and braces, because the two are reached from different places ("File
+   * the rest" re-enters here; the poll does not).
+   *
+   * Repetition is safe and converges: `Confirm` returns the ids still HELD, a
+   * promoted message is no longer held, and an already-allowlisted origin gets
+   * an empty release rather than `origin_unproven` (`quarantine.go:414-418`).
+   *
+   * # Why it is bounded twice
+   *
+   * {@link MAX_CONFIRM_ROUNDS} caps the work one tap can ask of the server —
+   * each round runs the parse cascade over up to 500 messages synchronously. And
+   * a round that does not REDUCE the remainder stops the loop regardless: a
+   * server that keeps answering with the same number is not making progress, and
+   * spinning on it would be this screen's own version of the unguarded repeat
+   * that produced Phase 0's freeze. Either way the notice stays up, the step
+   * stays put, and the control is there to try again.
    */
   const confirm = useCallback(
     async (domain: string, scope: TrustScope): Promise<void> => {
       setBusy(true);
       setMessage("");
+      let request = { domain, scope };
+      let left = 0;
       try {
-        const result = await confirmSender(client, domain, scope, {
-          ...(server === undefined ? {} : { server }),
-          ...(doFetch === undefined ? {} : { fetch: doFetch }),
-        });
-        // The batch is BOUNDED. `remaining > 0` means mail this user has already
-        // vouched for is still held, and — because the confirmed item has left
-        // the lane — there is no longer a row offering to file it. Dropping this
-        // is a silent partial ingest that ends in expiry.
-        const left = result.reingest?.remaining ?? 0;
-        setPartial(left > 0 ? { domain: result.domain, scope, remaining: left } : null);
-        if (result.reingest?.incomplete === true) {
-          setMessage(
-            "ledger filed part of the mail held for that sender and then hit an error. The rest is still held " +
-              "and still safe — try filing it again.",
-          );
+        for (let round = 0; round < MAX_CONFIRM_ROUNDS; round += 1) {
+          const result = await confirmSender(client, request.domain, request.scope, {
+            ...(server === undefined ? {} : { server }),
+            ...(doFetch === undefined ? {} : { fetch: doFetch }),
+          });
+          // The server's normalized spelling, so a continuation sends the string
+          // this server would match.
+          request = { domain: result.domain, scope: request.scope };
+          const now = result.reingest?.remaining ?? 0;
+          if (result.reingest?.incomplete === true) {
+            setMessage(
+              "ledger filed part of the mail held for that sender and then hit an error. The rest is still held " +
+                "and still safe — try filing it again.",
+            );
+            left = now;
+            break;
+          }
+          if (now === 0) {
+            left = 0;
+            break;
+          }
+          // No progress: stop rather than spin.
+          if (round > 0 && now >= left) {
+            left = now;
+            break;
+          }
+          left = now;
+          if (!live.current) break;
+          setPartial({ domain: request.domain, scope: request.scope, remaining: now });
         }
       } catch (error) {
         const code = error instanceof ApiError ? error.code : "";
         setMessage(CONFIRM_CONFLICT_COPY[code] ?? "Could not trust this sender. Try again.");
-        if (live.current) setBusy(false);
+        if (live.current) {
+          setBusy(false);
+          // Whatever was outstanding stays outstanding, and stays on screen.
+          if (left > 0) setPartial({ domain: request.domain, scope: request.scope, remaining: left });
+        }
         return;
       }
+      if (!live.current) return;
+      const outstanding = left > 0 ? { domain: request.domain, scope: request.scope, remaining: left } : null;
+      setPartial(outstanding);
+      // `watch` reads the ref, and React has not re-rendered yet.
+      partialRef.current = outstanding;
+      setBusy(false);
+
       await watch();
-      if (live.current) {
-        setBusy(false);
-        if (!advanced.current) {
-          // A confirmation that produced no transaction. Said plainly rather
-          // than treated as progress: the milestone is a transaction in the
-          // log, and there is not one yet. The loop is still running, so the
-          // promise in this sentence is now true.
-          setMessage((held) =>
-            held !== ""
-              ? held
-              : `${domain} is trusted. No transaction has come out of its mail yet — ledger will keep checking.`,
-          );
-        }
+      if (live.current && !advanced.current && outstanding === null) {
+        // A confirmation that produced no transaction. Said plainly rather than
+        // treated as progress: the milestone is a transaction in the log, and
+        // there is not one yet. The loop is still running, so the promise in
+        // this sentence is now true.
+        setMessage((held) =>
+          held !== ""
+            ? held
+            : `${request.domain} is trusted. No transaction has come out of its mail yet — ledger will keep checking.`,
+        );
       }
     },
     [client, server, doFetch, watch],
@@ -316,10 +406,11 @@ export function Verification({
       {partial !== null && (
         <Notice tone="danger" announce title="Some held mail is still waiting" testId="verification-partial">
           <p>
-            ledger files a bounded batch per confirmation, and {partial.remaining}{" "}
+            ledger files a bounded batch at a time, and {partial.remaining}{" "}
             {partial.remaining === 1 ? "message" : "messages"} from{" "}
-            <span className="font-mono">{partial.domain}</span> {partial.remaining === 1 ? "was" : "were"} not
-            reached this time. Nothing is lost — it is still held — but it will not file itself.
+            <span className="font-mono">{partial.domain}</span> {partial.remaining === 1 ? "is" : "are"} still
+            held. Nothing is lost, and setup will wait here until {partial.remaining === 1 ? "it is" : "they are"}{" "}
+            filed — this is the only screen that can file them.
           </p>
           <Button variant="primary" disabled={busy} onClick={() => void confirm(partial.domain, partial.scope)}>
             File the rest

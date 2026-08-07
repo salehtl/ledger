@@ -225,28 +225,84 @@ describe("Welcome", () => {
     expect((screen.getByLabelText("Invite code") as HTMLInputElement).value).toBe("ABC123");
   });
 
-  it("offers to clear the browser when this profile holds another account", async () => {
-    const user = userEvent.setup();
-    const rig = handleRig({
-      signIn: () => Promise.reject(new AccountMismatchError("u_old", "u_new")),
-    });
+  /** Signs in as a different account than this browser profile is bound to. */
+  function mountMismatch(pending: { op_id: string; type: string }[]) {
+    const rig = handleRig({ signIn: () => Promise.reject(new AccountMismatchError("u_old", "u_new")) });
+    rig.pending = pending;
     const wipe = vi.fn(async () => {});
     render(
       <MotionProvider>
         <Welcome handle={rig.handle} done={vi.fn()} wipe={wipe} />
       </MotionProvider>,
     );
+    return { rig, wipe };
+  }
+
+  it("offers to clear the browser when this profile holds another account", async () => {
+    const user = userEvent.setup();
+    const { rig, wipe } = mountMismatch([]);
 
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
 
     const notice = await screen.findByTestId("account-mismatch");
-    // The reassurance is the load-bearing half: the other account is not lost.
-    expect(notice.textContent).toMatch(/untouched on the server/i);
+    // The reassurance, in its narrow and true form.
+    expect(notice.textContent).toMatch(/already.*synced.*safe on the server/is);
+    // With nothing unsynced there is no warning and no arming step.
+    expect(screen.queryByTestId("unsynced-warning")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /clear this browser's data/i }));
     await waitFor(() => {
       expect(wipe).toHaveBeenCalledWith(rig.handle);
     });
+  });
+
+  it("never promises nothing was lost when unsynced work would be destroyed", async () => {
+    const user = userEvent.setup();
+    const { wipe } = mountMismatch([
+      { op_id: "o1", type: "txn_add" },
+      { op_id: "o2", type: "txn_categorize" },
+    ]);
+
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    const warning = await screen.findByTestId("unsynced-warning");
+    expect(warning.textContent).toMatch(/2 changes have never been sent/i);
+    expect(warning.textContent).toMatch(/permanently/i);
+    // The old, false blanket reassurance must not be anywhere on the screen.
+    expect(document.body.textContent).not.toMatch(/untouched on the server/i);
+
+    // Destructive and unrecoverable, so it is inert until acknowledged.
+    const clear = screen.getByRole("button", { name: /clear this browser's data/i });
+    expect(clear).toHaveProperty("disabled", true);
+    await user.click(clear);
+    expect(wipe).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("checkbox", { name: /unsent work will be destroyed/i }));
+    await user.click(clear);
+    await waitFor(() => {
+      expect(wipe).toHaveBeenCalled();
+    });
+  });
+
+  it("treats an unreadable outbox as risky rather than as empty", async () => {
+    const user = userEvent.setup();
+    const rig = handleRig({ signIn: () => Promise.reject(new AccountMismatchError("u_old", "u_new")) });
+    Object.defineProperty(rig.handle.client, "pending", {
+      get() {
+        throw new Error("store is degraded");
+      },
+    });
+    render(
+      <MotionProvider>
+        <Welcome handle={rig.handle} done={vi.fn()} wipe={vi.fn(async () => {})} />
+      </MotionProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    const warning = await screen.findByTestId("unsynced-warning");
+    expect(warning.textContent).toMatch(/cannot tell whether/i);
+    expect(screen.getByRole("button", { name: /clear this browser's data/i })).toHaveProperty("disabled", true);
   });
 
   it("signs in with one button and no argument at all", async () => {
