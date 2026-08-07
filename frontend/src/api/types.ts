@@ -1,6 +1,7 @@
 // Pure display/math types referenced by v3 wire shapes stay in lib/ (the
 // framework-free helper convention); they are imported, not duplicated.
 import type { Allocation, Cadence, EnvelopeSummary, TargetType } from "../lib/envelope";
+export type { Envelope } from "../lib/envelope";
 import type { ProvenanceInfo } from "../lib/recurring";
 import type { AccountKind } from "../lib/reconcile";
 
@@ -114,6 +115,7 @@ export interface AutoAssignResult {
 }
 
 export interface TargetBody {
+  month: string;
   target_type: TargetType;
   amount_fils: number;
   cadence: Cadence;

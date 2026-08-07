@@ -22,6 +22,13 @@ const EXPLAINER: Record<TargetType, string> = {
   save_by_date: "Build up to this amount by the date, in equal monthly steps.",
 };
 
+/** "2026-08" → "Aug 2026". Parsed as a local date; the string has no timezone. */
+function monthLabel(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  if (!y || !m) return month;
+  return new Date(y, m - 1, 1).toLocaleDateString("en-AE", { month: "short", year: "numeric" });
+}
+
 /**
  * Target editor for one category: three target types behind a segmented
  * control, cadence for the periodic types, a native date picker for
@@ -57,7 +64,7 @@ export function TargetSheet({ envelope, month, onClose }: {
 
   const save = () => {
     if (!amountOk || !dateOk) return;
-    const body: TargetBody = { target_type: type, amount_fils: parsed!, cadence };
+    const body: Omit<TargetBody, "month"> = { target_type: type, amount_fils: parsed!, cadence };
     if (type === "save_by_date") body.due_date = dueDate;
     put.mutate({ categoryId: envelope.category_id, body }, { onSuccess: onClose });
   };
@@ -75,7 +82,7 @@ export function TargetSheet({ envelope, month, onClose }: {
                 // and an unmounted mutation hook drops its callbacks — the
                 // restore would neither refresh caches nor report failure.
                 onAction: () => {
-                  const body: TargetBody = { target_type: old.type, amount_fils: old.amount_fils, cadence: old.cadence };
+                  const body: TargetBody = { month, target_type: old.type, amount_fils: old.amount_fils, cadence: old.cadence };
                   if (old.type === "save_by_date") body.due_date = old.due_date;
                   putTargetOnce(envelope.category_id, body)
                     .then(() => qc.invalidateQueries({ queryKey: ["envelopes"] }))
@@ -91,6 +98,9 @@ export function TargetSheet({ envelope, month, onClose }: {
 
   return (
     <Dialog title={`${envelope.category_name} target`} onClose={onClose}>
+      <p className="text-xs text-muted mb-3">
+        Applies from {monthLabel(month)} onward. Earlier months keep their current target.
+      </p>
       <SegmentedControl
         fullWidth
         value={type}
