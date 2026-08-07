@@ -414,15 +414,40 @@ describe("filters", () => {
     // midnight from both sides: 22:30Z is the NEXT day east of UTC and 01:00Z
     // is the PREVIOUS day west of it. `posted_at` is canonicalised UTC and the
     // bound is a substring of it, so both stay on their own UTC day.
-    const raw = await rawProjection([
-      { id: "late", posted_at: "2026-07-20T22:30:00.000Z" },
-      { id: "early", posted_at: "2026-07-21T01:00:00.000Z" },
-    ]);
-    const on = (day: string) =>
-      listTransactions(raw, { ...EMPTY_FILTERS, from: day, to: day }, { limit: 10, after: null }).rows.map((t) => t.id);
-    expect(on("2026-07-20")).toEqual(["late"]);
-    expect(on("2026-07-21")).toEqual(["early"]);
-    raw.close();
+    //
+    // **The zone is PINNED, and that is the whole guard.** This box — and any
+    // UTC CI runner — has `TZ` unset, where local time IS UTC and a
+    // local-derivation bug is indistinguishable from correct behaviour: the
+    // mutation `strftime('%Y-%m-%d', posted_at, 'localtime')` passes this test
+    // unpinned and fails it pinned. A guard whose bite depends on which machine
+    // it runs on is the "true by construction" trap wearing an environment
+    // variable. Set here rather than in `vite.config.ts`'s `test.env` because
+    // every file shares one process: a suite-wide `TZ` would silently move the
+    // local dates of ~20 v1 screen tests too.
+    //
+    // Node re-reads `process.env.TZ` on assignment (v16+), and sql.js's
+    // `localtime` goes through emscripten to the same JS `Date`, so this
+    // reaches the SQLite build as well as the runtime. Restored in `finally`,
+    // because the next file in this process inherits whatever is left.
+    const previous = process.env.TZ;
+    process.env.TZ = "Asia/Dubai"; // UTC+4, no DST
+    try {
+      const raw = await rawProjection([
+        { id: "late", posted_at: "2026-07-20T22:30:00.000Z" },
+        { id: "early", posted_at: "2026-07-21T01:00:00.000Z" },
+      ]);
+      // The pin is real, not merely assigned: without this, a Node that had
+      // cached the zone would leave the two assertions below proving nothing.
+      expect(new Date("2026-07-20T22:30:00.000Z").getTimezoneOffset()).toBe(-240);
+      const on = (day: string) =>
+        listTransactions(raw, { ...EMPTY_FILTERS, from: day, to: day }, { limit: 10, after: null }).rows.map((t) => t.id);
+      expect(on("2026-07-20")).toEqual(["late"]);
+      expect(on("2026-07-21")).toEqual(["early"]);
+      raw.close();
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
   });
 
   it("has a confirmed flag that is the negation the segmented control needs", () => {
