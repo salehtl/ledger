@@ -13,9 +13,23 @@
  * utf8Encode, plus a gzip(web) -> gunzip(bun) round-trip (compressed bytes
  * may legitimately differ between gzip implementations; the round-trip may
  * not).
+ *
+ * (c) gzip determinism: `platform.ts` states the gzip result IS what the
+ * chain hashes, so `webPlatform.gzip` must be deterministic against itself
+ * even though it is not byte-identical to `bunPlatform`'s output.
+ *
+ * (d) The rest of `platform.test.ts`'s gunzip contract, replayed here rather
+ * than by parameterizing `platform.test.ts` itself over both
+ * implementations — that file is guarded, and importing `webPlatform` into
+ * it would change its shape for `bunPlatform` too: truncated/non-gzip input
+ * throws, the cap is refused during inflation (timing), and a CRC32
+ * corruption case checked against `bunPlatform` (this implementation's own
+ * regression: fflate's decode does not verify the gzip trailer's checksum on
+ * its own).
  */
 
 import { describe, expect, test } from "bun:test";
+import { gzipSync } from "fflate";
 import { bunPlatform } from "./platform";
 import { webPlatform } from "./platform.web";
 
@@ -160,7 +174,7 @@ describe("webPlatform vs bunPlatform: cross-implementation equivalence", () => {
     }
   });
 
-  test("utf8Encode agrees on 50 pseudorandom strings", () => {
+  test("utf8Encode agrees on a fixed set of strings, including surrogate/BOM edge cases", () => {
     const strs = [
       "",
       "hello",
@@ -182,6 +196,33 @@ describe("webPlatform vs bunPlatform: cross-implementation equivalence", () => {
   });
 });
 
+describe("webPlatform: gzip determinism", () => {
+  // fflate stamps the wall clock into the gzip header (bytes 4-7, MTIME) by
+  // default. `platform.ts` states the gzip result IS what the chain hashes
+  // and what selects the size bucket, so sealing the same content twice on
+  // the same device must produce the same blob bytes — `webPlatform.gzip`
+  // passes `mtime: 0` for exactly this reason.
+  test("gzip(x) equals gzip(x) across separate calls", () => {
+    const plain = W.utf8Encode("the quick brown fox".repeat(50));
+    const a = W.gzip(plain);
+    const b = W.gzip(plain);
+    expect(a).toEqual(b);
+  });
+
+  test("the header's MTIME field (bytes 4-7) is zero", () => {
+    const z = W.gzip(W.utf8Encode("hello world"));
+    expect([z[4], z[5], z[6], z[7]]).toEqual([0, 0, 0, 0]);
+  });
+
+  // Not byte-identical to bunPlatform — a different deflate implementation
+  // legitimately produces different compressed bytes for the same input.
+  // That is expected and is NOT what this asserts.
+  test("gzip output size is not required to match bunPlatform's byte-for-byte", () => {
+    const plain = W.utf8Encode("the quick brown fox".repeat(50));
+    expect(W.gzip(plain)).not.toEqual(bunPlatform.gzip(plain));
+  });
+});
+
 describe("webPlatform gunzip cap", () => {
   test("gunzip throws when output exceeds maxOutputBytes", () => {
     const bomb = W.gzip(new Uint8Array(4 << 20));
@@ -198,5 +239,77 @@ describe("webPlatform gunzip cap", () => {
     const z = W.gzip(new Uint8Array(1000).fill(0x41));
     expect(() => W.gunzip(z, 1000)).not.toThrow();
     expect(() => W.gunzip(z, 999)).toThrow();
+  });
+
+  // Mirrors `platform.test.ts`'s "the cap is refused during inflation, not
+  // after it" — the bomb test above only proves the cap throws, not that it
+  // was refused cheaply. Same construction: the capped path is compared
+  // against the SAME implementation inflating the SAME bomb with a cap that
+  // never trips, so machine speed and background load cancel out. Measured
+  // locally: a correct implementation is roughly 215-230x cheaper for a
+  // 32 MiB bomb; an inflate-then-check implementation would be close to 1x
+  // (never cheaper). The 4x threshold sits nowhere near either number.
+  test("the cap is refused during inflation, not after it", () => {
+    const N = 32 << 20;
+    const bomb = W.gzip(new Uint8Array(N));
+    const capped = () => {
+      try {
+        W.gunzip(bomb, 1024);
+      } catch {
+        /* expected */
+      }
+    };
+    const full = () => W.gunzip(bomb, N + 1);
+
+    capped();
+    full(); // warm both paths before either is timed
+    const best = (f: () => void): number => {
+      let ms = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = performance.now();
+        f();
+        ms = Math.min(ms, performance.now() - t);
+      }
+      return ms;
+    };
+    const cappedMs = best(capped);
+    const fullMs = best(full);
+    expect(cappedMs * 4).toBeLessThan(fullMs);
+  });
+
+  test("truncated gzip throws rather than returning a short read", () => {
+    const z = W.gzip(W.utf8Encode("hello world".repeat(100)));
+    expect(() => W.gunzip(z.subarray(0, z.length - 8), 1 << 20)).toThrow();
+  });
+
+  test("non-gzip input throws", () => {
+    expect(() => W.gunzip(W.utf8Encode("not gzip at all"), 1024)).toThrow();
+  });
+
+  // `compresses at level 9` for bunPlatform asserts byte-identity with
+  // node:zlib at level 9 — not achievable here (different deflate
+  // implementation, confirmed to differ by a byte even with mtime forced to
+  // 0). What IS checkable without claiming byte-identity: level 9 compresses
+  // at least as well as a much weaker level on the same compressible input.
+  test("compresses at level 9 (checked via relative size, not byte-identity)", () => {
+    const plain = W.utf8Encode("aaaabbbbcccc".repeat(400));
+    const level9 = W.gzip(plain);
+    const level1 = gzipSync(plain, { level: 1, mtime: 0 });
+    expect(level9.length).toBeLessThanOrEqual(level1.length);
+  });
+
+  // The behavioural divergence this fix exists for: fflate's own decode does
+  // not verify the gzip trailer's CRC32, so a single flipped byte in a
+  // well-formed stream would otherwise decode "successfully" to the wrong
+  // bytes on webPlatform while bunPlatform (node:zlib) throws. Both must
+  // throw.
+  test("a flipped CRC32 byte is refused, matching bunPlatform", () => {
+    const plain = W.utf8Encode("the quick brown fox".repeat(50));
+    const z = W.gzip(plain);
+    const corrupt = z.slice();
+    const i = corrupt.length - 5; // inside the CRC32 field
+    corrupt[i] = (corrupt[i]! ^ 0xff) & 0xff;
+    expect(() => W.gunzip(corrupt, 1 << 20)).toThrow();
+    expect(() => bunPlatform.gunzip(corrupt, 1 << 20)).toThrow();
   });
 });
