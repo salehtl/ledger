@@ -15,12 +15,17 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { ConfigError, NetworkError } from "@ledger/client/net/client";
+
+import { enrollmentCopy } from "./enrollment";
 import {
   encodeAssertionCredential,
   encodeRegistrationCredential,
+  ensureDeviceWriter,
   fromBase64Url,
   initV2,
   isEnrollmentError,
+  type EnrollmentDeps,
   isPasskeyError,
   publicKeyCreationOptions,
   publicKeyRequestOptions,
@@ -371,6 +376,87 @@ describe("signUp", () => {
     expect(handle.signedIn()).toBe(true);
     expect(() => handle.client.writerId).toThrow(/not set up to make changes yet/);
     handle.close();
+  });
+
+  /**
+   * The production configuration, and the one nothing tested.
+   *
+   * `BootGate.tsx` ships `SERVER = ""` — same-origin, so `ledgerd` can serve
+   * the bundle off the listener that serves the API. Every other test in this
+   * file injects `"https://ledger.test"`, so all of them passed against a
+   * build that could not enrol a single device: `Client` treated `""` as
+   * "unconfigured" and threw inside `roster()`, after the account, the
+   * credential and the session had all been created. People were left signed
+   * in, unable to write, and reading "try again when you are online".
+   */
+  it("signs up on a same-origin build, where the server prefix is the empty string", async () => {
+    const sameOrigin: typeof fetch = async (input, init) => {
+      const url = String(input);
+      // Relative, as a same-origin build must be: the browser resolves it
+      // against the document, which is what this line stands in for.
+      expect(url.startsWith("/api/")).toBe(true);
+      return server.fetch(new URL(url, location.origin).toString(), init);
+    };
+    const handle = await initV2("", {
+      name: freshName(),
+      fetch: sameOrigin,
+      credentials: creds as unknown as CredentialsContainer,
+    });
+
+    await handle.signUp("GOODCODE");
+
+    expect(handle.signedIn()).toBe(true);
+    // The half that used to die: a device writer reached the server.
+    expect(server.writers).toHaveLength(1);
+    expect(() => handle.client.writerId).not.toThrow();
+    handle.close();
+  });
+});
+
+describe("enrolment classification", () => {
+  /** A stub whose `roster` fails however the test says. */
+  function deps(fail: unknown): EnrollmentDeps {
+    const store = new Map<string, string>();
+    return {
+      secrets: {
+        get: (k) => store.get(k) ?? null,
+        set: (k, v) => {
+          if (v === null) store.delete(k);
+          else store.set(k, v);
+        },
+      },
+      state: () => ({ writerId: null, writers: new Map() }),
+      client: {
+        roster: () => Promise.reject(fail),
+        enroll: () => Promise.resolve(),
+        useWriter: () => {},
+      },
+      mint: () => `web-${crypto.randomUUID()}`,
+    };
+  }
+
+  async function kindOf(fail: unknown): Promise<string> {
+    const err = await ensureDeviceWriter(deps(fail)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(isEnrollmentError(err)).toBe(true);
+    return (err as { enrollmentKind: string }).enrollmentKind;
+  }
+
+  // The sentence that cost the diagnosis. A `ConfigError` never reaches the
+  // wire and is never cured by waiting, so calling it "offline" tells someone
+  // on a working connection to keep pressing a button that cannot work.
+  it("does not call a configuration error offline", async () => {
+    const kind = await kindOf(new ConfigError("no server configured: pass --server"));
+    expect(kind).not.toBe("offline");
+    expect(kind).toBe("misconfigured");
+    expect(enrollmentCopy("misconfigured").retry).toBe(false);
+    expect(enrollmentCopy("misconfigured").body).not.toMatch(/online|connection/i);
+  });
+
+  it("still calls a genuine network failure offline", async () => {
+    expect(await kindOf(new NetworkError("GET /api/v1/writers: Failed to fetch", undefined))).toBe("offline");
   });
 });
 

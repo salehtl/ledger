@@ -4,7 +4,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Client, HardStopError, ROSTER_CHECKPOINT, decodeWireRow, registrationMessage } from "./client";
+import {
+  Client,
+  ConfigError,
+  HardStopError,
+  NetworkError,
+  ROSTER_CHECKPOINT,
+  decodeWireRow,
+  registrationMessage,
+} from "./client";
 import { INVARIANT_IDS, VIOLATION_CHAIN_WITHHELD, VIOLATION_ROSTER_COVERAGE } from "../invariants/check";
 import { bunDriver } from "../store/driver";
 import { openMemStore } from "../store/open";
@@ -1302,5 +1310,95 @@ describe("withholding is never escaped", () => {
   test("the two conditions the escape distinguishes are both real and both under I11", () => {
     expect(INVARIANT_IDS).toContain(ROSTER_CHECKPOINT);
     expect(VIOLATION_ROSTER_COVERAGE).not.toBe(VIOLATION_CHAIN_WITHHELD);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configuration
+//
+// The section the production bug walked straight through. Every other test in
+// this file injects a non-empty `server`, and the one build that does not is
+// the PWA — `web/src/v2/BootGate.tsx` sets `SERVER = ""` so the bundle and the
+// API share one listener. So the shipped default was the single configuration
+// nothing here exercised, and on it every request threw before `fetch`:
+// sign-up created the account and then died inside `roster()`, leaving people
+// signed in, un-enrolled, and reading "try again when you are online" on a
+// working connection.
+// ---------------------------------------------------------------------------
+
+describe("configuration", () => {
+  /** Runs `fn` with `globalThis.location` set to `origin`, or absent for `null`. */
+  async function withOrigin(origin: string | null, fn: () => Promise<void>): Promise<void> {
+    const g = globalThis as { location?: unknown };
+    const had = "location" in g;
+    const prev = g.location;
+    if (origin === null) delete g.location;
+    else g.location = { origin, href: `${origin}/` };
+    try {
+      await fn();
+    } finally {
+      if (had) g.location = prev;
+      else delete g.location;
+    }
+  }
+
+  /** A fetch that answers the two routes below and records the URL it was handed. */
+  function recorder(): { urls: string[]; fetch: typeof fetch } {
+    const urls: string[] = [];
+    const fake = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : String(input);
+      urls.push(url);
+      const body = url.endsWith("/api/v1/auth/exchange")
+        ? { session_token: "tok", user_id: "11111111-1111-4111-8111-111111111111" }
+        : { writers: [] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    return { urls, fetch: fake };
+  }
+
+  test("an empty server is same-origin, and requests go out relative to it", async () => {
+    const rec = recorder();
+    await withOrigin("https://app.sirdab.ae", async () => {
+      // Exactly the production shape: nothing passes `server` at all, so the
+      // store's own default empty string is what the client runs on.
+      const c = new Client({ store: openMemStore(), fetch: rec.fetch });
+      expect(c.server).toBe("");
+      await c.login("passkey", "dev:alice");
+      await expect(c.roster()).resolves.toEqual([]);
+    });
+    // Relative, and NOT rewritten to an absolute origin: the empty prefix is
+    // the point. An origin baked into the persisted state would be wrong for
+    // anyone who reaches the same deployment on a second hostname.
+    expect(rec.urls).toEqual(["/api/v1/auth/exchange", "/api/v1/writers"]);
+  });
+
+  test("with no ambient origin an empty server is refused as a ConfigError, never a NetworkError", async () => {
+    const rec = recorder();
+    await withOrigin(null, async () => {
+      const c = new Client({ store: openMemStore(), fetch: rec.fetch });
+      expect(() => c.server).toThrow(ConfigError);
+      // Through `login`, which is the first request any profile makes and the
+      // one that needs no session — so what this catches is the configuration
+      // and nothing else.
+      const err = await c.login("passkey", "dev:alice").catch((e: unknown) => e);
+      // The classification is the whole finding. `NetworkError` means "no HTTP
+      // answer arrived, try again when there is a network", and every layer
+      // above repeats that to a person as "you are offline". A build with no
+      // server address is not offline and will not come back.
+      expect(err).toBeInstanceOf(ConfigError);
+      expect(err).not.toBeInstanceOf(NetworkError);
+      expect((err as Error).message).toMatch(/no server configured/);
+    });
+    // And it never reached the wire, so it could not have been a network fault.
+    expect(rec.urls).toEqual([]);
+  });
+
+  test("a real network failure is still a NetworkError", async () => {
+    const c = new Client({
+      store: openMemStore(),
+      server: "https://unreachable.ledger.invalid",
+      fetch: (() => Promise.reject(new TypeError("Failed to fetch"))) as unknown as typeof fetch,
+    });
+    await expect(c.login("passkey", "dev:alice")).rejects.toBeInstanceOf(NetworkError);
   });
 });

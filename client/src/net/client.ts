@@ -117,6 +117,39 @@ export class NetworkError extends Error {
   }
 }
 
+/**
+ * This client is not configured well enough to make the request — the failure
+ * is in the build or the profile, not on the wire.
+ *
+ * Its own class because the alternative cost a day: `Client.request` used to
+ * read {@link Client.server} INSIDE the `try` around `fetch`, so a synchronous
+ * "no server configured" was caught by the branch that exists for "no HTTP
+ * answer arrived" and re-thrown as a {@link NetworkError}. Every layer above
+ * classifies `NetworkError` as "offline", so a browser with a perfectly good
+ * connection was told to try again when it was online — a sentence the code
+ * could not make true. A misconfiguration never becomes correct by retrying
+ * later, which is exactly the distinction {@link NetworkError} does not carry.
+ */
+export class ConfigError extends Error {
+  override readonly name = "ConfigError";
+}
+
+/**
+ * The origin a relative URL would resolve against here, or `null` when there
+ * is none — i.e. "am I running inside a document?".
+ *
+ * Deliberately a capability probe rather than a `typeof window` platform
+ * sniff: what the empty server string needs is not a browser, it is a base URL
+ * for `fetch` to resolve against. A `file://` document reports the literal
+ * origin `"null"`, which is not one, so it is excluded.
+ */
+function ambientOrigin(): string | null {
+  const loc = (globalThis as { location?: { origin?: unknown } }).location;
+  const origin = loc?.origin;
+  if (typeof origin !== "string" || origin === "" || origin === "null") return null;
+  return origin;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -473,8 +506,30 @@ export class Client {
 
   // -- accessors ----------------------------------------------------------
 
+  /**
+   * The prefix every request URL is built on — and `""` is a legitimate value,
+   * not an unset one.
+   *
+   * `""` means **same-origin**: `` `${""}${"/api/v1/writers"}` `` is a correct
+   * relative URL wherever there is a document origin for it to resolve
+   * against, which is precisely how the PWA is served (`web/src/v2/BootGate.tsx`
+   * sets `SERVER = ""` so `ledgerd` can serve the bundle off the same listener
+   * as the API, with no CORS and one entry in `rp_origins`). This getter used
+   * to reject `""` outright with "no server configured: pass `--server`" — CLI
+   * copy that had leaked into a browser — and the result was that every
+   * `Client` call on the public deployment threw before it ever reached
+   * `fetch`: sign-up created the account and then died in `roster()`, leaving
+   * people half-signed-in and reading a connection error.
+   *
+   * Under a CLI there is no ambient origin, `fetch("/api/v1/…")` cannot be
+   * resolved at all, and "unset" is the only thing `""` can mean — so that,
+   * and only that, is still refused, now as a {@link ConfigError} whose text
+   * names the flag an operator actually has.
+   */
   get server(): string {
-    if (this.st.server === "") throw new Error("no server configured: pass --server");
+    if (this.st.server === "" && ambientOrigin() === null) {
+      throw new ConfigError("no server configured: pass --server");
+    }
     return this.st.server;
   }
 
@@ -852,9 +907,17 @@ export class Client {
       if (this.st.sessionToken === null) throw new Error("not signed in: run `cli login` first");
       headers["Authorization"] = `Bearer ${this.st.sessionToken}`;
     }
+    // Built BEFORE the try, and that placement is the fix, not a tidy-up:
+    // `this.server` throws a ConfigError on an unconfigured profile, and inside
+    // the try it was caught by the `catch` below and re-thrown as a
+    // NetworkError — turning "this build has no server" into "you are
+    // offline", which every caller above then repeated to a person on a
+    // working connection. Nothing in this line touches the network, so nothing
+    // in it belongs in the block that names network failures.
+    const url = `${this.server}${path}`;
     let res: Response;
     try {
-      res = await this.doFetch(`${this.server}${path}`, {
+      res = await this.doFetch(url, {
         method,
         headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),

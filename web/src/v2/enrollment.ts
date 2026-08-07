@@ -43,6 +43,19 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
           "Nothing was lost. Try again in a moment.",
         retry: true,
       };
+    case "misconfigured":
+      // Says "this copy of ledger", not "your connection" and not "the
+      // server": the one thing that is certainly true is that the fault is on
+      // our side of the line, and the one thing a person must not be told is
+      // to keep pressing a button that cannot work.
+      return {
+        title: "ledger could not finish setting up this device",
+        body:
+          "You are signed in, but this copy of ledger is not set up correctly and cannot register this device as " +
+          "one that can make changes. Nothing was lost, and nothing you do here will fix it — this is ours to " +
+          "repair.",
+        retry: false,
+      };
     case "rate_limited":
       return {
         title: "Too many attempts",

@@ -91,7 +91,7 @@
 
 import { setPlatform } from "@ledger/client/platform.registry";
 import { webPlatform } from "@ledger/client/platform.web";
-import { ApiError, Client, NetworkError } from "@ledger/client/net/client";
+import { ApiError, Client, ConfigError, NetworkError } from "@ledger/client/net/client";
 import { SECRET_SESSION, SECRET_WRITER, sqliteStore } from "@ledger/client/store/sqlite";
 import type { ClientState, SecretStore, Store } from "@ledger/client/store/store";
 import type { Writer } from "@ledger/client/invariants/check";
@@ -379,7 +379,22 @@ export function isAccountMismatch(err: unknown): err is AccountMismatchError {
   return typeof err === "object" && err !== null && (err as { accountMismatch?: unknown }).accountMismatch === true;
 }
 
-export type EnrollmentKind = "offline" | "unavailable" | "rate_limited" | "rejected" | "revoked" | "key_lost";
+export type EnrollmentKind =
+  | "offline"
+  | "unavailable"
+  | "rate_limited"
+  | "rejected"
+  | "revoked"
+  | "key_lost"
+  /**
+   * The build itself is wrong — no server address, a profile the client cannot
+   * make a request from. Separated from `offline` because it is the failure
+   * that actually happened on the public deployment and was reported as
+   * `offline`: a person on a working connection was told to try again when
+   * they were online, and no amount of trying could have worked. Nothing here
+   * is the person's to fix, so `retry` is false.
+   */
+  | "misconfigured";
 
 /**
  * A failure of ENROLMENT, as opposed to of the session — ported from
@@ -420,6 +435,9 @@ function classifyEnrollment(err: unknown): EnrollmentError {
   const http = httpShape(err);
   if (http === null) {
     const detail = err instanceof Error ? err.message : String(err);
+    // Checked FIRST, and before the message sniff: a ConfigError is thrown
+    // synchronously, never reaches the wire, and is never cured by waiting.
+    if (err instanceof ConfigError) return new EnrollmentError("misconfigured", detail, err);
     return err instanceof NetworkError || /network|fetch|timeout|connect/i.test(detail)
       ? new EnrollmentError("offline", detail, err)
       : new EnrollmentError("unavailable", detail, err);
