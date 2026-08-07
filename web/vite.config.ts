@@ -62,7 +62,17 @@ export default defineConfig({
   // fileURLToPath, not `new URL(...).pathname`: the latter hands back a
   // percent-encoded, leading-slash URL path, which is wrong for any repo path
   // containing a space (or on Windows).
-  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // `client/` is the framework-free local-first engine (Task 1+). Only
+      // `@ledger/client/platform.web` may be imported from here — never
+      // `@ledger/client/platform` (statically imports node:zlib/node:crypto)
+      // or `@ledger/client/store/open` (pulls in bun:sqlite via ./driver).
+      // Those would fail `bun run build`, not silently ship broken.
+      "@ledger/client": fileURLToPath(new URL("../client/src", import.meta.url)),
+    },
+  },
   plugins: [
     react(),
     tailwindcss(),
