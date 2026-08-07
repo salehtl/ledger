@@ -233,7 +233,17 @@ export function BootGate({
   // verification step cannot finish until a pull lands the re-ingested bank
   // email in the local log, and withholding the coordinator here is what left
   // that step unable to complete at all.
-  const sync = useSync(state.step === "ready" || state.step === "onboarding" ? coordinator : null);
+  // A session that ended AFTER boot — expired, revoked, account deleted — is
+  // handled by re-running boot rather than by signing out from here. `boot()`
+  // reaches the same answer on its first call and classifies it once, in the one
+  // place that owns whether a device erases itself. The ref breaks the ordering
+  // knot: `again` is defined below because it needs `sync.clear`.
+  const rebootRef = useRef<() => void>(() => {});
+  const sync = useSync(state.step === "ready" || state.step === "onboarding" ? coordinator : null, {
+    onSessionEnded: () => {
+      rebootRef.current();
+    },
+  });
 
   // Held so the boot effect does not re-run when a caller re-creates one of
   // these inline, which is the ordinary way to pass a function prop.
@@ -306,6 +316,7 @@ export function BootGate({
     setState({ step: "opening" });
     setAttempt((n) => n + 1);
   }, [clearFault]);
+  rebootRef.current = again;
 
   switch (state.step) {
     case "opening":
@@ -341,7 +352,15 @@ export function BootGate({
       // Onboarding syncs (see the `useSync` condition), so it can raise a halt,
       // so it has to be able to show one. Without this the step's own `sync()`
       // could record a fault that nothing ever rendered.
-      if (activeHalt !== null) return <HaltWall halt={activeHalt} />;
+      //
+      // ONLY THIS ONE CARRIES A CONTROL. Recovery is automatic either way — the
+      // `visibilitychange` trigger clears the fault on the next successful sync
+      // — but "automatic" is invisible, and a dead-looking screen part-way
+      // through setting up an account is where you lose the person. In `ready`
+      // the user has an app they have been using and `halt.action` is the
+      // guidance; here they have neither, so they get the same affordance
+      // `unenrolled` and `fatal` offer.
+      if (activeHalt !== null) return <HaltWall halt={activeHalt} onRetry={again} />;
       return onboarding({
         handle,
         facts: state.facts,
@@ -432,17 +451,29 @@ function Notice({ title, body, detail }: { title: string; body: string; detail?:
  * then showed it to anyone who opened the app offline.
  *
  * `role="alert"` rather than `role="status"`: this is not progress, and a
- * screen reader must interrupt for it. No button, and no spinner: `halt.action`
- * says what there is to do, in prose, because none of the six is repaired by a
- * control on this screen.
+ * screen reader must interrupt for it. No spinner, and by default no button
+ * either: `halt.action` says what there is to do, in prose, because none of the
+ * six is repaired by a control on this screen.
+ *
+ * `onRetry` is the ONE exception, and it is not a dismissal — it re-runs boot,
+ * and lands right back here if the halt still holds. It exists for the
+ * onboarding wall, where there is no app behind the screen to make "still
+ * alive" obvious. See that call site.
  */
-function HaltWall({ halt }: { halt: Halt }) {
+function HaltWall({ halt, onRetry }: { halt: Halt; onRetry?: () => void }) {
   return (
     <Wall>
       <div role="alert" className="flex flex-col gap-3">
         <h1 className="text-xl font-semibold text-bad">{halt.title}</h1>
         <p className="text-sm leading-relaxed">{halt.body}</p>
         {halt.action !== null && <p className="text-sm leading-relaxed text-muted">{halt.action}</p>}
+        {onRetry !== undefined && (
+          <div>
+            <Button variant="primary" onClick={onRetry}>
+              Try again
+            </Button>
+          </div>
+        )}
         {halt.violations.length > 0 && (
           <ul data-testid="halt-detail" className="text-xs font-mono text-muted flex flex-col gap-1 break-words">
             {halt.violations.map((v, i) => (

@@ -88,6 +88,35 @@ describe("classifySyncFailure", () => {
     expect(failure.kind).toBe("offline");
   });
 
+  it("calls an expired session a SESSION answer, not an integrity failure", () => {
+    // Round 3: a 401 after boot used to reach the halt arm and put up a wall
+    // with no sign-in route, which no retry could clear because every retry
+    // 401s again.
+    const failure = classifySyncFailure(new ApiError(401, "unauthorized", "", "401"), null);
+    expect(failure.kind).toBe("session");
+    if (failure.kind !== "session") throw new Error("unreachable");
+    expect(failure.status).toBe(401);
+    expect(failure.wipe).toBe(false);
+  });
+
+  it("calls a deleted account a session answer that WIPES", () => {
+    const failure = classifySyncFailure(new ApiError(410, "account_deleted", "", "410"), null);
+    if (failure.kind !== "session") throw new Error("expected session");
+    expect(failure.wipe).toBe(true);
+  });
+
+  it("does not wipe on a bare 410 — the code is required as well as the status", () => {
+    const failure = classifySyncFailure(new ApiError(410, "gone", "", "410"), null);
+    expect(failure.kind).toBe("halt");
+  });
+
+  it("puts a session answer ahead of a halt in force", () => {
+    // A 401 says nothing about anybody's records, and walling it off is the
+    // one outcome the user cannot escape.
+    const failure = classifySyncFailure(new ApiError(401, "unauthorized", "", "401"), "I3_chain");
+    expect(failure.kind).toBe("session");
+  });
+
   it("calls a restarting server offline rather than an integrity failure", () => {
     expect(classifySyncFailure(new ApiError(503, "unavailable", "", "503"), null).kind).toBe("offline");
   });

@@ -374,11 +374,22 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   paraphrase them here and do not write a single generic halt message: the
   first version of this wall did, and it told anyone who opened the app offline
   that their records had failed an integrity check.
-- **Don't:** give a halt wall a retry button or a `role="status"`. It is
-  `role="alert"`, and retrying is not what fixes a chain break — `halt.action`
-  says what there is to do, in prose. The retry affordance belongs only to the
-  walls whose copy says pressing again could plausibly work
+- **Don't:** give a halt wall a `role="status"` or a spinner. It is
+  `role="alert"`, and it is not progress.
+- **A halt wall carries no button — with one deliberate exception.** Retrying is
+  not what fixes a chain break, so `halt.action` says what there is to do in
+  prose and the wall over the app has no control at all. The exception is the
+  wall raised **during onboarding**, which gets a Try-again: recovery is
+  automatic either way (the next successful sync clears the fault), but there is
+  no app behind that screen to make "still alive" obvious, and a dead-looking
+  screen part-way through setting up an account is where you lose the person.
+  The button re-runs boot and lands back on the wall if the halt still holds —
+  it is not a dismissal. Elsewhere the retry affordance belongs only to walls
+  whose copy says pressing again could plausibly work
   (`enrollmentCopy(...).retry`).
+- **Don't:** show a halt for a session that ended. An expired or revoked session
+  is a `401`, not a verdict about anyone's records; it routes to sign-in.
+  `v2/halt.ts`'s `classifySyncFailure` puts that ahead of every other arm.
 - **Don't:** show a wall for being offline. A failed sync is not a verdict; the
   projection is local and readable, so the app stays on screen. `v2/halt.ts` is
   the only thing allowed to make that call.

@@ -193,6 +193,25 @@ export interface SyncStatus {
   clear(): void;
 }
 
+export interface UseSyncOptions {
+  /**
+   * A sync came back `401`, or `410 account_deleted`.
+   *
+   * Handled by the CALLER rather than here, because signing out and wiping are
+   * `boot()`'s to do and duplicating them would be a second copy of the rule
+   * that decides whether a device erases itself. `BootGate` re-runs boot, which
+   * reaches the same `401` on its first call and classifies it once, in the one
+   * place that owns it.
+   *
+   * Without this, a session that expired while the app was open raised a
+   * full-screen `uncertified` halt with no button and no route to sign-in —
+   * and one no retry could clear, because every retry `401`s again. Round 3 of
+   * the review found it; the behaviour predated the halt work, but the halt
+   * work is what made it look handled.
+   */
+  onSessionEnded?: (failure: { status: number; wipe: boolean }) => void;
+}
+
 /**
  * Progress, faults, and the foreground trigger, for one coordinator.
  *
@@ -201,12 +220,18 @@ export interface SyncStatus {
  * development, and a listener registered outside the effect system leaks one
  * subscription per mount.
  */
-export function useSync(coordinator: SyncCoordinator | null): SyncStatus {
+export function useSync(coordinator: SyncCoordinator | null, opts: UseSyncOptions = {}): SyncStatus {
   const progress = useSyncProgress(coordinator);
   const [fault, setFault] = useState<Halt | null>(null);
   const clear = useCallback(() => {
     setFault(null);
   }, []);
+
+  // Held in a ref so a caller may pass the handler inline — which is the
+  // ordinary way to write it — without changing `run`'s identity on every
+  // render and re-registering the listener effect below.
+  const onSessionEnded = useRef(opts.onSessionEnded);
+  onSessionEnded.current = opts.onSessionEnded;
 
   const run = useCallback(
     async (trigger: SyncTrigger, options?: SyncOptions): Promise<void> => {
@@ -228,6 +253,14 @@ export function useSync(coordinator: SyncCoordinator | null): SyncStatus {
         // check out", which the phase alone cannot.
         const failure = classifySyncFailure(error, coordinator.haltReason);
         if (failure.kind === "offline") return;
+        if (failure.kind === "session") {
+          // NOT a fault. The records are fine; the bearer token is not. Raising
+          // a halt here is what trapped a user behind a wall with no sign-in
+          // route and no retry that could ever clear it.
+          setFault(null);
+          onSessionEnded.current?.({ status: failure.status, wipe: failure.wipe });
+          return;
+        }
         setFault(failure.halt);
       }
     },

@@ -73,7 +73,14 @@ import type { State } from "@ledger/client/replay/state";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { enrollmentFailureCopy, type EnrollmentCopy } from "./enrollment";
-import { classifySyncFailure, haltFromViolations, HALT_WITHOUT_REASON } from "./halt";
+import {
+  classifySyncFailure,
+  haltFromViolations,
+  httpShape,
+  mayWipeLocalData,
+  sessionAnswerOf,
+  HALT_WITHOUT_REASON,
+} from "./halt";
 import {
   firstMailAt,
   loadLocalRecord,
@@ -212,37 +219,13 @@ async function addressOrNull(deps: BootDeps): Promise<string | null> {
   try {
     return await deps.address();
   } catch (error) {
-    if (isSessionAnswer(error)) throw error;
+    if (sessionAnswerOf(error) !== null) throw error;
     return null;
   }
 }
 
 function fatal(error: unknown): BootState {
   return { step: "fatal", error: error instanceof Error ? error : new Error(String(error)) };
-}
-
-function httpShape(err: unknown): { status: number; code: string } | null {
-  if (typeof err !== "object" || err === null) return null;
-  const e = err as { status?: unknown; code?: unknown };
-  if (typeof e.status !== "number") return null;
-  return { status: e.status, code: typeof e.code === "string" ? e.code : "" };
-}
-
-function isSessionAnswer(err: unknown): boolean {
-  const http = httpShape(err);
-  return http !== null && (http.status === 401 || mayWipeLocalData(err));
-}
-
-/**
- * `410` **and** `account_deleted`, both. Not `410` alone: a bare status check
- * would also fire on any future `410` this endpoint learns to send. Not the
- * code alone: a body is the part an intermediary can most easily rewrite, and a
- * proxy answering `401 {"error":"account_deleted"}` would otherwise be able to
- * wipe a device.
- */
-export function mayWipeLocalData(err: unknown): boolean {
-  const http = httpShape(err);
-  return http !== null && http.status === 410 && http.code === "account_deleted";
 }
 
 /** The two failures about the ACCOUNT rather than about one call. */

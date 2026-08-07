@@ -3,6 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 
 import type { SyncResult } from "@ledger/client/net/engine";
 
+import { ApiError } from "@ledger/client/net/client";
 import { HALT_TAMPERED, HALT_UNCERTIFIED } from "@ledger/client/invariants/surface";
 
 // The shared double, which publishes `halted` BEFORE it rethrows exactly as
@@ -183,6 +184,55 @@ describe("useSync", () => {
       await result.current.run("foreground");
     });
     expect(result.current.fault).not.toBeNull();
+  });
+
+  it("reports an expired session to the caller instead of raising a wall", async () => {
+    const engine = fakeEngine({ sync: () => Promise.reject(new ApiError(401, "unauthorized", "", "401")) });
+    const seen: { status: number; wipe: boolean }[] = [];
+    const { result } = renderHook(() =>
+      useSync(new SyncCoordinator(engine), { onSessionEnded: (f) => seen.push(f) }),
+    );
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).toBeNull();
+    expect(seen).toEqual([{ status: 401, wipe: false }]);
+  });
+
+  it("reports a deleted account as a session answer that wipes", async () => {
+    const engine = fakeEngine({ sync: () => Promise.reject(new ApiError(410, "account_deleted", "", "410")) });
+    const seen: { status: number; wipe: boolean }[] = [];
+    const { result } = renderHook(() =>
+      useSync(new SyncCoordinator(engine), { onSessionEnded: (f) => seen.push(f) }),
+    );
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).toBeNull();
+    expect(seen).toEqual([{ status: 410, wipe: true }]);
+  });
+
+  it("clears a standing fault when the session turns out to be the problem", async () => {
+    let mode: "halt" | "expired" = "halt";
+    const engine = fakeEngine({
+      sync: () =>
+        mode === "halt"
+          ? Promise.resolve<SyncResult>({ pulled: 0, applied: 0, violations: [], halted: true })
+          : Promise.reject(new ApiError(401, "unauthorized", "", "401")),
+    });
+    const { result } = renderHook(() => useSync(new SyncCoordinator(engine), { onSessionEnded: () => {} }));
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).not.toBeNull();
+
+    mode = "expired";
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    // The wall must come down: the caller is about to route to sign-in, and a
+    // halt left standing would render over it.
+    expect(result.current.fault).toBeNull();
   });
 
   it("clear() drops the fault, for a caller re-running boot from the top", async () => {

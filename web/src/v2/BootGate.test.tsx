@@ -325,7 +325,11 @@ describe("BootGate", () => {
 
     halt = true;
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    document.dispatchEvent(new Event("visibilitychange"));
+    // Wrapped: the dispatch schedules state updates, and an unwrapped one logs
+    // an act warning on every baseline run — noise that hides a real one later.
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/doesn't match its own record/i);
     await waitFor(() => {
@@ -438,6 +442,85 @@ describe("BootGate", () => {
     expect(alert).toHaveTextContent(/couldn't finish checking your data/i);
     expect(screen.getByTestId("halt-detail")).toHaveTextContent("halted by the integrity screen");
     expect(screen.queryByTestId("app")).not.toBeInTheDocument();
+  });
+
+  it("sends the user to sign in when the session expires mid-session, never to a wall", async () => {
+    // Round 3: a post-boot 401 raised a full-screen `uncertified` halt with no
+    // button and no route to sign-in, and no retry could clear it because every
+    // retry 401s again. Clearing site data was the only escape.
+    let expired = false;
+    const r = rig({
+      sync: async () => {
+        if (expired) throw new ApiError(401, "unauthorized", "", "401");
+        return CLEAN;
+      },
+    });
+    mount(r, { signIn: () => <div data-testid="welcome">welcome</div> });
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+
+    expired = true;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(await screen.findByTestId("welcome")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("offers Try again on a halt raised while onboarding is on screen", async () => {
+    // Mid-onboarding there is no app behind the wall to make "still alive"
+    // obvious, so this one wall carries the affordance `unenrolled` and `fatal`
+    // have. The two tests below pin the other side of that line.
+    let halted = false;
+    const r = rig({
+      local: { bank: null, forwardingDeclared: false, finishedAt: null, inboundAddress: null },
+      sync: async () => (halted ? { pulled: 0, applied: 0, violations: [], halted: true } : CLEAN),
+    });
+    mount(r, { onboarding: () => <div data-testid="onboarding">onboarding</div> });
+    expect(await screen.findByTestId("onboarding")).toBeInTheDocument();
+
+    halted = true;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("onboarding")).not.toBeInTheDocument();
+  });
+
+  it("keeps the app's own halt wall control-free", async () => {
+    let halted = false;
+    const r = rig({ sync: async () => (halted ? { pulled: 0, applied: 0, violations: [], halted: true } : CLEAN) });
+    mount(r);
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+
+    halted = true;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("keeps the BOOT halt wall control-free too", async () => {
+    mount(
+      rig({
+        halted: "I3_chain",
+        sync: async () => ({
+          pulled: 0,
+          applied: 0,
+          violations: [{ id: "I3_chain", severity: "hard_stop", detail: "spliced" } as never],
+          halted: true,
+        }),
+      }),
+      { onboarding: () => <div data-testid="onboarding">onboarding</div> },
+    );
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
   // -- session answers ------------------------------------------------------

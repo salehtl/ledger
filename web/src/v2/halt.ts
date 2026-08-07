@@ -72,10 +72,59 @@ import { surface, type Halt } from "@ledger/client/invariants/surface";
 export const HALT_WITHOUT_REASON = "syncing stopped because this device's records did not check out";
 
 export type SyncFailure =
+  /**
+   * The SESSION ended — expired, revoked, or the account was deleted. Nothing
+   * to do with this device's records, and the only answer is to sign in again.
+   */
+  | { kind: "session"; status: number; wipe: boolean }
   /** No answer from the server. The app stays usable on local data. */
   | { kind: "offline"; detail: string }
   /** The records did not check out. Full-screen, non-dismissable. */
   | { kind: "halt"; halt: Halt };
+
+// ---------------------------------------------------------------------------
+// Session answers
+// ---------------------------------------------------------------------------
+
+export function httpShape(err: unknown): { status: number; code: string } | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as { status?: unknown; code?: unknown };
+  if (typeof e.status !== "number") return null;
+  return { status: e.status, code: typeof e.code === "string" ? e.code : "" };
+}
+
+/**
+ * `410` **and** `account_deleted`, both. Not `410` alone: a bare status check
+ * would also fire on any future `410` this endpoint learns to send. Not the
+ * code alone: a body is the part an intermediary can most easily rewrite, and a
+ * proxy answering `401 {"error":"account_deleted"}` would otherwise be able to
+ * wipe a device.
+ */
+export function mayWipeLocalData(err: unknown): boolean {
+  const http = httpShape(err);
+  return http !== null && http.status === 410 && http.code === "account_deleted";
+}
+
+/**
+ * The two failures that are about the ACCOUNT rather than about one call.
+ *
+ * It lives HERE, next to the widening, rather than only in `boot.ts` — which is
+ * where round 3 of the review found it. `boot.ts` intercepted these before
+ * classification on the BOOT path, and this module's comment then claimed they
+ * "never reach here". True at boot; false for every sync afterwards. An expired
+ * session or a revoked device raises a `401` from a background sync, which fell
+ * through to a full-screen `uncertified` halt with no button and no route to
+ * sign-in — and which could not self-clear, because every retry `401`s again.
+ * The user's only escape was clearing site data.
+ *
+ * One classifier, reachable from both paths, is the fix. The comment that made
+ * the gap invisible is corrected in {@link isUnreachable}.
+ */
+export function sessionAnswerOf(err: unknown): { status: number; wipe: boolean } | null {
+  if (mayWipeLocalData(err)) return { status: 410, wipe: true };
+  const http = httpShape(err);
+  return http !== null && http.status === 401 ? { status: 401, wipe: false } : null;
+}
 
 /**
  * The three ways a browser says "there was no HTTP answer".
@@ -115,9 +164,16 @@ export function isUnreachable(error: unknown): boolean {
   if (name === "ProtocolError") return true;
 
   // 3. A server that is up enough to answer and not up enough to serve: 502
-  //    behind a proxy, 503 restarting, 504 on a Tailscale hiccup. `ApiError`
-  //    carries the status; `401`/`410` never reach here, because `boot.ts`
-  //    intercepts them as session answers first.
+  //    behind a proxy, 503 restarting, 504 on a Tailscale hiccup. `ApiError` is
+  //    the only thing in `client/src` carrying a numeric `status`, so this arm
+  //    cannot reach an integrity error.
+  //
+  //    `401`/`410` do NOT arrive here, but not for the reason an earlier
+  //    version of this comment gave. It said `boot.ts` intercepts them — true
+  //    on the boot path only, which left every post-boot session answer falling
+  //    through to a halt wall. They are now intercepted by
+  //    {@link classifySyncFailure} itself, ahead of this function, on every
+  //    path.
   if (typeof e.status === "number" && e.status >= 500 && e.status <= 599) return true;
 
   // 4. The `TypeError` a raw `fetch` rejects with. Message-matched, and ONLY
@@ -130,16 +186,25 @@ export function isUnreachable(error: unknown): boolean {
 /**
  * What a failed sync actually was.
  *
- * `haltReason` is the engine's own flag and wins outright: once a halt is in
- * force `SyncEngine` refuses the next sync with a `SyncHaltedError`, and
- * reporting that refusal as "offline" would put the app back on screen over
- * data the engine has stopped standing behind.
+ * The order is the meaning:
+ *
+ *  1. **A session answer wins outright**, even over a halt in force. A `401` is
+ *     unambiguous and says nothing about anybody's records; showing an
+ *     integrity wall for one traps the user behind a screen with no sign-in
+ *     route, which no retry can clear because every retry `401`s again.
+ *  2. **`haltReason` beats "offline".** Once a halt is in force `SyncEngine`
+ *     refuses the next sync with a `SyncHaltedError`, and reporting that
+ *     refusal as offline would put the app back on screen over data the engine
+ *     has stopped standing behind.
+ *  3. Otherwise: unreachable, or a halt.
  */
 export function classifySyncFailure(
   error: unknown,
   haltReason: string | null = null,
   violations: readonly Violation[] = [],
 ): SyncFailure {
+  const session = sessionAnswerOf(error);
+  if (session !== null) return { kind: "session", ...session };
   if (haltReason === null && isUnreachable(error)) {
     return { kind: "offline", detail: messageOf(error) };
   }
