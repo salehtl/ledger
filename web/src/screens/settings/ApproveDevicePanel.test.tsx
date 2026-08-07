@@ -119,11 +119,42 @@ describe("ApproveDevicePanel", () => {
     await userEvent.click(screen.getByTestId("approve-device"));
     const note = await screen.findByTestId("approve-failure");
     expect(note).toHaveTextContent(/That device was not added/i);
-    expect(note).toHaveTextContent(/get a fresh code from that device/i);
+    // The two 403s that can actually arrive: already enrolled
+    // (ErrWriterExists / ErrKeyAlreadyEnrolled) and this device's key no longer
+    // accepted (ErrNotAuthorized).
+    expect(note).toHaveTextContent(/already added/i);
+    expect(note).toHaveTextContent(/key is no longer accepted/i);
     // The enrolling device's sentences, which would be false here.
     expect(note).not.toHaveTextContent(/needs approval/i);
     expect(note).not.toHaveTextContent(/code below/i);
+    // And the causes that cannot happen. Nothing here goes stale — the nonce is
+    // minted seconds before the register, and the pasted code never expires —
+    // and a fresh code re-registers the identical writer id and key, so it
+    // cures neither real cause. Naming it would prescribe the one action that
+    // cannot work.
+    expect(note).not.toHaveTextContent(/stale/i);
+    expect(note).not.toHaveTextContent(/fresh code/i);
     expect(screen.getByTestId("approve-device")).toBeEnabled();
+  });
+
+  /**
+   * `V2Handle.approveDevice` refuses locally, BEFORE any request, when this
+   * device holds no enrolled writer of its own. Nothing was asked of the
+   * server, so nothing may be reported as the server's answer.
+   */
+  it("does not blame the server for a refusal this device made by itself", async () => {
+    mount({
+      approve: async () => {
+        throw new EnrollmentError("key_lost", "this device is not enrolled itself");
+      },
+    });
+    await userEvent.type(screen.getByTestId("device-code-input"), CODE);
+    await userEvent.click(await screen.findByTestId("comparison-confirm"));
+    await userEvent.click(screen.getByTestId("approve-device"));
+    const note = await screen.findByTestId("approve-failure");
+    expect(note).toHaveTextContent(/has not been set up to make changes itself/i);
+    expect(note).not.toHaveTextContent(/server/i);
+    expect(note).not.toHaveTextContent(/fresh code/i);
   });
 
   it("says the connection failed when that is what happened, and never blames the code", async () => {

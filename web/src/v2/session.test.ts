@@ -26,6 +26,7 @@ import {
   initV2,
   isEnrollmentError,
   type EnrollmentDeps,
+  type EnrollmentError,
   isPasskeyError,
   publicKeyCreationOptions,
   publicKeyRequestOptions,
@@ -409,6 +410,36 @@ describe("signUp", () => {
     // The half that used to die: a device writer reached the server.
     expect(server.writers).toHaveLength(1);
     expect(() => handle.client.writerId).not.toThrow();
+    handle.close();
+  });
+});
+
+describe("approveDevice", () => {
+  /**
+   * The refusal is LOCAL: this device holds no enrolled writer, so it has
+   * nothing to sign with and no request is made. It must not be filed as
+   * `rejected` — that kind means the server refused, and a screen reading it
+   * tells the person "the server refuses without saying why" about a call that
+   * never happened, pointing them at the wrong half of the pair.
+   */
+  it("refuses locally, as key_lost and without asking the server, when this device is not enrolled", async () => {
+    const server = new FakeServer();
+    let calls = 0;
+    const counting: typeof server.fetch = (input, init) => {
+      calls++;
+      return server.fetch(input, init);
+    };
+    const handle = await initV2("https://ledger.test", { name: freshName(), fetch: counting });
+    const before = calls;
+    const err = await handle
+      .approveDevice({ writerId: "web-peer", publicKey: new Uint8Array(32).fill(1) })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(isEnrollmentError(err)).toBe(true);
+    expect((err as EnrollmentError).enrollmentKind).toBe("key_lost");
+    expect(calls).toBe(before);
     handle.close();
   });
 });

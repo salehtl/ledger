@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   comparisonCode,
   comparisonDigest,
+  COMPARISON_DOMAIN,
   decodeEnrolmentRequest,
   EnrolmentCodeError,
   encodeEnrolmentRequest,
@@ -110,8 +111,33 @@ describe("the comparison code", () => {
    * without this test failing and the reasoning above being read.
    */
   it("carries 50 bits, which is the number the grinding analysis chose", () => {
-    const code = comparisonCode(REQ, LOG);
-    expect(code.replace("-", "")).toHaveLength(10);
-    expect(10 * Math.log2(32)).toBe(50);
+    expect(comparisonCode(REQ, LOG).replace("-", "")).toHaveLength(10);
+  });
+
+  /**
+   * A golden vector over the whole derivation — the domain prefix, the
+   * canonical log encoding, the request fields, the truncation and the base32
+   * packer. Any change to any of them moves this string, which is the point:
+   * the two devices must agree byte for byte, so a silent re-encoding is a
+   * silent loss of the check rather than a cosmetic edit.
+   *
+   * If this fails after a deliberate format change, note that every already-
+   * enrolled pair of devices computes the old value until both are updated.
+   */
+  it("is pinned to a known value", () => {
+    expect(comparisonCode(REQ, LOG)).toBe("YAKAN-99HGC");
+  });
+
+  /**
+   * The domain prefix ends in a NUL, and it must be written `\x00` rather than
+   * as a literal byte: git treats a file containing one as binary and prints no
+   * diff for it, which has hidden two modules from review on this branch
+   * already. Asserted by code point so neither the label nor the terminator can
+   * drift while the file stays reviewable.
+   */
+  it("is domain-separated by a terminator that is escaped, not embedded", () => {
+    expect(COMPARISON_DOMAIN).toBe("ledger-v2-device-comparison\x00");
+    expect(COMPARISON_DOMAIN.codePointAt(COMPARISON_DOMAIN.length - 1)).toBe(0);
+    expect(COMPARISON_DOMAIN.slice(0, -1)).toMatch(/^[\x20-\x7e]+$/);
   });
 });

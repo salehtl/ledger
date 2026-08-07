@@ -52,8 +52,22 @@ import {
  * wrong person is still a sentence the code does not make true.
  *
  * The `rejected` arm may not claim a reason — `handleRegister` answers every
- * refusal with the same bodyless 403 — so it names the likely causes as
- * likelihoods and gives the one action that clears most of them: a fresh code.
+ * refusal with the same bodyless 403 — but it may not name causes that cannot
+ * happen either, and the first draft did. It said "its code is stale … get a
+ * fresh code", and neither half survives contact with the code:
+ *
+ *  - Nothing here goes stale. `Client.enroll` mints a fresh 5-minute challenge
+ *    immediately before each register, so the NONCE is seconds old; and the
+ *    pasted code is a writer id and a public key, which have no expiry at all.
+ *  - A fresh code cures nothing. The peer's writer id and key are the same on
+ *    the next copy, so a re-paste re-registers the identical enrolment and
+ *    collects the identical 403.
+ *
+ * The 403s that can actually arrive are `ErrWriterExists` /
+ * `ErrKeyAlreadyEnrolled` (that device is already added) and `ErrNotAuthorized`
+ * (this device's key is no longer accepted). So those are what it names, and
+ * the action it offers matches the second — re-enrol THIS device — because that
+ * is the one a person can act on.
  */
 function refusalCopy(error: unknown): string {
   const kind = isEnrollmentError(error) ? error.enrollmentKind : "unavailable";
@@ -64,15 +78,19 @@ function refusalCopy(error: unknown): string {
       return "That device was not added: too many attempts in a row. Wait a minute and try again.";
     case "rejected":
       return (
-        "That device was not added. The server refuses without saying why — the likeliest causes are that its code " +
-        "is stale, or that it is already added. Get a fresh code from that device and try again."
+        "That device was not added. The server does not say why — the likeliest causes are that it is already " +
+        "added, or that this device's key is no longer accepted for changes. Check the other device first; if it " +
+        "still cannot make changes, this device has to be set up on the account again before it can approve one."
       );
     case "revoked":
-    case "key_lost":
-      // Reachable through `approveDevice`'s own refusal when this device holds
-      // no enrolled writer, and through a 403 for a signing key the server no
-      // longer accepts. Either way the fault is on THIS side of the pair.
+      // A 403 for a signing key the server no longer accepts: the fault is on
+      // THIS side of the pair, and no code from the other device changes it.
       return "That device was not added, because this device can no longer sign for changes on this account. Approve from a device that still can.";
+    case "key_lost":
+      // The LOCAL refusal `V2Handle.approveDevice` raises before any request:
+      // this device holds no enrolled writer, so it has nothing to sign with.
+      // It must not read as a server answer — nothing was asked.
+      return "That device was not added. This device is signed in but has not been set up to make changes itself, so it cannot approve another one. Use a device that can.";
     case "misconfigured":
       return "That device was not added: this copy of ledger is not set up correctly. Nothing you do here will fix it — this is ours to repair.";
     case "unavailable":

@@ -901,9 +901,17 @@ export async function initV2(server: string, opts: InitV2Options = {}): Promise<
       // that rather than being sent to collect a 403.
       const signWith = store.load().writerId;
       if (signWith === null || signWith === "") {
+        // `key_lost`, NOT `rejected`. This refusal is entirely local — no
+        // request is made, the server says nothing, and there is no 403 to
+        // report. Filing it as `rejected` put "the server refuses without
+        // saying why" in front of a person whose own device never asked it
+        // anything, which is a sentence the code does not make true and points
+        // at the wrong half of the pair. `key_lost` is the kind whose whole
+        // meaning is "this device cannot prove who it is", which is exactly
+        // what is wrong here.
         throw new EnrollmentError(
-          "rejected",
-          "this device is not enrolled itself, so it cannot vouch for another one",
+          "key_lost",
+          "this device is not enrolled itself, so it holds no key that could vouch for another one",
         );
       }
       try {
