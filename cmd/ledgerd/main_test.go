@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -438,6 +442,120 @@ func TestRunServeAcceptsLoopbackAndTailnetAdminBinds(t *testing.T) {
 			t.Fatalf("runServe refused %q: %v", addr, err)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// autocert on the public listener (Task D3)
+// ---------------------------------------------------------------------------
+
+// No tls_domains means no TLS and no cache directory — the loopback
+// development case must not create anything or change the server.
+func TestNoTLSDomainsLeavesTheListenerCleartext(t *testing.T) {
+	srv := &http.Server{}
+	cfg := config.Config{Server: config.ServerConfig{
+		HTTPListen: "127.0.0.1:8091", AutocertCache: filepath.Join(t.TempDir(), "never"),
+	}}
+	serveTLS, err := configureTLS(cfg, srv)
+	if err != nil {
+		t.Fatalf("configureTLS: %v", err)
+	}
+	if serveTLS {
+		t.Fatal("configureTLS asked for TLS with no tls_domains")
+	}
+	if srv.TLSConfig != nil {
+		t.Fatal("configureTLS set a TLSConfig with no tls_domains")
+	}
+	if _, err := os.Stat(cfg.Server.AutocertCache); !os.IsNotExist(err) {
+		t.Fatalf("configureTLS created the autocert cache with no tls_domains: %v", err)
+	}
+}
+
+// With domains configured: TLS, a 0700 cache, and — the bit that decides which
+// firewall ports the deploy step must open — "acme-tls/1" advertised, so
+// validation happens over TLS-ALPN-01 on :443 and port 80 stays shut.
+func TestTLSDomainsGiveAnALPNCapableListenerAndA0700Cache(t *testing.T) {
+	srv := &http.Server{}
+	cache := filepath.Join(t.TempDir(), "autocert")
+	cfg := config.Config{Server: config.ServerConfig{
+		HTTPListen: ":443", TLSDomains: []string{"app.sirdab.ae", "api.sirdab.ae"}, AutocertCache: cache,
+	}}
+	serveTLS, err := configureTLS(cfg, srv)
+	if err != nil {
+		t.Fatalf("configureTLS: %v", err)
+	}
+	if !serveTLS {
+		t.Fatal("configureTLS did not ask for TLS with tls_domains set")
+	}
+	if srv.TLSConfig == nil || srv.TLSConfig.GetCertificate == nil {
+		t.Fatal("configureTLS left the server with no autocert certificate source")
+	}
+	if srv.TLSConfig.MinVersion < tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %#x, want at least TLS 1.2", srv.TLSConfig.MinVersion)
+	}
+	if !slices.Contains(srv.TLSConfig.NextProtos, "acme-tls/1") {
+		t.Fatalf("NextProtos = %v, missing acme-tls/1: without it autocert falls back to "+
+			"HTTP-01 and the deploy has to open port 80", srv.TLSConfig.NextProtos)
+	}
+	info, err := os.Stat(cache)
+	if err != nil {
+		t.Fatalf("autocert cache was not created: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("autocert cache mode = %o, want 700 (it holds the ACME account key)", perm)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The composed public listener: API + embedded PWA (Task D4)
+// ---------------------------------------------------------------------------
+
+// The PWA and the API share one origin, and the API wins every /api/ path.
+//
+// The second half is the one that matters. The SPA fallback answers an unknown
+// path with 200 and an HTML document, which is precisely the wrong answer for a
+// mistyped API route: a sync client would parse a page as a sync response and
+// the failure would surface far from the typo.
+func TestThePublicHandlerServesThePWAWithoutSwallowingAPIPaths(t *testing.T) {
+	api, _ := publicAndAdminHandlers(t)
+	h, err := publicHandler(api)
+	if err != nil {
+		t.Fatalf("publicHandler: %v", err)
+	}
+	do := func(p string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		return rec
+	}
+
+	if rec := do("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<!doctype html") {
+		t.Fatalf("GET / = %d, body starts %q; want the embedded index",
+			rec.Code, firstBytes(rec.Body.String()))
+	}
+	// A client-side route, which is not a file in the bundle.
+	if rec := do("/onboarding"); rec.Code != http.StatusOK {
+		t.Fatalf("GET /onboarding = %d, want the SPA fallback", rec.Code)
+	}
+	for _, p := range []string{"/api/v1/nope", "/api/nope", "/api/"} {
+		rec := do(p)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404 from the API's catch-all", p, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "<!doctype html") {
+			t.Fatalf("GET %s was answered with the app shell, not an API 404", p)
+		}
+	}
+	// The healthz route still answers through the composed mux — i.e. mounting
+	// the bundle did not shadow the API.
+	if rec := do("/api/v1/healthz"); rec.Code == http.StatusNotFound {
+		t.Fatal("GET /api/v1/healthz 404s through the composed handler")
+	}
+}
+
+func firstBytes(s string) string {
+	if len(s) > 60 {
+		return s[:60]
+	}
+	return s
 }
 
 // The admin console never appears on the listener users reach. This reads the

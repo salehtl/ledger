@@ -18,7 +18,8 @@
 # set both api and mx1 to DNS-only):
 #   in.sirdab.ae  MX 10 -> mx1.sirdab.ae -> 198.51.100.1   (direct, correct)
 #   in.sirdab.ae  MX 20 -> mx2.sirdab.ae (DOES NOT RESOLVE — relay VPS deferred)
-#   api.sirdab.ae            -> 198.51.100.1   (unproxied, required by D4)
+#   api.sirdab.ae            -> 198.51.100.1   (unproxied, required by D3's autocert)
+#   app.sirdab.ae            -> 198.51.100.1   (the PWA + API origin; same certificate)
 # api must stay unproxied: Cloudflare in front of it would break autocert's
 # challenge and would collapse the per-IP sign-in limiter to one key, since
 # every request would arrive from a Cloudflare address.
@@ -39,18 +40,33 @@ invalid_rcpt_burst = 5            # invalid RCPTs from one IP before the tarpit 
 tarpit_base        = "2s"         # base delay applied per invalid RCPT once tarpitting
 
 [server]
-http_listen  = "127.0.0.1:8443"   # API + sync listener (LEDGER_HTTP_LISTEN). LOOPBACK, and validate() refuses
-                                  # anything else: ledgerd serves PLAIN HTTP today, and this listener carries a
-                                  # session bearer token on every request plus the user's whole op log in the
-                                  # responses. Task D4 is the change that lifts this — it adds autocert to runServe
-                                  # so the process terminates TLS itself on the public domain, and that same change
-                                  # moves this to ":443".
+http_listen  = "127.0.0.1:8443"   # API + sync listener (LEDGER_HTTP_LISTEN). LOOPBACK unless tls_domains below is
+                                  # set, and validate() refuses anything else: with no TLS domains ledgerd serves
+                                  # PLAIN HTTP, and this listener carries a session bearer token on every request
+                                  # plus the user's whole op log in the responses. The PUBLIC deployment sets this
+                                  # to ":443" AND fills in tls_domains; neither alone is accepted.
+tls_domains  = []                 # Host names autocert obtains Let's Encrypt certificates for, e.g.
+                                  # ["app.sirdab.ae", "api.sirdab.ae"]. Bare host names — no scheme, no port, no
+                                  # wildcard — because they are matched against the TLS server name. Non-empty is
+                                  # the ONE thing that permits a non-loopback http_listen (Task D3): runServe then
+                                  # terminates TLS in-process rather than serving cleartext. Challenges are
+                                  # TLS-ALPN-01, on the same :443 socket, so port 80 need not be open at all.
+                                  # Both names are on one certificate and serve the same origin-sharing PWA + API;
+                                  # the WebAuthn rp_id is the parent domain so credentials work under either.
+                                  # Not a secret.
+autocert_cache = "/var/lib/ledger-v2/autocert"
+                                  # Where autocert keeps issued certificates and its ACME account key (created
+                                  # 0700). Required whenever tls_domains is set, and defaulted to this: a
+                                  # deployment with nowhere to cache re-requests certificates on every restart and
+                                  # walks into Let's Encrypt's issuance rate limit — a week-long outage caused by a
+                                  # missing directory.
 admin_listen = "127.0.0.1:8079"   # admin console bind address (LEDGER_ADMIN_LISTEN). TAILNET-ONLY, and enforced:
                                   # config.CheckAdminBind accepts ONLY a loopback address or one in Tailscale's
                                   # 100.64.0.0/10 (`tailscale ip -4`), and refuses everything else — ":8079",
                                   # "0.0.0.0:8079", a LAN address and a public one all fail at startup. It is
                                   # checked twice, in validate() and again in runServe immediately before
-                                  # net.Listen. Unlike http_listen's rail this one is NOT lifted by Task D4:
+                                  # net.Listen. Unlike http_listen's rail this one is NOT lifted by Task D3 —
+                                  # setting tls_domains does nothing for it, deliberately and permanently:
                                   # spec §3.1 keeps the console off the internet permanently, because it
                                   # publishes parsers and merchant mappings to every device in the beta and
                                   # reads diagnostics across all users. The binding is the control; the bearer

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/acme/autocert"
 
 	"ledger/internal/v2/addresses"
 	"ledger/internal/v2/admin"
@@ -40,6 +42,7 @@ import (
 	"ledger/internal/v2/samples"
 	"ledger/internal/v2/smtpd"
 	"ledger/internal/v2/tmpl"
+	"ledger/internal/v2/webui"
 )
 
 // modeHandlers is the single dispatch table main() uses — the real switch,
@@ -210,16 +213,17 @@ func main() {
 // runServe opens the Postgres pool, applies every embedded migration, and
 // serves the sync API until SIGINT/SIGTERM.
 //
-// Plain HTTP on purpose: TLS is deployment Task D4, which adds autocert HERE,
-// to this function, so the process terminates TLS itself on the public domain
-// (v2 is multi-user with external testers — unlike v1 it is not behind a
-// tailnet, and the plan puts no proxy in front of it).
+// TLS is terminated HERE, in this process, when server.tls_domains is set:
+// configureTLS puts autocert on the public listener (v2 is multi-user with
+// external testers — unlike v1 it is not behind a tailnet, and the plan puts no
+// proxy in front of it). With no tls_domains the listener is plain HTTP, and
+// then everything it carries is sensitive in the clear — a session bearer token
+// on every request, the user's whole op log in the responses — so
+// config.validate refuses a non-loopback address in that case and the default
+// is loopback. TLS is the only thing that lifts that rail.
 //
-// Everything this listener carries is sensitive — a session bearer token on
-// every request, the user's whole op log in the responses — so until that
-// change lands the restriction is enforced rather than assumed:
-// config.validate refuses a non-loopback http_listen and the default is
-// loopback. Lifting that rail is part of the same commit that adds autocert.
+// The embedded PWA is served from the SAME listener, behind the API routes; see
+// publicHandler for why one origin is load bearing rather than tidy.
 //
 // The SMTP receiver (Task 24) is mounted here too, on the same pool, and so is
 // the Tailscale-bound admin console (Task 32) — on its OWN listener, never on
@@ -380,7 +384,9 @@ func runServe(cfg config.Config) error {
 	// sender must re-ingest the mail that confirmation releases, or it sits held
 	// until it expires. See api.Server.Reprocessor.
 	syncAPI.Reprocessor = apiReingestAdapter{pipeline}
-	srv.Handler = syncAPI.Handler()
+	if srv.Handler, err = publicHandler(syncAPI.Handler()); err != nil {
+		return err
+	}
 
 	// The inbound SMTP receiver (Task 24). It is the most exposed surface in the
 	// system — public, unauthenticated port 25 — so it is built here, once,
@@ -478,9 +484,30 @@ func runServe(cfg config.Config) error {
 	// caller can trigger it.
 	ceremonySweepDone := startCeremonySweep(ctx, syncAPI.Passkeys)
 
+	// TLS (Task D3). Configured means public: config.validate permits a
+	// non-loopback http_listen if and only if tls_domains is non-empty, so this
+	// branch and the cleartext one below are exactly "public" and "loopback".
+	serveTLS, err := configureTLS(cfg, srv)
+	if err != nil {
+		return err
+	}
+
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("ledgerd serve: listening on %s", cfg.Server.HTTPListen)
+		if serveTLS {
+			log.Printf("ledgerd serve: listening on %s with TLS for %s (autocert, TLS-ALPN-01; "+
+				"cache %s)", cfg.Server.HTTPListen, strings.Join(cfg.Server.TLSDomains, ", "),
+				cfg.Server.AutocertCache)
+			// Empty cert and key paths: the certificate comes from
+			// TLSConfig.GetCertificate, i.e. from autocert.
+			if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+				return
+			}
+			errc <- nil
+			return
+		}
+		log.Printf("ledgerd serve: listening on %s (plain HTTP, loopback only)", cfg.Server.HTTPListen)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 			return
@@ -550,6 +577,75 @@ func runServe(cfg config.Config) error {
 	<-tombstoneSweepDone
 	<-ceremonySweepDone
 	return serveErr
+}
+
+// configureTLS puts autocert on the public listener, and reports whether the
+// caller must serve TLS. It reports false, and changes nothing, when
+// server.tls_domains is empty — the loopback development case.
+//
+// # TLS-ALPN-01, so port 80 stays shut
+//
+// The manager's TLSConfig advertises the "acme-tls/1" protocol, and Let's
+// Encrypt then validates by opening a TLS connection to :443 with that ALPN
+// name. Nothing listens on :80 and nothing needs to: no HTTP-to-HTTPS redirect
+// server, and no firewall rule for port 80 in the deploy step. That is a
+// deliberate reduction of surface — the only other option, HTTP-01, would put
+// an unauthenticated cleartext listener on the public internet whose only
+// purpose is to prove we own the name.
+//
+// # The cache is not optional
+//
+// autocert.DirCache stores the issued certificates AND the ACME account key. A
+// deployment that cannot write it re-registers and re-issues on every restart
+// and hits Let's Encrypt's duplicate-certificate limit, which is a week of
+// failed handshakes traced back to a directory. So it is created 0700 HERE, at
+// startup, before the listener — a permission problem is a startup error, not a
+// handshake failure at 3am. config.validate refuses an empty path.
+func configureTLS(cfg config.Config, srv *http.Server) (bool, error) {
+	if len(cfg.Server.TLSDomains) == 0 {
+		return false, nil
+	}
+	if err := os.MkdirAll(cfg.Server.AutocertCache, 0o700); err != nil {
+		return false, fmt.Errorf("autocert cache %s: %w", cfg.Server.AutocertCache, err)
+	}
+	m := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		Cache:      autocert.DirCache(cfg.Server.AutocertCache),
+		HostPolicy: autocert.HostWhitelist(cfg.Server.TLSDomains...),
+	}
+	tlsCfg := m.TLSConfig()
+	// TLS 1.2 floor. autocert's own default is Go's, which is the same today,
+	// but this listener carries session bearer tokens and the whole op log and
+	// the floor should not be inherited silently.
+	tlsCfg.MinVersion = tls.VersionTLS12
+	srv.TLSConfig = tlsCfg
+	return true, nil
+}
+
+// publicHandler composes what the public listener serves: the sync API, and
+// behind it the embedded PWA (Task D4).
+//
+// ONE listener, ONE origin, and that is the whole reason this composition
+// exists rather than a separate static host. A WebAuthn ceremony is bound to
+// the origin the browser reports it ran on, so serving the PWA anywhere else
+// would mean CORS on every sync request, a second entry in auth.rp_origins, and
+// a credential story that has to survive a cross-site fetch. Same origin
+// removes all three, and the Client's `server` base URL stays "".
+//
+// Order is load bearing: /api/ is routed to the API mux FIRST, so an unrouted
+// API path reaches api.Server's catch-all 404 JSON rather than the SPA
+// fallback's 200 HTML. webui.Handler declines the /api/ prefix on its own too —
+// belt and braces, because "the API is mounted first" is a property of this
+// function that a later edit could reorder with nothing to catch it.
+func publicHandler(apiHandler http.Handler) (http.Handler, error) {
+	files, err := webui.FS()
+	if err != nil {
+		return nil, fmt.Errorf("embedded pwa: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/", apiHandler)
+	mux.Handle("/", webui.Handler(files))
+	return mux, nil
 }
 
 // adminServer builds the Tailscale-bound admin console, or returns (nil, nil)

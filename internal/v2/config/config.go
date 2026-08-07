@@ -163,6 +163,24 @@ type ServerConfig struct {
 	AdminListen string `toml:"admin_listen"`
 	DSN         string `toml:"dsn"`
 
+	// TLSDomains are the host names runServe obtains Let's Encrypt
+	// certificates for, via golang.org/x/crypto/acme/autocert. It is the ONE
+	// switch that lifts validate()'s loopback rail on HTTPListen: a
+	// non-loopback listener is permitted if and only if this is non-empty,
+	// because that is the only configuration under which the listener is not
+	// cleartext. Empty means plain HTTP, and then loopback only.
+	//
+	// Bare host names, no scheme and no port — they are matched against the
+	// SNI server name (autocert.HostWhitelist). Not a secret.
+	TLSDomains []string `toml:"tls_domains"`
+
+	// AutocertCache is the directory autocert keeps issued certificates and
+	// its account key in, created 0700. Required whenever TLSDomains is set:
+	// a deployment with nowhere to cache re-requests certificates on every
+	// restart and walks into Let's Encrypt's issuance rate limit, which is a
+	// week-long outage produced by a missing directory.
+	AutocertCache string `toml:"autocert_cache"`
+
 	// AdminToken authenticates the Tailscale-bound admin API (Task 32,
 	// LEDGER_ADMIN_TOKEN). Env-only, never TOML.
 	AdminToken string `toml:"-"`
@@ -303,12 +321,19 @@ func (c Config) InboundSuffix() string { return "@in." + c.Mail.Domain }
 func defaults() Config {
 	return Config{
 		Server: ServerConfig{
-			// Loopback, not ":443". cmd/ledgerd serves PLAIN HTTP until
-			// deployment Task D4 lands TLS, and session bearer tokens plus the
-			// whole op log travel over it — so the default must not be a
-			// public interface. validate() refuses one too; see there.
+			// Loopback, not ":443". With no tls_domains configured cmd/ledgerd
+			// serves PLAIN HTTP, and session bearer tokens plus the whole op
+			// log travel over it — so the default must not be a public
+			// interface. validate() refuses one too unless TLS is configured;
+			// see there.
 			HTTPListen:  "127.0.0.1:8443",
 			AdminListen: "127.0.0.1:8079",
+			// Where autocert caches certificates and its ACME account key. A
+			// default rather than a required setting because it is inert until
+			// tls_domains is set, and the failure it prevents (re-issuing on
+			// every restart until the rate limit bites) is one nobody would
+			// think to configure their way out of in advance.
+			AutocertCache: "/var/lib/ledger-v2/autocert",
 		},
 		Mail: MailConfig{
 			SMTPListen:       ":25",
@@ -414,15 +439,14 @@ func Load(path string) (Config, error) {
 // "is this deployment accepting dev tokens" is answerable from the command line
 // that started it and from nowhere else.
 //
-// # The loopback rail is currently implied, and is written anyway
+// # This rail is now the load-bearing one
 //
-// validate() already refuses a non-loopback http_listen for every config, so
-// today this check cannot fire. Deployment Task D4 is the change that lifts
-// that general rail (it adds autocert to runServe and moves the listener to
-// :443), and on that day this is the only thing between a public deployment and
-// a server that accepts `dev:anyone` as a credential. A rail that is currently
-// redundant costs four lines; discovering it was load bearing after the fact
-// costs an account takeover.
+// It used to be implied: validate() refused every non-loopback http_listen, so
+// this check could not fire. Task D3 lifted that general rail for a
+// TLS-configured listener, so a public production config is now a legal config
+// — and this check is the only thing between it and a server that accepts
+// `dev:anyone` as a credential. TestEnableTestOnlyRefusesDevAuthOnAPublicTLSListener
+// asserts exactly that, against a config it first proves validate() accepts.
 func (c *Config) EnableTestOnly(devAuth bool, dnsFixtures string) error {
 	if !devAuth && dnsFixtures == "" {
 		return nil
@@ -504,7 +528,7 @@ func (c Config) validate() error {
 	if c.Server.HTTPListen == "" {
 		return fmt.Errorf("server.http_listen must not be empty")
 	}
-	// The HTTP listener is CLEARTEXT until deployment Task D4 terminates TLS.
+	// The HTTP listener is CLEARTEXT unless server.tls_domains is configured.
 	// Everything it carries is sensitive — the session bearer token on every
 	// request, and the user's entire op log in the responses — so binding it to
 	// anything but loopback puts all of that on the wire in the clear.
@@ -513,27 +537,29 @@ func (c Config) validate() error {
 	// `LEDGER_HTTP_LISTEN=:443` silently breaks with no visible symptom. This
 	// is the hard rail, in the same spirit as the :8080 refusal above.
 	//
-	// Task D4 is the change that lifts it, and it does so by adding autocert to
-	// cmd/ledgerd's runServe: the process terminates TLS ITSELF on the public
-	// domain. That matters for anyone reading this message — v2 is multi-user
-	// with external alpha testers, so unlike v1 it is not behind a tailnet, and
-	// there is no reverse proxy in the plan to hide behind either. The remedy
-	// is real TLS in this process, not a tunnel around it.
-	if !isLoopbackListen(c.Server.HTTPListen) {
+	// Task D3 lifted it EXACTLY as far as TLS reaches, and no further: runServe
+	// terminates TLS itself with autocert when tls_domains is non-empty (v2 is
+	// multi-user with external alpha testers, so unlike v1 it is not behind a
+	// tailnet, and there is no reverse proxy in the plan to hide behind
+	// either). Plain HTTP off loopback stays refused, because the remedy was
+	// always real TLS in this process rather than a promise about the network.
+	if !isLoopbackListen(c.Server.HTTPListen) && len(c.Server.TLSDomains) == 0 {
 		return fmt.Errorf(
-			"refusing to bind server.http_listen to %q: this listener is plain HTTP and carries "+
-				"session tokens and the whole op log. Bind loopback (e.g. 127.0.0.1:8443) until "+
-				"deployment Task D4 adds autocert to runServe, which terminates TLS in-process on "+
-				"the public domain and is the change that lifts this rail",
+			"refusing to bind server.http_listen to %q with no server.tls_domains: this listener "+
+				"is then plain HTTP and it carries session tokens and the whole op log. Either bind "+
+				"loopback (e.g. 127.0.0.1:8443) or set tls_domains, which makes runServe terminate "+
+				"TLS in-process with autocert",
 			c.Server.HTTPListen)
+	}
+	if err := c.validateTLS(); err != nil {
+		return err
 	}
 	if c.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen must not be empty")
 	}
 	// The admin rail, and the sibling of the http_listen one above. It is
-	// STRICTER: http_listen is loopback-only until Task D4 gives it real TLS and
-	// then moves to the public internet, whereas the admin console never becomes
-	// public at all — spec §3.1 keeps it tailnet-only for the life of the
+	// STRICTER: http_listen may go to the public internet once tls_domains
+	// gives it real TLS, whereas the admin console never becomes public at all — spec §3.1 keeps it tailnet-only for the life of the
 	// system, because the binding is what stops an attacker who has the bearer
 	// token. See CheckAdminBind for the full reasoning.
 	if err := CheckAdminBind(c.Server.AdminListen); err != nil {
@@ -559,6 +585,34 @@ func (c Config) validate() error {
 	}
 	if err := c.validatePush(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateTLS checks the autocert settings whenever tls_domains is set.
+//
+// Both refusals are about failures that are invisible until they are
+// expensive. A whitelist entry that is not a bare host name never matches an
+// SNI server name, so autocert answers every handshake with "host not
+// configured" and the deployment looks like a DNS or firewall problem. And a
+// cache-less deployment re-requests certificates on every restart until Let's
+// Encrypt's duplicate-certificate limit stops issuing for a week — by which
+// point the missing directory is nobody's leading hypothesis.
+func (c Config) validateTLS() error {
+	if len(c.Server.TLSDomains) == 0 {
+		return nil
+	}
+	for _, d := range c.Server.TLSDomains {
+		if d == "" || strings.ContainsAny(d, ":/ ") || strings.Contains(d, "*") {
+			return fmt.Errorf("server.tls_domains entry %q is not a bare host name: "+
+				"these are matched against the TLS server name, so a scheme, a port, a path "+
+				"or a wildcard never matches and no certificate is ever served for it", d)
+		}
+	}
+	if c.Server.AutocertCache == "" {
+		return fmt.Errorf("server.tls_domains is set but server.autocert_cache is empty: " +
+			"without a cache directory every restart re-requests certificates from Let's Encrypt " +
+			"and the deployment runs into the issuance rate limit")
 	}
 	return nil
 }

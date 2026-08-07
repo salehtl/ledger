@@ -237,7 +237,7 @@ func TestLoadWithNoPathUsesDefaultsAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
-	// Loopback by default: this listener is cleartext until Task D4.
+	// Loopback by default: with no tls_domains this listener is cleartext.
 	if cfg.Server.HTTPListen != "127.0.0.1:8443" {
 		t.Fatalf("default HTTPListen = %q", cfg.Server.HTTPListen)
 	}
@@ -369,8 +369,8 @@ func TestTheShippedExampleConfigActuallyLoads(t *testing.T) {
 }
 
 func TestRefusesToServeCleartextOnANonLoopbackAddress(t *testing.T) {
-	// ledgerd serves plain HTTP until deployment Task D4 lands TLS, and session
-	// bearer tokens plus the whole op log travel over it. "It is only reached
+	// With no server.tls_domains ledgerd serves plain HTTP, and session bearer
+	// tokens plus the whole op log travel over it. "It is only reached
 	// over Tailscale" is a deployment assumption nothing enforces, so the
 	// binding itself is the place to enforce it.
 	base := func() Config {
@@ -480,8 +480,107 @@ func TestValidateRejectsDSNPointingAtV1DataDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The public listener and autocert (Task D3)
+// ---------------------------------------------------------------------------
+
+func tlsBase() Config {
+	c := defaults()
+	c.Mail.Domain = "example.test"
+	c.Server.DSN = "postgres:///x"
+	return c
+}
+
+// The rail is lifted by TLS and by nothing else. A non-loopback http_listen is
+// permitted if and only if server.tls_domains names at least one host, because
+// that is the configuration under which runServe terminates TLS itself.
+func TestNonLoopbackHTTPListenIsPermittedOnlyWithTLSDomains(t *testing.T) {
+	for _, addr := range []string{":443", "0.0.0.0:443", "[::]:443", "192.168.1.10:8443"} {
+		c := tlsBase()
+		c.Server.HTTPListen = addr
+		if err := c.validate(); err == nil {
+			t.Fatalf("validate() accepted cleartext on %q with no tls_domains", addr)
+		}
+		c.Server.TLSDomains = []string{"app.sirdab.ae", "api.sirdab.ae"}
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate() refused TLS-configured %q: %v", addr, err)
+		}
+	}
+}
+
+// A TLS deployment with nowhere to keep its certificates re-requests them from
+// Let's Encrypt on every restart and hits the issuance rate limit; refuse at
+// startup instead.
+func TestTLSDomainsRequireAnAutocertCache(t *testing.T) {
+	c := tlsBase()
+	c.Server.HTTPListen = ":443"
+	c.Server.TLSDomains = []string{"app.sirdab.ae"}
+	c.Server.AutocertCache = ""
+	err := c.validate()
+	if err == nil {
+		t.Fatal("validate() accepted tls_domains with an empty autocert_cache")
+	}
+	if !strings.Contains(err.Error(), "autocert_cache") {
+		t.Fatalf("error does not name the setting: %v", err)
+	}
+}
+
+// The whitelist entries are host names, not URLs: autocert compares them
+// against the SNI server name, so a scheme or a port never matches anything
+// and the deployment simply fails to obtain a certificate.
+func TestTLSDomainsMustBeBareHostnames(t *testing.T) {
+	for _, bad := range []string{"https://app.sirdab.ae", "app.sirdab.ae:443", "app.sirdab.ae/", ""} {
+		c := tlsBase()
+		c.Server.HTTPListen = ":443"
+		c.Server.TLSDomains = []string{bad}
+		if err := c.validate(); err == nil {
+			t.Fatalf("validate() accepted tls_domains entry %q", bad)
+		}
+	}
+}
+
+// Task D3 lifts http_listen's rail and deliberately does NOT lift the admin
+// one: spec §3.1 keeps the console off the internet permanently.
+func TestTLSDomainsDoNotLiftTheAdminRail(t *testing.T) {
+	c := tlsBase()
+	c.Server.HTTPListen = ":443"
+	c.Server.TLSDomains = []string{"app.sirdab.ae"}
+	c.Server.AdminListen = "0.0.0.0:8079"
+	if err := c.validate(); err == nil {
+		t.Fatal("validate() accepted a public admin_listen once tls_domains was set")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The two test-only server flags (Task 14)
 // ---------------------------------------------------------------------------
+
+// THE rail Task D3 makes load bearing. Before it, validate() refused every
+// non-loopback http_listen, so EnableTestOnly's own check could not fire. Now a
+// production config is a legal config, and this is the only thing standing
+// between it and a server that accepts "dev:anyone" as a credential.
+func TestEnableTestOnlyRefusesDevAuthOnAPublicTLSListener(t *testing.T) {
+	c := tlsBase()
+	c.Server.HTTPListen = ":443"
+	c.Server.TLSDomains = []string{"app.sirdab.ae", "api.sirdab.ae"}
+	c.Server.AutocertCache = "/var/lib/ledger-v2/autocert"
+	// Precondition: this is a config the loader accepts. Without it the test
+	// could pass because the config was invalid for some unrelated reason.
+	if err := c.validate(); err != nil {
+		t.Fatalf("precondition: the production-shaped config must validate: %v", err)
+	}
+	if err := c.EnableTestOnly(true, ""); err == nil {
+		t.Fatal("EnableTestOnly accepted --dev-auth on a public TLS listener")
+	}
+	if c.DevAuth {
+		t.Fatal("EnableTestOnly left DevAuth set after refusing")
+	}
+	if err := c.EnableTestOnly(false, "dns.json"); err == nil {
+		t.Fatal("EnableTestOnly accepted --dns-fixtures on a public TLS listener")
+	}
+	if c.Server.DNSFixtures != "" {
+		t.Fatal("EnableTestOnly left DNSFixtures set after refusing")
+	}
+}
 
 // EnableTestOnly is the ONE place both flags are turned on, and it refuses
 // both unless the HTTP listener is loopback.

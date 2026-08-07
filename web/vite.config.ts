@@ -134,12 +134,17 @@ export default defineConfig({
       },
     }),
   ],
-  // NOT `../internal/web/dist` — that is v1's committed embed artifact, and a
-  // v2 build writing there would silently replace the bundle the single-user
-  // instance serves from `main`. Where v2 embeds this (a new `internal/v2`
-  // embed package, or static hosting in front of ledgerd) is an open decision;
-  // until it is made, build locally and gitignore it.
-  build: { outDir: "dist", emptyOutDir: true },
+  // DECIDED 2026-08-07 (plan task D4): `ledgerd` embeds this bundle from
+  // `internal/v2/webui` and serves it on the SAME listener as `/api/v1/*`, so
+  // the PWA and the API share one origin — which is what lets WebAuthn run
+  // with no CORS and no second hostname in `rp_origins`. Like v1's, the built
+  // output is COMMITTED, because `//go:embed all:dist` fails the Go build
+  // outright if the directory is absent.
+  //
+  // Still NOT `../internal/web/dist` — that is v1's committed embed artifact,
+  // and a v2 build writing there would silently replace the bundle the
+  // single-user instance serves from `main`. Keep these two trees apart.
+  build: { outDir: "../internal/v2/webui/dist", emptyOutDir: true },
   // `bun run dev` serves the PWA but the API client uses relative /api URLs,
   // so point them at a running Go binary. LEDGER_API overrides the target for
   // the UI test harness, which runs the server on a scratch DB and free port.

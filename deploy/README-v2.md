@@ -480,7 +480,8 @@ than accepts:
 
 | Value | Rail |
 |---|---|
-| `server.http_listen` | **must be loopback.** `":8443"`, `"0.0.0.0:8443"` and `":443"` all fail. The listener is plain HTTP and carries a session bearer token on every request plus the user's whole op log. Lifted only by task D4, in the same commit that adds autocert to `runServe` |
+| `server.http_listen` | **must be loopback unless `server.tls_domains` is non-empty.** With no TLS domains, `":8443"`, `"0.0.0.0:8443"` and `":443"` all fail: the listener is then plain HTTP and carries a session bearer token on every request plus the user's whole op log. Set `tls_domains` and `runServe` terminates TLS in-process with autocert (TLS-ALPN-01 on :443 — port 80 is never bound), which is the one thing that lifts the rail |
+| `server.tls_domains` | entries must be **bare host names** — no scheme, port, path or wildcard — because they are matched against the TLS server name. A non-empty list also requires `server.autocert_cache`: with nowhere to cache, every restart re-requests certificates and walks into Let's Encrypt's issuance rate limit |
 | `server.admin_listen` | **must be loopback or Tailscale `100.64.0.0/10`.** An empty host binds every interface and is explicitly refused. Checked **three** times: in `validate()`, at the top of `runServe` before any I/O, and again immediately before `net.Listen` so no code added in between can have changed it. **Never lifted** — §3.1 keeps the console off the internet for the life of the system |
 | `mail.max_message_bytes` | **1..`blob.MaxColdMail` (1,000,000), and larger is refused — not clamped.** The default already *is* `MaxColdMail`. Accepting mail at SMTP that the ingest path then cannot store is the worst available failure, so the receiver refuses at DATA instead |
 | any listener ending `:8080` | refused — `:8080` belongs to the running v1 instance |
