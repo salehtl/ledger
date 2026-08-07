@@ -114,6 +114,7 @@ export interface AutoAssignResult {
 }
 
 export interface TargetBody {
+  month: string;
   target_type: TargetType;
   amount_fils: number;
   cadence: Cadence;

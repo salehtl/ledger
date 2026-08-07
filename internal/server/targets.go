@@ -13,9 +13,9 @@ import (
 // TargetsStore is the store surface the category-target endpoints need.
 type TargetsStore interface {
 	UpsertCategoryTarget(store.CategoryTargetRow) error
-	SelectCategoryTargets() ([]store.CategoryTargetRow, error)
-	SelectCategoryTarget(categoryID int64) (store.CategoryTargetRow, bool, error)
-	DeleteCategoryTarget(categoryID int64) error
+	SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error)
+	SelectCategoryTargetForMonth(categoryID int64, month string) (store.CategoryTargetRow, bool, error)
+	DeleteCategoryTarget(categoryID int64, month string) error
 }
 
 // SetTargetsStore wires the targets store. Required for /api/targets.
@@ -38,24 +38,29 @@ func isFKViolation(err error) bool {
 // targetDTO is the wire shape of one category target, snake_case like the rest
 // of the v3 API surface.
 type targetDTO struct {
-	CategoryID int64  `json:"category_id"`
-	TargetType string `json:"target_type"` // set_aside | refill | save_by_date
-	AmountFils int64  `json:"amount_fils"`
-	Cadence    string `json:"cadence"`            // weekly | monthly | yearly
-	DueDate    string `json:"due_date,omitempty"` // YYYY-MM-DD, save_by_date only
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	CategoryID int64 `json:"category_id"`
+	// The month this version was set from. A later month inheriting it reports
+	// the earlier month, which is how the client can say where a target came from.
+	EffectiveMonth string `json:"effective_month"`
+	TargetType     string `json:"target_type"` // set_aside | refill | save_by_date
+	AmountFils     int64  `json:"amount_fils"`
+	Cadence        string `json:"cadence"`            // weekly | monthly | yearly
+	DueDate        string `json:"due_date,omitempty"` // YYYY-MM-DD, save_by_date only
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 func toTargetDTO(t store.CategoryTargetRow) targetDTO {
 	return targetDTO{
-		CategoryID: t.CategoryID, TargetType: t.TargetType, AmountFils: t.AmountFils,
-		Cadence: t.Cadence, DueDate: t.DueDate, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		CategoryID: t.CategoryID, EffectiveMonth: t.EffectiveMonth, TargetType: t.TargetType,
+		AmountFils: t.AmountFils, Cadence: t.Cadence, DueDate: t.DueDate,
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 }
 
 // targetInputDTO is the writable shape for PUT /api/targets/{categoryId}.
 type targetInputDTO struct {
+	Month      string `json:"month"` // 'YYYY-MM'; the version is written here
 	TargetType string `json:"target_type"`
 	AmountFils int64  `json:"amount_fils"`
 	Cadence    string `json:"cadence"`
@@ -73,12 +78,29 @@ func categoryIDFromPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
+// monthFromQuery reads ?month=YYYY-MM. Returns ok=false after writing a 400.
+// Deliberately required rather than defaulting to the current month: these
+// endpoints now change history from a point forward, and guessing which point
+// is not a decision the server should make on the client's behalf.
+func monthFromQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
+	m := r.URL.Query().Get("month")
+	if !store.ValidMonth(m) {
+		errJSON(w, http.StatusBadRequest, "month required (YYYY-MM)")
+		return "", false
+	}
+	return m, true
+}
+
 func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
 	if s.targetsStore == nil {
 		errJSON(w, http.StatusServiceUnavailable, "targets unavailable")
 		return
 	}
-	targets, err := s.targetsStore.SelectCategoryTargets()
+	month, ok := monthFromQuery(w, r)
+	if !ok {
+		return
+	}
+	targets, err := s.targetsStore.SelectCategoryTargetsForMonth(month)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
@@ -100,7 +122,11 @@ func (s *Server) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	t, found, err := s.targetsStore.SelectCategoryTarget(catID)
+	month, ok := monthFromQuery(w, r)
+	if !ok {
+		return
+	}
+	t, found, err := s.targetsStore.SelectCategoryTargetForMonth(catID, month)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
@@ -127,9 +153,13 @@ func (s *Server) handlePutTarget(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if !store.ValidMonth(in.Month) {
+		errJSON(w, http.StatusBadRequest, "month required (YYYY-MM)")
+		return
+	}
 	err := s.targetsStore.UpsertCategoryTarget(store.CategoryTargetRow{
-		CategoryID: catID, TargetType: in.TargetType, AmountFils: in.AmountFils,
-		Cadence: in.Cadence, DueDate: in.DueDate,
+		CategoryID: catID, EffectiveMonth: in.Month, TargetType: in.TargetType,
+		AmountFils: in.AmountFils, Cadence: in.Cadence, DueDate: in.DueDate,
 	})
 	if errors.Is(err, store.ErrTargetInvalid) {
 		errJSON(w, http.StatusBadRequest, err.Error())
@@ -143,9 +173,17 @@ func (s *Server) handlePutTarget(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	t, _, err := s.targetsStore.SelectCategoryTarget(catID)
+	t, found, err := s.targetsStore.SelectCategoryTargetForMonth(catID, in.Month)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if !found {
+		// The write just succeeded, so a miss here means something else (e.g. a
+		// concurrent delete for the same category+month) raced the read. Report
+		// it rather than serialize a zero-value target the client would render
+		// as if it were real.
+		errJSON(w, http.StatusInternalServerError, "target vanished after write")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -161,7 +199,19 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.targetsStore.DeleteCategoryTarget(catID); err != nil {
+	month, ok := monthFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := s.targetsStore.DeleteCategoryTarget(catID, month); err != nil {
+		if errors.Is(err, store.ErrTargetInvalid) {
+			errJSON(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if isFKViolation(err) {
+			errJSON(w, http.StatusBadRequest, "unknown category")
+			return
+		}
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
 	}

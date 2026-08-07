@@ -599,8 +599,16 @@ func (s *Store) CategoryUsage(id int64) (CategoryUsage, error) {
 		id).Scan(&u.Assignments); err != nil {
 		return CategoryUsage{}, err
 	}
+	// Version rows, so count the CURRENT state: 1 when the newest version is a
+	// real target, 0 when there is none or the newest version is a tombstone.
+	// A plain count(*) would report one per edit.
 	if err := s.DB.QueryRow(
-		`SELECT count(*) FROM category_targets WHERE category_id=?`, id).Scan(&u.Targets); err != nil {
+		`SELECT count(*) FROM category_targets t
+		  WHERE t.category_id = ?
+		    AND t.target_type <> 'none'
+		    AND t.effective_month = (SELECT MAX(x.effective_month) FROM category_targets x
+		                              WHERE x.category_id = t.category_id)`,
+		id).Scan(&u.Targets); err != nil {
 		return CategoryUsage{}, err
 	}
 	return u, nil

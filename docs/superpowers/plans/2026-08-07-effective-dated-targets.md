@@ -21,7 +21,7 @@ Spec: `docs/superpowers/specs/2026-08-07-effective-dated-targets-design.md`
 - Run `gofmt -w` on every Go file you touch. Two files are already gofmt-dirty on `main` (`internal/server/rates_test.go`, `internal/ingest/ingest.go`) — do not "fix" them, they are unrelated.
 - Do not run `bunx tsc`; it downloads a different TypeScript. Use `./node_modules/.bin/tsc -b --noEmit` from `frontend/`.
 - Frontend vitest is pinned single-fork on purpose (`vite.config.ts`). Do not change it.
-- Work in `/root/Coding/ledger` on branch `main`. Confirm with `pwd && git branch --show-current` before your first edit.
+- **Work in `/root/Coding/ledger/.claude/worktrees/effective-dated-targets` on branch `worktree-effective-dated-targets`.** Your shell may start in the main checkout `/root/Coding/ledger` — `cd` to the worktree first. Confirm with `pwd && git branch --show-current` before your first edit; if the branch is `main` you are in the wrong tree and must `cd` before touching anything.
 - Do not deploy, do not restart the `ledger` service, do not touch `/var/lib/ledger/ledger.db`. The orchestrator handles deployment.
 
 ---

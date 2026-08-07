@@ -21,6 +21,9 @@ export interface EnvelopeTargetInfo {
   /** max(0, needed − assigned). */
   still_needed_fils: number;
   funded: boolean;
+  /** The month this version was set from — may be earlier than the month
+   *  requested, which is inheritance carrying the target forward, not a bug. */
+  effective_month?: string;
 }
 
 export interface Envelope {

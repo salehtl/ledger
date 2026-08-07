@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"ledger/internal/store"
@@ -22,30 +25,31 @@ func TestTargetsCRUD(t *testing.T) {
 
 	// Upsert.
 	w := doJSON(t, srv, "PUT", "/api/targets/"+itoa(catID), map[string]any{
-		"target_type": "set_aside", "amount_fils": 50_000, "cadence": "monthly",
+		"month": "2026-07", "target_type": "set_aside", "amount_fils": 50_000, "cadence": "monthly",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d; body: %s", w.Code, w.Body)
 	}
 	var dto struct {
-		CategoryID int64  `json:"category_id"`
-		TargetType string `json:"target_type"`
-		AmountFils int64  `json:"amount_fils"`
-		Cadence    string `json:"cadence"`
+		CategoryID     int64  `json:"category_id"`
+		EffectiveMonth string `json:"effective_month"`
+		TargetType     string `json:"target_type"`
+		AmountFils     int64  `json:"amount_fils"`
+		Cadence        string `json:"cadence"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &dto)
-	if dto.CategoryID != catID || dto.TargetType != "set_aside" || dto.AmountFils != 50_000 || dto.Cadence != "monthly" {
+	if dto.CategoryID != catID || dto.EffectiveMonth != "2026-07" || dto.TargetType != "set_aside" || dto.AmountFils != 50_000 || dto.Cadence != "monthly" {
 		t.Fatalf("PUT dto = %+v", dto)
 	}
 
 	// Single get.
-	w = doJSON(t, srv, "GET", "/api/targets/"+itoa(catID), nil)
+	w = doJSON(t, srv, "GET", "/api/targets/"+itoa(catID)+"?month=2026-07", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET one status = %d", w.Code)
 	}
 
 	// List.
-	w = doJSON(t, srv, "GET", "/api/targets", nil)
+	w = doJSON(t, srv, "GET", "/api/targets?month=2026-07", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET list status = %d", w.Code)
 	}
@@ -57,18 +61,18 @@ func TestTargetsCRUD(t *testing.T) {
 
 	// Overwrite with a save_by_date target.
 	w = doJSON(t, srv, "PUT", "/api/targets/"+itoa(catID), map[string]any{
-		"target_type": "save_by_date", "amount_fils": 120_000, "due_date": "2026-12-01",
+		"month": "2026-07", "target_type": "save_by_date", "amount_fils": 120_000, "due_date": "2026-12-01",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("overwrite status = %d; body: %s", w.Code, w.Body)
 	}
 
 	// Delete, then 404.
-	w = doJSON(t, srv, "DELETE", "/api/targets/"+itoa(catID), nil)
+	w = doJSON(t, srv, "DELETE", "/api/targets/"+itoa(catID)+"?month=2026-07", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("DELETE status = %d", w.Code)
 	}
-	w = doJSON(t, srv, "GET", "/api/targets/"+itoa(catID), nil)
+	w = doJSON(t, srv, "GET", "/api/targets/"+itoa(catID)+"?month=2026-07", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET after delete status = %d, want 404", w.Code)
 	}
@@ -83,12 +87,14 @@ func TestPutTargetValidation(t *testing.T) {
 		path string
 		body map[string]any
 	}{
-		{"bad type", "/api/targets/" + itoa(catID), map[string]any{"target_type": "wat", "amount_fils": 100}},
-		{"zero amount", "/api/targets/" + itoa(catID), map[string]any{"target_type": "refill", "amount_fils": 0}},
-		{"bad cadence", "/api/targets/" + itoa(catID), map[string]any{"target_type": "refill", "amount_fils": 100, "cadence": "daily"}},
-		{"save_by_date without due_date", "/api/targets/" + itoa(catID), map[string]any{"target_type": "save_by_date", "amount_fils": 100}},
-		{"unknown category", "/api/targets/424242", map[string]any{"target_type": "refill", "amount_fils": 100}},
-		{"non-numeric id", "/api/targets/abc", map[string]any{"target_type": "refill", "amount_fils": 100}},
+		{"bad type", "/api/targets/" + itoa(catID), map[string]any{"month": "2026-07", "target_type": "wat", "amount_fils": 100}},
+		{"zero amount", "/api/targets/" + itoa(catID), map[string]any{"month": "2026-07", "target_type": "refill", "amount_fils": 0}},
+		{"bad cadence", "/api/targets/" + itoa(catID), map[string]any{"month": "2026-07", "target_type": "refill", "amount_fils": 100, "cadence": "daily"}},
+		{"save_by_date without due_date", "/api/targets/" + itoa(catID), map[string]any{"month": "2026-07", "target_type": "save_by_date", "amount_fils": 100}},
+		{"unknown category", "/api/targets/424242", map[string]any{"month": "2026-07", "target_type": "refill", "amount_fils": 100}},
+		{"non-numeric id", "/api/targets/abc", map[string]any{"month": "2026-07", "target_type": "refill", "amount_fils": 100}},
+		{"missing month", "/api/targets/" + itoa(catID), map[string]any{"target_type": "refill", "amount_fils": 100}},
+		{"bad month", "/api/targets/" + itoa(catID), map[string]any{"month": "2026-13", "target_type": "refill", "amount_fils": 100}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,5 +111,199 @@ func TestTargetsUnavailableWithoutStore(t *testing.T) {
 	w := doJSON(t, srv, "GET", "/api/targets", nil)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", w.Code)
+	}
+}
+
+// TestDeleteTargetUnknownCategory: DeleteCategoryTarget writes a tombstone
+// (an INSERT), so an unknown category trips the foreign key rather than
+// silently no-op'ing. The handler must map that to 400, the same way
+// handlePutTarget already does, not let it fall through to a bare 500.
+func TestDeleteTargetUnknownCategory(t *testing.T) {
+	srv, _ := newTargetsTestServer(t)
+	w := doJSON(t, srv, "DELETE", "/api/targets/424242?month=2026-09", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body)
+	}
+}
+
+// raceyTargetsStore fakes a write that races a concurrent delete: the
+// upsert reports success but the immediate re-read misses. Exercises
+// handlePutTarget's !found branch, which a real store can hit only inside a
+// narrow concurrent-delete window.
+type raceyTargetsStore struct{}
+
+func (raceyTargetsStore) UpsertCategoryTarget(store.CategoryTargetRow) error { return nil }
+func (raceyTargetsStore) SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error) {
+	return nil, nil
+}
+func (raceyTargetsStore) SelectCategoryTargetForMonth(categoryID int64, month string) (store.CategoryTargetRow, bool, error) {
+	return store.CategoryTargetRow{}, false, nil
+}
+func (raceyTargetsStore) DeleteCategoryTarget(categoryID int64, month string) error { return nil }
+
+// TestPutTargetReReadMiss: if the post-write read reports found=false, the
+// handler must not serialize the resulting zero-value target as a 200 — a
+// client rendering that response would show a fabricated 0-fils target.
+func TestPutTargetReReadMiss(t *testing.T) {
+	srv := New(fakeChecker{}, testFS())
+	srv.SetTargetsStore(raceyTargetsStore{})
+
+	w := doJSON(t, srv, "PUT", "/api/targets/1", map[string]any{
+		"month": "2026-07", "target_type": "set_aside", "amount_fils": 50_000, "cadence": "monthly",
+	})
+	if w.Code == http.StatusOK {
+		t.Fatalf("status = 200 with body %s, want a non-200 error rather than a phantom target", w.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["error"]; !ok {
+		t.Fatalf("body = %+v, want an error field, not a target-shaped body", body)
+	}
+}
+
+func seedServerCategory(t *testing.T, st *store.Store, name string) int64 {
+	t.Helper()
+	res, err := st.DB.Exec(`INSERT INTO categories (name, kind, bucket) VALUES (?, 'spending', 'need')`, name)
+	if err != nil {
+		// Fresh test stores seed default categories; a name collision here
+		// (e.g. "Groceries") means the category already exists — reuse it.
+		var id int64
+		if qerr := st.DB.QueryRow(`SELECT id FROM categories WHERE name = ?`, name).Scan(&id); qerr == nil {
+			return id
+		}
+		t.Fatal(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// putTargetAt PUTs a target effective from month and returns the response code.
+func putTargetAt(t *testing.T, srv *Server, catID int64, month string, amount int64) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"month": month, "target_type": "set_aside", "amount_fils": amount, "cadence": "monthly",
+	})
+	r := httptest.NewRequest("PUT", fmt.Sprintf("/api/targets/%d", catID), bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	return w.Code
+}
+
+// getTargetsAt returns the resolved target list for month.
+func getTargetsAt(t *testing.T, srv *Server, month string) []map[string]any {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/api/targets?month="+month, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/targets?month=%s = %d; body: %s", month, w.Code, w.Body)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestTargets_EditIsScopedForward(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetTargetsStore(st)
+	cat := seedServerCategory(t, st, "Groceries")
+
+	if code := putTargetAt(t, srv, cat, "2026-07", 150000); code != http.StatusOK {
+		t.Fatalf("PUT July = %d", code)
+	}
+	if code := putTargetAt(t, srv, cat, "2026-08", 200000); code != http.StatusOK {
+		t.Fatalf("PUT August = %d", code)
+	}
+
+	jul := getTargetsAt(t, srv, "2026-07")
+	if len(jul) != 1 || jul[0]["amount_fils"].(float64) != 150000 {
+		t.Errorf("July = %+v, want a single 150000 target (an August edit changed July)", jul)
+	}
+	aug := getTargetsAt(t, srv, "2026-08")
+	if len(aug) != 1 || aug[0]["amount_fils"].(float64) != 200000 {
+		t.Errorf("August = %+v, want a single 200000 target", aug)
+	}
+	sep := getTargetsAt(t, srv, "2026-09")
+	if len(sep) != 1 || sep[0]["amount_fils"].(float64) != 200000 {
+		t.Errorf("September = %+v, want August's 200000 carried forward", sep)
+	}
+}
+
+func TestTargets_DeleteIsScopedForward(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetTargetsStore(st)
+	cat := seedServerCategory(t, st, "Groceries")
+	putTargetAt(t, srv, cat, "2026-07", 150000)
+
+	r := httptest.NewRequest("DELETE", fmt.Sprintf("/api/targets/%d?month=2026-08", cat), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE = %d; body: %s", w.Code, w.Body)
+	}
+
+	if got := getTargetsAt(t, srv, "2026-07"); len(got) != 1 {
+		t.Errorf("July lost its target to an August removal: %+v", got)
+	}
+	if got := getTargetsAt(t, srv, "2026-08"); len(got) != 0 {
+		t.Errorf("August still has a target: %+v", got)
+	}
+	if got := getTargetsAt(t, srv, "2026-12"); len(got) != 0 {
+		t.Errorf("December still has a target — tombstone did not carry: %+v", got)
+	}
+}
+
+func TestTargets_MonthIsRequired(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetTargetsStore(st)
+	cat := seedServerCategory(t, st, "Groceries")
+
+	for _, tc := range []struct{ method, url string }{
+		{"GET", "/api/targets"},
+		{"GET", fmt.Sprintf("/api/targets/%d", cat)},
+		{"DELETE", fmt.Sprintf("/api/targets/%d", cat)},
+	} {
+		r := httptest.NewRequest(tc.method, tc.url, nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s %s = %d, want 400", tc.method, tc.url, w.Code)
+		}
+	}
+
+	body, _ := json.Marshal(map[string]any{"target_type": "set_aside", "amount_fils": 1000})
+	r := httptest.NewRequest("PUT", fmt.Sprintf("/api/targets/%d", cat), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT without month = %d, want 400", w.Code)
+	}
+}
+
+func TestTargets_ResponseCarriesEffectiveMonth(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetTargetsStore(st)
+	cat := seedServerCategory(t, st, "Groceries")
+	putTargetAt(t, srv, cat, "2026-07", 150000)
+
+	got := getTargetsAt(t, srv, "2026-09")
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	// September inherits July's version; the client shows where it came from.
+	if got[0]["effective_month"] != "2026-07" {
+		t.Errorf("effective_month = %v, want 2026-07", got[0]["effective_month"])
 	}
 }
