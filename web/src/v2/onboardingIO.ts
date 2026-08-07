@@ -385,6 +385,25 @@ export function trustBasis(item: QuarantineItem): TrustBasis {
   return { authenticated: true, label: domain, domain, source: item.attestedBy || "Verified signature" };
 }
 
+/**
+ * The expiry notice, or `null` while there is nothing to count down to.
+ *
+ * Held mail expires after 30 days and §2 forbids dropping anything without a
+ * user-visible notice. Both halves of that notice are on the wire: `warned_at`
+ * says the warning has gone out, and `delete_after` is the instant the sweep
+ * will actually act — **computed by the store, not here**, because a second copy
+ * of that arithmetic in the client is how a UI ends up promising a date the
+ * server does not honour. Until the warning has been sent there is no deletion
+ * to announce, which is why both fields are required for a notice at all.
+ */
+export function deletionNotice(item: QuarantineItem, nowMs: number): string | null {
+  if (item.warnedAt === null || item.deleteAfter === null) return null;
+  const deadline = Date.parse(item.deleteAfter);
+  if (!Number.isFinite(deadline)) return "Deletion deadline unavailable";
+  const days = Math.max(0, Math.ceil((deadline - nowMs) / 86_400_000));
+  return days === 0 ? "Scheduled for deletion today" : `Scheduled for deletion in ${days} day${days === 1 ? "" : "s"}`;
+}
+
 /** Which (domain, scope) pair confirming this item would send, or null. */
 export function trustRequest(item: QuarantineItem): { domain: string; scope: TrustScope } | null {
   if (!item.attested) return null;

@@ -51,9 +51,34 @@ const CARD_SHADOW = '0 18px 40px -16px rgba(20,23,31,0.35)'
 /** Taps this close together (ms) count as part of one multi-tap. */
 const TAP_WINDOW_MS = 500
 
+/**
+ * What the hero says, when the caller states it rather than deriving it.
+ *
+ * The v1 path computes this from `Txn.AmountFils`, a `number`. v2 money is
+ * `int64` minor units carried as `bigint` all the way from the projection, and
+ * converting it to a `number` to get it through this component is exactly the
+ * thing the project forbids — so the v2 caller formats from the `bigint` and
+ * hands over the finished strings. Both are already unsigned-free: `text`
+ * carries its own sign, `label` its own currency.
+ */
+export interface AmountDisplay {
+  /** e.g. `"−250.00"`. Signed, formatted, ready to print. */
+  text: string
+  /** e.g. `"Spent · AED"`. Names the currency the figure is actually in. */
+  label: string
+  /** The native-amount footnote, when the figure above is a conversion. */
+  note?: string | null
+  /** Paints the figure as money coming in. */
+  credit?: boolean
+}
+
 interface SwipeCardProps {
   txn: Txn
   config?: SwipeConfig
+  /** Overrides the derived hero. See {@link AmountDisplay}. */
+  amount?: AmountDisplay
+  /** Overrides the derived "why is this here" line. */
+  reason?: string
   /** When set, the card exits toward this bucket. AnimatePresence plays it. */
   flying?: SwipeDirection | null
   onDirectionCommit: (dir: SwipeDirection) => void
@@ -74,6 +99,8 @@ interface SwipeCardProps {
 export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function SwipeCard({
   txn,
   config = DEFAULT_SWIPE_CONFIG,
+  amount,
+  reason,
   flying = null,
   onDirectionCommit,
   onTripleTap,
@@ -196,7 +223,7 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
     year: 'numeric',
   })
 
-  const credit = txn.Direction === 'credit'
+  const credit = amount?.credit ?? txn.Direction === 'credit'
 
   return (
     <m.div
@@ -283,7 +310,7 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
                 {accountLabel(txn)}
               </span>
             )}
-            <span>{reviewReason(txn)}</span>
+            <span>{reason ?? reviewReason(txn)}</span>
           </div>
           {txn.Source === 'email' && onOpenEmail && (
             <Pressable
@@ -302,7 +329,7 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
               hero fell back to the native amount while the label still said
               AED, so a GBP 45.00 charge read as AED 45.00 at 48px. */}
           <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted mb-1">
-            {credit ? 'Received' : 'Spent'} · {aedFils(txn) === null ? txn.Currency : 'AED'}
+            {amount?.label ?? `${credit ? 'Received' : 'Spent'} · ${aedFils(txn) === null ? txn.Currency : 'AED'}`}
           </span>
           {/* clamp, not a hard 3rem: the card is ~261px wide and clips its
               overflow, so a five-figure amount lost a digit off each end. */}
@@ -310,11 +337,15 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
             className="tnum font-bold leading-none max-w-full"
             style={{ fontSize: 'clamp(1.75rem, 9vw, 3rem)', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
           >
-            {credit ? '+' : '−'}{formatFils(aedFils(txn) ?? txn.AmountFils)}
+            {amount?.text ?? `${credit ? '+' : '−'}${formatFils(aedFils(txn) ?? txn.AmountFils)}`}
           </span>
-          {nativeAmountTag(txn) && (
-            <p className="tnum text-xs text-muted">{nativeAmountTag(txn)}{aedFils(txn) === null ? " · no AED rate" : ""}</p>
-          )}
+          {amount !== undefined
+            ? amount.note != null && amount.note !== '' && (
+                <p className="tnum text-xs text-muted">{amount.note}</p>
+              )
+            : nativeAmountTag(txn) && (
+                <p className="tnum text-xs text-muted">{nativeAmountTag(txn)}{aedFils(txn) === null ? " · no AED rate" : ""}</p>
+              )}
         </div>
       </div>
 

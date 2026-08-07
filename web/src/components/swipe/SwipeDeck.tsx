@@ -17,7 +17,7 @@ import {
   actionColor,
   onActionColor,
 } from '../../lib/swipe'
-import { SwipeCard, SWIPE_ICONS } from './SwipeCard'
+import { SwipeCard, SWIPE_ICONS, type AmountDisplay } from './SwipeCard'
 import { SubcategoryPanel } from './SubcategoryPanel'
 import { LinkRefundSheet } from '../transactions/LinkRefundSheet'
 import { EmailPreviewSheet } from '../transactions/EmailPreviewSheet'
@@ -26,6 +26,30 @@ interface SwipeDeckProps {
   transactions: Txn[]
   categories: Category[]
   config?: SwipeConfig
+  /**
+   * Where a sorted card goes, when the caller owns that.
+   *
+   * The deck's own path POSTs to v1's `/api/transactions/:id/categorize`. On the
+   * v2 projection there is no such route: an answer is an op appended to the
+   * local log through the outbox, and only the screen holds the writer. Passing
+   * this replaces the network half and nothing else — the gesture, the rails,
+   * the fly-out, the ghost card and the undo toast are untouched.
+   *
+   * It must resolve only once the answer is DURABLE. The deck advances on the
+   * resolve and offers undo against it.
+   */
+  onCommit?: (txn: Txn, category: Category, makeRule: boolean) => Promise<void>
+  /** Reverses an {@link SwipeDeckProps.onCommit}. Without it, no undo is offered. */
+  onUndo?: (txn: Txn, category: Category) => Promise<void>
+  /**
+   * States the hero rather than deriving it from `Txn.AmountFils`.
+   *
+   * v2 money is `bigint` and must not become a `number` to get through a
+   * component. See `SwipeCard`'s {@link AmountDisplay}.
+   */
+  amountOf?: (txn: Txn) => AmountDisplay
+  /** States why a card is in the queue, rather than deriving it from v1's `Confidence`. */
+  reasonOf?: (txn: Txn) => string
 }
 
 interface DeckState {
@@ -124,11 +148,26 @@ interface Commit {
   txn: Txn
   kind: 'categorize' | 'transfer'
   categoryName?: string
+  /** The category chosen, kept whole so a local undo can name it. */
+  category?: Category
   ruleID?: number
   projectID?: number | null
 }
 
-export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CONFIG }: SwipeDeckProps) {
+export function SwipeDeck({
+  transactions,
+  categories,
+  config = DEFAULT_SWIPE_CONFIG,
+  onCommit,
+  onUndo,
+  amountOf,
+  reasonOf,
+}: SwipeDeckProps) {
+  // Whether this deck owns the network at all. Everything gated on it is a v1
+  // route `ledgerd` does not serve — the projects fetch, the refund link, the
+  // source-email sheet — and an affordance that looked live and 404ed would be
+  // worse than its absence.
+  const local = onCommit !== undefined
   // Bucket colours resolve against the active theme at call time, so the deck
   // has to re-render when the OS flips or the rails keep the old theme's hues.
   useDitherTheme()
@@ -151,7 +190,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
 
   // Active projects for the panel's assign-on-sort chips (same cache key as
   // the list view's CategorizeSheet).
-  const projects = useQuery({ queryKey: ['projects', 'active'], queryFn: () => getProjects(false) })
+  const projects = useQuery({ queryKey: ['projects', 'active'], queryFn: () => getProjects(false), enabled: !local })
 
   // Freeze the transaction list at mount time. Live refetches update the
   // query cache but shouldn't shift the index mid-session.
@@ -163,10 +202,14 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
   const next = queue[state.index + 1] ?? null
 
   const invalidate = useCallback(() => {
+    // v1 cache keys. On the local path the screen's own commit/undo owns
+    // invalidation, because it is the only thing that knows which projection
+    // queries an appended op touches.
+    if (local) return
     qc.invalidateQueries({ queryKey: ['review'] })
     qc.invalidateQueries({ queryKey: ['transactions'] })
     qc.invalidateQueries({ queryKey: ['summary'] })
-  }, [qc])
+  }, [qc, local])
 
   // Bring a committed card back to the front of the deck (undo / failed save).
   const restoreCard = useCallback((commit: Commit) => {
@@ -191,7 +234,11 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     }
     fire('selection')
     commitRef.current = null
-    const reverse = commit.kind === 'transfer'
+    const reverse = local
+      ? commit.category !== undefined && onUndo !== undefined
+        ? onUndo(commit.txn, commit.category)
+        : Promise.resolve()
+      : commit.kind === 'transfer'
       ? Promise.all([
           postJSON(`/api/transactions/${commit.txn.ID}/categorize`, { category_id: null }),
           postJSON(`/api/transactions/${commit.txn.ID}/status`, { status: 'needs_review' }),
@@ -207,7 +254,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         restoreCard(commit)
       })
       .catch(() => toast.show({ message: "Couldn't undo — fix it from Transactions", tone: 'error' }))
-  }, [invalidate, restoreCard, toast])
+  }, [invalidate, restoreCard, toast, local, onUndo])
 
   const handleDirectionCommit = useCallback((dir: SwipeDirection) => {
     const action = config[dir]
@@ -229,12 +276,29 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     const categoryName = chosen?.Name ?? 'category'
     const commit: Commit = {
       seq: ++seqRef.current, index: state.index, txn: current, kind: isTransfer ? 'transfer' : 'categorize', categoryName,
+      ...(chosen === undefined ? {} : { category: chosen }),
     }
     commitRef.current = commit
     // Close the panel and mark the card as flying. Do NOT advance the index
     // here — see the effect below for why the two must land in separate
     // renders.
     setState(s => ({ ...s, pendingDirection: null, flyDirection: dir }))
+    // The local path: one call, which the screen turns into ops. There is no
+    // transfer status and no project assignment in the op vocabulary, so the
+    // two extra round-trips below simply do not exist here.
+    if (onCommit !== undefined) {
+      if (chosen === undefined) return
+      try {
+        await onCommit(current, chosen, state.makeRule)
+        toast.show({
+          message: `Sorted into ${categoryName}`,
+          ...(onUndo === undefined ? {} : { action: { label: 'Undo', onAction: () => undoCommit(commit.seq) } }),
+        })
+      } catch {
+        failCommit(commit)
+      }
+      return
+    }
     try {
       const resp = await postJSON<{ ok: boolean; rule_id?: number }>(
         `/api/transactions/${current.ID}/categorize`,
@@ -267,7 +331,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
     } catch {
       failCommit(commit)
     }
-  }, [current, categories, projects.data, config, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit])
+  }, [current, categories, projects.data, config, state.pendingDirection, state.makeRule, state.index, invalidate, toast, undoCommit, failCommit, onCommit, onUndo])
 
   // One render after the card is marked flying, swap in the next one.
   // AnimatePresence holds the outgoing card mounted for its exit — with the
@@ -422,11 +486,13 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
                 key={current.ID}
                 txn={current}
                 config={config}
+                {...(amountOf === undefined ? {} : { amount: amountOf(current) })}
+                {...(reasonOf === undefined ? {} : { reason: reasonOf(current) })}
                 flying={state.flyDirection}
                 onDirectionCommit={handleDirectionCommit}
                 onTripleTap={handleTripleTap}
                 onPreview={handlePreview}
-                onOpenEmail={() => setEmailOpen(true)}
+                {...(local ? {} : { onOpenEmail: () => setEmailOpen(true) })}
               />
             )}
           </AnimatePresence>
@@ -443,7 +509,7 @@ export function SwipeDeck({ transactions, categories, config = DEFAULT_SWIPE_CON
         </Pressable>
       </div>
 
-      {current && current.Direction === 'credit' && (
+      {!local && current && current.Direction === 'credit' && (
         <button
           className="mx-auto mt-2 text-sm font-medium text-fg"
           onClick={() => setLinkOpen(true)}

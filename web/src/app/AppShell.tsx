@@ -19,6 +19,7 @@ import { Insights } from "../screens/Insights";
 import { Settings } from "../screens/Settings";
 import type { SettingsIntent } from "../screens/Settings";
 import { Review } from "../screens/Review";
+import { Quarantine } from "../screens/Quarantine";
 import { IngestHealthBanner } from "../components/IngestHealthBanner";
 import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
 import { ProjectsFlow } from "../screens/projects/ProjectsFlow";
@@ -42,7 +43,10 @@ type Overlay =
   | { kind: "settings"; intent?: SettingsIntent }
   | { kind: "accounts" }
   | { kind: "recurring" }
-  | { kind: "reports" };
+  | { kind: "reports" }
+  // Held mail. A drill-in rather than a tab: it is a decision a user makes
+  // rarely (once per bank) and the five tab slots are all task nouns.
+  | { kind: "quarantine" };
 
 export function AppShell() {
   const [tab, setTab] = useState<TabId>("home");
@@ -156,7 +160,7 @@ export function AppShell() {
           )}
           {tab === "plan" && <PlanScreen scope={scope} />}
           {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
-          {tab === "review" && <Review scope={scope} />}
+          {tab === "review" && <Review onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />}
           {tab === "insights" && <Insights scope={scope} />}
         </div>
       </main>
@@ -182,6 +186,10 @@ export function AppShell() {
             ) : o.kind === "accounts" ? (
               <SettingsPage title="Accounts" onClose={popOverlay} covered={accountsSubpage}>
                 <AccountsScreen onDetailChange={setAccountsSubpage} />
+              </SettingsPage>
+            ) : o.kind === "quarantine" ? (
+              <SettingsPage title="Held mail" onClose={popOverlay}>
+                <Quarantine />
               </SettingsPage>
             ) : o.kind === "reports" ? (
               <SettingsPage title="Reports" onClose={popOverlay}>

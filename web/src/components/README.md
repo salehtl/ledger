@@ -783,6 +783,19 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   without the DOM node, and falls back to `sync` with a warning), and the
   deck's `index` must advance one render *after* `flyDirection` is set, since
   AnimatePresence animates a child out as it was last rendered.
+  **Two decks, one component.** By default it owns the network and POSTs to
+  v1's `/api/transactions/:id/categorize`. Pass `onCommit` (and optionally
+  `onUndo`) and it owns none of it: the screen turns the answer into ops
+  through the outbox, the deck skips its own invalidation, and the three
+  affordances that are v1 routes `ledgerd` does not serve — the projects
+  fetch, "this is a refund", "view source email" — are not rendered rather
+  than rendered and broken. Nothing about the gesture, the rails, the fly-out
+  or the undo toast changes between the two. Two display props go with it:
+  `amountOf` states the hero instead of deriving it from `Txn.AmountFils`
+  (v2 money is `bigint` and must never become a `number` to get through a
+  component — see `SwipeCard`'s `AmountDisplay`), and `reasonOf` states the
+  why-is-this-here line instead of deriving it from v1's `Confidence`.
+  `v2/reviewDeck.ts` is the adapter that builds all of it, with its own test.
 - `AddTransactionSheet` / `LinkRefundSheet` — further `Dialog` composition
   examples.
 - `TrendBars` / `FlowBars` (`charts/`) — monthly spending / money-in-vs-out
