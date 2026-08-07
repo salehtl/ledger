@@ -73,4 +73,38 @@ describe("TargetSheet", () => {
       expect(String(del![0])).toContain("month=2026-08");
     });
   });
+
+  // Undo restores the target that removeTarget's DELETE just tombstoned. The
+  // DELETE only tombstoned from `month` (the month being edited) onward, so
+  // the restore must PUT starting at that same `month` — NOT at the target's
+  // `effective_month`, which for an inherited target can be an earlier month.
+  // Restoring at effective_month would silently rewrite history the user
+  // never touched. effective_month="2026-05" vs month="2026-08" here are
+  // deliberately different so the assertion actually distinguishes them.
+  it("undo restores the target starting at the month being edited, not its (earlier) effective_month", async () => {
+    const withInheritedTarget = {
+      ...envelope,
+      target: {
+        type: "set_aside",
+        amount_fils: 150000,
+        cadence: "monthly",
+        still_needed_fils: 0,
+        effective_month: "2026-05",
+      },
+    } as unknown as Envelope;
+    renderSheet("2026-08", withInheritedTarget);
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    const undoButton = await screen.findByRole("button", { name: /undo/i });
+    fireEvent.click(undoButton);
+
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      const puts = calls.filter((c) => c[1]?.method === "PUT");
+      expect(puts.length, "expected a restore PUT to /api/targets").toBeGreaterThan(0);
+      const restoreBody = JSON.parse(puts[puts.length - 1][1].body);
+      expect(restoreBody).toMatchObject({ month: "2026-08", amount_fils: 150000, cadence: "monthly" });
+      expect(restoreBody.month).not.toBe("2026-05");
+    });
+  });
 });
