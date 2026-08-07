@@ -46,7 +46,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 PG_STOP=""
-cleanup() { [[ -n "$PG_STOP" ]] && $PG_STOP || true; }
+# The scratch bundle directory the web guards build into (see the bottom of this
+# script). Cleaned up on any exit, including a failing one, so a gate that stops
+# early does not leave a ~2 MB bundle behind in /tmp on every run.
+WEB_OUT=""
+cleanup() {
+	[[ -n "$WEB_OUT" ]] && rm -rf "$WEB_OUT"
+	[[ -n "$PG_STOP" ]] && $PG_STOP || true
+}
 trap cleanup EXIT
 
 # `eval "$(go run ...)"` alone does NOT fail loudly if `go run` fails: a
@@ -119,6 +126,15 @@ fi
 # `vite build`'s job (see vite.config.ts's alias comment); `bun run test`
 # never runs Rollup, so it cannot see that failure either. Task 3 added this
 # line after finding the gap.
-(cd web && bun run build)
+#
+# It builds into a THROWAWAY directory. `internal/v2/webui/dist` is a tracked
+# artifact the deploy step owns, and a gate that rewrites it dirties the working
+# tree on every run — after which the checkout silently disagrees with what is
+# deployed and `git status` stops being usable as a signal. Both guards run
+# either way: they are `tsc -b` and Rollup, and neither cares where the output
+# lands. `LEDGER_WEB_OUT_DIR` is read by web/vite.config.ts and has no other
+# caller; the deploy build passes no override and writes the committed artifact.
+WEB_OUT="$(mktemp -d)"
+(cd web && LEDGER_WEB_OUT_DIR="$WEB_OUT" bun run build)
 
 echo "v2-check: OK (go + client + web + conformance)"

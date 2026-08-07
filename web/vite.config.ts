@@ -144,7 +144,17 @@ export default defineConfig({
   // Still NOT `../internal/web/dist` — that is v1's committed embed artifact,
   // and a v2 build writing there would silently replace the bundle the
   // single-user instance serves from `main`. Keep these two trees apart.
-  build: { outDir: "../internal/v2/webui/dist", emptyOutDir: true },
+  //
+  // `LEDGER_WEB_OUT_DIR` overrides the destination, and exists for exactly one
+  // caller: `scripts/v2-check.sh`. The gate runs `bun run build` because that is
+  // the ONLY thing that exercises the two browser guards (`tsc -b` for a stray
+  // `Bun.*`, Rollup for a `node:`/`bun:` import reaching the bundle) — but a
+  // gate that rewrites a tracked artifact is a gate that dirties the tree on
+  // every run, and the working copy then diverges from what is deployed with
+  // nothing to show for it. Pointing the gate at a throwaway directory keeps
+  // both guards running and leaves `dist` alone; the deploy step still builds
+  // with no override and writes the committed artifact.
+  build: { outDir: process.env.LEDGER_WEB_OUT_DIR ?? "../internal/v2/webui/dist", emptyOutDir: true },
   // `bun run dev` serves the PWA but the API client uses relative /api URLs,
   // so point them at a running Go binary. LEDGER_API overrides the target for
   // the UI test harness, which runs the server on a scratch DB and free port.
