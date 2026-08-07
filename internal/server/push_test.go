@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"ledger/internal/push"
 	"ledger/internal/store"
 )
 
@@ -153,5 +155,90 @@ func TestHandlePushTest_WithoutSenderReturns503(t *testing.T) {
 	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 when VAPID is unconfigured", w.Code)
+	}
+}
+
+// goneSender rejects every send as a permanently dead subscription.
+type goneSender struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *goneSender) PublicKey() string { return "fake_public_key" }
+func (g *goneSender) Send(_ context.Context, endpoint, _, _ string, _ []byte) error {
+	g.mu.Lock()
+	g.calls++
+	g.mu.Unlock()
+	return fmt.Errorf("push service returned 410 for %s: %w", endpoint, push.ErrSubscriptionGone)
+}
+
+// failSender fails every send for a reason that is NOT the subscription's fault.
+type failSender struct{}
+
+func (failSender) PublicKey() string { return "fake_public_key" }
+func (failSender) Send(_ context.Context, endpoint, _, _ string, _ []byte) error {
+	return fmt.Errorf("push service returned 403 for %s", endpoint)
+}
+
+func seedSubs(t *testing.T, st *store.Store, endpoints ...string) {
+	t.Helper()
+	for _, e := range endpoints {
+		if err := st.InsertPushSub(store.PushSubRow{Endpoint: e, P256dh: "p", Auth: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func subCount(t *testing.T, st *store.Store) int {
+	t.Helper()
+	subs, err := st.SelectPushSubs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(subs)
+}
+
+// A device that reinstalled the PWA answers 410 forever. Without pruning it
+// stays in the table and is retried on every single push.
+func TestPushAll_PrunesGoneSubscriptions(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	srv.SetPushSender(&goneSender{})
+	seedSubs(t, st, "https://push.example.com/dead1", "https://push.example.com/dead2")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+
+	for i := 0; i < 200; i++ {
+		if subCount(t, st) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("gone subscriptions were not pruned: %d remain", subCount(t, st))
+}
+
+// A 403 means OUR credentials are wrong while the subscriptions are fine.
+// Pruning on it would delete every device the first time the keys drift.
+func TestPushAll_KeepsSubscriptionsOnNonGoneFailure(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	srv.SetPushSender(failSender{})
+	seedSubs(t, st, "https://push.example.com/alive")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if n := subCount(t, st); n != 1 {
+		t.Errorf("subscriptions = %d, want 1 kept: a 403 must never prune", n)
 	}
 }

@@ -210,10 +210,8 @@ func main() {
 					"body":  "Monthly Anthropic spend cap reached. Re-enable in Settings.",
 				})
 				for _, sub := range subs {
-					go func(s store.PushSubRow) {
-						if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
-							log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
-						}
+					go func(sb store.PushSubRow) {
+						prunePush(st, pushSend, sb, payload)
 					}(sub)
 				}
 			}
@@ -322,10 +320,8 @@ func main() {
 				"body":  merchant,
 			})
 			for _, sub := range subs {
-				go func(s store.PushSubRow) {
-					if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
-						log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
-					}
+				go func(sb store.PushSubRow) {
+					prunePush(st, pushSend, sb, payload)
 				}(sub)
 			}
 		}
@@ -345,10 +341,8 @@ func main() {
 				"body":  alerts[0].FromAddr + " parse-success dropped",
 			})
 			for _, sub := range subs {
-				go func(s store.PushSubRow) {
-					if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
-						log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
-					}
+				go func(sb store.PushSubRow) {
+					prunePush(st, pushSend, sb, payload)
 				}(sub)
 			}
 		}
@@ -601,5 +595,25 @@ func runImport(args []string) {
 	if result.RowsError > 0 {
 		fmt.Fprintln(os.Stderr, "\nWARNING: some rows had errors — check output above")
 		os.Exit(1)
+	}
+}
+
+// prunePush sends one payload and deletes the subscription when the push
+// service reports it permanently gone (404/410) — a reinstalled PWA or revoked
+// permission would otherwise be retried on every push forever. Mirrors
+// Server.pushAll; anything other than "gone" is logged and kept, because a 403
+// means our VAPID credentials are wrong rather than the device being dead.
+func prunePush(st *store.Store, sender *push.Sender, sub store.PushSubRow, payload []byte) {
+	err := sender.Send(context.Background(), sub.Endpoint, sub.P256dh, sub.Auth, payload)
+	if err == nil {
+		return
+	}
+	log.Printf("push: send failed for %.40s...: %v", sub.Endpoint, err)
+	if errors.Is(err, push.ErrSubscriptionGone) {
+		if derr := st.DeletePushSub(sub.Endpoint); derr != nil {
+			log.Printf("push: pruning %.40s... failed: %v", sub.Endpoint, derr)
+		} else {
+			log.Printf("push: pruned dead subscription %.40s...", sub.Endpoint)
+		}
 	}
 }
