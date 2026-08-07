@@ -5,12 +5,14 @@ import userEvent from "@testing-library/user-event";
 import { ApiError } from "@ledger/client/net/client";
 import type { SyncProgress, SyncResult } from "@ledger/client/net/engine";
 
-import { BootGate, deleteBrowserDatabase } from "./BootGate";
-import { IDLE_PROGRESS, SyncCoordinator, type CoordinatedEngine } from "./engine";
+import { CLEAN_SYNC, fakeEngine } from "../test/engineDouble";
+import { IDB_NAME } from "./db/driver";
+import { BootGate, BROWSER_DATABASE, deleteBrowserDatabase, PROFILE } from "./BootGate";
+import { SyncCoordinator } from "./engine";
 import { encodeLocal, ONBOARDING_LOCAL_KEY } from "./onboarding";
 import { EnrollmentError, type V2Handle } from "./session";
 
-const CLEAN: SyncResult = { pulled: 0, applied: 0, violations: [], halted: false };
+const CLEAN: SyncResult = CLEAN_SYNC;
 
 const SETTLED = encodeLocal({
   hasSession: true,
@@ -83,27 +85,14 @@ function rig(
     publish: () => {},
   };
 
-  const watchers = new Set<(p: SyncProgress) => void>();
-  let progress: SyncProgress = { ...IDLE_PROGRESS };
-  const engine: CoordinatedEngine = {
-    get progress() {
-      return { ...progress };
-    },
+  // The SHARED double: it publishes `halted` before it rethrows, as the real
+  // engine does. Round 1's local rig did not, and NEW-1 hid in that gap.
+  const engine = fakeEngine({
+    ...(over.sync === undefined ? {} : { sync: over.sync }),
     halted: over.halted ?? null,
-    sync: over.sync ?? (async () => CLEAN),
-    subscribe: (fn) => {
-      watchers.add(fn);
-      return () => {
-        watchers.delete(fn);
-      };
-    },
-    halt: () => {},
-  };
+  });
   out.coordinator = new SyncCoordinator(engine);
-  out.publish = (patch) => {
-    progress = { ...progress, ...patch };
-    for (const w of watchers) w({ ...progress });
-  };
+  out.publish = engine.publish;
   return out;
 }
 
@@ -242,8 +231,78 @@ describe("BootGate", () => {
 
   it("never tells a user their integrity check failed just because they are offline", async () => {
     // Round-1 critical 1, end to end: a cold launch with no network.
-    mount(rig({ sync: () => Promise.reject(new TypeError("Failed to fetch")) }));
+    //
+    // Round 2 (NEW-1) is the same symptom by a second route, and this test only
+    // catches it because the double is faithful: `SyncEngine` publishes
+    // `phase: "halted"` before rethrowing a transport error and never resets it
+    // until the next run, so the gate's phase fallback used to raise the wall
+    // here even though no fault was set and `haltReason` was null.
+    const r = rig({ sync: () => Promise.reject(new TypeError("Failed to fetch")) });
+    mount(r);
     expect(await screen.findByTestId("app")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // The precondition that makes this a real test rather than a tautology.
+    expect(r.coordinator.progress.phase).toBe("halted");
+    expect(r.coordinator.haltReason).toBeNull();
+  });
+
+  it("does not raise the wall on a halted PHASE that has no reason behind it", async () => {
+    // The phase-only branch exists for an out-of-band `SyncEngine.halt(reason)`,
+    // which always sets a reason. A phase with no reason is what a rethrown
+    // transport failure leaves behind, and it is not a verdict about anything.
+    const r = rig();
+    mount(r);
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+    act(() => {
+      r.publish({ phase: "halted" });
+    });
+    expect(screen.getByTestId("app")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("does not wall off a running app when the server is restarting", async () => {
+    // NEW-2: a 503 is a server that ANSWERED, so it never reaches the transport
+    // arm by name — but "come back in a moment" is not an integrity verdict.
+    let down = false;
+    const r = rig({
+      sync: async () => {
+        if (down) throw new ApiError(503, "unavailable", "", "503");
+        return CLEAN;
+      },
+    });
+    mount(r);
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+
+    down = true;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(screen.getByTestId("app")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("does not wall off a running app behind a captive portal", async () => {
+    // The single most likely real-world trigger: hotel wifi answers 200 with an
+    // HTML login page, `JSON.parse` fails, and `Client` raises a ProtocolError.
+    const portal = new Error("expected JSON, got text/html");
+    portal.name = "ProtocolError";
+    let captured = false;
+    const r = rig({
+      sync: async () => {
+        if (captured) throw portal;
+        return CLEAN;
+      },
+    });
+    mount(r);
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+
+    captured = true;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(screen.getByTestId("app")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -463,5 +522,25 @@ describe("deleteBrowserDatabase", () => {
   it("is a no-op where there is no indexedDB at all", async () => {
     vi.stubGlobal("indexedDB", undefined);
     await expect(deleteBrowserDatabase()).resolves.toBeUndefined();
+  });
+
+  it("deletes the database the DRIVER actually opens, not a second spelling of it", async () => {
+    // These were two independent string literals in two files. A wipe aimed at
+    // the wrong one deletes nothing and leaves a deleted account's whole op log
+    // on the device, silently.
+    expect(BROWSER_DATABASE).toBe(IDB_NAME);
+    expect(BROWSER_DATABASE).not.toBe(PROFILE);
+
+    let asked: string | null = null;
+    vi.stubGlobal("indexedDB", {
+      deleteDatabase: (name: string) => {
+        asked = name;
+        const request: Record<string, unknown> = {};
+        setTimeout(() => (request["onsuccess"] as () => void)(), 0);
+        return request;
+      },
+    });
+    await deleteBrowserDatabase();
+    expect(asked).toBe(IDB_NAME);
   });
 });

@@ -1,46 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
-import type { SyncProgress, SyncResult } from "@ledger/client/net/engine";
+import type { SyncResult } from "@ledger/client/net/engine";
 
 import { HALT_TAMPERED, HALT_UNCERTIFIED } from "@ledger/client/invariants/surface";
 
-import { IDLE_PROGRESS, SyncCoordinator, useSync, useSyncProgress, type CoordinatedEngine } from "./engine";
-
-function fakeEngine(over: Partial<CoordinatedEngine> = {}): CoordinatedEngine & {
-  publish(p: Partial<SyncProgress>): void;
-  calls: unknown[];
-} {
-  const watchers = new Set<(p: SyncProgress) => void>();
-  let progress: SyncProgress = { ...IDLE_PROGRESS };
-  const calls: unknown[] = [];
-  return {
-    calls,
-    get progress() {
-      // A FRESH object per read, exactly as SyncEngine's own getter does. The
-      // useSyncProgress test below depends on that: a hook written with
-      // useSyncExternalStore over this getter loops forever.
-      return { ...progress };
-    },
-    halted: null,
-    sync(options?: unknown) {
-      calls.push(options);
-      return Promise.resolve<SyncResult>({ pulled: 0, applied: 0, violations: [], halted: false });
-    },
-    subscribe(fn: (p: SyncProgress) => void) {
-      watchers.add(fn);
-      return () => {
-        watchers.delete(fn);
-      };
-    },
-    halt() {},
-    publish(patch: Partial<SyncProgress>) {
-      progress = { ...progress, ...patch };
-      for (const w of watchers) w({ ...progress });
-    },
-    ...over,
-  } as CoordinatedEngine & { publish(p: Partial<SyncProgress>): void; calls: unknown[] };
-}
+// The shared double, which publishes `halted` BEFORE it rethrows exactly as
+// `SyncEngine.run` does. Round 1's local rig did not, and a bug lived in that
+// gap — see `src/test/engineDouble.ts`.
+import { fakeEngine } from "../test/engineDouble";
+import { IDLE_PROGRESS, SyncCoordinator, useSync, useSyncProgress } from "./engine";
 
 describe("SyncCoordinator", () => {
   it("joins every trigger kind onto the engine's one in-flight promise", () => {
@@ -165,6 +134,11 @@ describe("useSync", () => {
       await result.current.run("foreground");
     });
     expect(result.current.fault).toBeNull();
+    // And the engine HAS left the phase on `halted`, because that is what the
+    // real one does before rethrowing. Anything reading the phase alone would
+    // conclude the records failed a check; the fault is null precisely so it
+    // cannot. This assertion is the tripwire for round 2's NEW-1.
+    expect(result.current.progress.phase).toBe("halted");
   });
 
   it("clears the fault once a sync completes, so coming back online recovers", async () => {

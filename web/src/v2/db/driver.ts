@@ -139,7 +139,17 @@ import type { SqlDriver, SqlStatement } from "@ledger/client/store/driver";
 import initSqlJs, { type Database, type Statement } from "sql.js";
 import wasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 
-const IDB_NAME = "ledger-v2";
+/**
+ * The one IndexedDB database this app keeps its SQLite bytes in, holding a
+ * record per profile.
+ *
+ * Exported because destroying the store is not this module's job but the name
+ * is its property: `BootGate`'s account-deletion wipe used to spell it inline,
+ * which put two independent copies of a magic string in two files. A wipe that
+ * deleted the wrong name would silently leave a deleted account's whole op log
+ * on the device.
+ */
+export const IDB_NAME = "ledger-v2";
 const IDB_STORE = "dbs";
 const FLUSH_DEBOUNCE_MS = 500;
 

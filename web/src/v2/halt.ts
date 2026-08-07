@@ -16,14 +16,35 @@
  * So the phase is not the classifier. This module is, and it splits the throw
  * in two before anything renders:
  *
- *  - **Transport** — matched by NAME, never by class. `session.ts` records why
- *    (`instanceof` fails silently when a bundler ends up with two copies of a
- *    module), and `surface()` upstream duck-types for the same reason. The set
- *    is `NetworkError`, an aborted request, and the `TypeError` a raw `fetch`
- *    rejects with, whose message is different in every engine — hence three
- *    spellings rather than Chrome's.
+ *  - **Unreachable** — this device could not get a working answer. Matched by
+ *    NAME, never by class: `session.ts` records why (`instanceof` fails
+ *    silently when a bundler ends up with two copies of a module), and
+ *    `surface()` upstream duck-types for the same reason.
  *  - **Everything else** — handed to {@link surface}, the library's own
  *    classifier, which names the violation CLASS and supplies the copy.
+ *
+ * # "Unreachable" is wider than "no TCP", and it has to be
+ *
+ * Round 2 of the review found the first cut too narrow. It matched only the
+ * cases where no HTTP answer arrived at all, which leaves two everyday
+ * failures being reported as integrity verdicts:
+ *
+ *  - **`5xx`** — the server restarting, a proxy, a Tailscale hiccup. It
+ *    answered, so no transport error is raised, but "come back in a moment" is
+ *    not a statement about anybody's records.
+ *  - **`ProtocolError`** — the shape a **captive portal** takes. Hotel and
+ *    airport wifi answers `200` with an HTML login page, `JSON.parse` fails in
+ *    `Client`, and the app told the user their data had failed a safety check.
+ *    That is the single most likely real-world trigger of a false integrity
+ *    alarm and it is now firmly on this side of the line.
+ *
+ * `4xx` is deliberately NOT here (beyond the `401`/`410` that `boot.ts`
+ * intercepts as session answers, before this is reached). A `400` from our own
+ * API is a bug in this app, and `uncertified`'s copy — "this is a bug in the
+ * app rather than in your data" — says exactly that. `429` was considered and
+ * left out: nothing on the sync path is rate-limited today, so admitting it
+ * would widen the "not an integrity failure" set, which is the dangerous
+ * direction, for a case that cannot currently occur.
  *
  * # The words are the library's, not this app's
  *
@@ -66,13 +87,42 @@ export type SyncFailure =
  */
 const FETCH_REJECTION = /failed to fetch|load failed|network ?error|networkrequestfailed/i;
 
-export function isTransportFailure(error: unknown): boolean {
+/**
+ * Whether this device failed to get a working answer out of the server.
+ *
+ * Every arm is matched by NAME or by a numeric `status`, never by `instanceof`.
+ * The dangerous direction is a genuine integrity failure slipping in here and
+ * being shown as a network problem, so the set is enumerated rather than
+ * inferred, and none of `HardStopError`, `ChainBreakError`,
+ * `UnknownNewerVersionError`, `SyncHaltedError`, `ReplayOrderError`,
+ * `ProjectionCancelled`, `AuditAbandoned` or the `wire`/`norm` decode errors
+ * carries a `status` or one of these names.
+ */
+export function isUnreachable(error: unknown): boolean {
   if (error === null || error === undefined) return false;
-  const e = error as { name?: unknown; message?: unknown };
+  const e = error as { name?: unknown; message?: unknown; status?: unknown };
   const name = typeof e.name === "string" ? e.name : "";
-  // `Client`'s own wrapper, and the two names a cancelled or timed-out request
-  // arrives under.
+
+  // 1. No HTTP answer at all: `Client`'s own wrapper, plus the two names a
+  //    cancelled or timed-out request arrives under.
   if (name === "NetworkError" || name === "AbortError" || name === "TimeoutError") return true;
+
+  // 2. An answer that is not this protocol — which is the shape a CAPTIVE
+  //    PORTAL takes: hotel wifi replies 200 with an HTML login page and
+  //    `JSON.parse` fails inside `Client`. `HardStopError` is the only other
+  //    thing that could plausibly be confused with this, and it is a different
+  //    name carrying `violations`.
+  if (name === "ProtocolError") return true;
+
+  // 3. A server that is up enough to answer and not up enough to serve: 502
+  //    behind a proxy, 503 restarting, 504 on a Tailscale hiccup. `ApiError`
+  //    carries the status; `401`/`410` never reach here, because `boot.ts`
+  //    intercepts them as session answers first.
+  if (typeof e.status === "number" && e.status >= 500 && e.status <= 599) return true;
+
+  // 4. The `TypeError` a raw `fetch` rejects with. Message-matched, and ONLY
+  //    for a TypeError, so an ordinary bug that happens to be one ("x.map is
+  //    not a function") is not filed as a network problem.
   if (name !== "TypeError") return false;
   return FETCH_REJECTION.test(typeof e.message === "string" ? e.message : "");
 }
@@ -90,7 +140,7 @@ export function classifySyncFailure(
   haltReason: string | null = null,
   violations: readonly Violation[] = [],
 ): SyncFailure {
-  if (haltReason === null && isTransportFailure(error)) {
+  if (haltReason === null && isUnreachable(error)) {
     return { kind: "offline", detail: messageOf(error) };
   }
   return { kind: "halt", halt: haltOf(violations, error) };

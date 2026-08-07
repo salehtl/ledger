@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { NetworkError } from "@ledger/client/net/client";
+import { ApiError, HardStopError, NetworkError, ProtocolError } from "@ledger/client/net/client";
 import { HALT_TAMPERED, HALT_UNCERTIFIED, HALT_UPDATE_REQUIRED } from "@ledger/client/invariants/surface";
 
-import { classifySyncFailure, haltFromReason, haltFromViolations, isTransportFailure } from "./halt";
+import { classifySyncFailure, haltFromReason, haltFromViolations, isUnreachable } from "./halt";
 
-describe("isTransportFailure", () => {
+describe("isUnreachable", () => {
   it("recognises the fetch rejection of every engine we ship to", () => {
     // Chrome/Edge, Safari, Firefox. All three are a TypeError from `fetch`.
     for (const message of [
@@ -13,26 +13,70 @@ describe("isTransportFailure", () => {
       "Load failed",
       "NetworkError when attempting to fetch resource.",
     ]) {
-      expect(isTransportFailure(new TypeError(message))).toBe(true);
+      expect(isUnreachable(new TypeError(message))).toBe(true);
     }
   });
 
   it("recognises Client's own wrapper and an aborted request", () => {
-    expect(isTransportFailure(new NetworkError("POST /sync: connect", null))).toBe(true);
+    expect(isUnreachable(new NetworkError("POST /sync: connect", null))).toBe(true);
     const abort = new Error("aborted");
     abort.name = "AbortError";
-    expect(isTransportFailure(abort)).toBe(true);
+    expect(isUnreachable(abort)).toBe(true);
   });
 
   it("does not swallow a real bug that happens to be a TypeError", () => {
-    expect(isTransportFailure(new TypeError("x.map is not a function"))).toBe(false);
+    expect(isUnreachable(new TypeError("x.map is not a function"))).toBe(false);
+  });
+
+  it("counts a server that answered but could not serve", () => {
+    // It ANSWERED, so no transport error is raised — but "come back in a
+    // moment" is not a statement about anybody's records.
+    for (const status of [500, 502, 503, 504]) {
+      expect(isUnreachable(new ApiError(status, "unavailable", "", String(status)))).toBe(true);
+    }
+  });
+
+  it("counts a captive portal, which answers 200 with HTML", () => {
+    // The most likely real-world trigger of a false integrity alarm: hotel or
+    // airport wifi. `Client` raises ProtocolError when JSON.parse fails.
+    expect(isUnreachable(new ProtocolError("expected JSON, got text/html"))).toBe(true);
+  });
+
+  it("does NOT count a 4xx, which is this app's own bug to answer for", () => {
+    for (const status of [400, 403, 404, 409, 422]) {
+      expect(isUnreachable(new ApiError(status, "bad_request", "", String(status)))).toBe(false);
+    }
   });
 
   it("is false for an integrity failure", () => {
     const chain = new Error("chain break at seq 12");
     chain.name = "ChainBreakError";
-    expect(isTransportFailure(chain)).toBe(false);
-    expect(isTransportFailure(null)).toBe(false);
+    expect(isUnreachable(chain)).toBe(false);
+    expect(isUnreachable(null)).toBe(false);
+  });
+
+  it("is false for EVERY named failure the sync path can raise", () => {
+    // The dangerous direction: an integrity failure slipping into the
+    // unreachable set would be shown as a network problem and the app would
+    // stay up over data the engine refused. Enumerated rather than trusted.
+    expect(isUnreachable(new HardStopError([{ id: "I3_chain", severity: "hard_stop", detail: "x" }]))).toBe(false);
+    for (const name of [
+      "ChainBreakError",
+      "UnknownNewerVersionError",
+      "SyncHaltedError",
+      "ReplayOrderError",
+      "ProjectionCancelled",
+      "AuditAbandoned",
+      "OutboxStalledError",
+      "SnapshotBindingError",
+      "SnapshotDecodeError",
+      "BlobDecodeError",
+      "InvalidEnvelopeError",
+    ]) {
+      const error = new Error("whatever");
+      error.name = name;
+      expect(isUnreachable(error), name).toBe(false);
+    }
   });
 });
 
@@ -42,6 +86,14 @@ describe("classifySyncFailure", () => {
     // the integrity check had not passed and that reopening would not help.
     const failure = classifySyncFailure(new TypeError("Failed to fetch"), null);
     expect(failure.kind).toBe("offline");
+  });
+
+  it("calls a restarting server offline rather than an integrity failure", () => {
+    expect(classifySyncFailure(new ApiError(503, "unavailable", "", "503"), null).kind).toBe("offline");
+  });
+
+  it("calls a captive portal offline rather than an integrity failure", () => {
+    expect(classifySyncFailure(new ProtocolError("expected JSON, got text/html"), null).kind).toBe("offline");
   });
 
   it("refuses to call anything offline while a halt is in force", () => {
