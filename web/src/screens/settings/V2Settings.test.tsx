@@ -7,7 +7,7 @@
  * the only place a person can find out whether their ledger is moving.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SqlDriver } from "@ledger/client/store/driver";
@@ -16,6 +16,7 @@ import { MotionProvider } from "../../app/MotionProvider";
 import { ToastProvider } from "../../components/Toast";
 import { projectionWith } from "../../test/projectionFixture";
 import { fakeRuntime, WithV2, type FakeRuntimeOptions } from "../../test/v2Runtime";
+import { IDLE_PROGRESS } from "../../v2/engine";
 import { PasskeyError } from "../../v2/session";
 import { V2Settings, type V2SettingsProps } from "./V2Settings";
 
@@ -69,7 +70,14 @@ describe("V2Settings", () => {
     await waitFor(() => {
       expect(add).toHaveBeenCalledTimes(1);
     });
-    expect((await screen.findByTestId("settings-passkey-note")).textContent ?? "").toMatch(/added/i);
+    const note = (await screen.findByTestId("settings-passkey-note")).textContent ?? "";
+    expect(note).toMatch(/added/i);
+    // NOT onboarding's "Second passkey added." — this row can be used a third
+    // and fourth time, and there is no route to list enrolled credentials, so
+    // the note must not count what it cannot count. It points at the one place
+    // that does know: the authenticator.
+    expect(note).not.toMatch(/second/i);
+    expect(note).toMatch(/authenticator|password manager/i);
   });
 
   it("says a dismissed passkey prompt was not an error, and leaves the button usable", async () => {
@@ -113,6 +121,41 @@ describe("V2Settings", () => {
   it("says plainly that no sync has finished yet, rather than printing a fake time", async () => {
     wrap();
     expect((await screen.findByTestId("settings-sync")).textContent ?? "").toMatch(/no sync has finished/i);
+  });
+
+  it("does not report a stopped sync as up to date when the engine has no verdict", async () => {
+    // The ordinary failure, not an exotic one: `SyncEngine.run` publishes
+    // `halted` and rethrows for every transport failure, `ChainBreakError` and
+    // `ProtocolError`, and `useSync` classifies an offline throw as a NON-fault
+    // — so no HaltWall covers it and this row is the only thing on the glass
+    // that can say the sync stopped. Reporting it as "Up to date" is this row
+    // announcing the exact condition it exists for as health.
+    wrap({}, { sync: { progress: { ...IDLE_PROGRESS, phase: "halted" } }, haltReason: null });
+    const row = await screen.findByTestId("settings-sync");
+    expect(row.textContent ?? "").not.toMatch(/up to date/i);
+    expect(row.textContent ?? "").toMatch(/did not finish/i);
+    // A retry can genuinely work here — the engine has latched nothing.
+    expect(screen.getByRole("button", { name: /sync now/i })).toBeEnabled();
+  });
+
+  it("keeps the elapsed time honest while Settings stays open", async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = Date.parse("2026-08-07T10:01:00Z");
+      wrap({ now: () => clock }, { sync: { lastCompletedAt: Date.parse("2026-08-07T10:00:00Z") } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByTestId("settings-sync").textContent ?? "").toMatch(/1 minute ago/);
+
+      // Five minutes pass with the screen still on. A figure read once at render
+      // would still say "1 minute ago".
+      clock += 5 * 60_000;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+      });
+      expect(screen.getByTestId("settings-sync").textContent ?? "").toMatch(/6 minutes ago/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the halt reason on the sync row rather than a reassuring idle state", async () => {

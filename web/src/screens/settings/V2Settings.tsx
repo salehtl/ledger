@@ -37,7 +37,7 @@
  * target — just the code and the sentence saying why that is all there is.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "../../components/ui/Button";
@@ -164,7 +164,16 @@ export function V2Settings({
     setPasskeyNote(null);
     try {
       await addAnotherPasskey(handle);
-      setPasskeyNote(ADD_PASSKEY_COPY.done);
+      // NOT `ADD_PASSKEY_COPY.done` ("Second passkey added."). That constant is
+      // true on the onboarding screen, where it can only ever be the second;
+      // here the row can be used a third and fourth time. And there is no route
+      // to list enrolled credentials — `passkey.go` exposes `add/{begin,finish}`
+      // and nothing that enumerates — so this must not imply a count it cannot
+      // check. It names the one place that does know instead.
+      setPasskeyNote(
+        "A new passkey was added to this account. ledger cannot show you a list of them — check your " +
+          "authenticator or password manager to see every passkey you hold.",
+      );
     } catch (error) {
       const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
       const copyFor = passkeyFailureCopy(kind);
@@ -184,9 +193,55 @@ export function V2Settings({
     }
   }, [signOut, handle]);
 
+  /**
+   * Three failure-shaped states, not two, and conflating the last two is how
+   * this row announced its own subject as health.
+   *
+   *  - `halted !== null` — the engine has LATCHED a verdict. It refuses every
+   *    later sync until `resume()`, so no retry is offered.
+   *  - `phase === "halted"` with no reason — a run **stopped**. `SyncEngine.run`
+   *    publishes `halted` and rethrows for every transport failure,
+   *    `ChainBreakError` and `ProtocolError` alike (`engine.ts:405`), and it
+   *    leaves the phase there until the next run starts. `useSync` deliberately
+   *    classifies an offline throw as a NON-fault — being unreachable is not an
+   *    integrity verdict — so no `HaltWall` covers this and nothing else on the
+   *    glass says it happened. This row is it.
+   *  - idle — genuinely up to date.
+   *
+   * The middle one used to fall through to the last, printing "Up to date" over
+   * a sync that had just failed. A retry there can plainly work, so "Sync now"
+   * stays: the engine has latched nothing, and coming back online is the fix.
+   */
   const halted = coordinator.haltReason;
   const phase = sync.progress.phase;
   const busy = phase !== "idle" && phase !== "halted";
+  const stopped = phase === "halted" && halted === null;
+
+  /**
+   * Re-read on a timer, not once at render.
+   *
+   * Settings is a screen somebody leaves open, and a "Last synced 2 minutes
+   * ago" frozen at the moment of mount is the same class of untruth as the
+   * branch above: a sentence the code stops making true the instant it is
+   * painted. 30 s against a label whose finest unit is a minute means it is
+   * never more than half a unit stale, and there is nothing here to watch tick.
+   */
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (sync.lastCompletedAt === null) return;
+    const timer = setInterval(() => {
+      setTick((n) => n + 1);
+    }, 30_000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [sync.lastCompletedAt]);
+  const lastSynced = useMemo(
+    () => (sync.lastCompletedAt === null ? null : sinceLabel(sync.lastCompletedAt, now())),
+    // `tick` is the whole point of the memo: it is what makes the label re-read
+    // the clock. `now` is a prop with a stable default.
+    [sync.lastCompletedAt, now, tick],
+  );
 
   return (
     <div className="space-y-6">
@@ -202,19 +257,15 @@ export function V2Settings({
                   <PixelSpinner size={12} />
                   {PHASE_LABEL[phase] ?? "Working…"}
                 </span>
-              ) : halted === null ? (
-                <span className="text-xs text-muted">{PHASE_LABEL.idle}</span>
-              ) : (
+              ) : halted !== null ? (
                 <span className="text-xs font-medium text-bad">Stopped</span>
+              ) : stopped ? (
+                <span className="text-xs font-medium text-warn">Didn&rsquo;t finish</span>
+              ) : (
+                <span className="text-xs text-muted">{PHASE_LABEL.idle}</span>
               )}
             </div>
-            {halted === null ? (
-              <p className="text-xs text-muted">
-                {sync.lastCompletedAt === null
-                  ? "No sync has finished since you opened ledger."
-                  : `Last synced ${sinceLabel(sync.lastCompletedAt, now())}.`}
-              </p>
-            ) : (
+            {halted !== null ? (
               /*
                 The reason verbatim, and no "sync now" beside it. `SyncEngine`
                 refuses every later sync once it is halted, so a button here
@@ -223,6 +274,21 @@ export function V2Settings({
                 this row's job is only to say it is in force.
               */
               <p className="text-xs text-bad font-mono break-words">{halted}</p>
+            ) : stopped ? (
+              /*
+                No reason, so no claim about anybody's records — which is the
+                honest thing to say and also the likeliest truth: the common
+                cause is the connection. It says what is still true (nothing was
+                lost) rather than what it cannot know.
+              */
+              <p className="text-xs text-warn">
+                The last sync did not finish. Nothing was lost — this usually means ledger could not reach the
+                server. {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
+              </p>
+            ) : (
+              <p className="text-xs text-muted">
+                {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
+              </p>
             )}
             {halted === null && (
               <div className="pt-1">
