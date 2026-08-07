@@ -14,7 +14,7 @@ import userEvent from "@testing-library/user-event";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { emptyFacts, type OnboardingFacts } from "../../v2/onboarding";
-import { AccountMismatchError, PasskeyError, type V2Handle } from "../../v2/session";
+import { AccountMismatchError, EnrollmentError, PasskeyError, type V2Handle } from "../../v2/session";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { Onboarding } from "./Onboarding";
@@ -314,6 +314,26 @@ describe("Welcome", () => {
       expect(done).toHaveBeenCalled();
     });
     expect(signIn).toHaveBeenCalledWith();
+  });
+
+  /**
+   * A SECOND device: the passkey works, the session lands, and only the writer
+   * enrolment is refused (spec §3.4 — no enrolled key signed for it). Reporting
+   * that as "the server refused the request, nothing was created on this
+   * device" is false twice over, and it is what made a second device a dead
+   * end. The gate owns this state, so the screen hands off.
+   */
+  it("hands an enrolment refusal to the boot gate instead of calling sign-in failed", async () => {
+    const user = userEvent.setup();
+    const signIn = vi.fn(async () => {
+      throw new EnrollmentError("rejected", "403 registration_rejected");
+    });
+    const { done } = mountWelcome({ signIn });
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await waitFor(() => {
+      expect(done).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId("welcome-failure")).not.toBeInTheDocument();
   });
 });
 

@@ -48,7 +48,13 @@ import { wipeLocalData } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
 import { passkeyFailureCopy as failureCopy } from "../../v2/passkeyCopy";
 import { addPasskey } from "../../v2/passkeyAdd";
-import { isAccountMismatch, isPasskeyError, type PasskeyFailureKind, type V2Handle } from "../../v2/session";
+import {
+  isAccountMismatch,
+  isEnrollmentError,
+  isPasskeyError,
+  type PasskeyFailureKind,
+  type V2Handle,
+} from "../../v2/session";
 import { DevSignInPanel } from "./DevSignInPanel";
 import { Notice, Step } from "./Shell";
 
@@ -161,6 +167,18 @@ export function Welcome({
       await handle.signIn();
       done();
     } catch (error) {
+      // An ENROLMENT failure is not a sign-in failure, and reporting it as one
+      // is what made a second device a dead end: `session.ts`'s `ceremony`
+      // persists the session and THEN enrols, so by the time this throws the
+      // user is signed in, their account is fine, and "the server refused the
+      // request — nothing was created on this device" is false on both counts.
+      // It is also the exact state the boot gate exists to explain: `done()`
+      // re-runs boot, which calls `enrol()` again and puts up the wall that
+      // carries this device's enrolment code. So hand off rather than report.
+      if (isEnrollmentError(error)) {
+        done();
+        return;
+      }
       fail(error, from);
     }
   }, [handle, done, phase, fail]);
