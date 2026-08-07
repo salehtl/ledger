@@ -24,7 +24,11 @@ import { deckCategories } from "../v2/reviewDeck";
 import {
   categorizeOps,
   categoryIsUsable,
+  existingRuleCategory,
+  pendingCategories,
+  pendingRules,
   ruleTargetOf,
+  withPendingCategory,
   type ReviewSource,
 } from "../v2/sources/review";
 import {
@@ -138,7 +142,25 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
 
   const list = useTxnList(source, filters, limit);
   const facets = useTxnFacets(source);
-  const rows = useMemo(() => list.data?.rows ?? [], [list.data]);
+
+  /**
+   * The page, showing the answers this device has already given.
+   *
+   * The projection does not move until a sync folds, so a row categorised
+   * moments ago still reads `Uncategorized` in SQLite — offline, for the whole
+   * session. The deck hides that by taking the card off the pile; a list cannot,
+   * so it reads the outbox, which is the same durable record `settledBy` reads
+   * and survives the tab being killed in a way component state would not.
+   *
+   * `writer.pending` and not `writer`: `Client.emitMany` REPLACES the array
+   * while the outbox object is memoised for the tab's lifetime, so a memo keyed
+   * on the writer would never recompute.
+   */
+  const answered = useMemo(() => pendingCategories(writer?.pending ?? []), [writer?.pending]);
+  const rows = useMemo(
+    () => (list.data?.rows ?? []).map((t) => withPendingCategory(t, answered)),
+    [list.data, answered],
+  );
   const totals = useMemo(() => txnTotals(rows), [rows]);
   const firstReveal = useFirstReveal(rows.length > 0);
   const activeChips = filtersActive(chips);
@@ -165,7 +187,12 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
           // a guessed version; its own version is the only defensible fallback.
           projectedVersion: head ?? txn.version,
           pending: writer.pending,
-          rules: choices.data?.rules ?? [],
+          // Queued rules count as rules. `confirmOps` dedupes the write-back
+          // against what it is given, and the projection cannot know about a
+          // rule that has not folded yet — so without the pending half, a
+          // merchant answered twice in one offline session queues the same rule
+          // twice.
+          rules: [...(choices.data?.rules ?? []), ...pendingRules(writer.pending)],
           newID: newEntityID,
         }),
       );
@@ -325,6 +352,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
         <CategorySheet
           txn={editing}
           categories={categoryNames}
+          ruledTo={existingRuleCategory(editing.merchant_raw, choices.data?.rules ?? [], writer?.pending ?? [])}
           onClose={() => setEditing(null)}
           onSave={(category, makeRule) => void commit(editing, category, makeRule)}
         />
@@ -344,15 +372,31 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
  *
  * The current category is preselected, so re-categorising reads as a change
  * rather than a blank form.
+ *
+ * # The rule write-back is offered ONCE per merchant, and off by default on a
+ * correction
+ *
+ * `rule_added` is permanent — there is no delete and no edit op — and two
+ * `exact` rules on one pattern at one priority are resolved by comparing the
+ * category strings' code points. So a second rule does not replace the first; it
+ * hands the merchant to whichever category sorts first, forever, which is the
+ * exact opposite of what a user correcting a category meant. Hence: the switch
+ * defaults OFF when the row already has a category, and does not appear at all
+ * once a rule for this merchant exists ({@link ruledTo}). Replacing a rule would
+ * need an op the fold does not have.
  */
-function CategorySheet({ txn, categories, onClose, onSave }: {
+function CategorySheet({ txn, categories, ruledTo, onClose, onSave }: {
   txn: Txn;
   categories: readonly string[];
+  /** The category an `exact` rule already sends this merchant to, materialised or queued. */
+  ruledTo: string | null;
   onClose: () => void;
   onSave: (category: string, makeRule: boolean) => void;
 }) {
   const [picked, setPicked] = useState<string | null>(txn.category);
-  const [makeRule, setMakeRule] = useState(true);
+  // A first answer proposes the rule; a correction does not, because there is
+  // no way to take the first rule back.
+  const [makeRule, setMakeRule] = useState(txn.category === null);
   const amount = txnAmountLabel(txn);
   // The row's own category may predate the grid (a rule wrote it, or it came
   // from an import), and a sheet that could not show the current answer would
@@ -394,11 +438,20 @@ function CategorySheet({ txn, categories, onClose, onSave }: {
         })}
       </div>
 
-      {ruleable && (
+      {ruleable && ruledTo === null && (
         <label className="my-4 flex items-center justify-between gap-3 text-sm">
           <span className="min-w-0">Always use this category for “{txn.merchant_raw}”</span>
           <Switch checked={usable && makeRule} disabled={!usable} onChange={(e) => setMakeRule(e.target.checked)} />
         </label>
+      )}
+
+      {/* Stated rather than silently omitted, and it says only what is true: a
+          rule exists, and this change is about this transaction. It does not
+          offer to change the rule, because no op can. */}
+      {ruledTo !== null && (
+        <p className="my-4 text-sm text-muted">
+          A rule already files “{txn.merchant_raw}” under {ruledTo}. This change applies to this transaction only.
+        </p>
       )}
 
       <DialogFooter>
@@ -409,7 +462,7 @@ function CategorySheet({ txn, categories, onClose, onSave }: {
         <Button
           variant="primary"
           disabled={!usable}
-          onClick={() => { if (picked !== null && usable) onSave(picked, makeRule && ruleable); }}
+          onClick={() => { if (picked !== null && usable) onSave(picked, makeRule && ruleable && ruledTo === null); }}
         >
           Save
         </Button>

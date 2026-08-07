@@ -36,6 +36,7 @@ import {
   confirmOps,
   dispositionOf,
   duplicateKey,
+  existingRuleCategory,
   forkPage,
   isSettled,
   itemKey,
@@ -44,6 +45,8 @@ import {
   laneOf,
   lanePage,
   nextParentVersion,
+  pendingCategories,
+  pendingRules,
   rulesOf,
   settledBy,
   setDisposition,
@@ -51,6 +54,7 @@ import {
   topCategories,
   undoConfirmOps,
   versionOf,
+  withPendingCategory,
   type Lane,
 } from "./review";
 
@@ -621,5 +625,66 @@ describe("confirming a card", () => {
     const settlement = settledBy(queued);
     expect(isSettled(txnOf("t1"), settlement)).toBe(true);
     expect(isSettled(txnOf("t2"), settlement)).toBe(false);
+  });
+
+  // A list cannot take the row off the screen the way the deck takes a card off
+  // the pile, so it has to be able to SHOW the queued answer — otherwise a user
+  // sees no change, answers again, and two answers for one merchant is how a
+  // contradicting rule gets written.
+
+  const categorized = (id: string, category: string | null, needsReview: boolean, op: string): Op => ({
+    v: 1,
+    type: "txn_categorized",
+    op_id: op,
+    authored_at: "2026-06-06T12:00:00.000Z",
+    entity: { kind: "txn", id },
+    parent_version: 1,
+    payload: { category, needs_review: needsReview },
+  });
+
+  it("reads a row's queued answer, taking the last one when it was answered twice", () => {
+    const answered = pendingCategories([
+      categorized("t1", "Dining", false, "q1"),
+      categorized("t1", "Groceries", false, "q2"),
+    ]);
+    expect(answered.get("t1")).toEqual({ category: "Groceries", needs_review: false });
+
+    const shown = withPendingCategory(txnOf("t1"), answered);
+    expect(shown.category).toBe("Groceries");
+    expect(shown.needs_review).toBe(false);
+    // Only what the op carries: money and identity are untouched, because
+    // `txn_categorized` does not touch them either.
+    expect(shown.amount_minor).toBe(txnOf("t1").amount_minor);
+    expect(shown.id).toBe(txnOf("t1").id);
+    // A row with no queued answer is returned as-is — the SAME object, so a
+    // list's memo does not see a new identity for every unanswered row.
+    const untouched = txnOf("t2");
+    expect(withPendingCategory(untouched, answered)).toBe(untouched);
+  });
+
+  it("counts a queued rule as a rule, so one merchant is not ruled on twice", () => {
+    const queued: Op[] = [
+      {
+        v: 1,
+        type: "rule_added",
+        op_id: "q-rule",
+        authored_at: "2026-06-06T12:00:00.000Z",
+        entity: { kind: "rule", id: "r1" },
+        parent_version: null,
+        payload: { pattern: "carrefour", match: "exact", category: "Groceries", priority: 0 },
+      },
+    ];
+    expect(pendingRules(queued)).toEqual([
+      { pattern: "carrefour", match: "exact", category: "Groceries", priority: 0, version: 0 },
+    ]);
+
+    // There is no rule-delete op, and two `exact` rules on one pattern at one
+    // priority are resolved by comparing the categories' code points — so a
+    // "correction" would silently hand the merchant to whichever sorts first,
+    // forever. A screen has to be able to see that a rule already exists, and
+    // within one offline session the outbox is the only place it exists.
+    expect(existingRuleCategory("CARREFOUR", [], queued)).toBe("Groceries");
+    expect(existingRuleCategory("CARREFOUR", [], [])).toBeNull();
+    expect(existingRuleCategory("SPINNEYS", [], queued)).toBeNull();
   });
 });

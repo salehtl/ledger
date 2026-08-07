@@ -838,6 +838,108 @@ export function isSettled(t: Txn, s: Settlement): boolean {
   return s.entityIDs.has(t.id) || s.ingestIDs.has(t.ingest_id);
 }
 
+/** The answer a queued `txn_categorized` gave for one row. */
+export interface PendingAnswer {
+  category: string | null;
+  needs_review: boolean;
+}
+
+/**
+ * What the outbox has already answered, by transaction, with the answer itself.
+ *
+ * {@link settledBy} is enough for the deck, which only has to take a card OFF
+ * the pile. A list has to keep showing the row, and the projection does not move
+ * until a sync folds — so without this the row a user has just categorised goes
+ * on reading "Uncategorized", offline for as long as the session lasts. A user
+ * who sees no change very reasonably answers again, and two answers for one
+ * merchant is how a contradicting rule gets written.
+ *
+ * Later ops overwrite earlier ones, so a row answered twice reads as the user's
+ * LAST answer — the same order `fold` will resolve them in.
+ */
+export function pendingCategories(pending: readonly Op[]): Map<string, PendingAnswer> {
+  const out = new Map<string, PendingAnswer>();
+  for (const op of pending) {
+    if (op.type !== "txn_categorized" || op.entity === undefined) continue;
+    const payload = op.payload as { category?: unknown; needs_review?: unknown };
+    out.set(op.entity.id, {
+      category: typeof payload.category === "string" ? payload.category : null,
+      needs_review: payload.needs_review === true,
+    });
+  }
+  return out;
+}
+
+/**
+ * One row as it will read once the queued answer folds.
+ *
+ * It claims exactly what the op says and nothing else: the category and the
+ * review flag the op carries. Money, provenance and every other column are
+ * untouched, because `txn_categorized` does not touch them either.
+ */
+export function withPendingCategory(t: Txn, answered: ReadonlyMap<string, PendingAnswer>): Txn {
+  const answer = answered.get(t.id);
+  if (answer === undefined) return t;
+  if (answer.category === t.category && answer.needs_review === t.needs_review) return t;
+  return { ...t, category: answer.category, needs_review: answer.needs_review };
+}
+
+/**
+ * The rules a queued `rule_added` will materialise, in {@link Rule} shape.
+ *
+ * Passed to {@link confirmOps} alongside the projection's own rules so that a
+ * merchant answered twice in one offline session does not queue the same rule
+ * twice — the projection cannot know about a rule that has not folded yet.
+ */
+export function pendingRules(pending: readonly Op[]): Rule[] {
+  const out: Rule[] = [];
+  for (const op of pending) {
+    if (op.type !== "rule_added") continue;
+    const p = op.payload as { pattern?: unknown; match?: unknown; category?: unknown; priority?: unknown };
+    if (typeof p.pattern !== "string" || typeof p.match !== "string" || typeof p.category !== "string") continue;
+    out.push({
+      pattern: p.pattern,
+      match: p.match,
+      category: p.category,
+      priority: typeof p.priority === "number" ? p.priority : 0,
+      version: 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * The category an `exact` rule already sends this merchant to, or `null`.
+ *
+ * # Why a second rule is not an option
+ *
+ * There is no rule-delete and no rule-edit op, so every `rule_added` is
+ * permanent. Two `exact` rules on one pattern with the same priority and
+ * DIFFERENT categories are resolved by `client/src/categorize/rules.ts` by
+ * comparing the category strings' code points — alphabetically, not by
+ * intent — which would make a user who *corrected* a category silently hand
+ * that merchant to whichever of the two sorts first, forever. It would also
+ * make `rules.ts`'s own promise ("it never decides between two different
+ * categories that a user could have distinguished") false.
+ *
+ * So a screen offering the write-back has to know whether one already exists.
+ * Queued-but-unfolded rules count: within one offline session they are the only
+ * record there is.
+ */
+export function existingRuleCategory(
+  merchantRaw: string,
+  rules: Iterable<Rule>,
+  pending: readonly Op[] = [],
+): string | null {
+  const pattern = ruleTargetOf(merchantRaw);
+  if (pattern === null) return null;
+  let found: string | null = null;
+  for (const r of [...rules, ...pendingRules(pending)]) {
+    if (r.match === "exact" && r.pattern === pattern) found = r.category;
+  }
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // 12. The seam the screen sees
 // ---------------------------------------------------------------------------
