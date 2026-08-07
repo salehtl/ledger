@@ -17,7 +17,7 @@
  *
  *  - {@link SyncCoordinator.haltReason}, because the web gate has to render the
  *    reason and `CoordinatedEngine` otherwise had no way to say it.
- *  - {@link SyncFault} and {@link useSync}, because a browser tab has no
+ *  - {@link SyncStatus.fault} and {@link useSync}, because a browser tab has no
  *    equivalent of the native app's crash reporter: a rejected `sync()` with
  *    nobody awaiting it is an unhandled rejection in the console and a UI that
  *    looks like it is still loading.
@@ -36,15 +36,22 @@
  * `phase: "halted"` means the invariant checker found a chain break or a roster
  * problem, or the fold hit something it refuses to apply. It is the one sync
  * outcome that must never render as a spinner, and {@link useSync} raises it as
- * a {@link SyncFault} that nothing clears — see `BootGate.tsx`, which puts it
- * full-screen and non-dismissable.
+ * a {@link Halt} — see `BootGate.tsx`, which puts it full-screen and
+ * non-dismissable.
+ *
+ * **The phase alone cannot make that call.** `SyncEngine` publishes the same
+ * `halted` for a transport failure, so `halt.ts` classifies the throw first; a
+ * sync that simply could not reach the server is not a verdict about anybody's
+ * records. Round 1 of this task got that wrong in both directions at once — see
+ * {@link SyncStatus.fault}.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SyncEngine, type SyncOptions, type SyncProgress, type SyncResult } from "@ledger/client/net/engine";
-import type { Violation } from "@ledger/client/invariants/check";
+import type { Halt } from "@ledger/client/invariants/surface";
 
+import { classifySyncFailure, haltFromViolations, HALT_WITHOUT_REASON } from "./halt";
 import type { V2Handle } from "./session";
 
 /** The shape a sync-less render still has to have. */
@@ -157,30 +164,33 @@ export function useSyncProgress(coordinator: SyncCoordinator | null): SyncProgre
   return progress;
 }
 
-/**
- * Why the app stopped syncing, in the words the engine used.
- *
- * `violations` is empty for everything that is not a hard stop —
- * `ChainBreakError`, a transport failure, `UnknownNewerVersionError`. The
- * screen must therefore not require one to render.
- */
-export interface SyncFault {
-  reason: string;
-  violations: readonly Violation[];
-}
-
 export interface SyncStatus {
   progress: SyncProgress;
   /**
-   * Non-null once a sync stopped in a way the user has to be shown. **Nothing
-   * clears it**: every fault here is either a data-integrity stop or an
-   * unrecoverable client error, and both mean the projection on screen may not
-   * be what the log says. A dismissable version of this is a lie with a close
-   * button on it.
+   * Non-null once a sync stopped because the records did not check out. A
+   * {@link Halt} rather than a string: it carries the violation CLASS and the
+   * library's own copy, so a screen renders it rather than paraphrasing an
+   * exception message.
+   *
+   * **Not dismissable, but not permanent either.** Round 1 of this task made it
+   * sticky and unconditional, which meant one `visibilitychange` fired while
+   * offline put up a wall no amount of coming back online could clear, on a tab
+   * with no buttons on it. The rule that replaced it:
+   *
+   *  - a **successful** sync clears it, so recovery is automatic on the next
+   *    trigger;
+   *  - a **transport** failure neither sets nor clears it — being offline is
+   *    not an integrity verdict in either direction;
+   *  - a genuine halt sets `SyncEngine.haltReason`, and the engine then refuses
+   *    every later sync, so a real halt re-asserts itself on its own and stays
+   *    until `resume()`. The stickiness lives in the engine, where it belongs,
+   *    rather than in a React `useState` nothing can reach.
    */
-  fault: SyncFault | null;
-  /** Never rejects. A failure becomes {@link SyncStatus.fault}. */
+  fault: Halt | null;
+  /** Never rejects. A failure becomes {@link SyncStatus.fault}, or is ignored. */
   run(trigger: SyncTrigger, options?: SyncOptions): Promise<void>;
+  /** Drops the fault. For a caller that is re-running boot from the top. */
+  clear(): void;
 }
 
 /**
@@ -193,26 +203,32 @@ export interface SyncStatus {
  */
 export function useSync(coordinator: SyncCoordinator | null): SyncStatus {
   const progress = useSyncProgress(coordinator);
-  const [fault, setFault] = useState<SyncFault | null>(null);
+  const [fault, setFault] = useState<Halt | null>(null);
+  const clear = useCallback(() => {
+    setFault(null);
+  }, []);
 
   const run = useCallback(
     async (trigger: SyncTrigger, options?: SyncOptions): Promise<void> => {
       if (coordinator === null) return;
       try {
         const result = options === undefined ? await coordinator.run(trigger) : await coordinator.run(trigger, options);
-        if (!result.halted) return;
-        setFault({
-          reason: coordinator.haltReason ?? "syncing stopped because this device's records did not check out",
-          violations: result.violations,
-        });
+        if (!result.halted) {
+          // A sync that completed is the only thing that can say the previous
+          // verdict no longer holds.
+          setFault(null);
+          return;
+        }
+        setFault(haltFromViolations(result.violations, coordinator.haltReason ?? HALT_WITHOUT_REASON));
       } catch (error) {
         // The engine has already published `phase: "halted"` and left the store
         // consistent at the last chunk boundary. What it cannot do is tell a
-        // React tree, so this is the only place that error is observable.
-        setFault({
-          reason: error instanceof Error ? error.message : String(error),
-          violations: [],
-        });
+        // React tree, so this is the only place that error is observable — and
+        // the only place that can tell "no network" from "the records did not
+        // check out", which the phase alone cannot.
+        const failure = classifySyncFailure(error, coordinator.haltReason);
+        if (failure.kind === "offline") return;
+        setFault(failure.halt);
       }
     },
     [coordinator],
@@ -235,5 +251,5 @@ export function useSync(coordinator: SyncCoordinator | null): SyncStatus {
     };
   }, [coordinator]);
 
-  return useMemo(() => ({ progress, fault, run }), [progress, fault, run]);
+  return useMemo(() => ({ progress, fault, run, clear }), [progress, fault, run, clear]);
 }

@@ -40,14 +40,21 @@
  * after: a 401 or 410 raised while enrolling is still a session answer, and
  * `ensureDeviceWriter` lets both past unwrapped precisely so this order works.
  *
- * # A halt is a boot state of its own
+ * # A halt is a boot state of its own — and being offline is NOT one
  *
  * `SyncEngine` reports a hard stop as `{ halted: true }` DATA and throws
- * everything else — `ChainBreakError`, `UnknownNewerVersionError`, a transport
- * failure — after publishing `phase: "halted"`. Both land here as
- * {@link BootState} `halted`, because to the person holding the device they are
- * the same thing: the records did not check out and the app must not pretend to
- * be loading. `BootGate` renders it full-screen and non-dismissable.
+ * everything else after publishing `phase: "halted"`. That "everything else"
+ * includes a **transport failure**, which is why the phase is not the
+ * classifier: round 1 of this task shipped a wall telling a user with no
+ * network that their records had failed an integrity check and that reopening
+ * the app would not clear it. Both halves were false.
+ *
+ * `halt.ts` splits the throw before anything renders. A genuine integrity
+ * failure becomes {@link BootState} `halted`, carrying the {@link Halt} the
+ * library's own `surface()` classified — the violation CLASS and its written
+ * copy, not this app's paraphrase of an exception string. A transport failure
+ * sets `offline` and boot **carries on**: the projection is local, fully
+ * readable, and showing it is the honest answer.
  *
  * # The address read is allowed to fail
  *
@@ -61,11 +68,12 @@
  */
 
 import type { SyncResult } from "@ledger/client/net/engine";
-import type { Violation } from "@ledger/client/invariants/check";
+import type { Halt } from "@ledger/client/invariants/surface";
 import type { State } from "@ledger/client/replay/state";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { enrollmentFailureCopy, type EnrollmentCopy } from "./enrollment";
+import { classifySyncFailure, haltFromViolations, HALT_WITHOUT_REASON } from "./halt";
 import {
   firstMailAt,
   loadLocalRecord,
@@ -83,13 +91,15 @@ export type BootState =
    * Signed in, and this device is not able to author. Neither fatal nor a lie.
    */
   | { step: "unenrolled"; copy: EnrollmentCopy }
-  | { step: "onboarding"; userId: string; facts: OnboardingFacts }
-  | { step: "ready"; userId: string; facts: OnboardingFacts }
-  | { step: "halted"; reason: string; violations: readonly Violation[] }
+  /**
+   * `offline` records that the launch sync could not reach the server. The app
+   * still opens, on the local projection, because that is the honest answer —
+   * see the header.
+   */
+  | { step: "onboarding"; userId: string; facts: OnboardingFacts; offline: boolean }
+  | { step: "ready"; userId: string; facts: OnboardingFacts; offline: boolean }
+  | { step: "halted"; halt: Halt }
   | { step: "fatal"; error: Error };
-
-/** The words used when a halt arrives with no reason attached to it. */
-export const HALT_WITHOUT_REASON = "syncing stopped because this device's records did not check out";
 
 export interface BootDeps {
   /** {@link V2Handle.signedIn}. */
@@ -142,24 +152,31 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     return fatal(error);
   }
 
-  // 2. THE LAUNCH SYNC. Its own catch, so that the one class of error whose
-  //    right answer is `halted` rather than `fatal` is decided by WHERE it was
-  //    raised rather than by a type test on the error. The set of things
-  //    `SyncEngine` rethrows is open-ended on purpose (it names
-  //    `UnknownNewerVersionError`, `ChainBreakError`, `ProtocolError` and
-  //    "transport failures"), so an allow-list here would be a second copy of a
-  //    list that lives somewhere else and would silently mis-file the next
-  //    error added to it.
+  // 2. THE LAUNCH SYNC.
+  //
+  //    `SyncEngine` rethrows a TRANSPORT failure with the same `phase:
+  //    "halted"` it uses for a chain break, so the phase cannot be the
+  //    classifier: round 1 of this task shipped a wall telling an offline user
+  //    their records had failed an integrity check. `classifySyncFailure`
+  //    splits the two, and a sync this device simply could not perform does not
+  //    stop the app — the projection is local and readable.
   let result: SyncResult;
+  let offline = false;
   try {
     result = await deps.sync();
   } catch (error) {
     const forced = await classify(deps, error);
     if (forced !== null) return forced;
-    return { step: "halted", reason: messageOf(error), violations: [] };
+    const failure = classifySyncFailure(error, deps.haltReason());
+    if (failure.kind === "halt") return { step: "halted", halt: failure.halt };
+    offline = true;
+    result = { pulled: 0, applied: 0, violations: [], halted: false };
   }
   if (result.halted) {
-    return { step: "halted", reason: deps.haltReason() ?? HALT_WITHOUT_REASON, violations: result.violations };
+    return {
+      step: "halted",
+      halt: haltFromViolations(result.violations, deps.haltReason() ?? HALT_WITHOUT_REASON),
+    };
   }
 
   // 3. THE FACTS.
@@ -177,16 +194,14 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     // other field round-trips unchanged from what was just loaded.
     saveLocalRecord(deps.secrets, facts);
 
-    return onboardingComplete(facts) ? { step: "ready", userId, facts } : { step: "onboarding", userId, facts };
+    return onboardingComplete(facts)
+      ? { step: "ready", userId, facts, offline }
+      : { step: "onboarding", userId, facts, offline };
   } catch (error) {
     const forced = await classify(deps, error);
     if (forced !== null) return forced;
     return fatal(error);
   }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -233,7 +248,21 @@ export function mayWipeLocalData(err: unknown): boolean {
 /** The two failures about the ACCOUNT rather than about one call. */
 async function classify(deps: BootDeps, error: unknown): Promise<BootState | null> {
   if (mayWipeLocalData(error)) {
-    await deps.wipe();
+    try {
+      await deps.wipe();
+    } catch (failed) {
+      // A wipe that did not complete must NOT report `signed_out`. That would
+      // land the browser on a clean-looking sign-in over a database that still
+      // holds the deleted account's log under the same fixed name, and the next
+      // sign-in would open it. Say so instead, and stay put.
+      return {
+        step: "fatal",
+        error: new Error(
+          `this account was deleted, and ledger could not finish removing its data from this browser: ` +
+            `${failed instanceof Error ? failed.message : String(failed)}`,
+        ),
+      };
+    }
     return { step: "signed_out" };
   }
   if (httpShape(error)?.status === 401) {

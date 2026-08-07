@@ -368,10 +368,20 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   data, and rendering a spinner (or a dismissable banner over live figures)
   would say "still loading" about records the engine has stopped standing
   behind.
+- **The halt wall's words are the library's**, from
+  `client/src/invariants/surface.ts`'s `COPY`, rendered unaltered — one written
+  passage per halt CLASS, each ending by saying what is still true. Do not
+  paraphrase them here and do not write a single generic halt message: the
+  first version of this wall did, and it told anyone who opened the app offline
+  that their records had failed an integrity check.
 - **Don't:** give a halt wall a retry button or a `role="status"`. It is
-  `role="alert"`, and retrying is not what fixes a chain break. The retry
-  affordance belongs only to the walls whose copy says pressing again could
-  plausibly work (`enrollmentCopy(...).retry`).
+  `role="alert"`, and retrying is not what fixes a chain break — `halt.action`
+  says what there is to do, in prose. The retry affordance belongs only to the
+  walls whose copy says pressing again could plausibly work
+  (`enrollmentCopy(...).retry`).
+- **Don't:** show a wall for being offline. A failed sync is not a verdict; the
+  projection is local and readable, so the app stays on screen. `v2/halt.ts` is
+  the only thing allowed to make that call.
 
 ### Step / Notice (`screens/onboarding/Shell.tsx`)
 - **Purpose:** the page shape every onboarding step shares — title, optional

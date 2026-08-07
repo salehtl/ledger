@@ -3,6 +3,8 @@ import { act, renderHook } from "@testing-library/react";
 
 import type { SyncProgress, SyncResult } from "@ledger/client/net/engine";
 
+import { HALT_TAMPERED, HALT_UNCERTIFIED } from "@ledger/client/invariants/surface";
+
 import { IDLE_PROGRESS, SyncCoordinator, useSync, useSyncProgress, type CoordinatedEngine } from "./engine";
 
 function fakeEngine(over: Partial<CoordinatedEngine> = {}): CoordinatedEngine & {
@@ -122,14 +124,14 @@ describe("useSyncProgress", () => {
 });
 
 describe("useSync", () => {
-  it("raises a fault when a run comes back halted, and does not clear it", async () => {
+  it("raises a fault when a run comes back halted, classified by its violation", async () => {
     const engine = fakeEngine({
-      halted: "I11_roster_checkpoint",
+      halted: "I3_chain",
       sync: () =>
         Promise.resolve<SyncResult>({
           pulled: 0,
           applied: 0,
-          violations: [{ code: "I11_roster_checkpoint", detail: "no checkpoint names this writer" } as never],
+          violations: [{ id: "I3_chain", severity: "hard_stop", detail: "spliced" } as never],
           halted: true,
         }),
     });
@@ -139,18 +141,89 @@ describe("useSync", () => {
     await act(async () => {
       await result.current.run("launch");
     });
-    expect(result.current.fault).not.toBeNull();
-    expect(result.current.fault?.reason).toContain("I11_roster_checkpoint");
+    expect(result.current.fault?.kind).toBe(HALT_TAMPERED);
     expect(result.current.fault?.violations).toHaveLength(1);
   });
 
-  it("raises a fault when a run throws, naming the error rather than swallowing it", async () => {
-    const engine = fakeEngine({ sync: () => Promise.reject(new Error("chain break at seq 12")) });
+  it("raises a fault when a run throws an integrity failure", async () => {
+    const broken = new Error("chain break at seq 12");
+    broken.name = "ChainBreakError";
+    const engine = fakeEngine({ sync: () => Promise.reject(broken) });
     const { result } = renderHook(() => useSync(new SyncCoordinator(engine)));
     await act(async () => {
       await result.current.run("foreground");
     });
-    expect(result.current.fault?.reason).toBe("chain break at seq 12");
+    expect(result.current.fault?.kind).toBe(HALT_TAMPERED);
+  });
+
+  // -- round-1 critical 2: a fault must not be permanent --------------------
+
+  it("does NOT raise a fault when the run simply could not reach the server", async () => {
+    const engine = fakeEngine({ sync: () => Promise.reject(new TypeError("Failed to fetch")) });
+    const { result } = renderHook(() => useSync(new SyncCoordinator(engine)));
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).toBeNull();
+  });
+
+  it("clears the fault once a sync completes, so coming back online recovers", async () => {
+    let halted = true;
+    const engine = fakeEngine({
+      sync: () =>
+        Promise.resolve<SyncResult>(
+          halted
+            ? { pulled: 0, applied: 0, violations: [], halted: true }
+            : { pulled: 0, applied: 0, violations: [], halted: false },
+        ),
+    });
+    const { result } = renderHook(() => useSync(new SyncCoordinator(engine)));
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault?.kind).toBe(HALT_UNCERTIFIED);
+
+    halted = false;
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).toBeNull();
+  });
+
+  it("does not let an offline blip clear a fault that is already standing", async () => {
+    let mode: "halt" | "offline" = "halt";
+    const engine = fakeEngine({
+      sync: () =>
+        mode === "halt"
+          ? Promise.resolve<SyncResult>({ pulled: 0, applied: 0, violations: [], halted: true })
+          : Promise.reject(new TypeError("Failed to fetch")),
+    });
+    const { result } = renderHook(() => useSync(new SyncCoordinator(engine)));
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).not.toBeNull();
+
+    mode = "offline";
+    await act(async () => {
+      await result.current.run("foreground");
+    });
+    expect(result.current.fault).not.toBeNull();
+  });
+
+  it("clear() drops the fault, for a caller re-running boot from the top", async () => {
+    const engine = fakeEngine({
+      sync: () => Promise.resolve<SyncResult>({ pulled: 0, applied: 0, violations: [], halted: true }),
+    });
+    const { result } = renderHook(() => useSync(new SyncCoordinator(engine)));
+    await act(async () => {
+      await result.current.run("launch");
+    });
+    expect(result.current.fault).not.toBeNull();
+    act(() => {
+      result.current.clear();
+    });
+    expect(result.current.fault).toBeNull();
   });
 
   it("runs a foreground sync when the document becomes visible, and not when it hides", async () => {

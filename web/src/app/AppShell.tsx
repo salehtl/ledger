@@ -86,6 +86,14 @@ export function AppShell() {
       await invalidateAfterSync(qc);
       return;
     }
+    // The v1 path, and it must be noisy. A missing gate does not break
+    // anything here — it quietly refetches v1 HTTP endpoints that `ledgerd`
+    // does not serve, which reads as "working" right up until it is deployed.
+    // Screens backed by the projection use `useV2OrThrow` instead; this one is
+    // still genuinely dual-world until Task 10.
+    if (import.meta.env.DEV) {
+      console.warn("[ledger] AppShell rendered without <BootGate>: pull-to-refresh is using the v1 HTTP path.");
+    }
     await qc.invalidateQueries();
   }, [v2, qc]);
   // Disabled while offline: a pull would haptic-confirm a refresh that can't fetch.

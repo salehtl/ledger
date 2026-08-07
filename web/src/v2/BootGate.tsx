@@ -56,8 +56,11 @@ import {
 import { Button } from "../components/ui/Button";
 import { PixelSpinner } from "../components/ui/PixelSpinner";
 
+import type { Halt } from "@ledger/client/invariants/surface";
+
 import { readAddress } from "./address";
-import { boot, handleDeps, HALT_WITHOUT_REASON, type BootState } from "./boot";
+import { boot, handleDeps, type BootState } from "./boot";
+import { HALT_WITHOUT_REASON, haltFromReason } from "./halt";
 import { startEngine, useSync, type SyncCoordinator, type SyncStatus } from "./engine";
 import { ONBOARDING_LOCAL_KEY, type OnboardingFacts } from "./onboarding";
 import { initV2, SECRET_WRITER_ID, webSecretStore, type V2Handle } from "./session";
@@ -114,9 +117,33 @@ const V2Context = createContext<V2Runtime | null>(null);
  * Nullable rather than throwing, because v1 screens and their tests still mount
  * without a gate around them (Tasks 8–10 retire them) and a hook that threw
  * would make the gate a hard dependency of every one of them a task early.
+ *
+ * **Use {@link useV2OrThrow} in anything that reads the projection.** The
+ * nullable version has one honest use — a v1 surface choosing between the two
+ * worlds — and one dangerous one: a Task 8–10 screen that falls back to the v1
+ * HTTP path when the gate is missing does not fail, it silently talks to
+ * endpoints `ledgerd` does not serve, and every test passes.
  */
 export function useV2(): V2Runtime | null {
   return useContext(V2Context);
+}
+
+/**
+ * The runtime, or a loud failure. For every screen backed by the projection.
+ *
+ * There is no correct fallback for those: without the gate there is no handle,
+ * no engine and no projection, so "degrade to v1" means reading a different
+ * database over a different protocol and calling it the same screen.
+ */
+export function useV2OrThrow(): V2Runtime {
+  const runtime = useContext(V2Context);
+  if (runtime === null) {
+    throw new Error(
+      "this screen reads the v2 projection and must be rendered inside <BootGate>; " +
+        "there is no v1 fallback for it",
+    );
+  }
+  return runtime;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +189,15 @@ export function BootGate({
   // Bumped by "try again" and by a slot reporting it is done; every increment
   // re-runs boot from the top, which is the only way to re-derive the facts.
   const [attempt, setAttempt] = useState(0);
-  const sync = useSync(coordinator);
+  // The coordinator is handed to `useSync` ONLY while the app is on screen.
+  //
+  // That is what keeps a background sync from destroying the one affordance an
+  // `unenrolled` user has: with the trigger live in that state, a tab-switch
+  // syncs with no writer, throws, and the retryable enrolment wall is replaced
+  // by an un-retryable halt wall — the round-1 review reproduced exactly that.
+  // A device that cannot author has no business syncing in the background, so
+  // it does not.
+  const sync = useSync(state.step === "ready" ? coordinator : null);
 
   // Held so the boot effect does not re-run when a caller re-creates one of
   // these inline, which is the ordinary way to pass a function prop.
@@ -203,28 +238,14 @@ export function BootGate({
     };
   }, [attempt]);
 
+  const clearFault = sync.clear;
   const again = useCallback(() => {
+    // Dropped before the re-boot, not after: a stale verdict left standing
+    // would wall off the very state the retry was meant to reach.
+    clearFault();
     setState({ step: "opening" });
     setAttempt((n) => n + 1);
-  }, []);
-
-  // A halt raised by a LATER sync outranks whatever the boot state says: the
-  // app underneath is showing a projection the engine has stopped standing
-  // behind.
-  //
-  // Two conditions, deliberately. `fault` is what a `run()` through this hook
-  // observed, and carries the violations. The PHASE is the engine's own flag
-  // and catches the case no `run()` can report: `SyncEngine.halt(reason)`
-  // called from somewhere else — the Integrity screen, a future background
-  // task — which publishes `halted` with nobody awaiting a promise. The rule is
-  // that a halted phase is never on screen as anything but this, so it is read
-  // directly rather than inferred.
-  if (sync.fault !== null) {
-    return <HaltWall reason={sync.fault.reason} violations={sync.fault.violations.map(codeOf)} />;
-  }
-  if (sync.progress.phase === "halted") {
-    return <HaltWall reason={coordinator?.haltReason ?? HALT_WITHOUT_REASON} violations={[]} />;
-  }
+  }, [clearFault]);
 
   switch (state.step) {
     case "opening":
@@ -260,7 +281,7 @@ export function BootGate({
       return onboarding({ handle, facts: state.facts, done: again });
 
     case "halted":
-      return <HaltWall reason={state.reason} violations={state.violations.map(codeOf)} />;
+      return <HaltWall halt={state.halt} />;
 
     case "fatal":
       return (
@@ -278,13 +299,32 @@ export function BootGate({
         </Wall>
       );
 
-    case "ready":
+    case "ready": {
       if (handle === null || coordinator === null) return null;
+      // A halt raised by a LATER sync takes the screen from the app that was on
+      // it: what is rendered behind is a projection the engine has stopped
+      // standing behind.
+      //
+      // Two sources, deliberately. `fault` is what a `run()` through the hook
+      // observed and carries the violation class. The PHASE catches the case no
+      // `run()` can report — `SyncEngine.halt(reason)` called from somewhere
+      // else, which publishes `halted` with nobody awaiting a promise.
+      //
+      // Scoped to `ready` rather than checked ahead of the switch, which is
+      // where round 1 put it: there, a fault outranked the `unenrolled` wall and
+      // nothing could ever clear it. Here it can only be on screen over the app
+      // it is about, and a successful sync clears it (see `useSync`), so coming
+      // back online recovers on the next trigger with nothing to press.
+      const halt =
+        sync.fault ??
+        (sync.progress.phase === "halted" ? haltFromReason(coordinator.haltReason ?? HALT_WITHOUT_REASON) : null);
+      if (halt !== null) return <HaltWall halt={halt} />;
       return (
         <V2Context.Provider value={{ handle, coordinator, sync, userId: state.userId, facts: state.facts }}>
           {children}
         </V2Context.Provider>
       );
+    }
   }
 }
 
@@ -321,33 +361,34 @@ function Notice({ title, body, detail }: { title: string; body: string; detail?:
 }
 
 /**
- * The one screen with no way out.
+ * The one screen with no way out — in the LIBRARY's words.
+ *
+ * Every sentence comes from `invariants/surface.ts`'s `COPY`, unaltered, the
+ * way `app/`'s `HaltBanner` renders it. That matters beyond consistency: those
+ * strings are written per halt CLASS, they never claim to know more than the
+ * check did, and each ends by saying what is still true — which is the thing a
+ * person needs first from a full-screen stop. Round 1 hand-wrote a single
+ * paraphrase here that asserted tampering and said reopening would not help,
+ * then showed it to anyone who opened the app offline.
  *
  * `role="alert"` rather than `role="status"`: this is not progress, and a
- * screen reader must interrupt for it. There is deliberately no retry — a chain
- * break is not repaired by asking again, and a button that implied it was would
- * be the same lie as the spinner.
+ * screen reader must interrupt for it. No button, and no spinner: `halt.action`
+ * says what there is to do, in prose, because none of the six is repaired by a
+ * control on this screen.
  */
-function HaltWall({ reason, violations }: { reason: string; violations: readonly string[] }) {
+function HaltWall({ halt }: { halt: Halt }) {
   return (
     <Wall>
       <div role="alert" className="flex flex-col gap-3">
-        <h1 className="text-xl font-semibold text-bad">Syncing has stopped</h1>
-        <p className="text-sm leading-relaxed">
-          ledger checks that every record it receives matches what your devices signed for, and this check did not
-          pass. It has stopped syncing rather than show you figures it cannot stand behind. Nothing on this device
-          was changed or lost.
-        </p>
-        <p className="text-sm leading-relaxed text-muted">
-          This is not something to fix from here, and reopening the app will not clear it.
-        </p>
-        <p className="text-xs font-mono break-words border border-border rounded-[var(--radius)] p-3 bg-surface-2">
-          {reason}
-        </p>
-        {violations.length > 0 && (
-          <ul className="text-xs font-mono text-muted flex flex-col gap-1">
-            {violations.map((code) => (
-              <li key={code}>{code}</li>
+        <h1 className="text-xl font-semibold text-bad">{halt.title}</h1>
+        <p className="text-sm leading-relaxed">{halt.body}</p>
+        {halt.action !== null && <p className="text-sm leading-relaxed text-muted">{halt.action}</p>}
+        {halt.violations.length > 0 && (
+          <ul data-testid="halt-detail" className="text-xs font-mono text-muted flex flex-col gap-1 break-words">
+            {halt.violations.map((v, i) => (
+              <li key={`${v.id}-${i}`}>
+                {v.id}: {String(v.detail)}
+              </li>
             ))}
           </ul>
         )}
@@ -373,11 +414,6 @@ function Unbuilt({ what, owner }: { what: string; owner: string }) {
   );
 }
 
-function codeOf(v: unknown): string {
-  const c = (v as { code?: unknown } | null)?.code;
-  return typeof c === "string" ? c : String(c ?? "");
-}
-
 // ---------------------------------------------------------------------------
 // The IO the gate needs and nothing else owns yet
 // ---------------------------------------------------------------------------
@@ -394,10 +430,26 @@ function addressOf(handle: V2Handle): Promise<string | null> {
  * once their database is, so continuing in the same document would run the
  * sign-in screen against a closed driver.
  *
- * Best-effort by construction. A `deleteDatabase` that stays blocked (another
- * tab holding the same database open) must not stop the secrets from being
- * cleared — the session token is the part that matters most and it is gone
- * either way.
+ * # The delete is AWAITED, and a failure THROWS
+ *
+ * The store is not account-bound — there is no `account_id` anywhere in
+ * `client/src`, and the browser database is a fixed name (`ledger-v2`) holding a
+ * record keyed by profile. So a half-wipe is not "some leftovers": it is the
+ * deleted account's whole op log and projection, sitting under the name the next
+ * sign-in on this browser will open.
+ *
+ * Round 1 fired `deleteDatabase` without awaiting it and reloaded immediately,
+ * which loses the race in the two cases that matter — a delete blocked by a
+ * second tab holding the connection, and one simply cut short by the navigation.
+ * Secrets were cleared either way, so the reload landed on a clean-looking
+ * sign-in over surviving data. Now: await `success`/`error`/`blocked`, throw on
+ * anything but success, and **do not reload** — `boot`'s `classify` turns the
+ * throw into a wall that says what happened, instead of a fresh sign-in that
+ * hides it.
+ *
+ * `onblocked` is a rejection, not a wait. It fires when another tab still holds
+ * the database open, and that tab is not going to close on its own; waiting
+ * there is a hang, and the user can act on being told.
  */
 export async function wipeLocalData(handle: V2Handle): Promise<void> {
   const secrets = webSecretStore(PROFILE);
@@ -408,10 +460,29 @@ export async function wipeLocalData(handle: V2Handle): Promise<void> {
   }
   for (const key of [ONBOARDING_LOCAL_KEY, SECRET_WRITER_ID]) secrets.set(key, null);
   handle.close();
-  try {
-    if (typeof indexedDB !== "undefined") indexedDB.deleteDatabase("ledger-v2");
-  } catch {
-    // A blocked or refused delete leaves data behind; the session is still gone.
-  }
+  await deleteBrowserDatabase();
   if (typeof location !== "undefined" && typeof location.reload === "function") location.reload();
+}
+
+/** Resolves only when the database is actually gone. */
+export function deleteBrowserDatabase(name = "ledger-v2"): Promise<void> {
+  if (typeof indexedDB === "undefined") return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    let request: IDBOpenDBRequest;
+    try {
+      request = indexedDB.deleteDatabase(name);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    request.onsuccess = () => {
+      resolve();
+    };
+    request.onerror = () => {
+      reject(new Error(`could not delete the local database: ${String(request.error?.message ?? "unknown")}`));
+    };
+    request.onblocked = () => {
+      reject(new Error("another ledger tab still has the local database open; close every other ledger tab"));
+    };
+  });
 }
