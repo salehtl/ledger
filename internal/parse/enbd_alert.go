@@ -22,7 +22,9 @@ func (ENBDAlertParser) Matches(from, subject string) bool {
 }
 
 var (
-	enbdAlertDebitRe  = regexp.MustCompile(`(?i)((?:[A-Z]{3}\s*)?[\d,]+\.\d{2})\s+has been\s+(?:withdrawn|debited)\s+from your account`)
+	// "deducted" is ENBD's wording for bank-initiated debits (transfer
+	// issuance, fees); "withdrawn" is ATM/cash; "debited" the generic form.
+	enbdAlertDebitRe  = regexp.MustCompile(`(?i)((?:[A-Z]{3}\s*)?[\d,]+\.\d{2})\s+has been\s+(?:withdrawn|debited|deducted)\s+from your account`)
 	enbdAlertCreditRe = regexp.MustCompile(`(?i)((?:[A-Z]{3}\s*)?[\d,]+\.\d{2})\s+has been\s+(?:credited|deposited)\s+(?:in)?to your account`)
 	enbdAlertLast4Re  = regexp.MustCompile(`(?i)account ending with\s+(\d{4})`)
 )
