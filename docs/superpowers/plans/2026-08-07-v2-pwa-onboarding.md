@@ -297,9 +297,9 @@ Flow:
 
 - [ ] Add `app.sirdab.ae` A → `198.51.100.1`, **DNS-only (grey cloud)**. Cloudflare proxying would break autocert's TLS-ALPN challenge and collapse the per-IP sign-in limiter to a single key, since every request would arrive from a Cloudflare address.
 - [ ] **Delete the `MX 20 mx2.sirdab.ae` record** (Decision 4) — it resolves to nothing, and a backup MX that fails to resolve is worse than none: senders fail over to it exactly when mx1 is down.
-- [ ] Add `TXT sirdab.ae` = `v=spf1 -all` (this domain receives, never sends) and `TXT _dmarc.sirdab.ae` = `v=DMARC1; p=reject; rua=mailto:<operator>`.
-- [ ] Set rDNS/PTR for `198.51.100.1` → `in.sirdab.ae` in the **Hetzner console** (currently the default `static.41.132.104.178.clients.your-server.de`, which hurts inbound reputation).
-- [ ] Verify: `dig +short A app.sirdab.ae` → the IP; `dig +short MX in.sirdab.ae` → only `10 mx1…`; `dig +short -x 198.51.100.1` → `in.sirdab.ae`.
+- [ ] Add `TXT sirdab.ae` = `v=spf1 -all` (this domain receives, never sends) and `TXT _dmarc.sirdab.ae` = `v=DMARC1; p=reject`. **No `rua=`:** an aggregate-report address on a domain the operator does not control (e.g. icloud.com) cannot receive reports — RFC 7489 §7.1 external-destination verification requires the *destination* domain to publish `sirdab.ae._report._dmarc.<that domain>`, which only its owner can do. A reporting address that silently collects nothing reads as coverage and is worse than none; `p=reject` does the enforcement either way.
+- [ ] Set rDNS/PTR for `198.51.100.1` → **`mx1.sirdab.ae`** in the **Hetzner console** (currently the default `static.41.132.104.178.clients.your-server.de`, which hurts inbound reputation). **NOT `in.sirdab.ae`**, which the Phase 1 D1 plan said: `in.sirdab.ae` carries only an MX record and no A record, so a PTR naming it would fail forward-confirmation (PTR → name → A → same IP). `mx1.sirdab.ae` has the A record and round-trips.
+- [ ] Verify: `dig +short A app.sirdab.ae` → the IP; `dig +short MX in.sirdab.ae` → only `10 mx1…`; `dig +short -x 198.51.100.1` → `mx1.sirdab.ae.`, and `dig +short A mx1.sirdab.ae` → `198.51.100.1` (the forward half of the confirmation).
 
 ### Task D2: PostgreSQL on the primary
 
