@@ -339,16 +339,36 @@ export function Welcome({
           </Notice>
         )}
 
-        <Button
-          variant="danger"
-          disabled={phase.wiping || (phase.unsynced !== 0 && !phase.armed)}
-          onClick={() => void startFresh()}
-        >
-          {phase.wiping ? "Clearing…" : "Clear this browser's data and start fresh"}
-        </Button>
-        <Button variant="ghost" disabled={phase.wiping} onClick={() => setPhase({ kind: "idle" })}>
-          Go back
-        </Button>
+        {/*
+          SPACING IS THE SAFETY MECHANISM HERE, and it is deliberate.
+
+          The acknowledgement checkbox is the last thing inside the warning above
+          and this is the button it arms. At the default rhythm they sat about
+          36px apart (the notice's `p-4`, plus `Step`'s `gap-5`) — under the
+          44px this codebase holds every touch target to, and therefore within
+          one thumb's reach of each other. A fast double-tap could arm the
+          checkbox and fire the wipe in a single gesture, which on this screen
+          means accidental, permanent, unrecoverable destruction of a user's
+          unsynced records.
+
+          `pt-6` adds 24px, putting roughly 60px between them: past the
+          convention, and past the distance a double-tap can span. Not another
+          confirmation dialog — nothing else on this screen is destructive, so
+          the answer is distance, not a second thing to tap through. If this
+          layout is ever restyled, this gap is load-bearing.
+        */}
+        <div className="pt-6 flex flex-col gap-3">
+          <Button
+            variant="danger"
+            disabled={phase.wiping || (phase.unsynced !== 0 && !phase.armed)}
+            onClick={() => void startFresh()}
+          >
+            {phase.wiping ? "Clearing…" : "Clear this browser's data and start fresh"}
+          </Button>
+          <Button variant="ghost" disabled={phase.wiping} onClick={() => setPhase({ kind: "idle" })}>
+            Go back
+          </Button>
+        </div>
       </Step>
     );
   }

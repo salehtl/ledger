@@ -251,6 +251,32 @@ describe("Verification", () => {
     expect(rig.confirmCalls.every((c) => c.domain === "dib.ae" && c.scope === "inner")).toBe(true);
   });
 
+  it("keeps an outstanding remainder when a retry fails, rather than losing it", async () => {
+    const user = userEvent.setup();
+    const { rig, onConfirmed } = mount({
+      logAt: null,
+      logAtAfterConfirm: "2026-08-07T10:01:00Z",
+      reingest: { examined: 500, appended: 500, superseded: 0, unchanged: 0, failed: 0, remaining: 7 },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /this is my bank/i }));
+    const partial = await screen.findByTestId("verification-partial");
+    expect(partial.textContent).toMatch(/7 messages/);
+
+    // The retry is rate-limited on its FIRST round, so it learns nothing about
+    // the remainder. Clearing it here would unblock the advance and lose the
+    // mail — which is what a naively "symmetric" catch path would do.
+    rig.items = [];
+    rig.confirmStatus = 429;
+    await user.click(within(partial).getByRole("button", { name: /file the rest/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("verification-message").textContent).toMatch(/wait about a minute/i);
+    });
+    expect(screen.getByTestId("verification-partial")).toBeTruthy();
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
   it("tells a rate-limited user to wait rather than to try again", async () => {
     const user = userEvent.setup();
     mount({ confirmStatus: 429 });

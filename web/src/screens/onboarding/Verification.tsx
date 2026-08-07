@@ -353,8 +353,27 @@ export function Verification({
         setMessage(CONFIRM_CONFLICT_COPY[code] ?? "Could not trust this sender. Try again.");
         if (live.current) {
           setBusy(false);
-          // Whatever was outstanding stays outstanding, and stays on screen.
-          if (left > 0) setPartial({ domain: request.domain, scope: request.scope, remaining: left });
+          // Whatever this attempt learned was outstanding stays outstanding,
+          // and now stays in the REF too — symmetrically with the success path
+          // below, which sets both and says why. This path does not call
+          // `watch` itself, so today the only exposure is a poll tick landing
+          // before React flushes this render; the reason to fix it anyway is
+          // that the asymmetry is the kind that survives a refactor, and
+          // whoever later adds a `watch()` here would inherit a remainder the
+          // guard cannot see.
+          //
+          // It only ever WRITES a remainder, never clears one. A throw means
+          // this attempt learned nothing, and `left` is still 0 when round 0 is
+          // the one that threw — so clearing on `left === 0` would discard a
+          // real remainder recorded by an earlier confirm the moment a retry
+          // hit a 429, unblocking the advance and losing the mail. That is the
+          // bug this whole finding exists to prevent, and it would have been
+          // reintroduced by making the two paths symmetric in the naive way.
+          if (left > 0) {
+            const outstanding = { domain: request.domain, scope: request.scope, remaining: left };
+            setPartial(outstanding);
+            partialRef.current = outstanding;
+          }
         }
         return;
       }
