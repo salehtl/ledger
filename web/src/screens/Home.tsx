@@ -101,19 +101,14 @@ export function Home({ budgetSource, txnSource }: HomeProps) {
 
   return (
     <div className="space-y-4">
-      {/* hero: what has actually gone out, in the home currency — the one bold,
-          branded surface; everything below stays quiet on neutral cards. */}
-      <div className="rounded-[var(--radius)] bg-hero text-hero-fg p-5">
-        <p className="text-sm opacity-80">Spent so far{currency ? ` · ${currency}` : ""}</p>
-        <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-[-0.02em] tnum">
-          <RollingNumber value={formatMinor(spent)} />
-        </p>
-        <p className="text-sm opacity-80 mt-2">
-          against <span className="tnum">{formatMinor(s.income)}</span> in
-        </p>
-      </div>
-
       {!s.usable ? (
+        // The hero is INSIDE the usable branch, and this is the reason: when
+        // `usable` is false every money field on the snapshot is a safe zero
+        // placeholder ("never a real (and therefore misleading) partial
+        // total", `sources/budget.ts`), and printing a placeholder in the
+        // largest type on the screen tells a user they have spent nothing.
+        // A rebuilding projection has no headline number to show, so it shows
+        // none.
         <Card>
           <p className="text-sm">
             Your budget is rebuilding after an update. Nothing was lost — it will be back once the local sync finishes.
@@ -121,6 +116,19 @@ export function Home({ budgetSource, txnSource }: HomeProps) {
         </Card>
       ) : (
         <>
+          {/* hero: what has actually gone out, in the home currency — the one
+              bold, branded surface; everything below stays quiet on neutral
+              cards. */}
+          <div className="rounded-[var(--radius)] bg-hero text-hero-fg p-5">
+            <p className="text-sm opacity-80">Spent so far{currency ? ` · ${currency}` : ""}</p>
+            <p className="mt-1 text-[2.75rem] leading-none font-semibold tracking-[-0.02em] tnum">
+              <RollingNumber value={formatMinor(spent)} />
+            </p>
+            <p className="text-sm opacity-80 mt-2">
+              against <span className="tnum">{formatMinor(s.income)}</span> in
+            </p>
+          </div>
+
           {s.warming && (
             <Card>
               <p className="text-sm">

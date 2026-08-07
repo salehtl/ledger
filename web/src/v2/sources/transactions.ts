@@ -25,6 +25,19 @@
  * rows at the same instant on purpose, because a cursor without the tiebreak
  * loses exactly one of them and loses it quietly.
  *
+ * ## …and the web screen does not use the cursor yet. Deliberately.
+ *
+ * `Transactions.tsx` asks for one page with `after: null` and grows `limit`,
+ * so "Show older" re-walks the window — the very cost the paragraph above
+ * criticises `OFFSET` for. Two reasons it is the right trade *here* and not on
+ * the phone: the walk is over local SQLite rather than a network, and it keeps
+ * the rendered list a pure function of one query key, where cursor state
+ * accumulated across renders is the shape whose off-by-one lost exactly one
+ * row per page in the native port. The bound is 150 rows, so the re-walk is
+ * bounded too. The cursor machinery stays because it is correct, tested, and
+ * what a virtualised list would need on the day one is built — it is not dead
+ * code left behind, it is unclaimed.
+ *
  * # Rows are decoded by the projection's own decoder
  *
  * `decodeTxnRow` is imported rather than re-written. A second decoder would
@@ -205,7 +218,18 @@ export function buildTxnQuery(f: TxnFilters, opts: TxnPageOptions): { sql: strin
   }
   // The day, not the instant: `posted_at` is a canonicalised RFC3339 UTC
   // timestamp and the bounds are calendar days, so comparing the whole string
-  // against `"2026-07-31"` would drop every row on the 31st.
+  // against `"2026-07-31"` would drop every row on the 31st. The cut is in UTC
+  // — `substr` of an already-canonical string, no `Date` anywhere — which is
+  // what keeps it identical on a device in Dubai and one in Los Angeles.
+  //
+  // NOTE for whoever meets `lib/scope.ts` next: `scopeBounds` hands a range's
+  // upper bound as `"YYYY-MM-32"`, a day that does not exist. That is not a
+  // bug and it is load-bearing HERE — SQLite compares TEXT lexicographically,
+  // so `"2026-07-31" <= "2026-07-32"` holds and the sentinel admits the whole
+  // last day. "Fixing" it into a real date (`-31`) is safe for this predicate
+  // but not for a caller that compares whole timestamps, which is why the
+  // sentinel exists; changing either end without the other silently drops a
+  // day's transactions.
   if (f.from !== "") {
     where.push("substr(posted_at, 1, 10) >= ?");
     params.push(f.from);

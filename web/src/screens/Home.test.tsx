@@ -111,6 +111,11 @@ describe("Home on the projection", () => {
     expect(await screen.findByText(/rebuilding after an update/)).toBeInTheDocument();
     // …and the buckets it would have shown are absent, not zeroed and passed off.
     expect(screen.queryByText("125.00")).toBeNull();
+    // The placeholder zeros must not be rendered EITHER — least of all as the
+    // hero, where "0.00" in 44px type says "you have spent nothing" rather than
+    // "this is still rebuilding". The whole hero is gone in this state.
+    expect(screen.queryByText("0.00")).toBeNull();
+    expect(screen.queryByText(/Spent so far/)).toBeNull();
   });
 
   it("shows the empty state when the log holds no transactions", async () => {

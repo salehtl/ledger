@@ -24,7 +24,7 @@ import { setPlatform } from "@ledger/client/platform.registry";
 import { webPlatform } from "@ledger/client/platform.web";
 import { fold, INGEST_WRITER_ID } from "@ledger/client/replay/replay";
 import type { LogEntry } from "@ledger/client/replay/replay";
-import { project } from "@ledger/client/replay/projection";
+import { ensureProjection, project, PROJECTION_VERSION } from "@ledger/client/replay/projection";
 import type { Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 import type { Op } from "@ledger/client/wire/op";
@@ -116,6 +116,52 @@ function unparsedEntry(id: string, ingestN: number, posted_at: string): LogEntry
       tier: "none",
     },
   });
+}
+
+/**
+ * A projection written by hand, for the two cases the op path cannot produce.
+ *
+ * Used sparingly and never for the main fixture — a test that INSERTs what
+ * production is supposed to derive is how Phase 1's exit test went green over a
+ * production gap. The two exceptions below both say at their call site why the
+ * fold could not have got them there.
+ */
+async function rawProjection(rows: readonly Record<string, unknown>[]): Promise<SqlDriver> {
+  const raw = await openBrowserDriver(`raw-${crypto.randomUUID()}`);
+  ensureProjection(raw);
+  raw
+    .prepare(
+      `INSERT INTO projection_meta (id,version,cursor_hot,cursor_cold,home_currency,complete) VALUES (1,${PROJECTION_VERSION},'0','0','AED',1)`,
+    )
+    .run();
+  const insert = raw.prepare(
+    `INSERT INTO txn (id,ingest_id,amount_minor,currency,direction,posted_at,merchant_raw,last4,category,needs_review,provenance,amount_home_minor,unparsed,tier,parse_error,superseded_by,possible_duplicate_of,version)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+  );
+  for (const r of rows) {
+    const id = String(r["id"]);
+    const isUnparsed = r["unparsed"] === 1;
+    insert.run(
+      id,
+      id.padEnd(64, "a"),
+      r["amount_minor"] ?? "100",
+      isUnparsed ? "" : "AED",
+      isUnparsed ? "" : "debit",
+      r["posted_at"],
+      String(r["merchant_raw"] ?? id),
+      "",
+      r["category"] ?? null,
+      r["needs_review"] ?? 0,
+      "ingest",
+      isUnparsed ? null : "100",
+      isUnparsed ? 1 : 0,
+      isUnparsed ? "none" : "template",
+      null,
+      null,
+      null,
+    );
+  }
+  return raw;
 }
 
 let db: SqlDriver;
@@ -353,10 +399,30 @@ describe("filters", () => {
     expect(ids({ ...EMPTY_FILTERS, from: "2026-07-16", to: "2026-07-16" })).toEqual(["t9b"]);
     expect(ids({ ...EMPTY_FILTERS, from: "2026-07-13", to: "2026-07-14" })).toEqual(["t7", "t6", "t5"]);
     expect(ids({ ...EMPTY_FILTERS, from: "2026-08-01" })).toEqual([]);
-    // Bound parameters, not concatenation.
+    // Both halves of the predicate, and every value bound rather than concatenated.
     const { sql, params } = buildTxnQuery({ ...EMPTY_FILTERS, from: "2026-07-01", to: "2026-07-31" }, { limit: 5, after: null });
     expect(sql).toContain("substr(posted_at, 1, 10) >= ?");
+    expect(sql).toContain("substr(posted_at, 1, 10) <= ?");
+    expect(params).toContain("2026-07-01");
     expect(params).toContain("2026-07-31");
+  });
+
+  it("cuts the day in UTC, not in the runner's local zone", async () => {
+    // Every row in the main fixture is posted between 08:00Z and 10:00Z, so a
+    // day derived in LOCAL time would still land on the right date in most
+    // zones and the test above would pass over a real bug. These two straddle
+    // midnight from both sides: 22:30Z is the NEXT day east of UTC and 01:00Z
+    // is the PREVIOUS day west of it. `posted_at` is canonicalised UTC and the
+    // bound is a substring of it, so both stay on their own UTC day.
+    const raw = await rawProjection([
+      { id: "late", posted_at: "2026-07-20T22:30:00.000Z" },
+      { id: "early", posted_at: "2026-07-21T01:00:00.000Z" },
+    ]);
+    const on = (day: string) =>
+      listTransactions(raw, { ...EMPTY_FILTERS, from: day, to: day }, { limit: 10, after: null }).rows.map((t) => t.id);
+    expect(on("2026-07-20")).toEqual(["late"]);
+    expect(on("2026-07-21")).toEqual(["early"]);
+    raw.close();
   });
 
   it("has a confirmed flag that is the negation the segmented control needs", () => {
@@ -364,6 +430,24 @@ describe("filters", () => {
     expect(confirmed).not.toContain("t7"); // unparsed
     expect(confirmed).not.toContain("t3"); // needs review
     expect(confirmed.length).toBe(all.length - 2);
+  });
+
+  it("keeps an unparsed row out of Confirmed even if its needs_review flag says otherwise", async () => {
+    // `needs_review = 0` alone would pass every assertion above, because the
+    // FOLD refuses to produce this row: `replay.ts` (`unparsed` contract, rule
+    // 4) rejects `unparsed: true` with `needs_review: false` outright — "the
+    // review queue is the only surface it has". So it is written by hand here,
+    // deliberately, because a projection is a FILE: one written by an older
+    // build, or half-written by an interrupted run, is exactly what the
+    // `AND unparsed = 0` conjunct is defence against. Drop that conjunct and
+    // this row joins the confirmed ledger as a 0.00 purchase.
+    const raw = await rawProjection([
+      { id: "ghost", posted_at: "2026-07-20T10:00:00.000Z", unparsed: 1, needs_review: 0 },
+      { id: "real", posted_at: "2026-07-21T10:00:00.000Z", category: "Dining" },
+    ]);
+    const confirmed = listTransactions(raw, { ...EMPTY_FILTERS, flags: ["confirmed"] }, { limit: 10, after: null }).rows;
+    expect(confirmed.map((t) => t.id)).toEqual(["real"]);
+    raw.close();
   });
 
   it("counts every selected value across every dimension", () => {
@@ -396,6 +480,36 @@ describe("splits come back with their rows, in order", () => {
 
   it("gives a row with no splits an empty list, not another row's", () => {
     expect(all.find((t) => t.id === "t1")?.splits).toEqual([]);
+  });
+
+  it("fetches the whole page's parts in ONE statement, not one per row", () => {
+    // The N+1 this module's header exists to avoid, asserted as a statement
+    // COUNT rather than as "the right parts landed on the right row" — the
+    // latter is equally true of a per-row loop, which is exactly the shape that
+    // froze the native list. Measured through a driver wrapper, the same way
+    // `budget.test.ts` measures its grouped aggregate.
+    let splitQueries = 0;
+    const measured: SqlDriver = {
+      location: db.location,
+      exec: (sql) => db.exec(sql),
+      prepare(sql) {
+        const statement = db.prepare(sql);
+        return {
+          run: (...args) => statement.run(...args),
+          all: (...args) => {
+            if (sql.includes("FROM txn_split")) splitQueries += 1;
+            return statement.all(...args);
+          },
+        };
+      },
+      transaction: (fn) => db.transaction(fn),
+      close: () => db.close(),
+    };
+
+    const page = listTransactions(measured, EMPTY_FILTERS, { limit: 100, after: null });
+    expect(page.rows.length).toBe(9);
+    expect(page.rows.filter((t) => t.splits.length > 0).map((t) => t.id)).toEqual(["t2"]);
+    expect(splitQueries).toBe(1);
   });
 });
 
