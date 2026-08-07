@@ -21,6 +21,12 @@
  *     bun run gen-fixtures      # rewrite conformance/ts/
  */
 
+// A standalone program, so it installs its own Platform — see
+// `src/platform.registry.ts`. `bun run` gets no `[test]` preload (deliberately:
+// that is what keeps the spawned-child tests honest), and nothing this script
+// imports installs one on its way to `encodeBlobOps`.
+import "../src/platform";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 import {

@@ -20,6 +20,13 @@
  * Exits non-zero on any disagreement.
  */
 
+// A standalone program, so it installs its own Platform — see
+// `src/platform.registry.ts`. Latent rather than immediate: the only seam
+// `normalize` reaches is `norm/mime.ts`'s `platform().utf8Encode` on the RFC
+// 2047 encoded-word path, which a synthetic corpus row need not contain — but
+// the REAL corpus this script exists to diff certainly does.
+import "../src/platform";
+
 import { normalize, NoTextPartError, UnsupportedCharsetError, CURRENT_VERSION } from "../src/norm/norm.ts";
 
 interface Row {

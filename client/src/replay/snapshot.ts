@@ -102,7 +102,7 @@ import {
   type Txn,
   type Unreadable,
 } from "./state";
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import type { RowStore, WireRow } from "../store/store";
 import type { SqlDriver, SqlStatement } from "../store/driver";
 import { STREAM_HOT } from "../wire/blob";
@@ -228,7 +228,7 @@ export interface LogBinding {
  * can produce the same string by re-splitting.
  */
 export function rowIdentity(row: WireRow): string {
-  return [row.seq, row.stream, row.writer_id, row.writer_counter, row.blob_hash, row.prev_hash].join(" ");
+  return [row.seq, row.stream, row.writer_id, row.writer_counter, row.blob_hash, row.prev_hash].join("\u0000");
 }
 
 /** A {@link LogBinding} over a {@link RowStore}, using `range()` — the only read path. */
@@ -704,7 +704,7 @@ export function readSnapshot(
   const stateJSON = str(body["state_json"], "state_json");
   const appliedJSON = str(body["applied_json"], "applied_json");
   const p = platform();
-  const digest = p.toHex(p.sha256(new TextEncoder().encode(`${stateJSON} ${appliedJSON}`)));
+  const digest = p.toHex(p.sha256(new TextEncoder().encode(`${stateJSON}\u0000${appliedJSON}`)));
   if (digest !== str(raw["digest"], "digest")) {
     return no("corrupt", "the stored payload does not match its digest");
   }
