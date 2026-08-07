@@ -8,9 +8,14 @@ import { fold, emptyState } from "@ledger/client/replay/replay";
 import { webPlatform } from "@ledger/client/platform.web";
 
 describe("@ledger/client wiring", () => {
-  it("folds an empty log to the empty state", () => {
+  it("folds an empty log to a state equal to a fresh emptyState()", () => {
+    // Real signal, not just "the import resolved": fold's identity case
+    // (no entries) must hand back a state structurally equal to emptyState()
+    // itself — a wrong module resolving here (or a stale/duplicate build of
+    // client/) would plausibly still export *something* callable, but not
+    // necessarily one that agrees with emptyState()'s own shape.
     const state = fold([], emptyState());
-    expect(state).toBeDefined();
+    expect(state).toEqual(emptyState());
   });
 
   it("webPlatform hashes the empty string per the sha256 test vector", () => {

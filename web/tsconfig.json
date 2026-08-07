@@ -13,18 +13,24 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    // "bun" is needed only so `tsc -b` can fully type-check `platform.ts`,
-    // which `@ledger/client/platform.web` reaches through a type-only import
-    // (`import type { Platform } from "./platform"`) — TS still type-checks
-    // the whole referenced file, ambient `Bun` global and all, even though
-    // nothing here ever imports `platform.ts`'s VALUE export or its runtime
-    // Bun API calls. This is a typecheck-only concern: `verbatimModuleSyntax`
-    // erases the type-only import before bundling, so no `bun:` identifier
-    // ever reaches Vite/Rollup — see vite.config.ts's alias comment for the
-    // actual runtime constraint this must never violate.
-    "types": ["vitest/globals", "@testing-library/jest-dom", "node", "bun"],
+    "types": ["vitest/globals", "@testing-library/jest-dom", "node"],
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"], "@ledger/client/*": ["../client/src/*"] }
+    // Points at client's EMITTED `.d.ts` output (`dist-types/src/*`, built by
+    // the `references` entry below), not `../client/src/*`. `platform.web.ts`
+    // reaches `platform.ts` through a type-only import; if this pointed at
+    // source, `tsc -b` would fully re-check that whole file — ambient `Bun`
+    // global and all — even though nothing here imports its value export or
+    // calls a Bun API. Consuming the declaration file instead means `Bun` is
+    // already resolved (client/tsconfig.json has its own "types": ["bun"]) by
+    // the time web's program sees it, so web needs no Bun ambient types of
+    // its own — a stray `Bun.*` call under web/src has nothing to resolve
+    // against and fails `tsc -b`, which is the whole point: see
+    // client/tsconfig.json's "composite" comment and vite.config.ts's alias
+    // comment for the runtime half of this constraint (Vite/Rollup bundle the
+    // real source via a separate, ordinary path alias — declarations never
+    // reach the bundle).
+    "paths": { "@/*": ["./src/*"], "@ledger/client/*": ["../client/dist-types/src/*"] }
   },
-  "include": ["src"]
+  "include": ["src"],
+  "references": [{ "path": "../client" }]
 }

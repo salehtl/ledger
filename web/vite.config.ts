@@ -63,15 +63,26 @@ export default defineConfig({
   // percent-encoded, leading-slash URL path, which is wrong for any repo path
   // containing a space (or on Windows).
   resolve: {
-    alias: {
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    alias: [
+      { find: "@", replacement: fileURLToPath(new URL("./src", import.meta.url)) },
       // `client/` is the framework-free local-first engine (Task 1+). Only
       // `@ledger/client/platform.web` may be imported from here — never
       // `@ledger/client/platform` (statically imports node:zlib/node:crypto)
       // or `@ledger/client/store/open` (pulls in bun:sqlite via ./driver).
       // Those would fail `bun run build`, not silently ship broken.
-      "@ledger/client": fileURLToPath(new URL("../client/src", import.meta.url)),
-    },
+      //
+      // `find` is a RegExp requiring a `/` right after `@ledger/client`, so
+      // this matches subpaths only — same shape as tsconfig.json's
+      // `"@ledger/client/*"` path mapping, and it does not also swallow a
+      // hypothetical unrelated package like `@ledger/clientfoo`. A bare
+      // `@ledger/client` import (no subpath) intentionally resolves nowhere
+      // in either config, since nothing under `client/src` is meant to be
+      // imported that way (there is no root barrel file).
+      {
+        find: /^@ledger\/client\//,
+        replacement: `${fileURLToPath(new URL("../client/src", import.meta.url))}/`,
+      },
+    ],
   },
   plugins: [
     react(),

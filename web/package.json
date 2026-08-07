@@ -39,7 +39,6 @@
     "@storybook/react-vite": "^9",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/react": "^16.0.0",
-    "@types/bun": "1.2.19",
     "@types/d3-scale": "^4.0.9",
     "@types/d3-shape": "^3.1.8",
     "@types/node": "^26.1.2",

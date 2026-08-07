@@ -7,7 +7,24 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "noEmit": true,
+    // `composite`/`declaration`/`emitDeclarationOnly` exist so `web/tsconfig.json`
+    // can reference this project (`references: [{ "path": "../client" }]`) and
+    // type-check `@ledger/client/*` imports against emitted `.d.ts` files
+    // instead of re-parsing `src/*.ts` directly. Without that, a type-only
+    // import anywhere in `web/src` (e.g. `platform.web.ts`'s `import type
+    // { Platform } from "./platform"`) forces `tsc -b` in web to fully
+    // type-check the whole referenced source file — Bun ambient globals and
+    // all — which would require web's own tsconfig to carry Bun's ambient
+    // types too, and once it does, nothing stops a stray `Bun.*` call
+    // anywhere under web/src from type-checking clean and shipping a bundle
+    // that dies in a browser. `client/`'s own typecheck (`bun run typecheck`)
+    // still runs against `src/` directly, unaffected — this only changes what
+    // a REFERENCING project consumes. `dist-types/` is gitignored, rebuilt by
+    // `tsc -b` on demand.
+    "outDir": "dist-types",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "composite": true,
 
     "strict": true,
     "skipLibCheck": true,
