@@ -20,6 +20,7 @@ import { useFirstReveal } from "../hooks/useFirstReveal";
 import { DUR, EASE_OUT } from "../lib/motion";
 import { formatMinor } from "../lib/minorMoney";
 import { fire } from "../lib/feedback";
+import { authoredBy, recordAuthored } from "../v2/authored";
 import { deckCategories } from "../v2/reviewDeck";
 import {
   categorizeOps,
@@ -120,6 +121,9 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
   const toast = useToast();
   const choices = useCategoryChoices(reviewSource);
   const [editing, setEditing] = useState<Txn | null>(null);
+  // Bumped when this screen authors something, because the store it authors
+  // into is mutated in place and React cannot see that on its own.
+  const [authoredTick, setAuthoredTick] = useState(0);
   const [segment, setSegment] = useState<Segment>("all");
   const [search, setSearch] = useState("");
   const [chips, setChips] = useState<TxnFilters>(EMPTY_FILTERS);
@@ -147,19 +151,50 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
    * The page, showing the answers this device has already given.
    *
    * The projection does not move until a sync folds, so a row categorised
-   * moments ago still reads `Uncategorized` in SQLite — offline, for the whole
-   * session. The deck hides that by taking the card off the pile; a list cannot,
-   * so it reads the outbox, which is the same durable record `settledBy` reads
-   * and survives the tab being killed in a way component state would not.
+   * moments ago still reads `Uncategorized` in SQLite. The deck hides that by
+   * taking the card off the pile; a list cannot.
+   *
+   * TWO sources, because neither covers the whole life of an answer:
+   *
+   *  - `writer.pending` is durable and survives the tab being killed, but only
+   *    until the push. `Client.push` strips the acked ops and nothing on that
+   *    path projects, so `pending` empties while the projection is still stale.
+   *  - {@link authoredBy} remembers what this screen authored for as long as the
+   *    writer lives, which covers exactly that window, and each answer expires
+   *    the moment the projected row reaches the version its op produces.
+   *
+   * The pending half is layered second so that after a reload — where the store
+   * is gone and the outbox is not — the durable record is the one that speaks.
    *
    * `writer.pending` and not `writer`: `Client.emitMany` REPLACES the array
    * while the outbox object is memoised for the tab's lifetime, so a memo keyed
-   * on the writer would never recompute.
+   * on the writer would never recompute. `authoredTick` is the same problem for
+   * the store, which is mutated in place: it is a dependency with no other job.
    */
-  const answered = useMemo(() => pendingCategories(writer?.pending ?? []), [writer?.pending]);
+  const authored = useMemo(() => (writer === null ? null : authoredBy(writer)), [writer]);
+  const answered = useMemo(
+    () => new Map([...(authored?.answers ?? []), ...pendingCategories(writer?.pending ?? [])]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- authoredTick is the store's change signal
+    [authored, authoredTick, writer?.pending],
+  );
   const rows = useMemo(
     () => (list.data?.rows ?? []).map((t) => withPendingCategory(t, answered)),
     [list.data, answered],
+  );
+  /**
+   * Every rule this device knows about.
+   *
+   * Three places, because a rule passes through three states before the
+   * projection has it: queued in the outbox, pushed but not yet folded back
+   * (only {@link authoredBy} remembers those), and folded. A rule missing from
+   * this list is a rule the sheet would offer to write a second time, and a
+   * second `exact` rule on one pattern is permanent and decided by the
+   * alphabet.
+   */
+  const knownRules = useMemo(
+    () => [...(choices.data?.rules ?? []), ...(authored?.rules ?? []), ...pendingRules(writer?.pending ?? [])],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- authoredTick is the store's change signal
+    [choices.data, authored, authoredTick, writer?.pending],
   );
   const totals = useMemo(() => txnTotals(rows), [rows]);
   const firstReveal = useFirstReveal(rows.length > 0);
@@ -176,26 +211,29 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
    */
   const commit = useCallback(
     async (txn: Txn, category: string, makeRule: boolean): Promise<void> => {
-      if (reviewSource === null || writer === null) return;
+      if (reviewSource === null || writer === null || authored === null) return;
       const head = await reviewSource.version(txn.id);
-      writer.enqueueMany(
-        categorizeOps({
-          txn,
-          category,
-          makeRule,
-          // A row the projection no longer knows about cannot be categorised at
-          // a guessed version; its own version is the only defensible fallback.
-          projectedVersion: head ?? txn.version,
-          pending: writer.pending,
-          // Queued rules count as rules. `confirmOps` dedupes the write-back
-          // against what it is given, and the projection cannot know about a
-          // rule that has not folded yet — so without the pending half, a
-          // merchant answered twice in one offline session queues the same rule
-          // twice.
-          rules: [...(choices.data?.rules ?? []), ...pendingRules(writer.pending)],
-          newID: newEntityID,
-        }),
-      );
+      const specs = categorizeOps({
+        txn,
+        category,
+        makeRule,
+        // A row the projection no longer knows about cannot be categorised at
+        // a guessed version; its own version is the only defensible fallback.
+        projectedVersion: head ?? txn.version,
+        pending: writer.pending,
+        // Every rule this device knows about, from all three places one can
+        // be: folded into the projection, queued in the outbox, or already
+        // pushed but not yet folded back. `confirmOps` dedupes the write-back
+        // against what it is given, and a rule missing from that list is a
+        // second rule for the merchant — which is permanent.
+        rules: knownRules,
+        newID: newEntityID,
+      });
+      writer.enqueueMany(specs);
+      // Recorded from the ops themselves, so the screen cannot claim something
+      // the log will not say. This is what survives the push emptying `pending`.
+      recordAuthored(authored, txn.id, specs);
+      setAuthoredTick((n) => n + 1);
       setEditing(null);
       await qc.invalidateQueries({ queryKey: v2Keys.all });
       // Not awaited: the ops are already durable — `Client.emit` commits before
@@ -205,7 +243,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
         toast.show({ message: "Saved on this device — it will sync when you're back online" });
       });
     },
-    [reviewSource, writer, choices.data, qc, toast],
+    [reviewSource, writer, authored, knownRules, qc, toast],
   );
 
   /**
@@ -352,7 +390,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
         <CategorySheet
           txn={editing}
           categories={categoryNames}
-          ruledTo={existingRuleCategory(editing.merchant_raw, choices.data?.rules ?? [], writer?.pending ?? [])}
+          ruledTo={existingRuleCategory(editing.merchant_raw, knownRules)}
           onClose={() => setEditing(null)}
           onSave={(category, makeRule) => void commit(editing, category, makeRule)}
         />

@@ -838,10 +838,22 @@ export function isSettled(t: Txn, s: Settlement): boolean {
   return s.entityIDs.has(t.id) || s.ingestIDs.has(t.ingest_id);
 }
 
-/** The answer a queued `txn_categorized` gave for one row. */
+/** The answer a `txn_categorized` this device authored gave for one row. */
 export interface PendingAnswer {
   category: string | null;
   needs_review: boolean;
+  /**
+   * The version the op produces (`parent_version + 1`), or `null` when the op
+   * named no parent.
+   *
+   * It is what makes the answer STOP being evidence. A remembered answer is
+   * only true while the projection is behind the op that produced it; once the
+   * row is at or past this version the fold has happened and the projection is
+   * the truth — including when a peer's op won the fork and the category is not
+   * the one this device asked for. Without this an answer outlives its
+   * evidence, which is its own trap.
+   */
+  version: number | null;
 }
 
 /**
@@ -865,6 +877,7 @@ export function pendingCategories(pending: readonly Op[]): Map<string, PendingAn
     out.set(op.entity.id, {
       category: typeof payload.category === "string" ? payload.category : null,
       needs_review: payload.needs_review === true,
+      version: op.parent_version === null ? null : op.parent_version + 1,
     });
   }
   return out;
@@ -876,10 +889,16 @@ export function pendingCategories(pending: readonly Op[]): Map<string, PendingAn
  * It claims exactly what the op says and nothing else: the category and the
  * review flag the op carries. Money, provenance and every other column are
  * untouched, because `txn_categorized` does not touch them either.
+ *
+ * And it stops claiming once the projection has caught up — see
+ * {@link PendingAnswer.version}.
  */
 export function withPendingCategory(t: Txn, answered: ReadonlyMap<string, PendingAnswer>): Txn {
   const answer = answered.get(t.id);
   if (answer === undefined) return t;
+  // The fold has reached (or passed) this answer, so the projection is the
+  // better source — even if it disagrees.
+  if (answer.version !== null && t.version >= answer.version) return t;
   if (answer.category === t.category && answer.needs_review === t.needs_review) return t;
   return { ...t, category: answer.category, needs_review: answer.needs_review };
 }

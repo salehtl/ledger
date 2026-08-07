@@ -647,7 +647,8 @@ describe("confirming a card", () => {
       categorized("t1", "Dining", false, "q1"),
       categorized("t1", "Groceries", false, "q2"),
     ]);
-    expect(answered.get("t1")).toEqual({ category: "Groceries", needs_review: false });
+    // The version the op produces, which is what the answer expires against.
+    expect(answered.get("t1")).toEqual({ category: "Groceries", needs_review: false, version: 2 });
 
     const shown = withPendingCategory(txnOf("t1"), answered);
     expect(shown.category).toBe("Groceries");
@@ -660,6 +661,20 @@ describe("confirming a card", () => {
     // list's memo does not see a new identity for every unanswered row.
     const untouched = txnOf("t2");
     expect(withPendingCategory(untouched, answered)).toBe(untouched);
+  });
+
+  it("stops applying an answer once the projection has reached its version", () => {
+    // An answer is evidence only while the projection is BEHIND the op that
+    // produced it. At or past that version the fold has happened and the
+    // projection is the truth — including when a peer's op won the fork, which
+    // is exactly the case where a remembered answer would otherwise show a
+    // category the log does not hold.
+    const row = txnOf("t1");
+    const behind = new Map([["t1", { category: "Dining", needs_review: false, version: row.version + 1 }]]);
+    expect(withPendingCategory(row, behind).category).toBe("Dining");
+
+    const caughtUp = new Map([["t1", { category: "Dining", needs_review: false, version: row.version }]]);
+    expect(withPendingCategory(row, caughtUp)).toBe(row);
   });
 
   it("counts a queued rule as a rule, so one merchant is not ruled on twice", () => {

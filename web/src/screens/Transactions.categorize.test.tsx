@@ -17,7 +17,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -57,7 +57,7 @@ interface Recorder extends Writer {
  * would make a second edit in one session look correct while forking in
  * production.
  */
-function recorder(pending: Op[] = []): Recorder {
+function recorder(pending: Op[] = [], opts: { clearOnFlush?: boolean } = {}): Recorder {
   const queued: OpSpec[] = [];
   let live: Op[] = [...pending];
   let n = 0;
@@ -83,7 +83,16 @@ function recorder(pending: Op[] = []): Recorder {
         ];
       }
     },
-    flush: async () => undefined,
+    // `clearOnFlush` is what the REAL push does and what the default double
+    // does not: `Outbox.flush` calls `Client.push()`, `client.ts` strips the
+    // sent ops from `st.pending` on the ack, and nothing there pulls or
+    // projects — only `net/engine.ts` projects, on launch, `visibilitychange`
+    // and pull-to-refresh. So between the ack and the next full sync the
+    // outbox is EMPTY while the projection is still stale, and anything keyed
+    // purely on `pending` evaporates in that window.
+    flush: async () => {
+      if (opts.clearOnFlush === true) live = [];
+    },
   };
 }
 
@@ -275,6 +284,93 @@ describe("categorising from the transaction list", () => {
     await waitFor(() => expect(screen.queryByText("Uncategorized · 2026-08-07")).toBeNull());
     expect(screen.getByText(/groceries · 2026-08-07/)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the answer after the push empties the outbox, and still writes no second rule", async () => {
+    // THE window, and it is the ONLINE path, i.e. the normal one. `flush`
+    // succeeds, `pending` goes empty, and the projection has not folded
+    // anything yet — nothing between push and the next sync projects. A screen
+    // keyed purely on `pending` reverts the row to "Uncategorized" here, the
+    // rule switch comes back defaulted ON because `txn.category` is null again,
+    // and the user — seeing no change — answers again. That is two permanent
+    // `exact` rules on one pattern, decided by the alphabet.
+    const writer = recorder([], { clearOnFlush: true });
+    mount(await projectionWith([...FIXTURE_ROWS, TRUSTED_UNCATEGORISED]), writer);
+    let user = await openSheetFor("DIB CARD PURCHASE");
+    await user.click(screen.getByRole("button", { name: "groceries" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+
+    // The push landed: the outbox is empty and the projection is untouched.
+    await waitFor(() => expect(writer.pending.length).toBe(0));
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    expect(await screen.findByText("groceries · 2026-08-07")).toBeInTheDocument();
+    expect(screen.queryByText("Uncategorized · 2026-08-07")).toBeNull();
+
+    user = await openSheetFor("DIB CARD PURCHASE");
+    expect(screen.queryByRole("checkbox", { name: /Always use this category/ })).toBeNull();
+    expect(screen.getByText(/A rule already files .* under groceries/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "entertainment" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writer.queued.length).toBe(3));
+    // One rule for this merchant, ever.
+    expect(writer.queued.filter((s) => s.type === "rule_added").length).toBe(1);
+    expect(writer.queued[2]!.type).toBe("txn_categorized");
+  });
+
+  it("stops claiming an answer once the projection has folded it", async () => {
+    // The other half of "do not claim more than you know". The remembered
+    // answer is evidence only while the projection is BEHIND the version the
+    // op produces; once the row is at or past it, the projection is the truth —
+    // including when a peer's op won the fork and the category is not the one
+    // this device asked for.
+    const writer = recorder([], { clearOnFlush: true });
+    const db = await projectionWith([...FIXTURE_ROWS, TRUSTED_UNCATEGORISED]);
+    const source = sqlTxnSource(db);
+    let folded = false;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MotionProvider>
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <Transactions
+              source={{
+                ...source,
+                list: (filters, opts) => {
+                  const page = source.list(filters, opts);
+                  if (!folded) return page;
+                  // A sync folded a DIFFERENT answer at the version this
+                  // device's op produced.
+                  return {
+                    ...page,
+                    rows: page.rows.map((t) =>
+                      t.id === "t7" ? { ...t, category: "shopping", needs_review: false, version: 2 } : t,
+                    ),
+                  };
+                },
+              }}
+              reviewSource={sqlReviewSource(db)}
+              writer={writer}
+            />
+          </ToastProvider>
+        </QueryClientProvider>
+      </MotionProvider>,
+    );
+
+    const user = await openSheetFor("DIB CARD PURCHASE");
+    await user.click(screen.getByRole("button", { name: "groceries" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writer.pending.length).toBe(0));
+    expect(await screen.findByText("groceries · 2026-08-07")).toBeInTheDocument();
+
+    folded = true;
+    await qc.invalidateQueries();
+    // The projection is at the version this device's op produced, so the
+    // remembered answer is spent and what the log actually holds is shown.
+    expect(await screen.findByText("shopping · 2026-08-07")).toBeInTheDocument();
+    expect(screen.queryByText("groceries · 2026-08-07")).toBeNull();
   });
 
   it("does not offer a categorisation it could not record", async () => {
