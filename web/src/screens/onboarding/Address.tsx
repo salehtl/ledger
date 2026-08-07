@@ -24,19 +24,36 @@
  *
  * # `forwardingDeclared` is a claim, not an observation
  *
- * Nothing on this device can see a Gmail filter, and the only evidence a forward
+ * Nothing on this device can see a mail rule, and the only evidence a forward
  * works is mail arriving — which is the *next* step. So this step ends with the
  * user saying they have done it, and the verification step is what actually
  * measures it. Calling the fact `forwardingDeclared` rather than
  * `forwardingConfigured` is the same honesty in the machine.
+ *
+ * # The instructions are a REGISTRY, and the choice is UI state
+ *
+ * This half used to be four hardcoded Gmail sentences, which were simply wrong
+ * for every other provider — and worst for iCloud, whose flow has no
+ * confirmation code at all while the copy told the user to wait for one. The
+ * sentences now come from `v2/providers.ts`, which carries instructions and
+ * nothing else.
+ *
+ * The one thing the choice is allowed to decide beyond which sentences render is
+ * whether the NEXT screen offers a confirmation-code reader, which travels as
+ * the boolean argument to {@link AddressProps.onForwardingDeclared}. It never
+ * reaches a trust decision: `providers.test.ts` asserts no module in the trust
+ * path can even import the registry.
  */
 
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
+import { Pressable } from "../../components/ui/Pressable";
+import { SectionLabel } from "../../components/ui/SectionLabel";
 import { readAddress } from "../../v2/address";
 import type { TokenSource } from "../../v2/onboardingIO";
+import { GENERIC, PROVIDERS, providerFor, type Provider } from "../../v2/providers";
 import { Notice, Step } from "./Shell";
 
 export interface AddressProps {
@@ -44,8 +61,15 @@ export interface AddressProps {
   phase: "address" | "forwarding";
   /** `address_issued`, with the address the server actually minted. */
   onIssued: (address: string) => void;
-  /** `forwarding_declared`. */
-  onForwardingDeclared: () => void;
+  /**
+   * `forwarding_declared`.
+   *
+   * `expectConfirmation` says whether the verification step should offer to read
+   * a confirmation code — true unless the chosen provider is known to send none.
+   * It is a hint about which sentences and controls to render, and nothing else
+   * may be decided by it.
+   */
+  onForwardingDeclared: (expectConfirmation: boolean) => void;
   /** The address already known, so the forwarding half need not re-read. */
   known: string | null;
   server?: string;
@@ -75,6 +99,12 @@ export function Address({
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(known === null);
   const [copied, setCopied] = useState<boolean | null>(null);
+  /**
+   * Which provider's instructions are on screen. `null` is not "unset waiting to
+   * be filled in" — it renders {@link GENERIC}, so there are always instructions
+   * on the glass and no provider is presumed to be the user's.
+   */
+  const [providerId, setProviderId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -111,37 +141,42 @@ export function Address({
   };
 
   if (phase === "forwarding") {
+    const provider: Provider = providerId === null ? GENERIC : providerFor(providerId);
     return (
       <Step
         testId="forwarding"
         title="Send your bank mail here"
         intro="One forwarding rule in the mailbox your bank already writes to. ledger never sees the rest of that mailbox and never holds a password to it."
         footer={
-          <Button variant="primary" onClick={onForwardingDeclared}>
+          <Button variant="primary" onClick={() => onForwardingDeclared(provider.needsConfirmation)}>
             I have set up forwarding
           </Button>
         }
       >
         <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
-        <ol className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
-          <li>
-            In Gmail on a computer, open <strong>Settings → See all settings → Forwarding and POP/IMAP</strong>.
-          </li>
-          <li>
-            Press <strong>Add a forwarding address</strong> and paste the address above.
-          </li>
-          <li>
-            Gmail emails a confirmation code to it. That message is held by ledger on purpose — the next screen
-            shows you the code and the link.
-          </li>
-          <li>
-            Back in Gmail, create a filter for your bank&rsquo;s sender address and tick{" "}
-            <strong>Forward it to</strong> your ledger address. Forward the bank, not the whole mailbox.
-          </li>
+
+        <ProviderPicker selected={providerId} onSelect={setProviderId} />
+
+        <ol data-testid="forwarding-steps" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
+          {provider.steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
         </ol>
+
+        {/*
+          The caveat is a Notice rather than a fifth step: it is not something to
+          do, it is something that may stop the doing from working. Rendered
+          before the declaration button, because after it is too late.
+        */}
+        {provider.caveat !== undefined && (
+          <Notice announce title={`Before you start with ${provider.label}`} testId="provider-caveat">
+            <p>{provider.caveat}</p>
+          </Notice>
+        )}
+
         <Notice>
           <p>
-            A filter rather than blanket forwarding is the point: ledger only ever receives the messages you chose,
+            A rule rather than blanket forwarding is the point: ledger only ever receives the messages you chose,
             and anything else that reaches this address is held rather than read.
           </p>
         </Notice>
@@ -185,6 +220,55 @@ export function Address({
 
       {address !== null && <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address)} />}
     </Step>
+  );
+}
+
+/**
+ * Which provider's instructions to show.
+ *
+ * The same bordered, divided list of `Pressable` rows the bank step uses, rather
+ * than a `SegmentedControl`: six labels of this length in one row would either
+ * wrap or fall under the 44px target on a narrow phone, which is exactly the
+ * case the catalog says to keep out of a segmented control.
+ *
+ * `aria-pressed` rather than a radio group: nothing is submitted, and the rows
+ * are not a form field — they swap the copy underneath them.
+ */
+function ProviderPicker({ selected, onSelect }: { selected: string | null; onSelect: (id: string) => void }) {
+  const rows = [...PROVIDERS, GENERIC];
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionLabel as="h2">Where does your bank mail arrive?</SectionLabel>
+      <div
+        data-testid="provider-picker"
+        className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border"
+      >
+        {rows.map((p) => (
+          <Pressable
+            key={p.id}
+            aria-pressed={selected === p.id}
+            onClick={() => onSelect(p.id)}
+            className={`min-h-11 px-4 py-3 text-left text-sm font-medium transition-colors ${
+              selected === p.id ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
+            }`}
+          >
+            {p.label}
+          </Pressable>
+        ))}
+      </div>
+      {/*
+        Said plainly because the list is short on purpose: it is a shortcut to a
+        set of instructions, never a statement about which providers work.
+
+        And it stops at what is true. "ledger never learns which provider you
+        use" was the sentence this nearly became, and it is false: this choice
+        is never sent anywhere, but the server can see the domain that signed a
+        forwarded message, which is usually the provider.
+      */}
+      <p className="text-xs text-muted">
+        Any provider that can forward mail works. This choice only picks which instructions you see.
+      </p>
+    </div>
   );
 }
 
