@@ -543,21 +543,49 @@ function fixed2(minor: bigint): string {
 }
 
 /**
- * Why Google's own confirmation email is quarantined, said before the user can
+ * Why the message onboarding depends on is quarantined, said before the user can
  * read it as a fault.
  *
- * Plan Decision 7: Gmail sends its forwarding confirmation from `google.com`,
- * §3.2 forbids ever promoting a forwarder domain, so the one message onboarding
- * depends on is one the product will never trust. It is held forever and read
- * in place.
+ * Plan Decision 7: a mail provider signs its forwarding confirmation with its own
+ * domain, §3.2 forbids ever promoting a forwarder domain, so that message is one
+ * the product will never trust. It is held and read in place.
+ *
+ * **It used to name Google.** That was accurate about Gmail and wrong about
+ * everyone else, and it sat directly above a list that no longer knows or guesses
+ * a provider — `couldBeConfirmation` deliberately cannot tell a provider's
+ * confirmation from a bank's first direct alert, which is why the screen lists
+ * every held message by its verified signing domain and lets the user open the
+ * one they are waiting for. Copy that named one provider was the loudest
+ * remaining claim the code no longer makes.
+ *
+ * Every sentence here is one the screen honours: it does list everything held
+ * with the domain that signed it, only an authenticated message can be opened,
+ * and reading one files nothing.
  */
 export const QUARANTINE_HELD = {
-  title: "Google's confirmation email is held on purpose",
+  title: "Held mail is held on purpose",
   body:
-    "Gmail sends its confirmation from Google, not from your bank. ledger only files mail it can prove came " +
-    "from a bank, so anything forwarded by Google is held to one side instead — that is ledger working as " +
-    "intended. The code you need is in the held message and you can read it there. It stays held afterwards: " +
-    "trusting Google here would mean trusting anything at all that Google forwards.",
+    "ledger files mail only when it can prove it came from a bank. A forwarding confirmation is signed by your " +
+    "mail provider rather than by a bank, so it is held to one side instead of filed — that is ledger working as " +
+    "intended, not a fault. Everything held is listed below with the domain that signed it, and any message " +
+    "ledger could authenticate can be opened and read here. Reading one does not file it.",
+} as const;
+
+/**
+ * The same step when there is no code to wait for: an iCloud forward, or an
+ * address registered with the bank directly.
+ *
+ * Kept beside {@link QUARANTINE_HELD} because they are one screen's two
+ * openings, and the difference between them must stay legible in one place. The
+ * gate behind both is identical — a transaction in the log, via
+ * {@link firstMailAt} — so neither may promise anything the other cannot.
+ */
+export const WAITING_FOR_FIRST_MAIL = {
+  title: "Waiting for your first bank email",
+  body:
+    "There is no confirmation code to enter. This step finishes on its own once a transaction email from your " +
+    "bank arrives and ledger files it, so you can leave this open or come back later. Mail ledger cannot prove " +
+    "came from a bank is held rather than filed, and anything held is listed below.",
 } as const;
 
 /**

@@ -1,5 +1,6 @@
 /**
- * The provider's held confirmation, and then the first real bank email.
+ * The provider's held confirmation, if there is one, and then the first real
+ * bank email.
  *
  * One screen for two things because the machine has one slot for them, and
  * because in practice they are one wait: the user sets the forward, the
@@ -15,6 +16,28 @@
  * confirmation link out of a quarantined message"). It is held forever and read
  * in place, and `QUARANTINE_HELD` says "held on purpose" before it says anything
  * else — because otherwise a new user's first impression is a fault.
+ *
+ * # Some users have no confirmation to wait for at all
+ *
+ * iCloud sends no code — you enter the destination address and mail flows — and
+ * a user who set this address with their bank DIRECTLY never had a forwarder in
+ * the first place. Offering them a code reader and a screen about confirmations
+ * is a promise the flow cannot keep, so {@link VerificationProps.expectConfirmation}
+ * picks the opening: `WAITING_FOR_FIRST_MAIL` and no code affordance.
+ *
+ * Three things it deliberately does NOT change:
+ *
+ *  1. **The gate.** `firstMailAt()` either way. A transaction in the log is the
+ *     only provider-agnostic proof that mail actually reaches ledger.
+ *  2. **The list.** Every held message is still listed with its verified signing
+ *     domain, because held mail the user cannot see reads as lost mail.
+ *  3. **Trust.** It is a hint about which sentences to render, sourced from a
+ *     provider the user tapped. Nothing an unauthenticated party influences may
+ *     move a trust boundary, and this moves none.
+ *
+ * And it is never a dead end: a provider believed to send no code may send one,
+ * so the user can ask for the reader themselves. That control is the honest
+ * version of the flag — "we did not expect one" rather than "there is none".
  *
  * # The app does not guess which held message is which
  *
@@ -83,7 +106,7 @@ import { ApiError } from "@ledger/client/net/client";
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
-import { QUARANTINE_HELD } from "../../v2/onboarding";
+import { QUARANTINE_HELD, WAITING_FOR_FIRST_MAIL } from "../../v2/onboarding";
 import {
   CONFIRM_CONFLICT_COPY,
   confirmSender,
@@ -147,6 +170,20 @@ export interface VerificationProps {
   /** 0 disables the poll — what tests pass. */
   pollMs?: number;
   copy?: (text: string) => Promise<void>;
+  /**
+   * Whether the user's provider is expected to email a confirmation code.
+   *
+   * From the provider they picked on the forwarding step, or `false` when they
+   * registered this address with their bank directly. UI state only: it picks
+   * the opening copy and whether the code reader is offered up front. See the
+   * header for the three things it does not change.
+   *
+   * Defaults to `true`, which is also what a reloaded tab gets — the choice is
+   * not persisted. Expecting a code that never comes costs a control nobody
+   * presses; not expecting one that does would hide the thing the user is
+   * holding, and the control below covers even that.
+   */
+  expectConfirmation?: boolean;
 }
 
 export function Verification({
@@ -158,6 +195,7 @@ export function Verification({
   fetch: doFetch,
   pollMs = VERIFICATION_POLL_MS,
   copy,
+  expectConfirmation = true,
 }: VerificationProps) {
   const [items, setItems] = useState<QuarantineItem[]>([]);
   const [busy, setBusy] = useState(true);
@@ -171,6 +209,17 @@ export function Verification({
    * guess. See `couldBeConfirmation`.
    */
   const [openId, setOpenId] = useState<string | null>(null);
+  /**
+   * The user said a code arrived anyway.
+   *
+   * Only reachable when {@link VerificationProps.expectConfirmation} is false,
+   * and it exists because that flag is a belief about a provider rather than a
+   * fact about a mailbox. A provider that changes its flow, a bank that verifies
+   * an alert address by email — either leaves someone holding a code with
+   * nowhere to read it, and "reinstall to get the button back" is not an answer.
+   */
+  const [codeSought, setCodeSought] = useState(false);
+  const readingCode = expectConfirmation || codeSought;
   /** A confirmation that filed only part of its batch. See {@link ConfirmResult}. */
   const [partial, setPartial] = useState<{ domain: string; scope: TrustScope; remaining: number } | null>(null);
   const live = useRef(true);
@@ -304,7 +353,7 @@ export function Verification({
    * stale body on screen. {@link couldBeConfirmation} is re-applied here rather
    * than trusted from the render that offered the control.
    */
-  const opened = items.find((item) => item.id === openId && couldBeConfirmation(item)) ?? null;
+  const opened = readingCode ? (items.find((item) => item.id === openId && couldBeConfirmation(item)) ?? null) : null;
 
   /**
    * Memoized on the blob, not recomputed per render.
@@ -465,11 +514,15 @@ export function Verification({
     [client, server, doFetch, watch],
   );
 
+  // Two openings for one step. The gate behind them is the same `firstMailAt`,
+  // so neither promises anything the other cannot deliver.
+  const opening = readingCode ? QUARANTINE_HELD : WAITING_FOR_FIRST_MAIL;
+
   return (
     <Step
       testId="verification"
-      title={QUARANTINE_HELD.title}
-      intro={QUARANTINE_HELD.body}
+      title={opening.title}
+      intro={opening.body}
       footer={
         <Button variant="ghost" disabled={busy} onClick={() => void watch()}>
           {busy ? "Checking…" : "Check now"}
@@ -536,16 +589,16 @@ export function Verification({
       {items.length === 0 ? (
         <Notice testId="verification-no-bank-mail">
           <p>
-            Nothing has arrived yet. If your mail provider sends a confirmation code, it will appear here — and so
-            will your first bank email. This step finishes on its own when a bank email arrives, so you can leave
-            the app open or come back later.
+            {readingCode
+              ? "Nothing has arrived yet. If your mail provider sends a confirmation code, it will appear here — and so will your first bank email. This step finishes on its own when a bank email arrives, so you can leave the app open or come back later."
+              : "Nothing has arrived yet. This step finishes on its own when your first bank email arrives, so you can leave the app open or come back later. Anything ledger cannot prove came from a bank appears here rather than being filed."}
           </p>
         </Notice>
       ) : (
         items.map((item) => {
           const basis = trustBasis(item);
           const request = trustRequest(item);
-          const openable = couldBeConfirmation(item);
+          const openable = readingCode && couldBeConfirmation(item);
           const open = opened !== null && opened.id === item.id;
           const arrived = Date.parse(item.receivedAt);
           return (
@@ -635,6 +688,17 @@ export function Verification({
             </Notice>
           );
         })
+      )}
+
+      {/*
+        The way out of a wrong belief, and the reason `expectConfirmation` is
+        allowed to be a belief at all. It says what it does — reveals the reader —
+        and promises nothing about whether a code exists.
+      */}
+      {!readingCode && (
+        <Button variant="ghost" onClick={() => setCodeSought(true)}>
+          My provider did send a confirmation code
+        </Button>
       )}
 
       {busy && (

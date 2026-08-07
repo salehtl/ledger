@@ -31,7 +31,7 @@
  * would strand an offline user on the last step of setup.
  */
 
-import { useCallback, useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
@@ -84,6 +84,26 @@ export function Onboarding({
 }: OnboardingProps) {
   const [facts, dispatch] = useReducer(onboardingReducer, initial);
   const step = stepFor(facts);
+  /**
+   * Whether the verification step should offer a confirmation-code reader.
+   *
+   * Component state, and deliberately NOT a fact: it decides copy and one
+   * control, so it has no business in the milestone table, in the op log or in
+   * `LocalOnboardingRecord` — a durable field would make a UI preference look
+   * like something the machine reasons about, which is how a "which provider"
+   * value ends up read by something that matters.
+   *
+   * The cost is that a reload during setup forgets it and the step opens in its
+   * default, confirmation-expecting form. That is the safe direction: the code
+   * reader is offered to someone who does not need it, rather than withheld from
+   * someone who does, and either way the gate is the same transaction in the log.
+   */
+  const [expectConfirmation, setExpectConfirmation] = useState(true);
+
+  const declareForwarding = useCallback((expect: boolean) => {
+    setExpectConfirmation(expect);
+    dispatch({ type: "forwarding_declared" });
+  }, []);
 
   useEffect(() => {
     saveLocalRecord(secrets ?? webSecretStore(PROFILE), facts);
@@ -120,7 +140,7 @@ export function Onboarding({
           phase="address"
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
-          onForwardingDeclared={() => dispatch({ type: "forwarding_declared" })}
+          onForwardingDeclared={declareForwarding}
           {...io}
         />
       );
@@ -132,7 +152,7 @@ export function Onboarding({
           phase="forwarding"
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
-          onForwardingDeclared={() => dispatch({ type: "forwarding_declared" })}
+          onForwardingDeclared={declareForwarding}
           {...io}
         />
       );
@@ -143,6 +163,7 @@ export function Onboarding({
           client={handle.client}
           firstMailAt={() => firstMailAt(handle.client.state())}
           onConfirmed={(at) => dispatch({ type: "first_mail_confirmed", at })}
+          expectConfirmation={expectConfirmation}
           {...(sync === undefined ? {} : { sync })}
           {...(pollMs === undefined ? {} : { pollMs })}
           {...io}

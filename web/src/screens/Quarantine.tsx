@@ -16,8 +16,8 @@
  *    (`internal/v2/api/quarantine.go`: "The response carries the VERIFIED signing
  *    domain, the attested inner origin and an explicit attestation state — never
  *    the message's subject, its display name, or any part of its body"). The one
- *    exception, `?include_blob=1`, is onboarding's Gmail-code step and is not
- *    requested here.
+ *    exception, `?include_blob=1`, is onboarding's confirmation-code step and is
+ *    not requested here.
  *  - Everything rendered below comes from `trustBasis(item)` — `attested`,
  *    `attested_by`, `inner_domain`, `outer_domain`, `dkim`, `arc` — and every one
  *    of those is a *server* judgement about a signature, not a claim the message

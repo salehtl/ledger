@@ -54,7 +54,7 @@ interface Rig {
   logAtAfterConfirm: string | null;
 }
 
-function mount(over: Partial<Rig> = {}) {
+function mount(over: Partial<Rig> = {}, props: { expectConfirmation?: boolean } = {}) {
   const rig: Rig = {
     items: [BANK_ITEM],
     logAt: null,
@@ -98,6 +98,7 @@ function mount(over: Partial<Rig> = {}) {
           rig.syncs += 1;
         }}
         pollMs={0}
+        {...(props.expectConfirmation === undefined ? {} : { expectConfirmation: props.expectConfirmation })}
       />
     </MotionProvider>,
   );
@@ -409,6 +410,90 @@ describe("Verification", () => {
 
   it("refuses to offer trust for unauthenticated mail", async () => {
     mount({ items: [{ ...BANK_ITEM, attested: false, attested_by: "", inner_domain: "" }] });
+    const button = await screen.findByRole("button", { name: /cannot trust unauthenticated mail/i });
+    expect(button).toHaveProperty("disabled", true);
+  });
+
+  /** No provider is named any more, because the screen serves all of them. */
+  it("does not claim the held message is Google's", async () => {
+    mount();
+    await screen.findByTestId("verification");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).not.toMatch(/google|gmail/i);
+  });
+});
+
+/**
+ * The iCloud case, and the direct-with-the-bank case: there is no code, and a
+ * screen that waits for one is a promise the flow cannot keep.
+ */
+describe("Verification when no confirmation code is expected", () => {
+  const CONFIRMATION = {
+    ...BANK_ITEM,
+    id: "q5",
+    outer_domain: "fastmail.com",
+    inner_domain: "",
+    attested_by: "DKIM d=fastmail.com",
+    blob: Buffer.from(
+      ["Content-Type: text/plain; charset=UTF-8", "", "Confirmation code: 481516234", ""].join("\r\n"),
+      "utf8",
+    ).toString("base64"),
+  };
+
+  it("waits for the first bank email and offers no code reader", async () => {
+    mount({ items: [CONFIRMATION] }, { expectConfirmation: false });
+
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading.textContent).toMatch(/first bank email/i);
+    const item = await screen.findByTestId("verification-item-q5");
+    expect(within(item).queryByRole("button", { name: /look for a confirmation code/i })).toBeNull();
+    // The message is still listed by its verified signing domain: it is held,
+    // and pretending otherwise is how a user decides ledger has lost mail.
+    expect(item.textContent).toContain("fastmail.com");
+  });
+
+  it("offers both when a confirmation IS expected", async () => {
+    mount({ items: [CONFIRMATION] }, { expectConfirmation: true });
+    const item = await screen.findByTestId("verification-item-q5");
+    expect(within(item).getByRole("button", { name: /look for a confirmation code/i })).toBeTruthy();
+  });
+
+  /**
+   * The gate does not move. A transaction in the log is the only
+   * provider-agnostic proof that forwarding actually works, whichever route the
+   * user took to arrange it.
+   */
+  it("still advances only on a transaction in the log", async () => {
+    const { onConfirmed } = mount({ items: [], logAt: "2026-08-07T10:01:00Z" }, { expectConfirmation: false });
+    await waitFor(() => {
+      expect(onConfirmed).toHaveBeenCalledWith("2026-08-07T10:01:00Z");
+    });
+  });
+
+  it("does not advance without one, however sure the provider was", async () => {
+    const { onConfirmed } = mount({ items: [], logAt: null }, { expectConfirmation: false });
+    await screen.findByTestId("verification-no-bank-mail");
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Never a dead end: a provider we believed sends no code may send one anyway,
+   * and the user who is holding it must not have to reinstall to read it.
+   */
+  it("lets a user who did get a code ask for the reader", async () => {
+    const user = userEvent.setup();
+    mount({ items: [CONFIRMATION] }, { expectConfirmation: false });
+
+    await user.click(await screen.findByRole("button", { name: /did send a confirmation code/i }));
+    const item = screen.getByTestId("verification-item-q5");
+    await user.click(within(item).getByRole("button", { name: /look for a confirmation code/i }));
+    expect((await screen.findByTestId("verification-code")).textContent).toBe("481516234");
+  });
+
+  /** The provider choice is copy. It cannot make anything more or less trusted. */
+  it("changes nothing about what may be trusted", async () => {
+    mount({ items: [{ ...BANK_ITEM, id: "q6", attested: false, attested_by: "", inner_domain: "" }] }, {
+      expectConfirmation: false,
+    });
     const button = await screen.findByRole("button", { name: /cannot trust unauthenticated mail/i });
     expect(button).toHaveProperty("disabled", true);
   });
