@@ -171,7 +171,7 @@ export function Address({
 
       {failed && !busy && (
         <>
-          <Notice tone="danger" title="ledger could not get your address" testId="address-failed">
+          <Notice tone="danger" announce title="ledger could not get your address" testId="address-failed">
             <p>
               Nothing is wrong with this device and nothing has been lost — the address is created on the server
               the first time it is asked for, so trying again is safe.

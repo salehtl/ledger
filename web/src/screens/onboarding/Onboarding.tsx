@@ -60,6 +60,11 @@ export interface OnboardingProps {
   facts: OnboardingFacts;
   /** The boot gate's `again`. Called once the machine reaches `done`. */
   done: () => void;
+  /**
+   * The gate's coordinator, as a pull. Only the verification step uses it, and
+   * that step cannot finish without it — see `Verification.tsx`'s header.
+   */
+  sync?: () => Promise<void>;
   /** Injected by tests. */
   fetch?: typeof fetch;
   secrets?: SecretStore;
@@ -71,6 +76,7 @@ export function Onboarding({
   handle,
   facts: initial,
   done,
+  sync,
   fetch: doFetch,
   secrets,
   server = SERVER,
@@ -137,6 +143,7 @@ export function Onboarding({
           client={handle.client}
           firstMailAt={() => firstMailAt(handle.client.state())}
           onConfirmed={(at) => dispatch({ type: "first_mail_confirmed", at })}
+          {...(sync === undefined ? {} : { sync })}
           {...(pollMs === undefined ? {} : { pollMs })}
           {...io}
         />

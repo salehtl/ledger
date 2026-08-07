@@ -59,14 +59,29 @@ import { PixelSpinner } from "../components/ui/PixelSpinner";
 import type { Halt } from "@ledger/client/invariants/surface";
 
 import { readAddress } from "./address";
+import { IDB_NAME } from "./db/driver";
 import { boot, handleDeps, type BootState } from "./boot";
-import { HALT_WITHOUT_REASON, haltFromReason } from "./halt";
+import { haltFromReason } from "./halt";
 import { startEngine, useSync, type SyncCoordinator, type SyncStatus } from "./engine";
 import { ONBOARDING_LOCAL_KEY, type OnboardingFacts } from "./onboarding";
 import { initV2, SECRET_WRITER_ID, webSecretStore, type V2Handle } from "./session";
 
-/** The IndexedDB database name AND the secret-store namespace. */
+/**
+ * The profile: the key this app's bytes are stored under, and the secret-store
+ * namespace.
+ */
 export const PROFILE = "ledger";
+
+/**
+ * The name of the IndexedDB database the driver keeps those bytes in.
+ *
+ * A SECOND name, and NOT the same string as {@link PROFILE}: the driver holds
+ * one database with a record per profile inside it. Re-exported from the driver
+ * rather than spelled again here, which is what it was before — two copies of a
+ * magic string in two files, where deleting the profile name would have deleted
+ * nothing and left a deleted account's whole op log on the device.
+ */
+export const BROWSER_DATABASE = IDB_NAME;
 
 /**
  * Same-origin, in production and in `bun run dev` alike — the dev server
@@ -158,8 +173,21 @@ export interface BootGateProps {
   children: ReactNode;
   /** Task 7's Welcome / passkey screens. */
   signIn?: SlotRenderer;
-  /** Task 7's onboarding walk. `facts` is where it resumes from. */
-  onboarding?: (props: { handle: V2Handle; facts: OnboardingFacts; done: () => void }) => ReactElement;
+  /**
+   * Task 7's onboarding walk. `facts` is where it resumes from.
+   *
+   * `sync` is handed over because the walk has a step that CANNOT finish
+   * without one: the verification step waits for a re-ingested bank email to
+   * reach the local log, and only a pull puts it there. Nothing else in the tree
+   * pulls while onboarding is on screen — which is also why `onboarding` had to
+   * join `ready` in the `useSync` condition below.
+   */
+  onboarding?: (props: {
+    handle: V2Handle;
+    facts: OnboardingFacts;
+    done: () => void;
+    sync: () => Promise<void>;
+  }) => ReactElement;
   /** Injected by tests. Defaults to the memoised {@link openV2}. */
   open?: () => Promise<V2Handle>;
   /** Injected by tests. Defaults to {@link wipeLocalData}. */
@@ -189,15 +217,23 @@ export function BootGate({
   // Bumped by "try again" and by a slot reporting it is done; every increment
   // re-runs boot from the top, which is the only way to re-derive the facts.
   const [attempt, setAttempt] = useState(0);
-  // The coordinator is handed to `useSync` ONLY while the app is on screen.
+  // The coordinator is handed to `useSync` only in the states where syncing is
+  // safe — which is not the same as "only when the app is on screen".
   //
-  // That is what keeps a background sync from destroying the one affordance an
-  // `unenrolled` user has: with the trigger live in that state, a tab-switch
-  // syncs with no writer, throws, and the retryable enrolment wall is replaced
-  // by an un-retryable halt wall — the round-1 review reproduced exactly that.
-  // A device that cannot author has no business syncing in the background, so
-  // it does not.
-  const sync = useSync(state.step === "ready" ? coordinator : null);
+  // The state it must be withheld from is `unenrolled`, and the reason is
+  // specific: with the trigger live there, a tab-switch syncs with no writer,
+  // throws, and the retryable enrolment wall is replaced by an un-retryable halt
+  // wall — the round-1 review reproduced exactly that. A device that cannot
+  // author has no business syncing in the background.
+  //
+  // `onboarding` is on the other side of that line and is included
+  // deliberately. By then `boot()` has already enrolled this device (step 1) and
+  // already completed a launch sync (step 2), so both of the conditions that
+  // made `unenrolled` dangerous are known to hold. It has to be included: the
+  // verification step cannot finish until a pull lands the re-ingested bank
+  // email in the local log, and withholding the coordinator here is what left
+  // that step unable to complete at all.
+  const sync = useSync(state.step === "ready" || state.step === "onboarding" ? coordinator : null);
 
   // Held so the boot effect does not re-run when a caller re-creates one of
   // these inline, which is the ordinary way to pass a function prop.
@@ -237,6 +273,30 @@ export function BootGate({
       live = false;
     };
   }, [attempt]);
+
+  // The halt currently in force, or null. COMPUTED here and APPLIED per branch
+  // — never returned early, which is the shape round 1 got wrong: there it
+  // outranked `unenrolled` and took away the one affordance that could repair
+  // that account. It is applied in exactly the two states that sync.
+  //
+  // Two sources. `fault` is what a `run()` through the hook observed, and it
+  // carries the violation class. The PHASE catches the case no `run()` can
+  // report — an out-of-band `SyncEngine.halt(reason)`, which publishes `halted`
+  // with nobody awaiting a promise.
+  //
+  // THE PHASE BRANCH REQUIRES A REASON, and that guard is the whole of it.
+  // `SyncEngine.run` publishes `halted` and THEN rethrows — for a transport
+  // failure exactly as for a chain break — and never resets `p` until the next
+  // run starts. An ungated phase check therefore put the offline wall back up by
+  // a second route, after round 1 had removed it from the boot path: `useSync`
+  // correctly declined to raise a fault, the phase said `halted` anyway, and
+  // with no reason to show it rendered the generic "your records did not check
+  // out". An out-of-band `halt(reason)` always sets a reason; a rethrown
+  // transport failure never does. That is the difference, and it is the only
+  // reliable one available here.
+  const haltReason = coordinator?.haltReason ?? null;
+  const activeHalt =
+    sync.fault ?? (sync.progress.phase === "halted" && haltReason !== null ? haltFromReason(haltReason) : null);
 
   const clearFault = sync.clear;
   const again = useCallback(() => {
@@ -278,7 +338,21 @@ export function BootGate({
 
     case "onboarding":
       if (handle === null || onboarding === undefined) return <Unbuilt what="Onboarding" owner="Task 7" />;
-      return onboarding({ handle, facts: state.facts, done: again });
+      // Onboarding syncs (see the `useSync` condition), so it can raise a halt,
+      // so it has to be able to show one. Without this the step's own `sync()`
+      // could record a fault that nothing ever rendered.
+      if (activeHalt !== null) return <HaltWall halt={activeHalt} />;
+      return onboarding({
+        handle,
+        facts: state.facts,
+        done: again,
+        // `sync.run` rather than the coordinator directly, precisely because it
+        // never rejects: a halt raised while onboarding is on screen is recorded
+        // as a fault on the status this component already reads, so it reaches
+        // the gate's own wall on the next render instead of being swallowed by
+        // whichever step's `catch` happened to be awaiting.
+        sync: () => sync.run("refresh"),
+      });
 
     case "halted":
       return <HaltWall halt={state.halt} />;
@@ -299,32 +373,18 @@ export function BootGate({
         </Wall>
       );
 
-    case "ready": {
+    case "ready":
       if (handle === null || coordinator === null) return null;
       // A halt raised by a LATER sync takes the screen from the app that was on
       // it: what is rendered behind is a projection the engine has stopped
-      // standing behind.
-      //
-      // Two sources, deliberately. `fault` is what a `run()` through the hook
-      // observed and carries the violation class. The PHASE catches the case no
-      // `run()` can report — `SyncEngine.halt(reason)` called from somewhere
-      // else, which publishes `halted` with nobody awaiting a promise.
-      //
-      // Scoped to `ready` rather than checked ahead of the switch, which is
-      // where round 1 put it: there, a fault outranked the `unenrolled` wall and
-      // nothing could ever clear it. Here it can only be on screen over the app
-      // it is about, and a successful sync clears it (see `useSync`), so coming
+      // standing behind. A successful sync clears it (see `useSync`), so coming
       // back online recovers on the next trigger with nothing to press.
-      const halt =
-        sync.fault ??
-        (sync.progress.phase === "halted" ? haltFromReason(coordinator.haltReason ?? HALT_WITHOUT_REASON) : null);
-      if (halt !== null) return <HaltWall halt={halt} />;
+      if (activeHalt !== null) return <HaltWall halt={activeHalt} />;
       return (
         <V2Context.Provider value={{ handle, coordinator, sync, userId: state.userId, facts: state.facts }}>
           {children}
         </V2Context.Provider>
       );
-    }
   }
 }
 
@@ -465,7 +525,7 @@ export async function wipeLocalData(handle: V2Handle): Promise<void> {
 }
 
 /** Resolves only when the database is actually gone. */
-export function deleteBrowserDatabase(name = "ledger-v2"): Promise<void> {
+export function deleteBrowserDatabase(name = BROWSER_DATABASE): Promise<void> {
   if (typeof indexedDB === "undefined") return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     let request: IDBOpenDBRequest;

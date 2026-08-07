@@ -44,9 +44,10 @@ import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
+import { wipeLocalData } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
 import { addPasskey } from "../../v2/passkeyAdd";
-import { isPasskeyError, type PasskeyFailureKind, type V2Handle } from "../../v2/session";
+import { isAccountMismatch, isPasskeyError, type PasskeyFailureKind, type V2Handle } from "../../v2/session";
 import { DevSignInPanel } from "./DevSignInPanel";
 import { Notice, Step } from "./Shell";
 
@@ -56,6 +57,8 @@ export interface WelcomeProps {
   done: () => void;
   /** Injected by tests; defaults to the real add-passkey ceremony. */
   addSecondPasskey?: (handle: V2Handle) => Promise<string>;
+  /** Injected by tests; defaults to {@link wipeLocalData}, which reloads. */
+  wipe?: (handle: V2Handle) => Promise<void>;
 }
 
 /**
@@ -104,9 +107,17 @@ type Phase =
   | { kind: "busy"; what: "create" | "signin" }
   /** The account exists. The only thing left is the backup nobody else can give. */
   | { kind: "created"; adding: boolean; added: boolean; note: string | null }
-  | { kind: "not_invited" };
+  /** `not_invited`. `failure` carries a LATER failure of the retry, if any. */
+  | { kind: "not_invited"; failure: PasskeyFailureKind | null }
+  /** This profile holds another account's database. Only a wipe clears it. */
+  | { kind: "account_mismatch"; bound: string; offered: string; wiping: boolean };
 
-export function Welcome({ handle, done, addSecondPasskey = (h) => addPasskey({ client: h.client }) }: WelcomeProps) {
+export function Welcome({
+  handle,
+  done,
+  addSecondPasskey = (h) => addPasskey({ client: h.client }),
+  wipe = wipeLocalData,
+}: WelcomeProps) {
   /** A string draft all the way to submit — never coerced on keystroke. */
   const [code, setCode] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -115,24 +126,49 @@ export function Welcome({ handle, done, addSecondPasskey = (h) => addPasskey({ c
   const busy = phase.kind === "busy";
   const canCreate = code.trim() !== "" && !busy;
 
+  /**
+   * Files a failure without losing where the user is.
+   *
+   * Returns true when it handled the error as a screen of its own. The
+   * `not_invited` case is the reason this exists: a retry from that screen that
+   * hits a DIFFERENT failure used to reset `phase` to `idle`, throwing the user
+   * back to the front door with their code gone from view and no explanation —
+   * so a rate limit or a dropped connection looked like the app had simply
+   * forgotten what they were doing. A later failure now stays on whichever
+   * screen raised it.
+   */
+  const fail = useCallback((error: unknown, from: Phase): void => {
+    if (isAccountMismatch(error)) {
+      setPhase({ kind: "account_mismatch", bound: error.boundUserId, offered: error.offeredUserId, wiping: false });
+      return;
+    }
+    const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
+    if (isPasskeyError(error) && error.passkeyKind === "not_invited") {
+      setPhase({ kind: "not_invited", failure: from.kind === "not_invited" ? "not_invited" : null });
+      return;
+    }
+    if (from.kind === "not_invited") {
+      setPhase({ kind: "not_invited", failure: kind });
+      return;
+    }
+    setFailure(kind);
+    setPhase({ kind: "idle" });
+  }, []);
+
   const create = useCallback(async () => {
+    const from = phase;
     setFailure(null);
     setPhase({ kind: "busy", what: "create" });
     try {
       await handle.signUp(code.trim());
       setPhase({ kind: "created", adding: false, added: false, note: null });
     } catch (error) {
-      // Structural, not a string match. See this module's header.
-      if (isPasskeyError(error) && error.passkeyKind === "not_invited") {
-        setPhase({ kind: "not_invited" });
-        return;
-      }
-      setFailure(isPasskeyError(error) ? error.passkeyKind : "unavailable");
-      setPhase({ kind: "idle" });
+      fail(error, from);
     }
-  }, [handle, code]);
+  }, [handle, code, phase, fail]);
 
   const signIn = useCallback(async () => {
+    const from = phase;
     setFailure(null);
     setPhase({ kind: "busy", what: "signin" });
     try {
@@ -140,10 +176,17 @@ export function Welcome({ handle, done, addSecondPasskey = (h) => addPasskey({ c
       await handle.signIn();
       done();
     } catch (error) {
-      setFailure(isPasskeyError(error) ? error.passkeyKind : "unavailable");
-      setPhase({ kind: "idle" });
+      fail(error, from);
     }
-  }, [handle, done]);
+  }, [handle, done, phase, fail]);
+
+  const startFresh = useCallback(async () => {
+    setPhase((p) => (p.kind === "account_mismatch" ? { ...p, wiping: true } : p));
+    // `wipeLocalData` ends in a reload, so there is deliberately nothing after
+    // this: the handle and the engine are memoised for the tab's lifetime and
+    // both are dead once their database is.
+    await wipe(handle);
+  }, [wipe, handle]);
 
   const addAnother = useCallback(async () => {
     setPhase((p) => (p.kind === "created" ? { ...p, adding: true, note: null } : p));
@@ -200,14 +243,56 @@ export function Welcome({ handle, done, addSecondPasskey = (h) => addPasskey({ c
     );
   }
 
+  // -- this browser holds another account's database ----------------------
+  if (phase.kind === "account_mismatch") {
+    return (
+      <Step
+        testId="welcome-account-mismatch"
+        title="This browser is already holding another account"
+        intro="Your passkey is fine and the server accepted it. What is in the way is the data left here by a different ledger account."
+      >
+        <Notice tone="danger" announce title="Two accounts cannot share one browser profile" testId="account-mismatch">
+          <p>
+            ledger keeps each account&rsquo;s records in this browser&rsquo;s own storage, and it will not mix two
+            of them together — sync positions from one account applied to another&rsquo;s records would corrupt
+            both. So it refused rather than letting you in.
+          </p>
+          <p>
+            Clearing this browser&rsquo;s ledger data lets you sign in. It removes only what is stored{" "}
+            <em>here</em>: the other account, its records and everything you have recorded for it are untouched on
+            the server, and signing in as that account on its own device brings it all back.
+          </p>
+        </Notice>
+        <Button variant="danger" disabled={phase.wiping} onClick={() => void startFresh()}>
+          {phase.wiping ? "Clearing…" : "Clear this browser's data and start fresh"}
+        </Button>
+        <Button variant="ghost" disabled={phase.wiping} onClick={() => setPhase({ kind: "idle" })}>
+          Go back
+        </Button>
+      </Step>
+    );
+  }
+
   // -- the invite was refused ---------------------------------------------
   if (phase.kind === "not_invited") {
+    const later = phase.failure === null || phase.failure === "not_invited" ? null : failureCopy(phase.failure);
     return (
       <Step
         testId="welcome-not-invited"
         title="ledger is invite-only right now"
         intro="This is a closed beta, so an account needs a code. The one you used was not accepted."
       >
+        {/*
+          A LATER failure of the retry, kept on this screen. Bouncing back to the
+          front door for it would lose the code the user was mid-way through
+          correcting, and read as the app forgetting what they were doing.
+        */}
+        {later !== null && (
+          <Notice tone="danger" announce title={later.title} testId="not-invited-failure">
+            <p>{later.body}</p>
+          </Notice>
+        )}
+
         <Notice testId="not-invited">
           <p>
             Codes are handed out one at a time by the person running this beta, and each one works once — a code
@@ -237,7 +322,7 @@ export function Welcome({ handle, done, addSecondPasskey = (h) => addPasskey({ c
       intro="Your bank already emails you every transaction. Forward those emails here and ledger keeps the running picture — on your device, for you only."
     >
       {copy !== null && (
-        <Notice tone="danger" title={copy.title} testId="welcome-failure">
+        <Notice tone="danger" announce title={copy.title} testId="welcome-failure">
           <p>{copy.body}</p>
         </Notice>
       )}

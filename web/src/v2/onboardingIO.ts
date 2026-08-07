@@ -254,9 +254,17 @@ export async function readQuarantine(
 export type TrustScope = "outer" | "inner";
 
 /**
- * The two refusals `handleConfirmSender` makes deliberately distinguishable,
- * in the words a person can act on. Both name something already visible in the
- * user's own lane, so neither is an oracle.
+ * The refusals a confirmation can come back with, in words a person can act on.
+ *
+ * The two conflicts are the ones `handleConfirmSender` makes deliberately
+ * distinguishable — each names something already visible in the user's own lane,
+ * so neither is an oracle. `rate_limited` is here for a different reason: the
+ * route carries a per-user budget (`s.QuarantinePerUser`, spent BEFORE the body
+ * is even read, because a confirmation runs the whole parse cascade
+ * synchronously), so a `429` is an ordinary outcome of tapping twice. Without an
+ * entry it fell through to "Try again." — the one instruction that is actively
+ * wrong under a rate limit, since trying again is exactly what the budget is
+ * refusing.
  */
 export const CONFIRM_CONFLICT_COPY: Record<string, string> = {
   forwarder_domain:
@@ -265,20 +273,92 @@ export const CONFIRM_CONFLICT_COPY: Record<string, string> = {
   origin_unproven:
     "Nothing held for this account carries a verified signature from that domain, so there is nothing to trust " +
     "yet. Mail that cannot be verified stays held.",
+  rate_limited:
+    "ledger is filing mail as fast as the server will let it. Wait about a minute before confirming again — " +
+    "nothing was lost, and the held mail is still there.",
 };
+
+/**
+ * What one confirmation actually did, out of `ConfirmSenderResponse.Reingest`.
+ *
+ * **`remaining` is the field that matters and the one a caller must not
+ * discard.** `handleConfirmSender` feeds the released ids back through the parse
+ * cascade in a BOUNDED batch (`defaultMaxReingestPerConfirm`, 500 — the same cap
+ * `ingest.Reprocess` refuses to exceed), and reports what it did not attempt.
+ * Confirming again continues, because `Confirm` is idempotent and a promoted
+ * message is no longer held. A UI that dropped this reports "done" over a
+ * partial ingest, and the user's remaining bank mail sits in the lane until it
+ * EXPIRES — announced, per §2, but gone.
+ */
+export interface ReingestReport {
+  examined: number;
+  appended: number;
+  superseded: number;
+  unchanged: number;
+  failed: number;
+  /** Released ids this call did NOT attempt. Confirming again continues. */
+  remaining: number;
+  /** The re-ingest hit an infrastructure error; the counts describe what did happen. */
+  incomplete: boolean;
+}
+
+export interface ConfirmResult {
+  domain: string;
+  scope: string;
+  /** Hex sha256 ids the allowlist row made eligible. */
+  ingestIds: string[];
+  /**
+   * Absent when the deployment has no reprocessor wired — which is never true of
+   * a Phase 1 server, and is deliberately distinct from an all-zero report
+   * ("there was nothing held to re-ingest"). Collapsing the two would make a
+   * confirmation of an origin with no held mail indistinguishable from one on a
+   * server where the promotion path is missing.
+   */
+  reingest: ReingestReport | null;
+}
+
+function num(v: unknown): number {
+  return typeof v === "number" ? v : 0;
+}
 
 export async function confirmSender(
   client: TokenSource,
   domain: string,
   scope: TrustScope,
   opts: IOOptions = {},
-): Promise<void> {
-  await call(
+): Promise<ConfirmResult> {
+  const { text } = await call(
     "/api/v1/quarantine/confirm",
     requireToken(client),
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain, scope }) },
     opts,
   );
+  const body = json<{ domain?: unknown; scope?: unknown; ingest_ids?: unknown; reingest?: unknown }>(
+    text,
+    "POST /api/v1/quarantine/confirm",
+  );
+  const raw = body.reingest;
+  const reingest =
+    typeof raw === "object" && raw !== null
+      ? ((r: Record<string, unknown>): ReingestReport => ({
+          examined: num(r["examined"]),
+          appended: num(r["appended"]),
+          superseded: num(r["superseded"]),
+          unchanged: num(r["unchanged"]),
+          failed: num(r["failed"]),
+          remaining: num(r["remaining"]),
+          incomplete: r["incomplete"] === true,
+        }))(raw as Record<string, unknown>)
+      : null;
+  return {
+    // The server's NORMALIZED spelling, not the caller's: the stored row is
+    // lower-cased, and continuing a batch must send the string this server
+    // would match.
+    domain: typeof body.domain === "string" ? body.domain : domain,
+    scope: typeof body.scope === "string" ? body.scope : scope,
+    ingestIds: Array.isArray(body.ingest_ids) ? body.ingest_ids.filter((v): v is string => typeof v === "string") : [],
+    reingest,
+  };
 }
 
 // ---------------------------------------------------------------------------

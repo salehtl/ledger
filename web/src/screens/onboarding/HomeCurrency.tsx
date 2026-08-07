@@ -131,7 +131,7 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
           </>
         }
       >
-        <Notice tone="danger" title="This cannot be undone" testId="home-currency-consequence">
+        <Notice tone="danger" announce title="This cannot be undone" testId="home-currency-consequence">
           <p>{copy.consequence}</p>
         </Notice>
 

@@ -342,6 +342,43 @@ export function classifyPasskeyFailure(err: unknown): PasskeyError {
   return new PasskeyError("unavailable", detail, err);
 }
 
+/**
+ * A sign-in that named a DIFFERENT account than this browser profile is bound
+ * to — raised by `adoptSession`, which refuses rather than mixing two accounts'
+ * cursors and pinned heads into one database (I4 would then fail on every row of
+ * whichever one lost).
+ *
+ * Its own class, matched structurally like {@link PasskeyError} and
+ * {@link EnrollmentError}, because the refusal is correct but a bare `throw` is
+ * a dead end: the user has a working passkey, the server accepted it, and the
+ * only thing standing between them and their account is stale local data that
+ * nothing in the product offered to clear. The sign-in screen keys the "clear
+ * this browser's data" affordance off this, so it cannot be reached by
+ * string-matching a message.
+ *
+ * ⚠ This closes only the DIFFERENT-account direction. The same account signing
+ * in over a stale database still adopts it silently, because `client/src` has no
+ * `account_id` on the store to bind against; that needs a schema field plus a
+ * guard in `sqliteStore` and is deliberately out of scope here.
+ */
+export class AccountMismatchError extends Error {
+  readonly accountMismatch = true;
+  constructor(
+    readonly boundUserId: string,
+    readonly offeredUserId: string,
+  ) {
+    super(
+      `this browser profile holds data for a different ledger account (${boundUserId}), and the passkey you used ` +
+        `signs in as ${offeredUserId}`,
+    );
+    this.name = "AccountMismatchError";
+  }
+}
+
+export function isAccountMismatch(err: unknown): err is AccountMismatchError {
+  return typeof err === "object" && err !== null && (err as { accountMismatch?: unknown }).accountMismatch === true;
+}
+
 export type EnrollmentKind = "offline" | "unavailable" | "rate_limited" | "rejected" | "revoked" | "key_lost";
 
 /**
@@ -697,10 +734,11 @@ export async function initV2(server: string, opts: InitV2Options = {}): Promise<
   const adoptSession = (out: SessionResponse): void => {
     const st = store.load();
     if (st.userId !== null && st.userId !== out.user_id) {
-      throw new Error(
-        `this device is bound to user ${st.userId} and the server returned ${out.user_id}; ` +
-          `sign out before signing in as a different account`,
-      );
+      // A typed refusal, not a bare Error: the sign-in screen has to be able to
+      // tell this apart from every other failure in order to offer the one
+      // remedy that works — clearing this browser's data. See
+      // {@link AccountMismatchError}.
+      throw new AccountMismatchError(st.userId, out.user_id);
     }
     st.userId = out.user_id;
     st.sessionToken = out.session_token;

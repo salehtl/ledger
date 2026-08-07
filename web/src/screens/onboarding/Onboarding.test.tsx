@@ -14,7 +14,7 @@ import userEvent from "@testing-library/user-event";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { emptyFacts, type OnboardingFacts } from "../../v2/onboarding";
-import { PasskeyError, type V2Handle } from "../../v2/session";
+import { AccountMismatchError, PasskeyError, type V2Handle } from "../../v2/session";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { Onboarding } from "./Onboarding";
@@ -197,6 +197,56 @@ describe("Welcome", () => {
     // The code is still there to correct rather than retyped from scratch.
     expect((screen.getByLabelText("Invite code") as HTMLInputElement).value).toBe("ABC123");
     expect(rig.handle).toBeTruthy();
+  });
+
+  it("keeps a later failure on the not-invited screen instead of bouncing to the front door", async () => {
+    const user = userEvent.setup();
+    let attempt = 0;
+    mountWelcome({
+      signUp: () => {
+        attempt += 1;
+        return Promise.reject(
+          attempt === 1
+            ? new PasskeyError("not_invited", "403", { status: 403, code: "not_invited" })
+            : new PasskeyError("rate_limited", "429", { status: 429, code: "rate_limited" }),
+        );
+      },
+    });
+
+    await user.type(screen.getByLabelText("Invite code"), "ABC123");
+    await user.click(screen.getByRole("button", { name: /create my account/i }));
+    await screen.findByTestId("not-invited");
+
+    await user.click(screen.getByRole("button", { name: /try this code/i }));
+
+    // Still here, with the code intact and the real reason on screen.
+    expect(await screen.findByTestId("not-invited-failure")).toBeTruthy();
+    expect(screen.getByTestId("welcome-not-invited")).toBeTruthy();
+    expect((screen.getByLabelText("Invite code") as HTMLInputElement).value).toBe("ABC123");
+  });
+
+  it("offers to clear the browser when this profile holds another account", async () => {
+    const user = userEvent.setup();
+    const rig = handleRig({
+      signIn: () => Promise.reject(new AccountMismatchError("u_old", "u_new")),
+    });
+    const wipe = vi.fn(async () => {});
+    render(
+      <MotionProvider>
+        <Welcome handle={rig.handle} done={vi.fn()} wipe={wipe} />
+      </MotionProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    const notice = await screen.findByTestId("account-mismatch");
+    // The reassurance is the load-bearing half: the other account is not lost.
+    expect(notice.textContent).toMatch(/untouched on the server/i);
+
+    await user.click(screen.getByRole("button", { name: /clear this browser's data/i }));
+    await waitFor(() => {
+      expect(wipe).toHaveBeenCalledWith(rig.handle);
+    });
   });
 
   it("signs in with one button and no argument at all", async () => {

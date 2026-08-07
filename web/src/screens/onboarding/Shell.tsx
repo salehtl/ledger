@@ -14,7 +14,7 @@
  * not be.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 export function Step({
   title,
@@ -30,11 +30,33 @@ export function Step({
   footer?: ReactNode;
   testId?: string;
 }) {
+  /**
+   * Focus moves to the heading whenever the step changes.
+   *
+   * A step swaps the whole tree, so without this the focus ring stays on
+   * whatever was pressed — a button that no longer exists — and the browser
+   * drops focus to `<body>`. A screen-reader user is then given no indication
+   * that the page changed at all, and a keyboard user's next Tab restarts from
+   * the top of the document. Keyed on `title` rather than on mount, because the
+   * two `Address` phases and the two `HomeCurrency` phases are one component
+   * rendering a different step.
+   *
+   * `tabIndex={-1}` makes the heading programmatically focusable without adding
+   * it to the tab order; `outline-none` because the ring on a heading nobody
+   * clicked reads as a rendering fault rather than as focus.
+   */
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    heading.current?.focus();
+  }, [title]);
+
   return (
     <div className="min-h-[100svh] bg-bg text-fg overflow-y-auto" {...(testId === undefined ? {} : { "data-testid": testId })}>
       <div className="max-w-screen-sm mx-auto min-h-[100svh] flex flex-col gap-5 px-6 pt-12 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
         <header className="flex flex-col gap-2">
-          <h1 className="text-xl font-semibold tracking-[-0.015em]">{title}</h1>
+          <h1 ref={heading} tabIndex={-1} className="text-xl font-semibold tracking-[-0.015em] outline-none">
+            {title}
+          </h1>
           {intro !== undefined && <p className="text-sm leading-relaxed text-muted">{intro}</p>}
         </header>
         {children}
@@ -47,18 +69,35 @@ export function Step({
 /**
  * A bordered block that says something the user has to weigh.
  *
- * `tone="danger"` carries `role="alert"`: it is used for the two consequences in
- * this flow that cannot be undone — no account recovery, and the permanent home
- * currency — and a screen reader must interrupt for those rather than reach them
- * in reading order. `tone="note"` is an ordinary hairline card and stays silent.
+ * # `tone` is the look; `announce` is the live region, and they are separate
+ *
+ * They were one thing, and that was wrong. `tone="danger"` used to imply
+ * `role="alert"`, which put an alert on content **present at first paint** — the
+ * recovery warning. An `alert` is announced when it is dynamically INSERTED into
+ * an already-rendered page; one that is in the initial markup is generally read
+ * in ordinary document order like any other text, so the role bought nothing and
+ * the claim that a screen reader would interrupt for it was overstated.
+ *
+ * Worse than useless, in fact: `role="alert"` is `role="status"`-with-assertive,
+ * and assertive announcements interrupt whatever is being read. Applying it to
+ * static content risks cutting off the heading the user is listening to.
+ *
+ * So the rule now is: **`announce` only where the notice appears in response to
+ * something.** A sign-in failure, a partial re-ingest, the confirm step's
+ * consequence panel — all inserted after a user action, all correctly assertive.
+ * The recovery warning on the front door is not; it is ordinary content, placed
+ * high in reading order, which is what actually makes it heard.
  */
 export function Notice({
   tone = "note",
+  announce = false,
   title,
   children,
   testId,
 }: {
   tone?: "note" | "danger";
+  /** Renders a live region. Only for a notice inserted after first paint. */
+  announce?: boolean;
   title?: string;
   children: ReactNode;
   testId?: string;
@@ -67,7 +106,7 @@ export function Notice({
   return (
     <div
       className={`flex flex-col gap-2 p-4 rounded-[var(--radius)] border bg-surface ${danger ? "border-bad" : "border-border"}`}
-      {...(danger ? { role: "alert" } : {})}
+      {...(announce ? { role: "alert" } : {})}
       {...(testId === undefined ? {} : { "data-testid": testId })}
     >
       {title !== undefined && (

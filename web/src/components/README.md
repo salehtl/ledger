@@ -392,12 +392,26 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   can't push the primary action under the fold), no scrim and no focus trap. The
   Dialog-only rule is about surfaces layered over the app; these never leave the
   document flow.
-- **`Notice tone="danger"` carries `role="alert"`.** Reserved for the two
-  consequences in the flow that cannot be undone — no account recovery, and the
-  permanent home currency — because a screen reader must interrupt for those
-  rather than reach them in reading order. `tone="note"` is a plain hairline card
-  and stays silent; don't reach for `danger` because something merely feels
-  important.
+- **`tone` is the look; `announce` is the live region. They are separate props,
+  and that split is load-bearing.** They were one thing at first — `tone="danger"`
+  implied `role="alert"` — which put an alert on content present at **first
+  paint** (the recovery warning). An `alert` is announced when it is dynamically
+  *inserted* into an already-rendered page; one sitting in the initial markup is
+  generally just read in document order, so the role bought nothing and the claim
+  that a screen reader would interrupt for it was wrong. It is also actively
+  risky: `alert` is assertive, so on static content it can cut off the heading
+  the user is currently listening to.
+  **Rule: pass `announce` only for a notice that appears in response to
+  something** — a failure banner, a partial-result warning, a confirm step's
+  consequence panel. Static warnings earn their attention by placement (high in
+  reading order, `tone="danger"`), not by a live region. Don't reach for `danger`
+  because something merely feels important.
+- **`Step` moves focus to its `<h1>` on every step change** (`tabIndex={-1}`,
+  `outline-none`, keyed on the title). A step swaps the whole tree, so without it
+  focus lands on `<body>`: a screen-reader user gets no signal the page changed,
+  and a keyboard user's next Tab restarts from the top of the document. Keyed on
+  the title rather than on mount, because `Address` and `HomeCurrency` each
+  render two different steps from one component.
 - **Deliberately not exported from `components/`.** It encodes the onboarding
   flow's own rhythm (one question per page, the action last); a caller outside
   `screens/onboarding/` would mean the flow had leaked somewhere it shouldn't be.
@@ -674,6 +688,23 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `category · date`); a status pill shows only for review/archived rows. Tapping
   is the whole action surface — it has no inline buttons. Used by the
   Transactions list and the Insights drill-down/search sheets.
+- `ProjectionTxnRow` (`transactions/`) — the same calm list line as
+  `TransactionRow`, typed on the **projection's** `Txn`
+  (`client/src/replay/state.ts`) instead of v1's API type. Use it on any screen
+  reading the local projection; use `TransactionRow` on the v1 screens that are
+  still routed. **Do not merge the two:** v1 amounts are `number` fils and the
+  projection's are `bigint` minor units precisely because a `number` cannot hold
+  an `int64`, so one component serving both would mean a `Number()` on money.
+  Absent versus v1, for want of an op behind them: the project chip and the
+  "archived" status pill. Splits, the no-home-rate pill and the review/unread/
+  duplicate markers are all present.
+- `ProjectionFilterBar` (`transactions/`) — `FilterBar` for projection-backed
+  screens: type / state / category / currency chips built from
+  `TxnSource.facets()` (the distinct values actually present, including
+  `null` = Uncategorized) rather than from a category table, with the same
+  removable token row. No bucket dimension — a bucket is a read-time mapping,
+  not a column. "Clear all" leaves the screen's period and search alone; they
+  are not this panel's to clear.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
   left = trailing. Full-swipe past the commit threshold fires it (haptic +
   spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is
@@ -764,7 +795,7 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
 - `insights/DeltaBadge`: direction arrows + domain colors, stays bespoke.
 - Insights' search trigger: a `button` styled as a fake input (it opens
   `SearchSheet`), kept because a real input would summon the keyboard.
-- `FilterBar` chips and `SwipeableRow` action icons run at 36px inside their
+- `FilterBar`/`ProjectionFilterBar` chips and `SwipeableRow` action icons run at 36px inside their
   dense panels/rows — the sanctioned exception to the 44px target, same as
   `IconButton size="sm"`. Marked `data-dense-target` so `harness/audit.mjs`
   knows it is a decision, not an oversight.
