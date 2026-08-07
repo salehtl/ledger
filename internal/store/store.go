@@ -167,7 +167,13 @@ func migrate(db *sql.DB) error {
 	// frontend resolves it to the neutral, so no backfill is required for
 	// correctness here; Open runs BackfillCategoryColors separately so
 	// existing categories get a starting colour instead of staying neutral.
-	return addColumnIfMissing(db, "categories", "color", "TEXT")
+	if err := addColumnIfMissing(db, "categories", "color", "TEXT"); err != nil {
+		return err
+	}
+	if err := migrateTargetsToVersioned(db); err != nil {
+		return err
+	}
+	return nil
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
@@ -182,4 +188,62 @@ func addColumnIfMissing(db *sql.DB, table, column, ddl string) error {
 	}
 	_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl)
 	return err
+}
+
+// columnExists reports whether table already has column.
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	var n int
+	err := db.QueryRow(
+		`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n)
+	return n > 0, err
+}
+
+// migrateTargetsToVersioned converts the pre-versioning category_targets (one
+// row per category, category_id as PRIMARY KEY) into effective-dated version
+// rows. A PRIMARY KEY cannot be widened in place, so this rebuilds the table.
+//
+// Existing rows land at '0000-01' — before every real month — which preserves
+// exactly the old semantics: the target applied to all of history.
+//
+// No-op once the column exists, so it is safe on every start.
+func migrateTargetsToVersioned(db *sql.DB) error {
+	has, err := columnExists(db, "category_targets", "effective_month")
+	if err != nil || has {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE category_targets_new (
+		  id              INTEGER PRIMARY KEY,
+		  category_id     INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+		  effective_month TEXT NOT NULL,
+		  target_type     TEXT NOT NULL,
+		  amount_fils     INTEGER NOT NULL,
+		  cadence         TEXT NOT NULL DEFAULT 'monthly',
+		  due_date        TEXT,
+		  created_at      TEXT NOT NULL,
+		  updated_at      TEXT NOT NULL
+		)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO category_targets_new
+		  (category_id, effective_month, target_type, amount_fils, cadence, due_date, created_at, updated_at)
+		SELECT category_id, '0000-01', target_type, amount_fils, cadence, due_date, created_at, updated_at
+		FROM category_targets`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE category_targets`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE category_targets_new RENAME TO category_targets`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_target_cat_month ON category_targets(category_id, effective_month)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
