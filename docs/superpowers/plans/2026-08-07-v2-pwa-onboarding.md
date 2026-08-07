@@ -1,52 +1,57 @@
-# v2 PWA — multi-user sign-up, onboarding, and first sync (one-day plan)
+# v2 PWA — passkey sign-up, onboarding, and public deployment (one-day plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** By end of day, a fresh browser profile can sign up (invite-gated), onboard (bank → inbound address → forwarding → home currency), sync against the real `ledgerd`, and see a bank email arrive as a transaction — in the existing single-user UI's skin.
+**Goal:** By end of day, `https://app.sirdab.ae` is publicly reachable, and an invited alpha can sign up with a passkey, onboard (bank → inbound address → Gmail forwarding → home currency), forward a bank email, and watch it become a transaction — in the existing single-user UI's skin.
 
-**Architecture:** The PWA becomes a fourth host for the already-built local-first core: `client/src` (Client, SyncEngine, sqliteStore, projection) runs unmodified in the browser via two new adapters — a browser `Platform` (noble + fflate) and a browser `SqlDriver` (sql.js, persisted to IndexedDB). Screens keep `web/`'s components and styling; their data source flips from v1 REST to the local projection. The Expo app's framework-free `source.ts` / auth / sync modules are ported, its React components are not.
+**Architecture:** The PWA is a fourth host for the already-built local-first core: `client/src` (Client, SyncEngine, sqliteStore, projection) runs unmodified in the browser behind two new adapters — a browser `Platform` (noble + fflate) and a browser `SqlDriver` (sql.js → IndexedDB). Auth changes from Apple/Google OIDC to **passkeys (WebAuthn)** as a third provider behind the existing `auth.Verifier`/`Identity`/`SubjectHash` seam; sessions, invite gating, and writer enrolment are untouched. `ledgerd` gains autocert and serves the embedded PWA on the same origin as the API.
 
-**Tech Stack:** React 19 + Vite + Tailwind v4 (existing `web/`), `client/src` core, `@noble/hashes`, `@noble/curves`, `fflate`, `sql.js`, Google Identity Services (web), `ledgerd` + Postgres.
+**Tech Stack:** React 19 + Vite + Tailwind v4 (existing `web/`), `client/src` core, `@noble/hashes`, `@noble/curves`, `fflate`, `sql.js`, `github.com/go-webauthn/webauthn@v0.17.4`, `golang.org/x/crypto/acme/autocert`, `ledgerd` + PostgreSQL 16.
+
+## Decisions taken 2026-08-07 (these supersede the spec where they differ)
+
+1. **Auth is passkeys, not Apple/Google.** Spec §3.8's "Sign in with Apple + Google Sign-In" is replaced. Dropping Expo removed the App Store rule that forced Apple sign-in. No passwords still holds — the spec's "passwords never exist anywhere in v2" is *strengthened*, not weakened. **The `dev:<subject>` verifier stays** for local tests; it is structurally refused off a loopback listener (`config.EnableTestOnly`), so production cannot accept it.
+2. **Beta scope today: the operator plus 3–5 invited alphas**, gated by the existing single-use invite codes, under the signed plaintext-consent document (Task D6). Not open signup.
+3. **One public hostname, `app.sirdab.ae`**, serving both the PWA and `/api/v1/*` same-origin (no CORS; the `Client`'s `server` stays `""`). `api.sirdab.ae` keeps resolving and is covered by the same certificate. **WebAuthn RP ID is `sirdab.ae`** so credentials work across both names.
+4. **No backup relay today.** `MX 20 → mx2.sirdab.ae` does not resolve; Task D1 **deletes that record** so senders retry `mx1` correctly instead of failing over to nothing. The relay (Phase 1 Task D3) is the first fast-follow and needs a second VPS. This is a disclosed availability gap in the consent document, not a silent one.
+5. **Phase 1 is plaintext.** HPKE sealing, DEK, and recovery phrase remain Phase 3. Every alpha signs the consent document naming the four server-side read paths before an address is issued.
 
 ## Global Constraints
 
 - **Do not modify `client/src` behavior.** New files there are allowed (`platform.web.ts`); edits to existing modules are not — 2,351 tests and the conformance suite guard it.
-- **Do not touch `frontend/`, `internal/web/`, or anything v1 serves.** `web/` is the only frontend tree in play.
-- **`web/` build output stays `web/dist/` (gitignored).** Never `../internal/web/dist`.
-- **Design aesthetic is frozen** (direction doc, decision 1): existing tokens, fonts, `lib/motion.ts` constants, component catalog, 44px targets, 16px inputs. New screens compose existing `web/src/components/`; no new visual language.
-- **Money is `int64` minor units** — in TS, `bigint` end to end (the projection already does this). Never `Number` for amounts.
-- **No new server endpoints.** The 28 existing `/api/v1/*` routes are the whole surface.
-- **Crypto scope today:** writer identity keys (ed25519, real) + session auth. HPKE ingest sealing / DEK / recovery phrase are Phase 3 and explicitly out.
-- **All commands run from the worktree** (`/root/Coding/ledger/.claude/worktrees/v2-pwa`). Dev server: `ledgerd --dev-auth` on scratch Postgres + free port, never `:8080` or `/var/lib/ledger`.
-- Commit after every task; `Co-Authored-By: Claude` trailer per repo convention.
+- **Do not touch `frontend/`, `internal/web/`, `/var/lib/ledger`, or `:8080`.** v1 keeps running, loopback + tailnet only, throughout.
+- **`admin_listen` stays loopback-or-tailnet.** `config.CheckAdminBind` enforces it and Task D3 does **not** lift that rail — only `http_listen`'s.
+- **Design aesthetic is frozen:** existing tokens, fonts, `lib/motion.ts` constants, component catalog, 44px targets, 16px inputs. New screens compose existing `web/src/components/`; no new visual language.
+- **Money is `int64` minor units** — `bigint` end to end in TS. Never `Number` for amounts.
+- **Crypto scope today:** WebAuthn credentials (server-verified) + ed25519 writer identity keys. HPKE/DEK/recovery phrase are explicitly out.
+- **Secrets are env-only**, never in TOML: `LEDGER_ADMIN_TOKEN`, `LEDGER_DICT_HMAC_KEY`, `LEDGER_PG_DSN`.
+- Local dev runs `ledgerd serve --dev-auth` on scratch Postgres + a free port. Never `:8080`, never `/var/lib/ledger`.
+- Commit after every task, `Co-Authored-By: Claude` trailer.
 
-## Blocked on Saleh (start these in parallel, none block local dev)
+## Part D is operator-executed
 
-1. **Google web OAuth client ID** (Cloud console → Credentials → OAuth client, type *Web application*, authorized origin = the tailnet HTTPS origin + `http://localhost:5173`). Until it exists, sign-in uses the dev panel (`--dev-auth`), which is the whole local loop anyway.
-2. **Invite codes**: decide the initial invite list. `POST /api/v1/auth/exchange` takes `invite_code`; codes are minted via the admin console (`internal/v2/admin`).
-3. **Serving the PWA over the tailnet** for a phone test: `tailscale serve` an extra port fronting `vite preview` (or a static `web/dist`). Not needed for the desktop-browser E2E gate.
+Tasks **D1–D6 touch a public box that also holds v1 production data**: firewall rules, systemd units, DNS, and a live cutover. They are executed by the controller in-session with the operator watching, **not dispatched to subagents**, and each irreversible step is confirmed before it runs. Tasks 0–10 are subagent work and depend on none of Part D except the final gate.
 
 ## File Structure
 
 ```
-client/src/platform.web.ts          # browser Platform (noble + fflate)  — NEW
-client/src/platform.web.test.ts     # same contract vectors, bun test    — NEW
-web/src/v2/db/driver.ts             # sql.js SqlDriver + IndexedDB persist — NEW
-web/src/v2/db/driver.test.ts
-web/src/v2/session.ts               # Client bootstrap, login, enrolment  — port of app/src/auth/{session,enrollment}.ts
-web/src/v2/session.test.ts
-web/src/v2/engine.ts                # SyncEngine construction + coordinator — port of app/src/sync/coordinator.ts
-web/src/v2/sources/budget.ts        # port of app/src/screens/budget/source.ts
-web/src/v2/sources/transactions.ts  # port of app/src/screens/transactions/source.ts
-web/src/v2/sources/review.ts        # port of app/src/db/reviewQueue.ts
-web/src/v2/queries.ts               # react-query wrappers over the sources — NEW
-web/src/screens/onboarding/*        # SignIn, Bank, Address, Verification, HomeCurrency — RN screens re-skinned with web/ components
-web/src/app/AppShell.tsx            # MODIFY: auth/onboarding gate, nav trimmed to live screens
-web/vite.config.ts                  # MODIFY: @ledger/client alias, sql.js asset, dev proxy
-scripts/v2-check.sh                 # MODIFY: skip app/, add web/
+client/src/platform.web.ts            # browser Platform (noble + fflate)          NEW
+client/src/platform.web.test.ts
+web/src/v2/db/driver.ts               # sql.js SqlDriver + IndexedDB persistence   NEW
+web/src/v2/session.ts                 # initV2, passkey signup/login, enrolment    NEW
+web/src/v2/engine.ts                  # SyncEngine + coordinator (port of app/src/sync/coordinator.ts)
+web/src/v2/queries.ts                 # react-query wrappers over the sources
+web/src/v2/sources/{budget,transactions,review}.ts   # ports of app/src/**/source.ts
+web/src/screens/onboarding/*          # Passkey signup/login, Bank, Address, Verification, HomeCurrency
+web/src/app/AppShell.tsx              # MODIFY: auth/onboarding gate, trimmed nav
+internal/v2/auth/passkey.go           # WebAuthn ceremonies over the Verifier seam  NEW
+internal/v2/auth/passkey_store.go     # credentials + ceremony session data         NEW
+internal/v2/api/passkey.go            # 6 endpoints                                 NEW
+internal/v2/pg/migrations/00021_passkeys.sql                                        NEW
+internal/v2/webui/                    # embed.FS of the built PWA + SPA fallback    NEW
+cmd/ledgerd/serve.go                  # MODIFY: autocert, static mount
+deploy/ledgerd.service                                                              NEW
 ```
-
-Task order is risk-first: the two adapters (1–3) decide whether the day works; UI ports come after.
 
 ---
 
@@ -54,25 +59,22 @@ Task order is risk-first: the two adapters (1–3) decide whether the day works;
 
 **Files:** Modify `scripts/v2-check.sh`
 
-- [ ] In `scripts/v2-check.sh`, find the `app/` section (the one that prints `v2-check: app/node_modules is missing`). Replace it with a comment — `# app/ (Expo) is retired on this branch; see docs/superpowers/specs/2026-08-07-v2-pwa-direction.md` — and delete its check.
-- [ ] Add a `web/` section modeled on the `client/` one: fail with `v2-check: web/node_modules is missing; run (cd web && bun install)` when absent, else run `(cd web && bun run test)` and include it in the final `OK` line: `v2-check: OK (go + client + web + conformance)`.
-- [ ] Run: `bash scripts/v2-check.sh` → expect the new OK line (go + client + web all green; ~2,351 + 1,360 tests).
+- [ ] Find the `app/` section (prints `v2-check: app/node_modules is missing`). Replace with a comment `# app/ (Expo) is retired on this branch; see docs/superpowers/specs/2026-08-07-v2-pwa-direction.md` and delete its check.
+- [ ] Add a `web/` section modeled on the `client/` one: absent deps ⇒ `v2-check: web/node_modules is missing; run (cd web && bun install)`; else run `(cd web && bun run test)`. Final line becomes `v2-check: OK (go + client + web + conformance)`.
+- [ ] Run `bash scripts/v2-check.sh` → expect the new OK line.
 - [ ] Commit: `chore(v2-check): retire app/ from the gate, admit web/`
 
 ---
 
 ### Task 1: Browser `Platform` — `client/src/platform.web.ts`
 
-The seam is 14 synchronous methods (`client/src/platform.ts`); WebCrypto is async so the impl is pure JS. Contract is `client/src/platform.test.ts` — read it before writing anything.
+The seam is 14 **synchronous** methods (`client/src/platform.ts`); WebCrypto is async, so the implementation is pure JS. **Read `client/src/platform.test.ts` first — it is the contract and it wins over any sketch below.**
 
-**Files:**
-- Create: `client/src/platform.web.ts`, `client/src/platform.web.test.ts`
-- Modify: `client/package.json` (deps: `@noble/hashes@^1`, `@noble/curves@^1`, `fflate@^0.8`)
+**Files:** Create `client/src/platform.web.ts`, `client/src/platform.web.test.ts`; modify `client/package.json`
 
-**Interfaces:**
-- Produces: `export const webPlatform: Platform` — consumed by Task 5's boot (`setPlatform(webPlatform)`).
+**Interfaces:** Produces `export const webPlatform: Platform`, consumed by Task 4's boot via `setPlatform(webPlatform)`.
 
-- [ ] **Step 1: failing test.** `client/src/platform.web.test.ts`, `bun test`. Two layers: (a) the fixed vectors — copy the sha256 empty-string vector, RFC 8032 ed25519 test-vector-1, the hex/base64 leading-zero and 0xFF cases, and the 4-byte-codepoint UTF-8 case out of `platform.test.ts` and assert them against `webPlatform`; (b) cross-impl equivalence — for 50 random byte strings assert `webPlatform.sha256/gzip-roundtrip/toHex/toBase64/utf8` agree with `bunPlatform` byte-for-byte, and that `bunPlatform.gunzip(webPlatform.gzip(x))` round-trips (the compressed bytes themselves may differ; the round-trip may not). Also: `gunzip` throws when output exceeds `maxOutputBytes` (gzip-bomb cap — see how `platform.test.ts` builds it).
+- [ ] **Step 1: write the failing test.** Two layers. (a) *Fixed vectors*: copy from `platform.test.ts` the sha256 empty-string vector, RFC 8032 ed25519 test-vector-1, the hex and base64 leading-zero-byte and `0xFF` cases, and the 4-byte-codepoint UTF-8 case; assert each against `webPlatform`. (b) *Cross-implementation equivalence*: for 50 pseudorandom byte strings (fixed seed, not `Math.random`), assert `webPlatform.sha256`, `toHex`, `toBase64`, `utf8Encode` agree with `bunPlatform` byte-for-byte, and that `bunPlatform.gunzip(webPlatform.gzip(x), 1<<20)` round-trips (compressed bytes may differ between implementations; the round-trip may not). Plus: `gunzip` throws when output exceeds `maxOutputBytes` — build the bomb the way `platform.test.ts` does.
 - [ ] **Step 2:** `cd client && bun add @noble/hashes @noble/curves fflate && bun test src/platform.web.test.ts` → FAIL (module not found).
 - [ ] **Step 3: implement.**
 
@@ -83,12 +85,16 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { gzipSync, gunzipSync } from "fflate";
 import type { Platform } from "./platform";
 
+const HEX = "0123456789abcdef";
+
 export const webPlatform: Platform = {
   sha256: (d) => sha256(d),
   gzip: (d) => gzipSync(d),
   gunzip: (d, maxOutputBytes) => {
-    const out = gunzipSync(d); // fflate has no streaming cap on the sync path:
-    if (out.length > maxOutputBytes) throw new Error(`gunzip: output ${out.length} exceeds cap ${maxOutputBytes}`);
+    const out = gunzipSync(d);
+    if (out.length > maxOutputBytes) {
+      throw new Error(`gunzip: output ${out.length} exceeds cap ${maxOutputBytes}`);
+    }
     return out;
   },
   ed25519GenerateKey: () => {
@@ -96,149 +102,264 @@ export const webPlatform: Platform = {
     return { priv, pub: ed25519.getPublicKey(priv) };
   },
   ed25519PublicKey: (priv) => ed25519.getPublicKey(priv),
-  ed25519Sign: (priv, msg) => ed25519.sign(msg, priv), // noble is (msg, priv) — the test vectors catch a swap
+  // noble's argument order is (message, privateKey) — the RFC 8032 vector catches a swap.
+  ed25519Sign: (priv, msg) => ed25519.sign(msg, priv),
   randomUUID: () => crypto.randomUUID(),
   randomBytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
-  toHex: /* loop over bytes, padStart(2,"0") */ ...,
-  fromHex: ...,
-  toBase64: (b) => btoa(String.fromCharCode(...chunked(b))), // chunk to avoid arg-limit; or a manual encoder
+  toHex: (b) => {
+    let s = "";
+    for (const byte of b) s += HEX[byte >> 4] + HEX[byte & 15];
+    return s;
+  },
+  fromHex: (s) => {
+    if (s.length % 2 !== 0) throw new Error("fromHex: odd-length input");
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      const byte = Number.parseInt(s.slice(i * 2, i * 2 + 2), 16);
+      if (Number.isNaN(byte)) throw new Error(`fromHex: bad hex at ${i * 2}`);
+      out[i] = byte;
+    }
+    return out;
+  },
+  toBase64: (b) => {
+    // Chunked: String.fromCharCode(...b) blows the argument limit on large blobs.
+    let s = "";
+    for (let i = 0; i < b.length; i += 0x8000) {
+      s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+    }
+    return btoa(s);
+  },
   fromBase64: (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)),
   utf8Encode: (s) => new TextEncoder().encode(s),
-  utf8Decode: (b) => new TextDecoder("utf-8", { fatal: false }).decode(b),
+  utf8Decode: (b) => new TextDecoder("utf-8").decode(b),
 };
 ```
 
-Match each method's exact edge-case behavior to whatever `platform.test.ts` pins (lone surrogates, whitespace in base64, etc.) — the contract file wins over this sketch. `fromHex`/`toHex`: hand-rolled loops, no deps. **Do NOT call `setPlatform` at module load** — the app decides (bunPlatform auto-installs for tests; double-install throws or confuses).
-- [ ] **Step 4:** `bun test src/platform.web.test.ts` → PASS. Then full `bun test` → count ≥ 2,351 + new file, nothing broken.
-- [ ] **Step 5:** Commit: `feat(client): browser Platform over noble + fflate`
+**Do NOT call `setPlatform` at module load** — `bunPlatform` auto-installs for tests and the app installs `webPlatform` explicitly at boot.
+- [ ] **Step 4:** `bun test src/platform.web.test.ts` → PASS. Then full `cd client && bun test` → collected count ≥ 2,351 + the new file, nothing weakened or skipped.
+- [ ] **Step 5:** Commit `feat(client): browser Platform over noble + fflate`
 
 ---
 
-### Task 2: Wire `web/` to `client/src` — alias, deps, vitest
+### Task 2: Wire `web/` to `client/src`
 
-**Files:** Modify `web/vite.config.ts`, `web/tsconfig.json`, `web/package.json`
+**Files:** Modify `web/vite.config.ts`, `web/tsconfig.json`, `web/package.json`; create `web/src/v2/wiring.test.ts`
 
-**Interfaces:** Produces the import path every later task uses: `import { ... } from "@ledger/client/net/client"` etc.
+**Interfaces:** Produces the import path every later task uses — `import { fold } from "@ledger/client/replay/replay"`.
 
-- [ ] **Step 1:** In `web/vite.config.ts` add `resolve: { alias: { "@ledger/client": fileURLToPath(new URL("../client/src", import.meta.url)) } }` (the file already uses the `fileURLToPath` pattern — follow it). In `web/tsconfig.json` add the matching `paths` entry `"@ledger/client/*": ["../client/src/*"]`. Mirror both into the vitest config block if `web/` uses a separate one (check `vite.config.ts` — vitest reads the same file here).
-- [ ] **Step 2:** `cd web && bun add sql.js && bun add -d @types/sql.js`. (noble/fflate arrive transitively through the alias? **No** — the alias imports resolve from `web/node_modules`, so `bun add @noble/hashes @noble/curves fflate` here too, same versions as `client/`.)
-- [ ] **Step 3: smoke test.** `web/src/v2/wiring.test.ts`: `import { fold, emptyState } from "@ledger/client/replay/replay"; test("fold folds", () => expect(fold([], emptyState())).toBeDefined())` and `import { webPlatform } from "@ledger/client/platform.web"` + one sha256 vector. Run `bun run test -- wiring` → PASS. Also `bun run build` → must succeed (this catches `bun:sqlite`/`node:` imports leaking into the bundle; `store/driver.ts` is import-type-only from `sqlite.ts`, and `platform.ts`'s `node:zlib`/`node:crypto` static imports mean **the app must never import `@ledger/client/platform`, only `platform.web`** — if the build still drags them in via `store/open.ts` or the test, mark those `external` in `build.rollupOptions` or avoid importing `open.ts` at all: the app constructs `sqliteStore(driver, …)` directly).
-- [ ] **Step 4:** Commit: `feat(web): resolve @ledger/client, add browser crypto/sqlite deps`
+- [ ] **Step 1:** In `web/vite.config.ts` add `resolve.alias` mapping `@ledger/client` → `fileURLToPath(new URL("../client/src", import.meta.url))` (the file already imports `fileURLToPath` — follow its existing comment convention about why, not `new URL(...).pathname`). Add the matching `"@ledger/client/*": ["../client/src/*"]` to `web/tsconfig.json` `compilerOptions.paths`. Vitest reads the same config file here, so no second copy — verify that claim by running the Step 3 test.
+- [ ] **Step 2:** `cd web && bun add sql.js @noble/hashes @noble/curves fflate && bun add -d @types/sql.js`. Versions must match `client/package.json`'s — the alias resolves imports from `web/node_modules`, so a version skew silently gives two different crypto implementations.
+- [ ] **Step 3: smoke test.** `web/src/v2/wiring.test.ts`: import `fold`/`emptyState` from `@ledger/client/replay/replay` and assert `fold([], emptyState())` is defined; import `webPlatform` from `@ledger/client/platform.web` and assert the sha256 empty-string vector. Run `bun run test -- wiring` → PASS. Then `bun run build` → must succeed. **The build is the real assertion:** `client/src/platform.ts` statically imports `node:zlib` and `node:crypto`, so **the app must never import `@ledger/client/platform`, only `platform.web`**, and must never import `store/open.ts` (which pulls `bun:sqlite` through `./driver`) — construct `sqliteStore(driver, …)` directly instead. If the build still drags a `node:` builtin in, find the importing module and route around it; do not paper over it with an `external` entry that would fail at runtime instead of build time.
+- [ ] **Step 4:** Commit `feat(web): resolve @ledger/client, add browser crypto/sqlite deps`
 
 ---
 
-### Task 3: Browser `SqlDriver` — sql.js + IndexedDB persistence
+### Task 3: Browser `SqlDriver` — sql.js over IndexedDB
 
-**Files:** Create `web/src/v2/db/driver.ts`, `web/src/v2/db/driver.test.ts`
+**Files:** Create `web/src/v2/db/driver.ts`, `web/src/v2/db/driver.test.ts`, `web/src/v2/db/store-conformance.test.ts`
 
 **Interfaces:**
-- Consumes: `SqlDriver`, `SqlStatement` from `@ledger/client/store/driver` (**import type only** — a value import drags in `bun:sqlite`).
-- Produces: `openBrowserDriver(name: string): Promise<SqlDriver & { flush(): Promise<void> }>` — sql.js is async to *init* (WASM fetch) but the returned driver is fully synchronous, which is what `sqliteStore` requires. `flush()` persists; the driver also auto-persists (debounced 500 ms) after any `transaction()` and on `visibilitychange→hidden`.
+- Consumes `SqlDriver`, `SqlStatement` from `@ledger/client/store/driver` — **`import type` only**; a value import drags in `bun:sqlite`.
+- Produces `openBrowserDriver(name: string): Promise<SqlDriver & { flush(): Promise<void> }>`. sql.js is async to *initialise* (WASM fetch) but the returned driver is fully **synchronous**, which is what `sqliteStore` requires. `flush()` persists on demand; the driver also auto-persists debounced 500 ms after any `transaction()`, and on `visibilitychange → hidden`.
 
-- [ ] **Step 1: failing test** (vitest, node env — sql.js runs in node): open driver, `exec` a CREATE TABLE, prepared `run`/`all` with positional params round-trip a string + a `bigint`-as-text + a `Uint8Array` blob; `transaction` rolls back on throw; `flush()` then re-`openBrowserDriver` same name reloads the row (mock IndexedDB with a Map when `indexedDB` is undefined — keep the fallback in the driver itself: it doubles as the vitest path and a private-browsing fallback).
+- [ ] **Step 1: failing test.** Open a driver; `exec` a `CREATE TABLE`; prepared `run`/`all` round-trip a string, a bigint-as-TEXT, and a `Uint8Array` blob; `transaction` rolls back on throw; `flush()` then reopening the same name reloads the row. Keep an in-memory fallback inside the driver for when `indexedDB` is undefined — it doubles as the vitest path and as private-browsing behaviour, so it is production code, not test scaffolding.
 - [ ] **Step 2:** run → FAIL.
-- [ ] **Step 3: implement.** `initSqlJs({ locateFile: (f) => new URL("sql.js/dist/" + f, import.meta.url).toString() })` (add `sql.js/dist/sql-wasm.wasm` to Vite's static handling — `?url` import is simplest); load prior bytes from IndexedDB (`ledger-v2` DB, `dbs` object store, key = name) into `new SQL.Database(bytes)`. Map the interface: `prepare` → sql.js `db.prepare` with `stmt.bind(args); while(stmt.step()) rows.push(stmt.getAsObject()); stmt.reset()` for `all`, `stmt.run(args)` for `run` — **note sql.js statements are not cached across calls the way bun's are; re-prepare per call or hold the handle, but `free()` on `close`**. `transaction`: `exec("BEGIN")` / `COMMIT` / `ROLLBACK` on throw (sql.js has no helper; not re-entrant is fine per the contract). Persist = `db.export()` → IDB put. sql.js `getAsObject` returns numbers for INTEGER columns — the store schema (`client/src/store/sqlite.ts` `SCHEMA`) stores seqs as TEXT via `seqKey` and blobs as blobs, so check what column types the projection schema uses (`PROJECTION_SCHEMA` in `replay/projection.ts`) and confirm amounts are TEXT there too; if any INTEGER column can exceed 2^53, return it via `stmt.getAsObject()` is unusable and you must read with `db.exec` raw... **verify against the schemas, don't guess** — the store was built for expo-sqlite which has the same JS-number problem, so TEXT is the expected answer.
+- [ ] **Step 3: implement.** `initSqlJs({ locateFile })` pointing at the `sql.js` wasm asset (import it with Vite's `?url` suffix so it is fingerprinted and precached like any other asset). Load prior bytes from IndexedDB (database `ledger-v2`, object store `dbs`, key = `name`) into `new SQL.Database(bytes)`. Map the interface: `prepare` returns an object holding a sql.js statement — `all` does `stmt.bind(args); const rows = []; while (stmt.step()) rows.push(stmt.getAsObject()); stmt.reset(); return rows`, `run` does `stmt.run(args)`; `free()` every held statement on `close`. `transaction` is `exec("BEGIN")` + `COMMIT`, `ROLLBACK` on throw (sql.js has no helper; the contract says it need not be re-entrant). Persist = `db.export()` → IDB put.
+  **The bigint trap, which you must resolve by reading and not by guessing:** sql.js returns JS `number` for INTEGER columns, so any value above 2^53 is silently corrupted. Read `SCHEMA` in `client/src/store/sqlite.ts` and `PROJECTION_SCHEMA` in `client/src/replay/projection.ts` and confirm every column that can exceed 2^53 (seqs, amounts, counters) is declared TEXT. The store was built for `expo-sqlite`, which has the identical constraint, so TEXT is the expected finding — but confirm it, and if any such column really is INTEGER, stop and report it as a blocker rather than working around it locally.
 - [ ] **Step 4:** run → PASS.
-- [ ] **Step 5: the real gate — the store's own suite over this driver.** `web/src/v2/db/store-conformance.test.ts`: import `sqliteStore` from `@ledger/client/store/sqlite` and run a basic life-cycle against the browser driver: `load()` empty state → mutate (`st.userId = "u1"`) → `save(st)` → reopen → `load()` returns it; `rows("hot").append` a fake `WireRow` then `eachRowChunk` reads it back. (Running client's full `store.test.ts` here would be better but it's bun-test; this subset covers the driver surface the engine touches.)
-- [ ] **Step 6:** Commit: `feat(web): sql.js SqlDriver with IndexedDB persistence`
+- [ ] **Step 5: the real gate — the store's own surface over this driver.** `store-conformance.test.ts`: import `sqliteStore` from `@ledger/client/store/sqlite`, build it over the browser driver, then: `load()` on a fresh store returns empty client state; mutate a field and `save()`; reopen the driver by the same name and `load()` returns the mutation; `rows("hot").append` one `WireRow` and read it back through `eachRowChunk`. (`client/`'s own `store.test.ts` is a `bun:test` file and cannot run here; this is the subset covering the driver surface the engine touches.)
+- [ ] **Step 6:** Commit `feat(web): sql.js SqlDriver with IndexedDB persistence`
 
 ---
 
-### Task 4: Session + enrolment — `web/src/v2/session.ts`
+### Task 4: Backend — passkey authentication
+
+Adds WebAuthn as a third provider behind the **existing** `auth.Verifier`/`Identity`/`SubjectHash` seam. Sessions, invite redemption, writer enrolment, and the key-history log are untouched.
 
 **Files:**
-- Create: `web/src/v2/session.ts`, `web/src/v2/session.test.ts`
-- Reference (read first, port logic, drop RN imports): `app/src/auth/session.ts`, `app/src/auth/enrollment.ts`, `app/src/auth/devAuth.ts`
+- Create: `internal/v2/auth/passkey.go`, `internal/v2/auth/passkey_test.go`, `internal/v2/auth/passkey_store.go`, `internal/v2/api/passkey.go`, `internal/v2/api/passkey_test.go`, `internal/v2/pg/migrations/00021_passkeys.sql`
+- Modify: `internal/v2/auth/idp.go` (`validIdP`), `internal/v2/api/api.go` (routes), `internal/v2/config/config.go` (`[auth]` keys)
+
+**Read first:** `internal/v2/auth/idp.go` (the `Verifier` contract, `Identity`, `SubjectHash` and its `"|"`-separator warning), `internal/v2/auth/invite.go` (`ErrNotInvited`, redemption), `internal/v2/auth/session.go` (how an `Identity` becomes a user + session), `internal/v2/api/ratelimit.go`.
+
+**Interfaces produced (the client in Task 5 depends on these exact shapes):**
+
+```
+POST /api/v1/auth/passkey/register/begin   {invite_code}          -> {ceremony_id, options}
+POST /api/v1/auth/passkey/register/finish  {ceremony_id, credential} -> {session_token, user_id}
+POST /api/v1/auth/passkey/login/begin      {}                     -> {ceremony_id, options}
+POST /api/v1/auth/passkey/login/finish     {ceremony_id, credential} -> {session_token, user_id}
+POST /api/v1/auth/passkey/add/begin        {}  (authenticated)    -> {ceremony_id, options}
+POST /api/v1/auth/passkey/add/finish       {ceremony_id, credential} (authenticated) -> {credential_id}
+```
+
+`options` is go-webauthn's `protocol.CredentialCreation` / `CredentialAssertion` marshalled as-is — the browser consumes it directly. Errors keep the existing envelope: `403 {"error":"not_invited"}` when no unredeemed code authorised creation.
+
+- [ ] **Step 1: the migration.** `internal/v2/pg/migrations/00021_passkeys.sql` (**re-run `ls internal/v2/pg/migrations/` immediately before writing it and claim the next free number — 00021 is expected but three sessions are concurrent; never claim the vacant 00004 or 00015**). Two tables plus one constraint change:
+  - `webauthn_credentials(credential_id BYTEA PRIMARY KEY, user_id … REFERENCES users ON DELETE CASCADE, public_key BYTEA NOT NULL, sign_count BIGINT NOT NULL DEFAULT 0, aaguid BYTEA, transports TEXT, backup_eligible BOOL NOT NULL, backup_state BOOL NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_used_at TIMESTAMPTZ)` + an index on `user_id`.
+  - `webauthn_ceremonies(id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('register','login','add')), user_handle BYTEA, session_data JSONB NOT NULL, invite_code_hash BYTEA, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)` — go-webauthn's `SessionData` must survive between begin and finish, and it holds the challenge, so it is server-side state and never a client cookie.
+  - Widen the `users.idp` CHECK constraint to admit `'passkey'`. **Mirror the grant pattern documented in `00003_writers.sql`'s header** — new tables need explicit `ledger_runtime` grants and the sequence grants, or every write fails with `permission denied` in production only.
+- [ ] **Step 2: write the failing auth test.** `passkey_test.go` against `pgtest`, using go-webauthn's own test helpers or a scripted software authenticator: (a) register with a valid invite creates exactly one user whose `idp = 'passkey'` and redeems the code; (b) register with an already-redeemed code returns `ErrNotInvited` and creates nothing; (c) login with the registered credential returns a session for the *same* `user_id`; (d) login with an unknown credential is rejected; (e) a replayed `ceremony_id` is rejected (single-use); (f) an expired ceremony is rejected; (g) a `sign_count` that goes backwards is rejected as cloned-authenticator evidence. Run → FAIL.
+- [ ] **Step 3: implement `passkey.go`.** `go get github.com/go-webauthn/webauthn@v0.17.4`. Config from `[auth] rp_id`, `rp_display_name`, `rp_origins` (list). The `Identity` produced is `{IdP: "passkey", Subject: base64url(user_handle)}` where `user_handle` is 32 random bytes minted at registration and stored as the credential's user handle — **discoverable credentials return it in the assertion, which is what makes username-less login possible.** Add `"passkey"` to `validIdP`; the `SubjectHash` `"|"`-separator warning stays satisfied because the value contains no `"|"`. Ceremonies: single-use (delete on finish), 5-minute TTL, `id` from `crypto/rand`. Require `UserVerification: preferred`, `ResidentKey: required`.
+- [ ] **Step 4:** run the auth tests → PASS.
+- [ ] **Step 5: the API layer.** `api/passkey.go` wires the six routes, applies the **existing** per-IP rate limiter from `ratelimit.go` to all six (an unauthenticated endpoint that mints ceremonies is a memory-growth target), and returns the documented error envelope. Test each route's happy path plus: register/finish with a mismatched `ceremony_id`, add/* without a session (401). Run → PASS.
+- [ ] **Step 6:** `go test ./internal/v2/... && bash scripts/v2-check.sh` green. Commit `feat(v2): passkey authentication behind the Verifier seam`
+
+---
+
+### Task 5: Client session — passkey ceremonies + device-writer enrolment
+
+**Files:** Create `web/src/v2/session.ts`, `web/src/v2/session.test.ts`
+**Read first (port the logic, drop the RN imports):** `app/src/auth/session.ts`, `app/src/auth/enrollment.ts`
 
 **Interfaces:**
-- Consumes: `Client` from `@ledger/client/net/client` (`login(idp, idToken, inviteCode?)`, `enroll(writerId)`, `sessionToken`), `sqliteStore` over Task 3's driver, `webPlatform`.
+- Consumes `Client` from `@ledger/client/net/client`, `sqliteStore` over Task 3's driver, `webPlatform`, and Task 4's six endpoints.
 - Produces:
-  - `initV2(server: string): Promise<V2Handle>` — one call at app boot: `setPlatform(webPlatform)`, open driver, build store + `Client`.
-  - `V2Handle = { client: Client; driver: SqlDriver; signedIn(): boolean; signIn(idp: "google"|"dev", idToken: string, invite?: string): Promise<void>; }`
-  - `signIn` = `client.login(...)` then **enrol this device's writer immediately** (the `cb6904e`/`8365532` lesson: sign-in without enrolment leaves every write path throwing). Writer id: `web-<platform.randomUUID()>` persisted in the store; key material via `ed25519GenerateKey`, held in the sqliteStore's `SecretStore` (see `SECRET_WRITER` in `store/sqlite.ts` — the store already has the slot; mirror how `app/src/auth/enrollment.ts` names and stores it, exactly, so a future native app and the PWA agree).
-- [ ] **Step 1: failing test** (vitest): with a fake `fetch` scripted from the wire shapes in `client/src/net/client.test.ts` (copy the `/api/v1/auth/exchange` and `/api/v1/writers/challenge`+`register` response fixtures from there), `signIn("dev","dev:alice")` leaves `signedIn() === true`, a writer enrolled (client no longer throws the "no writer is enrolled" error on a write), and both survive re-`initV2` from the same driver name.
-- [ ] **Step 2:** FAIL → **Step 3:** implement (this is a port: `app/src/auth/session.ts` already sequences login→enroll→persist; strip RN, swap `expoDriver`→Task 3 driver) → **Step 4:** PASS.
-- [ ] **Step 5:** Commit: `feat(web): v2 session bootstrap — login + device-writer enrolment`
+  - `initV2(server: string): Promise<V2Handle>` — one call at boot: `setPlatform(webPlatform)`, open the driver, build store + `Client`.
+  - `V2Handle = { client: Client; driver: SqlDriver; signedIn(): boolean; signUp(inviteCode: string): Promise<void>; signIn(): Promise<void>; signOut(): Promise<void> }`
+- **`signUp` and `signIn` must both end with the device writer enrolled.** Sign-in without enrolment leaves every write path throwing `"this device is not set up to make changes yet"` (the exact regression fixed in `8365532`). Writer id `web-<platform.randomUUID()>`, ed25519 key from `webPlatform.ed25519GenerateKey()`, stored in the `SecretStore` under the **same key naming `app/src/auth/enrollment.ts` uses** (`SECRET_WRITER` in `store/sqlite.ts`) so a future native client and the PWA agree.
+- WebAuthn plumbing: `navigator.credentials.create/get` need `ArrayBuffer`s, and the server sends base64url JSON — convert with `webPlatform.fromBase64`/`toBase64` (URL-safe variants), not a hand-rolled second implementation.
+
+- [ ] **Step 1: failing test.** With a scripted fake `fetch` (copy the wire fixtures for `/writers/challenge` and `/writers/register` from `client/src/net/client.test.ts`) and a stubbed `navigator.credentials`: `signUp("CODE")` leaves `signedIn() === true`, a writer enrolled (a write no longer throws), and both survive a re-`initV2` against the same driver name. A `403 not_invited` surfaces as a typed error the UI can branch on, not a generic failure.
+- [ ] **Step 2:** FAIL → **Step 3:** implement → **Step 4:** PASS.
+- [ ] **Step 5:** Commit `feat(web): passkey sign-up/sign-in with device-writer enrolment`
 
 ---
 
-### Task 5: Sync engine + boot gate in the shell
+### Task 6: Sync engine + boot gate
 
-**Files:**
-- Create: `web/src/v2/engine.ts`, `web/src/v2/queries.ts`
-- Modify: `web/src/app/AppShell.tsx`, `web/src/queryClient.ts` (or wherever the router mounts — read `AppShell` first)
-- Reference: `app/src/sync/coordinator.ts` (31 lines — copy it), `SyncEngine` in `client/src/net/engine.ts` (read its options/`SyncProgress`/`SyncResult` docs)
+**Files:** Create `web/src/v2/engine.ts`, `web/src/v2/queries.ts`; modify `web/src/app/AppShell.tsx`, `web/vite.config.ts`
+**Read first:** `app/src/sync/coordinator.ts` (31 lines — port it), `SyncEngine` in `client/src/net/engine.ts`
 
-**Interfaces:**
-- Produces: `startEngine(h: V2Handle): SyncCoordinator` (engine over the handle's client+driver; triggers: on start, on `visibilitychange→visible`, on the existing pull-to-refresh hook); `useSyncProgress(): SyncProgress` (subscribe → React state); `queries.ts` exports `qk.transactions`, `qk.budget`, `qk.review` query keys and a single `invalidateAfterSync(queryClient)` called from the coordinator's post-sync hook.
-- Dev server plumbing: add to `web/vite.config.ts` `server.proxy = { "/api/v1": process.env.LEDGER_V2_API ?? "http://127.0.0.1:8091" }` — mirroring the existing `LEDGER_API` comment style; the `Client`'s `server` is then just `""` (same-origin) in dev and prod alike.
-- [ ] **Step 1:** test (vitest): coordinator built over a fake engine (the `CoordinatedEngine` interface makes this trivial) forwards `run("launch")`, and `useSyncProgress` re-renders on progress events (`@testing-library/react` `renderHook`).
-- [ ] **Step 2–4:** FAIL → implement → PASS.
-- [ ] **Step 5: the gate in `AppShell`.** Boot: `initV2("")` → not signed in ⇒ render onboarding stack (Task 6); signed in but onboarding incomplete (no home currency in projection meta — port the check from `app/src/screens/onboarding/OnboardingShell.tsx`) ⇒ resume onboarding; else main app + `startEngine`. A `halted` `SyncPhase` renders a full-screen non-dismissable error (reuse the existing error/empty-state component) — a chain break must not look like a loading state. **Keep v1's `PersistQueryClientProvider` out of the v2 data path** (projection is the cache; double-caching bigints through JSON persist will corrupt them — the `react-query-persist-ispending` lesson says gate carefully if any of it stays).
-- [ ] **Step 6:** `bun run test` + `bun run build` green. Commit: `feat(web): sync engine, boot gate, v2 query plumbing`
+**Interfaces:** `startEngine(h: V2Handle): SyncCoordinator` (triggers: boot, `visibilitychange → visible`, the existing pull-to-refresh hook); `useSyncProgress(): SyncProgress`; `queries.ts` exports the query keys and `invalidateAfterSync(queryClient)`.
+
+- [ ] **Step 1:** dev proxy — add to `web/vite.config.ts` `server.proxy = { "/api/v1": process.env.LEDGER_V2_API ?? "http://127.0.0.1:8091" }`, matching the file's existing `LEDGER_API` comment style. Production is same-origin, so the `Client`'s `server` is `""` in both.
+- [ ] **Step 2: failing test.** The coordinator over a fake `CoordinatedEngine` forwards `run("launch")`; `useSyncProgress` re-renders on progress events (`renderHook` from `@testing-library/react`).
+- [ ] **Step 3–4:** FAIL → implement → PASS.
+- [ ] **Step 5: the gate in `AppShell`.** Boot: `initV2("")` → not signed in ⇒ auth screens (Task 7); signed in but onboarding incomplete ⇒ resume onboarding (port the completeness check from `app/src/screens/onboarding/OnboardingShell.tsx`); else the main app + `startEngine`. A `halted` `SyncPhase` renders a **full-screen, non-dismissable** error — a chain break must never look like a loading state. Keep v1's `PersistQueryClientProvider` off the v2 data path: the projection *is* the cache, and round-tripping bigints through its JSON persister corrupts them.
+- [ ] **Step 6:** `bun run test && bun run build` green. Commit `feat(web): sync engine, boot gate, v2 query plumbing`
 
 ---
 
-### Task 6: Onboarding screens
+### Task 7: Auth + onboarding screens
 
-**Files:**
-- Create: `web/src/screens/onboarding/{SignIn,Bank,Address,Verification,HomeCurrency}.tsx` + one `Onboarding.test.tsx`
-- Reference for flow/copy/logic (NOT for markup): `app/src/screens/onboarding/*.tsx`; `NotInvitedView.tsx` for the invite-rejected state
-- Compose from: existing `web/src/components/` (Dialog, Pressable, ProgressBar, list rows, `Pill`…) — check `web/src/components/README.md` first, per its own rule
+**Files:** Create `web/src/screens/onboarding/{Welcome,Bank,Address,Verification,HomeCurrency}.tsx` + `Onboarding.test.tsx`
+**Read first for flow, copy and logic (NOT markup):** `app/src/screens/onboarding/*.tsx`, `NotInvitedView.tsx`
+**Compose from** existing `web/src/components/` — read `web/src/components/README.md` first, per its own rule, and update it in this commit if you add a shared component.
 
-Flow (port exactly): **SignIn** (Google GIS button — render via `https://accounts.google.com/gsi/client` script, `import.meta.env.VITE_GOOGLE_CLIENT_ID`, callback hands `credential` to `signIn("google", credential, invite)`; plus a dev-only panel gated on `import.meta.env.DEV` mirroring `DevSignInPanel.tsx` — subject + invite-code fields) → **Bank** picker (supported list ↔ `GET /api/v1/templates` bank set; unsupported ⇒ `POST /api/v1/waitlist` + done) → **Address** (`GET /api/v1/address` → show `u-…@in.sirdab.ae` with a copy button + Gmail forwarding steps) → **Verification** (Gmail's confirmation mail arrives at our server: poll `GET /api/v1/quarantine`, surface the verification link/code from the listing the way `VerificationScreen.tsx` does) → **HomeCurrency** (currency list; writes the `home_currency_set` op through the client's outbox — find the exact op author in `app/src/screens/onboarding/HomeCurrencyScreen.tsx` and port it) → main app.
+Flow:
+1. **Welcome** — two paths. *Create account*: invite-code field → `signUp(code)` → the browser's passkey sheet ("Save a passkey for sirdab.ae"). *Sign in*: a single button → `signIn()` (username-less; discoverable credentials mean no email field anywhere). A `not_invited` error renders the ported `NotInvitedView` copy. Include the `import.meta.env.DEV`-gated dev panel mirroring `DevSignInPanel.tsx` so local work needs no authenticator.
+2. **Bank** picker — supported set from `GET /api/v1/templates`; unsupported ⇒ `POST /api/v1/waitlist` and stop with the waitlist confirmation.
+3. **Address** — `GET /api/v1/address`, show `u-…@in.sirdab.ae` with a copy button and the Gmail forwarding steps.
+4. **Verification** — Gmail's confirmation mail lands in our quarantine lane (it is from `forwarding-noreply@google.com`, not allowlisted). Poll `GET /api/v1/quarantine` and surface the verification link the way `VerificationScreen.tsx` does.
+5. **HomeCurrency** — currency list; writes the `home_currency_set` op through the outbox. Port the op author from `app/src/screens/onboarding/HomeCurrencyScreen.tsx` rather than re-deriving the op shape.
 
-- [ ] **Step 1:** failing tests: render SignIn (dev panel present under test env), scripted-fetch walk of Bank→Address (address renders the token from the fixture), HomeCurrency writes the op (assert via the client's outbox/pending count).
-- [ ] **Step 2–4:** FAIL → implement → PASS. Screens must pass the design constraints (44px, 16px inputs) — they're built from catalog components, so this is free unless you hand-roll; don't hand-roll.
-- [ ] **Step 5:** Commit: `feat(web): onboarding — sign-in, bank, address, forwarding, home currency`
-
----
-
-### Task 7: Rewire Home/Budget + Transactions to the projection
-
-**Files:**
-- Create: `web/src/v2/sources/{budget,transactions}.ts` (+ colocated `.test.ts`) — ports of `app/src/screens/budget/source.ts` and `app/src/screens/transactions/source.ts` (both are framework-free over `SqlDriver`; the port is mostly the import path)
-- Modify: `web/src/screens/home/*` and `web/src/screens/Transactions.tsx` — swap their react-query `queryFn`s from `api/` calls to the sources via `queries.ts`; keep components, rows, filters, motion untouched
-- [ ] **Step 1:** port each `source.ts` **with its existing tests** (the `.rn-test` files test components — skip those; `source.test.ts` files are runner-agnostic — port them to vitest as-is). Run → PASS (these test against an in-memory driver seeded with `PROJECTION_SCHEMA` fixtures — the ported tests carry their own fixtures).
-- [ ] **Step 2:** swap the screens' data layer. The screens' prop shapes and v1 API types will disagree in places (v1 `TransactionRow` vs projection `Txn` from `replay/state.ts`) — adapt in `queries.ts` mappers, **not** inside components. Any v1-only widget on these screens with no projection data (AI-usage strip, ingest-health card, envelope/target cards if v2 has no envelope ops — check `state.ts` for what exists) is removed from the v2 screen, not stubbed.
-- [ ] **Step 3:** existing screen tests: update their mocks from api-client to source layer; keep assertions. `bun run test` green.
-- [ ] **Step 4:** Commit: `feat(web): home + transactions read the local projection`
+- [ ] **Step 1: failing tests.** Welcome renders both paths and surfaces `not_invited`; a scripted-fetch walk Bank → Address renders the fixture's address token; HomeCurrency writes the op (assert via the outbox's pending count).
+- [ ] **Step 2–4:** FAIL → implement → PASS. Built from catalog components, so the 44px/16px rules come for free — do not hand-roll controls.
+- [ ] **Step 5:** Commit `feat(web): passkey welcome + onboarding flow`
 
 ---
 
-### Task 8: Review queue + quarantine lane
+### Task 8: Home + Transactions on the projection
 
-**Files:**
-- Create: `web/src/v2/sources/review.ts` (port `app/src/db/reviewQueue.ts` + its test), `web/src/screens/Quarantine.tsx`
-- Modify: `web/src/screens/Review.tsx` (swap data source; categorize action authors a `txn_categorized` op through the client — port the author from `app/src/screens/review/`), nav in `AppShell`
-- Reference: `app/src/screens/quarantine/` for the trust-sender flow: list `GET /api/v1/quarantine`, confirm `POST /api/v1/quarantine/confirm` **showing the verified signing domain or the prominent "unauthenticated" state** (spec §3.2 — the decision must never be made from attacker-rendered content alone; the RN screen has the exact copy, keep it)
-- [ ] **Step 1:** port `review.ts` + test → PASS. **Step 2:** rewire `Review.tsx` (the swipe deck stays; only its feed and its commit action change). **Step 3:** build `Quarantine.tsx` from list-row + Dialog catalog components; test: fixture rows render domain badge; confirm fires the POST and invalidates. **Step 4:** `bun run test` green; commit: `feat(web): review queue on local ops, quarantine trust-sender lane`
+**Files:** Create `web/src/v2/sources/{budget,transactions}.ts` + tests (ports of `app/src/screens/budget/source.ts`, `app/src/screens/transactions/source.ts` — both framework-free over `SqlDriver`; mostly an import-path change). Modify `web/src/screens/home/*`, `web/src/screens/Transactions.tsx`.
 
----
-
-### Task 9: Trim the nav to what's real
-
-**Files:** Modify `web/src/app/AppShell.tsx` (nav), delete-from-nav only — files stay.
-
-- [ ] Nav for v2 = Home, Transactions, Review, Quarantine, Settings. Screens with v1-only backends (Insights, Reports, Projects, Recurring, Accounts, Rules/Category managers, AI settings) are **unrouted** — not deleted, not "coming soon" placeholders; they return as their data grows projections. Settings keeps: sign-out (drop session + `closeSharedDriver`), inbound address display + copy, home currency display, and the sync status row (last sync, progress, halted reason).
-- [ ] `bun run test && bun run build` green. Commit: `feat(web): v2 nav — route only projection-backed screens`
+- [ ] **Step 1:** port each `source.ts` **with its existing `source.test.ts`** (those are runner-agnostic; the `.rn-test.tsx` component tests are not — skip them). Run → PASS.
+- [ ] **Step 2:** swap each screen's react-query `queryFn` from `api/` to the sources via `queries.ts`. Keep components, rows, filters and motion untouched. Where v1's API types and the projection's `Txn` (`client/src/replay/state.ts`) disagree, adapt in `queries.ts` mappers — **never inside components**. Any v1-only widget with no projection data behind it (AI-usage strip, ingest-health card, and envelope/target cards if no such ops exist — check `state.ts`) is **removed from the v2 screen, not stubbed**.
+- [ ] **Step 3:** update the existing screen tests' mocks from the api client to the source layer, keeping their assertions. `bun run test` green.
+- [ ] **Step 4:** Commit `feat(web): home + transactions read the local projection`
 
 ---
 
-### Task 10: End-to-end gate (the definition of "done today")
+### Task 9: Review queue + quarantine lane
 
-**Files:** Create `docs/superpowers/notes/2026-08-07-pwa-e2e-gate.md` (the record)
+**Files:** Create `web/src/v2/sources/review.ts` (port `app/src/db/reviewQueue.ts` + test), `web/src/screens/Quarantine.tsx`. Modify `web/src/screens/Review.tsx`, nav in `AppShell`.
 
-- [ ] **Step 1: stack up.** Scratch Postgres (pattern from `internal/v2/pgtest` or the enabled service with a scratch DB — record which), `go build -o /tmp/claude-0/**/scratchpad/ledgerd ./cmd/ledgerd`, run with `--dev-auth`, HTTP on `127.0.0.1:8091`, templates seeded (`ledgerd seed-templates`; verify 4 published via admin). Mint one invite code via the admin console.
-- [ ] **Step 2: the walk, in a fresh browser profile** (`cd web && bun run dev`, `LEDGER_V2_API=http://127.0.0.1:8091`): dev sign-in with the invite → bank: DIB → address shown → skip Gmail (dev) → home currency AED → lands on Home, empty-state.
-- [ ] **Step 3: mail becomes a transaction.** Inject a corpus DIB email at the SMTP port (`swaks --to <the-address> --server 127.0.0.1:<smtp-port>` with a real corpus body — `internal/v2/corpus` fixtures; the sender is unknown ⇒ it must land in **Quarantine**). Trust the sender in the UI → confirm re-runs ingest → sync → **the transaction renders on Home and in Transactions with the correct amount**. Send a second mail from the now-trusted sender → arrives as a normal op, appears after refresh-sync.
-- [ ] **Step 4: persistence + two-writer sanity.** Reload the tab: no re-login, no full re-pull (cursor persisted), state intact. Categorize the txn in the review deck → reload → sticks (op round-tripped through the server, not just local). Open a **second** browser profile, sign in as the same dev user, sync: sees the txn and the categorization (this is the two-writer case; the writer-roster/I11 machinery is what's being exercised).
-- [ ] **Step 5: record.** Write the gate note: what passed, timings (cold restore, sync), every deviation, and the open Saleh items (Google client ID, invites, tailnet serve). `bash scripts/v2-check.sh` one last time → OK line. Commit: `docs(v2): PWA onboarding E2E gate record`
+- [ ] **Step 1:** port `review.ts` + its test → PASS.
+- [ ] **Step 2:** rewire `Review.tsx` — the swipe deck stays; only its feed and its commit action change (the categorize action authors a `txn_categorized` op; port the author from `app/src/screens/review/`).
+- [ ] **Step 3:** `Quarantine.tsx` from list-row + Dialog catalog components: `GET /api/v1/quarantine`, confirm via `POST /api/v1/quarantine/confirm`, **showing the verified signing domain or a prominent "unauthenticated" state** — spec §3.2 requires the trust decision never be made from attacker-rendered content alone; the RN screen has the exact copy, keep it. Test: fixture rows render the domain badge; confirm fires the POST and invalidates.
+- [ ] **Step 4:** `bun run test` green. Commit `feat(web): review queue on local ops, quarantine trust-sender lane`
+
+---
+
+### Task 10: Trim the nav
+
+**Files:** Modify `web/src/app/AppShell.tsx`
+
+- [ ] v2 nav = Home, Transactions, Review, Quarantine, Settings. Screens with v1-only backends (Insights, Reports, Projects, Recurring, Accounts, Rules/Category managers, AI settings) are **unrouted — not deleted, not replaced with "coming soon" placeholders**; they return as their data grows projections. Settings keeps: sign-out, inbound address + copy, home currency, "add another passkey" (Task 4's `add/*` endpoints), and a sync-status row (last sync, progress, halted reason).
+- [ ] `bun run test && bun run build` green. Commit `feat(web): v2 nav — route only projection-backed screens`
+
+---
+
+## Part D — Public deployment (operator-executed, in-session)
+
+### Task D1: Finish the DNS
+
+- [ ] Add `app.sirdab.ae` A → `198.51.100.1`, **DNS-only (grey cloud)**. Cloudflare proxying would break autocert's TLS-ALPN challenge and collapse the per-IP sign-in limiter to a single key, since every request would arrive from a Cloudflare address.
+- [ ] **Delete the `MX 20 mx2.sirdab.ae` record** (Decision 4) — it resolves to nothing, and a backup MX that fails to resolve is worse than none: senders fail over to it exactly when mx1 is down.
+- [ ] Add `TXT sirdab.ae` = `v=spf1 -all` (this domain receives, never sends) and `TXT _dmarc.sirdab.ae` = `v=DMARC1; p=reject; rua=mailto:<operator>`.
+- [ ] Set rDNS/PTR for `198.51.100.1` → `in.sirdab.ae` in the **Hetzner console** (currently the default `static.41.132.104.178.clients.your-server.de`, which hurts inbound reputation).
+- [ ] Verify: `dig +short A app.sirdab.ae` → the IP; `dig +short MX in.sirdab.ae` → only `10 mx1…`; `dig +short -x 198.51.100.1` → `in.sirdab.ae`.
+
+### Task D2: PostgreSQL on the primary
+
+- [ ] Enable and start the installed-but-disabled cluster (`postgresql@16-main`, currently `disabled`/`down`). `listen_addresses = 'localhost'` only.
+- [ ] Create the database with `ENCODING='UTF8' LC_COLLATE='C.UTF-8' LC_CTYPE='C.UTF-8'` — matching `pgtest`'s cluster locale exactly. A production collation that differs from the test cluster's produces ordering, `LIKE` and index bugs that only appear after deploy.
+- [ ] **Two roles, not one:** `ledger_migrate` owns the schema, `ledger_runtime` serves and never owns. This is a security control, not tidiness: `key_history` is append-only *by trigger*, and `ALTER TABLE … DISABLE TRIGGER` needs only ownership — so a single role that both migrates and serves can switch off the guard that peer devices audit for key substitution. Follow the recipe in `internal/v2/pg/migrations/00003_writers.sql`'s header verbatim, including the two easily-missed steps: `GRANT USAGE, SELECT ON ALL SEQUENCES` (a `bigserial` makes every registration fail without it) and `ALTER DEFAULT PRIVILEGES FOR ROLE ledger_migrate … GRANT … ON TABLES/SEQUENCES` (a plain `GRANT ON ALL TABLES` is a snapshot, not a policy, so Task 4's new tables would be unreachable).
+- [ ] Apply migrations out-of-band as `ledger_migrate` **before** starting the new binary.
+- [ ] Nightly `pg_dump` to `/var/backups/ledger-v2/`, 14-day rotation, plus a pre-deploy dump. **Run backups as root** — `/var/backups` is root-owned, and don't chain the dump under `set -e` with the restart.
+- [ ] Verify: `ledgerd verify` exits 0 against the production database.
+
+### Task D3: autocert and the public listener (the one code change in Part D)
+
+**Files:** Modify `cmd/ledgerd/serve.go`, `internal/v2/config/config.go`
+
+- [ ] `config.validate()` currently **refuses any non-loopback `http_listen`**, with a comment naming this task as the change that lifts it. Lift it *only* when TLS is configured: add `[server] tls_domains = []` and `autocert_cache = "/var/lib/ledger-v2/autocert"`; a non-loopback `http_listen` is permitted **if and only if** `tls_domains` is non-empty. Plain HTTP off loopback stays refused — that listener carries a session bearer token on every request and the user's whole op log in its responses.
+- [ ] **Do not touch `CheckAdminBind`.** The admin console stays loopback-or-tailnet permanently (spec §3.1): it publishes parsers and merchant mappings to every device and reads diagnostics across all users.
+- [ ] Wire `golang.org/x/crypto/acme/autocert` into `runServe` with a `HostWhitelist(app.sirdab.ae, api.sirdab.ae)` and the cache dir at 0700. Keep `:80` bound only for the HTTP-01 redirect if autocert needs it, else use TLS-ALPN-01 and leave :80 closed.
+- [ ] Confirm `EnableTestOnly` still refuses `--dev-auth` off loopback — production must be structurally incapable of accepting `dev:` tokens. Add a test asserting exactly that against a `tls_domains`-configured non-loopback listener.
+- [ ] `go test ./internal/v2/config/... ./cmd/ledgerd/...` green. Commit `feat(ledgerd): autocert TLS and the public listener rail`
+
+### Task D4: Serve the PWA from ledgerd
+
+**Files:** Create `internal/v2/webui/{embed.go,spa.go}`; modify `cmd/ledgerd/serve.go`, `web/vite.config.ts`
+
+- [ ] Point `web/vite.config.ts` `build.outDir` at `../internal/v2/webui/dist` (it is currently the placeholder local `dist/`, deliberately not v1's `../internal/web/dist`). Gitignore rules follow v1's convention for a committed build artifact.
+- [ ] `internal/v2/webui`: `//go:embed all:dist` plus an SPA fallback modeled on `internal/server/spa.go` — unknown `/api/*` must still 404 rather than being swallowed by the fallback.
+- [ ] Mount it in `runServe` **after** the API routes, on the same listener, so the PWA and `/api/v1/*` share an origin (no CORS; WebAuthn RP ID `sirdab.ae` covers both hostnames).
+- [ ] Verify: `cd web && bun run build && CGO_ENABLED=0 go build -o /tmp/…/ledgerd ./cmd/ledgerd`, run locally, `curl -I http://127.0.0.1:8091/` returns the index and `/api/v1/nope` returns 404.
+- [ ] Commit `feat(ledgerd): embed and serve the v2 PWA`
+
+### Task D5: Firewall, systemd, cutover
+
+- [ ] `deploy/ledgerd.service` modeled on `deploy/ledger.service`'s hardened sandbox (`ProtectSystem=strict`, `NoNewPrivileges`, dedicated user, `AmbientCapabilities=CAP_NET_BIND_SERVICE` for :25 and :443). Config `/etc/ledger-v2/config.toml`, secrets `/etc/ledger-v2/ledgerd.env` (0600), state `/var/lib/ledger-v2` (0700).
+- [ ] `ufw allow 25/tcp` and `ufw allow 443/tcp` (v4 **and** v6). **Then check the Hetzner Cloud Firewall in the panel** — it is a second layer upstream of the host that ufw cannot see and Phase 0 never inspected. Verify v1 is unaffected: `:8080` stays loopback, `/var/lib/ledger` untouched, tailnet rules intact.
+- [ ] Seed templates and confirm: `GET /admin/templates` (over the tailnet) lists **four** published templates — `dib.card.v1`, `dib.account.v1`, `enbd.transfer.v1`, `enbd.alert.v1`.
+- [ ] Verify the running process is the new binary by inode/PID, not just that health is green (deploy runbook convention).
+- [ ] Verify from **off** the tailnet: `curl https://app.sirdab.ae/api/v1/healthz` returns 200 over a real certificate, and the PWA loads in a browser.
+
+### Task D6: Consent, invites, and the alpha cutover
+
+- [ ] Write the plain-language alpha consent document. It must name, in plain words, the **four Phase-1-only server-side read paths** from the Phase 1 inventory — reprocessing, quarantine re-ingest, sample donation, and parse-rate adjudication — because "we can read your mail during the alpha" is the actual thing being consented to. It must also disclose the **no-backup-MX availability gap** (Decision 4) and the retention/migrate-or-delete commitment at the Phase 3 cutover.
+- [ ] Collect a signature from each alpha **before** issuing an address.
+- [ ] `ledgerd mint-invite` one code per alpha plus one for the operator.
+
+---
+
+### Task 11: End-to-end gate — the definition of done
+
+**Files:** Create `docs/superpowers/notes/2026-08-07-pwa-e2e-gate.md`
+
+- [ ] **Step 1: the operator's own walk, against the public deployment.** Fresh browser profile → `https://app.sirdab.ae` → invite code → create passkey (Face ID / Touch ID) → bank DIB → address shown → home currency AED → Home renders its empty state.
+- [ ] **Step 2: mail becomes a transaction.** Set up a real Gmail forward to the issued address; confirm Google's verification mail appears in the quarantine lane and complete the verification. Then forward a real DIB alert. It arrives from an unallowlisted origin ⇒ **Quarantine**; trust the sender (verified signing domain shown) ⇒ re-ingest ⇒ sync ⇒ **the transaction renders on Home and in Transactions with the correct amount.** A second mail from the now-trusted sender arrives as a normal op.
+- [ ] **Step 3: persistence and two writers.** Reload: no re-auth, no full re-pull (cursor persisted), state intact. Categorize in the review deck → reload → it sticks (proving the op round-tripped through the server, not just locally). Sign in from a **second** browser/device with a second passkey (`add/*`), sync, and see both the transaction and the categorization — this is the two-writer path that exercises the writer roster and the I11 checkpoint machinery.
+- [ ] **Step 4: the negative checks.** `curl` the admin console from off-tailnet → must fail. `--dev-auth` must be absent from the running unit. v1 still serves over the tailnet and `:8080` is still loopback.
+- [ ] **Step 5: record.** Write the gate note: what passed, cold-restore and sync timings, every deviation, and the open follow-ups (backup relay, Phase 3 crypto, rich push). Run `bash scripts/v2-check.sh` → OK. Commit `docs(v2): PWA public deployment E2E gate record`
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage vs. the ask:** account creation (T4/T6, invite-gated per backend reality), onboarding (T6), "using the platform" (T5/T7/T8, mail→txn in T10), auth (T4), crypto = writer keys only with Phase 3 explicitly out (Global Constraints), UI unchanged (frozen-aesthetic constraint + catalog-only composition). No new server endpoints anywhere.
-- **Known thin ice, named:** (a) sql.js INTEGER-vs-bigint — T3 Step 3 forces a schema read instead of a guess; (b) `platform.ts`'s static `node:` imports leaking into the Vite build — T2 Step 3 catches it at build time with the fix options listed; (c) `HomeCurrencyScreen`/review op authors — the plan points at the exact RN files that already author these ops rather than re-deriving op shapes.
-- **Order is droppable from the back:** if the day runs short, T8→T9 can compress (Review ships, Quarantine confirm moves to Settings as a plain list) and T10 Step 4's two-profile check is the only step that may slip to tomorrow without lying about the goal. T1–T6 are not droppable.
+- **Coverage of the two decisions:** passkeys replace Apple/Google in Task 4 (server), Task 5 (client), Task 7 (UI), with the `dev:` path preserved for local work and structurally refused in production (D3). Public reachability is D1–D5; invited-alpha scope with consent is D6.
+- **Known thin ice, named rather than hidden:** (a) sql.js's `number`-typed INTEGER columns — Task 3 forces a schema read and escalation rather than a local workaround; (b) `platform.ts`'s static `node:` imports leaking into the Vite bundle — Task 2 catches it at build time with the routing-around fix stated; (c) `users.idp`'s CHECK constraint and `SubjectHash`'s non-injective separator — Task 4 Step 1/3 handle both explicitly; (d) the two-role Postgres grant recipe, whose two easy misses fail only in production — D2 names both.
+- **Ordering:** Tasks 0–3 are the risk (adapters); Task 4 is the only Go work the client blocks on; 5–10 are UI. Part D is independent of 0–10 until Task 11 and is operator-executed. If the day runs short, Tasks 9–10 compress (Review ships, quarantine confirm moves into Settings as a plain list) and Task 11 Step 3's second-device check may slip; Tasks 0–7 and D1–D5 are not droppable, because without them there is no multi-user product.
