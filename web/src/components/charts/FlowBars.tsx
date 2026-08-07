@@ -115,7 +115,16 @@ export function FlowBars({ points, activePeriod }: { points: readonly TrendMonth
                 [−maxOut, +maxIn], so where this line sits *is* the reading —
                 high line = a heavy-spending stretch, low line = a saving one. */}
             <ReferenceLine y={0} />
-            <Tooltip labelKey="label" valueFormatter={(v) => formatMinor(exact.get(v) ?? 0n)} />
+            {/* An em dash, never a confident `0.00`, if the lookup ever misses:
+                a fabricated zero in a money slot is indistinguishable from a
+                month with no flow. */}
+            <Tooltip
+              labelKey="label"
+              valueFormatter={(v) => {
+                const minor = exact.get(v);
+                return minor === undefined ? "—" : formatMinor(minor);
+              }}
+            />
           </BarChart>
         </div>
       </div>

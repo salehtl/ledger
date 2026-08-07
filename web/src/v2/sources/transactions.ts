@@ -534,8 +534,14 @@ function likeLiteral(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** Every part of every named transaction, in `idx` order, in one statement. */
-function readSplits(db: SqlDriver, ids: readonly string[]): Map<string, Split[]> {
+/**
+ * Every part of every named transaction, in `idx` order, in one statement.
+ *
+ * Exported for `sources/insights.ts`, which hydrates its drill-in rows the same
+ * way this file does. A second implementation of "attach the splits" is how one
+ * screen comes to show a split transaction and another does not.
+ */
+export function readSplits(db: SqlDriver, ids: readonly string[]): Map<string, Split[]> {
   const out = new Map<string, Split[]>();
   if (ids.length === 0) return out;
   const rows = db

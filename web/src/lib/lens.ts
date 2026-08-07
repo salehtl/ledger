@@ -21,7 +21,7 @@
  * take {@link categoryDither}'s spend-rank hue, which is exactly what it is
  * documented to be.
  */
-import type { BucketDelta, CategoryDelta, InsightsBucket, MerchantTotal } from "../v2/sources/insights";
+import type { BucketDelta, CategoryDelta, DrillTarget, InsightsBucket, MerchantTotal } from "../v2/sources/insights";
 import { bucketDither, bucketDensity, categoryDither } from "./ditherColor";
 import type { DitherColor } from "../components/dither-kit/palette";
 import type { Density } from "../components/charts/DitherFill";
@@ -65,11 +65,11 @@ export interface BreakdownRow {
   drill: DrillTarget;
 }
 
-/** The three things a breakdown row can open. */
-export type DrillTarget =
-  | { type: "bucket"; bucket: InsightsBucket; name: string }
-  | { type: "category"; category: string | null; name: string }
-  | { type: "merchant"; merchant: string };
+/**
+ * The three things a breakdown row can open. Defined in `sources/insights.ts`
+ * because the *source* is what has to interpret it exactly — see `DrillPage`.
+ */
+export type { DrillTarget };
 
 /**
  * `spent / total` as a 0..1 fraction. Divided in `bigint` at six decimal places
@@ -125,6 +125,6 @@ export function merchantRows(merchants: readonly MerchantTotal[], total: bigint,
     spent: m.spent,
     share: share(m.spent, total),
     count: m.count,
-    drill: { type: "merchant", merchant: m.merchant },
+    drill: { type: "merchant", merchant: m.merchant, name: m.merchant || "—" },
   }));
 }

@@ -819,16 +819,26 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
 - `LensBreakdown` (`insights/`) — ranked, drillable magnitude-bar list for the
   selected analysis lens; each row's bar is a `DitherFill` scaled to the
   largest row's spend, tapping opens the transactions behind it.
-- `ComparativeSummary` (`insights/`) — the month's net/saved hero plus one
+- `ComparativeSummary` (`insights/`) — the month's net/saved hero (its `currency`
+  prop names the home currency beside the net, since v2 is multi-currency and a
+  bare `125.00` says nothing about which) plus one
   `DitherFill` (12px) showing the need/want/saving split (plus an
   "Uncategorized" remainder, so the shares always sum to what left the account),
   with a tap-to-drill legend beneath it.
 - `ProjectionDrillSheet` (`insights/`) — the transactions behind one breakdown
-  row, in a `Dialog` over `ProjectionTxnRow`. Read-only, and it builds its query
-  from `sqlTxnSource`'s own `TxnFilters` rather than re-deriving one, so a
-  bucket drilled from Insights and the same bucket filtered on Transactions
-  return the same rows. Use it instead of v1's `DrillDownSheet`, which is typed
-  on `api/types` and posts edits to routes `ledgerd` does not serve.
+  row, in a `Dialog` over `ProjectionTxnRow`. Read-only. Use it instead of v1's
+  `DrillDownSheet`, which is typed on `api/types` and posts edits to routes
+  `ledgerd` does not serve.
+  **It reads `InsightsSource.drill`, deliberately, and not `sqlTxnSource.list`.**
+  It prints a total in the same units directly beneath the row it was opened
+  from, so that total has to be the row's own figure — and going through
+  `TxnFilters` made it two different kinds of wrong: `query` is a `LIKE`, so a
+  merchant drill over-counted every name the tapped one is a prefix of, and a
+  split transaction contributed its whole amount rather than the part in this
+  category. `drill` runs over the same CTE the totals do. If you ever need a
+  list here that `TxnFilters` can express, still route it through the source:
+  the invariant is "one query answers, the other agrees", not "reuse the
+  filters".
 
 **The Insights family is `bigint`.** `ComparativeSummary`, `LensBreakdown`,
 `TopMovers`, `DeltaBadge` and `FlowBars` all take money as `bigint` minor units

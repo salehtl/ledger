@@ -25,10 +25,12 @@ const BAR_UNITS = 10_000;
  * Money is `bigint`; the only `number` here is the aria-hidden bar geometry and
  * the savings *rate*, which is a ratio.
  */
-export function ComparativeSummary({ label, note, net, savingsRate, buckets, onSelectBucket }: {
+export function ComparativeSummary({ label, note, net, currency = "", savingsRate, buckets, onSelectBucket }: {
   label: string;
   note: string;
   net: bigint;
+  /** The home-currency code the figures are in. Bare when the log has not set one. */
+  currency?: string;
   savingsRate: number | null;
   buckets: readonly BucketDelta[];
   onSelectBucket?: (bucket: BucketDelta) => void;
@@ -42,7 +44,7 @@ export function ComparativeSummary({ label, note, net, savingsRate, buckets, onS
       </div>
       <div className="mt-2 flex items-end justify-between gap-3">
         <div>
-          <p className="text-xs text-muted">Net this month</p>
+          <p className="text-xs text-muted">Net this month{currency ? ` · ${currency}` : ""}</p>
           <p className="text-2xl font-bold tnum">{formatMinor(net)}</p>
         </div>
         <div className="text-right">

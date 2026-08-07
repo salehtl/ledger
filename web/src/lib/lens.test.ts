@@ -107,6 +107,6 @@ describe("merchantRows", () => {
     expect(rows[0].share).toBeCloseTo(0.667, 3);
     expect(rows[0].delta).toBeUndefined();
     expect(rows[1].key).toBe("merchant:Deliveroo");
-    expect(rows[1].drill).toEqual({ type: "merchant", merchant: "Deliveroo" });
+    expect(rows[1].drill).toEqual({ type: "merchant", merchant: "Deliveroo", name: "Deliveroo" });
   });
 });

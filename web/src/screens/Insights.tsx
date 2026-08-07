@@ -23,8 +23,7 @@ import {
 } from "../lib/lens";
 import { insightsFocus, DEFAULT_SCOPE, type Scope } from "../lib/scope";
 import type { CategoryDelta, InsightsSource } from "../v2/sources/insights";
-import type { TxnSource } from "../v2/sources/transactions";
-import { useInsightsSnapshot, useInsightsSource, useTxnSource } from "../v2/queries";
+import { useInsightsSnapshot, useInsightsSource } from "../v2/queries";
 
 /**
  * Insights, on the local projection.
@@ -75,11 +74,9 @@ export interface InsightsProps {
   scope?: Scope;
   /** Test seam: a source over a projection this test built. */
   insightsSource?: InsightsSource;
-  /** Test seam: see {@link insightsSource}. */
-  txnSource?: TxnSource;
 }
 
-export function Insights({ scope = DEFAULT_SCOPE, insightsSource, txnSource }: InsightsProps) {
+export function Insights({ scope = DEFAULT_SCOPE, insightsSource }: InsightsProps) {
   const focus = insightsFocus(scope);
   const period = focus.period;
   // The trend trails the month being *looked at*, not the wall clock. v1
@@ -95,7 +92,6 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource, txnSource }: I
   const trendPeriods = useMemo(() => trailingPeriods(period, TREND_MONTHS), [period]);
 
   const source = useInsightsSource(insightsSource);
-  const txns = useTxnSource(txnSource);
   const snapshot = useInsightsSnapshot(source, period, trendPeriods);
 
   const [lens, setLens] = useState<Lens>("categories");
@@ -156,6 +152,10 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource, txnSource }: I
   }
 
   const label = `${monthLabel(period)} ${period.slice(0, 4)}`;
+  // v2 is explicitly multi-currency and the snapshot carries the code the
+  // totals were converted into, so the screen names it rather than leaving a
+  // bare `125.00` for the reader to guess at.
+  const currency = s.homeCurrency ?? "";
 
   return (
     <div className="space-y-4">
@@ -163,6 +163,7 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource, txnSource }: I
         label={label}
         note={focus.note}
         net={s.net}
+        currency={currency}
         savingsRate={s.savingsRate}
         buckets={s.buckets.filter((b) => b.spent > 0n || b.prevSpent > 0n)}
         onSelectBucket={(b) => setDrill({ type: "bucket", bucket: b.bucket, name: LENS_BUCKET_LABEL[b.bucket] })}
@@ -188,8 +189,8 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource, txnSource }: I
           key={drill.type === "bucket" ? drill.bucket : drill.type === "category" ? String(drill.category) : drill.merchant}
           target={drill}
           period={period}
-          categories={s.categories}
-          source={txns}
+          currency={currency}
+          source={source}
           onClose={() => setDrill(null)}
         />
       )}

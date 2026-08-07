@@ -56,6 +56,28 @@ describe("FlowBars", () => {
     expect((container.firstElementChild as HTMLElement).style.touchAction ?? "").toBe("");
   });
 
+  it("prints exact money in the detail box, from the bigint and not from the geometry", async () => {
+    // 2^53 + 1 in, an ordinary amount out. dither-kit hands `valueFormatter`
+    // the raw datum, which is a `Number(bigint)` for the canvas — so if this
+    // formatted THAT, the income figure would come out one fil light. It
+    // resolves back through `flowExact` instead.
+    const huge = [
+      { period: "2026-05", label: "May", income: 9007199254740993n, spent: 100000n },
+    ];
+    const { container } = renderFlow(<FlowBars points={huge} />);
+    const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative");
+    if (!surface) throw new Error("chart pointer surface not found");
+
+    fireEvent.pointerEnter(surface);
+    fireEvent.pointerMove(surface, { clientX: 160 });
+
+    const tip = container.querySelector<HTMLElement>(".dither-tooltip");
+    expect(tip?.textContent).toContain("90,071,992,547,409.93");
+    expect(tip?.textContent).toContain("1,000.00");
+    // Never a fabricated zero in a money slot.
+    expect(tip?.textContent).not.toContain("0.00\u00a0");
+  });
+
   it("shows the detail box while scrubbing and hides it when the browser takes the gesture", async () => {
     const { container } = renderFlow(<FlowBars points={points} />);
     const surface = container.querySelector<HTMLElement>("[aria-hidden] .relative");

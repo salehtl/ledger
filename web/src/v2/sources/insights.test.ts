@@ -202,6 +202,93 @@ describe("sqlInsightsSource", () => {
     expect(sqlInsightsSource(db).read("2026-08", TREND).savingsRate).toBeNull();
   });
 
+  // --- drill -------------------------------------------------------------
+  //
+  // Every case here exists because summing the *listed rows* instead got it
+  // wrong: the figure under a breakdown row has to be the figure on it.
+
+  it("matches a merchant exactly, so a LIKE-alike is not counted into the total", async () => {
+    const { db, add } = await setup();
+    add("a", { home: "100", merchant: "CARREFOUR", category: "groceries" });
+    add("b", { home: "900", merchant: "CARREFOUR MARKET", category: "groceries" });
+
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "merchant", merchant: "CARREFOUR", name: "CARREFOUR" }, 50);
+    expect(got.total).toBe(100n);
+    expect(got.matches).toBe(1);
+    expect(got.rows.map((r) => r.id)).toEqual(["a"]);
+  });
+
+  it("counts only the split PART that belongs to the category drilled into", async () => {
+    const { db, add } = await setup();
+    add("s", { amount: "3", home: "100", category: "ignored" });
+    const put = db.prepare("INSERT INTO txn_split (txn_id,idx,category,amount_minor,amount_home_minor) VALUES (?,?,?,?,?)");
+    put.run("s", 0, "groceries", "1", "33");
+    put.run("s", 1, "dining", "1", "67");
+
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "category", category: "groceries", name: "groceries" }, 50);
+    // 33, not the transaction's whole 100 — and the row is still listed, which
+    // is why `hasSplit` exists for the sheet to say so.
+    expect(got.total).toBe(33n);
+    expect(got.rows.map((r) => r.id)).toEqual(["s"]);
+    expect(got.hasSplit).toBe(true);
+  });
+
+  it("agrees with the breakdown row it came from, bucket by bucket", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    add("d", { home: "300", category: "dining" });
+    add("u", { home: "70", category: null });
+    add("x", { home: "20", category: "not-a-known-category" });
+
+    const src = sqlInsightsSource(db);
+    const snap = src.read("2026-08", TREND);
+    for (const b of snap.buckets) {
+      const got = src.drill("2026-08", { type: "bucket", bucket: b.bucket, name: b.bucket }, 50);
+      expect(got.total).toBe(b.spent);
+    }
+    // The remainder bucket takes both the uncategorized row and the one whose
+    // category the mapping does not name.
+    expect(src.drill("2026-08", { type: "bucket", bucket: "unassigned", name: "u" }, 50).matches).toBe(2);
+  });
+
+  it("finds the uncategorized rows for a null-category drill", async () => {
+    const { db, add } = await setup();
+    add("u", { home: "70", category: null });
+    add("g", { home: "500", category: "groceries" });
+
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "category", category: null, name: "Uncategorized" }, 50);
+    expect(got.total).toBe(70n);
+    expect(got.rows.map((r) => r.id)).toEqual(["u"]);
+  });
+
+  it("caps the list but not the total, and says which happened", async () => {
+    const { db, add } = await setup();
+    for (let i = 0; i < 5; i++) add(`r${i}`, { home: "100", category: "groceries", posted: `2026-08-0${i + 1}T00:00:00.000Z` });
+
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "category", category: "groceries", name: "groceries" }, 2);
+    expect(got.rows).toHaveLength(2);
+    expect(got.matches).toBe(5);
+    expect(got.truncated).toBe(true);
+    // The whole month, not the two rows shown.
+    expect(got.total).toBe(500n);
+    // Newest first.
+    expect(got.rows.map((r) => r.id)).toEqual(["r4", "r3"]);
+  });
+
+  it("keeps a drilled total exact past 2^53", async () => {
+    const { db, add } = await setup();
+    add("huge", { amount: "9007199254740993", home: "9007199254740993", category: "groceries" });
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "category", category: "groceries", name: "groceries" }, 50);
+    expect(got.total).toBe(9007199254740993n);
+  });
+
+  it("drills nothing from an unusable projection rather than a partial list", async () => {
+    const { db, add } = await setup(0);
+    add("g", { home: "500", category: "groceries" });
+    const got = sqlInsightsSource(db).drill("2026-08", { type: "category", category: "groceries", name: "g" }, 50);
+    expect(got).toEqual({ rows: [], matches: 0, total: 0n, truncated: false, hasSplit: false });
+  });
+
   it("computes the savings rate as a ratio, from bigint money", async () => {
     const { db, add } = await setup();
     add("g", { home: "2500", category: "groceries" });

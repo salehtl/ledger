@@ -49,7 +49,13 @@ import {
   type ReviewMoney,
   type ReviewSource,
 } from "./sources/review";
-import { sqlInsightsSource, type InsightsSnapshot, type InsightsSource } from "./sources/insights";
+import {
+  sqlInsightsSource,
+  type DrillPage,
+  type DrillTarget,
+  type InsightsSnapshot,
+  type InsightsSource,
+} from "./sources/insights";
 import {
   sqlTxnSource,
   type TxnFacets,
@@ -94,6 +100,9 @@ export const v2Keys = {
    */
   insights: (period: string, trend: readonly string[]) =>
     [V2_QUERY_ROOT, "insights", period, trend.join(",")] as const,
+  /** One breakdown row's transactions. `target` is serialised, so the key is comparable. */
+  insightsDrill: (period: string, target: string, limit: number) =>
+    [V2_QUERY_ROOT, "insights", "drill", period, target, limit] as const,
   transactions: (filter: TxnFilter) =>
     [
       V2_QUERY_ROOT,
@@ -271,6 +280,31 @@ export function useInsightsSnapshot(
     ...PROJECTION_QUERY,
     queryKey: v2Keys.insights(period, trendPeriods),
     queryFn: () => source!.read(period, trendPeriods),
+    enabled: source !== null,
+  });
+}
+
+/**
+ * A stable key for a drill target. `null` is a real category ("uncategorized")
+ * and has to be distinguishable from the empty string, hence the sentinel.
+ */
+function serializeDrillTarget(t: DrillTarget): string {
+  if (t.type === "merchant") return `merchant:${t.merchant}`;
+  if (t.type === "bucket") return `bucket:${t.bucket}`;
+  return `category:${t.category === null ? " null" : t.category}`;
+}
+
+/** The transactions behind one breakdown row. See `sources/insights.ts`'s `DrillPage`. */
+export function useInsightsDrill(
+  source: InsightsSource | null,
+  period: string,
+  target: DrillTarget,
+  limit: number,
+): UseQueryResult<DrillPage> {
+  return useQuery({
+    ...PROJECTION_QUERY,
+    queryKey: v2Keys.insightsDrill(period, serializeDrillTarget(target), limit),
+    queryFn: () => source!.drill(period, target, limit),
     enabled: source !== null,
   });
 }

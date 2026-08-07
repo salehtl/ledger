@@ -33,11 +33,13 @@
  * no net worth. See `screens/Insights.tsx` for the panels that came out.
  */
 
-import { projectionIsUsable, readMeta } from "@ledger/client/replay/projection";
+import { decodeTxnRow, projectionIsUsable, readMeta, TXN_COLUMNS } from "@ledger/client/replay/projection";
+import type { Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { monthLabel } from "../../lib/insights";
 import { CONFIRMED, DEFAULT_BUDGET_MAPPING, type BudgetBucket, type BudgetMapping } from "./budget";
+import { readSplits } from "./transactions";
 
 /** The three rule buckets, plus the remainder that has no category yet. */
 export type InsightsBucket = BudgetBucket | "unassigned";
@@ -104,6 +106,55 @@ export interface InsightsSnapshot {
   trend: TrendMonth[];
 }
 
+/** What a breakdown row drills into. `name` is display only. */
+export type DrillTarget =
+  | { type: "bucket"; bucket: InsightsBucket; name: string }
+  | { type: "category"; category: string | null; name: string }
+  | { type: "merchant"; merchant: string; name: string };
+
+/**
+ * The transactions behind one breakdown row.
+ *
+ * # Why this lives here and not behind `TxnFilters`
+ *
+ * The first cut of the drill-in reused `sqlTxnSource.list`, and it printed a
+ * subtotal that could contradict the row directly above it, two ways:
+ *
+ *   - `TxnFilters.query` is a `merchant_raw LIKE '%…%'`, but the breakdown
+ *     groups by the *exact* `merchant_raw`. Drilling "CARREFOUR" listed
+ *     "CARREFOUR MARKET" too, and the subtotal came out LARGER than the row.
+ *   - `TxnFilters.categories` matches `txn.category`, but the breakdown sums
+ *     `txn_split` parts through the `PARTS` CTE. A split transaction was
+ *     invisible to the filter, and any that did appear contributed its whole
+ *     `amount_home_minor` rather than the part in this category.
+ *
+ * Both are the same mistake — asking a second query the question the first one
+ * already answered. So the drill runs over the very same `PARTS` CTE the totals
+ * come from: {@link DrillPage.total} is the sum of the *matching parts* and is
+ * therefore equal to the row's own figure, by construction rather than by
+ * coincidence.
+ */
+export interface DrillPage {
+  /** The matching transactions, newest first, capped at the requested limit. */
+  rows: Txn[];
+  /** Matching transactions in the month, BEFORE the cap. */
+  matches: number;
+  /**
+   * Exact sum of the matching parts across the whole month — the same `bigint`
+   * the breakdown row shows, capped list or not.
+   */
+  total: bigint;
+  /** True when `rows` is shorter than `matches`. */
+  truncated: boolean;
+  /**
+   * At least one listed row is split, so its printed amount is the whole
+   * transaction while {@link DrillPage.total} counts only the part in this
+   * group. The sheet has to say so; the two figures are both right and they do
+   * not add up.
+   */
+  hasSplit: boolean;
+}
+
 export interface InsightsSource {
   /**
    * `period` is `"YYYY-MM"`; `trendPeriods` is the ordered list the flow chart
@@ -111,6 +162,8 @@ export interface InsightsSource {
    * same projection and the same arguments always give the same answer.
    */
   read(period: string, trendPeriods: readonly string[]): InsightsSnapshot;
+  /** The transactions behind one breakdown row. See {@link DrillPage}. */
+  drill(period: string, target: DrillTarget, limit: number): DrillPage;
 }
 
 const UNCATEGORIZED = "Uncategorized";
@@ -121,12 +174,12 @@ const UNCATEGORIZED = "Uncategorized";
  * columns this screen slices by.
  */
 const PARTS = `WITH parts AS (
-    SELECT direction, category, amount_home_minor AS home, substr(posted_at,1,7) AS period, merchant_raw
+    SELECT id AS txn_id, direction, category, amount_home_minor AS home, substr(posted_at,1,7) AS period, posted_at, merchant_raw
       FROM txn
      WHERE ${CONFIRMED} AND amount_home_minor IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM txn_split s WHERE s.txn_id=txn.id)
     UNION ALL
-    SELECT t.direction, s.category, s.amount_home_minor AS home, substr(t.posted_at,1,7) AS period, t.merchant_raw
+    SELECT t.id AS txn_id, t.direction, s.category, s.amount_home_minor AS home, substr(t.posted_at,1,7) AS period, t.posted_at, t.merchant_raw
       FROM txn t JOIN txn_split s ON s.txn_id=t.id
      WHERE t.${CONFIRMED} AND s.amount_home_minor IS NOT NULL
   )`;
@@ -205,6 +258,48 @@ export function previousPeriod(period: string): string {
 }
 
 const BUCKET_ORDER: InsightsBucket[] = ["need", "want", "saving", "unassigned"];
+
+/**
+ * The predicate that selects exactly the parts one breakdown row is made of.
+ *
+ * Every arm matches the way the totals were grouped and no other way: an equal
+ * on `merchant_raw` (never a `LIKE` — see {@link DrillPage}), an equal or
+ * `IS NULL` on the part's own `category`, and for a bucket the set of category
+ * names the mapping puts in it. `"unassigned"` is the complement: no category,
+ * or one the mapping does not name — the same `ELSE` arm the totals fold into.
+ */
+function drillPredicate(mapping: BudgetMapping, target: DrillTarget): { sql: string; args: unknown[] } {
+  if (target.type === "merchant") return { sql: "merchant_raw = ?", args: [target.merchant] };
+  if (target.type === "category") {
+    return target.category === null
+      ? { sql: "category IS NULL", args: [] }
+      : { sql: "category = ?", args: [target.category] };
+  }
+  const known = Object.keys(mapping.categories);
+  if (target.bucket === "unassigned") {
+    // `mapping.fallback` sends unmapped categories to a real bucket when it is
+    // set, and then nothing is left over; honour it rather than listing rows
+    // the totals put somewhere else.
+    if (mapping.fallback !== null) return { sql: "category IS NULL", args: [] };
+    if (known.length === 0) return { sql: "1=1", args: [] };
+    return {
+      sql: `(category IS NULL OR lower(category) NOT IN (${known.map(() => "?").join(",")}))`,
+      args: known,
+    };
+  }
+  const mine = known.filter((c) => mapping.categories[c] === target.bucket);
+  const arms: string[] = [];
+  const args: unknown[] = [];
+  if (mine.length > 0) {
+    arms.push(`lower(category) IN (${mine.map(() => "?").join(",")})`);
+    args.push(...mine);
+  }
+  if (mapping.fallback === target.bucket && known.length > 0) {
+    arms.push(`(category IS NOT NULL AND lower(category) NOT IN (${known.map(() => "?").join(",")}))`);
+    args.push(...known);
+  }
+  return arms.length === 0 ? { sql: "1=0", args: [] } : { sql: `(${arms.join(" OR ")})`, args };
+}
 
 export function sqlInsightsSource(db: SqlDriver, mapping: BudgetMapping = DEFAULT_BUDGET_MAPPING): InsightsSource {
   return {
@@ -319,6 +414,58 @@ export function sqlInsightsSource(db: SqlDriver, mapping: BudgetMapping = DEFAUL
         categories,
         merchants,
         trend,
+      };
+    },
+
+    drill(period, target, limit) {
+      const empty: DrillPage = { rows: [], matches: 0, total: 0n, truncated: false, hasSplit: false };
+      if (readMeta(db) === null || !projectionIsUsable(db)) return empty;
+
+      // Spending only, like the breakdown it came from: a credit is income
+      // context there and would be a row here that belongs to no bar.
+      const where = drillPredicate(mapping, target);
+      const scope = `WHERE period = ? AND direction = 'debit' AND ${where.sql}`;
+      const args = [period, ...where.args];
+
+      const totals = db
+        .prepare(
+          `${PARTS}
+  SELECT CAST(SUM(CAST(home AS INTEGER)) AS TEXT) AS total, COUNT(DISTINCT txn_id) AS matches FROM parts ${scope}`,
+        )
+        .all(...args)[0] as Record<string, unknown>;
+      const matches = Number(totals["matches"] ?? 0);
+      if (matches === 0) return empty;
+
+      const picked = (
+        db
+          .prepare(
+            `${PARTS}
+  SELECT txn_id, MAX(posted_at) AS posted_at FROM parts ${scope}
+   GROUP BY txn_id ORDER BY posted_at DESC, txn_id DESC LIMIT ?`,
+          )
+          .all(...args, limit) as Record<string, unknown>[]
+      ).map((r) => String(r["txn_id"]));
+
+      // Hydrated the same way `listTransactions` does — same columns, same
+      // decoder, same split attachment — so a row looks identical wherever the
+      // user meets it.
+      const splits = readSplits(db, picked);
+      const raw = db
+        .prepare(`SELECT ${TXN_COLUMNS} FROM txn WHERE id IN (${picked.map(() => "?").join(",")})`)
+        .all(...picked) as Record<string, unknown>[];
+      const byID = new Map(raw.map((r) => [String(r["id"]), r]));
+      const rows: Txn[] = [];
+      for (const id of picked) {
+        const row = byID.get(id);
+        if (row !== undefined) rows.push(decodeTxnRow(row, splits.get(id) ?? []));
+      }
+
+      return {
+        rows,
+        matches,
+        total: exact(totals, "total"),
+        truncated: matches > rows.length,
+        hasSplit: rows.some((t) => t.splits.length > 0),
       };
     },
   };

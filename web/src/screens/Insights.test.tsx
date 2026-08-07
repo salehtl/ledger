@@ -21,7 +21,6 @@ import { Insights } from "./Insights";
 import { MotionProvider } from "../app/MotionProvider";
 import { FIXTURE_ROWS, projectionWith, type FixtureRow } from "../test/projectionFixture";
 import { sqlInsightsSource } from "../v2/sources/insights";
-import { sqlTxnSource } from "../v2/sources/transactions";
 import type { Scope } from "../lib/scope";
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -53,7 +52,7 @@ function wrap(db: SqlDriver | null) {
         {db === null ? (
           <Insights scope={AUGUST} />
         ) : (
-          <Insights scope={AUGUST} insightsSource={sqlInsightsSource(db)} txnSource={sqlTxnSource(db)} />
+          <Insights scope={AUGUST} insightsSource={sqlInsightsSource(db)} />
         )}
       </QueryClientProvider>
     </MotionProvider>,
