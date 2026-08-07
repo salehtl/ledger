@@ -184,7 +184,10 @@ CREATE TABLE IF NOT EXISTS category_targets (
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_target_cat_month ON category_targets(category_id, effective_month);
+-- idx_target_cat_month is created in migrate(), not here: on a pre-versioning
+-- database the CREATE TABLE above is skipped (IF NOT EXISTS) and the old table
+-- has no effective_month column, so indexing it here would fail startup before
+-- migrateTargetsToVersioned ever runs.
 
 -- v3: per-month envelope assignments ("give every dirham a job").
 CREATE TABLE IF NOT EXISTS envelope_assignments (
