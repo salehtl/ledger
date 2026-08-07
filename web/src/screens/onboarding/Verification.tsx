@@ -106,7 +106,7 @@ import { ApiError } from "@ledger/client/net/client";
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
-import { QUARANTINE_HELD, WAITING_FOR_FIRST_MAIL } from "../../v2/onboarding";
+import { QUARANTINE_HELD, TRUST_ONLY_YOUR_BANK, WAITING_FOR_FIRST_MAIL } from "../../v2/onboarding";
 import {
   CONFIRM_CONFLICT_COPY,
   confirmSender,
@@ -586,6 +586,20 @@ export function Verification({
         offered side by side. The user knows which message they are waiting for.
       */}
       <SectionLabel as="h2">Mail held for you</SectionLabel>
+
+      {/*
+        The one thing a user can get wrong here, above the control that does it.
+        Rendered only when there is something to press: a warning about a button
+        that is not on screen is noise, and noise is how the real one stops being
+        read. Not `announce` — it is present at first paint, which is exactly the
+        case `Notice`'s doc says must not be an alert.
+      */}
+      {items.length > 0 && (
+        <Notice title={TRUST_ONLY_YOUR_BANK.title} testId="verification-trust-warning">
+          <p>{TRUST_ONLY_YOUR_BANK.body}</p>
+        </Notice>
+      )}
+
       {items.length === 0 ? (
         <Notice testId="verification-no-bank-mail">
           <p>

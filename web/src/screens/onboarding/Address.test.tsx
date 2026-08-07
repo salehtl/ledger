@@ -154,6 +154,21 @@ describe("the forwarding step's provider instructions", () => {
     expect(caveat.textContent).toMatch(/work or school/i);
   });
 
+  /**
+   * "Before the user tries" is a position on the page, not a tone of voice. A
+   * caveat that may mean THIS ROUTE CANNOT WORK AT ALL — a Microsoft 365 work
+   * account — read below the numbered steps it invalidates.
+   */
+  it("renders the caveat above the steps it may invalidate", async () => {
+    const user = userEvent.setup();
+    mountForwarding();
+    await intoForwarding(user);
+    await user.click(await screen.findByRole("button", { name: /outlook/i }));
+    const caveat = screen.getByTestId("provider-caveat");
+    const steps = screen.getByTestId("forwarding-steps");
+    expect(caveat.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows no caveat for a provider that has none", async () => {
     const user = userEvent.setup();
     mountForwarding();

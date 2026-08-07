@@ -572,6 +572,45 @@ export const QUARANTINE_HELD = {
 } as const;
 
 /**
+ * What "This is my bank — file its mail" actually asks for, said above the
+ * buttons rather than discovered by pressing one.
+ *
+ * # This was deleted once, for a reason that was backwards
+ *
+ * The sentence "trusting Google here would mean trusting anything at all that
+ * Google forwards" was removed when the held-mail list stopped naming a provider
+ * and started offering the trust button on every row — on the grounds that the
+ * screen no longer honoured a promise about one provider's confirmation. It was
+ * the right objection to the wrong half of the sentence: the naming had to go,
+ * the warning had to stay, because the per-row button is what makes it reachable.
+ *
+ * On a provider's own forwarding confirmation there is no inner origin — the
+ * provider signed the whole thing — so `trustRequest` returns that provider's
+ * domain in **outer** scope, i.e. "trust everything this provider relays to my
+ * address". The server refuses that (`ErrForwarderDomain`, 409), and the operator
+ * hit exactly that refusal on the live deployment. So this is a comprehension
+ * problem rather than a hole, and a user who does not understand a refusal
+ * presses again or concludes the product is broken.
+ *
+ * # Every clause is one the code honours
+ *
+ * The rows really are labelled with the verified signing domain (`trustBasis`);
+ * outer-scope trust really does cover every future message from that domain; and
+ * the refusal really is a list of known providers (`origin.ForwarderDomains`),
+ * which is why the copy says "recognises" rather than promising it always
+ * catches one. It names no provider, because it is true for all of them.
+ */
+export const TRUST_ONLY_YOUR_BANK = {
+  title: "Press this only on mail from your bank",
+  body:
+    "Each message below is filed under the domain that signed it. On your bank's own mail that domain is the " +
+    "bank's, and trusting it files the bank's alerts from now on. Your mail provider signs its own confirmation " +
+    "message, so pressing it there asks ledger to trust that provider instead — everything it relays to this " +
+    "address, not just your bank. ledger refuses that for the providers it recognises and tells you why, but the " +
+    "safe rule is simply: only your bank.",
+} as const;
+
+/**
  * The same step when there is no code to wait for: an iCloud forward, or an
  * address registered with the bank directly.
  *

@@ -26,7 +26,10 @@ export function bannerMessage(h: IngestHealth, now: Date): string | null {
   if (h.reasons.includes("poll_stale")) {
     return `Email checks may be stuck — last success ${relTime(h.last_poll_success_at, now)}`;
   }
-  return `No bank email in over ${dayWord(h.silence_days)} — check the forwarding rule`;
+  // Not "check the forwarding rule": an address registered with the bank
+  // directly — the route the product recommends — has no rule to check, and that
+  // user would go looking for something that never existed.
+  return `No bank email in over ${dayWord(h.silence_days)} — check your bank still has this address, or your forwarding rule`;
 }
 
 /** Plain-language explanation of one reason key, for the status page. */
@@ -37,7 +40,7 @@ export function reasonText(reason: string, h: IngestHealth): string {
     case "poll_stale":
       return "No recent successful mailbox check — the worker may be stuck.";
     case "mail_silent":
-      return `No bank email in over ${dayWord(h.silence_days)} — check the auto-forward rule.`;
+      return `No bank email in over ${dayWord(h.silence_days)} — check your bank still has this address, or your forwarding rule.`;
     default:
       return reason;
   }

@@ -255,22 +255,26 @@ export function Address({
 
         <ProviderPicker selected={providerId} onSelect={setProviderId} />
 
-        <ol data-testid="forwarding-steps" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
-          {provider.steps.map((step) => (
-            <li key={step}>{step}</li>
-          ))}
-        </ol>
-
         {/*
-          The caveat is a Notice rather than a fifth step: it is not something to
-          do, it is something that may stop the doing from working. Rendered
-          before the declaration button, because after it is too late.
+          The caveat is a Notice rather than a numbered step: it is not something
+          to do, it is something that may stop the doing from working — and it is
+          rendered ABOVE the steps, because "before the user tries" is a position
+          on the page and not a tone of voice. Outlook's is the case that settles
+          it: a Microsoft 365 work account may be unable to forward at all, so
+          the list beneath it is not merely incomplete, it is unusable. Under the
+          steps, that read as a footnote to instructions already being followed.
         */}
         {provider.caveat !== undefined && (
           <Notice announce title={`Before you start with ${provider.label}`} testId="provider-caveat">
             <p>{provider.caveat}</p>
           </Notice>
         )}
+
+        <ol data-testid="forwarding-steps" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
+          {provider.steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
 
         <Notice>
           <p>

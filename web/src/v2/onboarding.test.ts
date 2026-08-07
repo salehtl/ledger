@@ -5,6 +5,8 @@ import type { State, Txn } from "@ledger/client/replay/state";
 
 import {
   ONBOARDING_STEPS,
+  QUARANTINE_HELD,
+  TRUST_ONLY_YOUR_BANK,
   decodeLocal,
   emptyFacts,
   encodeLocal,
@@ -204,5 +206,45 @@ describe("firstMailAt", () => {
       ["c", txn("2026-09-01T00:00:00Z")],
     ]);
     expect(firstMailAt({ txns } as unknown as Pick<State, "txns">)).toBe("2026-07-30T00:00:00Z");
+  });
+});
+
+/**
+ * The warning that was deleted rather than generalised, and which the operator
+ * then hit on the live deployment: a forwarded bank alert was refused with
+ * "icloud.com is a forwarder, and trusting it as an outer origin would trust
+ * everything relayed through it".
+ *
+ * The reasoning for deleting it — "the screen now offers to trust every row, so
+ * the promise is no longer honoured" — was backwards. That button is why the
+ * warning is needed MORE: on a provider-confirmation row `inner_domain` is empty,
+ * so `trustRequest` asks for the PROVIDER'S domain in outer scope.
+ */
+describe("the held-mail trust warning", () => {
+  it("says what pressing it on a provider's own confirmation would ask for", () => {
+    const body = TRUST_ONLY_YOUR_BANK.body.toLowerCase();
+    expect(TRUST_ONLY_YOUR_BANK.title).not.toBe("");
+    expect(body).toMatch(/bank/);
+    expect(body).toMatch(/mail provider/);
+    // The consequence, not just the instruction: everything that provider relays.
+    expect(body).toMatch(/everything/);
+  });
+
+  /**
+   * It is true for ANY provider, so it names none — the defect the first version
+   * had, and the reason it was deleted instead of widened.
+   */
+  it("names no provider, in either half of the copy", () => {
+    for (const s of [TRUST_ONLY_YOUR_BANK.title, TRUST_ONLY_YOUR_BANK.body, QUARANTINE_HELD.body]) {
+      expect(s.toLowerCase()).not.toMatch(/google|gmail|icloud|outlook|yahoo|proton/);
+    }
+  });
+
+  /**
+   * `Onboarding.test.tsx` asserts the direct-with-the-bank route's verification
+   * screen never says "forwarding rule" — that user has none.
+   */
+  it("does not assume the user set up a forwarding rule", () => {
+    expect(TRUST_ONLY_YOUR_BANK.body.toLowerCase()).not.toMatch(/forwarding rule/);
   });
 });

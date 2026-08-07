@@ -62,6 +62,25 @@ describe("the provider registry", () => {
     expect(caveat.toLowerCase()).toMatch(/administrator|work or school/);
   });
 
+  /**
+   * The steps and the caveat used to contradict each other: step 2 said "turn on
+   * forwarding and enter the address above", which forwards the WHOLE mailbox,
+   * and the caveat below then retracted it by explaining that a Rule is what
+   * sends only the bank's mail. A user who follows numbered steps follows the
+   * numbered steps. The Rule IS the step now.
+   */
+  it("puts iCloud's Rule in the steps rather than in a caveat that retracts them", () => {
+    const icloud = providerFor("icloud");
+    const steps = icloud.steps.join(" ").toLowerCase();
+    expect(steps).toMatch(/rule/);
+    expect(steps).toMatch(/bank/);
+    // The instruction that forwarded everything must not be a step any more.
+    expect(steps).not.toMatch(/turn on forwarding/);
+    // And the caveat still says why, so the whole-mailbox setting is not simply
+    // discovered by a user who goes looking for "Forwarding".
+    expect((icloud.caveat ?? "").toLowerCase()).toMatch(/whole mailbox/);
+  });
+
   it("names Proton's paid-plan restriction rather than letting a user find it", () => {
     expect(providerFor("proton").caveat ?? "").not.toBe("");
   });

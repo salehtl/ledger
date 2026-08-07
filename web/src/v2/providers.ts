@@ -81,13 +81,17 @@ export const PROVIDERS: readonly Provider[] = [
     // https://support.apple.com/guide/icloud/automatically-forward-email-mm6b1a3960/icloud
     label: "iCloud Mail",
     needsConfirmation: false,
+    // The steps are the RULE, not the Forwarding switch. They used to be the
+    // switch, with the caveat below retracting them one paragraph later — and a
+    // user who follows numbered steps follows the numbered steps, which in that
+    // version forwarded their entire personal mailbox into the inbound address.
     steps: [
-      "On iCloud.com, open Mail, then its settings, then Forwarding.",
-      "Turn on forwarding and enter the address above.",
-      "iCloud does not send a confirmation code. Mail starts arriving once the setting is saved.",
+      "On iCloud.com, open Mail, then its settings, then Rules.",
+      "Add a rule matching your bank's sender address, with the action “Forward to” and the address above.",
+      "iCloud does not send a confirmation code. Mail starts arriving once the rule is saved.",
     ],
     caveat:
-      "iCloud's Forwarding setting forwards your whole mailbox. To send only your bank's mail, add a Rule in the same settings instead, matching your bank's sender address with the action “Forward to”.",
+      "Use a Rule, as the steps do — not iCloud's Forwarding setting. That setting forwards your whole mailbox to the address rather than only your bank's mail.",
   },
   {
     id: "outlook",

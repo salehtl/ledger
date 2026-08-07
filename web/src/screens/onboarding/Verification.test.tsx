@@ -414,6 +414,27 @@ describe("Verification", () => {
     expect(button).toHaveProperty("disabled", true);
   });
 
+  /**
+   * The finding the operator proved on the live deployment. On a provider's own
+   * confirmation `inner_domain` is empty, so "This is my bank" asks to trust the
+   * PROVIDER'S domain in outer scope — everything it relays. The server refuses
+   * that, but a user who is not told why simply presses again.
+   */
+  it("warns what the trust button asks for, before the button", async () => {
+    mount();
+    const warning = await screen.findByTestId("verification-trust-warning");
+    expect(warning.textContent?.toLowerCase()).toMatch(/mail provider/);
+    expect(warning.textContent?.toLowerCase()).toMatch(/everything/);
+    const button = screen.getByRole("button", { name: /this is my bank/i });
+    expect(warning.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does not warn about a button that is not on screen", async () => {
+    mount({ items: [] });
+    await screen.findByTestId("verification-no-bank-mail");
+    expect(screen.queryByTestId("verification-trust-warning")).toBeNull();
+  });
+
   /** No provider is named any more, because the screen serves all of them. */
   it("does not claim the held message is Google's", async () => {
     mount();

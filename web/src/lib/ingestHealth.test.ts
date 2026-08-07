@@ -44,6 +44,19 @@ describe("bannerMessage", () => {
     const h = health({ reasons: ["mail_silent"], silence_days: 3 });
     expect(bannerMessage(h, NOW)).toContain("3 days");
   });
+
+  /**
+   * A user who registered the inbound address with their bank directly — the
+   * route the product now recommends — has no forwarding rule to check, so an
+   * instruction to check one sends them looking for something that never existed.
+   */
+  it("does not assume a forwarding rule exists", () => {
+    const h = health({ reasons: ["mail_silent"], silence_days: 3 });
+    expect(bannerMessage(h, NOW)?.toLowerCase()).toMatch(/bank/);
+    expect(bannerMessage(h, NOW)).not.toMatch(/check the forwarding rule/i);
+    expect(reasonText("mail_silent", h).toLowerCase()).toMatch(/bank/);
+    expect(reasonText("mail_silent", h)).not.toMatch(/check the auto-forward rule/i);
+  });
 });
 
 describe("dismissKey", () => {
