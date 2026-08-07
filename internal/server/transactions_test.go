@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,5 +512,87 @@ func TestPostCategorizeSplitParentConflicts(t *testing.T) {
 	}
 	if parentCat.Valid {
 		t.Fatalf("split parent got categorized to %d despite 409", parentCat.Int64)
+	}
+}
+
+// seedEmailTxn stores one raw message and a transaction pointing at it.
+func seedEmailTxn(t *testing.T, st *store.Store, uid string, raw []byte) int64 {
+	t.Helper()
+	created, err := st.InsertIngest(store.IngestRecord{
+		MessageUID: uid, FromAddr: "alert@emiratesnbd.com", Subject: "Transaction advice",
+		ReceivedAt: time.Now(), ParseStatus: "parsed", RawBody: raw, CreatedAt: time.Now(),
+	})
+	if err != nil || !created {
+		t.Fatalf("insert ingest: created=%v err=%v", created, err)
+	}
+	var ingestID int64
+	if err := st.DB.QueryRow(`SELECT id FROM ingest_log WHERE message_uid=?`, uid).Scan(&ingestID); err != nil {
+		t.Fatal(err)
+	}
+	txID, ok, err := st.InsertTransaction(store.TransactionRow{
+		PostedAt: time.Now(), AmountFils: 150000, Currency: "AED", Direction: "debit",
+		Status: "needs_review", IngestID: ingestID,
+	})
+	if err != nil || !ok {
+		t.Fatalf("insert transaction: ok=%v err=%v", ok, err)
+	}
+	return txID
+}
+
+func fetchEmail(t *testing.T, srv *Server, txID int64) map[string]any {
+	t.Helper()
+	r := httptest.NewRequest("GET", fmt.Sprintf("/api/transactions/%d/email", txID), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// The preview exists so a human can READ the mail. Returning the raw RFC822
+// message buries one sentence under kilobytes of DKIM headers and MIME
+// boundaries, so the handler runs the same BodyText+Unwrap pipeline the parse
+// cascade feeds its templates.
+func TestTransactionEmailReturnsReadableText(t *testing.T) {
+	raw := []byte("From: alert@emiratesnbd.com\r\n" +
+		"Subject: Transaction advice\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n" +
+		"\r\n" +
+		"<html><head><style>p{color:red}</style></head><body>" +
+		"<p>Dear Customer,</p><p>AED 1,500.00 has been deducted from your " +
+		"account 067XXX17XXX01.</p></body></html>\r\n")
+
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	got := fetchEmail(t, srv, seedEmailTxn(t, st, "readable", raw))
+
+	body, _ := got["body"].(string)
+	if !strings.Contains(body, "AED 1,500.00 has been deducted from your account") {
+		t.Errorf("body missing the readable sentence:\n%s", body)
+	}
+	for _, junk := range []string{"Content-Transfer-Encoding", "<p>", "text/html", "p{color:red}"} {
+		if strings.Contains(body, junk) {
+			t.Errorf("body still contains raw artefact %q:\n%s", junk, body)
+		}
+	}
+}
+
+// A message with no text part must stay inspectable rather than render empty.
+func TestTransactionEmailFallsBackToRawWhenUnextractable(t *testing.T) {
+	raw := []byte("From: alert@emiratesnbd.com\r\nContent-Type: image/png\r\n\r\n\x89PNG-binary")
+
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	got := fetchEmail(t, srv, seedEmailTxn(t, st, "nofallback", raw))
+
+	if body, _ := got["body"].(string); !strings.Contains(body, "PNG-binary") {
+		t.Errorf("body = %q, want the raw message as a fallback", body)
 	}
 }
