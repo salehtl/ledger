@@ -22,6 +22,7 @@ type EnvelopeStore interface {
 	UpsertEnvelopeAssignments(month string, byCategory map[int64]int64) error
 	MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryID, amountFils int64) error
 	ApplyEnvelopeDeltas(month string, deltas []store.EnvelopeDelta) error
+	SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error)
 }
 
 // SetEnvelopeStore wires the envelope store. Required for /api/envelopes.
@@ -96,6 +97,21 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Opening a month the user has never planned carries the previous month's
+	// assignments into it, so a stable budget survives the month boundary
+	// without being re-typed. This is a write on a GET — a real smell, kept
+	// because the alternative (a month-rollover job) can only ever seed the
+	// CURRENT month, so planning ahead would still land on an empty screen.
+	// The store guards it to fire at most once per month and never on history;
+	// envelopeMu is the same lock the mutation handlers take, so two
+	// simultaneous page loads cannot double-seed.
+	//
+	// A seeding failure must not blank the screen: log nothing, fall through,
+	// and serve the (unseeded) summary rather than 500.
+	s.envelopeMu.Lock()
+	_, _ = s.envelopeStore.SeedEnvelopeAssignmentsFromPreviousMonth(month)
+	s.envelopeMu.Unlock()
+
 	s.writeEnvelopeSummary(w, month)
 }
 
