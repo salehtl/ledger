@@ -3,6 +3,7 @@ package push
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -20,10 +21,26 @@ func New(privateKey, publicKey, subscriber string) (*Sender, error) {
 	if privateKey == "" || publicKey == "" {
 		return nil, fmt.Errorf("LEDGER_VAPID_PRIVATE and LEDGER_VAPID_PUBLIC are required")
 	}
+	subscriber = normalizeSubscriber(subscriber)
 	if subscriber == "" {
-		subscriber = "mailto:admin@localhost"
+		subscriber = "admin@localhost"
 	}
 	return &Sender{privateKey: privateKey, publicKey: publicKey, subscriber: subscriber}, nil
+}
+
+// normalizeSubscriber strips a mailto: scheme, because webpush-go prepends one
+// to every subscriber that is not an https URL. Passing it a mailto: URI
+// therefore signs the VAPID JWT with sub="mailto:mailto:you@example.com", which
+// Apple rejects with 403 {"reason":"BadJwtToken"} — every push to an iPhone
+// fails. Chrome/FCM accepts the malformed claim, so callers cannot discover
+// this except on iOS. Accept either form here and hand the library what it
+// wants.
+func normalizeSubscriber(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 7 && strings.EqualFold(s[:7], "mailto:") {
+		return s[7:]
+	}
+	return s
 }
 
 // GenerateKeys generates a new VAPID key pair. Call once; store as

@@ -211,7 +211,9 @@ func main() {
 				})
 				for _, sub := range subs {
 					go func(s store.PushSubRow) {
-						_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+						if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
+							log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
+						}
 					}(sub)
 				}
 			}
@@ -321,7 +323,9 @@ func main() {
 			})
 			for _, sub := range subs {
 				go func(s store.PushSubRow) {
-					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+					if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
+						log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
+					}
 				}(sub)
 			}
 		}
@@ -342,7 +346,9 @@ func main() {
 			})
 			for _, sub := range subs {
 				go func(s store.PushSubRow) {
-					_ = pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload)
+					if err := pushSend.Send(context.Background(), s.Endpoint, s.P256dh, s.Auth, payload); err != nil {
+						log.Printf("push: send failed for %.40s...: %v", s.Endpoint, err)
+					}
 				}(sub)
 			}
 		}
