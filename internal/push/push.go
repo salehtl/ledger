@@ -2,11 +2,21 @@ package push
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
+
+// ErrSubscriptionGone reports that the push service considers the subscription
+// permanently dead (404/410) — the PWA was reinstalled, or notification
+// permission was revoked. Callers should delete the row rather than retry it,
+// since it can never succeed again. Deliberately narrow: a 403 means our VAPID
+// credentials are wrong while the subscription is perfectly good, and pruning
+// on that would wipe every device at once.
+var ErrSubscriptionGone = errors.New("push subscription gone")
 
 // Sender sends web push notifications using VAPID.
 type Sender struct {
@@ -68,6 +78,9 @@ func (s *Sender) Send(ctx context.Context, endpoint, p256dh, auth string, payloa
 		return fmt.Errorf("webpush send: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return fmt.Errorf("push service returned %d for %s: %w", resp.StatusCode, endpoint, ErrSubscriptionGone)
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("push service returned %d for %s", resp.StatusCode, endpoint)
 	}

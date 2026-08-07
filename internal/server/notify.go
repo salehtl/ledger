@@ -13,6 +13,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"ledger/internal/budget"
+	"ledger/internal/push"
 	"ledger/internal/store"
 )
 
@@ -127,8 +129,21 @@ func (s *Server) pushAll(title, body string) {
 			// made every push to an iPhone fail silently: the endpoint still
 			// answered 204 and nothing appeared in the log, so a broken
 			// delivery chain was indistinguishable from having nothing to say.
-			if err := s.pushSender.Send(context.Background(), p.Endpoint, p.P256dh, p.Auth, payload); err != nil {
-				log.Printf("push: send failed for %.40s...: %v", p.Endpoint, err)
+			err := s.pushSender.Send(context.Background(), p.Endpoint, p.P256dh, p.Auth, payload)
+			if err == nil {
+				return
+			}
+			log.Printf("push: send failed for %.40s...: %v", p.Endpoint, err)
+			// 404/410 is permanent — the PWA was reinstalled or permission
+			// revoked. Drop the row so it isn't retried on every future push.
+			// Any other failure keeps it: a 403 means our VAPID credentials
+			// are wrong, and pruning on that would wipe every device at once.
+			if errors.Is(err, push.ErrSubscriptionGone) {
+				if derr := s.pushStore.DeletePushSub(p.Endpoint); derr != nil {
+					log.Printf("push: pruning %.40s... failed: %v", p.Endpoint, derr)
+				} else {
+					log.Printf("push: pruned dead subscription %.40s...", p.Endpoint)
+				}
 			}
 		}(sub)
 	}
