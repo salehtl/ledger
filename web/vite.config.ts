@@ -111,10 +111,20 @@ export default defineConfig({
       workbox: {
         navigateFallback: "/index.html",
         // Precache only what a cold offline start needs: app code + latin
-        // fonts. Marketing/link-preview images and non-latin font subsets
-        // (never fetched at runtime thanks to unicode-range) stay
-        // network-served with cache headers.
-        globPatterns: ["**/*.{js,css,html,woff2}"],
+        // fonts + the sql.js wasm. Marketing/link-preview images and
+        // non-latin font subsets (never fetched at runtime thanks to
+        // unicode-range) stay network-served with cache headers.
+        //
+        // `wasm` is in this list, not just `js`: `web/src/v2/db/driver.ts`
+        // imports `sql.js/dist/sql-wasm.wasm?url` so the ~660 KB binary is
+        // fingerprinted like any other asset, but a fingerprinted asset is
+        // only ACTUALLY offline-available once it is also in the precache
+        // manifest — Workbox does not precache everything Rollup emits, only
+        // what matches `globPatterns`. Without `wasm` here, the browser
+        // SqlDriver has no database to open on a cold offline boot: the app
+        // shell loads, but sql.js's own WASM fetch fails with no service
+        // worker entry to serve it from.
+        globPatterns: ["**/*.{js,css,html,woff2,wasm}"],
         globIgnores: [
           "assets/*-cyrillic*",
           "assets/*-greek*",

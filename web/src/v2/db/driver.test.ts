@@ -8,10 +8,12 @@
  * requires — see driver.ts's own comment for why.
  *
  * jsdom (this suite's environment) does not implement `indexedDB`, so every
- * test here exercises the in-memory fallback. That is not a gap: the brief
- * this driver was built against calls that fallback "production code, not
- * test scaffolding" — it is also what a browser falls back to in private
- * browsing, where `indexedDB` throws or is absent.
+ * test here exercises the in-memory fallback. That fallback itself is not a
+ * gap: the brief this driver was built against calls it "production code,
+ * not test scaffolding" — it is also what a browser falls back to in private
+ * browsing, where `indexedDB` throws or is absent. What IS a coverage gap:
+ * the real-IndexedDB path (`openIdb`/`idbLoad`/`idbSave` in driver.ts) has no
+ * test here at all and needs a real-browser harness to close.
  */
 import { describe, expect, it } from "vitest";
 import { openBrowserDriver } from "./driver";
@@ -84,6 +86,52 @@ describe("openBrowserDriver", () => {
     driver.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
     const rows = driver.prepare("SELECT id FROM t").all();
     expect(rows).toEqual([]);
+    driver.close();
+  });
+
+  // Regression for a real bug: an earlier version of this driver scheduled
+  // its debounced persist ONLY from `transaction()`. `sqliteStore.save()`
+  // (client/src/store/sqlite.ts:226, the path every `Client.commit()` takes)
+  // and `RowStore.prune()` (:185) both call a prepared statement's `run`
+  // directly, never wrapped in a transaction — so that write scheduled no
+  // flush at all and survived only if `visibilitychange` happened to fire
+  // first. This test writes via `run()` OUTSIDE any transaction, then closes
+  // with NO `flush()` call, and expects the write to have survived anyway —
+  // exercising both "a bare `run()` marks the driver dirty" and "`close()`
+  // persists a pending dirty write" together, since neither alone is the
+  // guarantee a caller needs.
+  it("persists a run() outside any transaction even when close() is called with no flush()", async () => {
+    const name = `driver-close-persists-${crypto.randomUUID()}`;
+    const first = await openBrowserDriver(name);
+    first.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+    first.prepare("INSERT INTO t (id) VALUES (?)").run("no-flush-row");
+    first.close(); // deliberately no flush() first
+
+    const second = await openBrowserDriver(name);
+    const rows = second.prepare("SELECT id FROM t").all();
+    expect(rows).toEqual([{ id: "no-flush-row" }]);
+    second.close();
+  });
+
+  it("refuses a re-entrant transaction() rather than silently joining the outer one", async () => {
+    const driver = await openBrowserDriver(`driver-reentrant-${crypto.randomUUID()}`);
+    driver.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+    expect(() =>
+      driver.transaction(() => {
+        driver.transaction(() => {
+          // never reached
+        });
+      }),
+    ).toThrow(/not re-entrant/);
+    driver.close();
+  });
+
+  // jsdom has no `indexedDB`, so every driver in this suite runs on the
+  // in-memory fallback — `location` must say so rather than claim real
+  // persistence it does not have.
+  it("marks location as sqljs-memory when running on the in-memory fallback", async () => {
+    const driver = await openBrowserDriver(`driver-location-${crypto.randomUUID()}`);
+    expect(driver.location).toMatch(/^sqljs-memory:/);
     driver.close();
   });
 });
