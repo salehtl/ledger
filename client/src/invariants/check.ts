@@ -89,7 +89,7 @@
  * named fields of a re-fold instead.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import { applyOp, type LogEntry } from "../replay/replay";
 import { emptyState, entityKey, type State } from "../replay/state";
 import { BUCKETS, aad, embeddedAAD, openBlob, type Stream } from "../wire/blob";

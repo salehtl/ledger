@@ -18,6 +18,25 @@
  * observes the same `active` variable — there is exactly one registry, and this
  * file is it.
  *
+ * # The rule this creates: AN ENTRYPOINT INSTALLS ITS PLATFORM
+ *
+ * `platform.ts` self-installs `bunPlatform` at the bottom of the file, guarded
+ * on the builtins actually existing. That used to reach every host process for
+ * free, because `store/store.ts`, `net/client.ts`, `wire/*.ts` and five others
+ * imported `platform.ts` on the way to anything useful. They import THIS module
+ * now, so it does not.
+ *
+ * The install is therefore explicit wherever a program starts:
+ * `cli/main.ts`; `store/open.ts`, `store/file.ts` and `store/driver.ts` (all
+ * host-only already, and the door the child programs `outbox.test.ts` and
+ * `engine.test.ts` spawn come in through); `test/preload.ts` for `bun test`;
+ * `app/src/platform/index.ts` for Hermes; and `initV2` in
+ * `web/src/v2/session.ts` for the browser.
+ *
+ * A new entrypoint that forgets gets a runtime "no Platform installed" from the
+ * first hash it takes, not a compile error. Nothing enforces this — it is a
+ * convention, and this paragraph is where it is written down.
+ *
  * The `Platform` INTERFACE deliberately stays in `platform.ts`: it is a type,
  * so importing it costs a browser bundle nothing (the import is erased), and
  * moving it would churn every consumer for no gain.

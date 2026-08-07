@@ -14,7 +14,7 @@
  * where the server quietly passed text through.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import { decodeSingleByte, decodeUTF8WHATWG, classifyCharset, classifyWordCharset } from "./charset.ts";
 import { UnsupportedCharsetError } from "./charset.ts";
 

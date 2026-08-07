@@ -1,5 +1,5 @@
 /** Content-free layout fingerprint, byte-for-byte compatible with Go diag.StructureSig. */
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 
 export const STRUCTURE_SHAPE_BYTES = 4 << 10;
 

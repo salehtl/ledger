@@ -58,7 +58,7 @@
  * either of them.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import { STREAM_COLD, STREAM_HOT, type Stream } from "../wire/blob";
 import { ZERO_HASH, type ChainKey, type Head } from "../wire/chain";
 import { parseDecimal, type Op } from "../wire/op";

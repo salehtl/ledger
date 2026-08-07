@@ -38,6 +38,13 @@
 
 import { Database } from "bun:sqlite";
 
+// Installs the host `Platform`, for the same reason and in the same way as
+// `store/file.ts` — see the long comment there. This module is host-only
+// (`bun:sqlite`, above), and `engine.test.ts`'s spawned child imports it
+// directly, so it is the second door a fresh Bun process can come through
+// without touching `platform.ts`.
+import "../platform";
+
 /** A prepared statement. Parameters are positional `?`, never named. */
 export interface SqlStatement {
   run(...args: unknown[]): void;

@@ -26,6 +26,12 @@
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
 
+// Installs the host `Platform` — see `store/file.ts`'s comment. Redundant with
+// the two imports below (both `./driver` and `./file` do the same), and kept
+// anyway: this module is the documented way a host process chooses a store, so
+// it should not depend on which branch of `openStore` a caller happens to take.
+import "../platform";
+
 import { bunDriver } from "./driver";
 import { ensureStateDir, fileSecretStore, fileStore } from "./file";
 import { sqliteStore } from "./sqlite";

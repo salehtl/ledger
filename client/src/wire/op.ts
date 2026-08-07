@@ -60,7 +60,7 @@
  * be conflated — they are `oplog.ErrUnknownNewerVersion` and `blob.ErrSetAside`.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 
 /** The op schema this build understands. `blob.ts`'s VERSION versions the framing. */
 export const SCHEMA_VERSION = 2;

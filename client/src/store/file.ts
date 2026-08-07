@@ -46,6 +46,27 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+// Installs the host `Platform`. See `platform.registry.ts`: the registry moved
+// out of `platform.ts` so a browser can reach `setPlatform` without dragging
+// `node:zlib`/`node:crypto` into its bundle, which means `platform.ts` is no
+// longer imported by anything on the hot path and its self-install at the
+// bottom of the file no longer fires just because somebody used the library.
+//
+// It fires HERE because this module is already host-only (`node:fs`, above) and
+// unreachable from Hermes or a browser, and because every host entrypoint
+// reaches a store: the CLI through `open.ts`, and — the case that actually
+// caught this — the child scripts `outbox.test.ts` and `engine.test.ts` write
+// and `Bun.spawn`, which import `store/file.ts` directly and nothing else that
+// would install a platform. A fresh process with no platform throws
+// "no Platform installed" from the first hash it takes.
+//
+// A bare side-effect import, NOT `setPlatform(bunPlatform)`: the install at the
+// bottom of `platform.ts` is guarded on `gzipSync`/`randomUUID`/`Bun` actually
+// existing ("measured, not sniffed"), and calling it unconditionally here would
+// install an object of `undefined`s on a runtime that lacks them. This
+// reproduces the old transitive behaviour exactly, guard included.
+import "../platform";
+
 import {
   arrayRowStore,
   decodeState,

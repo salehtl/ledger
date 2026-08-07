@@ -71,7 +71,7 @@ import {
   serializeAppliedAtCursor,
   type LogBinding,
 } from "./snapshot";
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import type { SqlDriver, SqlStatement } from "../store/driver";
 
 /**

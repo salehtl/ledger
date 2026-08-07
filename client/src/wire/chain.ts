@@ -54,7 +54,7 @@
  * adversary.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import type { Stream } from "./blob";
 
 /** The genesis of every chain: the prev-hash of writer_counter 1. */

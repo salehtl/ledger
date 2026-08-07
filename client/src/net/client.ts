@@ -41,7 +41,7 @@
 
 import { ulid } from "ulid";
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 
 import {
   VIOLATION_ROSTER_COVERAGE,

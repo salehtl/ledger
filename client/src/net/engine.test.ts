@@ -494,6 +494,10 @@ async function foldArm(corpus: string, userId: string, keepOps: boolean): Promis
   await Bun.write(
     script,
     `
+// This child is a standalone program, so it installs its own Platform — the
+// registry no longer arrives transitively (see \`platform.registry.ts\`), and
+// this arm reaches neither of the host-only store modules that install one.
+import ${JSON.stringify(join(src, "platform.ts"))};
 import { Client } from ${JSON.stringify(join(src, "net/client.ts"))};
 import { memStore } from ${JSON.stringify(join(src, "store/store.ts"))};
 
@@ -1333,6 +1337,9 @@ test("reconcile is a no-op on a healthy store", async () => {
 function childScript(dir: string, url: string, profile: string): string {
   const src = join(import.meta.dir, "..");
   return `
+// Explicit, not inherited: \`store/file.ts\` happens to install a Platform too,
+// but a standalone program should not depend on which store it picked.
+import ${JSON.stringify(join(src, "platform.ts"))};
 import { Client } from ${JSON.stringify(join(src, "net/client.ts"))};
 import { SyncEngine } from ${JSON.stringify(join(src, "net/engine.ts"))};
 import { fileStore } from ${JSON.stringify(join(src, "store/file.ts"))};

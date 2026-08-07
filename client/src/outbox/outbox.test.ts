@@ -389,7 +389,11 @@ describe("an op authored offline survives the app being killed", () => {
     const script = join(dir, `child-${profile}.ts`);
     writeFileSync(
       script,
-      `import { Client } from ${JSON.stringify(join(import.meta.dir, "../net/client.ts"))};\n` +
+      // Explicit, not inherited: `store/file.ts` happens to install a Platform
+      // too, but a standalone program should not depend on which store it
+      // picked. See `platform.registry.ts`.
+      `import ${JSON.stringify(join(import.meta.dir, "../platform.ts"))};\n` +
+        `import { Client } from ${JSON.stringify(join(import.meta.dir, "../net/client.ts"))};\n` +
         `import { Outbox } from ${JSON.stringify(join(import.meta.dir, "./outbox.ts"))};\n` +
         `import { fileStore } from ${JSON.stringify(join(import.meta.dir, "../store/file.ts"))};\n` +
         `const store = fileStore(${JSON.stringify(dir)}, ${JSON.stringify(profile)});\n` +

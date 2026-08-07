@@ -44,7 +44,7 @@
  * `ErrInvalidEnvelope`.
  */
 
-import { platform } from "../platform";
+import { platform } from "../platform.registry";
 import { BlobDecodeError, InvalidEnvelopeError } from "./op";
 
 /** The envelope version byte. It versions the FRAMING, not the ops inside. */

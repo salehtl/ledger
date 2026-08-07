@@ -47,37 +47,32 @@
  * base64, because that is what `internal/v2/api` uses for every binary field
  * of its own; the base64url only ever appears inside a WebAuthn payload.
  *
- * # KNOWN BLOCKER: this module does not bundle for the browser yet
+ * # How this module reaches `setPlatform` without breaking the bundle
  *
- * `setPlatform` is imported from `@ledger/client/platform.registry` — a new,
- * import-free module holding the registry that `platform.ts` used to hold and
- * now re-exports — precisely so that installing `webPlatform` does not drag
- * `platform.ts`'s `node:zlib`/`node:crypto` into the bundle. That door is open.
+ * `setPlatform` comes from `@ledger/client/platform.registry` — a module with
+ * no imports at all, holding the registry `platform.ts` used to hold and now
+ * re-exports. That split exists because `platform.ts` statically imports
+ * `node:zlib`/`node:crypto` for `bunPlatform`, and Vite externalizes a `node:`
+ * builtin and then fails the build with `"gzipSync" is not exported by
+ * "__vite-browser-external"`.
  *
- * The rest of `client/src` still walks through the old one. `store/store.ts`,
- * `net/client.ts`, `invariants/check.ts`, `wire/{blob,chain,op}.ts`,
- * `replay/audit.ts`, `norm/mime.ts` and `diag/structure.ts` each do
- * `import { platform } from "../platform"`, so anything reaching `sqliteStore`
- * or `Client` — this module, and Task 3's `store-conformance.test.ts` before it
- * — pulls `platform.ts` in and a `vite build` over it fails with
- * `"gzipSync" is not exported by "__vite-browser-external"`. It is invisible
- * today only because nothing under `src/app` imports this file yet; the moment
- * `main.tsx` does, `bun run build` breaks. Verified by building this module as
- * a Rollup entry in isolation.
+ * The registry alone was not enough: nine modules under `client/src`
+ * (`store/store.ts`, `net/client.ts`, `invariants/check.ts`,
+ * `wire/{blob,chain,op}.ts`, `replay/audit.ts`, `norm/mime.ts`,
+ * `diag/structure.ts`) also imported `../platform`, so ANY path to
+ * `sqliteStore` or `Client` dragged it in — this module, and Task 3's
+ * `store-conformance.test.ts` before it. They now import the registry too, and
+ * a build with this module reachable from `main.tsx` produces a bundle with no
+ * `node:` builtin and no `__vite-browser-external` in it.
  *
- * The fix is nine one-line import changes, `../platform` → `../platform.registry`
- * (measured: with them, this module bundles clean, with no `node:` builtin and
- * no `__vite-browser-external` left in the output). It was NOT made here because
- * it is not behaviour-preserving and `client/`'s own suite hides that: nothing
- * else imports `platform.ts` for its VALUE, so the repoint removes the
- * transitive auto-install of `bunPlatform` that `platform.ts`'s bottom line
- * performs. `bun test` still passes 2346 tests because `platform.test.ts`
- * imports the module directly and every file shares one process — but three
- * tests that spawn the CLI as a SUBPROCESS fail with a platform that was never
- * installed. So the repoint has to land together with an explicit
- * `setPlatform(bunPlatform)` in the Bun entrypoints (`cli/main.ts`,
- * `store/open.ts`), exactly as `app/src/platform/index.ts` already does for
- * Hermes. That belongs to whoever owns `client/src`.
+ * That repoint took the transitive `setPlatform(bunPlatform)` away from every
+ * host process, so the install is now explicit where a program starts:
+ * `cli/main.ts`, `store/open.ts`, and the host-only `store/file.ts` /
+ * `store/driver.ts` (which is how the child programs `outbox.test.ts` and
+ * `engine.test.ts` spawn get one), plus `client/test/preload.ts` for `bun test`.
+ * The rule that falls out of it, and the one to keep: AN ENTRYPOINT INSTALLS
+ * ITS PLATFORM. `app/src/platform/index.ts` does it for Hermes, `initV2` does
+ * it here, and `client/`'s three host doors do it for Bun.
  *
  * # Where the secrets go
  *
