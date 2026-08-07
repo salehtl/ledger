@@ -64,6 +64,48 @@ func TestUnknownAPIPathsAreNeverSwallowedByTheFallback(t *testing.T) {
 	}
 }
 
+// The admin console is on its own tailnet-only listener and is not mounted here
+// at all — but the fallback used to answer /admin/* with the app shell, which
+// makes the deploy gate's "curl the console from off-tailnet, it must fail"
+// step unable to tell a served console from a 200 page.
+func TestAdminPathsAreDeclinedSoTheDeployGateMeansSomething(t *testing.T) {
+	h := Handler(testFS())
+	for _, p := range []string{"/admin", "/admin/", "/admin/templates", "/admin/quarantine"} {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404", p, rec.Code)
+		}
+	}
+	// Not a false positive on a route that merely starts with the same letters.
+	if rec := get(t, h, "/administration"); rec.Code != http.StatusOK {
+		t.Fatalf("GET /administration = %d, want the SPA fallback", rec.Code)
+	}
+}
+
+func TestCheckBundleRejectsABundleThatIsNotTheV2UI(t *testing.T) {
+	// A v1-era bundle: real JavaScript, no /api/v1 anywhere. This is exactly
+	// the state the committed dist was in when the reviewer caught it.
+	v1 := fstest.MapFS{
+		"index.html":      {Data: []byte("<!doctype html>")},
+		"assets/app-x.js": {Data: []byte(`fetch("/api/categorize/run")`)},
+	}
+	if err := CheckBundle(v1); err == nil {
+		t.Fatal("CheckBundle accepted a bundle with no /api/v1 reference")
+	}
+	// Nothing built at all.
+	if err := CheckBundle(fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}); err == nil {
+		t.Fatal("CheckBundle accepted a bundle with no scripts in it")
+	}
+	// A v2 bundle.
+	v2 := fstest.MapFS{
+		"index.html":      {Data: []byte("<!doctype html>")},
+		"assets/app-y.js": {Data: []byte(`fetch(s+"/api/v1/sync",{})`)},
+	}
+	if err := CheckBundle(v2); err != nil {
+		t.Fatalf("CheckBundle rejected a v2 bundle: %v", err)
+	}
+}
+
 func TestHashedAssetsAreImmutableAndEntryPointsRevalidate(t *testing.T) {
 	h := Handler(testFS())
 	cases := map[string]string{

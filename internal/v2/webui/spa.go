@@ -30,8 +30,9 @@ func Handler(files fs.FS) http.HandlerFunc {
 		if clean == "" {
 			clean = "index.html"
 		}
-		// Never serve the app shell for an API path. See the doc comment.
-		if clean == "api" || strings.HasPrefix(clean, "api/") {
+		// Never serve the app shell for an API path, nor for an admin one.
+		// See the doc comment and declined below.
+		if declined(clean) {
 			http.NotFound(w, r)
 			return
 		}
@@ -45,6 +46,30 @@ func Handler(files fs.FS) http.HandlerFunc {
 		w.Header().Set("Cache-Control", cacheControl(clean))
 		fileServer.ServeHTTP(w, r)
 	}
+}
+
+// declinedPrefixes are the path prefixes the SPA fallback answers 404 for
+// rather than with the app shell. Both are server surfaces, and the PWA has no
+// client-side route under either.
+//
+//   - "api" — see Handler's doc comment: an HTML document is the wrong answer
+//     for a mistyped API route.
+//   - "admin" — the console lives on its OWN listener, tailnet-only, and it is
+//     not mounted on the public mux at all. But the fallback answered
+//     /admin/templates with 200 and a page, which silently defeats the
+//     deployment gate's "curl the admin console from off-tailnet and it must
+//     fail" step: the operator sees a 200 and cannot tell a served console from
+//     an app shell. Nothing leaked; the verification did. A 404 makes that
+//     check mean something again.
+var declinedPrefixes = []string{"api", "admin"}
+
+func declined(clean string) bool {
+	for _, p := range declinedPrefixes {
+		if clean == p || strings.HasPrefix(clean, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // cacheControl picks a caching policy for a served file. Files under assets/

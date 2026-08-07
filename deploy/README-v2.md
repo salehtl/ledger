@@ -498,6 +498,42 @@ Two more behaviours of `Load` worth knowing at 2am:
 - **Putting a secret in the TOML fails the same way.** `server.admin_token = "x"`
   is rejected with the message telling you to use the environment.
 
+### The public listener also serves the PWA (Task D4)
+
+`ledgerd` embeds the built PWA (`internal/v2/webui/dist`) and serves it behind
+the API on the **same** listener, so the app and `/api/v1/*` share one origin —
+which is what lets WebAuthn work with no CORS. Two consequences worth knowing
+before a cutover:
+
+- **`/api/` and `/admin/` are declined by the SPA fallback** (404, not the app
+  shell). The admin console is on its own tailnet-only listener; the 404 is what
+  keeps the gate's "curl the console from off-tailnet, it must fail" step
+  meaningful.
+- **⚠ The committed `dist/` must be a build of the finished v2 UI before the
+  public cutover.** It is a committed artifact, so a stale one is completely
+  silent: the build passes, the tests pass, and the public origin serves a client
+  wired to endpoints `ledgerd` does not have. `serve` logs a loud
+  `*** the embedded PWA bundle … contains no reference to "/api/v1" ***` when it
+  detects this — **check the startup log for it, and rebuild with
+  `cd web && bun run build` if it appears.**
+
+### Response headers on the public listener
+
+Set for every response, API and page alike: `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+`Cross-Origin-Opener-Policy: same-origin`, and a CSP whose `connect-src 'self'`
+is the one that matters — the PWA and API share an origin, so an injected script
+has nowhere to send an op log.
+
+`Strict-Transport-Security: max-age=15552000` is set **only when this process
+terminates TLS**, never on a loopback/plain-HTTP listener (it would pin a
+developer's browser to an `https://127.0.0.1` URL nothing serves for 180 days).
+It matters most here precisely *because* the challenge type is TLS-ALPN-01 and
+nothing ever binds `:80`: there is no redirect server, so HSTS is the only thing
+stopping a plain `http://app.sirdab.ae` request from being made at all. No
+`includeSubDomains` and no `preload` — both would commit every future subdomain
+irreversibly for the max-age.
+
 `http_listen` defaults to `127.0.0.1:8443`. Tailscale's Storybook mount also uses
 `:8443`, but on the *tailnet* addresses (`100.68.143.4:8443`), not loopback, so
 there is no socket collision — it is still worth picking a different port to

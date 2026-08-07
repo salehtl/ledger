@@ -528,12 +528,36 @@ func TestTLSDomainsRequireAnAutocertCache(t *testing.T) {
 // against the SNI server name, so a scheme or a port never matches anything
 // and the deployment simply fails to obtain a certificate.
 func TestTLSDomainsMustBeBareHostnames(t *testing.T) {
-	for _, bad := range []string{"https://app.sirdab.ae", "app.sirdab.ae:443", "app.sirdab.ae/", ""} {
+	bad := []string{
+		"https://app.sirdab.ae", "app.sirdab.ae:443", "app.sirdab.ae/", "",
+		// Every one of these used to pass the old ContainsAny check and then
+		// lift the rail. None can ever match an SNI server name, so the
+		// deployment refuses every handshake with a message about the host —
+		// which reads like a DNS problem, not a config typo.
+		"app.sirdab.ae\t", "app.sirdab.ae\n", " app.sirdab.ae", "..", "-",
+		"-app.sirdab.ae", "app-.sirdab.ae", "app..sirdab.ae", ".sirdab.ae",
+		"sirdab.ae.", "localhost", "app_1.sirdab.ae", "*.sirdab.ae",
+	}
+	for _, bad := range bad {
 		c := tlsBase()
 		c.Server.HTTPListen = ":443"
 		c.Server.TLSDomains = []string{bad}
 		if err := c.validate(); err == nil {
 			t.Fatalf("validate() accepted tls_domains entry %q", bad)
+		}
+	}
+}
+
+func TestTLSDomainsAcceptRealHostnames(t *testing.T) {
+	for _, good := range []string{
+		"app.sirdab.ae", "api.sirdab.ae", "a.co", "x-1.example.co.uk",
+		"very-long-label-but-under-sixty-three-characters.example.test",
+	} {
+		c := tlsBase()
+		c.Server.HTTPListen = ":443"
+		c.Server.TLSDomains = []string{good}
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate() refused tls_domains entry %q: %v", good, err)
 		}
 	}
 }
@@ -547,6 +571,38 @@ func TestTLSDomainsDoNotLiftTheAdminRail(t *testing.T) {
 	c.Server.AdminListen = "0.0.0.0:8079"
 	if err := c.validate(); err == nil {
 		t.Fatal("validate() accepted a public admin_listen once tls_domains was set")
+	}
+}
+
+// CheckPublicBind is the cleartext rail as a callable function, so runServe can
+// re-check it immediately before it serves — exactly as it re-checks
+// CheckAdminBind before net.Listen. The two must agree with validate() by
+// construction, which is what this asserts.
+func TestCheckPublicBindMatchesValidate(t *testing.T) {
+	cases := []struct {
+		addr    string
+		domains []string
+		wantErr bool
+	}{
+		{"127.0.0.1:8443", nil, false},
+		{"localhost:8443", nil, false},
+		{":443", nil, true},
+		{"0.0.0.0:8443", nil, true},
+		{"192.168.1.10:8443", nil, true},
+		{":443", []string{"app.sirdab.ae"}, false},
+		{"0.0.0.0:443", []string{"app.sirdab.ae"}, false},
+	}
+	for _, tc := range cases {
+		err := CheckPublicBind(tc.addr, tc.domains)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("CheckPublicBind(%q, %v) = %v, wantErr %v", tc.addr, tc.domains, err, tc.wantErr)
+		}
+		c := tlsBase()
+		c.Server.HTTPListen = tc.addr
+		c.Server.TLSDomains = tc.domains
+		if gotValidate := c.validate() != nil; gotValidate != tc.wantErr {
+			t.Fatalf("validate() disagrees with CheckPublicBind for %q, %v", tc.addr, tc.domains)
+		}
 	}
 }
 

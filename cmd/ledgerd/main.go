@@ -384,7 +384,17 @@ func runServe(cfg config.Config) error {
 	// sender must re-ingest the mail that confirmation releases, or it sits held
 	// until it expires. See api.Server.Reprocessor.
 	syncAPI.Reprocessor = apiReingestAdapter{pipeline}
-	if srv.Handler, err = publicHandler(syncAPI.Handler()); err != nil {
+	// TLS (Task D3) is configured HERE, before the handler, because the same
+	// answer decides both: whether autocert terminates TLS, and whether the
+	// responses may carry HSTS. One predicate, one variable, so the two cannot
+	// disagree — an HSTS header on a plain-HTTP listener would pin a browser to
+	// an https:// URL that does not exist, and it would stay pinned for the
+	// whole max-age.
+	serveTLS, err := configureTLS(cfg, srv)
+	if err != nil {
+		return err
+	}
+	if srv.Handler, err = publicHandler(syncAPI.Handler(), serveTLS); err != nil {
 		return err
 	}
 
@@ -484,11 +494,15 @@ func runServe(cfg config.Config) error {
 	// caller can trigger it.
 	ceremonySweepDone := startCeremonySweep(ctx, syncAPI.Passkeys)
 
-	// TLS (Task D3). Configured means public: config.validate permits a
-	// non-loopback http_listen if and only if tls_domains is non-empty, so this
-	// branch and the cleartext one below are exactly "public" and "loopback".
-	serveTLS, err := configureTLS(cfg, srv)
-	if err != nil {
+	// The cleartext rail, re-checked immediately before the listener starts —
+	// the same treatment CheckAdminBind gets above, and for the same reason: a
+	// Config assembled in code rather than through Load never passed
+	// validate(). This one is the MORE consequential of the two (it is the
+	// listener carrying every session token and every op log), so it does not
+	// get the weaker version. It is checked against the same tls_domains
+	// configureTLS gated on, so "serving TLS" and "allowed to be public" cannot
+	// come apart.
+	if err := config.CheckPublicBind(cfg.Server.HTTPListen, cfg.Server.TLSDomains); err != nil {
 		return err
 	}
 
@@ -608,6 +622,26 @@ func configureTLS(cfg config.Config, srv *http.Server) (bool, error) {
 	if err := os.MkdirAll(cfg.Server.AutocertCache, 0o700); err != nil {
 		return false, fmt.Errorf("autocert cache %s: %w", cfg.Server.AutocertCache, err)
 	}
+	// MkdirAll applies its mode ONLY to directories it creates, so a cache
+	// directory an operator (or an earlier deploy) made by hand at 0755 would
+	// keep 0755 and leave the ACME account key world-readable — silently, since
+	// everything works. Tighten unconditionally, and refuse a path that is not
+	// a directory rather than letting autocert fail later at first write.
+	info, err := os.Stat(cfg.Server.AutocertCache)
+	if err != nil {
+		return false, fmt.Errorf("autocert cache %s: %w", cfg.Server.AutocertCache, err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("autocert cache %s is not a directory", cfg.Server.AutocertCache)
+	}
+	if info.Mode().Perm() != 0o700 {
+		if err := os.Chmod(cfg.Server.AutocertCache, 0o700); err != nil {
+			return false, fmt.Errorf("tighten autocert cache %s to 0700 (it holds the ACME "+
+				"account key): %w", cfg.Server.AutocertCache, err)
+		}
+		log.Printf("ledgerd serve: tightened autocert cache %s from %o to 0700",
+			cfg.Server.AutocertCache, info.Mode().Perm())
+	}
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache(cfg.Server.AutocertCache),
@@ -637,15 +671,103 @@ func configureTLS(cfg config.Config, srv *http.Server) (bool, error) {
 // fallback's 200 HTML. webui.Handler declines the /api/ prefix on its own too —
 // belt and braces, because "the API is mounted first" is a property of this
 // function that a later edit could reorder with nothing to catch it.
-func publicHandler(apiHandler http.Handler) (http.Handler, error) {
+func publicHandler(apiHandler http.Handler, tlsEnabled bool) (http.Handler, error) {
 	files, err := webui.FS()
 	if err != nil {
 		return nil, fmt.Errorf("embedded pwa: %w", err)
 	}
+	// Loud, once, at startup — not fatal. See webui.CheckBundle: a committed
+	// dist/ is what lets a fresh clone build without Node, and it is also what
+	// makes a stale bundle completely silent. Refusing to boot during a cutover
+	// would be worse than a warning an operator can act on.
+	if err := webui.CheckBundle(files); err != nil {
+		log.Printf("ledgerd serve: *** %v ***", err)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/", webui.Handler(files))
-	return mux, nil
+	return securityHeaders(mux, tlsEnabled), nil
+}
+
+// contentSecurityPolicy is the CSP served with every response.
+//
+// 'wasm-unsafe-eval' is required and is not a loosening of 'unsafe-eval': the
+// browser SqlDriver compiles sql.js's WebAssembly, which CSP treats as
+// evaluation. 'unsafe-inline' in style-src is required too — Framer Motion
+// animates by writing style attributes — and is the one directive here that is
+// genuinely weak; it is scoped to styles, never to scripts.
+//
+// connect-src 'self' is the one that matters most for this app: the PWA and the
+// API share an origin, so a same-origin-only connect policy is not a
+// compromise, it is exactly the rule. An injected script cannot exfiltrate an
+// op log to another host.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self' 'wasm-unsafe-eval'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; " +
+	"font-src 'self'; " +
+	"connect-src 'self'; " +
+	"worker-src 'self' blob:; " +
+	"manifest-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'none'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'"
+
+// hstsValue is 180 days, without includeSubDomains and without preload.
+//
+// includeSubDomains is omitted deliberately rather than forgotten: it would
+// commit EVERY name under the apex — including any operator tooling, and any
+// future subdomain nobody has thought of yet — to HTTPS for the whole max-age,
+// with no way to take it back inside that window. app. and api. are the only
+// names served over HTTP and both are covered directly. preload is omitted for
+// the stronger version of the same reason: it is not reversible on our
+// timetable at all.
+const hstsValue = "max-age=15552000"
+
+// securityHeaders is the one place response headers are set for the public
+// listener. It wraps BOTH the API and the PWA, because nosniff and a CSP matter
+// for a JSON 404 as much as for a page.
+//
+// # Why HSTS is gated on TLS rather than always set
+//
+// Two failures, in opposite directions, and both are why this takes a bool
+// rather than sniffing the request.
+//
+// Setting it on a plain-HTTP loopback listener would pin the developer's
+// browser to https://127.0.0.1:<port>, which nothing serves, for the whole
+// max-age — a local machine broken for six months by a header. So it is set
+// only when this process actually terminates TLS.
+//
+// And it must be set when we do, because of the challenge type: TLS-ALPN-01
+// means nothing ever listens on :80. There is no redirect server, so a browser
+// that tries http://app.sirdab.ae first gets whatever an attacker on the path
+// chooses to answer with. HSTS is the only thing that stops that request from
+// being made at all — the ONE mechanism that turns "we never bind :80" from a
+// smaller surface into a closed one.
+//
+// # The rest, and why they are unconditional
+//
+//   - nosniff: the SPA fallback answers 200 with an HTML body on every unknown
+//     path, so content-type sniffing has plenty to work with. Also stops a JSON
+//     error body being sniffed as something executable.
+//   - Referrer-Policy: URLs here carry account and transaction identifiers.
+//     no-referrer means none of that leaves in a header, ever.
+//   - X-Frame-Options + frame-ancestors 'none': a financial app is never framed.
+//   - Cross-Origin-Opener-Policy: severs window.opener between origins.
+func securityHeaders(next http.Handler, tlsEnabled bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		if tlsEnabled {
+			h.Set("Strict-Transport-Security", hstsValue)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // adminServer builds the Tailscale-bound admin console, or returns (nil, nil)

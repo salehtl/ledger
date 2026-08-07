@@ -505,6 +505,114 @@ func TestTLSDomainsGiveAnALPNCapableListenerAndA0700Cache(t *testing.T) {
 	}
 }
 
+// MkdirAll applies its mode only to directories it CREATES. A cache directory
+// made by hand — which is exactly what a deploy runbook produces — keeps
+// whatever mode it was made with, and 0755 there means a world-readable ACME
+// account key with no symptom at all.
+func TestAPreExistingAutocertCacheIsTightenedTo0700(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "autocert")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Server: config.ServerConfig{
+		HTTPListen: ":443", TLSDomains: []string{"app.sirdab.ae"}, AutocertCache: cache,
+	}}
+	if _, err := configureTLS(cfg, &http.Server{}); err != nil {
+		t.Fatalf("configureTLS: %v", err)
+	}
+	info, err := os.Stat(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("a pre-existing cache stayed at %o; want it tightened to 700", perm)
+	}
+}
+
+// A file where the cache should be is refused at startup rather than surfacing
+// as an autocert write failure during the first handshake.
+func TestANonDirectoryAutocertCacheIsRefused(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "autocert")
+	if err := os.WriteFile(cache, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Server: config.ServerConfig{
+		HTTPListen: ":443", TLSDomains: []string{"app.sirdab.ae"}, AutocertCache: cache,
+	}}
+	if _, err := configureTLS(cfg, &http.Server{}); err == nil {
+		t.Fatal("configureTLS accepted a cache path that is a file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Response security headers (review round 1)
+// ---------------------------------------------------------------------------
+
+// HSTS is set if and ONLY if this process terminates TLS.
+//
+// Both directions are failures. Absent on the public listener, a browser that
+// tries http://app.sirdab.ae has nothing pinning it to HTTPS — and because the
+// ACME challenge is TLS-ALPN-01, nothing is listening on :80 to redirect it,
+// so whatever answers that request is not us. Present on a loopback listener,
+// it pins a developer's browser to an https://127.0.0.1 URL nothing serves,
+// for the whole max-age.
+func TestHSTSIsSetOnTLSAndNeverOnCleartext(t *testing.T) {
+	api, _ := publicAndAdminHandlers(t)
+	for _, tc := range []struct {
+		name     string
+		tls      bool
+		wantHSTS bool
+	}{
+		{"public TLS listener", true, true},
+		{"loopback cleartext listener", false, false},
+	} {
+		h, err := publicHandler(api, tc.tls)
+		if err != nil {
+			t.Fatalf("%s: publicHandler: %v", tc.name, err)
+		}
+		// Both a page and an API response: the headers wrap everything.
+		for _, p := range []string{"/", "/api/v1/nope"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+			got := rec.Header().Get("Strict-Transport-Security")
+			if tc.wantHSTS && got == "" {
+				t.Errorf("%s: %s carried no HSTS", tc.name, p)
+			}
+			if !tc.wantHSTS && got != "" {
+				t.Errorf("%s: %s carried HSTS %q on a plain-HTTP listener", tc.name, p, got)
+			}
+			// The unconditional ones are on every response either way.
+			for k, want := range map[string]string{
+				"X-Content-Type-Options":     "nosniff",
+				"Referrer-Policy":            "no-referrer",
+				"X-Frame-Options":            "DENY",
+				"Cross-Origin-Opener-Policy": "same-origin",
+			} {
+				if g := rec.Header().Get(k); g != want {
+					t.Errorf("%s: %s %s = %q, want %q", tc.name, p, k, g, want)
+				}
+			}
+			csp := rec.Header().Get("Content-Security-Policy")
+			for _, must := range []string{
+				"default-src 'self'", "connect-src 'self'", "object-src 'none'",
+				"frame-ancestors 'none'", "base-uri 'none'",
+			} {
+				if !strings.Contains(csp, must) {
+					t.Errorf("%s: %s CSP is missing %q: %s", tc.name, p, must, csp)
+				}
+			}
+			// The app needs these two and they are the only relaxations.
+			if !strings.Contains(csp, "'wasm-unsafe-eval'") {
+				t.Errorf("%s: CSP lacks 'wasm-unsafe-eval'; sql.js cannot compile its wasm", tc.name)
+			}
+			if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") ||
+				strings.Contains(csp, "script-src 'self' 'unsafe-eval'") {
+				t.Errorf("%s: CSP relaxes script-src: %s", tc.name, csp)
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The composed public listener: API + embedded PWA (Task D4)
 // ---------------------------------------------------------------------------
@@ -517,7 +625,7 @@ func TestTLSDomainsGiveAnALPNCapableListenerAndA0700Cache(t *testing.T) {
 // the failure would surface far from the typo.
 func TestThePublicHandlerServesThePWAWithoutSwallowingAPIPaths(t *testing.T) {
 	api, _ := publicAndAdminHandlers(t)
-	h, err := publicHandler(api)
+	h, err := publicHandler(api, false)
 	if err != nil {
 		t.Fatalf("publicHandler: %v", err)
 	}

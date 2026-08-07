@@ -543,13 +543,8 @@ func (c Config) validate() error {
 	// tailnet, and there is no reverse proxy in the plan to hide behind
 	// either). Plain HTTP off loopback stays refused, because the remedy was
 	// always real TLS in this process rather than a promise about the network.
-	if !isLoopbackListen(c.Server.HTTPListen) && len(c.Server.TLSDomains) == 0 {
-		return fmt.Errorf(
-			"refusing to bind server.http_listen to %q with no server.tls_domains: this listener "+
-				"is then plain HTTP and it carries session tokens and the whole op log. Either bind "+
-				"loopback (e.g. 127.0.0.1:8443) or set tls_domains, which makes runServe terminate "+
-				"TLS in-process with autocert",
-			c.Server.HTTPListen)
+	if err := CheckPublicBind(c.Server.HTTPListen, c.Server.TLSDomains); err != nil {
+		return err
 	}
 	if err := c.validateTLS(); err != nil {
 		return err
@@ -589,6 +584,69 @@ func (c Config) validate() error {
 	return nil
 }
 
+// CheckPublicBind refuses a cleartext listener on anything but loopback.
+//
+// It is the sibling of CheckAdminBind and is called from the same two places
+// for the same reason: Config.validate refuses at load, so no deployment
+// configured this way ever starts, and cmd/ledgerd's runServe calls it again
+// immediately before it serves, so a Config assembled in code rather than
+// through Load — which every test does, and which a future subcommand might —
+// cannot slip past. It is the MORE consequential of the two rails, so it does
+// not get the weaker treatment.
+//
+// tlsDomains being non-empty is the whole exemption: runServe then terminates
+// TLS in-process with autocert, and there is no cleartext to protect. Callers
+// must pass the same slice configureTLS gates on, so the two decisions cannot
+// diverge.
+func CheckPublicBind(addr string, tlsDomains []string) error {
+	if isLoopbackListen(addr) || len(tlsDomains) > 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to bind server.http_listen to %q with no server.tls_domains: this listener "+
+			"is then plain HTTP and it carries session tokens and the whole op log. Either bind "+
+			"loopback (e.g. 127.0.0.1:8443) or set tls_domains, which makes runServe terminate "+
+			"TLS in-process with autocert",
+		addr)
+}
+
+// validHostname reports whether s has the shape of a DNS host name autocert
+// could actually match against a TLS server name.
+//
+// The rule is deliberately narrow — letters, digits and hyphens per label, no
+// leading or trailing hyphen, at least two labels, 253 bytes overall — because
+// the failure this prevents is not a crash. An entry autocert can never match
+// produces a deployment where every handshake is refused with "host not
+// configured", which reads exactly like a DNS or firewall problem and sends
+// the operator looking anywhere but at this list. Whitespace, a bare "-" and
+// ".." all used to pass and all have that symptom.
+//
+// Wildcards are rejected with the rest: autocert.HostWhitelist compares literal
+// names, and DNS-01 (the only challenge type that could issue a wildcard) is
+// not wired up.
+func validHostname(s string) bool {
+	if s == "" || len(s) > 253 || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+		return false
+	}
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || strings.HasPrefix(l, "-") || strings.HasSuffix(l, "-") {
+			return false
+		}
+		for _, r := range l {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // validateTLS checks the autocert settings whenever tls_domains is set.
 //
 // Both refusals are about failures that are invisible until they are
@@ -603,10 +661,11 @@ func (c Config) validateTLS() error {
 		return nil
 	}
 	for _, d := range c.Server.TLSDomains {
-		if d == "" || strings.ContainsAny(d, ":/ ") || strings.Contains(d, "*") {
+		if !validHostname(d) {
 			return fmt.Errorf("server.tls_domains entry %q is not a bare host name: "+
-				"these are matched against the TLS server name, so a scheme, a port, a path "+
-				"or a wildcard never matches and no certificate is ever served for it", d)
+				"these are matched against the TLS server name, so a scheme, a port, a path, "+
+				"a wildcard or stray whitespace never matches and no certificate is ever "+
+				"served for it", d)
 		}
 	}
 	if c.Server.AutocertCache == "" {
