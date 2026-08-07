@@ -170,7 +170,16 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "categories", "color", "TEXT"); err != nil {
 		return err
 	}
+	// v3: effective-dated category targets. The uniqueness index is created
+	// here, not in schema.sql, since effective_month doesn't exist yet when
+	// schema.sql first runs on a pre-existing DB (same hazard as idx_tx_project
+	// above). Unconditional and idempotent: it covers the fresh-database case
+	// too, where migrateTargetsToVersioned is a no-op.
 	if err := migrateTargetsToVersioned(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_target_cat_month ON category_targets(category_id, effective_month)`); err != nil {
 		return err
 	}
 	return nil
