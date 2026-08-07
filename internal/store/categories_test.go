@@ -929,7 +929,7 @@ func TestCategoryUsageCountsTargets(t *testing.T) {
 	}
 
 	if err := st.UpsertCategoryTarget(CategoryTargetRow{
-		CategoryID: id, TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
+		CategoryID: id, EffectiveMonth: "2026-01", TargetType: "set_aside", AmountFils: 50_000, Cadence: "monthly",
 	}); err != nil {
 		t.Fatalf("UpsertCategoryTarget: %v", err)
 	}
