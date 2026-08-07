@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FlowBars } from "./FlowBars";
 import { bandCenters } from "../../lib/trendBars";
 import { rgb, seedOfColor } from "../dither-kit/palette";
-import type { TrendPoint } from "../../lib/insights";
+import type { TrendMonth } from "../../v2/sources/insights";
 import { MotionProvider } from "../../app/MotionProvider";
 
 // jsdom rewrites `rgba(r,g,b,1)` to `rgb(r,g,b)`, so compare the channels.
@@ -28,9 +28,9 @@ async function motionReady(container: HTMLElement) {
   });
 }
 
-const points: TrendPoint[] = [
-  { period: "2026-05", label: "May", income: 200000, spent: 100000 },
-  { period: "2026-06", label: "Jun", income: 50000, spent: 100000 },
+const points: TrendMonth[] = [
+  { period: "2026-05", label: "May", income: 200000n, spent: 100000n },
+  { period: "2026-06", label: "Jun", income: 50000n, spent: 100000n },
 ];
 
 describe("FlowBars", () => {

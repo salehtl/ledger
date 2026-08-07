@@ -56,12 +56,13 @@ function wrap() {
 describe("AppShell", () => {
   it("routes only the projection-backed screens, and starts on Home", async () => {
     wrap();
-    for (const name of [/^home$/i, /^transactions$/i, /review/i]) {
+    for (const name of [/^home$/i, /^transactions$/i, /^insights$/i, /review/i]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
-    // Unrouted in v2: no op authors a plan, a project, a schedule, an account
-    // balance or an insight, so none of these may be reachable from the shell.
-    for (const name of [/^plan$/i, /^insights$/i, /^reports$/i, /^projects$/i, /^recurring$/i]) {
+    // Unrouted in v2: no op authors a plan, a project, a schedule or an account
+    // balance, so none of these may be reachable from the shell. Insights IS
+    // routed — every figure on it is a sum over `txn_*` ops (Task 4).
+    for (const name of [/^plan$/i, /^reports$/i, /^projects$/i, /^recurring$/i]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
     // Home is showing, and the figure comes from the projection this test built.
@@ -84,13 +85,26 @@ describe("AppShell", () => {
   it("offers the period stepper only where a period means something", async () => {
     wrap();
     // Home sums the whole log and Review is a state rather than a period —
-    // both said so in their own headers. A control that changes nothing is
-    // worse than an absent one.
+    // both say so in their own headers. A control that changes nothing is
+    // worse than an absent one. Transactions and Insights are both bounded by
+    // a month, so both get it.
     expect(screen.queryByRole("button", { name: /\d{4}/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
     const label = await screen.findByRole("button", { name: /\d{4}/ });
     fireEvent.click(label);
     expect(await screen.findByText(/choose period/i)).toBeInTheDocument();
+  });
+
+  it("routes Insights to the projection, with no v1 report tiles behind it", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /^insights$/i }));
+    // The lens picker only renders once the projection read has resolved, so
+    // finding it proves the screen is live on the local data. The fixture's
+    // own figures are asserted in `screens/Insights.test.tsx`, which pins the
+    // month; here the shell hands it whatever month it is today.
+    expect(await screen.findByText(/analyze by/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Net worth|Age of money/)).toBeNull();
+    expect(screen.queryByText(/your local ledger isn't open/i)).toBeNull();
   });
 
   it("pulls to SYNC, not to refetch a v1 endpoint", async () => {

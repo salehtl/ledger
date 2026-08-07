@@ -6,8 +6,15 @@ export function trendRows(points: TrendPoint[]): { period: string; label: string
   return points.map((p) => ({ period: p.period, label: p.label, spent: p.spent }));
 }
 
-/** Position of the active month, or null when it isn't in the series. */
-export function activeIndex(points: TrendPoint[], activePeriod?: string): number | null {
+/**
+ * Position of the active month, or null when it isn't in the series.
+ *
+ * Typed on `{ period }` alone rather than on `TrendPoint`, so the two charts
+ * that need it can share one lookup: `FlowBars`' columns carry `bigint` money
+ * and v1's `TrendBars` carries `number`, and neither shape is any of this
+ * function's business.
+ */
+export function activeIndex(points: readonly { period: string }[], activePeriod?: string): number | null {
   if (!activePeriod) return null;
   const i = points.findIndex((p) => p.period === activePeriod);
   return i === -1 ? null : i;

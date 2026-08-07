@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildYScale, computeBands } from "./scales";
 import { flowColumns, flowRows } from "../../lib/flowBars";
-import type { TrendPoint } from "../../lib/insights";
+import type { TrendMonth } from "../../v2/sources/insights";
 
 // Lives here, beside `palette.test.ts`, rather than in `lib/`: the behaviour
 // under test belongs to the *vendored* module and to our local fork of it
@@ -11,7 +11,7 @@ import type { TrendPoint } from "../../lib/insights";
 // `lib/flowBars.ts` output, because FlowBars is the consumer that depends on
 // the fork.
 
-const pt = (period: string, income: number, spent: number): TrendPoint => ({
+const pt = (period: string, income: bigint, spent: bigint): TrendMonth => ({
   period,
   label: period.slice(5),
   income,
@@ -23,9 +23,9 @@ describe("computeBands · stacked", () => {
   // the in-vs-out chart exists to show, and the one plain cumulative stacking
   // (stackOffsetNone) paints outside the canvas.
   const cols = flowColumns([
-    pt("2026-02", 200000, 100000), // surplus
-    pt("2026-03", 50000, 100000), // deficit
-    pt("2026-04", 100000, 100000), // break-even
+    pt("2026-02", 200000n, 100000n), // surplus
+    pt("2026-03", 50000n, 100000n), // deficit
+    pt("2026-04", 100000n, 100000n), // break-even
   ]);
   const rows = flowRows(cols);
 

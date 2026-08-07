@@ -661,13 +661,13 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   bar, since the bar itself is `aria-hidden`.
 - **Texture is state, not identity.** `bucketDensity` returns `"solid"` at or
   over budget and `"dotted"` otherwise — the same `pct >= 1.0` threshold
-  `ProgressBar` calls "overbudget", and wired to agree with it: `bucketDensity` takes an
-  `isOverBudget` flag, and `overBudgetBuckets` (`lib/insights.ts`) turns a
-  period's `BucketSummary[]` (`pct_used >= 1.0`) into the set of names callers
-  pass in. `Insights.tsx` threads its `summary` query's buckets through to both
-  `ComparativeSummary` (`overBudgetBuckets` prop) and `LensBreakdown`'s buckets
-  lens (`bucketRows`'s `overBudget` param) so their bars go solid at the same
-  point Home's `ProgressBar`s turn red for the period.
+  `ProgressBar` calls "overbudget". **In v2 nothing ever passes `true`**: the
+  over-budget set came from `/api/summary`'s `pct_used`, which needs a target,
+  and no op in the v2 vocabulary authors one (`client/src/replay/state.ts`). So
+  `ComparativeSummary` lost its `overBudgetBuckets` prop and `bucketRows` lost
+  its `overBudget` param rather than being permanently passed an empty set — a
+  prop nobody can set is a claim the screen cannot make. The flag stays on
+  `bucketDensity` for the day a target op exists.
 - Density used to double as bucket identity (need dense, want medium, saving
   sparse), from when Insights' bars were monochrome and hue was unavailable.
   Once Home and Insights shared one dot texture, hue took over identity — which
@@ -820,15 +820,34 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   selected analysis lens; each row's bar is a `DitherFill` scaled to the
   largest row's spend, tapping opens the transactions behind it.
 - `ComparativeSummary` (`insights/`) — the month's net/saved hero plus one
-  `DitherFill` (12px) showing the need/want/saving split, with a
-  tap-to-drill legend beneath it.
+  `DitherFill` (12px) showing the need/want/saving split (plus an
+  "Uncategorized" remainder, so the shares always sum to what left the account),
+  with a tap-to-drill legend beneath it.
+- `ProjectionDrillSheet` (`insights/`) — the transactions behind one breakdown
+  row, in a `Dialog` over `ProjectionTxnRow`. Read-only, and it builds its query
+  from `sqlTxnSource`'s own `TxnFilters` rather than re-deriving one, so a
+  bucket drilled from Insights and the same bucket filtered on Transactions
+  return the same rows. Use it instead of v1's `DrillDownSheet`, which is typed
+  on `api/types` and posts edits to routes `ledgerd` does not serve.
+
+**The Insights family is `bigint`.** `ComparativeSummary`, `LensBreakdown`,
+`TopMovers`, `DeltaBadge` and `FlowBars` all take money as `bigint` minor units
+and format it with `lib/minorMoney`, because every figure they show is a SUM out
+of the projection and the projection stores amounts as TEXT precisely because a
+JS `number` cannot hold an `int64`. The only `number`s they accept are ratios
+(a share, a savings rate) and `DitherFill`/canvas geometry, which is
+`aria-hidden` and laid out in percent. Do not add a `number` money prop to any
+of them; `lib/flowBars.ts`'s `flowExact` exists so even the chart tooltip
+formats from the exact `bigint` rather than from the geometry it was fed.
 
 ## Known deliberate exceptions
 
 - BottomNav's review-count badge: too small for `Pill`, stays bespoke.
 - `insights/DeltaBadge`: direction arrows + domain colors, stays bespoke.
-- Insights' search trigger: a `button` styled as a fake input (it opens
-  `SearchSheet`), kept because a real input would summon the keyboard.
+- The fake-input `button` pattern (a `button` styled as an input, so a tap opens
+  a sheet without summoning the keyboard). v1's Insights search trigger used it;
+  that trigger is gone in v2 — search lives on the Transactions tab — but the
+  pattern is sanctioned wherever a control has to look like a field.
 - `FilterBar`/`ProjectionFilterBar` chips and `SwipeableRow` action icons run at 36px inside their
   dense panels/rows — the sanctioned exception to the 44px target, same as
   `IconButton size="sm"`. Marked `data-dense-target` so `harness/audit.mjs`

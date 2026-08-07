@@ -56,6 +56,7 @@ import { usePullToRefresh } from "../hooks/usePullToRefresh";
 import { PullToRefreshIndicator } from "../components/PullToRefreshIndicator";
 import { Home } from "../screens/Home";
 import { Transactions } from "../screens/Transactions";
+import { Insights } from "../screens/Insights";
 import { Review } from "../screens/Review";
 import { Quarantine } from "../screens/Quarantine";
 import { PwaUpdatePrompt } from "./PwaUpdatePrompt";
@@ -65,6 +66,7 @@ import { V2Settings } from "../screens/settings/V2Settings";
 const TITLES: Record<TabId, string> = {
   home: "Home",
   transactions: "Transactions",
+  insights: "Insights",
   review: "Review",
 };
 
@@ -133,12 +135,12 @@ export function AppShell() {
           title={TITLES[tab]}
           scope={scope}
           onScopeChange={setScope}
-          // Transactions is the one screen a period bounds. Home sums the whole
-          // log (there is no per-period plan in the projection) and the review
-          // queue is a state rather than a period — both screens say so in their
-          // own headers, and a stepper that changed nothing on two of three tabs
-          // was the shell contradicting them.
-          showScope={tab === "transactions"}
+          // Transactions and Insights are the screens a period bounds. Home
+          // sums the whole log (there is no per-period plan in the projection)
+          // and the review queue is a state rather than a period — both screens
+          // say so in their own headers, and a stepper that changed nothing on
+          // the tab you were looking at was the shell contradicting them.
+          showScope={tab === "transactions" || tab === "insights"}
           onOpenSettings={() => pushOverlay({ kind: "settings" })}
         />
         {!online && (
@@ -155,6 +157,7 @@ export function AppShell() {
           <div className="max-w-screen-sm w-full mx-auto px-4 pt-4 pb-8 min-h-full flex flex-col">
             {tab === "home" && <Home />}
             {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
+            {tab === "insights" && <Insights scope={scope} />}
             {tab === "review" && <Review onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />}
           </div>
         </main>

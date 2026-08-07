@@ -49,6 +49,7 @@ import {
   type ReviewMoney,
   type ReviewSource,
 } from "./sources/review";
+import { sqlInsightsSource, type InsightsSnapshot, type InsightsSource } from "./sources/insights";
 import {
   sqlTxnSource,
   type TxnFacets,
@@ -86,6 +87,13 @@ export const v2Keys = {
    * whole log. The argument stays because a period op would reinstate it.
    */
   budget: (period: string) => [V2_QUERY_ROOT, "budget", period] as const,
+  /**
+   * The Insights read for one month. Unlike {@link v2Keys.budget}, `period` is
+   * real here: the breakdown IS bounded by a month, and the trailing flow chart
+   * is part of the same pass, so the periods it plots are in the key too.
+   */
+  insights: (period: string, trend: readonly string[]) =>
+    [V2_QUERY_ROOT, "insights", period, trend.join(",")] as const,
   transactions: (filter: TxnFilter) =>
     [
       V2_QUERY_ROOT,
@@ -213,6 +221,16 @@ export function useBudgetSource(injected?: BudgetSource): BudgetSource | null {
   }, [injected, driver]);
 }
 
+/** The Insights source over this device's projection, or `null`. See {@link useTxnSource}. */
+export function useInsightsSource(injected?: InsightsSource): InsightsSource | null {
+  const runtime = useV2();
+  const driver = runtime?.handle.driver ?? null;
+  return useMemo(() => {
+    if (injected !== undefined) return injected;
+    return driver === null ? null : sqlInsightsSource(driver);
+  }, [injected, driver]);
+}
+
 /**
  * `staleTime: Infinity` on every read below, deliberately.
  *
@@ -232,6 +250,27 @@ export function useBudgetSnapshot(source: BudgetSource | null): UseQueryResult<B
     // key: `historyDays` moves once a day, and a key that carried the clock
     // would miss the cache on every render.
     queryFn: () => source!.read(Date.now()),
+    enabled: source !== null,
+  });
+}
+
+/**
+ * One month of Insights, in a single pass of the projection.
+ *
+ * One query rather than four, for the reason {@link useReviewFeed} gives: the
+ * headline, the breakdown, the movers and the flow chart are one screen, and
+ * four keys would let the hero render against a different pass than the bars
+ * beneath it.
+ */
+export function useInsightsSnapshot(
+  source: InsightsSource | null,
+  period: string,
+  trendPeriods: readonly string[],
+): UseQueryResult<InsightsSnapshot> {
+  return useQuery({
+    ...PROJECTION_QUERY,
+    queryKey: v2Keys.insights(period, trendPeriods),
+    queryFn: () => source!.read(period, trendPeriods),
     enabled: source !== null,
   });
 }

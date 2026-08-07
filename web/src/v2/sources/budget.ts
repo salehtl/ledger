@@ -72,7 +72,12 @@ export interface BudgetSource {
   read(nowMs: number): BudgetSnapshot;
 }
 
-const CONFIRMED =
+/**
+ * What "counts" — exported so `sources/insights.ts` slices the *same* set of
+ * transactions this screen totals. Two copies of this predicate is how Home and
+ * Insights eventually print two different numbers for the same month.
+ */
+export const CONFIRMED =
   "superseded_by IS NULL AND needs_review=0 AND unparsed=0 AND (possible_duplicate_of IS NULL OR duplicate_disposition='different')";
 
 function mappingSQL(mapping: BudgetMapping): { sql: string; args: unknown[] } {

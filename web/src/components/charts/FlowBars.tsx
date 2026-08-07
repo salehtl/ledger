@@ -1,8 +1,8 @@
 import { useMemo } from "react";
-import type { TrendPoint } from "../../lib/insights";
-import { flowColumns, flowRows, compactFils, type NetSign } from "../../lib/flowBars";
+import type { TrendMonth } from "../../v2/sources/insights";
+import { flowColumns, flowRows, flowExact, compactMinor, type NetSign } from "../../lib/flowBars";
 import { bandCenters, activeIndex } from "../../lib/trendBars";
-import { formatFils } from "../../lib/money";
+import { formatMinor } from "../../lib/minorMoney";
 import { BarChart } from "../dither-kit/bar-chart";
 import { Bar } from "../dither-kit/bar";
 import { Tooltip } from "../dither-kit/tooltip";
@@ -38,11 +38,17 @@ const NET_DOT: Record<NetSign, string> = {
  * axis, spending drops below it, both on one shared scale so the asymmetry reads
  * as the month's net. A thin net thread (dots + connecting line) traces the
  * running balance — the one emphasized element; the bars stay quiet.
+ *
+ * Money in is `bigint` minor units and every figure it prints is formatted from
+ * that. The canvas is fed ratios instead (see `lib/flowBars.ts`'s `flowRows`),
+ * and the tooltip resolves a ratio back to its exact amount through
+ * {@link flowExact} rather than reading money off the geometry.
  */
-export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activePeriod?: string }) {
+export function FlowBars({ points, activePeriod }: { points: readonly TrendMonth[]; activePeriod?: string }) {
   const cols = useMemo(() => flowColumns(points), [points]);
   const dark = useDitherTheme();
   const rows = useMemo(() => flowRows(cols), [cols]);
+  const exact = useMemo(() => flowExact(cols), [cols]);
   const n = cols.length;
   if (n === 0) return null;
 
@@ -63,7 +69,7 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
   const threadPts = cols.map((c, i) => `${cx(i)},${cy(c.netLanePct)}`).join(" ");
 
   const summary = cols
-    .map((c) => `${c.label}: in ${formatFils(c.income)}, out ${formatFils(c.spent)}, net ${compactFils(c.net)}`)
+    .map((c) => `${c.label}: in ${formatMinor(c.income)}, out ${formatMinor(c.spent)}, net ${compactMinor(c.net)}`)
     .join("; ");
 
   return (
@@ -109,7 +115,7 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
                 [−maxOut, +maxIn], so where this line sits *is* the reading —
                 high line = a heavy-spending stretch, low line = a saving one. */}
             <ReferenceLine y={0} />
-            <Tooltip labelKey="label" valueFormatter={(v) => formatFils(Math.abs(v))} />
+            <Tooltip labelKey="label" valueFormatter={(v) => formatMinor(exact.get(v) ?? 0n)} />
           </BarChart>
         </div>
       </div>
@@ -145,7 +151,7 @@ export function FlowBars({ points, activePeriod }: { points: TrendPoint[]; activ
               style={{ left: `${centers[i].center * 100}%`, width: `${centers[i].width * 100}%` }}
               className="absolute top-0 -translate-x-1/2 text-center"
             >
-              <div className={`truncate text-[10px] tnum ${NET_TEXT[c.netSign]}`}>{compactFils(c.net)}</div>
+              <div className={`truncate text-[10px] tnum ${NET_TEXT[c.netSign]}`}>{compactMinor(c.net)}</div>
               <div className={`truncate text-[11px] ${active ? "font-medium text-fg" : "text-muted"}`}>{c.label}</div>
             </div>
           );

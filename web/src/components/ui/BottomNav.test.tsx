@@ -9,14 +9,14 @@ const wrap = (ui: React.ReactNode) => render(<MotionProvider>{ui}</MotionProvide
 describe("BottomNav", () => {
   it("renders exactly the projection-backed tabs", () => {
     wrap(<BottomNav active="home" reviewCount={0} onNavigate={() => {}} />);
-    for (const name of [/home/i, /transactions/i, /review/i]) {
+    for (const name of [/home/i, /transactions/i, /^insights$/i, /review/i]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
-    // Settings left the bar for the TopBar gear in v3. Plan and Insights left
-    // it in v2: neither has an op behind it, so both are unrouted (Task 10).
+    // Settings left the bar for the TopBar gear in v3. Plan left it in v2 and
+    // stayed off: no op authors a target or an envelope. Insights came back in
+    // Task 4 — every figure on it is a sum over `txn_*` ops.
     expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^plan$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^insights$/i })).toBeNull();
     expect(screen.getAllByRole("button")).toHaveLength(TABS.length);
   });
 

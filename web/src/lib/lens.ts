@@ -1,125 +1,130 @@
-import type { Txn } from "../api/types";
-import { BUCKET_LABEL, type BucketComparison, type CategoryDelta } from "./insights";
-import { merchantBreakdown } from "./analysis";
+/**
+ * Ranked breakdown rows for the Insights lenses, over the local projection.
+ *
+ * # Why the money here is `bigint`
+ *
+ * Every row is an aggregate of an aggregate: a category total is a SUM over
+ * transactions, and the share beside it is that SUM against the month's. The
+ * projection stores amounts as TEXT because a JS `number` cannot hold an
+ * `int64` (`client/src/replay/projection.ts`), so a `number` on this path would
+ * be a rounding bug that only appears at the top of the screen where the
+ * figures are largest. `share` is a ratio, not money, and is derived by
+ * dividing in `bigint` first.
+ *
+ * # No `overBudget`, and no per-category colour
+ *
+ * Both were v1 HTTP data. `overBudget` came from `/api/summary`'s `pct_used`,
+ * which needs a target, and no op in the v2 vocabulary authors one — so every
+ * bar renders dotted and nothing here claims a bucket is "over". Category
+ * colours came from `/api/categories`; `category` is a free-form string in
+ * `client/src/replay/state.ts` with no entity and no colour behind it, so rows
+ * take {@link categoryDither}'s spend-rank hue, which is exactly what it is
+ * documented to be.
+ */
+import type { BucketDelta, CategoryDelta, InsightsBucket, MerchantTotal } from "../v2/sources/insights";
 import { bucketDither, bucketDensity, categoryDither } from "./ditherColor";
-import { isPaletteName } from "./paletteColor";
 import type { DitherColor } from "../components/dither-kit/palette";
 import type { Density } from "../components/charts/DitherFill";
 
 // The three dimensions you can slice spending by on the Insights page.
 export type Lens = "buckets" | "categories" | "merchants";
 
-/** A stored category colour as a canvas seed, or the neutral if it is missing
- *  or not a palette name. `PaletteName` and `DitherColor` are pinned to the
- *  same set by the assertions in `paletteColor.ts`, so the narrowing is exact. */
-function ditherFor(color: string | undefined): DitherColor {
-  return isPaletteName(color) ? color : "slate";
-}
+/** Display names for the four buckets this screen ranks, the remainder included. */
+export const LENS_BUCKET_LABEL: Record<InsightsBucket, string> = {
+  need: "Needs",
+  want: "Wants",
+  saving: "Savings & debt",
+  unassigned: "Uncategorized",
+};
 
-// A single ranked row in the analysis breakdown. `share` is a fraction of the
-// month's total spend; delta fields are present only for lenses that compare
-// to the previous month (buckets, categories), absent for merchants.
+/**
+ * A single ranked row in the analysis breakdown. `share` is a fraction of the
+ * month's total spend; delta fields are present only for lenses that compare to
+ * the previous month (buckets, categories), absent for merchants.
+ */
 export interface BreakdownRow {
   key: string;
   name: string;
   /**
-   * Palette hue for this row's bar, as a name rather than a CSS colour.
-   * There is deliberately no parallel CSS-color field: every
-   * consumer of a breakdown row renders a `DitherFill`, and carrying the same
-   * color twice is how a legend drifts out of step with what it labels. The
-   * CSS-var side of the mapping lives in `lib/ditherColor.ts`.
+   * Palette hue for this row's bar, as a name rather than a CSS colour. There
+   * is deliberately no parallel CSS-color field: every consumer renders a
+   * `DitherFill`, and carrying the same colour twice is how a legend drifts out
+   * of step with what it labels.
    */
   ditherColor: DitherColor;
-  /**
-   * Bar texture for this row — `"solid"` when the row is at or over budget.
-   * Only set for bucket rows, since only buckets have a target to be over.
-   * Category and merchant rows leave it undefined, which `DitherFill` renders
-   * dotted.
-   */
+  /** Bar texture. Always dotted here — see the header on `overBudget`. */
   density?: Density;
-  spent: number;
+  spent: bigint;
   share: number;
   count?: number;
-  delta?: number;
+  delta?: bigint;
   deltaPct?: number | null;
   isNew?: boolean;
   isGone?: boolean;
-  categoryId?: number | null;
+  /** What tapping this row drills into. */
+  drill: DrillTarget;
 }
 
-function share(spent: number, total: number): number {
-  return total > 0 ? spent / total : 0;
-}
+/** The three things a breakdown row can open. */
+export type DrillTarget =
+  | { type: "bucket"; bucket: InsightsBucket; name: string }
+  | { type: "category"; category: string | null; name: string }
+  | { type: "merchant"; merchant: string };
 
 /**
- * Bucket rows (need/want/saving) ranked by spend, with month-over-month
- * deltas. `overBudget` is the set of bucket names at or over target for the
- * period shown (see `overBudgetBuckets` in `lib/insights.ts`) — when a bucket
- * is in it, its bar renders solid instead of dotted. Omit it (or pass an empty
- * set) where over-budget data isn't available; every bucket then renders dotted.
+ * `spent / total` as a 0..1 fraction. Divided in `bigint` at six decimal places
+ * so the money never enters a double; only the bounded quotient does.
  */
-export function bucketRows(buckets: BucketComparison[], total: number, overBudget: Set<string> = new Set()): BreakdownRow[] {
+export function share(spent: bigint, total: bigint): number {
+  if (total <= 0n) return 0;
+  return Number((spent * 1_000_000n) / total) / 1_000_000;
+}
+
+/** Bucket rows ranked by spend, with month-over-month deltas. */
+export function bucketRows(buckets: readonly BucketDelta[], total: bigint): BreakdownRow[] {
   return [...buckets]
-    .sort((a, b) => b.spent - a.spent)
+    .filter((b) => b.spent > 0n || b.prevSpent > 0n)
+    .sort((a, b) => (b.spent === a.spent ? 0 : b.spent > a.spent ? 1 : -1))
     .map((b) => ({
-      key: b.bucket,
-      name: BUCKET_LABEL[b.bucket] ?? b.bucket,
+      key: b.key,
+      name: LENS_BUCKET_LABEL[b.bucket],
       ditherColor: bucketDither(b.bucket),
-      density: bucketDensity(b.bucket, overBudget.has(b.bucket)),
+      density: bucketDensity(b.bucket),
       spent: b.spent,
       share: share(b.spent, total),
       delta: b.delta,
-      deltaPct: b.prevSpent > 0 ? b.delta / b.prevSpent : null,
-      isNew: b.prevSpent === 0 && b.spent > 0,
-      isGone: b.spent === 0 && b.prevSpent > 0,
+      deltaPct: b.deltaPct,
+      isNew: b.isNew,
+      isGone: b.isGone,
+      drill: { type: "bucket", bucket: b.bucket, name: LENS_BUCKET_LABEL[b.bucket] },
     }));
 }
 
-/**
- * Category rows ranked by spend (rows arrive pre-sorted with a `pct` share),
- * carrying each category's id for drill-down and its delta.
- *
- * The bar takes the category's **own** colour, looked up by id. It used to take
- * `categoryDither(i)` — the hue at its *spend rank* — which had two faults that
- * only showed once categories carried colours of their own: a category changed
- * hue whenever its rank changed between months, and `CATEGORY_DITHER` holds
- * five entries, so with 21 categories everything from sixth place down
- * collapsed into the same neutral grey.
- *
- * An id with no usable colour falls to the neutral rather than being
- * interpolated: an unknown name would reach `var(--color-…)` as valid CSS that
- * resolves to nothing, and the bar would vanish instead of degrading. In
- * practice the map always hits — every category is seeded at insert and
- * backfilled at startup — so this covers the window before the query lands.
- */
-export function categoryRows(
-  rows: (CategoryDelta & { pct: number })[],
-  colorById: ReadonlyMap<number, string>,
-): BreakdownRow[] {
-  return rows.map((c) => ({
-    key: `cat:${c.category_id}`,
+/** Category rows, already ranked by the source, carrying their delta. */
+export function categoryRows(categories: readonly CategoryDelta[], total: bigint): BreakdownRow[] {
+  return categories.map((c, i) => ({
+    key: c.key,
     name: c.name,
-    ditherColor: ditherFor(colorById.get(c.category_id)),
+    ditherColor: categoryDither(i),
     spent: c.spent,
-    share: c.pct,
+    share: share(c.spent, total),
     delta: c.delta,
     deltaPct: c.deltaPct,
     isNew: c.isNew,
-    isGone: c.spent === 0 && c.prevSpent > 0,
-    categoryId: c.category_id,
+    isGone: c.isGone,
+    drill: { type: "category", category: c.category, name: c.name },
   }));
 }
 
 /** Merchant rows ranked by spend (no prior-month comparison available). */
-export function merchantRows(txns: Txn[], total: number, limit = 20): BreakdownRow[] {
-  return merchantBreakdown(txns)
-    .slice(0, limit)
-    .map((m, i) => ({
-      key: `merchant:${m.merchant}`,
-      name: m.merchant,
-      ditherColor: categoryDither(i),
-      spent: m.spent,
-      share: share(m.spent, total),
-      count: m.count,
-    }));
+export function merchantRows(merchants: readonly MerchantTotal[], total: bigint, limit = 20): BreakdownRow[] {
+  return merchants.slice(0, limit).map((m, i) => ({
+    key: `merchant:${m.merchant}`,
+    name: m.merchant || "—",
+    ditherColor: categoryDither(i),
+    spent: m.spent,
+    share: share(m.spent, total),
+    count: m.count,
+    drill: { type: "merchant", merchant: m.merchant },
+  }));
 }

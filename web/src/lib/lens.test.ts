@@ -1,106 +1,112 @@
 import { describe, it, expect } from "vitest";
-import type { Txn } from "../api/types";
-import type { BucketComparison, CategoryDelta } from "./insights";
-import { bucketRows, categoryRows, merchantRows } from "./lens";
+import type { BucketDelta, CategoryDelta, MerchantTotal } from "../v2/sources/insights";
+import { bucketRows, categoryRows, merchantRows, share } from "./lens";
 
-function txn(p: Partial<Txn>): Txn {
+function bucket(p: Partial<BucketDelta> & Pick<BucketDelta, "bucket" | "spent" | "prevSpent">): BucketDelta {
+  const d = p.spent - p.prevSpent;
   return {
-    ID: 1, PostedAt: "2026-06-10T12:00:00Z", AmountFils: 1000, AmountAedFils: 1000, Currency: "AED",
-    Direction: "debit", MerchantRaw: "M", Status: "confirmed", Confidence: 1, Source: "email",
-    CategoryID: 1, CategoryName: "Dining", Bucket: "want", Kind: "spending", BucketSnapshot: "",
+    key: p.bucket,
+    name: p.bucket,
+    delta: d,
+    deltaPct: p.prevSpent === 0n ? null : Number(d) / Number(p.prevSpent),
+    isNew: p.prevSpent === 0n && p.spent > 0n,
+    isGone: p.spent === 0n && p.prevSpent > 0n,
     ...p,
   };
 }
 
+describe("share", () => {
+  it("divides in bigint, so a total past 2^53 still gives an exact fraction", () => {
+    expect(share(9007199254740993n, 18014398509481986n)).toBeCloseTo(0.5, 6);
+  });
+  it("is zero when there is nothing to be a fraction of", () => {
+    expect(share(10n, 0n)).toBe(0);
+  });
+});
+
 describe("bucketRows", () => {
   it("ranks by spend with share and month-over-month delta", () => {
-    const buckets: BucketComparison[] = [
-      { bucket: "need", spent: 400, prevSpent: 500, delta: -100 },
-      { bucket: "want", spent: 600, prevSpent: 0, delta: 600 },
-    ];
-    const rows = bucketRows(buckets, 1000);
+    const rows = bucketRows(
+      [bucket({ bucket: "need", spent: 400n, prevSpent: 500n }), bucket({ bucket: "want", spent: 600n, prevSpent: 0n })],
+      1000n,
+    );
     expect(rows.map((r) => r.name)).toEqual(["Wants", "Needs"]); // 600 before 400
     expect(rows[0].share).toBeCloseTo(0.6, 5);
-    expect(rows[0].isNew).toBe(true); // want had no prior spend
-    expect(rows[1].deltaPct).toBeCloseTo(-0.2, 5); // need: -100/500
+    expect(rows[0].isNew).toBe(true);
+    expect(rows[1].deltaPct).toBeCloseTo(-0.2, 5);
     expect(rows[0].key).toBe("want");
+    expect(rows[0].drill).toEqual({ type: "bucket", bucket: "want", name: "Wants" });
   });
 
-  it("gives every bucket row the same dotted texture — identity is carried by hue", () => {
-    const buckets: BucketComparison[] = [
-      { bucket: "need", spent: 50, prevSpent: 0, delta: 50 },
-      { bucket: "want", spent: 30, prevSpent: 0, delta: 30 },
-      { bucket: "saving", spent: 20, prevSpent: 0, delta: 20 },
-    ];
-    for (const row of bucketRows(buckets, 100)) {
-      expect(row.density).toBe("dotted");
-    }
+  it("names the uncategorized remainder rather than dropping it out of the shares", () => {
+    const rows = bucketRows([bucket({ bucket: "unassigned", spent: 100n, prevSpent: 0n })], 100n);
+    expect(rows[0].name).toBe("Uncategorized");
+    expect(rows[0].share).toBe(1);
   });
 
-  it("marks only the over-budget buckets solid, leaving the others dotted", () => {
-    const buckets: BucketComparison[] = [
-      { bucket: "need", spent: 50, prevSpent: 0, delta: 50 },
-      { bucket: "want", spent: 30, prevSpent: 0, delta: 30 },
-      { bucket: "saving", spent: 20, prevSpent: 0, delta: 20 },
-    ];
-    const rows = bucketRows(buckets, 100, new Set(["want"]));
-    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.density]));
-    expect(byKey.want).toBe("solid");
-    expect(byKey.need).toBe("dotted");
-    expect(byKey.saving).toBe("dotted");
+  it("drops a bucket with no spending in either month", () => {
+    const rows = bucketRows(
+      [bucket({ bucket: "need", spent: 50n, prevSpent: 0n }), bucket({ bucket: "saving", spent: 0n, prevSpent: 0n })],
+      50n,
+    );
+    expect(rows.map((r) => r.key)).toEqual(["need"]);
+  });
+
+  it("gives every bucket row the same dotted texture — there is no target to be over", () => {
+    const rows = bucketRows(
+      [
+        bucket({ bucket: "need", spent: 50n, prevSpent: 0n }),
+        bucket({ bucket: "want", spent: 30n, prevSpent: 0n }),
+        bucket({ bucket: "saving", spent: 20n, prevSpent: 0n }),
+      ],
+      100n,
+    );
+    for (const row of rows) expect(row.density).toBe("dotted");
   });
 });
 
 describe("categoryRows", () => {
-  const input: (CategoryDelta & { pct: number })[] = [
-    { category_id: 10, name: "Dining", bucket: "want", spent: 600, prevSpent: 400, delta: 200, deltaPct: 0.5, isNew: false, pct: 0.6 },
-    { category_id: 11, name: "Rent", bucket: "need", spent: 400, prevSpent: 400, delta: 0, deltaPct: 0, isNew: false, pct: 0.4 },
+  const input: CategoryDelta[] = [
+    { key: "cat:dining", name: "dining", category: "dining", bucket: "want", spent: 600n, prevSpent: 400n, delta: 200n, deltaPct: 0.5, isNew: false, isGone: false },
+    { key: "cat:housing", name: "housing", category: "housing", bucket: "need", spent: 400n, prevSpent: 400n, delta: 0n, deltaPct: 0, isNew: false, isGone: false },
   ];
 
-  it("maps shares, ids and deltas", () => {
-    const rows = categoryRows(input, new Map([[10, "teal"], [11, "orchid"]]));
-    expect(rows[0]).toMatchObject({ name: "Dining", categoryId: 10, share: 0.6, delta: 200, key: "cat:10" });
+  it("maps shares, deltas and the drill target", () => {
+    const rows = categoryRows(input, 1000n);
+    expect(rows[0]).toMatchObject({ name: "dining", share: 0.6, delta: 200n, key: "cat:dining" });
+    expect(rows[0].drill).toEqual({ type: "category", category: "dining", name: "dining" });
   });
 
-  it("takes each category's own colour, not the hue at its spend rank", () => {
-    // `categoryDither` would give rank 0 "amber" and rank 1 "azure". Choosing
-    // colours neither of those can produce is what makes this fail if the row
-    // builder ever goes back to indexing by rank.
-    const rows = categoryRows(input, new Map([[10, "teal"], [11, "orchid"]]));
-    expect(rows.map((r) => r.ditherColor)).toEqual(["teal", "orchid"]);
+  it("colours by spend rank, which is the only signal the projection carries", () => {
+    // `category` is a free-form string in `replay/state.ts`: there is no
+    // category entity and therefore no stored colour to key on.
+    expect(categoryRows(input, 1000n).map((r) => r.ditherColor)).toEqual(["amber", "azure"]);
   });
 
-  it("keeps a category's colour when its spend rank changes", () => {
-    // The regression that motivated this: a category changed hue between months
-    // purely because it moved up or down the ranking.
-    const reversed = [input[1], input[0]];
-    const rows = categoryRows(reversed, new Map([[10, "teal"], [11, "orchid"]]));
-    expect(rows.find((r) => r.categoryId === 10)!.ditherColor).toBe("teal");
-    expect(rows.find((r) => r.categoryId === 11)!.ditherColor).toBe("orchid");
-  });
-
-  it("falls back to the neutral for an id with no usable colour", () => {
-    // Covers the window before the categories query lands, and guards against
-    // interpolating an unknown name into var(--color-…) — valid CSS that
-    // resolves to nothing, so the bar would vanish rather than degrade.
-    const rows = categoryRows(input, new Map([[10, "chartreuse"]]));
-    expect(rows.map((r) => r.ditherColor)).toEqual(["slate", "slate"]);
+  it("keeps a total past 2^53 exact", () => {
+    const rows = categoryRows(
+      [{ ...input[0], spent: 9007199254740993n }],
+      9007199254740993n,
+    );
+    expect(rows[0].spent).toBe(9007199254740993n);
+    expect(rows[0].share).toBe(1);
   });
 });
 
 describe("merchantRows", () => {
   it("ranks merchants by spend with share of total and no delta", () => {
-    const txns = [
-      txn({ ID: 1, MerchantRaw: "Deliveroo", AmountFils: 300 }),
-      txn({ ID: 2, MerchantRaw: "Deliveroo", AmountFils: 200 }),
-      txn({ ID: 3, MerchantRaw: "Noon", AmountFils: 1000 }),
+    const merchants: MerchantTotal[] = [
+      { merchant: "Noon", spent: 1000n, count: 1 },
+      { merchant: "Deliveroo", spent: 500n, count: 2 },
     ];
-    const rows = merchantRows(txns, 1500);
+    const rows = merchantRows(merchants, 1500n);
     expect(rows.map((r) => [r.name, r.spent, r.count])).toEqual([
-      ["Noon", 1000, 1], ["Deliveroo", 500, 2],
+      ["Noon", 1000n, 1],
+      ["Deliveroo", 500n, 2],
     ]);
     expect(rows[0].share).toBeCloseTo(0.667, 3);
     expect(rows[0].delta).toBeUndefined();
     expect(rows[1].key).toBe("merchant:Deliveroo");
+    expect(rows[1].drill).toEqual({ type: "merchant", merchant: "Deliveroo" });
   });
 });
