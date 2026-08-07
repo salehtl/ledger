@@ -221,8 +221,13 @@ function Finish({ facts, onFinish }: { facts: OnboardingFacts; onFinish: () => v
       }
     >
       <Notice title="What happens now">
+        {/*
+          "Every transaction email your FILTER forwards" — which a user who set
+          this address with their bank directly does not have. The sentence says
+          what is true of both routes: mail that reaches the address is filed.
+        */}
         <p>
-          Every transaction email your filter forwards to{" "}
+          Every transaction email that reaches{" "}
           <span className="font-mono break-all">{facts.inboundAddress ?? "your ledger address"}</span> becomes a
           transaction, usually within a minute of your bank sending it.
         </p>

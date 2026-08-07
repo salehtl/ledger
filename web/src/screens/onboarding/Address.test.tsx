@@ -35,9 +35,70 @@ function mountForwarding(over: { onForwardingDeclared?: (expectConfirmation: boo
   return { onForwardingDeclared };
 }
 
+/** The forwarding route is now one of two, so its tests have to walk into it. */
+async function intoForwarding(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(await screen.findByRole("button", { name: /forward it from my email/i }));
+}
+
+/**
+ * Most UAE banks let a customer set the alert email address themselves. That
+ * route has no forwarder, no confirmation code, and no rule a provider can
+ * silently switch off after an outage — which is the single largest availability
+ * risk in the product — so it is offered first and named as the better one.
+ */
+describe("the two ways mail can reach ledger", () => {
+  it("offers both routes before any forwarding instructions appear", async () => {
+    mountForwarding();
+    const picker = await screen.findByTestId("route-picker");
+    expect(within(picker).getByRole("button", { name: /with your bank directly/i })).toBeTruthy();
+    expect(within(picker).getByRole("button", { name: /forward it from my email/i })).toBeTruthy();
+    // Nothing about providers or forwarding rules until the route is chosen.
+    expect(screen.queryByTestId("provider-picker")).toBeNull();
+    expect(screen.queryByTestId("forwarding-steps")).toBeNull();
+  });
+
+  it("takes the direct route without a word about forwarding or confirmation codes", async () => {
+    const user = userEvent.setup();
+    mountForwarding();
+    await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
+
+    const steps = await screen.findByTestId("direct-steps");
+    expect(steps.textContent).not.toMatch(/forward/i);
+    expect(steps.textContent).not.toMatch(/confirmation code/i);
+    expect(screen.queryByTestId("provider-picker")).toBeNull();
+    expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
+  });
+
+  it("reaches the same waiting state, expecting no confirmation code", async () => {
+    const user = userEvent.setup();
+    const onForwardingDeclared = vi.fn();
+    mountForwarding({ onForwardingDeclared });
+
+    await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
+    await user.click(screen.getByRole("button", { name: /i have set this address with my bank/i }));
+    expect(onForwardingDeclared).toHaveBeenCalledWith(false);
+  });
+
+  /**
+   * Not every bank lets a customer change the address, and some have only one.
+   * Said on the route that would otherwise strand them.
+   */
+  it("says what to do when the bank will not let the address be changed", async () => {
+    const user = userEvent.setup();
+    mountForwarding();
+    await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
+    expect(screen.getByTestId("direct-caveat").textContent).toMatch(/only one|cannot be changed/i);
+    // And the way out is on the same screen, not a step backwards.
+    await user.click(screen.getByRole("button", { name: /forward it from my email/i }));
+    expect(await screen.findByTestId("provider-picker")).toBeTruthy();
+  });
+});
+
 describe("the forwarding step's provider instructions", () => {
   it("offers every provider in the registry, plus a way out for the rest", async () => {
+    const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     const picker = await screen.findByTestId("provider-picker");
     for (const p of PROVIDERS) {
       expect(within(picker).getByRole("button", { name: p.label })).toBeTruthy();
@@ -50,7 +111,9 @@ describe("the forwarding step's provider instructions", () => {
    * rather than a blank panel or, as before, Gmail's presented as everyone's.
    */
   it("shows provider-neutral steps until a provider is chosen", async () => {
+    const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     const steps = await screen.findByTestId("forwarding-steps");
     expect(steps.textContent).toMatch(/forwarding or auto-forward setting/i);
     expect(steps.textContent).not.toMatch(/gmail/i);
@@ -59,6 +122,7 @@ describe("the forwarding step's provider instructions", () => {
   it("replaces the steps with the chosen provider's", async () => {
     const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     await user.click(await screen.findByRole("button", { name: "Gmail" }));
     expect(screen.getByTestId("forwarding-steps").textContent).toMatch(/Forwarding and POP\/IMAP/i);
 
@@ -71,6 +135,7 @@ describe("the forwarding step's provider instructions", () => {
   it("says iCloud sends no confirmation code, rather than leaving the user waiting for one", async () => {
     const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     await user.click(await screen.findByRole("button", { name: "iCloud Mail" }));
     expect(screen.getByTestId("forwarding-steps").textContent).toMatch(/does not send a confirmation code/i);
   });
@@ -82,6 +147,7 @@ describe("the forwarding step's provider instructions", () => {
   it("warns about a work Outlook account before the user tries", async () => {
     const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     await user.click(await screen.findByRole("button", { name: /outlook/i }));
     const caveat = screen.getByTestId("provider-caveat");
     expect(caveat.textContent).toMatch(/administrator/i);
@@ -91,6 +157,7 @@ describe("the forwarding step's provider instructions", () => {
   it("shows no caveat for a provider that has none", async () => {
     const user = userEvent.setup();
     mountForwarding();
+    await intoForwarding(user);
     await user.click(await screen.findByRole("button", { name: "Gmail" }));
     expect(screen.queryByTestId("provider-caveat")).toBeNull();
   });
@@ -104,6 +171,7 @@ describe("the forwarding step's provider instructions", () => {
     const user = userEvent.setup();
     const onForwardingDeclared = vi.fn();
     mountForwarding({ onForwardingDeclared });
+    await intoForwarding(user);
 
     await user.click(await screen.findByRole("button", { name: "iCloud Mail" }));
     await user.click(screen.getByRole("button", { name: /i have set up forwarding/i }));

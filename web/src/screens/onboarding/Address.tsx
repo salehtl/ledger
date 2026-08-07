@@ -1,9 +1,24 @@
 /**
- * The inbound address, and the forwarding rule that points at it.
+ * The inbound address, and how bank mail is going to get to it.
  *
  * Two positions of the machine (`address_issued`, then `forwarding_configured`)
  * on one component, because they are one subject: here is your address, now send
  * mail to it. The `phase` prop picks which half is on screen.
+ *
+ * # There are two routes, and forwarding is the weaker one
+ *
+ * Most UAE banks let a customer set the address their alerts go to. That route
+ * has no forwarder, no confirmation code, and no rule a provider can silently
+ * switch off — which removes the largest availability risk in the product, a
+ * forwarding rule that turns itself off after an outage with nobody noticing. So
+ * it is offered first and named as the better one, and forwarding is the answer
+ * for a bank that will not let the address be changed.
+ *
+ * Both routes end at the same `forwarding_declared` fact. The name is now wider
+ * than the thing it describes, and that is preferred to renaming a milestone the
+ * boot gate, the local record and the step table all read: the fact means "the
+ * user says mail will now arrive here", which is exactly as much as this screen
+ * has ever known.
  *
  * # The read is what creates the address
  *
@@ -105,6 +120,16 @@ export function Address({
    * on the glass and no provider is presumed to be the user's.
    */
   const [providerId, setProviderId] = useState<string | null>(null);
+  /**
+   * How mail is going to reach ledger. `null` until the user says.
+   *
+   * Deliberately not defaulted to forwarding: the direct route is the one with
+   * no rule to break, and defaulting would bury it under instructions for the
+   * fragile path. Both routes end at the same `forwarding_declared` fact,
+   * because the fact means "the user says mail will now arrive here" — the
+   * screen after it is what measures whether that is true.
+   */
+  const [route, setRoute] = useState<"direct" | "forward" | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -140,6 +165,74 @@ export function Address({
     }
   };
 
+  if (phase === "forwarding" && route === null) {
+    return (
+      <Step
+        testId="forwarding"
+        title="How should your bank mail reach ledger?"
+        intro="Two ways, and the first one is steadier. ledger never holds a password to any mailbox either way."
+      >
+        <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
+        <div
+          data-testid="route-picker"
+          className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border"
+        >
+          <RouteRow
+            title="Set this address with your bank directly"
+            detail="Recommended. Most banks let you choose where alerts are sent, and there is no forwarding rule in between to be switched off."
+            onClick={() => setRoute("direct")}
+          />
+          <RouteRow
+            title="Forward it from my email"
+            detail="One rule in the mailbox your bank already writes to. Works with any provider, and with a bank that will not let the address be changed."
+            onClick={() => setRoute("forward")}
+          />
+        </div>
+      </Step>
+    );
+  }
+
+  if (phase === "forwarding" && route === "direct") {
+    return (
+      <Step
+        testId="forwarding"
+        title="Give this address to your bank"
+        intro="Your bank writes to ledger, and nothing sits in between. Nothing else on this device needs setting up."
+        footer={
+          <>
+            <Button variant="primary" onClick={() => onForwardingDeclared(false)}>
+              I have set this address with my bank
+            </Button>
+            <Button variant="ghost" onClick={() => setRoute("forward")}>
+              Forward it from my email instead
+            </Button>
+          </>
+        }
+      >
+        <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
+        <ol data-testid="direct-steps" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
+          <li>
+            In your bank&rsquo;s app or online banking, find where the email address for alerts or statements is
+            set — often under your profile, contact details or notification settings.
+          </li>
+          <li>Set it to the address above.</li>
+          <li>That is all. Each transaction email your bank sends becomes a transaction as it arrives.</li>
+        </ol>
+        {/*
+          The two ways this route fails, said on the screen that proposes it
+          rather than discovered halfway through a banking app.
+        */}
+        <Notice title="If your bank will not let you" testId="direct-caveat">
+          <p>
+            Some banks keep only one alert address, so setting this one stops those emails arriving where they
+            arrive now. If that address cannot be changed at all, or you would rather keep it, forward from your
+            email instead — the button below switches.
+          </p>
+        </Notice>
+      </Step>
+    );
+  }
+
   if (phase === "forwarding") {
     const provider: Provider = providerId === null ? GENERIC : providerFor(providerId);
     return (
@@ -148,9 +241,14 @@ export function Address({
         title="Send your bank mail here"
         intro="One forwarding rule in the mailbox your bank already writes to. ledger never sees the rest of that mailbox and never holds a password to it."
         footer={
-          <Button variant="primary" onClick={() => onForwardingDeclared(provider.needsConfirmation)}>
-            I have set up forwarding
-          </Button>
+          <>
+            <Button variant="primary" onClick={() => onForwardingDeclared(provider.needsConfirmation)}>
+              I have set up forwarding
+            </Button>
+            <Button variant="ghost" onClick={() => setRoute("direct")}>
+              Set this address with my bank directly instead
+            </Button>
+          </>
         }
       >
         <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
@@ -220,6 +318,25 @@ export function Address({
 
       {address !== null && <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address)} />}
     </Step>
+  );
+}
+
+/**
+ * One of the two ways mail can reach ledger.
+ *
+ * A two-line row rather than a `SegmentedControl`: the difference between these
+ * routes is the second line, not the label, and a user picking blind between two
+ * short words is how the fragile route gets chosen by accident.
+ */
+function RouteRow({ title, detail, onClick }: { title: string; detail: string; onClick: () => void }) {
+  return (
+    <Pressable
+      onClick={onClick}
+      className="min-h-11 px-4 py-3 text-left flex flex-col gap-1 hover:bg-surface-2 transition-colors"
+    >
+      <span className="text-sm font-medium">{title}</span>
+      <span className="text-xs leading-relaxed text-muted">{detail}</span>
+    </Pressable>
   );
 }
 

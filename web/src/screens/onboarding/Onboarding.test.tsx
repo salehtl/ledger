@@ -363,6 +363,30 @@ describe("the bank and address walk", () => {
     // the step is that this bank cannot be read yet.
     expect(screen.queryByTestId("inbound-address")).toBeNull();
   });
+
+  /**
+   * The direct route, end to end through the real machine: no forwarder, no
+   * confirmation, and the same waiting-for-first-mail step at the end of it.
+   *
+   * Worth driving here rather than in `Address.test.tsx` alone, because the
+   * thing being checked is that a route chosen on one screen reaches the copy on
+   * the NEXT one — which is exactly the join a component test cannot see.
+   */
+  it("walks the direct-with-the-bank route to the same waiting step, with no code to enter", async () => {
+    const user = userEvent.setup();
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    mount({ ...invited(), bank: "dib", inboundAddress: ADDRESS }, rig, doFetch);
+
+    await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
+    await user.click(screen.getByRole("button", { name: /i have set this address with my bank/i }));
+
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading.textContent).toMatch(/waiting for your first bank email/i);
+    expect(screen.getByTestId("verification").textContent).not.toMatch(/confirmation code is held|forwarding rule/i);
+    // The gate has not moved: nothing is in the log, so nothing advances.
+    expect(screen.queryByTestId("onboarding-finish")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
