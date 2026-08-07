@@ -201,7 +201,12 @@ describe("Verification", () => {
     expect(onConfirmed).not.toHaveBeenCalled();
     // Bounded: a server that never makes progress does not get spun on.
     expect(rig.confirmCalls.length).toBeLessThanOrEqual(4);
-    expect(screen.getByTestId("verification-partial").textContent).toMatch(/setup will wait here/i);
+    // The copy must promise only what a reload cannot falsify: the block lives
+    // in component state, so "setup will wait here until they are filed" — what
+    // this said — becomes untrue the moment the tab is reloaded.
+    const notice = screen.getByTestId("verification-partial").textContent ?? "";
+    expect(notice).toMatch(/keep trying to file/i);
+    expect(notice).not.toMatch(/wait here until/i);
   });
 
   it("drains the batch across rounds and only then advances", async () => {

@@ -424,12 +424,26 @@ export function Verification({
       */}
       {partial !== null && (
         <Notice tone="danger" announce title="Some held mail is still waiting" testId="verification-partial">
+          {/*
+            "ledger will keep trying" and NOT "setup will wait here until they
+            are filed", which is what this said and which a reload makes false:
+            the block lives in `partialRef`, which is component state, so a
+            remount starts with no remainder and `watch` advances. The block is
+            deliberately not persisted — a schema change to
+            `LocalOnboardingRecord` for a constraint Task 10 removes is bad
+            value, and a harder block is the wrong direction — but that is an
+            argument for deferring DURABILITY, not for keeping a sentence the
+            code does not honour. A user who trusts the stronger promise and
+            reloads loses the mail, which is the exact failure this guard exists
+            to prevent.
+          */}
           <p>
             ledger files a bounded batch at a time, and {partial.remaining}{" "}
             {partial.remaining === 1 ? "message" : "messages"} from{" "}
             <span className="font-mono">{partial.domain}</span> {partial.remaining === 1 ? "is" : "are"} still
-            held. Nothing is lost, and setup will wait here until {partial.remaining === 1 ? "it is" : "they are"}{" "}
-            filed — this is the only screen that can file them.
+            held. Nothing is lost, and ledger will keep trying to file{" "}
+            {partial.remaining === 1 ? "it" : "them"} before setup finishes — this is the only screen that can
+            file {partial.remaining === 1 ? "it" : "them"}.
           </p>
           <Button variant="primary" disabled={busy} onClick={() => void confirm(partial.domain, partial.scope)}>
             File the rest

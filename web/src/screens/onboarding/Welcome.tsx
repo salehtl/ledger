@@ -356,8 +356,17 @@ export function Welcome({
           confirmation dialog — nothing else on this screen is destructive, so
           the answer is distance, not a second thing to tap through. If this
           layout is ever restyled, this gap is load-bearing.
+
+          `gap-5` inside, not `gap-3`: these two buttons were direct children of
+          `Step` before this wrapper existed and sat 20px apart. Wrapping them
+          would otherwise have narrowed that to 12px as a side effect — widening
+          the gap that guards the destructive button while quietly tightening the
+          one between it and "Go back". A mis-tap there resolves toward the
+          harmless button either way, so this is not the same class of hazard,
+          but there is no reason to prefer 12px and the change would have been
+          incidental rather than chosen.
         */}
-        <div className="pt-6 flex flex-col gap-3">
+        <div className="pt-6 flex flex-col gap-5">
           <Button
             variant="danger"
             disabled={phase.wiping || (phase.unsynced !== 0 && !phase.armed)}
