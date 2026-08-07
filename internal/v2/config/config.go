@@ -219,6 +219,28 @@ type AuthConfig struct {
 	AppleClientIDs  []string      `toml:"apple_client_ids"`
 	GoogleClientIDs []string      `toml:"google_client_ids"`
 	SessionTTL      time.Duration `toml:"session_ttl"`
+
+	// The WebAuthn relying party (auth.Passkeys). None of these is a secret
+	// either — RPID and RPOrigins are the site's own public identity, and that
+	// is exactly why they are configuration: they are what binds a ceremony to
+	// THIS deployment, and a passkey minted under one RPID is unusable under
+	// another.
+	//
+	// RPID empty means the six passkey routes are NOT MOUNTED, on the same rule
+	// as Addresses and Dict in api.Server: a deployment that has not been told
+	// its own domain cannot run a ceremony, and a route that exists only to fail
+	// is one a client retries forever.
+	//
+	// RPID is the effective domain with no scheme and no port
+	// ("ledger.example.com"); RPOrigins are the fully qualified origins that may
+	// run a ceremony ("https://ledger.example.com"). They are separate because
+	// they are checked against different things — the RPID against the
+	// credential's scope, the origin against the browser's own report of which
+	// page called it — and conflating them is how a ceremony ends up bound to
+	// nothing.
+	RPID          string   `toml:"rp_id"`
+	RPDisplayName string   `toml:"rp_display_name"`
+	RPOrigins     []string `toml:"rp_origins"`
 }
 
 // modeOrder lists every dispatch mode cmd/ledgerd's main() is meant to
@@ -356,6 +378,15 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("LEDGER_GOOGLE_CLIENT_IDS"); v != "" {
 		cfg.Auth.GoogleClientIDs = splitCSV(v)
+	}
+	if v := os.Getenv("LEDGER_RP_ID"); v != "" {
+		cfg.Auth.RPID = v
+	}
+	if v := os.Getenv("LEDGER_RP_DISPLAY_NAME"); v != "" {
+		cfg.Auth.RPDisplayName = v
+	}
+	if v := os.Getenv("LEDGER_RP_ORIGINS"); v != "" {
+		cfg.Auth.RPOrigins = splitCSV(v)
 	}
 	if v := os.Getenv("LEDGER_EXPO_ACCESS_TOKEN"); v != "" {
 		cfg.Push.AccessToken = v
@@ -523,8 +554,57 @@ func (c Config) validate() error {
 	if c.Auth.SessionTTL <= 0 {
 		return fmt.Errorf("auth.session_ttl must be positive")
 	}
+	if err := c.validatePasskeys(); err != nil {
+		return err
+	}
 	if err := c.validatePush(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validatePasskeys refuses the two half-configured relying parties.
+//
+// Neither is a hypothetical. An RPID with no origins is the shape a `.env` in a
+// hurry produces, and it is the one that fails LATEST: every ceremony begins
+// happily and every finish is refused, because there is no origin to compare the
+// browser's client data against. An origin list with no RPID is the mirror image
+// and is quieter still — the routes are simply not mounted, and the operator
+// discovers it when the first tester's sign-in 404s.
+//
+// It is checked whenever EITHER is set, not only when passkeys are "enabled",
+// for the reason validatePush states about expo_url: a wrong value that sits
+// inert in a file until somebody sets the other one is exactly the failure this
+// exists to refuse.
+//
+// The origins are required to be absolute URLs with a scheme and host, because a
+// bare "ledger.example.com" in rp_origins is the most likely typo of all — it is
+// what rp_id looks like — and go-webauthn would compare it as an opaque string
+// against the browser's "https://ledger.example.com" and never match.
+func (c Config) validatePasskeys() error {
+	if c.Auth.RPID == "" && len(c.Auth.RPOrigins) == 0 {
+		return nil // Passkeys are not configured at all; the routes are not mounted.
+	}
+	if c.Auth.RPID == "" {
+		return fmt.Errorf("auth.rp_origins is set but auth.rp_id is empty (LEDGER_RP_ID): " +
+			"without the relying party id the passkey routes are not mounted at all")
+	}
+	if strings.Contains(c.Auth.RPID, "/") || strings.Contains(c.Auth.RPID, ":") {
+		return fmt.Errorf("auth.rp_id is %q: it must be a bare effective domain "+
+			"(\"ledger.example.com\"), with no scheme and no port — the fully qualified "+
+			"form belongs in auth.rp_origins", c.Auth.RPID)
+	}
+	if len(c.Auth.RPOrigins) == 0 {
+		return fmt.Errorf("auth.rp_id is set but auth.rp_origins is empty (LEDGER_RP_ORIGINS): " +
+			"a WebAuthn ceremony is bound to the origin that ran it, and with none configured " +
+			"every registration and every sign-in would be refused at the finish step")
+	}
+	for _, o := range c.Auth.RPOrigins {
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("auth.rp_origins entry %q is not an absolute origin: "+
+				"it must carry a scheme and a host (\"https://ledger.example.com\")", o)
+		}
 	}
 	return nil
 }

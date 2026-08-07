@@ -159,6 +159,22 @@ var seeders = map[string]seeder{
 		                 FROM sessions WHERE user_id = $1 LIMIT 1`,
 			u, "ExponentPushToken["+u.String()+"]")
 	},
+	"public.webauthn_credentials": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO webauthn_credentials
+		  (credential_id, user_id, user_handle, public_key, sign_count, backup_eligible, backup_state, created_at)
+		  VALUES ($2, $1, $3, $4, 1, true, true, now())`,
+			u, randBytes(t, 20), randBytes(t, 32), randBytes(t, 77))
+	},
+	"public.webauthn_ceremonies": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		// An 'add' ceremony, which is the only kind that names an account: a
+		// registration's account does not exist yet and a discoverable login
+		// deliberately does not know whose it is. Those two carry a NULL user_id
+		// and correctly survive a purge, because they attribute to nobody.
+		exec(t, pool, `INSERT INTO webauthn_ceremonies
+		  (id, kind, user_id, user_handle, session_data, created_at, expires_at)
+		  VALUES ($2, 'add', $1, $3, '{"challenge":"x"}'::jsonb, now(), now() + interval '5 minutes')`,
+			u, u.String()+"-ceremony", randBytes(t, 32))
+	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
 		               VALUES ($1, 'alpha-plaintext-v1', now(), now() + interval '90 days')

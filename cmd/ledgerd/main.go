@@ -470,6 +470,13 @@ func runServe(cfg config.Config) error {
 	// reaches, and a sweep an anonymous caller can trigger is a write an
 	// anonymous caller can trigger.
 	tombstoneSweepDone := startTombstoneSweep(ctx, syncAPI.Sessions)
+	// And the fifth, for the same reason and with the same shape: a passkey
+	// ceremony is a row an UNAUTHENTICATED caller causes this server to write,
+	// and it is claimed by the finish that spends it — so the ones that are
+	// never finished are exactly the ones nothing else removes. Sweeping on the
+	// finish path instead would have put the write back where an anonymous
+	// caller can trigger it.
+	ceremonySweepDone := startCeremonySweep(ctx, syncAPI.Passkeys)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -541,6 +548,7 @@ func runServe(cfg config.Config) error {
 	<-sampleSweepDone
 	<-dictSweepDone
 	<-tombstoneSweepDone
+	<-ceremonySweepDone
 	return serveErr
 }
 
@@ -749,6 +757,33 @@ func startTombstoneSweep(ctx context.Context, s *auth.Sessions) <-chan struct{} 
 			return "", err
 		}
 		return fmt.Sprintf("reaped %d expired deleted-account tombstone(s)", n), nil
+	})
+}
+
+// startCeremonySweep bounds webauthn_ceremonies (00025_passkeys.sql).
+//
+// A ceremony is deleted by the finish that claims it, so what this removes is
+// the abandoned ones: a user who dismissed the browser prompt, a tab that was
+// closed, and anything a caller minted for no reason at all. That last case is
+// why it exists — four of the six passkey routes are unauthenticated, and while
+// the rate limiter bounds how fast rows appear, only this bounds how long they
+// stay.
+//
+// It is the FIFTH loop for the reason given on startSampleSweep. Failing is mild
+// in the same way the tombstone sweep's is: an unswept row still answers
+// correctly, because auth.Passkeys.claimCeremony refuses anything past its own
+// expires_at whether or not it was reaped. The cost is growth, and growth nobody
+// is told about is how a table becomes a surprise.
+func startCeremonySweep(ctx context.Context, p *auth.Passkeys) <-chan struct{} {
+	if p == nil {
+		return closedChan()
+	}
+	return startSweep(ctx, "passkey ceremony sweep", func(ctx context.Context) (string, error) {
+		n, err := p.ReapExpiredCeremonies(ctx)
+		if err != nil || n == 0 {
+			return "", err
+		}
+		return fmt.Sprintf("reaped %d expired passkey ceremony(s)", n), nil
 	})
 }
 

@@ -1628,7 +1628,7 @@ func TestSubjectHashIsStableAndNotReversible(t *testing.T) {
 	if !equalBytes(SubjectHash("apple|x", "y"), SubjectHash("apple", "x|y")) {
 		t.Fatal("the separator became injective; update SubjectHash's doc comment")
 	}
-	for _, idp := range []string{IdPApple, IdPGoogle} {
+	for _, idp := range []string{IdPApple, IdPGoogle, IdPPasskey} {
 		if strings.Contains(idp, "|") {
 			t.Fatalf("idp %q contains the hash separator", idp)
 		}

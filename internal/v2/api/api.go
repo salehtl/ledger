@@ -386,6 +386,18 @@ type Server struct {
 	// exists to remove. TestIdPVerifiersAreReusedAcrossRequests pins it.
 	Verifiers map[string]auth.Verifier
 
+	// Passkeys is the WebAuthn relying party (spec §3.8). Nil means the six
+	// /api/v1/auth/passkey routes are NOT MOUNTED — the same rule as Addresses,
+	// Quarantine and Dict, and for the same reason: a deployment that has not
+	// been told its own domain (`auth.rp_id`) cannot run a ceremony at all, and
+	// a sign-in route that exists only to answer 500 is one a client retries
+	// forever.
+	//
+	// It is the PWA's whole sign-in surface. The ID-token exchange above remains
+	// mounted beside it for the accounts that predate this, and for the dev
+	// verifier the exit test signs in with.
+	Passkeys *auth.Passkeys
+
 	// The limiters default to the constants above when nil.
 	SignInPerIP      *Limiter
 	SignInGlobal     *Limiter
@@ -416,6 +428,12 @@ type Server struct {
 	// budget, for the reason the two above share: they are one flow, and a
 	// caller who can register without limit is not limited by a bounded delete.
 	PushPerUser *Limiter
+	// PasskeyPerIP and PasskeyGlobal bound all six passkey routes, including the
+	// two that require a session — the limiter runs before the session is
+	// resolved, so omitting the credential is not a way around it. See
+	// passkey.go.
+	PasskeyPerIP  *Limiter
+	PasskeyGlobal *Limiter
 	// QuarantinePerUser bounds POST /api/v1/quarantine/confirm, which re-ingests
 	// held mail through the parse cascade inside the request. See the
 	// quarantineRate block above.
@@ -538,6 +556,18 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 		s.Dict = &dict.Dict{Pool: pool, Now: now}
 	}
 	s.Templates = &tmpl.Store{Pool: pool, Now: now}
+	// The WebAuthn relying party. Built only when a domain is configured; a
+	// deployment without one serves no passkey routes at all rather than routes
+	// that cannot verify anything. config.validatePasskeys has already refused
+	// the half-configured shapes, so an error here is a genuine construction
+	// failure and is fatal at startup rather than at the first sign-in.
+	if cfg.Auth.RPID != "" {
+		pk, err := auth.NewPasskeys(pool, cfg.Auth.RPID, cfg.Auth.RPDisplayName, cfg.Auth.RPOrigins)
+		if err != nil {
+			return nil, fmt.Errorf("api: NewServer: %w", err)
+		}
+		s.Passkeys = pk
+	}
 	// The backup relay's shared secret (spec §3.2). relay.enabled asks for the
 	// two relay routes; without the token they cannot be served, and answering
 	// that with a warning would leave an operator believing they had a relay
@@ -627,6 +657,12 @@ func (s *Server) Handler() http.Handler {
 	if s.RelayPerIP == nil {
 		s.RelayPerIP = NewLimiter(relayRate, relayBurst, relayMaxKeys, s.now)
 	}
+	if s.PasskeyPerIP == nil {
+		s.PasskeyPerIP = NewLimiter(passkeyPerIPRate, passkeyPerIPBurst, passkeyMaxKeys, s.now)
+	}
+	if s.PasskeyGlobal == nil {
+		s.PasskeyGlobal = NewLimiter(passkeyGlobalRate, passkeyGlobalBurst, 1, s.now)
+	}
 	// Filled in rather than checked for nil at the route, because these two
 	// routes are the ones that must never be missing — see the Deletion field.
 	if s.Deletion == nil {
@@ -641,6 +677,22 @@ func (s *Server) Handler() http.Handler {
 	// See health.go for why it pings the pool and why its body is two words.
 	mux.HandleFunc("GET /api/v1/healthz", s.handleHealthz)
 	mux.HandleFunc("POST /api/v1/auth/exchange", s.handleExchange)
+	// The PWA's sign-in surface. Absent entirely without a relying party — see
+	// the Passkeys field and passkey.go.
+	if s.Passkeys != nil {
+		mux.HandleFunc("POST /api/v1/auth/passkey/register/begin",
+			s.passkeyLimited(s.handlePasskeyRegisterBegin))
+		mux.HandleFunc("POST /api/v1/auth/passkey/register/finish",
+			s.passkeyLimited(s.handlePasskeyRegisterFinish))
+		mux.HandleFunc("POST /api/v1/auth/passkey/login/begin",
+			s.passkeyLimited(s.handlePasskeyLoginBegin))
+		mux.HandleFunc("POST /api/v1/auth/passkey/login/finish",
+			s.passkeyLimited(s.handlePasskeyLoginFinish))
+		mux.HandleFunc("POST /api/v1/auth/passkey/add/begin",
+			s.passkeyLimitedSession(s.handlePasskeyAddBegin))
+		mux.HandleFunc("POST /api/v1/auth/passkey/add/finish",
+			s.passkeyLimitedSession(s.handlePasskeyAddFinish))
+	}
 	mux.HandleFunc("POST /api/v1/writers/challenge", s.requireSession(s.handleChallenge))
 	mux.HandleFunc("POST /api/v1/writers/register", s.requireSession(s.handleRegister))
 	mux.HandleFunc("GET /api/v1/writers", s.requireSession(s.handleRoster))

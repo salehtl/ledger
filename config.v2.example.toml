@@ -86,6 +86,21 @@ apple_client_ids  = []            # Sign in with Apple client identifiers (not s
 google_client_ids = []            # Google Sign-In client identifiers (not secret; LEDGER_GOOGLE_CLIENT_IDS, comma-separated)
 session_ttl       = "720h"        # 30 days; opaque server-side session lifetime
 
+# Passkeys (WebAuthn). These are the PWA's sign-in surface and they replaced the
+# two IdPs above: the App Store rule that forced Sign in with Apple went away
+# with the native client. Not secrets — they are the site's own public identity,
+# and that is exactly why they are configuration: they are what binds a ceremony
+# to THIS deployment, and a passkey minted under one rp_id is unusable under
+# another.
+#
+# rp_id is the bare effective domain: no scheme, no port. rp_origins are the
+# fully qualified origins allowed to run a ceremony. Leaving rp_id empty means
+# the six /api/v1/auth/passkey routes are NOT SERVED at all, rather than served
+# and unable to verify anything.
+rp_id             = ""                       # e.g. "ledger.example.com"  (LEDGER_RP_ID)
+rp_display_name   = "Ledger"                 # shown in the platform's passkey prompt (LEDGER_RP_DISPLAY_NAME)
+rp_origins        = []                       # e.g. ["https://ledger.example.com"] (LEDGER_RP_ORIGINS, comma-separated)
+
 # --- TEST-ONLY command-line switches. They have NO TOML KEY AT ALL. ---
 #
 # Neither of these can be set from this file or from the environment, and that

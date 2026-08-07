@@ -87,6 +87,22 @@ func inviteCodeHash(code string) []byte {
 	return sum[:]
 }
 
+// InviteCodeHash is inviteCodeHash for callers that must hold a code across two
+// round trips: a passkey registration takes the code at `register/begin` and
+// cannot spend it until `register/finish`, so the ceremony row carries this
+// digest rather than the code itself (00025_passkeys.sql).
+//
+// An empty or separator-only code hashes to NOTHING — nil, not the digest of the
+// empty string — so a caller who offered no code cannot end up holding a value
+// that might one day match a row. redeemInviteTx treats a nil hash as
+// ErrNotInvited for the same reason.
+func InviteCodeHash(code string) []byte {
+	if NormalizeInviteCode(code) == "" {
+		return nil
+	}
+	return inviteCodeHash(code)
+}
+
 // MintInvite creates one code and returns it. The plaintext is returned exactly
 // once, to exactly one caller, and is not recoverable from the database
 // afterwards — an operator who loses it mints another.
@@ -166,18 +182,24 @@ func ListInvites(ctx context.Context, pool *pgxpool.Pool) ([]InviteSummary, erro
 // row, and the second re-evaluates the predicate after the first commits (the
 // caller pins READ COMMITTED for exactly this reason) and matches zero rows.
 // A check-then-update in application code would let both through.
-func redeemInviteTx(ctx context.Context, tx pgx.Tx, code string, userID uuid.UUID, now time.Time) error {
-	// An empty code is refused here rather than treated as "no code offered".
+// It takes the HASH rather than the code, because the two callers hold the code
+// at different times: the ID-token exchange has the plaintext in the request it
+// is serving, while a passkey registration took it one round trip earlier and
+// kept only the digest (see InviteCodeHash). Hashing at the edge rather than
+// here means there is exactly one moment in either flow at which a live code
+// exists in memory.
+func redeemInviteTx(ctx context.Context, tx pgx.Tx, codeHash []byte, userID uuid.UUID, now time.Time) error {
+	// An absent code is refused here rather than treated as "no code offered".
 	// The caller decides whether a code is REQUIRED; once it is, an empty
 	// string is a failed attempt like any other and must not normalize into a
 	// hash that could ever match a row.
-	if NormalizeInviteCode(code) == "" {
+	if len(codeHash) == 0 {
 		return ErrNotInvited
 	}
 	tag, err := tx.Exec(ctx,
 		`UPDATE invite_codes SET redeemed_at = $1, redeemed_by = $2
 		  WHERE code_hash = $3 AND redeemed_at IS NULL`,
-		now, userID, inviteCodeHash(code))
+		now, userID, codeHash)
 	if err != nil {
 		return fmt.Errorf("auth: redeem invite: %w", err)
 	}

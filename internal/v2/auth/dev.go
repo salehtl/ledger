@@ -63,7 +63,13 @@ func (v devVerifier) clock() time.Time {
 }
 
 func (v devVerifier) Verify(_ context.Context, idToken string, _ VerifyOpts) (Identity, error) {
-	if !validIdP(v.idp) {
+	if !validIdP(v.idp) || v.idp == IdPPasskey {
+		// The passkey clause is not redundant. "passkey" is in the IdP
+		// vocabulary but is not an ID-token provider, and a dev verifier built
+		// for it would hand out an Identity whose subject the CALLER chose for
+		// an account addressed by a 32-byte handle the SERVER minted — a dev
+		// token that signs in as an arbitrary passkey account. Nothing
+		// constructs one today; this is what keeps that true.
 		// Not an ErrTokenRejected: a verifier built for a provider that does not
 		// exist is a wiring mistake, and answering "your token is invalid" would
 		// send a caller off to fetch another one that fails identically. It is

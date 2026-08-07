@@ -384,17 +384,29 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 // was never created, an account created against a code someone else spent a
 // millisecond earlier — is a rollback here instead.
 func UpsertUserInvited(ctx context.Context, pool *pgxpool.Pool, id Identity, code string) (uuid.UUID, error) {
-	return upsertUser(ctx, pool, id, &code)
+	hash := InviteCodeHash(code)
+	return upsertUser(ctx, pool, id, &hash)
 }
 
-// upsertUser is the body both entry points share. invite is nil when creation
-// is unconditional and non-nil (possibly empty) when it must be paid for.
-func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *string) (uuid.UUID, error) {
+// UpsertUserInvitedHash is UpsertUserInvited for a caller that holds the code's
+// DIGEST rather than the code: a passkey registration, which took the code at
+// `register/begin` and stored only its hash on the ceremony row, and spends it
+// here one round trip later. Everything else — the gate, the single-use
+// redemption, the one transaction — is identical, because it is the same code.
+func UpsertUserInvitedHash(ctx context.Context, pool *pgxpool.Pool, id Identity, codeHash []byte) (uuid.UUID, error) {
+	return upsertUser(ctx, pool, id, &codeHash)
+}
+
+// upsertUser is the body all three entry points share. invite is nil when
+// creation is unconditional and non-nil (possibly holding no hash at all) when
+// it must be paid for.
+func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *[]byte) (uuid.UUID, error) {
 	if pool == nil {
 		return uuid.Nil, errors.New("auth: UpsertUser: pool is nil")
 	}
 	if !validIdP(id.IdP) {
-		return uuid.Nil, fmt.Errorf("auth: UpsertUser: idp is %q, want %q or %q", id.IdP, IdPApple, IdPGoogle)
+		return uuid.Nil, fmt.Errorf("auth: UpsertUser: idp is %q, want one of %q, %q, %q",
+			id.IdP, IdPApple, IdPGoogle, IdPPasskey)
 	}
 	if id.Subject == "" {
 		return uuid.Nil, errors.New("auth: UpsertUser: identity has no subject")

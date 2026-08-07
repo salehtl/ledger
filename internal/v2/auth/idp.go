@@ -64,12 +64,20 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 )
 
-// The two identity providers v2 supports. These strings are also the CHECK
+// The identity providers v2 supports. These strings are also the CHECK
 // constraint on users.idp, and they are part of SubjectHash's input, so they
 // are a closed vocabulary and not free-form labels.
+//
+// IdPPasskey is not an OIDC provider and has no verifier in this file: a passkey
+// identity is established by a WebAuthn ceremony (passkey.go) rather than by an
+// ID token, and it reaches the same Identity/SubjectHash/session machinery from
+// the other side. It is listed here because the vocabulary is what SubjectHash's
+// separator argument depends on, so there must be exactly one place that
+// enumerates it.
 const (
-	IdPApple  = "apple"
-	IdPGoogle = "google"
+	IdPApple   = "apple"
+	IdPGoogle  = "google"
+	IdPPasskey = "passkey"
 )
 
 // Issuer and JWKS locations, in one place because a typo in an issuer is an
@@ -273,9 +281,15 @@ type Verifier interface {
 //
 // The "|" separator is not injective for arbitrary inputs — ("a|b", "c") and
 // ("a", "b|c") hash alike — which is safe here only because idp is a closed
-// two-value vocabulary containing no "|", enforced by validIdP below and again
-// by the CHECK constraint on users.idp. Do not widen that vocabulary without
-// making the encoding unambiguous (length-prefix it).
+// vocabulary containing no "|", enforced by validIdP below and again by the
+// CHECK constraint on users.idp. Do not widen that vocabulary without making the
+// encoding unambiguous (length-prefix it).
+//
+// "passkey" was added on those terms and the argument was re-checked rather than
+// assumed: the value itself contains no "|", and the SUBJECT it names is
+// base64url of 32 random bytes, an alphabet that cannot contain one either. The
+// pair is therefore still unambiguous. The one caller-chosen subject anywhere in
+// this package is the dev verifier's, which refuses a "|" explicitly.
 //
 // The "v2|" prefix domain-separates this digest from any other SHA-256 the
 // system computes over user data, so a hash from elsewhere can never be
@@ -285,7 +299,9 @@ func SubjectHash(idp, subject string) []byte {
 	return sum[:]
 }
 
-func validIdP(idp string) bool { return idp == IdPApple || idp == IdPGoogle }
+func validIdP(idp string) bool {
+	return idp == IdPApple || idp == IdPGoogle || idp == IdPPasskey
+}
 
 // NewOIDCVerifier builds a verifier for one provider.
 //
@@ -382,6 +398,13 @@ func newOIDCVerifier(idp, issuer, jwksURL string, audiences []string, now func()
 	switch {
 	case !validIdP(idp):
 		v.configErr = fmt.Errorf("%w: unknown idp %q", ErrNotConfigured, idp)
+	case idp == IdPPasskey:
+		// In the vocabulary, but not an OIDC provider: there is no issuer, no
+		// JWKS and no ID token to verify. Refused explicitly rather than left to
+		// fall through the issuer/jwks checks below, so that wiring a passkey
+		// verifier into the exchange path is a loud misconfiguration instead of
+		// a verifier that happens to reject everything for the wrong reason.
+		v.configErr = fmt.Errorf("%w: %q is not an OIDC provider; passkey identities come from a WebAuthn ceremony", ErrNotConfigured, idp)
 	case issuer == "":
 		v.configErr = fmt.Errorf("%w: %s has no issuer", ErrNotConfigured, idp)
 	case jwksURL == "":
