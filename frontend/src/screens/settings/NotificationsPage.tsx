@@ -6,6 +6,7 @@ import { Skeleton } from "../../components/Skeleton";
 import { useToast } from "../../components/Toast";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
+import { PushSection } from "./PushSection";
 
 type NotifySettings = { notify_thresholds: boolean; notify_upcoming_days: number };
 
@@ -47,6 +48,8 @@ export function NotificationsPage({ onClose }: { onClose: () => void }) {
         <p className="text-sm text-muted">Couldn't load notification settings. Pull down to retry.</p>
       ) : (
         <>
+          <PushSection />
+
           <div className="flex items-center justify-between gap-3 min-h-11">
             <div className="min-w-0">
               <p className="text-sm font-medium">Budget thresholds</p>
