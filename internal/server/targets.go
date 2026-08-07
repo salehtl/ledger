@@ -173,9 +173,17 @@ func (s *Server) handlePutTarget(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	t, _, err := s.targetsStore.SelectCategoryTargetForMonth(catID, in.Month)
+	t, found, err := s.targetsStore.SelectCategoryTargetForMonth(catID, in.Month)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if !found {
+		// The write just succeeded, so a miss here means something else (e.g. a
+		// concurrent delete for the same category+month) raced the read. Report
+		// it rather than serialize a zero-value target the client would render
+		// as if it were real.
+		errJSON(w, http.StatusInternalServerError, "target vanished after write")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -198,6 +206,10 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	if err := s.targetsStore.DeleteCategoryTarget(catID, month); err != nil {
 		if errors.Is(err, store.ErrTargetInvalid) {
 			errJSON(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if isFKViolation(err) {
+			errJSON(w, http.StatusBadRequest, "unknown category")
 			return
 		}
 		errJSON(w, http.StatusInternalServerError, "db error")

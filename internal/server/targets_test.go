@@ -114,6 +114,55 @@ func TestTargetsUnavailableWithoutStore(t *testing.T) {
 	}
 }
 
+// TestDeleteTargetUnknownCategory: DeleteCategoryTarget writes a tombstone
+// (an INSERT), so an unknown category trips the foreign key rather than
+// silently no-op'ing. The handler must map that to 400, the same way
+// handlePutTarget already does, not let it fall through to a bare 500.
+func TestDeleteTargetUnknownCategory(t *testing.T) {
+	srv, _ := newTargetsTestServer(t)
+	w := doJSON(t, srv, "DELETE", "/api/targets/424242?month=2026-09", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body)
+	}
+}
+
+// raceyTargetsStore fakes a write that races a concurrent delete: the
+// upsert reports success but the immediate re-read misses. Exercises
+// handlePutTarget's !found branch, which a real store can hit only inside a
+// narrow concurrent-delete window.
+type raceyTargetsStore struct{}
+
+func (raceyTargetsStore) UpsertCategoryTarget(store.CategoryTargetRow) error { return nil }
+func (raceyTargetsStore) SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error) {
+	return nil, nil
+}
+func (raceyTargetsStore) SelectCategoryTargetForMonth(categoryID int64, month string) (store.CategoryTargetRow, bool, error) {
+	return store.CategoryTargetRow{}, false, nil
+}
+func (raceyTargetsStore) DeleteCategoryTarget(categoryID int64, month string) error { return nil }
+
+// TestPutTargetReReadMiss: if the post-write read reports found=false, the
+// handler must not serialize the resulting zero-value target as a 200 — a
+// client rendering that response would show a fabricated 0-fils target.
+func TestPutTargetReReadMiss(t *testing.T) {
+	srv := New(fakeChecker{}, testFS())
+	srv.SetTargetsStore(raceyTargetsStore{})
+
+	w := doJSON(t, srv, "PUT", "/api/targets/1", map[string]any{
+		"month": "2026-07", "target_type": "set_aside", "amount_fils": 50_000, "cadence": "monthly",
+	})
+	if w.Code == http.StatusOK {
+		t.Fatalf("status = 200 with body %s, want a non-200 error rather than a phantom target", w.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["error"]; !ok {
+		t.Fatalf("body = %+v, want an error field, not a target-shaped body", body)
+	}
+}
+
 func seedServerCategory(t *testing.T, st *store.Store, name string) int64 {
 	t.Helper()
 	res, err := st.DB.Exec(`INSERT INTO categories (name, kind, bucket) VALUES (?, 'spending', 'need')`, name)
