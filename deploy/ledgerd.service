@@ -40,9 +40,14 @@ SystemCallErrorNumber=EPERM
 # AF_UNIX is needed for the local Postgres socket; the DSN uses 127.0.0.1 today
 # but a unix-socket DSN must not silently fail if it is ever switched.
 
-# The autocert cache holds the ACME account key and the issued certificates.
-# 0700, owner-only: this directory is the whole of the service's TLS identity.
-ReadWritePaths=/var/lib/ledger-v2
+# The autocert cache holds the ACME account key and the issued certificates —
+# the whole of the service's TLS identity. StateDirectory rather than a bare
+# ReadWritePaths so systemd CREATES it and ENFORCES the mode on every start:
+# with ReadWritePaths alone the 0700 claim depends on whoever made the
+# directory by hand, which is a comment rather than a control. Matches
+# ledger.service's pattern for the same reason.
+StateDirectory=ledger-v2
+StateDirectoryMode=0700
 
 # v1 is a SEPARATE service with its own database and config. Nothing here may
 # reach it: /var/lib/ledger is not in ReadWritePaths, and ProtectSystem=strict
