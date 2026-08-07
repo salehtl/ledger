@@ -33,13 +33,17 @@
  * until it lands, deliberately: a half-set-up device that let you into the
  * product would look fine until the first edit.
  *
- * # One handle, one engine, for the tab's lifetime
+ * # One handle for the tab's lifetime — one engine per CLIENT
  *
  * Both are memoised at module scope rather than held in component state.
  * `SyncEngine`'s rule 2 is one SQLite connection for the app's lifetime, and
  * `StrictMode` mounts every effect twice in development — without the memo that
  * is two `openBrowserDriver` calls against one IndexedDB record and two engines
  * racing syncs on it, which is rule 3's fetch storm with a different cause.
+ *
+ * The two memos have DIFFERENT lifetimes, and that is the whole of {@link
+ * engineFor}: the handle outlives every session, while an engine is only ever
+ * as good as the `Client` it captured in its constructor. See that function.
  */
 
 import {
@@ -57,6 +61,7 @@ import { Button } from "../components/ui/Button";
 import { PixelSpinner } from "../components/ui/PixelSpinner";
 
 import type { Halt } from "@ledger/client/invariants/surface";
+import type { Client } from "@ledger/client/net/client";
 
 import { readAddress } from "./address";
 import { IDB_NAME } from "./db/driver";
@@ -102,13 +107,46 @@ export function openV2(): Promise<V2Handle> {
   return handleOnce;
 }
 
-const engines = new WeakMap<V2Handle, SyncCoordinator>();
+/**
+ * Keyed on the **`Client`**, never on the handle.
+ *
+ * `SyncEngine` reads its client ONCE, in its constructor
+ * (`client/src/net/engine.ts`), and `V2Handle.client` is a getter that hands
+ * back a NEW `Client` every time a ceremony adopts a session (`session.ts`'s
+ * `adoptSession` ends with `client = build()`). The handle, meanwhile, is
+ * memoised for the tab's lifetime. So a cache keyed on the handle answers every
+ * later question with an engine bound to a client that no longer exists.
+ *
+ * That is not theoretical: it is exactly what made re-authenticating in the
+ * same tab impossible. A session expires → the sync `401`s → the gate re-runs
+ * boot → `signed_out` → the user signs in on the sign-in slot, minting a fresh
+ * client → `done()` re-runs boot → the handle is the same object, so the cache
+ * returns the engine still holding the EXPIRED token → the launch sync `401`s →
+ * boot classifies it as a session answer and clears the token the user just
+ * minted → back to Welcome. Every attempt, until the tab is hard-reloaded.
+ *
+ * Keying on the client makes the cache's key the same identity the engine
+ * captured, so the entry can only ever be returned while it is still valid, and
+ * a rotated client cannot find a stale entry to hit. The stale coordinator dies
+ * with the client that owned it — a `WeakMap`, so nothing has to remember to
+ * evict it.
+ */
+const engines = new WeakMap<Client, SyncCoordinator>();
 
-function engineFor(handle: V2Handle): SyncCoordinator {
-  const held = engines.get(handle);
+/**
+ * The one engine for a handle's CURRENT client, built at most once.
+ *
+ * `build` is a seam and not a convenience: without it, the only way for a test
+ * to hand the gate a fake engine was to replace this whole function, so the
+ * memo — the code that actually runs in production — was covered by nothing.
+ * Injecting the *builder* instead means every gate test drives the real cache.
+ */
+export function engineFor(handle: V2Handle, build: (h: V2Handle) => SyncCoordinator = startEngine): SyncCoordinator {
+  const client = handle.client;
+  const held = engines.get(client);
   if (held !== undefined) return held;
-  const made = startEngine(handle);
-  engines.set(handle, made);
+  const made = build(handle);
+  engines.set(client, made);
   return made;
 }
 
@@ -195,9 +233,14 @@ export interface BootGateProps {
   /** Injected by tests. `GET /api/v1/address`. */
   address?: (handle: V2Handle) => Promise<string | null>;
   /**
-   * Injected by tests. Defaults to the memoised {@link engineFor} — which
-   * builds a real {@link SyncEngine}, and so runs the projection's DDL against
-   * the real driver.
+   * How to BUILD an engine — not how to get one. Defaults to
+   * {@link startEngine}, which constructs a real `SyncEngine` and so runs the
+   * projection's DDL against the real driver.
+   *
+   * The gate always goes through {@link engineFor}, whatever this is, so the
+   * memo and its key are exercised by every test rather than replaced by them.
+   * Injecting the memo itself is what left the caching path — the only path
+   * that runs in production — untested, and it held a bug for three rounds.
    */
   engine?: (handle: V2Handle) => SyncCoordinator;
 }
@@ -209,7 +252,7 @@ export function BootGate({
   open = openV2,
   wipe = wipeLocalData,
   address = addressOf,
-  engine = engineFor,
+  engine = startEngine,
 }: BootGateProps) {
   const [handle, setHandle] = useState<V2Handle | null>(null);
   const [coordinator, setCoordinator] = useState<SyncCoordinator | null>(null);
@@ -261,7 +304,10 @@ export function BootGate({
           setState({ step: "signed_out" });
           return;
         }
-        const c = io.current.engine(h);
+        // Through the memo, never around it: `engineFor` is what decides
+        // whether the engine this boot uses is still bound to a live client,
+        // and re-authenticating in the same tab depends on that answer.
+        const c = engineFor(h, io.current.engine);
         setCoordinator(c);
         const next = await boot(
           handleDeps({

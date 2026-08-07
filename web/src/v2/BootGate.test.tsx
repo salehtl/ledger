@@ -7,7 +7,7 @@ import type { SyncProgress, SyncResult } from "@ledger/client/net/engine";
 
 import { CLEAN_SYNC, fakeEngine } from "../test/engineDouble";
 import { IDB_NAME } from "./db/driver";
-import { BootGate, BROWSER_DATABASE, deleteBrowserDatabase, PROFILE } from "./BootGate";
+import { BootGate, BROWSER_DATABASE, deleteBrowserDatabase, engineFor, PROFILE } from "./BootGate";
 import { SyncCoordinator } from "./engine";
 import { encodeLocal, ONBOARDING_LOCAL_KEY } from "./onboarding";
 import { EnrollmentError, type V2Handle } from "./session";
@@ -558,6 +558,153 @@ describe("BootGate", () => {
     expect(await screen.findByText(/could not open this account/i)).toBeInTheDocument();
     expect(screen.getByText(/indexedDB refused/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The memoised engine — the path production actually runs
+// ---------------------------------------------------------------------------
+
+/**
+ * A handle whose `client` ROTATES, the way the real one does.
+ *
+ * `session.ts`'s `adoptSession` ends with `client = build()`, so every
+ * successful ceremony replaces the object, while the handle itself is memoised
+ * for the tab's lifetime. The engine builder here mirrors `SyncEngine`'s
+ * constructor exactly — it reads `h.client` ONCE and holds it — which is what
+ * makes a coordinator built over a dead client keep answering `401` forever.
+ *
+ * Every test above injects `engine`, so before this rig the cache in front of
+ * that builder was covered by nothing at all.
+ */
+function sessionRig() {
+  localStorage.setItem(`ledger-v2:ledger:${ONBOARDING_LOCAL_KEY}`, JSON.stringify(SETTLED));
+
+  const dead = new Set<string>();
+  let issued = 1;
+  let token: string | null = "tok-1";
+
+  const makeClient = (tok: string) => ({
+    tok,
+    get userId() {
+      return "u_1";
+    },
+    state: () => ({
+      txns: new Map([["t1", { posted_at: "2026-08-01T00:00:00Z" }]]),
+      homeCurrency: "AED",
+    }),
+    get writerId() {
+      return "web-1";
+    },
+  });
+
+  let client = makeClient("tok-1");
+
+  const handle = {
+    signedIn: () => token !== null,
+    enrol: async () => {},
+    signOut: async () => {
+      token = null;
+    },
+    close: () => {},
+    get client() {
+      return client;
+    },
+  } as unknown as V2Handle;
+
+  /** The token each engine was built over, in build order. */
+  const builds: string[] = [];
+  const build = (h: V2Handle): SyncCoordinator => {
+    const captured = h.client as unknown as { tok: string };
+    builds.push(captured.tok);
+    return new SyncCoordinator(
+      fakeEngine({
+        sync: async () => {
+          if (dead.has(captured.tok)) throw new ApiError(401, "unauthorized", "", "401");
+          return CLEAN_SYNC;
+        },
+      }),
+    );
+  };
+
+  return {
+    handle,
+    build,
+    builds,
+    /** The server stops honouring the token this client holds. */
+    expire() {
+      dead.add(client.tok);
+    },
+    /** A passkey ceremony: a fresh token, and a NEW `Client` around it. */
+    signIn() {
+      issued += 1;
+      token = `tok-${issued}`;
+      client = makeClient(token);
+    },
+  };
+}
+
+describe("engineFor", () => {
+  it("hands back the same engine while the client is unchanged", () => {
+    const r = sessionRig();
+    // StrictMode's double mount, and every later re-boot on one session.
+    expect(engineFor(r.handle, r.build)).toBe(engineFor(r.handle, r.build));
+    expect(r.builds).toEqual(["tok-1"]);
+  });
+
+  it("builds a NEW engine once the handle's client has been replaced", () => {
+    const r = sessionRig();
+    const before = engineFor(r.handle, r.build);
+    r.signIn();
+    const after = engineFor(r.handle, r.build);
+    expect(after).not.toBe(before);
+    expect(r.builds).toEqual(["tok-1", "tok-2"]);
+  });
+});
+
+describe("BootGate, re-authenticating in the same document", () => {
+  it("reaches the app again after the session expires and the user signs back in", async () => {
+    const r = sessionRig();
+    render(
+      <BootGate
+        open={async () => r.handle}
+        engine={r.build}
+        address={async () => "u-abc@in.sirdab.ae"}
+        wipe={async () => {}}
+        signIn={({ done }) => (
+          <button
+            type="button"
+            data-testid="welcome"
+            onClick={() => {
+              r.signIn();
+              done();
+            }}
+          >
+            Sign in
+          </button>
+        )}
+      >
+        <div data-testid="app">the app</div>
+      </BootGate>,
+    );
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+
+    // The session ends while the tab is open — the case round 3 made common by
+    // routing a post-boot 401 back through boot instead of reloading.
+    r.expire();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(await screen.findByTestId("welcome")).toBeInTheDocument();
+
+    // Signing in mints a fresh `Client`. With the cache keyed on the HANDLE,
+    // the gate got back the engine still holding the expired token, the launch
+    // sync 401'd, and boot cleared the token that had just been minted — so
+    // this landed back on Welcome, every time, until the tab was reloaded.
+    await userEvent.click(screen.getByTestId("welcome"));
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+    expect(r.builds).toEqual(["tok-1", "tok-2"]);
   });
 });
 
