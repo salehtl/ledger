@@ -66,7 +66,12 @@ import (
 //     the remainder rides forward and the final month (monthsLeft = 1) asks
 //     for the entire remainder — last-month absorption, never lost.
 type TargetStatus struct {
-	Type            string `json:"type"`
+	Type string `json:"type"`
+	// EffectiveMonth is the month this target version was set in. It may be
+	// EARLIER than the month being viewed — that is inheritance: a target
+	// carries forward until a later version supersedes it, and the client uses
+	// this to tell "set here" from "inherited from an earlier month".
+	EffectiveMonth  string `json:"effective_month"`
 	AmountFils      int64  `json:"amount_fils"`
 	Cadence         string `json:"cadence"`
 	DueDate         string `json:"due_date,omitempty"`
@@ -107,9 +112,11 @@ type EnvelopeSummary struct {
 
 // ComputeEnvelopes evaluates one month's envelopes. rows come from
 // store.EnvelopeMonthSummary(month) (row order — need/want/saving then name —
-// is preserved), targets from store.SelectCategoryTargets; income is resolved
-// by the caller exactly as for the jar summary. Targets for categories not in
-// rows are ignored.
+// is preserved), targets from store.SelectCategoryTargetsForMonth — already
+// resolved by the caller for the month being displayed, so each row is the
+// version in force then, whichever month it was originally set in. Income is
+// resolved by the caller exactly as for the jar summary. Targets for
+// categories not in rows are ignored.
 func ComputeEnvelopes(month string, income int64, rows []store.EnvelopeMonthRow, targets []store.CategoryTargetRow) (EnvelopeSummary, error) {
 	monthStart, err := time.Parse("2006-01", month)
 	if err != nil {
@@ -152,7 +159,8 @@ func ComputeEnvelopes(month string, income int64, rows []store.EnvelopeMonthRow,
 // targetStatus evaluates one target against the month; see TargetStatus for
 // the per-type formulas and remainder policy.
 func targetStatus(t store.CategoryTargetRow, monthStart time.Time, carry, assigned, activity int64) *TargetStatus {
-	ts := &TargetStatus{Type: t.TargetType, AmountFils: t.AmountFils, Cadence: t.Cadence, DueDate: t.DueDate}
+	ts := &TargetStatus{Type: t.TargetType, EffectiveMonth: t.EffectiveMonth,
+		AmountFils: t.AmountFils, Cadence: t.Cadence, DueDate: t.DueDate}
 	switch t.TargetType {
 	case "set_aside":
 		ts.NeededFils = monthlyEquivalent(t.AmountFils, t.Cadence, int(monthStart.Month()))

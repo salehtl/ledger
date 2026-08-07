@@ -359,16 +359,20 @@ async function main() {
   }
 
   // ---- targets + envelope assignments ------------------------------------
+  // Targets are effective-dated: `month` is the month the target applies from,
+  // and it is required — without it PUT /api/targets/{id} 400s and api() only
+  // records the failure, leaving the harness up with no targets at all. Use the
+  // same month as the envelope assignments below.
+  const month = "2026-07";
   const targets = [
-    [byName["Rent"], { target_type: "refill", amount_fils: 750_000, cadence: "monthly" }],
-    [byName["Groceries"], { target_type: "refill", amount_fils: 220_000, cadence: "monthly" }],
-    [byName["Subscriptions"], { target_type: "set_aside", amount_fils: 30_000, cadence: "monthly" }],
-    [byName["Savings"], { target_type: "save_by_date", amount_fils: 5_000_000, cadence: "monthly", due_date: "2027-01-31" }],
-    [byName["Transport"], { target_type: "refill", amount_fils: 90_000, cadence: "monthly" }],
+    [byName["Rent"], { month, target_type: "refill", amount_fils: 750_000, cadence: "monthly" }],
+    [byName["Groceries"], { month, target_type: "refill", amount_fils: 220_000, cadence: "monthly" }],
+    [byName["Subscriptions"], { month, target_type: "set_aside", amount_fils: 30_000, cadence: "monthly" }],
+    [byName["Savings"], { month, target_type: "save_by_date", amount_fils: 5_000_000, cadence: "monthly", due_date: "2027-01-31" }],
+    [byName["Transport"], { month, target_type: "refill", amount_fils: 90_000, cadence: "monthly" }],
   ];
   for (const [cid, body] of targets) if (cid) await api("PUT", `/api/targets/${cid}`, body);
 
-  const month = "2026-07";
   await api("POST", "/api/envelopes/assign", {
     month,
     assignments: [

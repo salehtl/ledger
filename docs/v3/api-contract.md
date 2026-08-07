@@ -25,53 +25,89 @@ Conventions:
 
 ## 1. Category targets
 
-One target max per category. `target_type`: `"set_aside" | "refill" |
-"save_by_date"`. `cadence`: `"weekly" | "monthly" | "yearly"` (default
-`"monthly"` when omitted). `due_date` required iff `save_by_date`.
+Targets are **effective-dated**. A target is a version row keyed
+`(category_id, effective_month)`; it applies from its effective month onward
+until a later version supersedes it. So a target set once carries forward to
+every later month automatically, and **editing at month M never affects any
+month before M** — history stays what it was.
 
-### `GET /api/targets`
+Every endpoint is therefore month-scoped, and the month is always **required**
+rather than defaulting to "now": these endpoints are read and written while the
+user is looking at some other month, so a silent default would edit the wrong
+one. A missing or malformed month is `400 {"error":"month required (YYYY-MM)"}`.
 
-→ `200` array (may be `[]`):
+`target_type`: `"set_aside" | "refill" | "save_by_date"`. `cadence`:
+`"weekly" | "monthly" | "yearly"` (default `"monthly"` when omitted).
+`due_date` required iff `save_by_date`. The internal tombstone type (see
+DELETE) is never returned by any endpoint.
+
+### The target object
 
 ```json
-[
-  {
-    "category_id": 5,
-    "target_type": "set_aside",
-    "amount_fils": 50000,
-    "cadence": "monthly",
-    "created_at": "2026-07-29T10:00:00Z",
-    "updated_at": "2026-07-29T10:00:00Z"
-  }
-]
+{
+  "category_id": 5,
+  "effective_month": "2026-05",
+  "target_type": "set_aside",
+  "amount_fils": 50000,
+  "cadence": "monthly",
+  "created_at": "2026-07-29T10:00:00Z",
+  "updated_at": "2026-07-29T10:00:00Z"
+}
 ```
+
+`effective_month` is the month the returned version was *set* in, and **may be
+earlier than the month requested** — that is inheritance, and it is how a client
+distinguishes "set in this month" from "carried forward from an earlier one".
 
 `due_date` is omitted (not `""`) when unset — i.e. on every target that is not
 `save_by_date`.
 
-### `GET /api/targets/{categoryId}`
+### `GET /api/targets?month=YYYY-MM`
 
-→ `200` single target object (shape above) | `404 {"error":"no target for category"}`.
+→ `200` array (may be `[]`) of the targets **in force during that month**, one
+per category, category order. A category whose target starts in a later month,
+or whose newest version at or before `month` is a removal, is absent.
+
+`400 {"error":"month required (YYYY-MM)"}` when `month` is missing or invalid.
+
+### `GET /api/targets/{categoryId}?month=YYYY-MM`
+
+→ `200` the single target in force for that category in that month (shape
+above) | `404 {"error":"no target for category"}` when none is in force —
+including when the category's target was removed at or before `month`.
+
+`400` on a missing/invalid `month`.
 
 ### `PUT /api/targets/{categoryId}`
 
-Creates or overwrites the category's target.
+Writes the version effective from `month`, overwriting an existing version at
+exactly that month. Earlier months are untouched; later months inherit the new
+value unless they have versions of their own.
 
-Request:
+Request — note `month` travels in the **body**, not the query string:
 
 ```json
-{ "target_type": "save_by_date", "amount_fils": 120000, "cadence": "monthly", "due_date": "2026-12-01" }
+{ "month": "2026-08", "target_type": "save_by_date", "amount_fils": 120000, "cadence": "monthly", "due_date": "2026-12-01" }
 ```
 
-→ `200` the stored target object. `400` on invalid type/amount/cadence,
+→ `200` the stored target object (its `effective_month` is the `month` just
+written). `400` on a missing/invalid `month`, invalid type/amount/cadence,
 `save_by_date` without a `due_date` or with one that is not a valid
 `YYYY-MM-DD` date, or unknown category (`{"error":"unknown category"}`).
 A `due_date` sent on a `set_aside`/`refill` payload is silently dropped —
 never stored or echoed.
 
-### `DELETE /api/targets/{categoryId}`
+### `DELETE /api/targets/{categoryId}?month=YYYY-MM`
 
-→ `200 {"ok":true}` (idempotent — deleting a nonexistent target is ok).
+Stops the target **from that month onward**. This is not a row deletion: it
+writes a tombstone version at `month`, because deleting the row would let the
+previous version resurrect and apply forever — the opposite of removing.
+Months before `month` keep whatever target was in force then.
+
+→ `200 {"ok":true}`. `400` on a missing/invalid `month`, or on an unknown
+category (`{"error":"unknown category"}`) — unlike the old delete, this is a
+write, so a category that does not exist is rejected rather than accepted as a
+no-op. Removing a category that simply has no target in force is fine.
 
 ---
 
