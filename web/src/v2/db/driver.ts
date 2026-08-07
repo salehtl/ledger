@@ -55,6 +55,26 @@
  * export is enough to keep the *same* `SqlStatement` object the store is
  * holding fully working.
  *
+ * `held` is never emptied except by `close()`, and `SqlStatement` — a
+ * contract shared with `bunDriver` and the intended `expoDriver` under
+ * `client/src`, which this task must not change the behaviour of — exposes no
+ * `free()` a caller could use to release one early. That is harmless for
+ * `sqliteStore`, which prepares a small fixed set once. It is NOT harmless
+ * for `client/src/replay/projection.ts`, which calls `db.prepare(...)`
+ * AD HOC, inside functions invoked on every projection read/write (`project`,
+ * `readTxns`, `readRules`, `ensureProjection`, and friends). Without caching,
+ * `held` — and the O(N) `sqlite3_prepare` cost `reprepareHeld` pays on every
+ * 500ms flush — would grow without bound over a long-lived tab's session:
+ * strictly worse than the bug the re-prepare fix replaced, because a leak
+ * degrades silently instead of throwing. `prepare()` therefore caches by SQL
+ * TEXT: an identical string returns the SAME held wrapper rather than a new
+ * one, so `held`'s size is bounded by the number of DISTINCT statements a
+ * caller ever prepares — for `projection.ts` that is the fixed handful of
+ * `INSERT`/`SELECT` templates in the module, not one per call. This mirrors
+ * sql.js's own internal statement cache (also keyed by SQL text, confirmed by
+ * reading `sql-wasm.js`), so it introduces no new sharing model — it just
+ * makes this driver's `held` set follow the same shape sql.js already assumes.
+ *
  * # The in-memory fallback is not test scaffolding
  *
  * `indexedDB` is undefined in two real situations this driver must survive:
@@ -273,7 +293,9 @@ interface HeldStatement extends SqlStatement {
  * "persist now" a caller can await — e.g. before navigating away from a
  * screen that just wrote something worth not losing to the 500ms debounce.
  */
-export async function openBrowserDriver(name: string): Promise<SqlDriver & { flush(): Promise<void> }> {
+export async function openBrowserDriver(
+  name: string,
+): Promise<SqlDriver & { flush(): Promise<void>; heldStatementCount(): number }> {
   const SQL = await initSqlJs(isNode() ? {} : { locateFile: () => wasmUrl });
 
   // See `FallbackState`'s own doc: starts `false`, flips permanently `true`
@@ -283,7 +305,11 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
   const priorBytes = await loadBytes(name, fallback);
   const db: Database = new SQL.Database(priorBytes ?? undefined);
 
-  const held = new Set<HeldStatement>();
+  // Keyed by SQL text — see the module doc's "held is never emptied" section.
+  // A `prepare()` call with SQL already in this map returns the EXISTING
+  // wrapper rather than creating a new one, which is what bounds this map's
+  // size to the number of distinct statements a caller ever prepares.
+  const held = new Map<string, HeldStatement>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
   // Set by any mutation, cleared once it has been exported and handed to
@@ -304,7 +330,7 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
    * if) nothing yields between `db.export()` and this call.
    */
   const reprepareHeld = (): void => {
-    for (const stmt of held) {
+    for (const stmt of held.values()) {
       stmt.raw = db.prepare(stmt.sql);
     }
   };
@@ -312,9 +338,25 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
   const persistNow = async (): Promise<void> => {
     if (closed || !dirty) return;
     dirty = false;
-    const bytes = db.export();
-    reprepareHeld();
-    await saveBytes(name, bytes, fallback);
+    try {
+      const bytes = db.export();
+      reprepareHeld();
+      await saveBytes(name, bytes, fallback);
+    } catch (err) {
+      // `db.export()`/`reprepareHeld()` can in principle throw mid-way
+      // (e.g. the WASM heap is out of memory), leaving some statements
+      // swapped and some still freed. Whatever happened, the bytes this
+      // attempt would have persisted were NOT saved — so `dirty` must go
+      // back to `true`, or a future flush would see nothing pending and this
+      // mutation would be lost with no further attempt to persist it. The
+      // throw itself still propagates (surfacing as an unhandled rejection
+      // from the debounce/visibilitychange call sites, or straight to the
+      // caller from `flush()`) rather than being swallowed here — a loud
+      // failure is the point; only silently discarding the pending write is
+      // the part this driver must not do.
+      dirty = true;
+      throw err;
+    }
   };
 
   const scheduleFlush = (): void => {
@@ -352,7 +394,7 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
   // Nothing in this codebase relies on the old silent-join behaviour.
   let inTransaction = false;
 
-  const driver: SqlDriver & { flush(): Promise<void> } = {
+  const driver: SqlDriver & { flush(): Promise<void>; heldStatementCount(): number } = {
     // A getter, not a plain field: `fallback.usingMemory` can flip true after
     // open (a write degrading mid-session), and `location` should reflect
     // that the moment it happens rather than freeze the answer from open time.
@@ -366,6 +408,12 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
     },
 
     prepare(sql: string): SqlStatement {
+      // Text-keyed cache: an ad hoc caller (projection.ts prepares inside
+      // functions called on every read) that prepares the same SQL
+      // repeatedly gets back the SAME wrapper rather than growing `held`
+      // without bound — see the module doc.
+      const existing = held.get(sql);
+      if (existing !== undefined) return existing;
       const stmt: HeldStatement = {
         sql,
         raw: db.prepare(sql),
@@ -388,7 +436,7 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
           return rows;
         },
       };
-      held.add(stmt);
+      held.set(sql, stmt);
       return stmt;
     },
 
@@ -452,12 +500,18 @@ export async function openBrowserDriver(name: string): Promise<SqlDriver & { flu
       // no-op in sql.js (finalizing an already-finalized/NULL statement
       // pointer), so this loop is safe to run unconditionally rather than
       // branch on whether the export above happened to run.
-      for (const stmt of held) stmt.raw.free();
+      for (const stmt of held.values()) stmt.raw.free();
       held.clear();
       db.close();
     },
 
     flush: persistNow,
+
+    // Diagnostic only — not part of `SqlDriver`. Exposes the size of the
+    // text-keyed statement cache above, so a test can assert it stays
+    // bounded under repeated identical `prepare()` calls rather than growing
+    // per call (see driver.test.ts's "does not grow held statements" test).
+    heldStatementCount: (): number => held.size,
   };
 
   return driver;

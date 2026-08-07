@@ -178,6 +178,29 @@ describe("openBrowserDriver", () => {
       }
     }
   });
+
+  // Regression for the round-3 IMPORTANT: making `held` re-prepare every
+  // statement on export (round 2's fix for "Statement closed") is only safe
+  // if `held` itself stays bounded. `client/src/replay/projection.ts` calls
+  // `db.prepare(...)` AD HOC inside functions invoked on every projection
+  // read — not once at construction like `sqliteStore` — so without a
+  // text-keyed cache, `held` (and the O(N) re-prepare cost paid on every
+  // 500ms flush) would grow by one for every single projection read in a
+  // long-lived tab's session. `prepare()` now returns the SAME wrapper for
+  // identical SQL text, so preparing one statement 500 times must leave
+  // exactly one entry behind, not 500.
+  it("does not grow held statements when the same SQL is prepared repeatedly", async () => {
+    const driver = await openBrowserDriver(`driver-held-bound-${crypto.randomUUID()}`);
+    driver.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+
+    const sql = "SELECT id FROM t WHERE id = ?";
+    for (let i = 0; i < 500; i++) {
+      driver.prepare(sql);
+    }
+
+    expect(driver.heldStatementCount()).toBe(1);
+    driver.close();
+  });
 });
 
 /**
