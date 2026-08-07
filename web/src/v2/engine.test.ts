@@ -53,6 +53,29 @@ describe("SyncCoordinator", () => {
     const coordinator = new SyncCoordinator(fakeEngine({ halted: "chain break at seq 12" }));
     expect(coordinator.haltReason).toBe("chain break at seq 12");
   });
+
+  it("stamps the time a sync COMPLETED, so Settings can say when the ledger last moved", async () => {
+    const coordinator = new SyncCoordinator(fakeEngine(), () => 1_700_000_000_000);
+    expect(coordinator.lastCompletedAt).toBeNull();
+    await coordinator.run("launch");
+    expect(coordinator.lastCompletedAt).toBe(1_700_000_000_000);
+  });
+
+  it("does not stamp a halted sync — a run that stopped is not a run that landed", async () => {
+    const halted: SyncResult = { pulled: 0, applied: 0, violations: [], halted: true };
+    const coordinator = new SyncCoordinator(fakeEngine({ sync: async () => halted }), () => 1);
+    await coordinator.run("launch");
+    expect(coordinator.lastCompletedAt).toBeNull();
+  });
+
+  it("does not stamp a sync that threw, and does not raise an unhandled rejection", async () => {
+    const coordinator = new SyncCoordinator(
+      fakeEngine({ sync: () => Promise.reject(new Error("offline")) }),
+      () => 1,
+    );
+    await expect(coordinator.run("launch")).rejects.toThrow("offline");
+    expect(coordinator.lastCompletedAt).toBeNull();
+  });
 });
 
 describe("useSyncProgress", () => {
@@ -94,6 +117,16 @@ describe("useSyncProgress", () => {
 });
 
 describe("useSync", () => {
+  it("republishes the coordinator's last-completed stamp, so a screen re-renders when it moves", async () => {
+    const coordinator = new SyncCoordinator(fakeEngine(), () => 1_700_000_000_000);
+    const { result } = renderHook(() => useSync(coordinator));
+    expect(result.current.lastCompletedAt).toBeNull();
+    await act(async () => {
+      await result.current.run("refresh");
+    });
+    expect(result.current.lastCompletedAt).toBe(1_700_000_000_000);
+  });
+
   it("raises a fault when a run comes back halted, classified by its violation", async () => {
     const engine = fakeEngine({
       halted: "I3_chain",

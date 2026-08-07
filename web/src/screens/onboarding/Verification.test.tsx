@@ -207,6 +207,33 @@ describe("Verification", () => {
     const notice = screen.getByTestId("verification-partial").textContent ?? "";
     expect(notice).toMatch(/keep trying to file/i);
     expect(notice).not.toMatch(/wait here until/i);
+    // Task 10: this is no longer the ONLY screen that can file it, so the copy
+    // must not say so — Settings owns held mail now.
+    expect(notice).not.toMatch(/only screen/i);
+    expect(notice).toMatch(/settings/i);
+  });
+
+  it("hands an unfiled remainder to Settings and lets the user carry on", async () => {
+    const user = userEvent.setup();
+    const { onConfirmed } = mount({
+      logAt: null,
+      logAtAfterConfirm: "2026-08-07T10:01:00Z",
+      // Never drains.
+      reingest: { examined: 500, appended: 500, superseded: 0, unchanged: 0, failed: 0, remaining: 7 },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /this is my bank/i }));
+    const partial = await screen.findByTestId("verification-partial");
+    expect(onConfirmed).not.toHaveBeenCalled();
+
+    // The handoff: setup does not dead-end on mail Settings can file. Pressing
+    // this is the user being TOLD, which is why the block is released here and
+    // not automatically — an auto-advance would unmount this notice in the same
+    // frame it appeared, and the user would never have read it.
+    await user.click(within(partial).getByRole("button", { name: /carry on/i }));
+    await waitFor(() => {
+      expect(onConfirmed).toHaveBeenCalledWith("2026-08-07T10:01:00Z");
+    });
   });
 
   it("drains the batch across rounds and only then advances", async () => {

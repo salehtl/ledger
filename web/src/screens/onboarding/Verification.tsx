@@ -206,9 +206,11 @@ export function Verification({
    * It self-corrected on the next tick, which is exactly the kind of flicker
    * nobody can reproduce on purpose.
    *
-   * **It will not advance while a remainder is outstanding.** See
-   * {@link confirm}: advancing there unmounts the only control in the product
-   * that can file the rest of a bounded batch.
+   * **It will not advance while a remainder is outstanding — until the user
+   * says so.** See {@link confirm} and {@link handOff}. Advancing automatically
+   * unmounts the notice in the frame it appears, so the sentence pointing at
+   * Settings → Held mail never gets read; the user releases the pause with a
+   * button, which is the handoff being made rather than assumed.
    */
   const watch = useCallback(async () => {
     if (advanced.current || inFlight.current) return;
@@ -234,6 +236,31 @@ export function Verification({
       if (live.current) setBusy(false);
     }
   }, [load]);
+
+  /**
+   * The handoff, and the reason it is a BUTTON rather than a removed guard.
+   *
+   * Task 7 blocked the step on an undrainable remainder, and that was right only
+   * while this was the sole surface in the product that could file held mail.
+   * Task 10 gave Settings a held-mail screen, so the block is now a dead end
+   * where a handoff will do — a user whose remainder never drains (a server
+   * that keeps reporting the same number, a repeated 429) could not finish
+   * setting up at all.
+   *
+   * But simply deleting the guard was wrong in the other direction: `confirm`
+   * ends by calling {@link watch}, so the step would advance in the same frame
+   * the notice appeared, and the sentence telling the user where the rest lives
+   * would unmount before it could be read. Pressing this is the user having
+   * been told. It releases the block for this mount only — nothing is filed and
+   * nothing is dismissed server-side; the mail stays held, and Settings still
+   * shows it with its expiry.
+   */
+  const handOff = useCallback(() => {
+    setPartial(null);
+    // `watch` reads the ref, and React has not re-rendered yet.
+    partialRef.current = null;
+    void watch();
+  }, [watch]);
 
   useEffect(() => {
     void watch();
@@ -295,7 +322,10 @@ export function Verification({
    * So the batch is drained here, before the step is allowed to end, and
    * {@link watch} additionally refuses to advance while `partial` is non-null —
    * belt and braces, because the two are reached from different places ("File
-   * the rest" re-enters here; the poll does not).
+   * the rest" re-enters here; the poll does not). Since Task 10 that pause is
+   * releasable by the user through {@link handOff}, because Settings can file
+   * held mail now and a permanent block would strand a setup on a remainder
+   * that never drains.
    *
    * Repetition is safe and converges: `Confirm` returns the ids still HELD, a
    * promoted message is no longer held, and an already-allowlisted origin gets
@@ -430,23 +460,23 @@ export function Verification({
             the block lives in `partialRef`, which is component state, so a
             remount starts with no remainder and `watch` advances. The block is
             deliberately not persisted — a schema change to
-            `LocalOnboardingRecord` for a constraint Task 10 removes is bad
-            value, and a harder block is the wrong direction — but that is an
-            argument for deferring DURABILITY, not for keeping a sentence the
-            code does not honour. A user who trusts the stronger promise and
-            reloads loses the mail, which is the exact failure this guard exists
-            to prevent.
+            `LocalOnboardingRecord` for a constraint that is now a pause rather
+            than a wall is bad value — but that is an argument for deferring
+            DURABILITY, not for keeping a sentence the code does not honour.
           */}
           <p>
             ledger files a bounded batch at a time, and {partial.remaining}{" "}
             {partial.remaining === 1 ? "message" : "messages"} from{" "}
             <span className="font-mono">{partial.domain}</span> {partial.remaining === 1 ? "is" : "are"} still
             held. Nothing is lost, and ledger will keep trying to file{" "}
-            {partial.remaining === 1 ? "it" : "them"} before setup finishes — this is the only screen that can
-            file {partial.remaining === 1 ? "it" : "them"}.
+            {partial.remaining === 1 ? "it" : "them"} while you are here. You can also finish this any time from
+            Settings, under Held mail.
           </p>
           <Button variant="primary" disabled={busy} onClick={() => void confirm(partial.domain, partial.scope)}>
             File the rest
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={handOff}>
+            Carry on — I&rsquo;ll finish this in Settings
           </Button>
         </Notice>
       )}

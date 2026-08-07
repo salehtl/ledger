@@ -165,6 +165,22 @@ export interface V2Runtime {
 const V2Context = createContext<V2Runtime | null>(null);
 
 /**
+ * The runtime, provided.
+ *
+ * Exported so a test can mount a screen — or the whole shell — in the SAME
+ * configuration production uses, rather than in the one configuration
+ * production never has. That distinction is the whole reason it exists: while
+ * `AppShell.test.tsx` mounted the shell bare, every screen under it rendered its
+ * "your local ledger isn't open" branch, so the suite's most integrated test
+ * exercised only the branch that cannot happen and none of the ones that can.
+ *
+ * `BootGate` uses it too, so there is one Provider and not two.
+ */
+export function V2Provider({ value, children }: { value: V2Runtime; children: ReactNode }) {
+  return <V2Context.Provider value={value}>{children}</V2Context.Provider>;
+}
+
+/**
  * The runtime, or null.
  *
  * Nullable rather than throwing, because v1 screens and their tests still mount
@@ -446,9 +462,9 @@ export function BootGate({
       // back online recovers on the next trigger with nothing to press.
       if (activeHalt !== null) return <HaltWall halt={activeHalt} />;
       return (
-        <V2Context.Provider value={{ handle, coordinator, sync, userId: state.userId, facts: state.facts }}>
+        <V2Provider value={{ handle, coordinator, sync, userId: state.userId, facts: state.facts }}>
           {children}
-        </V2Context.Provider>
+        </V2Provider>
       );
   }
 }

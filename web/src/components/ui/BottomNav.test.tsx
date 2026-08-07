@@ -7,13 +7,23 @@ import { BottomNav } from "./BottomNav";
 const wrap = (ui: React.ReactNode) => render(<MotionProvider>{ui}</MotionProvider>);
 
 describe("BottomNav", () => {
-  it("renders five tabs including Review", () => {
+  it("renders exactly the projection-backed tabs", () => {
     wrap(<BottomNav active="home" reviewCount={0} onNavigate={() => {}} />);
-    for (const name of [/home/i, /plan/i, /transactions/i, /review/i, /insights/i]) {
+    for (const name of [/home/i, /transactions/i, /review/i]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
-    // Settings left the bar for the TopBar gear in v3.
+    // Settings left the bar for the TopBar gear in v3. Plan and Insights left
+    // it in v2: neither has an op behind it, so both are unrouted (Task 10).
     expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^plan$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^insights$/i })).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(TABS.length);
+  });
+
+  it("lays out one column per tab, so trimming the nav does not strand empty cells", () => {
+    const { container } = wrap(<BottomNav active="home" reviewCount={0} onNavigate={() => {}} />);
+    const nav = container.querySelector("nav");
+    expect(nav?.style.gridTemplateColumns).toBe(`repeat(${TABS.length}, minmax(0, 1fr))`);
   });
 
   it("shows the count badge on the Review tab, not Transactions", () => {

@@ -6,7 +6,15 @@ export function BottomNav({
   active, reviewCount, onNavigate,
 }: { active: TabId; reviewCount: number; onNavigate: (id: TabId) => void }) {
   return (
-    <nav className="shrink-0 grid grid-cols-5 bg-bg border-t border-border pb-[env(safe-area-inset-bottom)]">
+    // The column count comes from {@link TABS}, not a `grid-cols-N` literal:
+    // Tailwind cannot build a class name at runtime, and the literal that was
+    // here (`grid-cols-5`) silently left two dead cells the moment the nav was
+    // trimmed to three. An inline `gridTemplateColumns` is the one place in the
+    // chrome where a computed value beats a token.
+    <nav
+      style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
+      className="shrink-0 grid bg-bg border-t border-border pb-[env(safe-area-inset-bottom)]"
+    >
       {TABS.map((t) => {
         const Icon = t.icon;
         const isActive = active === t.id;

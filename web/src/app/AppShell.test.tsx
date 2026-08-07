@@ -1,120 +1,157 @@
+/**
+ * The shell, mounted the way production mounts it: inside the v2 context, over
+ * a real projection.
+ *
+ * # Why this test changed shape in Task 10
+ *
+ * It used to render `<AppShell />` bare, with `fetch` stubbed to return empty
+ * v1 payloads. That made every screen underneath take its "your local ledger
+ * isn't open" branch — so the most integrated test in the suite covered only the
+ * configuration production never has, and none of the configuration it always
+ * has. It also kept `AppShell`'s v1 pull-to-refresh path alive: the path existed
+ * because this test needed it, and the warning it logged said as much.
+ *
+ * Now the shell asserts its own invariant with `useV2OrThrow`, this test
+ * provides the runtime, and the fixture rows are the only place the numbers
+ * below exist — a shell that reached for `/api/summary` could not satisfy them.
+ */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { SqlDriver } from "@ledger/client/store/driver";
+
+import { MotionProvider } from "./MotionProvider";
 import { ToastProvider } from "../components/Toast";
+import { projectionWith } from "../test/projectionFixture";
+import { fakeRuntime, WithV2 } from "../test/v2Runtime";
 import { AppShell } from "./AppShell";
 
-const warnIngest = {
-  configured: true, count: 5, last_at: "2026-07-05T08:00:00Z",
-  status: "warn", reasons: ["poll_stale"],
-  last_poll_success_at: "2026-07-05T06:00:00Z",
-  last_poll_attempt_at: "2026-07-05T09:00:00Z",
-  consecutive_failures: 0, poll_interval_seconds: 60, silence_days: 3,
-};
+let db: SqlDriver;
+let fetchMock: ReturnType<typeof vi.fn>;
 
-beforeEach(() => {
+beforeEach(async () => {
   sessionStorage.clear();
-  // Every screen hits the API on mount; return empty payloads.
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    if (url.includes("/api/summary")) return new Response(JSON.stringify({ period: "2026-06", income: 0, month_progress: 0, buckets: [], recent: [] }));
-    if (url.includes("/api/health")) return new Response(JSON.stringify({ status: "ok", db: "ok", ingest: warnIngest }));
-    if (url.includes("/api/events")) return new Response("");
-    return new Response("[]");
-  }));
-  // EventSource isn't in jsdom; stub it so useLiveEvents doesn't throw.
-  vi.stubGlobal("EventSource", class { addEventListener() {} close() {} set onerror(_v: unknown) {} });
+  fetchMock = vi.fn(async () => new Response(JSON.stringify({ address: "u-abc@in.sirdab.ae" })));
+  vi.stubGlobal("fetch", fetchMock);
+  db = await projectionWith();
 });
 
 function wrap() {
+  const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}><ToastProvider><AppShell /></ToastProvider></QueryClientProvider>,
+  const view = render(
+    <MotionProvider>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <WithV2 runtime={runtime}>
+            <AppShell />
+          </WithV2>
+        </ToastProvider>
+      </QueryClientProvider>
+    </MotionProvider>,
   );
+  return { ...view, runs };
 }
 
 describe("AppShell", () => {
-  it("shows five tabs and starts on Home", async () => {
+  it("routes only the projection-backed screens, and starts on Home", async () => {
     wrap();
-    expect(screen.getByRole("button", { name: /home/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /transactions/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /review/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /insights/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    for (const name of [/^home$/i, /^transactions$/i, /review/i]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+    // Unrouted in v2: no op authors a plan, a project, a schedule, an account
+    // balance or an insight, so none of these may be reachable from the shell.
+    for (const name of [/^plan$/i, /^insights$/i, /^reports$/i, /^projects$/i, /^recurring$/i]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    // Home is showing, and the figure comes from the projection this test built.
+    expect(await screen.findByText("174.99")).toBeInTheDocument();
   });
 
-  it("opens the Review screen under the persistent TopBar", async () => {
+  it("badges Review from the local projection, not from /api/transactions", async () => {
     wrap();
-    fireEvent.click(screen.getByRole("button", { name: /review/i }));
-    // TopBar renders the active screen's title as the page heading and keeps the scope control.
-    expect(await screen.findByRole("heading", { name: /review/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /\d{4}/ })).toBeInTheDocument(); // month label still present
+    // One `needs_review` row in the fixture.
+    const review = await screen.findByRole("button", { name: /review, 1 need review/i });
+    expect(review).toHaveTextContent("1");
   });
 
   it("switches screens when a tab is tapped", async () => {
     wrap();
-    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
-    // The TopBar renders the active screen's title as the page heading.
-    expect(await screen.findByRole("heading", { name: /settings/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    expect(await screen.findByRole("heading", { name: /^transactions$/i })).toBeInTheDocument();
   });
 
-  it("exposes the global period control and opens the picker", async () => {
+  it("offers the period stepper only where a period means something", async () => {
     wrap();
-    // The TopBar shows the current month as a tappable label; tapping opens the sheet.
-    const label = screen.getByRole("button", { name: /\d{4}/ }); // e.g. "Jun 2026"
+    // Home sums the whole log and Review is a state rather than a period —
+    // both said so in their own headers. A control that changes nothing is
+    // worse than an absent one.
+    expect(screen.queryByRole("button", { name: /\d{4}/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    const label = await screen.findByRole("button", { name: /\d{4}/ });
     fireEvent.click(label);
     expect(await screen.findByText(/choose period/i)).toBeInTheDocument();
   });
 
-  it("refetches data when the user pulls down from the top", async () => {
-    wrap();
-    await screen.findByRole("button", { name: /home/i });
-    const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } };
-    // The shell's own review-badge query, not Home's: Home reads the local
-    // projection now (Task 8) and never fetches. This still asserts what the
-    // test is about — a pull invalidates and the queries below it refetch.
-    const summaryCalls = () =>
-      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/transactions")).length;
-    await waitFor(() => expect(summaryCalls()).toBeGreaterThan(0));
-    const before = summaryCalls();
+  it("pulls to SYNC, not to refetch a v1 endpoint", async () => {
+    const { runs } = wrap();
+    await screen.findByRole("button", { name: /^home$/i });
 
     const main = screen.getByRole("main");
     fireEvent.touchStart(main, { touches: [{ clientX: 0, clientY: 0 }] });
     fireEvent.touchMove(main, { touches: [{ clientX: 0, clientY: 400 }] }); // past threshold
     fireEvent.touchEnd(main);
 
-    await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));
+    await waitFor(() => {
+      expect(runs).toContain("refresh");
+    });
   });
 
-  it("does not replay a stale settings deep-link after closing and reopening Settings", async () => {
+  it("opens Settings from the gear, showing the v2 surface rather than v1's hub", async () => {
     wrap();
-    // Tap the ingest warning banner: opens the Settings overlay straight into the Email ingest drill-in.
-    fireEvent.click(await screen.findByRole("button", { name: /ingest details/i }));
-    expect(await screen.findByRole("heading", { name: /email ingest/i })).toBeInTheDocument();
-
-    // Back out of the drill-in, then out of Settings entirely.
-    fireEvent.click(screen.getByRole("button", { name: /back from email ingest/i }));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: /back from settings/i }));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: /^settings$/i })).toBeNull());
-
-    // Reopen via the TopBar gear: the stale intent must not replay — hub, not the drill-in.
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
     expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /email ingest/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /back from email ingest/i })).toBeNull();
+    expect(await screen.findByTestId("settings-inbound-address")).toHaveTextContent("u-abc@in.sirdab.ae");
+    // v1's hub rows must not be here: every one of them reads a route ledgerd
+    // does not serve.
+    expect(screen.queryByText(/budget & income/i)).toBeNull();
+    expect(screen.queryByText(/ai & api usage/i)).toBeNull();
   });
 
-  it("opens the Projects overlay from the Settings hub without switching tabs, and unmounts it on close", async () => {
+  it("reaches held mail from Settings — the surface onboarding hands off to", async () => {
     wrap();
-    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
-    await screen.findByRole("heading", { name: /^settings$/i });
-
-    fireEvent.click(await screen.findByText(/^projects$/i));
-    expect(await screen.findByRole("heading", { name: /^projects$/i })).toBeInTheDocument();
-    // Still on the Settings tab underneath — opening Projects must not switch tabs.
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /held mail/i }));
+    expect(await screen.findByRole("heading", { name: /held mail/i })).toBeInTheDocument();
+    // Backing out of held mail reveals Settings, which is still mounted.
+    fireEvent.click(screen.getByRole("button", { name: /back from held mail/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: /held mail/i })).toBeNull();
+    });
     expect(screen.getByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: /back from projects/i }));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: /^projects$/i })).toBeNull());
+  it("touches no v1 HTTP route", async () => {
+    wrap();
+    await screen.findByText("174.99");
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.filter((u) => !u.startsWith("/api/v1/"))).toEqual([]);
+  });
+
+  it("refuses to render outside the gate rather than degrading to v1", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() =>
+      render(
+        <MotionProvider>
+          <QueryClientProvider client={qc}>
+            <ToastProvider>
+              <AppShell />
+            </ToastProvider>
+          </QueryClientProvider>
+        </MotionProvider>,
+      ),
+    ).toThrow(/BootGate/);
+    quiet.mockRestore();
   });
 });

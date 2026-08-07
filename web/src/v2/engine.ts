@@ -76,7 +76,16 @@ export interface CoordinatedEngine {
 
 /** The only app-level entry point for synchronization triggers. */
 export class SyncCoordinator {
-  constructor(private readonly engine: CoordinatedEngine) {}
+  private completedAt: number | null = null;
+
+  /**
+   * `clock` is injected so a test can assert the stamp rather than its
+   * neighbourhood.
+   */
+  constructor(
+    private readonly engine: CoordinatedEngine,
+    private readonly clock: () => number = Date.now,
+  ) {}
 
   get progress(): SyncProgress {
     return this.engine.progress;
@@ -84,6 +93,24 @@ export class SyncCoordinator {
 
   get haltReason(): string | null {
     return this.engine.halted;
+  }
+
+  /**
+   * When a sync last COMPLETED, or null if none has in this tab's lifetime.
+   *
+   * Deliberately not persisted, and Settings words it accordingly ("no sync has
+   * finished since you opened ledger" rather than "never synced"). A durable
+   * answer would have to live in `projection_meta`, which the client library
+   * owns; inventing a second store for it here is how two clocks that disagree
+   * get born. What this number is for is the one question a person actually asks
+   * of a sync row — *is it moving?* — and a per-session answer answers it.
+   *
+   * Halted and thrown runs are excluded, because a run that stopped is not a
+   * run that landed: stamping either would print a reassuring timestamp beside
+   * a halt reason.
+   */
+  get lastCompletedAt(): number | null {
+    return this.completedAt;
   }
 
   subscribe(listener: (progress: SyncProgress) => void): () => void {
@@ -94,7 +121,21 @@ export class SyncCoordinator {
     // `sync()` and `sync(undefined)` are the same call to the engine, but not
     // to a test that asserts on the argument list, and the native port made
     // this distinction deliberately. Kept.
-    return options === undefined ? this.engine.sync() : this.engine.sync(options);
+    const running = options === undefined ? this.engine.sync() : this.engine.sync(options);
+    // Attached, never awaited, and the ENGINE'S OWN promise is what is returned.
+    // Wrapping this method in `async` would hand back a fresh promise per call
+    // and break the guarantee its first test asserts by identity — that five
+    // triggers join one in-flight sync rather than starting five.
+    running.then(
+      (result) => {
+        if (!result.halted) this.completedAt = this.clock();
+      },
+      () => {
+        // A throw is the caller's to observe; handling it here only stops this
+        // derived promise from becoming an unhandled rejection of its own.
+      },
+    );
+    return running;
   }
 
   halt(reason: string): void {
@@ -187,6 +228,16 @@ export interface SyncStatus {
    *    rather than in a React `useState` nothing can reach.
    */
   fault: Halt | null;
+  /**
+   * {@link SyncCoordinator.lastCompletedAt}, re-read whenever progress moves.
+   *
+   * Republished through this hook rather than read off the coordinator at the
+   * call site, because the coordinator is a mutable object React does not watch:
+   * a screen reading `coordinator.lastCompletedAt` during render would show
+   * whatever happened to be there at its last unrelated re-render. Progress is
+   * the thing that changes when a sync lands, so the memo below hangs off it.
+   */
+  lastCompletedAt: number | null;
   /** Never rejects. A failure becomes {@link SyncStatus.fault}, or is ignored. */
   run(trigger: SyncTrigger, options?: SyncOptions): Promise<void>;
   /** Drops the fault. For a caller that is re-running boot from the top. */
@@ -284,5 +335,10 @@ export function useSync(coordinator: SyncCoordinator | null, opts: UseSyncOption
     };
   }, [coordinator]);
 
-  return useMemo(() => ({ progress, fault, run, clear }), [progress, fault, run, clear]);
+  // `progress` is in the dependency list precisely so the stamp is re-read on
+  // the render a completed sync causes — see {@link SyncStatus.lastCompletedAt}.
+  return useMemo(
+    () => ({ progress, fault, lastCompletedAt: coordinator?.lastCompletedAt ?? null, run, clear }),
+    [progress, fault, coordinator, run, clear],
+  );
 }

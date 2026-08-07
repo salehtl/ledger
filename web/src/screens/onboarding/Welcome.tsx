@@ -46,6 +46,7 @@ import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { wipeLocalData } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
+import { passkeyFailureCopy as failureCopy } from "../../v2/passkeyCopy";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { isAccountMismatch, isPasskeyError, type PasskeyFailureKind, type V2Handle } from "../../v2/session";
 import { DevSignInPanel } from "./DevSignInPanel";
@@ -59,47 +60,6 @@ export interface WelcomeProps {
   addSecondPasskey?: (handle: V2Handle) => Promise<string>;
   /** Injected by tests; defaults to {@link wipeLocalData}, which reloads. */
   wipe?: (handle: V2Handle) => Promise<void>;
-}
-
-/**
- * What each failure says. Every arm is a true sentence about what happened and,
- * where it matters, about whether pressing again could plausibly help — the
- * distinction `BootGate`'s walls make and for the same reason.
- */
-function failureCopy(kind: PasskeyFailureKind): { title: string; body: string } {
-  switch (kind) {
-    case "unsupported":
-      return {
-        title: "This browser cannot use passkeys",
-        body: "ledger signs you in with a passkey and this browser has no support for them. A current Safari, Chrome, Edge or Firefox will work.",
-      };
-    case "cancelled":
-      return {
-        title: "The passkey prompt was closed",
-        body: "Nothing was sent and nothing was created. Press the button again when you are ready.",
-      };
-    case "rejected":
-      return {
-        title: "That passkey was not accepted",
-        body: "The signature did not check out, or the credential is not one this account knows. If you are trying to get into an existing account, use the device that holds its passkey.",
-      };
-    case "rate_limited":
-      return {
-        title: "Too many attempts just now",
-        body: "The server is asking for a pause. Wait a minute and try again — nothing is wrong with your passkey.",
-      };
-    case "offline":
-      return {
-        title: "ledger could not reach the server",
-        body: "There was no answer at all, which is almost always the connection. Nothing was created, so trying again is safe.",
-      };
-    case "not_invited":
-    case "unavailable":
-      return {
-        title: "That did not go through",
-        body: "The server refused the request. Nothing was created on this device, so trying again is safe.",
-      };
-  }
 }
 
 type Phase =

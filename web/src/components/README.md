@@ -558,10 +558,20 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 ### TopBar / BottomNav
 - **Purpose:** app chrome. TopBar owns the page title + period scope stepper
   + the persistent Settings gear (Settings is not a tab); BottomNav owns tab
-  navigation (five tabs: Home / Plan / Transactions / Review / Insights, with
-  the review badge). Reports, Accounts and Recurring are drill-in overlays
-  reached from Insights, Settings and Home — they never hold tab slots.
-  Screens never render their own h1 outside these.
+  navigation (with the review badge). Screens never render their own h1
+  outside these.
+- **The tab set lives in `app/nav.ts`, not here.** In v2 it is Home /
+  Transactions / Review — the three screens the local projection can feed.
+  Plan, Insights, Reports, Accounts, Recurring and Projects are *unrouted*
+  (their files are kept; no op authors their data yet), and held mail is a
+  drill-in reached from Review and from Settings. BottomNav sets
+  `gridTemplateColumns` from `TABS.length` rather than a `grid-cols-N` literal:
+  Tailwind cannot build a class name at runtime, and the literal left dead
+  cells the moment the nav was trimmed. **Add or remove a tab in `nav.ts` and
+  the bar follows** — do not reintroduce a hard-coded column count.
+- **`showScope` is per-screen, not always-on.** Only Transactions is bounded by
+  a period; Home sums the whole log and Review is a state rather than a period.
+  A stepper that changes nothing reads as a broken control.
 - **TopBar type:** the title is sans (screen-title row of the scale); the
   period-scope stepper is mono micro-caps (eyebrow-weight, tighter tracking) —
   it's data, not prose.

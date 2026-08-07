@@ -1,0 +1,368 @@
+/**
+ * Settings, in v2: the four facts about this account, and the three controls
+ * that are not reachable anywhere else.
+ *
+ * # This is a NEW screen, and `screens/Settings.tsx` is untouched
+ *
+ * v1's Settings hub reads `/api/budget`, `/api/settings`, `/api/categories`,
+ * `/api/rules`, `/api/rates`, `/api/health`, `/api/accounts`, `/api/projects`,
+ * `/api/scheduled` and `/api/settings/notifications`. `ledgerd` serves none of
+ * them, and every one of those queries would sit `isPending` forever behind a
+ * row that looked like it was loading. It is unrouted rather than rewritten
+ * because most of those pages come back the moment their data grows a
+ * projection; deleting them would throw away work that is only early.
+ *
+ * # Why "add another passkey" is the most important control on this screen
+ *
+ * There is no account recovery and there cannot be one — the server holds no
+ * password, no recovery address and no second factor, and spec Decision 10
+ * refused a recovery phrase that recovers nothing. A user whose only credential
+ * lives on one handset loses every record in the account when that handset does,
+ * and the operator cannot help. `passkeyAdd.ts` has existed since Task 4 and
+ * nothing called it, while Task 7's onboarding already told people they could
+ * "add a passkey later from Settings". This is that promise being made true.
+ *
+ * # Why the sync row exists at all
+ *
+ * The projection is the data. It only moves when a sync writes it, and every
+ * screen in the app reads it silently — so without this row there is no way at
+ * all to tell "nothing has happened" from "nothing is working". It carries the
+ * halt reason for the same reason `BootGate` gives a halt the whole screen: an
+ * engine that has stopped standing behind its records must never render as idle.
+ *
+ * # The home currency is shown and NOT offered
+ *
+ * Spec §3.7: log state, set once, no in-product way to change it. A row with a
+ * chevron on it would be a lie, so this one has neither a chevron nor a tap
+ * target — just the code and the sentence saying why that is all there is.
+ */
+
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Dialog, DialogFooter } from "../../components/ui/Dialog";
+import { PixelSpinner } from "../../components/ui/PixelSpinner";
+import { Pressable } from "../../components/ui/Pressable";
+import { SectionLabel } from "../../components/ui/SectionLabel";
+import { ChevronRight } from "../../components/ui/PixelIcon";
+import { sinceLabel } from "../../lib/sinceLabel";
+import { readAddress } from "../../v2/address";
+import { useV2OrThrow } from "../../v2/BootGate";
+import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
+import { addPasskey } from "../../v2/passkeyAdd";
+import { passkeyFailureCopy } from "../../v2/passkeyCopy";
+import { invalidateAfterSync, useHomeCurrency, useTxnSource, v2Keys } from "../../v2/queries";
+import { isPasskeyError, type V2Handle } from "../../v2/session";
+
+export interface V2SettingsProps {
+  /** Opens the held-mail drill-in. Absent hides the row. */
+  onOpenQuarantine?: () => void;
+  /** Test seam. Defaults to the real add-passkey ceremony. */
+  addAnotherPasskey?: (handle: V2Handle) => Promise<string>;
+  /** Test seam. Defaults to `GET /api/v1/address`. */
+  address?: (handle: V2Handle) => Promise<string | null>;
+  /** Test seam. Defaults to {@link signOutAndReload}. */
+  signOut?: (handle: V2Handle) => Promise<void>;
+  /** Test seam. Defaults to the Clipboard API. */
+  copy?: (text: string) => Promise<void>;
+  /** Test seam. */
+  now?: () => number;
+}
+
+/**
+ * Signing out, and then a reload.
+ *
+ * The reload is structural, not cosmetic: the handle, the engine and the outbox
+ * are all memoised for the tab's lifetime and all three are bound to a session
+ * that no longer exists. `wipeLocalData` reloads for the same reason.
+ *
+ * Nothing local is DELETED, which is the difference between this and a wipe. The
+ * projection and the op log stay on the device; signing back in with the same
+ * account adopts them, and signing in with a different one reaches Welcome's
+ * `account_mismatch` screen, which is where the decision to erase belongs.
+ */
+export async function signOutAndReload(handle: V2Handle): Promise<void> {
+  await handle.signOut();
+  if (typeof location !== "undefined" && typeof location.reload === "function") location.reload();
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  if (typeof navigator === "undefined" || navigator.clipboard === undefined) {
+    throw new Error("this browser has no clipboard access");
+  }
+  await navigator.clipboard.writeText(text);
+}
+
+const PHASE_LABEL: Record<string, string> = {
+  idle: "Up to date",
+  pulling: "Fetching new records…",
+  pushing: "Sending your changes…",
+  folding: "Reading your records…",
+  projecting: "Rebuilding your ledger…",
+};
+
+export function V2Settings({
+  onOpenQuarantine,
+  addAnotherPasskey = (h) => addPasskey({ client: h.client }),
+  address = (h) => readAddress(h.client),
+  signOut = signOutAndReload,
+  copy = writeClipboard,
+  now = Date.now,
+}: V2SettingsProps) {
+  const { handle, sync, coordinator, facts } = useV2OrThrow();
+  const qc = useQueryClient();
+  const homeCurrency = useHomeCurrency(useTxnSource()) ?? facts.homeCurrency;
+
+  // The invalidation is not optional: the projection is the data, so a sync
+  // that nothing invalidated moves rows the tree never re-reads. Same pairing
+  // the shell's pull-to-refresh makes.
+  const syncNow = useCallback(async () => {
+    await sync.run("refresh");
+    await invalidateAfterSync(qc);
+  }, [sync, qc]);
+
+  // Server truth, not the fact. `onboarding.ts` is explicit that the cached
+  // address is a RESUME HINT: an address that has since been rotated would be
+  // printed here as the one to forward to, and the mail would go nowhere.
+  // The fact is the placeholder while the read is in flight, never the answer.
+  const inbound = useQuery({
+    queryKey: v2Keys.address(),
+    queryFn: () => address(handle),
+    staleTime: 60_000,
+  });
+  const shownAddress = inbound.data ?? (inbound.isPending ? facts.inboundAddress : null);
+
+  const [copied, setCopied] = useState<boolean | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  const onCopy = useCallback(
+    async (value: string): Promise<void> => {
+      try {
+        await copy(value);
+        setCopied(true);
+      } catch {
+        setCopied(false);
+      }
+    },
+    [copy],
+  );
+
+  /**
+   * The add ceremony. A failure here NEVER blocks anything — the account is
+   * fine and the existing passkey still works — so every arm says so, and the
+   * button stays live. A dismissed prompt in particular is not an error: the
+   * user decided not to, and being scolded for it is how a person learns to
+   * ignore this row.
+   */
+  const addPasskeyNow = useCallback(async (): Promise<void> => {
+    setAdding(true);
+    setPasskeyNote(null);
+    try {
+      await addAnotherPasskey(handle);
+      setPasskeyNote(ADD_PASSKEY_COPY.done);
+    } catch (error) {
+      const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
+      const copyFor = passkeyFailureCopy(kind);
+      setPasskeyNote(`${copyFor.title}. ${copyFor.body}`);
+    } finally {
+      setAdding(false);
+    }
+  }, [addAnotherPasskey, handle]);
+
+  const doSignOut = useCallback(async (): Promise<void> => {
+    setSigningOut(true);
+    try {
+      await signOut(handle);
+    } finally {
+      setSigningOut(false);
+      setSignOutOpen(false);
+    }
+  }, [signOut, handle]);
+
+  const halted = coordinator.haltReason;
+  const phase = sync.progress.phase;
+  const busy = phase !== "idle" && phase !== "halted";
+
+  return (
+    <div className="space-y-6">
+      {/* ---- Sync ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Your ledger</SectionLabel>
+        <Card className="!p-0 divide-y divide-border overflow-hidden">
+          <div data-testid="settings-sync" className="px-4 py-3.5 space-y-1">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium">Sync</span>
+              {busy ? (
+                <span className="flex items-center gap-2 text-xs text-muted" role="status">
+                  <PixelSpinner size={12} />
+                  {PHASE_LABEL[phase] ?? "Working…"}
+                </span>
+              ) : halted === null ? (
+                <span className="text-xs text-muted">{PHASE_LABEL.idle}</span>
+              ) : (
+                <span className="text-xs font-medium text-bad">Stopped</span>
+              )}
+            </div>
+            {halted === null ? (
+              <p className="text-xs text-muted">
+                {sync.lastCompletedAt === null
+                  ? "No sync has finished since you opened ledger."
+                  : `Last synced ${sinceLabel(sync.lastCompletedAt, now())}.`}
+              </p>
+            ) : (
+              /*
+                The reason verbatim, and no "sync now" beside it. `SyncEngine`
+                refuses every later sync once it is halted, so a button here
+                would be a control that cannot work offered at the exact moment
+                trust matters most. `BootGate`'s wall is what explains a halt;
+                this row's job is only to say it is in force.
+              */
+              <p className="text-xs text-bad font-mono break-words">{halted}</p>
+            )}
+            {halted === null && (
+              <div className="pt-1">
+                <Button variant="ghost" disabled={busy} onClick={() => void syncNow()}>
+                  Sync now
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {onOpenQuarantine !== undefined && (
+            <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
+          )}
+        </Card>
+      </section>
+
+      {/* ---- The address ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Your inbound address</SectionLabel>
+        <Card className="space-y-3">
+          <p className="text-sm leading-relaxed text-muted">
+            Bank mail forwarded here becomes transactions in ledger. Nothing else about your mailbox is read.
+          </p>
+          {inbound.isPending && shownAddress === null && (
+            <div className="flex items-center gap-3 text-muted" role="status">
+              <PixelSpinner size={12} />
+              <span className="text-sm">Getting your address…</span>
+            </div>
+          )}
+          {shownAddress !== null && (
+            <>
+              {/* `select-all` + `break-all`: it is longer than a phone is wide
+                  and it is the one string here somebody may move by hand. */}
+              <p data-testid="settings-inbound-address" className="font-mono text-sm select-all break-all">
+                {shownAddress}
+              </p>
+              <Button variant="secondary" onClick={() => void onCopy(shownAddress)}>
+                {copied === true ? "Copied" : "Copy address"}
+              </Button>
+              {copied === false && (
+                <p role="status" className="text-xs text-bad">
+                  This browser would not let ledger use the clipboard. The address above can be selected by hand.
+                </p>
+              )}
+            </>
+          )}
+          {inbound.isError && (
+            <p role="alert" className="text-sm text-bad">
+              ledger could not read your address just now. Nothing is wrong with the address itself — it is created
+              on the server and it is still there.
+            </p>
+          )}
+        </Card>
+      </section>
+
+      {/* ---- Home currency: stated, never offered ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Home currency</SectionLabel>
+        <Card className="space-y-1">
+          <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
+            {homeCurrency ?? "—"}
+          </p>
+          <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
+            ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
+            currency cannot be changed. The only way to a different one is a new account.
+          </p>
+        </Card>
+      </section>
+
+      {/* ---- Passkeys: the only backup this product can offer ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Passkeys</SectionLabel>
+        <Card className="space-y-3">
+          <div data-testid="settings-recovery-warning" className="space-y-2">
+            <h3 className="text-sm font-semibold text-bad">{RECOVERY_WARNING.title}</h3>
+            <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.body}</p>
+            <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
+          </div>
+          <p className="text-sm leading-relaxed text-muted">{ADD_PASSKEY_COPY.body}</p>
+          <Button variant="primary" disabled={adding} onClick={() => void addPasskeyNow()}>
+            {adding ? "Waiting for your authenticator…" : ADD_PASSKEY_COPY.action}
+          </Button>
+          {passkeyNote !== null && (
+            <p data-testid="settings-passkey-note" role="status" className="text-sm text-muted">
+              {passkeyNote}
+            </p>
+          )}
+        </Card>
+      </section>
+
+      {/* ---- Signing out ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">This device</SectionLabel>
+        <Card className="!p-0 divide-y divide-border overflow-hidden">
+          <Pressable
+            onClick={() => setSignOutOpen(true)}
+            className="w-full min-h-11 px-4 py-3.5 text-left text-sm font-medium text-bad hover:bg-surface-2/50"
+          >
+            Sign out
+          </Pressable>
+        </Card>
+      </section>
+
+      <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+
+      {signOutOpen && (
+        <Dialog title="Sign out of ledger?" onClose={() => setSignOutOpen(false)}>
+          <p className="text-sm leading-relaxed mb-4">
+            Your passkey is the only way back in — there is no password to reset and no recovery address. Sign out
+            only if you can still use the passkey for this account.
+          </p>
+          <p className="text-sm leading-relaxed text-muted mb-4">
+            Nothing recorded on this device is deleted. It is picked up again when you sign back in.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" disabled={signingOut} onClick={() => setSignOutOpen(false)}>
+              Stay signed in
+            </Button>
+            <Button variant="danger" disabled={signingOut} onClick={() => void doSignOut()}>
+              {signingOut ? "Signing out…" : "Sign out"}
+            </Button>
+          </DialogFooter>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+/** The hub-row shape v1's Settings established, kept so the two look alike. */
+function HubRow({ label, value, onClick }: { label: string; value?: string; onClick: () => void }) {
+  return (
+    <Pressable
+      onClick={onClick}
+      className="w-full min-h-11 flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left hover:bg-surface-2/50"
+    >
+      <span>{label}</span>
+      <span className="flex items-center gap-2 text-muted min-w-0">
+        {value !== undefined && <span className="truncate text-xs">{value}</span>}
+        <ChevronRight size={16} aria-hidden className="shrink-0" />
+      </span>
+    </Pressable>
+  );
+}

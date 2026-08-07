@@ -8,9 +8,10 @@ const meta = {
     docs: {
       description: {
         component:
-          "Five tabs. The active tab is a 2px vermilion tick on the top hairline plus text-fg — " +
-          "never a tinted pill, never accent-coloured label text. The review badge is one of the " +
-          "five sanctioned full-opacity red uses app-wide.",
+          "One column per entry in `app/nav.ts`'s TABS — in v2 that is Home / Transactions / Review, " +
+          "the three screens the local projection can feed. The active tab is a 2px vermilion tick on " +
+          "the top hairline plus text-fg — never a tinted pill, never accent-coloured label text. The " +
+          "review badge is one of the five sanctioned full-opacity red uses app-wide.",
       },
     },
   },
