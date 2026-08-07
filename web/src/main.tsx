@@ -8,6 +8,8 @@ import { queryClient } from "./queryClient";
 import { ToastProvider } from "./components/Toast";
 import { AppShell } from "./app/AppShell";
 import { BootGate } from "./v2/BootGate";
+import { Onboarding } from "./screens/onboarding/Onboarding";
+import { Welcome } from "./screens/onboarding/Welcome";
 import { MotionProvider } from "./app/MotionProvider";
 import { applyFontScale, loadFontScale } from "./lib/fontScale";
 import { loadHapticsEnabled, loadSoundEnabled } from "./lib/feedback";
@@ -44,7 +46,15 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <MotionProvider>
         <ToastProvider>
-          <BootGate>
+          {/*
+            The gate's two slots, filled. Both take `done`, which re-runs boot
+            from the top — the only way to re-derive the facts, and the reason
+            neither screen has to tell the gate what it changed.
+          */}
+          <BootGate
+            signIn={({ handle, done }) => <Welcome handle={handle} done={done} />}
+            onboarding={({ handle, facts, done }) => <Onboarding handle={handle} facts={facts} done={done} />}
+          >
             <AppShell />
           </BootGate>
         </ToastProvider>

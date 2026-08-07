@@ -373,6 +373,26 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   affordance belongs only to the walls whose copy says pressing again could
   plausibly work (`enrollmentCopy(...).retry`).
 
+### Step / Notice (`screens/onboarding/Shell.tsx`)
+- **Purpose:** the page shape every onboarding step shares — title, optional
+  intro, body, and a footer that holds the step's actions pinned below the
+  content (`mt-auto`). `Notice` is the bordered block inside it.
+- **Structurally a wall, not an overlay**, exactly like `v2/BootGate.tsx`'s:
+  rendered *instead of* the app, `min-h-[100svh]` (not `vh`, so an iOS URL bar
+  can't push the primary action under the fold), no scrim and no focus trap. The
+  Dialog-only rule is about surfaces layered over the app; these never leave the
+  document flow.
+- **`Notice tone="danger"` carries `role="alert"`.** Reserved for the two
+  consequences in the flow that cannot be undone — no account recovery, and the
+  permanent home currency — because a screen reader must interrupt for those
+  rather than reach them in reading order. `tone="note"` is a plain hairline card
+  and stays silent; don't reach for `danger` because something merely feels
+  important.
+- **Deliberately not exported from `components/`.** It encodes the onboarding
+  flow's own rhythm (one question per page, the action last); a caller outside
+  `screens/onboarding/` would mean the flow had leaked somewhere it shouldn't be.
+  Use `Card` for a content surface inside a normal screen.
+
 ### Card
 - **Purpose:** the paper content surface (`bg-surface`, card radius,
   `border border-border`, `p-4`) — bounded by a hairline, not a shadow.

@@ -6,12 +6,10 @@
  * (Task 0), its tests no longer run, and shipping browser code out of a tree
  * nothing checks is how a module rots without anyone noticing.
  *
- * **This is the machine half only.** The currency vocabulary
- * (`COMMON_CURRENCIES`, `normalizeCurrency`'s pickers), the op authors
- * (`homeCurrencyOps`, the USD peg) and the confirmation copy stay in the native
- * file until Task 7 needs them, and when it does they belong in THIS file
- * rather than in a screen — the split is machine-vs-screens, not two copies of
- * the machine.
+ * Task 7 brought over the second half it named: the currency vocabulary
+ * (`COMMON_CURRENCIES`, `searchCurrencies`), the op authors (`homeCurrencyOps`,
+ * the USD peg) and the confirmation copy now live HERE rather than in a screen,
+ * because the split is machine-vs-screens and not two copies of the machine.
  *
  * # The step is DERIVED, never stored
  *
@@ -50,6 +48,7 @@
  * is a record with nowhere to put one.
  */
 
+import { convert } from "@ledger/client/replay/fx";
 import type { State } from "@ledger/client/replay/state";
 import type { SecretStore } from "@ledger/client/store/store";
 
@@ -389,3 +388,208 @@ export function loadLocalRecord(secrets: Pick<SecretStore, "get">): LocalOnboard
 export function saveLocalRecord(secrets: Pick<SecretStore, "set">, f: OnboardingFacts): void {
   secrets.set(ONBOARDING_LOCAL_KEY, JSON.stringify(encodeLocal(f)));
 }
+
+// ---------------------------------------------------------------------------
+// Currencies
+// ---------------------------------------------------------------------------
+
+export interface CurrencyChoice {
+  code: string;
+  name: string;
+}
+
+/**
+ * The picker's curated list, UAE-beta first. It is a convenience and not the
+ * vocabulary: {@link searchCurrencies} offers any well-formed alpha-3 code, so
+ * a beta user whose currency is missing is never stuck.
+ */
+export const COMMON_CURRENCIES: readonly CurrencyChoice[] = [
+  { code: "AED", name: "UAE dirham" },
+  { code: "SAR", name: "Saudi riyal" },
+  { code: "USD", name: "US dollar" },
+  { code: "EUR", name: "Euro" },
+  { code: "GBP", name: "Pound sterling" },
+  { code: "INR", name: "Indian rupee" },
+  { code: "PKR", name: "Pakistani rupee" },
+  { code: "EGP", name: "Egyptian pound" },
+  { code: "PHP", name: "Philippine peso" },
+  { code: "BDT", name: "Bangladeshi taka" },
+  { code: "LKR", name: "Sri Lankan rupee" },
+  { code: "JOD", name: "Jordanian dinar" },
+  { code: "KWD", name: "Kuwaiti dinar" },
+  { code: "QAR", name: "Qatari riyal" },
+  { code: "OMR", name: "Omani rial" },
+  { code: "BHD", name: "Bahraini dinar" },
+  { code: "TRY", name: "Turkish lira" },
+  { code: "CAD", name: "Canadian dollar" },
+  { code: "AUD", name: "Australian dollar" },
+  { code: "CHF", name: "Swiss franc" },
+  { code: "JPY", name: "Japanese yen" },
+  { code: "CNY", name: "Chinese yuan" },
+];
+
+export function searchCurrencies(query: string): CurrencyChoice[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return [...COMMON_CURRENCIES];
+  const hits = COMMON_CURRENCIES.filter((c) => c.code.toLowerCase().includes(q) || c.name.toLowerCase().includes(q));
+  if (hits.length > 0) return hits;
+  const code = normalizeCurrency(query);
+  return code === null ? [] : [{ code, name: "Currency code" }];
+}
+
+// ---------------------------------------------------------------------------
+// The ops
+// ---------------------------------------------------------------------------
+
+/**
+ * An op the picker asks the client to author. Deliberately not an `Op`: op ids
+ * and timestamps are `Client.emitMany`'s to mint, and a pure module that minted
+ * them would be a second, untested authoring path.
+ */
+export interface OpSpec {
+  type: string;
+  payload: unknown;
+}
+
+/**
+ * The USD peg, fixed since 1997 and seeded as a real `rate_set` op rather than
+ * as a schema default (spec §3.7). 1 USD = 3.6725 AED, in home-units-per-
+ * foreign-unit micros.
+ */
+export const USD_PEG_MICRO = 3_672_500n;
+
+/**
+ * The ops one confirmed pick emits, in the order they must be folded.
+ *
+ * The peg is seeded **only** for an AED home. For any other home currency it
+ * would be wrong in two ways at once: the number is AED-denominated, and a USD
+ * home would take `rate_set` for its own currency, which replay refuses as a
+ * `rate_set_for_home_currency` anomaly.
+ *
+ * An unusable code produces no ops. {@link onboardingReducer} has already
+ * refused it, so this is the second of two gates rather than the only one.
+ */
+export function homeCurrencyOps(currency: string): OpSpec[] {
+  const ccy = normalizeCurrency(currency);
+  if (ccy === null) return [];
+  const ops: OpSpec[] = [{ type: "home_currency_set", payload: { currency: ccy } }];
+  if (ccy === "AED") {
+    // A decimal STRING: `parseMoney` refuses a JSON number outright, because
+    // `JSON.parse` of one is a float64 and a rate that rounds re-values every
+    // conversion made against it.
+    ops.push({ type: "rate_set", payload: { currency: "USD", rate_micro: USD_PEG_MICRO.toString(10) } });
+  }
+  return ops;
+}
+
+// ---------------------------------------------------------------------------
+// Copy
+// ---------------------------------------------------------------------------
+
+export interface ConfirmCopy {
+  title: string;
+  /** Said before the tap, in the words §3.7 requires. */
+  consequence: string;
+  /** What "home currency" actually does to their money, in one sentence. */
+  meaning: string;
+  acknowledgement: string;
+  confirm: string;
+  back: string;
+}
+
+/**
+ * The words on the second step of the picker.
+ *
+ * §3.7 makes this one-shot with **no in-product way to change it afterward**,
+ * and the only remedy is deleting the account. The copy says that, and it must
+ * never say "you can change this later in settings" — the sentence a
+ * well-meaning edit reaches for, and a lie. `Onboarding.test.tsx` asserts its
+ * absence, because the copy is templated and a leak could hide in one arm.
+ */
+export function confirmCopy(currency: string): ConfirmCopy {
+  const c = normalizeCurrency(currency) ?? currency.trim().toUpperCase();
+  return {
+    title: `Set ${c} as your home currency?`,
+    consequence:
+      `There is no way to change this once it is set. If ${c} turns out to be the wrong choice, the only way ` +
+      `to fix it is to delete your account and start again, which deletes everything ledger has recorded for you.`,
+    meaning:
+      `Every total and every budget is kept in ${c}. A purchase in another currency is converted once, when it ` +
+      `arrives, and that converted figure is frozen — so changing the base afterwards would silently re-value ` +
+      `everything already recorded.`,
+    acknowledgement: `I understand ${c} is permanent.`,
+    confirm: `Set ${c} as my home currency`,
+    back: "Choose a different currency",
+  };
+}
+
+/**
+ * The peg, shown as arithmetic rather than as a claim — and shown for a second
+ * reason: it is a rate the user **can** change, right next to a choice they
+ * cannot, which is what makes the difference legible before the tap.
+ */
+export function pegIllustration(currency: string): string | null {
+  if (normalizeCurrency(currency) !== "AED") return null;
+  // Computed with the same `convert` the replay engine uses, not with a
+  // hand-written product: an illustration that disagreed with the engine would
+  // be teaching the user the wrong arithmetic.
+  return `USD 100.00 is recorded as AED ${fixed2(convert(100_00n, USD_PEG_MICRO))}`;
+}
+
+function fixed2(minor: bigint): string {
+  const neg = minor < 0n;
+  const abs = neg ? -minor : minor;
+  return `${neg ? "-" : ""}${(abs / 100n).toString(10)}.${(abs % 100n).toString(10).padStart(2, "0")}`;
+}
+
+/**
+ * Why Google's own confirmation email is quarantined, said before the user can
+ * read it as a fault.
+ *
+ * Plan Decision 7: Gmail sends its forwarding confirmation from `google.com`,
+ * §3.2 forbids ever promoting a forwarder domain, so the one message onboarding
+ * depends on is one the product will never trust. It is held forever and read
+ * in place.
+ */
+export const QUARANTINE_HELD = {
+  title: "Google's confirmation email is held on purpose",
+  body:
+    "Gmail sends its confirmation from Google, not from your bank. ledger only files mail it can prove came " +
+    "from a bank, so anything forwarded by Google is held to one side instead — that is ledger working as " +
+    "intended. The code you need is in the held message and you can read it there. It stays held afterwards: " +
+    "trusting Google here would mean trusting anything at all that Google forwards.",
+} as const;
+
+/**
+ * The consequence of a passkey that lives on one device, said at the moment the
+ * passkey is created and not in a settings screen nobody opens.
+ *
+ * **There is no account recovery, and there cannot be one.** The server holds
+ * no password to reset, no recovery email and no second factor to fall back on;
+ * an account is reachable only by a credential an authenticator holds. The
+ * operator cannot restore access, so a user with one passkey on one lost device
+ * has lost the account and everything in it. Spec Decision 10 refused a recovery
+ * phrase that recovers nothing; this is the honest version of the same
+ * conversation, and it is why {@link ADD_PASSKEY_COPY} offers a second one on
+ * the same screen rather than filing it under "later".
+ */
+export const RECOVERY_WARNING = {
+  title: "If you lose this passkey, the account is gone",
+  body:
+    "There is no password to reset and no recovery email. Nobody — including the person running this beta — can " +
+    "let you back in, because nobody holds anything that could. If your only passkey is on one device and that " +
+    "device is lost, wiped or replaced, the account and everything recorded in it cannot be reached again.",
+  advice:
+    "Save the passkey somewhere that outlives one handset: iCloud Keychain, a Google or password-manager account " +
+    "that syncs, or a hardware key. Then add a second one below.",
+} as const;
+
+export const ADD_PASSKEY_COPY = {
+  title: "Add a second passkey",
+  body:
+    "A second passkey on a different device — another phone, a laptop, a hardware key — is the only backup this " +
+    "product can offer. Either one will sign you in on its own.",
+  action: "Add another passkey",
+  done: "Second passkey added.",
+  skip: "Not now",
+} as const;
