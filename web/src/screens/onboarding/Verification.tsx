@@ -83,13 +83,14 @@ import {
   type TrustScope,
 } from "../../v2/onboardingIO";
 import {
+  couldBeConfirmation,
   heldBody,
-  isForwarderConfirmation,
   NO_CODE_COPY,
   scanForCode,
   UNTRUSTED_BODY_LABEL,
   type CodeScan,
 } from "../../v2/verificationCode";
+import { sinceLabel } from "../../lib/sinceLabel";
 import { Notice, Step } from "./Shell";
 
 /**
@@ -149,6 +150,14 @@ export function Verification({
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
   const [copied, setCopied] = useState(false);
+  /**
+   * Which held message the user opened to look for a code, if any.
+   *
+   * The app cannot tell a provider's confirmation from a bank's first direct
+   * alert — both are mail whose only signature is the outer one — so it does not
+   * guess. See `couldBeConfirmation`.
+   */
+  const [openId, setOpenId] = useState<string | null>(null);
   /** A confirmation that filed only part of its batch. See {@link ConfirmResult}. */
   const [partial, setPartial] = useState<{ domain: string; scope: TrustScope; remaining: number } | null>(null);
   const live = useRef(true);
@@ -274,8 +283,15 @@ export function Verification({
     };
   }, [watch, pollMs]);
 
-  const forwarder = items.find(isForwarderConfirmation) ?? null;
-  const banks = items.filter((item) => !isForwarderConfirmation(item));
+  /**
+   * The message the user said is the one they are waiting for.
+   *
+   * Re-derived from the CURRENT page rather than kept as an object, so an item
+   * that has left the lane between polls closes itself instead of leaving a
+   * stale body on screen. {@link couldBeConfirmation} is re-applied here rather
+   * than trusted from the render that offered the control.
+   */
+  const opened = items.find((item) => item.id === openId && couldBeConfirmation(item)) ?? null;
 
   /**
    * Memoized on the blob, not recomputed per render.
@@ -287,10 +303,10 @@ export function Verification({
    */
   const scan: CodeScan | null = useMemo(
     () =>
-      forwarder === null || forwarder.blob === undefined
+      opened === null || opened.blob === undefined
         ? null
-        : scanForCode(heldBody(forwarder.blob, forwarder.receivedAt).text),
-    [forwarder?.blob, forwarder?.receivedAt],
+        : scanForCode(heldBody(opened.blob, opened.receivedAt).text),
+    [opened?.blob, opened?.receivedAt],
   );
 
   const onCopyCode = async (code: string): Promise<void> => {
@@ -481,78 +497,106 @@ export function Verification({
         </Notice>
       )}
 
-      {/* ---- Google's confirmation ---- */}
-      {forwarder === null ? (
-        <Notice title="Waiting for Google's confirmation" testId="verification-waiting">
-          <p>
-            When you add the forward, Google emails a code to your ledger address. It usually arrives within a
-            minute, and it will appear here.
-          </p>
-        </Notice>
-      ) : (
-        <Notice title={`From ${forwarder.outerDomain}`} testId="verification-forwarder">
-          {scan === null ? (
-            <p data-testid="verification-no-body">
-              This message is held but its contents were not sent to this device. Open it from held mail in
-              settings once you are through setup.
-            </p>
-          ) : scan.code !== null ? (
-            <>
-              <p data-testid="verification-code" className="font-mono text-2xl select-all tnum">
-                {scan.code}
-              </p>
-              <Button variant="primary" onClick={() => void onCopyCode(scan.code as string)}>
-                {copied ? "Copied" : "Copy code"}
-              </Button>
-              <p className="text-xs text-muted">
-                Paste this into the confirmation box in Gmail&rsquo;s forwarding settings.
-              </p>
-            </>
-          ) : (
-            <>
-              <p data-testid="verification-no-code">{NO_CODE_COPY}</p>
-              <p className="text-xs text-muted">{UNTRUSTED_BODY_LABEL}</p>
-              <pre
-                data-testid="verification-raw-body"
-                className="font-mono text-xs text-muted whitespace-pre-wrap break-all max-h-64 overflow-y-auto"
-              >
-                {scan.body}
-              </pre>
-            </>
-          )}
-          {scan?.link != null && (
-            <a
-              data-testid="verification-open-link"
-              href={scan.link}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="min-h-11 inline-flex items-center text-sm underline"
-            >
-              Open the confirmation link on mail-settings.google.com
-            </a>
-          )}
-        </Notice>
-      )}
+      {/*
+        ---- One list, because the app cannot honestly make two ----
 
-      {/* ---- The first real bank email ---- */}
-      <SectionLabel as="h2">Your first bank email</SectionLabel>
-      {banks.length === 0 ? (
+        This was two sections: "Google's confirmation" and "your first bank
+        email", split by a predicate that asked whether the outer domain was
+        Google's. That predicate could not be generalised, it could only be
+        deleted — a bank that registers this address DIRECTLY has no inner
+        domain either, so nothing in the data distinguishes a provider's
+        confirmation from a bank's first alert. Guessing would either hide the
+        confirmation (what it did for every non-Gmail user) or file a bank under
+        a heading about forwarding.
+
+        So every held message is listed with the one thing that is actually
+        known about it — the domain that SIGNED it — and the two actions are
+        offered side by side. The user knows which message they are waiting for.
+      */}
+      <SectionLabel as="h2">Mail held for you</SectionLabel>
+      {items.length === 0 ? (
         <Notice testId="verification-no-bank-mail">
           <p>
-            Nothing from a bank has arrived yet. This step finishes on its own when one does, so you can leave the
-            app open or come back later.
+            Nothing has arrived yet. If your mail provider sends a confirmation code, it will appear here — and so
+            will your first bank email. This step finishes on its own when a bank email arrives, so you can leave
+            the app open or come back later.
           </p>
         </Notice>
       ) : (
-        banks.map((item) => {
+        items.map((item) => {
           const basis = trustBasis(item);
           const request = trustRequest(item);
+          const openable = couldBeConfirmation(item);
+          const open = opened !== null && opened.id === item.id;
+          const arrived = Date.parse(item.receivedAt);
           return (
-            <Notice key={item.id} title={basis.label} testId={`verification-bank-${item.id}`}>
+            <Notice key={item.id} title={basis.label} testId={`verification-item-${item.id}`}>
               <p className="text-xs text-muted">Verification: {basis.source}</p>
               <p className="text-xs text-muted">
                 DKIM: {item.dkim} · ARC: {item.arc}
               </p>
+              {Number.isFinite(arrived) && (
+                <p className="text-xs text-muted">Arrived {sinceLabel(arrived, Date.now())}</p>
+              )}
+
+              {/*
+                Reading a body is offered only for a message whose outer domain
+                the SERVER verified — the same bar `trustRequest` uses. An
+                unverified message is still listed, so it is not a mystery, but
+                nothing is lifted out of it and offered as an action.
+              */}
+              {openable && (
+                <Button variant="secondary" onClick={() => setOpenId(open ? null : item.id)}>
+                  {open ? "Hide this message" : "Look for a confirmation code"}
+                </Button>
+              )}
+
+              {open && scan === null && (
+                <p data-testid="verification-no-body">
+                  This message is held but its contents were not sent to this device. Open it from held mail in
+                  settings once you are through setup.
+                </p>
+              )}
+              {open && scan !== null && (
+                <>
+                  {scan.code !== null ? (
+                    <>
+                      <p data-testid="verification-code" className="font-mono text-2xl select-all tnum">
+                        {scan.code}
+                      </p>
+                      <Button variant="primary" onClick={() => void onCopyCode(scan.code as string)}>
+                        {copied ? "Copied" : "Copy code"}
+                      </Button>
+                      <p className="text-xs text-muted">
+                        Paste this into the confirmation box in your mail provider&rsquo;s forwarding settings.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p data-testid="verification-no-code">{NO_CODE_COPY}</p>
+                      <p className="text-xs text-muted">{UNTRUSTED_BODY_LABEL}</p>
+                      <pre
+                        data-testid="verification-raw-body"
+                        className="font-mono text-xs text-muted whitespace-pre-wrap break-all max-h-64 overflow-y-auto"
+                      >
+                        {scan.body}
+                      </pre>
+                    </>
+                  )}
+                  {scan.link !== null && (
+                    <a
+                      data-testid="verification-open-link"
+                      href={scan.link}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="min-h-11 inline-flex items-center text-sm underline"
+                    >
+                      Open the confirmation link on mail-settings.google.com
+                    </a>
+                  )}
+                </>
+              )}
+
               <Button
                 variant={request === null ? "secondary" : "primary"}
                 disabled={request === null || busy}

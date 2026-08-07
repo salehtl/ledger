@@ -1,14 +1,18 @@
 /**
- * Reading Gmail's forward-confirmation code out of a **held, untrusted**
- * message — ported from `app/src/lib/verificationCode.ts`.
+ * Reading a forward-confirmation code out of a **held, untrusted** message —
+ * ported from `app/src/lib/verificationCode.ts`.
  *
  * # Why this exists at all
  *
- * Plan Decision 7: Gmail sends its forwarding confirmation from `google.com`,
- * §3.2 forbids ever promoting a forwarder domain, so that message quarantines
- * permanently *by design* and onboarding's happy path runs straight through the
- * held lane. `onboarding.ts`'s `QUARANTINE_HELD` is the wording; this module is
- * the reading.
+ * Plan Decision 7: a mail provider sends its forwarding confirmation from its
+ * own domain (Gmail's is `google.com`), §3.2 forbids ever promoting a forwarder
+ * domain, so that message quarantines permanently *by design* and onboarding's
+ * happy path runs straight through the held lane. `onboarding.ts`'s
+ * `QUARANTINE_HELD` is the wording; this module is the reading.
+ *
+ * **Nothing here knows a provider.** {@link couldBeConfirmation} says only that a
+ * held message *could* be the one the user is waiting for; which one it is, is
+ * the user's answer to give, for the reason recorded on that function.
  *
  * # This runs a pattern over attacker-controlled content
  *
@@ -49,6 +53,8 @@
 import { CURRENT_VERSION, normalize } from "@ledger/client/norm/norm";
 import { webPlatform } from "@ledger/client/platform.web";
 
+import { UNVERIFIED_PREFIX } from "./onboardingIO";
+
 // ---------------------------------------------------------------------------
 // The bounds
 // ---------------------------------------------------------------------------
@@ -86,34 +92,68 @@ const LINK_PATTERN = /https:\/\/mail-settings\.google\.com\/mail\/[-A-Za-z0-9_.~
 export const SCAN_PATTERNS: readonly RegExp[] = [...CODE_PATTERNS, LINK_PATTERN];
 
 // ---------------------------------------------------------------------------
-// Which held message is Gmail's
+// Which held message might be the one the user is waiting for
 // ---------------------------------------------------------------------------
 
 /**
- * The forwarder domains Google seals as.
+ * A bare hostname and nothing else: lowercase letters, digits, dots, hyphens.
  *
- * Deliberately narrow, and deliberately not the server's `origin.ForwarderDomains`:
- * this is a UI filter answering "which held message is the one I am waiting
- * for", not a trust decision. Trust is the server's, and it has already refused
- * every one of these as an outer origin.
+ * Anchored at both ends and bounded at the DNS maximum, because everything
+ * downstream — a pattern built from it, a domain rendered next to the word
+ * "verified" — is only as narrow as this. A colon is not in the class, which is
+ * what makes `unverified:dib.ae` and `dib.ae:8080` fail here as well as at the
+ * explicit prefix check below.
  */
-const GOOGLE_DOMAINS = ["google.com", "googlemail.com", "gmail.com"] as const;
+const HOSTNAME = /^[a-z0-9.-]{1,253}$/;
 
-function isGoogleDomain(d: string): boolean {
-  const s = d.trim().toLowerCase().replace(/\.$/, "");
-  return GOOGLE_DOMAINS.some((g) => s === g || s.endsWith(`.${g}`));
+/**
+ * The outer domain when it is genuinely verified, folded — otherwise `null`.
+ *
+ * Three refusals, and all three are the same refusal from different directions:
+ *
+ *  1. `attested` is not `true`. Decoded as `=== true` in `onboardingIO`, so a
+ *     field this build failed to read can never read as verified.
+ *  2. The domain carries {@link UNVERIFIED_PREFIX} — an envelope-derived name
+ *     the SENDER typed and nothing checked. `origin.Resolve` applies that prefix
+ *     precisely so it cannot be compared against anything.
+ *  3. It is not a hostname. Nothing here needs a URL, a port or a mailbox, and a
+ *     value that is not a hostname must not become the pinned host of a link the
+ *     user is invited to open.
+ *
+ * This is a READING of the server's decision, never a decision of its own.
+ */
+export function verifiedOuterDomain(item: { outerDomain: string; attested: boolean }): string | null {
+  if (!item.attested) return null;
+  const d = item.outerDomain.trim().toLowerCase().replace(/\.$/, "");
+  if (d === "" || d.startsWith(UNVERIFIED_PREFIX)) return null;
+  return HOSTNAME.test(d) ? d : null;
 }
 
 /**
- * Whether a held item is Google's own confirmation rather than a bank's mail.
+ * Whether a held item **could** be the confirmation the user is waiting for.
  *
- * Matched on the **outer** domain — the one that signed the envelope this server
- * received — because that is what Gmail's forwarder seals as. An `innerDomain`
- * naming Google would mean the *content* claimed to be from Google, which is
- * exactly the claim this product does not act on.
+ * # Why this deliberately does not identify a provider
+ *
+ * Its predecessor, `isForwarderConfirmation`, required a Google domain, and that
+ * was a bug the moment anyone used another provider: a Fastmail or Proton
+ * confirmation sat in the lane while the screen said "Waiting for Google's
+ * confirmation" forever.
+ *
+ * Dropping the domain list alone does not fix it, and the reason is worth
+ * stating because it is the whole design: **a bank that sends DIRECTLY to the
+ * inbound address also has no inner domain.** No predicate over this data can
+ * tell "my provider's confirmation" from "my bank's first alert" — both are
+ * mail whose only signature is the outer one — and they need opposite handling.
+ * So this stops classifying and answers only "could this be it", the screen
+ * lists every candidate with its verified signing domain, and the user, who
+ * knows which message they are waiting for, opens the right one.
+ *
+ * An attested INNER origin disqualifies: that is content signed by someone the
+ * outer hop merely relayed, i.e. a bank behind a forwarder, and it has its own
+ * control.
  */
-export function isForwarderConfirmation(item: { outerDomain: string; innerDomain: string }): boolean {
-  return item.innerDomain.trim() === "" && isGoogleDomain(item.outerDomain);
+export function couldBeConfirmation(item: { outerDomain: string; innerDomain: string; attested: boolean }): boolean {
+  return item.innerDomain.trim() === "" && verifiedOuterDomain(item) !== null;
 }
 
 // ---------------------------------------------------------------------------

@@ -320,6 +320,52 @@ describe("Verification", () => {
     expect(message.textContent).not.toMatch(/try again/i);
   });
 
+  /**
+   * The provider-agnostic rework. A confirmation from ANY verified provider can
+   * be opened and read; the old code recognised Google alone, so a Fastmail user
+   * sat on "Waiting for Google's confirmation" with the message already held.
+   */
+  it("lets the user open a held confirmation from any verified provider", async () => {
+    const user = userEvent.setup();
+    mount({
+      items: [
+        {
+          ...BANK_ITEM,
+          id: "q9",
+          outer_domain: "fastmail.com",
+          inner_domain: "",
+          attested_by: "DKIM d=fastmail.com",
+          blob: Buffer.from(
+            ["Content-Type: text/plain; charset=UTF-8", "", "Confirmation code: 481516234", ""].join("\r\n"),
+            "utf8",
+          ).toString("base64"),
+        },
+      ],
+    });
+
+    // Listed by its VERIFIED signing domain, and openable — no code is read
+    // until the user says this is the message they are waiting for.
+    const item = await screen.findByTestId("verification-item-q9");
+    expect(item.textContent).toContain("fastmail.com");
+    expect(screen.queryByTestId("verification-code")).toBeNull();
+
+    await user.click(within(item).getByRole("button", { name: /look for a confirmation code/i }));
+    expect((await screen.findByTestId("verification-code")).textContent).toBe("481516234");
+  });
+
+  /** Listed, so it is not a mystery — but never openable and never trustable. */
+  it("lists unverified held mail without offering to read a code out of it", async () => {
+    mount({
+      items: [
+        { ...BANK_ITEM, id: "q8", outer_domain: "unverified:fastmail.com", inner_domain: "", attested: false },
+      ],
+    });
+    const item = await screen.findByTestId("verification-item-q8");
+    expect(item.textContent).toContain("Unauthenticated");
+    expect(item.textContent).not.toContain("fastmail.com");
+    expect(within(item).queryByRole("button", { name: /look for a confirmation code/i })).toBeNull();
+  });
+
   it("refuses to offer trust for unauthenticated mail", async () => {
     mount({ items: [{ ...BANK_ITEM, attested: false, attested_by: "", inner_domain: "" }] });
     const button = await screen.findByRole("button", { name: /cannot trust unauthenticated mail/i });
