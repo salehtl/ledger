@@ -84,7 +84,8 @@ living catalog; update the story in the same commit as the component.
 - **Money & counts** use `.tnum` (tabular mono figures) via `<Money>` or the
   class directly.
 - **Overlays**: every sheet/modal is a `Dialog`. Full-screen drill-ins are a
-  `SettingsPage`. No hand-rolled `fixed inset-0` overlays.
+  `SettingsPage`. No hand-rolled `fixed inset-0` overlays. **A "wall" is not an
+  overlay** — see `v2/BootGate.tsx` below.
 - **Loading**: `Skeleton` for list-shaped primary loads; a centered
   `PixelSpinner` only for non-list loads (Review deck) and inline waits. Never
   Tailwind's `animate-spin`, and never a rotating `Loader2` — that glyph is
@@ -350,6 +351,27 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   Recurring and Reports all mount inside one, stacked in DOM order like
   ProjectsFlow so backing out reveals the real parent.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
+
+### Walls (`v2/BootGate.tsx`)
+- **Purpose:** the boot gate's full-page states — opening, "this device was not
+  set up", "syncing has stopped", a fatal open. `min-h-[100svh]` on the page
+  itself, centred, with a heading, body copy, an optional mono detail block and
+  at most one `Button`.
+- **Not an overlay, and that is the whole point.** A wall is rendered *instead
+  of* the app, never over it, so "non-dismissable" is structural: there is no
+  layer behind it, no scrim to tap through and no focus trap to get wrong. That
+  is why it does not use `Dialog` and does not violate the no-`fixed inset-0`
+  rule — it never leaves the document flow. `100svh`, not `100vh`, so an iOS URL
+  bar cannot push the action under the fold.
+- **Use for:** an app-level state in which the app itself must not be on screen.
+  A halted sync is the canonical one: the invariant checker has refused the
+  data, and rendering a spinner (or a dismissable banner over live figures)
+  would say "still loading" about records the engine has stopped standing
+  behind.
+- **Don't:** give a halt wall a retry button or a `role="status"`. It is
+  `role="alert"`, and retrying is not what fixes a chain break. The retry
+  affordance belongs only to the walls whose copy says pressing again could
+  plausibly work (`enrollmentCopy(...).retry`).
 
 ### Card
 - **Purpose:** the paper content surface (`bg-surface`, card radius,

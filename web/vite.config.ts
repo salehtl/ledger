@@ -148,8 +148,20 @@ export default defineConfig({
   // `bun run dev` serves the PWA but the API client uses relative /api URLs,
   // so point them at a running Go binary. LEDGER_API overrides the target for
   // the UI test harness, which runs the server on a scratch DB and free port.
+  //
+  // `/api/v1` is `ledgerd` (v2) and `/api` is the v1 binary. The v1 key would
+  // also match `/api/v1/...` — Vite walks the proxy table in key order and
+  // takes the first prefix that matches — so the more specific one is FIRST,
+  // and moving it below `/api` would silently send every v2 call to the
+  // single-user server. LEDGER_V2_API overrides the target the same way
+  // LEDGER_API does. In production both are same-origin and there is no proxy
+  // at all, which is why the `Client`'s `server` is `""` in either case.
   server: {
     proxy: {
+      "/api/v1": {
+        target: process.env.LEDGER_V2_API ?? "http://127.0.0.1:8091",
+        changeOrigin: true,
+      },
       "/api": {
         target: process.env.LEDGER_API ?? "http://127.0.0.1:8080",
         changeOrigin: true,

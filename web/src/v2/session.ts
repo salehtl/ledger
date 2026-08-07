@@ -573,6 +573,29 @@ export interface V2Handle {
   signUp(inviteCode: string): Promise<void>;
   /** Username-less discoverable sign-in, then enrols. */
   signIn(): Promise<void>;
+  /**
+   * Makes sure this device can author, and does nothing when it already can.
+   *
+   * {@link signUp} and {@link signIn} both end by calling this, so on the happy
+   * path nobody else has to. It is exposed because the happy path is not the
+   * only one: `ceremony` persists the session (`adoptSession`) BEFORE it
+   * enrols, so a network drop in between leaves a device with
+   * `signedIn() === true` and no writer — a state in which every write throws
+   * `"this device is not set up to make changes yet"` and which nothing else
+   * repairs. That is commit `8365532`'s regression one step removed, and the
+   * repair is the same one `app/src/app/bootstrap.ts` performs: call this at
+   * every boot, before the first sync and before anything that could author.
+   *
+   * Free on the already-enrolled path — {@link ensureDeviceWriter}'s fast path
+   * makes no network call — which is what makes an unconditional call at every
+   * launch the right shape. The alternative, "enrol only when signing in",
+   * leaves every device that signed in before this existed permanently unable
+   * to write.
+   *
+   * Throws {@link EnrollmentError}, except for `401`/`410`, which are the
+   * session's business and travel unwrapped.
+   */
+  enrol(): Promise<void>;
   signOut(): Promise<void>;
   close(): void;
 }
@@ -764,6 +787,8 @@ export async function initV2(server: string, opts: InitV2Options = {}): Promise<
         "/api/v1/auth/passkey/login/finish",
       );
     },
+
+    enrol: enrolThisDevice,
 
     async signOut(): Promise<void> {
       // The bearer token and NOTHING else. This is not the account-deleted

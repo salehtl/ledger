@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useV2 } from "../v2/BootGate";
+import { invalidateAfterSync } from "../v2/queries";
 import { getJSON } from "../api/client";
 import type { Txn } from "../api/types";
 import { BottomNav } from "../components/ui/BottomNav";
@@ -69,8 +71,25 @@ export function AppShell() {
 
   const qc = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);
+  // Under the v2 gate a pull is a SYNC, not a refetch: the screens read the
+  // local projection, so invalidating without syncing first would re-read the
+  // same rows and look broken. `run("refresh")` joins whatever sync is already
+  // in flight (SyncEngine's rule-3 guard), and the invalidation afterwards is
+  // what tells the tree the projection moved.
+  //
+  // `useV2()` is null wherever the gate is absent — v1's own screen tests mount
+  // this component bare — and there the v1 behaviour is unchanged.
+  const v2 = useV2();
+  const refresh = useCallback(async () => {
+    if (v2 !== null) {
+      await v2.sync.run("refresh");
+      await invalidateAfterSync(qc);
+      return;
+    }
+    await qc.invalidateQueries();
+  }, [v2, qc]);
   // Disabled while offline: a pull would haptic-confirm a refresh that can't fetch.
-  const { pullDistance, refreshing } = usePullToRefresh(mainRef, () => qc.invalidateQueries(), online);
+  const { pullDistance, refreshing } = usePullToRefresh(mainRef, refresh, online);
 
   const bounds = scopeBounds(scope);
 
