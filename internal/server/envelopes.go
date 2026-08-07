@@ -16,7 +16,7 @@ import (
 // or a half-applied plan.
 type EnvelopeStore interface {
 	EnvelopeMonthSummary(month string) ([]store.EnvelopeMonthRow, error)
-	SelectCategoryTargets() ([]store.CategoryTargetRow, error)
+	SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error)
 	SelectBudgetConfig() (store.BudgetConfig, error)
 	SelectMonthIncome(period string) (int64, error)
 	UpsertEnvelopeAssignments(month string, byCategory map[int64]int64) error
@@ -60,7 +60,7 @@ func (s *Server) computeEnvelopeSummary(month string) (budget.EnvelopeSummary, s
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
-	targets, err := s.envelopeStore.SelectCategoryTargets()
+	targets, err := s.envelopeStore.SelectCategoryTargetsForMonth(month)
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
