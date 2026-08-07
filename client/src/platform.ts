@@ -46,6 +46,7 @@
  * `undefined`.
  */
 
+import { setPlatform } from "./platform.registry";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 
@@ -144,23 +145,12 @@ export interface Platform {
 // The registry
 // ---------------------------------------------------------------------------
 
-let active: Platform | undefined;
-
-/**
- * Installs the implementation every call site will use. The app calls this at
- * module load, before anything reaches the seam.
- */
-export function setPlatform(p: Platform): void {
-  active = p;
-}
-
-/** The installed implementation. Throws if none has been installed. */
-export function platform(): Platform {
-  if (active === undefined) {
-    throw new Error("no Platform installed: call setPlatform() before using the client library on this runtime");
-  }
-  return active;
-}
+// The registry itself lives in `platform.registry.ts`, which imports nothing —
+// see that file's doc comment. It is re-exported here so every existing
+// `import { platform } from "../platform"` is untouched, and so there is
+// exactly one `active` variable in the process no matter which of the two
+// modules a caller reached it through.
+export { platform, setPlatform } from "./platform.registry";
 
 // ---------------------------------------------------------------------------
 // The Bun/Node implementation
