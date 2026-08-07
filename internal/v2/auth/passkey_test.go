@@ -200,6 +200,83 @@ func TestTwoRegistrationsBegunAgainstOneLiveCodeYieldOneAccount(t *testing.T) {
 	}
 }
 
+// A registration that fails AFTER the account has been upserted must leave the
+// invite code exactly as it found it — unredeemed, still noted, still spendable.
+//
+// This is the regression for the defect the Task 4 review found: the account and
+// the credential used to be two separate transactions, with a hand-written
+// `DELETE FROM users` compensating on failure. Because invite_codes.redeemed_by
+// is ON DELETE SET NULL and 00023's trigger clears the note, that compensation
+// left `redeemed_at` set, `redeemed_by` NULL and the note gone: a beta code
+// permanently burned, for an account that does not exist, and the operator
+// unable to tell whose it had been.
+//
+// The failure is forced without a hook: a second authenticator presenting a
+// credential id that is already the primary key of an enrolled one. The insert
+// is the last statement in the transaction, so this reaches it only after the
+// user, the counter row, the ingest writer and the redemption are all in place —
+// which is precisely the window the defect lived in.
+func TestARegistrationThatFailsAfterTheUpsertDoesNotBurnTheInvite(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	_, first := enroll(t, p, mustMint(t, pool, "the first account"))
+
+	code := mustMint(t, pool, "sameera's code")
+	id, opts, err := p.BeginRegistration(bgctx, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clash := authtest.New(t)
+	clash.CredID = first.CredID // collides with the primary key already stored
+
+	if _, _, err := p.FinishRegistration(bgctx, id, clash.Create(t, opts)); err == nil {
+		t.Fatal("a duplicate credential id was accepted")
+	}
+
+	// Nothing was created...
+	if n := countUsers(t, pool); n != 1 {
+		t.Fatalf("users = %d, want 1", n)
+	}
+	// ...and, the point of this test, nothing was SPENT.
+	var (
+		redeemed *time.Time
+		by       *uuid.UUID
+		note     string
+	)
+	if err := pool.QueryRow(bgctx,
+		`SELECT redeemed_at, redeemed_by, coalesce(note, '') FROM invite_codes WHERE redeemed_at IS NULL`).
+		Scan(&redeemed, &by, &note); err != nil {
+		t.Fatalf("the failed registration left no unredeemed code behind: %v", err)
+	}
+	if redeemed != nil || by != nil {
+		t.Fatalf("code is redeemed_at=%v by=%v after a failed registration", redeemed, by)
+	}
+	if note != "sameera's code" {
+		t.Fatalf("note = %q, want the operator's words: a burned code nobody can identify "+
+			"is the half of this defect that cannot be repaired by hand", note)
+	}
+
+	// And it is still usable, which is the only thing the beta tester cares about.
+	if _, _, err := enrollErr(t, p, code); err != nil {
+		t.Fatalf("the code did not survive as spendable: %v", err)
+	}
+	if n := countUsers(t, pool); n != 2 {
+		t.Fatalf("users = %d, want 2 after the retry succeeded", n)
+	}
+}
+
+// enrollErr is enroll without the t.Fatal, for the one test that retries.
+func enrollErr(t *testing.T, p *Passkeys, code string) (uuid.UUID, *authtest.Authenticator, error) {
+	t.Helper()
+	id, opts, err := p.BeginRegistration(bgctx, code)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+	a := authtest.New(t)
+	userID, _, err := p.FinishRegistration(bgctx, id, a.Create(t, opts))
+	return userID, a, err
+}
+
 // ---------------------------------------------------------------------------
 // (c) login
 // ---------------------------------------------------------------------------
@@ -363,6 +440,61 @@ func TestPasskeySignCountGoingBackwardsIsRefusedAsCloneEvidence(t *testing.T) {
 	}
 	if signCount != 9 {
 		t.Fatalf("sign_count = %d, want 9 — the refused assertion moved it", signCount)
+	}
+}
+
+// A permanent-zero signature counter is the COMMON case, not an edge one: every
+// synced passkey provider (iCloud Keychain, Google Password Manager) reports
+// zero for ever, because a counter is meaningless for a credential that exists
+// on several devices at once.
+//
+// Two things must hold for them, and one of them did not: repeated sign-ins must
+// not be refused as clone evidence, and last_used_at must actually be recorded.
+// touchCredential's `WHERE sign_count < $2` matched no row at zero, so "last
+// used" would have read NULL for ever for most users.
+func TestAPermanentZeroCounterSignsInRepeatedlyAndStillRecordsLastUsed(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+
+	code := mustMint(t, pool, "icloud keychain")
+	id, opts, err := p.BeginRegistration(bgctx, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := authtest.New(t)
+	a.Counter = 0
+	userID, _, err := p.FinishRegistration(bgctx, id, a.Create(t, opts))
+	if err != nil {
+		t.Fatalf("FinishRegistration at counter 0: %v", err)
+	}
+
+	for i := range 3 {
+		lid, lopts, err := p.BeginLogin(bgctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _, err := p.FinishLogin(bgctx, lid, a.Assert(t, lopts, 0))
+		if err != nil {
+			t.Fatalf("login %d at counter 0: %v — a synced passkey was bricked", i+1, err)
+		}
+		if got != userID {
+			t.Fatalf("login %d resolved to %s, want %s", i+1, got, userID)
+		}
+		var (
+			signCount int64
+			lastUsed  *time.Time
+		)
+		if err := pool.QueryRow(bgctx,
+			`SELECT sign_count, last_used_at FROM webauthn_credentials WHERE credential_id = $1`,
+			a.CredID).Scan(&signCount, &lastUsed); err != nil {
+			t.Fatal(err)
+		}
+		if signCount != 0 {
+			t.Fatalf("sign_count = %d, want it left at 0", signCount)
+		}
+		if lastUsed == nil {
+			t.Fatalf("login %d did not record last_used_at for a zero-counter authenticator", i+1)
+		}
 	}
 }
 

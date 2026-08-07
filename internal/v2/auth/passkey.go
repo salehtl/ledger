@@ -329,6 +329,15 @@ func (p *Passkeys) BeginRegistration(ctx context.Context, inviteCode string) (st
 // fifth for the reason the others are in it: an account with no credential is an
 // account nobody can ever sign into, and it would have spent an invite code to
 // get there.
+//
+// It is one transaction because the first version was not, and the difference was
+// not theoretical. That version committed the account (and the redemption) and
+// then inserted the credential separately, compensating on failure with a
+// `DELETE FROM users`. Since invite_codes.redeemed_by is ON DELETE SET NULL and
+// 00023's trigger clears the note, what the compensation left behind was a code
+// marked redeemed, pointing at nobody, with the operator's own note about whose
+// it was destroyed: a beta tester with a silently dead code and an operator with
+// no way to work out which one to reissue. See upsertUser's inTx parameter.
 func (p *Passkeys) FinishRegistration(ctx context.Context, ceremonyID string, response []byte) (uuid.UUID, []byte, error) {
 	if p.Pool == nil || p.WA == nil {
 		return uuid.Nil, nil, errors.New("auth: Passkeys is not configured")
@@ -354,40 +363,22 @@ func (p *Passkeys) FinishRegistration(ctx context.Context, ceremonyID string, re
 	return userID, cred.ID, nil
 }
 
-// createAccountWithCredential is UpsertUserInvitedHash plus the credential, in
-// one transaction.
+// createAccountWithCredential creates the account and stores its first
+// credential in ONE transaction — the account's own, entered through
+// upsertUser's inTx hook.
 //
-// It cannot reuse upsertUser directly — that function owns its own transaction —
-// so instead it calls it and inserts the credential immediately afterwards inside
-// a transaction of its own, then verifies the account is the one it just made.
-// The window that opens is bounded and benign: the account exists for a moment
-// with no credential, and if the insert fails the account is deleted again rather
-// than left as an unusable row holding a spent invite.
+// There is no compensating delete here and there must not be one: a rollback
+// un-spends the invite code, and a `DELETE FROM users` does not (redeemed_by is
+// ON DELETE SET NULL, and 00023's trigger clears the note as well). See
+// FinishRegistration.
 func (p *Passkeys) createAccountWithCredential(ctx context.Context, sc storedCredential, inviteHash []byte, now time.Time) (uuid.UUID, error) {
-	userID, err := UpsertUserInvitedHash(ctx, p.Pool, passkeyIdentity(sc.UserHandle, now), inviteHash)
-	if err != nil {
-		// ErrNotInvited passes through unwrapped: the HTTP layer keys its one
-		// distinguishable rejection on it.
-		return uuid.Nil, err
-	}
-	sc.UserID = userID
-	if err := insertCredential(ctx, p.Pool, sc, now); err != nil {
-		// Roll the account back by hand. The handle was minted moments ago and
-		// belongs to nothing else, so this can only ever remove the row this call
-		// created — and leaving it would strand a spent invite code against an
-		// account with no way in.
-		//
-		// Deliberately on a context detached from the caller's: the failure that
-		// gets here is most often the request being cancelled, and cleanup that
-		// inherits the cancellation is cleanup that does not run.
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if _, delErr := p.Pool.Exec(cleanup, `DELETE FROM users WHERE id = $1`, userID); delErr != nil {
-			return uuid.Nil, fmt.Errorf("%w (and the account could not be rolled back: %v)", err, delErr)
-		}
-		return uuid.Nil, err
-	}
-	return userID, nil
+	// ErrNotInvited passes through unwrapped: the HTTP layer keys its one
+	// distinguishable rejection on it.
+	return upsertUser(ctx, p.Pool, passkeyIdentity(sc.UserHandle, now), &inviteHash,
+		func(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+			sc.UserID = userID
+			return insertCredential(ctx, tx, sc, now)
+		})
 }
 
 // ---------------------------------------------------------------------------

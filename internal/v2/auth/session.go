@@ -370,7 +370,7 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 // Verifier. Nothing in this function can tell a verified subject from an
 // attacker-supplied string.
 func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID, error) {
-	return upsertUser(ctx, pool, id, nil)
+	return upsertUser(ctx, pool, id, nil, nil)
 }
 
 // UpsertUserInvited is UpsertUser behind the closed beta's gate: an identity
@@ -385,22 +385,30 @@ func UpsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity) (uuid.UUID
 // millisecond earlier — is a rollback here instead.
 func UpsertUserInvited(ctx context.Context, pool *pgxpool.Pool, id Identity, code string) (uuid.UUID, error) {
 	hash := InviteCodeHash(code)
-	return upsertUser(ctx, pool, id, &hash)
+	return upsertUser(ctx, pool, id, &hash, nil)
 }
 
-// UpsertUserInvitedHash is UpsertUserInvited for a caller that holds the code's
-// DIGEST rather than the code: a passkey registration, which took the code at
-// `register/begin` and stored only its hash on the ceremony row, and spends it
-// here one round trip later. Everything else — the gate, the single-use
-// redemption, the one transaction — is identical, because it is the same code.
-func UpsertUserInvitedHash(ctx context.Context, pool *pgxpool.Pool, id Identity, codeHash []byte) (uuid.UUID, error) {
-	return upsertUser(ctx, pool, id, &codeHash)
-}
-
-// upsertUser is the body all three entry points share. invite is nil when
-// creation is unconditional and non-nil (possibly holding no hash at all) when
-// it must be paid for.
-func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *[]byte) (uuid.UUID, error) {
+// upsertUser is the body every entry point shares. invite is nil when creation
+// is unconditional and non-nil (possibly holding no hash at all) when it must be
+// paid for.
+//
+// inTx, when non-nil, runs inside the SAME transaction just before it commits,
+// and its error rolls the whole thing back. It exists for exactly one caller —
+// a passkey registration, which must store the credential alongside the account
+// (auth.Passkeys.FinishRegistration) — and it is a callback rather than a second
+// copy of this function because the alternative was measured and was a defect:
+//
+//	the credential was inserted on the POOL after this function had already
+//	committed, with a hand-written `DELETE FROM users` compensating on failure.
+//	invite_codes.redeemed_by is ON DELETE SET NULL and 00023's trigger clears
+//	the note, so that compensation left `redeemed_at` set with redeemed_by NULL
+//	and no note — a permanently burned beta code whose owner the operator could
+//	no longer identify.
+//
+// A compensating write is not a rollback. The parameter is here so nobody has to
+// discover that a second time.
+func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *[]byte,
+	inTx func(context.Context, pgx.Tx, uuid.UUID) error) (uuid.UUID, error) {
 	if pool == nil {
 		return uuid.Nil, errors.New("auth: UpsertUser: pool is nil")
 	}
@@ -500,6 +508,14 @@ func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *[]
 	// again. Idempotent, so a returning user's sign-in writes nothing.
 	if err := ensureIngestWriterTx(ctx, tx, userID, time.Now().UTC()); err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: %w", err)
+	}
+	// Last, so that everything this function guarantees is already in place when
+	// it runs, and inside the transaction, so that its failure un-spends the
+	// invite code along with the account.
+	if inTx != nil {
+		if err := inTx(ctx, tx, userID); err != nil {
+			return uuid.Nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: commit: %w", err)

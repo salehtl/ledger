@@ -29,6 +29,22 @@
 -- base64url output cannot contain one either, so widening the vocabulary by this
 -- one value keeps the encoding unambiguous. Do not add a value containing "|"
 -- without length-prefixing the digest input.
+--
+-- # READ THIS BEFORE REACHING FOR THE DOWN MIGRATION
+--
+-- The Down below restores CHECK (idp IN ('apple','google')). Once ANY passkey
+-- account exists it CANNOT succeed: Postgres validates a new CHECK against
+-- every existing row, so the ALTER fails on the first `idp = 'passkey'` user and
+-- the whole migration aborts. That is not an oversight to be patched — it is the
+-- correct behaviour, because the alternative would be a rollback that silently
+-- deleted every passkey account or left the column lying about its contents.
+--
+-- Deployment here is FORWARD-ONLY (deploy/README.md): the fix for a bad
+-- migration is another migration, restoring from the pre-deploy backup, not
+-- `goose down`. The Down is kept because goose wants one and because it is
+-- correct on a database with no passkey users yet — which is exactly the window
+-- in which anyone would legitimately use it. Anywhere else, it will fail loudly
+-- rather than do damage, which is the right way round.
 
 ALTER TABLE users DROP CONSTRAINT users_idp_check;
 ALTER TABLE users ADD CONSTRAINT users_idp_check

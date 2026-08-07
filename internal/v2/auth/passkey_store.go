@@ -215,10 +215,14 @@ type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// insertCredential stores a freshly created credential. On the registration path
-// it runs inside the transaction that also creates the account and spends the
-// invite, so an account is never committed without the credential that is the
-// only way to sign into it.
+// insertCredential stores a freshly created credential.
+//
+// On the registration path the execer is the pgx.Tx that also creates the
+// account and spends the invite (upsertUser's inTx hook), so an account is never
+// committed without the credential that is the only way to sign into it — and,
+// just as importantly, a failure here rolls the invite redemption back rather
+// than burning the code. On the add path it is the pool, because there is
+// nothing else in that statement's fate to share.
 func insertCredential(ctx context.Context, q execer, sc storedCredential, now time.Time) error {
 	var transports any
 	if ts := transportsString(sc.Credential.Transport); ts != "" {
@@ -258,13 +262,22 @@ func transportsString(ts []protocol.AuthenticatorTransport) string {
 // touchCredential records a successful assertion: the new signature counter and
 // when it was last used.
 //
-// The counter is guarded in SQL as well as in Go (`sign_count < $2`). The Go
-// check is the one that REFUSES a clone; this one is belt, and it is what keeps
-// two concurrent sign-ins from committing the lower of two counters.
+// The counter is guarded in SQL as well as in Go. The Go check (CloneWarning) is
+// the one that REFUSES a clone; GREATEST here is belt, and it is what keeps two
+// concurrent sign-ins from committing the lower of two counters.
+//
+// GREATEST rather than a `WHERE sign_count < $2` predicate, which is what this
+// was and was wrong for the COMMON case: an authenticator that reports a
+// permanent zero — iCloud Keychain and every other synced passkey provider, i.e.
+// most users — never satisfies it, so the whole UPDATE matched no row and
+// last_used_at stayed NULL for ever. Splitting the two facts is the fix: the
+// counter must never go backwards, and "this credential was used just now" is
+// true regardless of what the counter says.
 func (p *Passkeys) touchCredential(ctx context.Context, credentialID []byte, signCount uint32, now time.Time) error {
 	if _, err := p.Pool.Exec(ctx,
-		`UPDATE webauthn_credentials SET sign_count = $2, last_used_at = $3
-		  WHERE credential_id = $1 AND sign_count < $2`,
+		`UPDATE webauthn_credentials
+		    SET sign_count = GREATEST(sign_count, $2), last_used_at = $3
+		  WHERE credential_id = $1`,
 		credentialID, int64(signCount), now); err != nil {
 		return fmt.Errorf("auth: passkey: update credential: %w", err)
 	}
