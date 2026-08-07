@@ -2,8 +2,10 @@
  * The verification-code reader, pinned against hostile input.
  *
  * Ported from `app/src/lib/verificationCode.test.ts` (the Expo app is retired on
- * this branch) and extended for the provider-agnostic rework: recognition by
- * user choice rather than by a Google domain list.
+ * this branch) and then extended for the provider-agnostic rework: recognition
+ * by user choice rather than by a Google domain list, and a link host taken from
+ * the message's own VERIFIED signing domain rather than from a literal in the
+ * pattern.
  *
  * The probe corpus is `conformance/dialect/patterns.json`'s own — the same bytes
  * the template dialect is measured on, chosen because they contain CR, U+2028,
@@ -21,6 +23,7 @@ import {
   CODE_DIGITS,
   couldBeConfirmation,
   heldBody,
+  linkPattern,
   SCAN_BUDGET_MS,
   SCAN_LIMIT_CHARS,
   SCAN_PATTERNS,
@@ -55,6 +58,11 @@ const GMAIL = [
   "https://mail-settings.google.com/mail/vf-%5BANGjdJ8abcDEF123%5D-XyZ0",
   "",
 ].join("\r\n");
+
+const GOOGLE = "google.com";
+
+/** The Gmail body scanned with the host Gmail's own confirmation links live on. */
+const gmailScan = () => scanForCode(GMAIL, { linkHost: GOOGLE });
 
 // ---------------------------------------------------------------------------
 // Task 1 — recognition by choice, not by a domain list
@@ -125,60 +133,274 @@ describe("verifiedOuterDomain", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The bounds
+// Task 2 — a link host taken from the signature, not from the body
 // ---------------------------------------------------------------------------
 
-describe("shape of the patterns", () => {
-  /**
-   * No unbounded quantifier, measured on the `source` of every pattern rather
-   * than promised in a comment. The scan walks the pattern, skipping escaped
-   * characters and the interior of a character class (a star or plus inside
-   * `[...]` is a literal), and fails on `+`, `*` or an open-ended `{n,}`.
-   */
-  it("contains no unbounded quantifier", () => {
-    for (const re of SCAN_PATTERNS) {
-      const src = re.source;
-      let inClass = false;
-      for (let i = 0; i < src.length; i++) {
-        const c = src[i] as string;
-        if (c === "\\") {
-          i++;
-          continue;
-        }
-        if (inClass) {
-          if (c === "]") inClass = false;
-          continue;
-        }
-        if (c === "[") {
-          inClass = true;
-          continue;
-        }
-        expect({ pattern: src, at: i, char: c }).not.toEqual({ pattern: src, at: i, char: "+" });
-        expect({ pattern: src, at: i, char: c }).not.toEqual({ pattern: src, at: i, char: "*" });
-        if (c === "{") {
-          const close = src.indexOf("}", i);
-          expect(close).toBeGreaterThan(i);
-          const body = src.slice(i + 1, close);
-          expect({ pattern: src, bound: body, openEnded: /^\d+,$/.test(body) }).toEqual({
-            pattern: src,
-            bound: body,
-            openEnded: false,
-          });
-          i = close;
-        }
-      }
+describe("the link host comes from the caller, never from the body", () => {
+  it("returns a link on the verified host", () => {
+    expect(gmailScan().link).toBe("https://mail-settings.google.com/mail/vf-%5BANGjdJ8abcDEF123%5D-XyZ0");
+  });
+
+  it("returns a link on the verified domain itself, not only a subdomain", () => {
+    const got = scanForCode("Confirmation code: 123456\nhttps://fastmail.com/settings/forward/abc", {
+      linkHost: "fastmail.com",
+    });
+    expect(got.link).toBe("https://fastmail.com/settings/forward/abc");
+  });
+
+  /** Ordering must not decide it: the first URL in the body is the attacker's. */
+  it("ignores a link on a different host even when it comes first", () => {
+    const body = [
+      "https://evil.example/mail/steal",
+      "https://mail-settings.google.com.evil.example/mail/steal",
+      "https://evil-google.com/mail/steal",
+      "https://google.com@evil.example/mail/steal",
+      "https://mail-settings.google.com/mail/real",
+    ].join("\n");
+    expect(scanForCode(body, { linkHost: GOOGLE }).link).toBe("https://mail-settings.google.com/mail/real");
+  });
+
+  it("refuses a lookalike when it is the only link in the body", () => {
+    for (const url of [
+      "https://evil-google.com/mail/x",
+      "https://google.com.evil.example/mail/x",
+      "https://google.com@evil.example/mail/x",
+      "http://mail-settings.google.com/mail/x",
+      "https://notgoogle.com/mail/x",
+    ]) {
+      expect({ url, link: scanForCode(url, { linkHost: GOOGLE }).link }).toEqual({ url, link: null });
     }
   });
 
-  it("starts every pattern with literal text, so a miss is a literal scan", () => {
-    for (const re of SCAN_PATTERNS) {
-      expect({ pattern: re.source, literal: /^[A-Za-z\\]/.test(re.source) }).toEqual({
-        pattern: re.source,
-        literal: true,
-      });
+  /**
+   * The dot is the one metacharacter a LEGAL host always contains, so it is the
+   * one that proves the escaping: unescaped, `google.com` matches `googleXcom`.
+   */
+  it("escapes the dots in a legal host", () => {
+    expect(scanForCode("https://googleXcom/mail/x", { linkHost: GOOGLE }).link).toBeNull();
+    expect(scanForCode("https://mail-settingsXgoogle.com/mail/x", { linkHost: GOOGLE }).link).toBeNull();
+  });
+
+  /** The host is escaped into the pattern, so a metacharacter is text or nothing. */
+  it("escapes a host rather than interpreting it", () => {
+    const hostile = "a+b.example";
+    // Escaped: the literal string does not appear, so nothing matches...
+    expect(scanForCode("https://ab.example/x", { linkHost: hostile }).link).toBeNull();
+    expect(scanForCode("https://aaab.example/x", { linkHost: hostile }).link).toBeNull();
+    // ...and the host is refused outright as a non-hostname anyway.
+    expect(scanForCode("https://a+b.example/x", { linkHost: hostile }).link).toBeNull();
+  });
+
+  it("returns no link at all when there is no verified host to pin it to", () => {
+    for (const host of ["", "   ", "unverified:google.com"]) {
+      const got = scanForCode(GMAIL, { linkHost: host });
+      expect({ host, link: got.link }).toEqual({ host, link: null });
+      // The code is still read, and the raw body is still offered.
+      expect(got.code).toBe("123456789");
+      expect(got.body.length).toBeGreaterThan(0);
     }
   });
 });
+
+describe("codes beyond Gmail's exact wording", () => {
+  it("reads the wordings providers actually use, at the lengths they use", () => {
+    const cases: [string, string | null][] = [
+      ["Confirmation code: 123456789", "123456789"],
+      ["confirmation code is 4821", "4821"],
+      ["Your verification code is 90210", "90210"],
+      ["Security code: 314159", "314159"],
+      ["Confirm your request: 1234", "1234"],
+    ];
+    for (const [body, want] of cases) {
+      expect({ body, code: scanForCode(body, { linkHost: "" }).code }).toEqual({ body, code: want });
+    }
+  });
+
+  it("holds the run to a bounded range at both ends", () => {
+    expect(CODE_DIGITS).toEqual({ min: 4, max: 12 });
+    expect(scanForCode("Confirmation code: 123", { linkHost: "" }).code).toBeNull();
+    // Thirteen digits: the first twelve still match, which is preferable to a
+    // dead end and is what the bound means.
+    expect(scanForCode("Confirmation code: 1234567890123", { linkHost: "" }).code).toBe("123456789012");
+  });
+
+  it("does not invent a code out of a bare number", () => {
+    expect(scanForCode("Your balance is 123456", { linkHost: "" }).code).toBeNull();
+    // The gap between the anchor and the digits is bounded too.
+    expect(scanForCode(`Confirmation code${"·".repeat(40)}123456`, { linkHost: "" }).code).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2 Step 5 — the shape of every pattern, measured
+// ---------------------------------------------------------------------------
+
+/**
+ * A pattern's `source`, split into the tokens the rules are about.
+ *
+ * Groups are TRANSPARENT: `(` `)` `(?:` contribute nothing, so the class inside
+ * a capture group counts as adjacent to the class before it — which is exactly
+ * the pair that matters (`[^0-9]{0,16}([0-9]{4,12})`) and exactly the pair a
+ * naive scanner would miss.
+ */
+interface Token {
+  kind: "class" | "literal";
+  /** The class source including brackets, e.g. `[^0-9]`. Empty for a literal. */
+  source: string;
+  /** `{n,m}`, `?`, or "" — the quantifier attached to this token. */
+  quantifier: string;
+}
+
+function tokenize(src: string): { tokens: Token[]; problems: string[] } {
+  const tokens: Token[] = [];
+  const problems: string[] = [];
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i] as string;
+    if (c === "\\") {
+      tokens.push({ kind: "literal", source: src.slice(i, i + 2), quantifier: "" });
+      i++;
+      continue;
+    }
+    if (c === "+" || c === "*") {
+      problems.push(`unbounded quantifier ${c} at ${String(i)}`);
+      continue;
+    }
+    if (c === "{") {
+      const close = src.indexOf("}", i);
+      if (close < 0) {
+        problems.push(`unterminated bound at ${String(i)}`);
+        continue;
+      }
+      const body = src.slice(i + 1, close);
+      if (/^\d+,$/.test(body)) problems.push(`open-ended bound {${body}} at ${String(i)}`);
+      const last = tokens[tokens.length - 1];
+      if (last !== undefined) last.quantifier = `{${body}}`;
+      i = close;
+      continue;
+    }
+    if (c === "[") {
+      let j = i + 1;
+      if (src[j] === "^") j++;
+      if (src[j] === "]") j++;
+      while (j < src.length && src[j] !== "]") {
+        if (src[j] === "\\") j++;
+        j++;
+      }
+      if (j >= src.length) {
+        problems.push(`unterminated class at ${String(i)}`);
+        break;
+      }
+      tokens.push({ kind: "class", source: src.slice(i, j + 1), quantifier: "" });
+      i = j;
+      continue;
+    }
+    // Groups are transparent; `?` after a group or token is a bounded quantifier.
+    if (c === "(") {
+      if (src.startsWith("(?:", i)) i += 2;
+      continue;
+    }
+    if (c === ")") continue;
+    if (c === "?") {
+      const last = tokens[tokens.length - 1];
+      if (last !== undefined) last.quantifier = "?";
+      continue;
+    }
+    tokens.push({ kind: "literal", source: c, quantifier: "" });
+  }
+  return { tokens, problems };
+}
+
+/** A probe alphabet wide enough to catch the overlaps that matter. */
+const ALPHABET = Array.from({ length: 0x7f - 0x20 }, (_, i) => String.fromCharCode(0x20 + i)).concat([
+  "\n",
+  "\r",
+  "\t",
+  " ",
+  " ",
+  "é",
+]);
+
+function members(classSource: string): Set<string> {
+  const re = new RegExp(`^${classSource}$`);
+  return new Set(ALPHABET.filter((ch) => re.test(ch)));
+}
+
+/** Every rule from the module header, applied to one pattern's source. */
+function shapeProblems(src: string): string[] {
+  const { tokens, problems } = tokenize(src);
+
+  // Rule 1: a literal anchor.
+  if (!/^[A-Za-z\\]/.test(src)) problems.push("does not start with literal text");
+
+  // Rule 3: no quantified class adjacent to a class it intersects.
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const a = tokens[i] as Token;
+    const b = tokens[i + 1] as Token;
+    if (a.kind !== "class" || b.kind !== "class") continue;
+    if (a.quantifier === "" && b.quantifier === "") continue;
+    const shared = [...members(a.source)].filter((ch) => members(b.source).has(ch));
+    if (shared.length > 0) {
+      problems.push(`${a.source}${a.quantifier} is adjacent to ${b.source}${b.quantifier} and they overlap`);
+    }
+  }
+  return problems;
+}
+
+describe("the shape of every pattern, measured rather than asserted in a comment", () => {
+  it("holds for every pattern this module will run", () => {
+    for (const re of SCAN_PATTERNS) {
+      expect({ pattern: re.source, problems: shapeProblems(re.source) }).toEqual({
+        pattern: re.source,
+        problems: [],
+      });
+    }
+  });
+
+  /**
+   * The checker can fail. Without this the suite above is a green light for
+   * "nothing was checked" — the exact true-by-construction shape this project
+   * keeps finding.
+   */
+  it("fails on each shape it exists to reject", () => {
+    expect(shapeProblems("Code[a-z]+")).toContain("unbounded quantifier + at 9");
+    expect(shapeProblems("Code[a-z]*")).toContain("unbounded quantifier * at 9");
+    expect(shapeProblems("Code[a-z]{2,}")).toContain("open-ended bound {2,} at 9");
+    expect(shapeProblems("[a-z]{0,8}Code")).toContain("does not start with literal text");
+    // The overlap rule, including through a capture group.
+    expect(shapeProblems("Code[a-z]{0,8}[a-z0-9]{1,4}")).toEqual([
+      "[a-z]{0,8} is adjacent to [a-z0-9]{1,4} and they overlap",
+    ]);
+    expect(shapeProblems("Code[^0-9]{0,16}([^a-z]{1,4})")).toEqual([
+      "[^0-9]{0,16} is adjacent to [^a-z]{1,4} and they overlap",
+    ]);
+    // And it does NOT cry wolf on the disjoint pair the module is built on.
+    expect(shapeProblems("Code[^0-9]{0,16}([0-9]{4,12})")).toEqual([]);
+  });
+
+  /**
+   * The link pattern is BUILT, so its shape depends on the host it was built
+   * from. A host that reached the pattern unescaped would show up here as a
+   * quantifier, which is why the exported set carries a metacharacter probe.
+   */
+  it("holds for a link pattern built from a hostile host", () => {
+    for (const host of ["a+b.example", "a*b.example", "a{1,9}b.example", "(a|b).example", "[a-z].example"]) {
+      const built = linkPattern(host);
+      expect({ host, built: built === null }).toEqual({ host, built: true });
+    }
+    // Built from a legal host, the shape still holds.
+    expect(shapeProblems((linkPattern("mail-settings.google.com") as RegExp).source)).toEqual([]);
+  });
+
+  it("pins scheme and path separator as literals in the built pattern", () => {
+    const src = (linkPattern(GOOGLE) as RegExp).source;
+    expect(src.startsWith("https:\\/\\/")).toBe(true);
+    expect(src).toContain("google\\.com\\/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bounds
+// ---------------------------------------------------------------------------
 
 describe("the corpus this project already knows finds things", () => {
   it("actually loaded", () => {
@@ -192,7 +414,7 @@ describe("the corpus this project already knows finds things", () => {
   it("yields no code, no link, and no slow scan on any probe", () => {
     for (const probe of probes) {
       const started = performance.now();
-      const got = scanForCode(probe.input);
+      const got = scanForCode(probe.input, { linkHost: GOOGLE });
       const took = performance.now() - started;
       expect({ name: probe.name, code: got.code, link: got.link }).toEqual({
         name: probe.name,
@@ -207,18 +429,10 @@ describe("the corpus this project already knows finds things", () => {
 
 describe("scanForCode", () => {
   it("reads Gmail's code and its link", () => {
-    const got = scanForCode(GMAIL);
+    const got = gmailScan();
     expect(got.code).toBe("123456789");
-    expect(got.code?.length).toBe(CODE_DIGITS);
-    expect(got.link).toBe("https://mail-settings.google.com/mail/vf-%5BANGjdJ8abcDEF123%5D-XyZ0");
     expect(got.truncated).toBe(false);
     expect(got.overBudget).toBe(false);
-  });
-
-  it("does not offer a link on any other host", () => {
-    const got = scanForCode("Confirmation code: 123456789\nhttps://mail-settings.google.com.evil.example/mail/vf-x");
-    expect(got.code).toBe("123456789");
-    expect(got.link).toBeNull();
   });
 
   /**
@@ -231,32 +445,34 @@ describe("scanForCode", () => {
   });
 
   it("scans at most the first 8192 characters and says when it stopped short", () => {
-    const late = scanForCode(`${"x".repeat(8192)}Confirmation code: 123456789`);
+    const late = scanForCode(`${"x".repeat(8192)}Confirmation code: 123456789`, { linkHost: GOOGLE });
     expect(late.code).toBeNull();
     expect(late.truncated).toBe(true);
     expect(late.body.length).toBe(8192);
 
-    const early = scanForCode(`${"x".repeat(8152)}Confirmation code: 123456789${"x".repeat(8192)}`);
+    const early = scanForCode(`${"x".repeat(8152)}Confirmation code: 123456789${"x".repeat(8192)}`, {
+      linkHost: GOOGLE,
+    });
     expect(early.code).toBe("123456789");
     expect(early.truncated).toBe(true);
   });
 
   /**
    * The tripwire fires, and firing STOPS the scan. The body's code is reachable
-   * only by the second (case-insensitive) pattern, so a clock that jumps past
-   * the budget after the first must produce a null code. If the guard were
-   * decorative this returns a code and the test fails.
+   * only by a later pattern, so a clock that jumps past the budget after the
+   * first must produce a null code. If the guard were decorative this returns
+   * a code and the test fails.
    */
   it("stops the scan on a clock past the budget instead of merely reporting it", () => {
-    const body = "CONFIRMATION CODE ... 123456789";
-    expect(scanForCode(body).code).toBe("123456789");
+    const body = "Security code ... 123456789";
+    expect(scanForCode(body, { linkHost: GOOGLE }).code).toBe("123456789");
 
     let calls = 0;
     const jumpy = () => {
       calls += 1;
       return calls <= 2 ? 0 : SCAN_BUDGET_MS + 1;
     };
-    const got = scanForCode(body, jumpy);
+    const got = scanForCode(body, { linkHost: GOOGLE, now: jumpy });
     expect(got.code).toBeNull();
     expect(got.overBudget).toBe(true);
     expect(got.link).toBeNull();
@@ -265,7 +481,7 @@ describe("scanForCode", () => {
   it("treats a body with nothing in it as a clean miss, not a throw", () => {
     const bom = String.fromCharCode(0xfeff);
     for (const body of ["", "   ", "Confirmation code:", bom]) {
-      const got = scanForCode(body);
+      const got = scanForCode(body, { linkHost: GOOGLE });
       expect(got.code).toBeNull();
       expect(got.body).toBe(body);
     }
@@ -284,11 +500,13 @@ describe("scanForCode", () => {
       ["repeated a", "a".repeat(SCAN_LIMIT_CHARS)],
       ["metacharacters", "a.b [x] (y) {z} \\ | ^ $ -".repeat(400)],
       ["near-link", `https://mail-settings.google.com/mail/${"%".repeat(SCAN_LIMIT_CHARS)}`],
+      ["subdomain soup", `https://${"a.".repeat(2000)}google.com/mail/x`],
+      ["dotted labels", `https://${"a.".repeat(4000)}`],
       ["digit soup", "1234567 ".repeat(1000)],
     ];
     for (const [name, body] of hostile) {
       const started = performance.now();
-      scanForCode(body);
+      scanForCode(body, { linkHost: GOOGLE });
       const took = performance.now() - started;
       expect({ name, slow: took > 50 }).toEqual({ name, slow: false });
     }
@@ -317,6 +535,6 @@ describe("heldBody", () => {
 
   it("works end to end on a Gmail message", () => {
     const body = heldBody(b64(GMAIL), "2026-08-05T12:00:00Z");
-    expect(scanForCode(body.text).code).toBe("123456789");
+    expect(scanForCode(body.text, { linkHost: GOOGLE }).code).toBe("123456789");
   });
 });

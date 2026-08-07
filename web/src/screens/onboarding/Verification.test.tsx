@@ -353,6 +353,47 @@ describe("Verification", () => {
     expect((await screen.findByTestId("verification-code")).textContent).toBe("481516234");
   });
 
+  /**
+   * The link the screen offers is pinned to the domain the SERVER verified —
+   * `google.com` here — so a subdomain of it is offered and the two decoys in
+   * the same body are not. Nothing about where this link may point comes out of
+   * the message.
+   */
+  it("offers a link only on the message's own verified signing domain", async () => {
+    const user = userEvent.setup();
+    mount({
+      items: [
+        {
+          ...BANK_ITEM,
+          id: "q7",
+          outer_domain: "google.com",
+          inner_domain: "",
+          attested_by: "DKIM d=google.com",
+          blob: Buffer.from(
+            [
+              "Content-Type: text/plain; charset=UTF-8",
+              "",
+              "https://evil.example/mail/steal",
+              "https://evil-google.com/mail/steal",
+              "https://mail-settings.google.com/mail/vf-abc",
+              "",
+            ].join("\r\n"),
+            "utf8",
+          ).toString("base64"),
+        },
+      ],
+    });
+
+    const item = await screen.findByTestId("verification-item-q7");
+    await user.click(within(item).getByRole("button", { name: /look for a confirmation code/i }));
+
+    const link = await screen.findByTestId("verification-open-link");
+    expect(link.getAttribute("href")).toBe("https://mail-settings.google.com/mail/vf-abc");
+    // And the sentence names the verified domain, not a host read out of the body.
+    expect(link.textContent).toContain("google.com");
+    expect(link.textContent).not.toContain("evil");
+  });
+
   /** Listed, so it is not a mystery — but never openable and never trustable. */
   it("lists unverified held mail without offering to read a code out of it", async () => {
     mount({

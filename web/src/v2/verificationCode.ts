@@ -26,24 +26,31 @@
  *     engine's first move on a non-matching subject is a literal scan.
  *  2. **No unbounded quantifier anywhere.** Not `+`, not `*`, not `{n,}`. The
  *     widest run in this file is `{0,16}`.
- *  3. **Disjoint adjacent classes.** `[^0-9]{0,16}` is followed by `[0-9]{9}`:
- *     the two cannot both match the same character, so once the gap stops there
- *     is exactly ONE way to continue. The match is deterministic rather than
- *     merely bounded — there is no alternative carve-up for a backtracking
- *     engine to explore.
+ *  3. **Disjoint adjacent classes.** `[^0-9]{0,16}` is followed by
+ *     `[0-9]{4,12}`: the two cannot both match the same character, so once the
+ *     gap stops there is exactly ONE way to continue. The match is deterministic
+ *     rather than merely bounded — there is no alternative carve-up for a
+ *     backtracking engine to explore. The link pattern's subdomain labels obey
+ *     the same rule: the label class excludes the dot that terminates it.
  *  4. **An 8 KB slice**, so the linear factor is a constant rather than
  *     whatever the sender chose to send.
  *
  * {@link SCAN_BUDGET_MS} is a **tripwire on top of that**, not the bound: it
  * exists so an edit reintroducing a hazardous pattern shows up as `overBudget`
- * rather than as a frozen tab.
+ * rather than as a frozen tab. The four rules themselves are no longer merely
+ * asserted here: `verificationCode.test.ts` walks every pattern in
+ * {@link SCAN_PATTERNS} and fails on an unbounded quantifier, a missing literal
+ * anchor, or a quantified class adjacent to one it overlaps.
  *
  * # What may be shown to the user
  *
- * A nine-digit run and a URL whose **host is a literal in the pattern**. That is
- * the whole surface — a link this module returns can only ever point at
- * `mail-settings.google.com`, because scheme, host and path prefix are fixed
- * text and only the opaque tail is captured.
+ * A bounded digit run and a URL whose **host is a literal in the pattern**. That
+ * is the whole surface. The host is no longer `mail-settings.google.com` in
+ * source — it is the message's own verified signing domain, escaped into the
+ * pattern by {@link linkPattern} from a value the CALLER supplies out of server
+ * data. Scheme and path separator stay fixed text and only the opaque tail is
+ * captured, so a held message still cannot send the user anywhere it chooses;
+ * it can only offer a link on the domain that signed it.
  *
  * The raw body is still offered as a fallback (never a dead end), returned as
  * {@link CodeScan.body}, labelled untrusted by the screen, capped, and rendered
@@ -68,33 +75,6 @@ export const SCAN_LIMIT_CHARS = 8192;
  */
 export const SCAN_BUDGET_MS = 50;
 
-/** Gmail's code is a nine-digit run. Pinned, because the pattern encodes it. */
-export const CODE_DIGITS = 9;
-
-/**
- * Every pattern this module will run, in order, most specific first. Read them
- * against the four rules in the header before adding one: a `+` or a `*` here is
- * a defect, and so is an adjacent pair of classes that can match the same
- * character.
- */
-const CODE_PATTERNS: readonly RegExp[] = [
-  /Confirmation code[^0-9]{0,8}([0-9]{9})/,
-  /confirmation code[^0-9]{0,16}([0-9]{9})/i,
-];
-
-/** Scheme, host and path prefix as literal text; only the tail is captured. */
-const LINK_PATTERN = /https:\/\/mail-settings\.google\.com\/mail\/[-A-Za-z0-9_.~%+#?&=/]{1,512}/;
-
-/**
- * Every pattern this module will ever run, exported so their SHAPE can be
- * measured rather than asserted in a comment.
- */
-export const SCAN_PATTERNS: readonly RegExp[] = [...CODE_PATTERNS, LINK_PATTERN];
-
-// ---------------------------------------------------------------------------
-// Which held message might be the one the user is waiting for
-// ---------------------------------------------------------------------------
-
 /**
  * A bare hostname and nothing else: lowercase letters, digits, dots, hyphens.
  *
@@ -102,9 +82,111 @@ export const SCAN_PATTERNS: readonly RegExp[] = [...CODE_PATTERNS, LINK_PATTERN]
  * downstream — a pattern built from it, a domain rendered next to the word
  * "verified" — is only as narrow as this. A colon is not in the class, which is
  * what makes `unverified:dib.ae` and `dib.ae:8080` fail here as well as at the
- * explicit prefix check below.
+ * explicit prefix check in {@link verifiedOuterDomain}.
+ *
+ * Declared with the bounds rather than beside its callers because
+ * {@link SCAN_PATTERNS} builds a link pattern at module load and would otherwise
+ * read it before its initializer had run.
  */
 const HOSTNAME = /^[a-z0-9.-]{1,253}$/;
+
+/**
+ * The digit runs a confirmation code comes in.
+ *
+ * Was `9`, because Gmail's is nine digits and the pattern encoded exactly that —
+ * which made every other provider's code unreadable (Yahoo's is eight, plenty
+ * are six). A RANGE, still bounded at both ends: four because three digits is
+ * indistinguishable from a price, twelve because nothing longer is a code and an
+ * open end is the thing this file exists to avoid.
+ */
+export const CODE_DIGITS = { min: 4, max: 12 } as const;
+
+/**
+ * Every code pattern this module will run, in order, most specific first.
+ *
+ * Read them against the four rules in the header before adding one: a `+` or a
+ * `*` here is a defect, and so is an adjacent pair of classes that can match the
+ * same character. `verificationCode.test.ts` checks all of that mechanically,
+ * over `SCAN_PATTERNS`, so a new pattern is measured rather than reviewed.
+ *
+ * The anchors are a small set of literals rather than one provider's exact
+ * sentence. Each is still a literal anchor, so a body that contains none of them
+ * costs four literal scans and nothing else.
+ */
+const CODE_PATTERNS: readonly RegExp[] = [
+  /Confirmation code[^0-9]{0,16}([0-9]{4,12})/i,
+  /Verification code[^0-9]{0,16}([0-9]{4,12})/i,
+  /Security code[^0-9]{0,16}([0-9]{4,12})/i,
+  /Confirm your[^0-9]{0,16}([0-9]{4,12})/i,
+];
+
+/** RegExp-special characters, escaped so a host is text and never syntax. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Up to four subdomain labels in front of the verified domain.
+ *
+ * Needed because the verified SIGNING domain is the organisational one
+ * (`google.com`) while the link lives on a subdomain (`mail-settings.google.com`).
+ *
+ * Deterministic despite being a nested quantifier: the inner class excludes the
+ * dot and is followed by a literal dot, so there is exactly one way to consume
+ * `a.b.` — the partition is forced rather than searched. The outer `{0,4}` then
+ * offers at most five carve-ups before the literal host, each settled by a
+ * literal comparison. Both bounds are closed, so 4 x 63 characters is the most
+ * this can consume.
+ *
+ * It is also the ANCHOR that makes `evil-google.com` impossible: the host must
+ * follow either `//` or a `.`, never the middle of a label.
+ */
+const SUBDOMAIN_LABELS = "(?:[-A-Za-z0-9]{1,63}\\.){0,4}";
+
+/** The opaque tail. Bounded, and disjoint from nothing that follows it. */
+const LINK_TAIL = "[-A-Za-z0-9_.~%+#?&=/]{0,512}";
+
+/**
+ * The pattern that will match a link on `host`, or `null` if `host` is not one
+ * this module will pin a link to.
+ *
+ * Replaces a hardcoded `https://mail-settings.google.com/mail/`, which worked
+ * for exactly one provider. The generalisation is deliberately NOT "any URL in
+ * the body" — that would let a held message send the user anywhere, which is the
+ * attack this file is built against. The host comes from the caller, which takes
+ * it from the server's verified signature; scheme and path separator stay fixed
+ * literals; only the opaque tail is free.
+ *
+ * The host is validated as a bare hostname AND escaped. Either alone would do
+ * today; both, because the day the validation is loosened is the day escaping is
+ * the only thing standing between a domain string and the pattern engine.
+ */
+export function linkPattern(host: string): RegExp | null {
+  const h = host.trim().toLowerCase().replace(/\.$/, "");
+  if (h === "" || h.startsWith(UNVERIFIED_PREFIX) || !HOSTNAME.test(h)) return null;
+  return new RegExp(`https:\\/\\/${SUBDOMAIN_LABELS}${escapeRegExp(h)}\\/${LINK_TAIL}`, "i");
+}
+
+/**
+ * Every pattern this module will ever run, exported so their SHAPE can be
+ * measured rather than asserted in a comment — which the test file now does,
+ * mechanically, for all four rules in the header.
+ *
+ * The link pattern is BUILT, so a representative one has to be in here for that
+ * measurement to mean anything. Two hosts, not one: the second carries the
+ * characters a hostname is allowed to contain, so a host that reached the
+ * pattern unescaped would appear in the measured `source` as syntax.
+ */
+export const SCAN_PATTERNS: readonly RegExp[] = [
+  ...CODE_PATTERNS,
+  ...["mail-settings.google.com", "a-b.example"]
+    .map((h) => linkPattern(h))
+    .filter((p): p is RegExp => p !== null),
+];
+
+// ---------------------------------------------------------------------------
+// Which held message might be the one the user is waiting for
+// ---------------------------------------------------------------------------
 
 /**
  * The outer domain when it is genuinely verified, folded — otherwise `null`.
@@ -161,9 +243,13 @@ export function couldBeConfirmation(item: { outerDomain: string; innerDomain: st
 // ---------------------------------------------------------------------------
 
 export interface CodeScan {
-  /** Exactly {@link CODE_DIGITS} digits, or null. */
+  /** A digit run within {@link CODE_DIGITS}, or null. */
   code: string | null;
-  /** A URL on `mail-settings.google.com`, or null. Host is a pattern literal. */
+  /**
+   * A URL on the caller's verified host (or a subdomain of it), or null. The
+   * host is a literal in the pattern, escaped, and supplied from server data —
+   * never read out of the text being scanned.
+   */
   link: string | null;
   /** The slice that was scanned. Never longer than {@link SCAN_LIMIT_CHARS}. */
   body: string;
@@ -174,13 +260,28 @@ export interface CodeScan {
   overBudget: boolean;
 }
 
+export interface ScanOptions {
+  /**
+   * The host a link may point at: the held item's **verified** outer domain, as
+   * the server reported it. A link on this host or on a subdomain of it may be
+   * returned; anything else may not, and an empty or non-hostname value means no
+   * link is returned at all.
+   *
+   * Required rather than defaulted, and never derived from `text`. A caller that
+   * has no verified domain has to say so.
+   */
+  linkHost: string;
+  now?: () => number;
+}
+
 /**
  * Scans at most the first {@link SCAN_LIMIT_CHARS} characters of `text`.
  *
  * `now` is injected so the budget can be *measured* rather than asserted: a
  * clock that jumps past the budget between patterns must stop the scan.
  */
-export function scanForCode(text: string, now: () => number = Date.now): CodeScan {
+export function scanForCode(text: string, opts: ScanOptions): CodeScan {
+  const now = opts.now ?? Date.now;
   const truncated = text.length > SCAN_LIMIT_CHARS;
   const body = truncated ? text.slice(0, SCAN_LIMIT_CHARS) : text;
   const started = now();
@@ -204,7 +305,9 @@ export function scanForCode(text: string, now: () => number = Date.now): CodeSca
     if (now() - started > SCAN_BUDGET_MS) {
       overBudget = true;
     } else {
-      link = LINK_PATTERN.exec(body)?.[0] ?? null;
+      // Built from the CALLER's verified host. `null` — no host, or one that is
+      // not a bare hostname — means no link is looked for at all.
+      link = linkPattern(opts.linkHost)?.exec(body)?.[0] ?? null;
     }
   }
 
@@ -254,7 +357,7 @@ export function heldBody(blobBase64: string, receivedAt: string): HeldBody {
 
 /** Said when no code was found. It must never read as a failure of the user's. */
 export const NO_CODE_COPY =
-  "ledger could not find a nine-digit code in this message. The message itself is below, exactly as it arrived and " +
-  "not trusted — the code is somewhere in it, and copying it from there works just as well.";
+  "ledger could not find a confirmation code in this message. The message itself is below, exactly as it arrived " +
+  "and not trusted — if there is a code, it is somewhere in it, and copying it from there works just as well.";
 
 export const UNTRUSTED_BODY_LABEL = "Raw message, shown as text. ledger has not verified anything in it.";

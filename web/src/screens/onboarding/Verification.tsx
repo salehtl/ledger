@@ -1,34 +1,46 @@
 /**
- * Google's held confirmation, and then the first real bank email.
+ * The provider's held confirmation, and then the first real bank email.
  *
  * One screen for two things because the machine has one slot for them, and
- * because in practice they are one wait: the user sets the forward, Google's
- * confirmation lands within seconds, and the bank's first alert lands whenever
- * the bank feels like it.
+ * because in practice they are one wait: the user sets the forward, the
+ * provider's confirmation lands within seconds, and the bank's first alert lands
+ * whenever the bank feels like it.
  *
  * # Everything here is read out of the QUARANTINE lane, by design
  *
- * Gmail's confirmation is signed by `google.com`; §3.2 forbids ever promoting a
- * forwarder domain; so the message onboarding depends on is one the product will
- * never trust. `quarantine.go`'s own header records the dependency in as many
- * words ("onboarding (Task D6) reads the confirmation link out of a quarantined
- * message"). It is held forever and read in place, and `QUARANTINE_HELD` says
- * "held on purpose" before it says anything else — because otherwise a new
- * user's first impression is a fault.
+ * A provider's confirmation is signed by the PROVIDER (Gmail's by `google.com`);
+ * §3.2 forbids ever promoting a forwarder domain; so the message onboarding
+ * depends on is one the product will never trust. `quarantine.go`'s own header
+ * records the dependency in as many words ("onboarding (Task D6) reads the
+ * confirmation link out of a quarantined message"). It is held forever and read
+ * in place, and `QUARANTINE_HELD` says "held on purpose" before it says anything
+ * else — because otherwise a new user's first impression is a fault.
+ *
+ * # The app does not guess which held message is which
+ *
+ * It used to: a Google domain meant "the forwarder's confirmation" and anything
+ * else meant "a bank". That was wrong for every other provider, and it cannot be
+ * fixed by widening the list, because a bank that registers this address
+ * DIRECTLY is signed by itself and has no inner domain either — exactly like a
+ * provider's confirmation. So every held message is listed with the domain that
+ * signed it and when it arrived, and the user opens the one they are waiting
+ * for. See `couldBeConfirmation`.
  *
  * # What may be rendered as trusted, and what may not
  *
- * The bank half shows `trustBasis(item)` — the VERIFIED signing domain, or a
+ * Every row shows `trustBasis(item)` — the VERIFIED signing domain, or a
  * prominent unauthenticated state — and never a subject, a display name or any
  * part of a body. The API does not even send those fields, for exactly this
  * reason: a sheet that rendered the subject line would be asking the user to
  * authenticate the sender using text the sender wrote.
  *
- * The Google half *does* render body text, because it has to. It is labelled as
- * raw and untrusted, capped at 8 KB by `scanForCode`, and rendered as a React
+ * An OPENED message *does* render body text, because it has to. It is labelled
+ * as raw and untrusted, capped at 8 KB by `scanForCode`, and rendered as a React
  * text child, which interpolates no markup. The only two things lifted out of it
- * and offered as actions are a nine-digit run and a URL whose host is a literal
- * in the pattern — see `v2/verificationCode.ts`.
+ * and offered as actions are a bounded digit run and a URL on the message's own
+ * verified signing domain — a host this screen passes IN, never one read out of
+ * the body. See `v2/verificationCode.ts`. Only a message whose outer domain the
+ * server verified can be opened at all.
  *
  * # Advancing is MEASURED, not inferred — and measured REPEATEDLY
  *
@@ -84,6 +96,7 @@ import {
 } from "../../v2/onboardingIO";
 import {
   couldBeConfirmation,
+  verifiedOuterDomain,
   heldBody,
   NO_CODE_COPY,
   scanForCode,
@@ -300,13 +313,19 @@ export function Verification({
    * normalize of a message that may be a megabyte. Phase 0's >500 MB freeze was
    * partly unguarded repeated passes over large bodies; there is no reason for
    * this one to run more than once per distinct message.
+   *
+   * `linkHost` is the item's own VERIFIED signing domain, read off server data
+   * and never out of the body. It is what confines the only link this screen
+   * will offer to open — a held message can point at the domain that signed it
+   * and nowhere else.
    */
+  const linkHost = opened === null ? "" : (verifiedOuterDomain(opened) ?? "");
   const scan: CodeScan | null = useMemo(
     () =>
       opened === null || opened.blob === undefined
         ? null
-        : scanForCode(heldBody(opened.blob, opened.receivedAt).text),
-    [opened?.blob, opened?.receivedAt],
+        : scanForCode(heldBody(opened.blob, opened.receivedAt).text, { linkHost }),
+    [opened?.blob, opened?.receivedAt, linkHost],
   );
 
   const onCopyCode = async (code: string): Promise<void> => {
@@ -591,7 +610,14 @@ export function Verification({
                       rel="noreferrer noopener"
                       className="min-h-11 inline-flex items-center text-sm underline"
                     >
-                      Open the confirmation link on mail-settings.google.com
+                      {/*
+                        The domain named here is the one the SERVER verified, not
+                        a host parsed out of the link — and `scanForCode` was
+                        given that same domain as the only host it may return a
+                        link on, so the sentence and the destination cannot come
+                        apart.
+                      */}
+                      Open the confirmation link on {linkHost}
                     </a>
                   )}
                 </>
