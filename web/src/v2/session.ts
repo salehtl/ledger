@@ -91,7 +91,7 @@
 
 import { setPlatform } from "@ledger/client/platform.registry";
 import { webPlatform } from "@ledger/client/platform.web";
-import { ApiError, Client, ConfigError, NetworkError } from "@ledger/client/net/client";
+import { ApiError, Client, ConfigError, NetworkError, type KeyHistoryEntry } from "@ledger/client/net/client";
 import { SECRET_SESSION, SECRET_WRITER, sqliteStore } from "@ledger/client/store/sqlite";
 import type { ClientState, SecretStore, Store } from "@ledger/client/store/store";
 import type { Writer } from "@ledger/client/invariants/check";
@@ -504,6 +504,15 @@ export function webSecretStore(namespace: string): SecretStore {
 // Device-writer enrolment (ported from app/src/auth/{keys,enrollment}.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * A fresh writer id for this install. One place, because
+ * {@link ensureDeviceWriter} and {@link V2Handle.enrolmentRequest} must mint
+ * the SAME id — a second spelling would enrol one writer and sign for another.
+ */
+export function mintWriterId(): string {
+  return `web-${webPlatform.randomUUID()}`;
+}
+
 /** Mirrors `writers_writer_id_charset` and `auth.validWriterID`. */
 export function isValidWriterId(id: string): boolean {
   return /^[A-Za-z0-9._-]{1,64}$/.test(id);
@@ -651,6 +660,39 @@ export interface V2Handle {
    * session's business and travel unwrapped.
    */
   enrol(): Promise<void>;
+  /**
+   * What this device would ask another device to enrol on its behalf: its
+   * writer id and its PUBLIC key. Never the private half — see
+   * `Client.enroll`'s doc.
+   *
+   * Safe to call at any time and on any device. Both halves are idempotent:
+   * the writer id is minted once and persisted ({@link ensureWriterId}), and
+   * `Client.ensureWriterKey` returns the existing key or creates and commits
+   * one. Calling it on a device that is already enrolled returns exactly the
+   * identity that is already on the roster.
+   */
+  enrolmentRequest(): { writerId: string; publicKey: Uint8Array };
+  /**
+   * Signs a peer's enrolment with THIS device's enrolled key.
+   *
+   * This is the proof of key possession `internal/v2/auth/writer.go` requires,
+   * and it is the only thing that can produce it: the session token cannot.
+   * Throws if this device is not itself enrolled — a device with no key has
+   * nothing to sign with, and the server would answer the same bodyless 403 it
+   * answers a stolen session.
+   *
+   * Failures are {@link EnrollmentError}s, classified exactly as this device's
+   * own enrolment is, except `401`/`410` which stay the session's business.
+   */
+  approveDevice(request: { writerId: string; publicKey: Uint8Array }): Promise<void>;
+  /**
+   * The account's key-history log, oldest first, as the server served it.
+   *
+   * Used to derive the cross-device comparison code (`deviceEnrolment.ts`).
+   * Deliberately unfiltered and unsorted here: the comparison is only worth
+   * anything if both devices hash the same bytes.
+   */
+  keyHistory(): Promise<KeyHistoryEntry[]>;
   signOut(): Promise<void>;
   close(): void;
 }
@@ -780,7 +822,7 @@ export async function initV2(server: string, opts: InitV2Options = {}): Promise<
           client.useWriter(writerId);
         },
       },
-      mint: () => `web-${webPlatform.randomUUID()}`,
+      mint: mintWriterId,
     });
   };
 
@@ -845,6 +887,41 @@ export async function initV2(server: string, opts: InitV2Options = {}): Promise<
     },
 
     enrol: enrolThisDevice,
+
+    enrolmentRequest(): { writerId: string; publicKey: Uint8Array } {
+      const writerId = ensureWriterId(secrets, mintWriterId);
+      return { writerId, publicKey: client.ensureWriterKey(writerId) };
+    },
+
+    async approveDevice(request: { writerId: string; publicKey: Uint8Array }): Promise<void> {
+      // This device's OWN writer id, read from the store rather than from the
+      // secret: `Client.useWriter` is what puts it there, and it is set only
+      // once this device holds a key the server has on the roster. A device
+      // that is merely signed in has `writerId === null` here, and must be told
+      // that rather than being sent to collect a 403.
+      const signWith = store.load().writerId;
+      if (signWith === null || signWith === "") {
+        throw new EnrollmentError(
+          "rejected",
+          "this device is not enrolled itself, so it cannot vouch for another one",
+        );
+      }
+      try {
+        await client.enroll(request.writerId, { signWith, publicKey: request.publicKey });
+      } catch (error) {
+        if (isSessionFailure(error)) throw error;
+        throw classifyEnrollment(error);
+      }
+    },
+
+    async keyHistory(): Promise<KeyHistoryEntry[]> {
+      try {
+        return await client.keyHistory();
+      } catch (error) {
+        if (isSessionFailure(error)) throw error;
+        throw classifyEnrollment(error);
+      }
+    },
 
     async signOut(): Promise<void> {
       // The bearer token and NOTHING else. This is not the account-deleted

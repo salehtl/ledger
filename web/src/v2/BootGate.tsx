@@ -51,6 +51,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
@@ -59,6 +60,7 @@ import {
 
 import { Button } from "../components/ui/Button";
 import { PixelSpinner } from "../components/ui/PixelSpinner";
+import { PendingDevicePanel } from "../screens/settings/PendingDevicePanel";
 
 import type { Halt } from "@ledger/client/invariants/surface";
 import type { Client } from "@ledger/client/net/client";
@@ -399,6 +401,15 @@ export function BootGate({
       return (
         <Wall>
           <Notice title={state.copy.title} body={state.copy.body} />
+          {/*
+            `rejected` is the one kind that is not a dead end: the server
+            refuses a second device precisely because no already-enrolled key
+            signed for it (spec §3.4), and the fix is a device that can. The
+            panel is what lets the person provide that proof, so it belongs on
+            the wall rather than behind a Settings screen this device cannot
+            reach — it cannot reach anything until it is enrolled.
+          */}
+          {state.kind === "rejected" && handle !== null && <PendingDevice handle={handle} onRecheck={again} />}
           {state.copy.retry && (
             <div>
               <Button variant="primary" onClick={again}>
@@ -485,6 +496,29 @@ function Wall({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+/**
+ * The enrolment request this device would have another device approve.
+ *
+ * A component of its own so `enrolmentRequest()` — which mints and persists a
+ * writer id and an Ed25519 key on first call — runs once, in a memo, rather
+ * than on every render of the wall. It can throw (a stored writer id that is no
+ * longer a legal one is a refusal, not a re-mint), and a throw here must not
+ * take the wall down with it: the copy above the panel is still the truth, so
+ * the panel is simply absent.
+ */
+function PendingDevice({ handle, onRecheck }: { handle: V2Handle; onRecheck: () => void }) {
+  const request = useMemo(() => {
+    try {
+      return handle.enrolmentRequest();
+    } catch {
+      return null;
+    }
+  }, [handle]);
+  const loadKeyHistory = useCallback(() => handle.keyHistory(), [handle]);
+  if (request === null) return null;
+  return <PendingDevicePanel request={request} loadKeyHistory={loadKeyHistory} onRecheck={onRecheck} />;
 }
 
 function Notice({ title, body, detail }: { title: string; body: string; detail?: string }) {

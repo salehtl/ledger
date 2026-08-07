@@ -89,7 +89,7 @@ import {
   saveLocalRecord,
   type OnboardingFacts,
 } from "./onboarding";
-import { isEnrollmentError, type V2Handle } from "./session";
+import { isEnrollmentError, type EnrollmentKind, type V2Handle } from "./session";
 
 export type BootState =
   | { step: "opening" }
@@ -97,7 +97,13 @@ export type BootState =
   /**
    * Signed in, and this device is not able to author. Neither fatal nor a lie.
    */
-  | { step: "unenrolled"; copy: EnrollmentCopy }
+  /**
+   * `kind` rides alongside the copy because one of the seven is not a dead end
+   * any more: `rejected` is what a SECOND device gets, and the wall for it
+   * carries the enrolment request another device can approve. The copy alone
+   * cannot be switched on — it is prose.
+   */
+  | { step: "unenrolled"; kind: EnrollmentKind; copy: EnrollmentCopy }
   /**
    * `offline` records that the launch sync could not reach the server. The app
    * still opens, on the local projection, because that is the honest answer —
@@ -155,7 +161,9 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     // AFTER classify, never before: an `EnrollmentError` carries its cause's
     // status, and reading that status here would file a session answer as an
     // enrolment problem.
-    if (isEnrollmentError(error)) return { step: "unenrolled", copy: enrollmentFailureCopy(error) };
+    if (isEnrollmentError(error)) {
+      return { step: "unenrolled", kind: error.enrollmentKind, copy: enrollmentFailureCopy(error) };
+    }
     return fatal(error);
   }
 

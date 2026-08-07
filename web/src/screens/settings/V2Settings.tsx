@@ -55,6 +55,8 @@ import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
 import { invalidateAfterSync, useHomeCurrency, useTxnSource, v2Keys } from "../../v2/queries";
 import { isPasskeyError, type V2Handle } from "../../v2/session";
+import type { EnrolmentRequest, KeyHistoryEntry } from "../../v2/deviceEnrolment";
+import { ApproveDevicePanel } from "./ApproveDevicePanel";
 
 export interface V2SettingsProps {
   /** Opens the held-mail drill-in. Absent hides the row. */
@@ -67,6 +69,10 @@ export interface V2SettingsProps {
   signOut?: (handle: V2Handle) => Promise<void>;
   /** Test seam. Defaults to the Clipboard API. */
   copy?: (text: string) => Promise<void>;
+  /** Test seam. Defaults to `GET /api/v1/key-history`. */
+  keyHistory?: (handle: V2Handle) => Promise<KeyHistoryEntry[]>;
+  /** Test seam. Defaults to signing the peer's registration with this device's key. */
+  approve?: (handle: V2Handle, request: EnrolmentRequest) => Promise<void>;
   /** Test seam. */
   now?: () => number;
 }
@@ -109,6 +115,8 @@ export function V2Settings({
   address = (h) => readAddress(h.client),
   signOut = signOutAndReload,
   copy = writeClipboard,
+  keyHistory = (h) => h.keyHistory(),
+  approve = (h, request) => h.approveDevice(request),
   now = Date.now,
 }: V2SettingsProps) {
   const { handle, sync, coordinator, facts } = useV2OrThrow();
@@ -139,6 +147,16 @@ export function V2Settings({
   const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false);
+
+  // Bound here rather than inline in the JSX so the panel's fetch effect, which
+  // depends on the identity of its loader, runs once per opening instead of on
+  // every render of this screen.
+  const loadKeyHistory = useCallback(() => keyHistory(handle), [keyHistory, handle]);
+  const approveDevice = useCallback(
+    (request: EnrolmentRequest) => approve(handle, request),
+    [approve, handle],
+  );
 
   const onCopy = useCallback(
     async (value: string): Promise<void> => {
@@ -379,6 +397,21 @@ export function V2Settings({
         </Card>
       </section>
 
+      {/* ---- Adding a second device ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Your devices</SectionLabel>
+        <Card className="space-y-3">
+          <p className="text-sm leading-relaxed text-muted">
+            A device that signs in for the first time can read this account, but it cannot make changes until a
+            device that is already signed in approves it. Approving is done here, with a code that device shows
+            you.
+          </p>
+          <Button variant="secondary" onClick={() => setAddDeviceOpen(true)}>
+            Add a device
+          </Button>
+        </Card>
+      </section>
+
       {/* ---- Signing out ---- */}
       <section className="space-y-2">
         <SectionLabel as="h2" className="px-1">This device</SectionLabel>
@@ -393,6 +426,12 @@ export function V2Settings({
       </section>
 
       <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+
+      {addDeviceOpen && (
+        <Dialog title="Add a device" onClose={() => setAddDeviceOpen(false)}>
+          <ApproveDevicePanel loadKeyHistory={loadKeyHistory} approve={approveDevice} />
+        </Dialog>
+      )}
 
       {signOutOpen && (
         <Dialog title="Sign out of ledger?" onClose={() => setSignOutOpen(false)}>

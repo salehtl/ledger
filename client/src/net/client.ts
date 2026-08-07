@@ -234,6 +234,20 @@ interface UploadBlob {
   blob: string;
 }
 
+/**
+ * One entry of `GET /api/v1/key-history`, mirroring `api.KeyHistoryEntry`.
+ *
+ * `pubkey` is standard base64, and EMPTY for the keyless ingest writer — a
+ * distinct fact from a key, not a substitute for one.
+ */
+export interface KeyHistoryEntry {
+  id: number;
+  writer_id: string;
+  pubkey: string;
+  event: string;
+  at: string;
+}
+
 /** The `RegistrationMessage` domain prefix, mirroring `auth.registrationDomain`. */
 const REGISTRATION_DOMAIN = "ledger-v2-writer-registration\u0000";
 
@@ -1079,6 +1093,22 @@ export class Client {
   async roster(): Promise<Writer[]> {
     const out = await this.request<{ writers: Writer[] }>("GET", "/api/v1/writers");
     return out.writers ?? [];
+  }
+
+  /**
+   * The account's append-only key-history log, OLDEST FIRST — the log
+   * `internal/v2/api/keyhistory.go` serves and deliberately does not summarise.
+   *
+   * The server does not compute the cross-device comparison code (spec §3.4)
+   * because it is the party being audited, so a device that wants one fetches
+   * these entries and derives the digest itself. Returned verbatim, with no
+   * client-side ordering or filtering: two devices must hash the same bytes for
+   * a comparison to mean anything, and the canonical order is the one the
+   * server serves.
+   */
+  async keyHistory(): Promise<KeyHistoryEntry[]> {
+    const out = await this.request<{ entries: KeyHistoryEntry[] }>("GET", "/api/v1/key-history");
+    return out.entries ?? [];
   }
 
   // -- pull ---------------------------------------------------------------

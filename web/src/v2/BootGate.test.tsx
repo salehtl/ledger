@@ -63,6 +63,14 @@ function rig(
       },
       signOut: async () => {},
       close: () => {},
+      // What the second-device wall reads. `enrolmentRequest` is idempotent on
+      // the real handle (a minted-once id and `ensureWriterKey`), so a constant
+      // here is faithful.
+      enrolmentRequest: () => ({ writerId: "web-2", publicKey: new Uint8Array(32).fill(7) }),
+      keyHistory: async () => [
+        { id: 1, writer_id: "web-1", pubkey: "AAAA", event: "registered", at: "2026-08-01T00:00:00Z" },
+      ],
+      approveDevice: async () => {},
       client: {
         get userId() {
           return "u_1";
@@ -198,10 +206,21 @@ describe("BootGate", () => {
     expect(r.handle.client.writerId).toBe("web-1");
   });
 
-  it("offers no retry when the server refused this device outright", async () => {
+  /**
+   * The refusal is the SECOND-DEVICE case, and the wall has to be actionable.
+   * `auth.Writers.Register` refuses a writer that no enrolled key signed for
+   * (spec §3.4), and the only cure is an already-enrolled device signing — so
+   * the wall carries this device's enrolment code rather than a dead end. No
+   * "try again": pressing it cannot change the answer.
+   */
+  it("hands a refused device its enrolment code instead of a dead end", async () => {
     mount(rig({ enrolled: false, enrolFails: new EnrollmentError("rejected", "403") }));
-    expect(await screen.findByText(/was not accepted/i)).toBeInTheDocument();
+    expect(await screen.findByText(/needs approval/i)).toBeInTheDocument();
+    expect(await screen.findByTestId("enrolment-code")).toHaveTextContent("ledger-device-1:web-2:");
+    // Computed on this device, from the key history it fetched itself.
+    expect(await screen.findByText(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /check again/i })).toBeInTheDocument();
   });
 
   // -- halts ---------------------------------------------------------------

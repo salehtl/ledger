@@ -9,8 +9,11 @@
  *
  * `rejected` is the one that has to be careful: the server answers every
  * registration refusal with the same bodyless `403`, so the copy may not claim
- * to know WHY, only what is true — that this device was not accepted and
- * pressing again will not change that.
+ * to know WHY. What it may say — and now does — is the one thing that is true
+ * of every refusal a working build can reach: this device is not enrolled, and
+ * only a device already enrolled on the account can enrol it (spec §3.4). It
+ * points at the code the wall shows rather than at a reason it cannot know, and
+ * it still offers no retry, because pressing again cannot change the answer.
  *
  * The wording says "this device" rather than the native port's "this phone":
  * the same account is reachable from a laptop here.
@@ -63,12 +66,17 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
         retry: true,
       };
     case "rejected":
+      // The likeliest cause by far, now that it can be acted on: a SECOND
+      // device. The server requires an already-enrolled device to sign for a
+      // new one (spec §3.4), and refuses without saying why — so this says what
+      // is certainly true and what to do, and stops short of claiming to know
+      // the reason. The wall that renders this also renders the enrolment
+      // request, which is the "below" it points at.
       return {
-        title: "This device was not accepted",
+        title: "This device needs approval",
         body:
-          "You are signed in, but the server refused to register this device as one that can make changes, and it " +
-          "does not say why. If another device is already set up on this account, adding a second one has to be " +
-          "approved from that device — which this beta cannot do yet. Trying again will not change the answer.",
+          "You are signed in, but this device cannot make changes until a device that is already signed in to " +
+          "this account approves it. Nothing was lost. Use the code below on your other device.",
         retry: false,
       };
     case "revoked":
