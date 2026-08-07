@@ -199,14 +199,24 @@ func (s *Store) MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryI
 //     WRITES rows, so "has rows" is the faithful record of "the user has
 //     touched this month" — a month deliberately emptied stays empty instead
 //     of refilling itself. Do not weaken this to "has no non-zero rows".
-//   - some earlier month has a non-zero assignment. The greatest such month
+//   - some earlier month has a non-zero assignment to a category still
+//     eligible (active, kind='spending' — the same predicate
+//     envelopeCategoryOK/EnvelopeMonthSummary use). The greatest such month
 //     wins, so jumping ahead over empty months inherits the last real plan
-//     rather than an empty one.
+//     rather than an empty one. A month whose only non-zero rows belong to a
+//     category since deactivated or re-kinded (e.g. edited to 'income') is
+//     not eligible as a source at all — otherwise it would be picked and then
+//     nothing would be copied, silently producing a zero-row "seed" that
+//     leaves the target month looking untouched forever.
 //   - month is the current calendar month or later. Browsing back through
 //     history must never rewrite it.
 //
 // Negative assignments carry: move-money may over-draw a source envelope, and
-// that is part of the plan, not a corruption of it.
+// that is part of the plan, not a corruption of it. Rows belonging to a
+// category that is no longer an active spending category are never copied —
+// EnvelopeMonthSummary would never surface them, so copying them would
+// produce assigned fils invisible to every budget view (silently breaking the
+// RTA identity).
 func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error) {
 	if !validMonth(month) {
 		return 0, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
@@ -234,7 +244,10 @@ func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, err
 
 	var source sql.NullString
 	err = tx.QueryRow(
-		`SELECT MAX(month) FROM envelope_assignments WHERE month < ? AND assigned_fils != 0`,
+		`SELECT MAX(ea.month) FROM envelope_assignments ea
+		   JOIN categories c ON c.id = ea.category_id
+		  WHERE ea.month < ? AND ea.assigned_fils != 0
+		    AND c.is_active=1 AND c.kind='spending'`,
 		month).Scan(&source)
 	if err != nil {
 		return 0, err
@@ -245,9 +258,11 @@ func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, err
 
 	res, err := tx.Exec(
 		`INSERT INTO envelope_assignments (month, category_id, assigned_fils, updated_at)
-		 SELECT ?, category_id, assigned_fils, ?
-		   FROM envelope_assignments
-		  WHERE month = ? AND assigned_fils != 0`,
+		 SELECT ?, ea.category_id, ea.assigned_fils, ?
+		   FROM envelope_assignments ea
+		   JOIN categories c ON c.id = ea.category_id
+		  WHERE ea.month = ? AND ea.assigned_fils != 0
+		    AND c.is_active=1 AND c.kind='spending'`,
 		month, isoNow(s), source.String)
 	if err != nil {
 		return 0, err
