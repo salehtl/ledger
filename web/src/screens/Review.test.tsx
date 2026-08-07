@@ -251,6 +251,111 @@ describe("Review", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("undoes the transaction the user confirmed when a sync folds it out mid-toast", async () => {
+    // THE production window, not an edge case: `commit` invalidates, the lane is
+    // re-read, and a sync that landed in between can have folded the confirmed
+    // row out of `needs_review` — all while the undo toast is still on screen.
+    //
+    // Two things have to survive that, and both were broken before this test:
+    //
+    //  1. Card ids were POSITIONS in the feed, so the surviving row inherited
+    //     the confirmed row's id and `undo` authored against the wrong
+    //     transaction. (With nothing surviving it is the same mechanism ending
+    //     in a silent early return instead.)
+    //  2. The deck was keyed on the feed's content, so the changed page
+    //     remounted it — which resets its index and drops the `commitRef` the
+    //     toast's Undo resolves against, i.e. the deck destroyed its own undo.
+    const user = userEvent.setup();
+    const writer = recorder();
+    const base = await projection();
+    let reads = 0;
+    const folding: ReviewSource = {
+      ...base,
+      page: async (lane, opts) => {
+        const rows = await base.page(lane, opts);
+        // First read is the deck's; every read after it is the post-confirm one.
+        return ++reads === 1 ? rows : rows.filter((r) => r.txn.id !== "t2");
+      },
+    };
+    mount(folding, writer);
+    await screen.findByText("SPINNEYS");
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+    // The lane really did change underneath the toast.
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(writer.queued.length).toBe(3));
+
+    // (1) The compensating op names t2 — what the user actually confirmed — and
+    // not t1, the row that survived the fold and would have inherited its id.
+    expect(writer.queued[2]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "t2" },
+      payload: { needs_review: true },
+    });
+    expect(screen.queryByText(/Too late to undo/)).not.toBeInTheDocument();
+
+    // (2) The deck did not remount, and this is how that is visible from
+    // outside it: undo puts the card BACK at the front — `restoreCard` sets the
+    // deck's index to the one the commit was made at. A deck keyed on the
+    // feed's CONTENT re-mounts when the sync changes the page, and then
+    // `restoreCard` is talking to an instance React has already thrown away:
+    // the op is undone, but the card never returns, the index is back at zero
+    // and every skip made this session is gone. The undo would quietly mean
+    // less than it said.
+    expect(await screen.findByText("SPINNEYS")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still resolves the NEXT card after a sync folds the confirmed one out", async () => {
+    // The other half of the same window, and the half the undo path cannot
+    // check: the toast holds the callbacks it was created with, so an undo
+    // resolves through the card map AS IT WAS AT COMMIT TIME whatever happens
+    // afterwards. Sorting the next card goes through the CURRENT one.
+    //
+    // The deck's frozen list still holds the card it was handed for t1. If ids
+    // are positions, t1 is renumbered into the id the folded row had; if
+    // `byCard` is rebuilt from the current page, it has forgotten both. Either
+    // way the lookup misses, `commit` throws "the deck committed a card this
+    // screen does not hold", and the deck tells the user "Couldn't save".
+    const user = userEvent.setup();
+    const writer = recorder();
+    const base = await projection();
+    let reads = 0;
+    const folding: ReviewSource = {
+      ...base,
+      page: async (lane, opts) => {
+        const rows = await base.page(lane, opts);
+        return ++reads === 1 ? rows : rows.filter((r) => r.txn.id !== "t2");
+      },
+    };
+    mount(folding, writer);
+    await screen.findByText("SPINNEYS");
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+
+    // The deck has advanced to CARREFOUR, whose card id was minted from a page
+    // that no longer exists.
+    await user.click(await screen.findByRole("button", { name: /Want — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Dining" }));
+    // Four, not three: CARREFOUR is a merchant this user has not ruled on, so
+    // its confirmation carries a write-back rule too.
+    await waitFor(() => expect(writer.queued.length).toBe(4));
+    expect(writer.queued[2]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "t1" },
+      payload: { category: "Dining", needs_review: false },
+    });
+    expect(screen.queryByText(/Couldn't save/)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("keeps a card the outbox has already answered off the deck", async () => {
     const answered: Op[] = [
       {

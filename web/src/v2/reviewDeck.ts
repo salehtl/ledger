@@ -17,14 +17,25 @@
  * nothing reads it) and the hero is handed over pre-formatted as an
  * `AmountDisplay`, formatted from the `bigint` by `lib/minorMoney`.
  *
- * # The synthetic `ID`
+ * # The synthetic `ID`, and why it is not a position
  *
  * v1 identifies a row by an autoincrement integer; v2 by a ULID. The deck uses
- * `Txn.ID` for its React key and its skip set, so the adapter assigns each row
- * its position in the feed and {@link DeckRow} keeps the real item beside it.
- * That is safe **only** because `SwipeDeck` freezes its list at mount: the
- * screen remounts the deck when the feed changes ({@link deckKey}), so a
- * position never silently comes to mean a different transaction.
+ * `Txn.ID` for its React key, its skip set and — through the undo toast, which
+ * holds the card object it committed — for resolving an answer minutes after it
+ * was given. So the id has to mean the same transaction for as long as the
+ * screen is up.
+ *
+ * It was a position in the feed, and that was wrong in two ways that look
+ * identical from the outside. Positions renumber whenever the feed changes:
+ * when the settled filter removes a confirmed row, and — the one that survives
+ * any amount of care about filter order — when a **sync folds the confirmed row
+ * out of the lane while the undo toast is still up**, which is the ordinary
+ * production window, not an edge case. Either way `byCard.get(card.ID)` resolves
+ * a *different* transaction, and the undo silently authors against it.
+ *
+ * {@link cardIdSource} therefore assigns an id per transaction id, once, for the
+ * screen's lifetime. A card's id never moves, whatever happens to the feed
+ * underneath it.
  *
  * # There is no bucket taxonomy in v2, so one is supplied
  *
@@ -93,10 +104,10 @@ export function deckAmount(t: ProjectionTxn, homeCurrency: string | null): Amoun
  * `""` rather than `"email"` so the card offers no "view source email" link,
  * which would open a v1 route `ledgerd` does not serve.
  */
-export function deckCard(item: ReviewItem, index: number): ApiTxn {
+export function deckCard(item: ReviewItem, id: number): ApiTxn {
   const t = item.txn;
   return {
-    ID: index + 1,
+    ID: id,
     PostedAt: t.posted_at,
     AmountFils: 0,
     AmountAedFils: null,
@@ -115,25 +126,40 @@ export function deckCard(item: ReviewItem, index: number): ApiTxn {
   };
 }
 
-export function deckRows(items: readonly ReviewItem[], homeCurrency: string | null): DeckRow[] {
-  return items.map((item, i) => ({
-    card: deckCard(item, i),
+/**
+ * Hands out the numeric card id for a transaction, and keeps handing out the
+ * same one.
+ *
+ * A closure rather than a pure `(items) => ids` function because the property
+ * that matters is *memory*: an id has to survive the row leaving the feed
+ * entirely, which no function of the current feed can do. The screen holds one
+ * of these in a ref for as long as it is mounted.
+ *
+ * Ids start at 1 because `SwipeCard` keys on them and 0 is falsy in enough
+ * places to be worth not finding out about.
+ */
+export function cardIdSource(): (txnID: string) => number {
+  const seen = new Map<string, number>();
+  return (txnID: string): number => {
+    const known = seen.get(txnID);
+    if (known !== undefined) return known;
+    const next = seen.size + 1;
+    seen.set(txnID, next);
+    return next;
+  };
+}
+
+export function deckRows(
+  items: readonly ReviewItem[],
+  homeCurrency: string | null,
+  idFor: (txnID: string) => number,
+): DeckRow[] {
+  return items.map((item) => ({
+    card: deckCard(item, idFor(item.txn.id)),
     item,
     amount: deckAmount(item.txn, homeCurrency),
     reason: REVIEW_REASON_COPY[item.reason].title,
   }));
-}
-
-/**
- * A key that changes exactly when the deck's frozen list would be wrong.
- *
- * `SwipeDeck` snapshots `transactions` at mount on purpose (a refetch must not
- * shift the index under the user's thumb), so the screen has to remount it when
- * the feed is genuinely a different feed. The length alone is not enough: two
- * different pages of the same size would silently keep the old cards.
- */
-export function deckKey(lane: string, items: readonly ReviewItem[]): string {
-  return `${lane}:${items.length}:${items[0]?.key ?? ""}:${items[items.length - 1]?.key ?? ""}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@
  * hand the user thirty cards they had already sorted.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { newEntityID } from "@ledger/client/net/client";
@@ -48,7 +48,7 @@ import { useToast } from "../components/Toast";
 import type { Category, Txn as ApiTxn } from "../api/types";
 import { loadSwipeConfig } from "../lib/swipe";
 import { formatMinor } from "../lib/minorMoney";
-import { deckCategories, deckKey, deckRows } from "../v2/reviewDeck";
+import { cardIdSource, deckCategories, deckRows, type DeckRow } from "../v2/reviewDeck";
 import { useHomeCurrency, useReviewFeed, useReviewSource, useTxnSource, v2Keys } from "../v2/queries";
 import { confirmOps, isSettled, settledBy, undoConfirmOps, type ReviewSource } from "../v2/sources/review";
 import { useWriter, type Writer } from "../v2/writer";
@@ -75,15 +75,41 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
   /**
    * Every row the lane page returned, adapted, in the page's own order.
    *
-   * The settled filter is applied AFTER this and never to it, and the two must
-   * not be swapped. Card ids are positions in this array; if they were positions
-   * in the filtered one, confirming a card would renumber every card behind it,
-   * and the undo toast — which holds the card object it committed — would look
-   * up an id that now means a different transaction, or no transaction at all.
+   * The settled filter is applied AFTER this and never to it.
    */
   const page = useMemo(() => feed.data?.items ?? [], [feed.data]);
-  const allRows = useMemo(() => deckRows(page, homeCurrency), [page, homeCurrency]);
-  const byCard = useMemo(() => new Map(allRows.map((r) => [r.card.ID, r])), [allRows]);
+
+  /**
+   * Card ids, stable per transaction for as long as this screen is mounted.
+   *
+   * Not positions. A position renumbers whenever the feed changes — when the
+   * settled filter drops a confirmed row, and, unavoidably, when a sync folds
+   * that row out of the lane while the undo toast is still up. Both make
+   * `byCard.get(card.ID)` resolve a *different* transaction, and `undo` would
+   * then author a compensating op against a row the user never touched.
+   */
+  const idFor = useRef(cardIdSource()).current;
+  const allRows = useMemo(() => deckRows(page, homeCurrency, idFor), [page, homeCurrency, idFor]);
+
+  /**
+   * Every card this screen has ever handed the deck, by id — **cumulative**.
+   *
+   * A `Map` rebuilt from the current page would forget a row the moment a sync
+   * folded it out, and forgetting is not a safe default here: `undo` early-returns
+   * on a miss (there is nothing sensible to do with an id it cannot resolve), so
+   * the user's undo would quietly do nothing at the exact moment the sync they
+   * were waiting for arrived. The deck outlives the feed, so the lookup has to
+   * as well.
+   *
+   * It grows with the number of distinct cards seen in one sitting, which is
+   * bounded by the queue the user is working through, and is dropped when the
+   * screen unmounts.
+   */
+  const cards = useRef(new Map<number, DeckRow>()).current;
+  const byCard = useMemo(() => {
+    for (const r of allRows) cards.set(r.card.ID, r);
+    return cards;
+  }, [allRows, cards]);
 
   /**
    * What the deck is handed: the page minus what the outbox has already
@@ -209,13 +235,16 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
 
       {!feed.isPending && !feed.isError && rows.length > 0 && (
         <SwipeDeck
-          // Keyed on the RAW page, not on `rows`. `SwipeDeck` freezes its list
-          // at mount, so the key is what decides when it re-freezes — and a key
-          // that moved every time the outbox grew would remount the deck on
-          // every confirm, which resets the index and takes the undo toast's
-          // commit record with it. The raw page changes only when a sync folds
-          // something, which is exactly when a re-freeze is right.
-          key={deckKey("needs_review", page)}
+          // NO `key`. `SwipeDeck` freezes its list at mount by design — a
+          // refetch must not shift the index under the user's thumb — and the
+          // key is the only thing that can force it to re-freeze. Every
+          // content-derived key tried here was wrong in the same way: it moved
+          // when the outbox grew, or when a sync folded the confirmed row out
+          // of the lane, and a remount resets the index AND drops the deck's
+          // `commitRef`, which is the undo the toast is at that moment
+          // offering. So the deck mounts once per visit to this screen, which
+          // is what freezing at mount already meant. Work that arrives mid-
+          // session is on the next visit; the counts below say it is there.
           transactions={rows.map((r) => r.card)}
           categories={categories}
           config={config}

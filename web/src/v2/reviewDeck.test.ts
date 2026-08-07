@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Txn } from "@ledger/client/replay/state";
 
-import { bucketOf, deckAmount, deckCard, deckCategories, deckKey, deckRows } from "./reviewDeck";
+import { bucketOf, cardIdSource, deckAmount, deckCard, deckCategories, deckRows } from "./reviewDeck";
 import type { ReviewItem } from "./sources/review";
 
 function txn(over: Partial<Txn> = {}): Txn {
@@ -79,19 +79,33 @@ describe("deckCard", () => {
     expect(deckCard(item(txn()), 0).Source).toBe("");
   });
 
-  it("numbers cards by position, so the deck's key and skip set stay stable", () => {
-    const rows = deckRows([item(txn({ id: "a" })), item(txn({ id: "b" }))], "AED");
+  it("numbers cards from the id source rather than from the feed", () => {
+    const rows = deckRows([item(txn({ id: "a" })), item(txn({ id: "b" }))], "AED", cardIdSource());
     expect(rows.map((r) => r.card.ID)).toEqual([1, 2]);
     expect(rows[1]!.item.txn.id).toBe("b");
   });
 });
 
-describe("deckKey", () => {
-  it("changes when the feed changes, not merely when its length does", () => {
-    const a = [item(txn({ id: "a" })), item(txn({ id: "b" }))];
-    const b = [item(txn({ id: "c" })), item(txn({ id: "d" }))];
-    expect(deckKey("needs_review", a)).not.toBe(deckKey("needs_review", b));
-    expect(deckKey("needs_review", a)).toBe(deckKey("needs_review", [...a]));
+describe("cardIdSource", () => {
+  it("gives a transaction the same id for as long as it is asked", () => {
+    const idFor = cardIdSource();
+    expect(idFor("a")).toBe(1);
+    expect(idFor("b")).toBe(2);
+    expect(idFor("a")).toBe(1);
+  });
+
+  it("does not renumber when a row leaves the feed", () => {
+    // THE property. A position would renumber here, and the undo toast — which
+    // holds the card it committed — would resolve a different transaction.
+    const idFor = cardIdSource();
+    const before = deckRows([item(txn({ id: "a" })), item(txn({ id: "b" }))], "AED", idFor);
+    // A sync folds "a" out of the lane while the toast for it is still up.
+    const after = deckRows([item(txn({ id: "b" }))], "AED", idFor);
+    expect(before.find((r) => r.item.txn.id === "b")!.card.ID).toBe(after[0]!.card.ID);
+    expect(after[0]!.card.ID).toBe(2);
+    // …and the id "a" held is never handed to anybody else.
+    expect(idFor("c")).toBe(3);
+    expect(idFor("a")).toBe(1);
   });
 });
 
