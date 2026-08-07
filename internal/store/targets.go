@@ -10,26 +10,40 @@ import (
 // ErrTargetInvalid reports a category-target payload the store refuses to persist.
 var ErrTargetInvalid = errors.New("invalid category target")
 
-// CategoryTargetRow is one budgeting target attached to a category (at most
-// one per category — category_id is the primary key). AmountFils is integer
-// AED fils. DueDate ('YYYY-MM-DD') is set only for save_by_date targets.
+// tombstoneTarget marks "no target from this month on". Removal writes one of
+// these instead of deleting the row, because deleting would let the previous
+// version resurrect and apply forever — the opposite of removing. It is never
+// returned to callers; resolution filters it out.
+const tombstoneTarget = "none"
+
+// CategoryTargetRow is one *version* of a category's budgeting target. It
+// applies from EffectiveMonth ('YYYY-MM') onward until a later version
+// supersedes it, so a target set once carries forward and an edit made in
+// month M never changes any month before M. AmountFils is integer AED fils.
+// DueDate ('YYYY-MM-DD') is set only for save_by_date targets.
 type CategoryTargetRow struct {
-	CategoryID int64
-	TargetType string // 'set_aside' | 'refill' | 'save_by_date'
-	AmountFils int64
-	Cadence    string // 'weekly' | 'monthly' | 'yearly'; defaults to 'monthly'
-	DueDate    string // "" unless save_by_date
-	CreatedAt  string
-	UpdatedAt  string
+	CategoryID     int64
+	EffectiveMonth string // 'YYYY-MM'
+	TargetType     string // 'set_aside' | 'refill' | 'save_by_date'
+	AmountFils     int64
+	Cadence        string // 'weekly' | 'monthly' | 'yearly'; defaults to 'monthly'
+	DueDate        string // "" unless save_by_date
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 func validateTarget(t *CategoryTargetRow) error {
 	if t.CategoryID <= 0 {
 		return fmt.Errorf("%w: category_id required", ErrTargetInvalid)
 	}
+	if !validMonth(t.EffectiveMonth) {
+		return fmt.Errorf("%w: effective_month %q (want YYYY-MM)", ErrTargetInvalid, t.EffectiveMonth)
+	}
 	switch t.TargetType {
 	case "set_aside", "refill", "save_by_date":
 	default:
+		// tombstoneTarget lands here too: it is internal, and letting a caller
+		// write one through this path would dodge the amount check below.
 		return fmt.Errorf("%w: target_type %q", ErrTargetInvalid, t.TargetType)
 	}
 	if t.AmountFils <= 0 {
@@ -62,34 +76,61 @@ func validateTarget(t *CategoryTargetRow) error {
 	return nil
 }
 
-// UpsertCategoryTarget inserts or overwrites the target for a category.
+// UpsertCategoryTarget writes the target version effective from t.EffectiveMonth,
+// overwriting an existing version at exactly that month. Earlier months are
+// untouched.
 func (s *Store) UpsertCategoryTarget(t CategoryTargetRow) error {
 	if err := validateTarget(&t); err != nil {
 		return err
 	}
+	return s.writeTargetVersion(t)
+}
+
+// writeTargetVersion is the unvalidated insert shared by the normal write path
+// and the tombstone path.
+func (s *Store) writeTargetVersion(t CategoryTargetRow) error {
 	now := isoNow(s)
 	_, err := s.DB.Exec(
-		`INSERT INTO category_targets (category_id, target_type, amount_fils, cadence, due_date, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(category_id) DO UPDATE SET
+		`INSERT INTO category_targets
+		   (category_id, effective_month, target_type, amount_fils, cadence, due_date, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(category_id, effective_month) DO UPDATE SET
 		   target_type=excluded.target_type, amount_fils=excluded.amount_fils,
 		   cadence=excluded.cadence, due_date=excluded.due_date, updated_at=excluded.updated_at`,
-		t.CategoryID, t.TargetType, t.AmountFils, t.Cadence, nullableStr(t.DueDate), now, now,
+		t.CategoryID, t.EffectiveMonth, t.TargetType, t.AmountFils, t.Cadence,
+		nullableStr(t.DueDate), now, now,
 	)
 	return err
 }
 
-const targetColumns = `category_id, target_type, amount_fils, cadence, COALESCE(due_date,''), created_at, updated_at`
+const targetColumns = `category_id, effective_month, target_type, amount_fils, cadence, COALESCE(due_date,''), created_at, updated_at`
 
 func scanTarget(sc interface{ Scan(...any) error }) (CategoryTargetRow, error) {
 	var t CategoryTargetRow
-	err := sc.Scan(&t.CategoryID, &t.TargetType, &t.AmountFils, &t.Cadence, &t.DueDate, &t.CreatedAt, &t.UpdatedAt)
+	err := sc.Scan(&t.CategoryID, &t.EffectiveMonth, &t.TargetType, &t.AmountFils,
+		&t.Cadence, &t.DueDate, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
-// SelectCategoryTargets lists every target, category order.
-func (s *Store) SelectCategoryTargets() ([]CategoryTargetRow, error) {
-	rows, err := s.DB.Query(`SELECT ` + targetColumns + ` FROM category_targets ORDER BY category_id`)
+// resolveClause keeps only each category's newest version at or before the
+// month, then drops tombstones. Both placeholders take the same month.
+const resolveClause = `
+	  FROM category_targets t
+	 WHERE t.effective_month <= ?
+	   AND t.effective_month = (SELECT MAX(x.effective_month) FROM category_targets x
+	                             WHERE x.category_id = t.category_id
+	                               AND x.effective_month <= ?)
+	   AND t.target_type <> '` + tombstoneTarget + `'`
+
+// SelectCategoryTargetsForMonth lists the targets in force during month
+// ('YYYY-MM'), category order. A category whose newest version is a tombstone,
+// or whose first version starts later, is absent.
+func (s *Store) SelectCategoryTargetsForMonth(month string) ([]CategoryTargetRow, error) {
+	if !validMonth(month) {
+		return nil, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrTargetInvalid, month)
+	}
+	rows, err := s.DB.Query(
+		`SELECT `+targetColumns+resolveClause+` ORDER BY t.category_id`, month, month)
 	if err != nil {
 		return nil, err
 	}
@@ -105,10 +146,14 @@ func (s *Store) SelectCategoryTargets() ([]CategoryTargetRow, error) {
 	return out, rows.Err()
 }
 
-// SelectCategoryTarget fetches one category's target; ok=false when it has none.
-func (s *Store) SelectCategoryTarget(categoryID int64) (CategoryTargetRow, bool, error) {
+// SelectCategoryTargetForMonth resolves one category's target for month;
+// ok=false when it has none in force.
+func (s *Store) SelectCategoryTargetForMonth(categoryID int64, month string) (CategoryTargetRow, bool, error) {
+	if !validMonth(month) {
+		return CategoryTargetRow{}, false, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrTargetInvalid, month)
+	}
 	t, err := scanTarget(s.DB.QueryRow(
-		`SELECT `+targetColumns+` FROM category_targets WHERE category_id=?`, categoryID))
+		`SELECT `+targetColumns+resolveClause+` AND t.category_id = ?`, month, month, categoryID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, false, nil
 	}
@@ -118,8 +163,17 @@ func (s *Store) SelectCategoryTarget(categoryID int64) (CategoryTargetRow, bool,
 	return t, true, nil
 }
 
-// DeleteCategoryTarget removes a category's target (no-op if none).
-func (s *Store) DeleteCategoryTarget(categoryID int64) error {
-	_, err := s.DB.Exec(`DELETE FROM category_targets WHERE category_id=?`, categoryID)
-	return err
+// DeleteCategoryTarget stops the target from month onward by writing a
+// tombstone version. Months before it keep whatever was in force.
+func (s *Store) DeleteCategoryTarget(categoryID int64, month string) error {
+	if categoryID <= 0 {
+		return fmt.Errorf("%w: category_id required", ErrTargetInvalid)
+	}
+	if !validMonth(month) {
+		return fmt.Errorf("%w: month %q (want YYYY-MM)", ErrTargetInvalid, month)
+	}
+	return s.writeTargetVersion(CategoryTargetRow{
+		CategoryID: categoryID, EffectiveMonth: month,
+		TargetType: tombstoneTarget, AmountFils: 0, Cadence: "monthly",
+	})
 }
