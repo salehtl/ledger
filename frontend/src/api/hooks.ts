@@ -102,22 +102,24 @@ export function useAutoAssign(month: string) {
   });
 }
 
-/** PUT /api/targets/{categoryId} — create or overwrite. A target changes the
- *  needed-this-month ask for every cached month, so invalidate the prefix. */
-export function usePutTarget(_month: string) {
+/** PUT /api/targets/{categoryId} — writes the version effective from `month`.
+ *  Earlier months keep whatever was in force, so invalidate the whole prefix:
+ *  every month from `month` onward may have changed. */
+export function usePutTarget(month: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ categoryId, body }: { categoryId: number; body: TargetBody }) =>
-      postJSON(`/api/targets/${categoryId}`, body, "PUT"),
+    mutationFn: ({ categoryId, body }: { categoryId: number; body: Omit<TargetBody, "month"> }) =>
+      postJSON(`/api/targets/${categoryId}`, { ...body, month }, "PUT"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["envelopes"] }),
   });
 }
 
-/** DELETE /api/targets/{categoryId} — idempotent; prefix-invalidates like PUT. */
-export function useDeleteTarget(_month: string) {
+/** DELETE /api/targets/{categoryId}?month= — tombstones from `month` onward. */
+export function useDeleteTarget(month: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (categoryId: number) => del(`/api/targets/${categoryId}`),
+    mutationFn: (categoryId: number) =>
+      del(`/api/targets/${categoryId}?month=${encodeURIComponent(month)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["envelopes"] }),
   });
 }
