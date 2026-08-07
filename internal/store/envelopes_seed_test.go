@@ -234,6 +234,69 @@ func TestSeedAssignments_RejectsBadMonth(t *testing.T) {
 	}
 }
 
+// A category re-kinded away from 'spending' (or deactivated) after being
+// assigned is no longer eligible: EnvelopeMonthSummary would never surface it,
+// so seeding must not copy its row even though it is still non-zero in the
+// source month.
+func TestSeedAssignments_IgnoresRowsFromIneligibleCategory(t *testing.T) {
+	st := newTestStore(t)
+	a := seedCat(t, st, "Groceries")
+	b := seedCat(t, st, "Transport")
+	prev, next := thisMonth(), monthsFromNow(1)
+	assign(t, st, prev, a, 150000)
+	assign(t, st, prev, b, 50000)
+	if _, err := st.DB.Exec(`UPDATE categories SET kind='income' WHERE id=?`, b); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("seeded %d rows, want 1", n)
+	}
+	got := assignedIn(t, st, next)
+	if got[a] != 150000 {
+		t.Errorf("assignment[a] = %d, want 150000", got[a])
+	}
+	if _, present := got[b]; present {
+		t.Errorf("an ineligible category's assignment was copied: %v", got)
+	}
+}
+
+// If a month's ONLY non-zero row belongs to a now-ineligible category, that
+// month must not be picked as the source at all — picking it and then copying
+// nothing would silently leave the target month with zero rows, which looks
+// identical to "never seeded" and would keep re-attempting forever. An
+// earlier month with a valid plan must be chosen instead.
+func TestSeedAssignments_SkipsSourceMonthWhoseOnlyNonZeroRowIsIneligible(t *testing.T) {
+	st := newTestStore(t)
+	a := seedCat(t, st, "Groceries")
+	b := seedCat(t, st, "Transport")
+	older, prev, next := monthsFromNow(-1), thisMonth(), monthsFromNow(1)
+	assign(t, st, older, a, 150000)
+	assign(t, st, prev, b, 50000)
+	if _, err := st.DB.Exec(`UPDATE categories SET kind='income' WHERE id=?`, b); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("seeded %d rows, want 1 (inherited from the older eligible month)", n)
+	}
+	got := assignedIn(t, st, next)
+	if got[a] != 150000 {
+		t.Errorf("assignment[a] = %d, want 150000 carried from the older month", got[a])
+	}
+	if _, present := got[b]; present {
+		t.Errorf("an ineligible category's assignment was copied: %v", got)
+	}
+}
+
 func TestSeedAssignments_NoPriorPlanIsANoOp(t *testing.T) {
 	st := newTestStore(t)
 	n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(monthsFromNow(1))
