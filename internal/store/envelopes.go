@@ -188,6 +188,80 @@ func (s *Store) MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryI
 	return tx.Commit()
 }
 
+// SeedEnvelopeAssignmentsFromPreviousMonth copies the most recent planned
+// month's non-zero assignments into month, so a stable budget does not have to
+// be re-entered every month. Returns how many rows it wrote; 0 when it
+// declines. Idempotent.
+//
+// It declines unless all three hold:
+//
+//   - month has NO rows at all. Zeroing a month through the assign sheet
+//     WRITES rows, so "has rows" is the faithful record of "the user has
+//     touched this month" — a month deliberately emptied stays empty instead
+//     of refilling itself. Do not weaken this to "has no non-zero rows".
+//   - some earlier month has a non-zero assignment. The greatest such month
+//     wins, so jumping ahead over empty months inherits the last real plan
+//     rather than an empty one.
+//   - month is the current calendar month or later. Browsing back through
+//     history must never rewrite it.
+//
+// Negative assignments carry: move-money may over-draw a source envelope, and
+// that is part of the plan, not a corruption of it.
+func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error) {
+	if !validMonth(month) {
+		return 0, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
+	}
+	if month < time.Now().UTC().Format("2006-01") {
+		return 0, nil
+	}
+
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Re-check inside the transaction: the caller's mutex serialises the HTTP
+	// handlers, but nothing stops another writer.
+	var existing int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM envelope_assignments WHERE month=?`, month).Scan(&existing); err != nil {
+		return 0, err
+	}
+	if existing > 0 {
+		return 0, nil
+	}
+
+	var source sql.NullString
+	err = tx.QueryRow(
+		`SELECT MAX(month) FROM envelope_assignments WHERE month < ? AND assigned_fils != 0`,
+		month).Scan(&source)
+	if err != nil {
+		return 0, err
+	}
+	if !source.Valid {
+		return 0, nil
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO envelope_assignments (month, category_id, assigned_fils, updated_at)
+		 SELECT ?, category_id, assigned_fils, ?
+		   FROM envelope_assignments
+		  WHERE month = ? AND assigned_fils != 0`,
+		month, isoNow(s), source.String)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // EnvelopeDelta is one category's share of a batch add-delta write (the
 // auto-assign plan application).
 type EnvelopeDelta struct {
