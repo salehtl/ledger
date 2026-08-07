@@ -1150,3 +1150,46 @@ func TestInsertCategoryRejectsUnknownColor(t *testing.T) {
 		t.Fatalf("colour = %q, want the seed %q — an unvalidated name must not be stored", c.Color, SeedCategoryColor(id))
 	}
 }
+
+// CategoryUsage.Targets answers "does this category have a target", used by the
+// delete-category confirmation. With version rows a naive count(*) would report
+// 3 for a category edited three times, and 1 for one whose target was removed.
+func TestCategoryUsage_TargetsCountsCurrentNotVersions(t *testing.T) {
+	st := newTestStore(t)
+	cat := seedCat(t, st, "Groceries")
+
+	u, err := st.CategoryUsage(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Targets != 0 {
+		t.Errorf("no target: Targets = %d, want 0", u.Targets)
+	}
+
+	for _, m := range []string{"2026-06", "2026-07", "2026-08"} {
+		if err := st.UpsertCategoryTarget(CategoryTargetRow{
+			CategoryID: cat, EffectiveMonth: m, TargetType: "set_aside",
+			AmountFils: 1000, Cadence: "monthly",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err = st.CategoryUsage(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Targets != 1 {
+		t.Errorf("three versions: Targets = %d, want 1", u.Targets)
+	}
+
+	if err := st.DeleteCategoryTarget(cat, "2026-09"); err != nil {
+		t.Fatal(err)
+	}
+	u, err = st.CategoryUsage(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Targets != 0 {
+		t.Errorf("after removal: Targets = %d, want 0", u.Targets)
+	}
+}
