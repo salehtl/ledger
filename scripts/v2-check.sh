@@ -97,43 +97,15 @@ if [[ ! -d client/node_modules ]]; then
 fi
 (cd client && bun run typecheck && bun test src/diag/structure.test.ts && bun test)
 
-# The Expo React Native app. Phase 2 tasks 3 and 9-27 built every screen of
-# this app and, until now, nothing here checked any of it: the client/ step
-# above only covers the shared TypeScript executor, not the app that consumes
-# it. Measured before this step existed: the gate reported exit 0 while
-# `cd app && bun test` alone gave 518 pass / 1 fail (bootstrap.test.ts, a
-# stale test fixture that didn't know about a dictionary sync call a prior
-# task had wired into bootstrap). That is exactly the failure mode this step
-# closes — code landing in app/ with nothing to catch it. Same rule as
-# client/: no `bun install` here, so a missing app/node_modules is a hard
-# failure with the fix named rather than a gate that mutates the tree to pass.
-#
-# The 13 *.rn-test.tsx mounted-component tests run under jest, not bun test.
-# They were landing ungated until now — bun test covers *.test.ts but not the
-# React Native mounted renders in *.rn-test.tsx, including
-# RuntimeNavigation.rn-test.tsx which verifies the app wires into itself. That
-# is a second hole of exactly this shape: code shipping with nothing to catch
-# it. Both test suites run via `test:all` in app/package.json.
-if [[ ! -d app/node_modules ]]; then
-	echo "v2-check: app/node_modules is missing; run (cd app && bun install)" >&2
+# app/ (Expo) is retired on this branch; see docs/superpowers/specs/2026-08-07-v2-pwa-direction.md
+
+# The PWA client. Same rule as client/: no `bun install` here, so a missing
+# web/node_modules is a hard failure with the fix named rather than a gate
+# that mutates the tree to pass.
+if [[ ! -d web/node_modules ]]; then
+	echo "v2-check: web/node_modules is missing; run (cd web && bun install)" >&2
 	exit 1
 fi
-#
-# Third hole of the same shape: none of the above ever asks Expo to resolve
-# its own config, so an app.json plugin entry referencing a package that is
-# in neither package.json nor node_modules sailed straight through — typecheck
-# and both test suites are pure TypeScript/Jest and never touch app.json.
-# Measured before this step existed: commit 5b00344 added an `expo-splash-screen`
-# plugin entry to app.json without adding the package, and
-# `bunx expo export --platform ios` failed with `PluginError: Failed to
-# resolve plugin for module "expo-splash-screen"` while `bun run typecheck &&
-# bun run test:all` above stayed green. `expo config --type prebuild` resolves
-# every config plugin exactly like `expo export` does but skips bundling the
-# JS graph, so it reproduces the same PluginError in ~0.7s instead of export's
-# ~14s (measured); confirmed by deliberately removing node_modules/expo-splash-screen
-# and observing this step fail with the same PluginError before restoring it.
-# EXPO_PUBLIC_LEDGER_SERVER is required by src/app/config.ts and is set here
-# to an obviously-fake HTTPS origin — no real host belongs in the gate.
-(cd app && bun run typecheck && EXPO_PUBLIC_LEDGER_SERVER=https://example.test bun run config-check && bun run test:all)
+(cd web && bun run test)
 
-echo "v2-check: OK (go + client + app + conformance)"
+echo "v2-check: OK (go + client + web + conformance)"
