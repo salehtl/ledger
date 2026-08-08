@@ -1073,15 +1073,73 @@ function setNeedsReview(s: State, t: Txn, want: boolean, seq: bigint): void {
   t.needs_review = want;
 }
 
+/**
+ * The money half of an edit: applied on a row the user authored, refused in
+ * words on a row the ingest pipeline did. See {@link MONEY_OWNED} for why the
+ * two rows differ, and why the answer comes from `provenance` rather than from
+ * anything in the payload.
+ *
+ * Three things travel with the number and would rot if this only assigned it:
+ *
+ *  1. **The FX snapshot.** `amount_home_minor` was frozen from the OLD amount.
+ *     It is recomputed here against the rate head live at the EDIT's position —
+ *     the same rule `txn_superseded` follows (§3.7:129) and for the same
+ *     reason: a correction is a new statement of the money, not an inheritance.
+ *     An edit that carries `amount_home_minor` explicitly wins over this; the
+ *     assignment below is that user's own decision about a conversion.
+ *  2. **The pending bucket**, which is keyed by currency. Changing the currency
+ *     without moving the row would leave it filed under a code no `rate_set`
+ *     will ever drain on its behalf.
+ *  3. **The fingerprint index**, which {@link applyTxnEdit} already reindexes
+ *     around this call — `amount_minor` and `direction` are both in it.
+ *
+ * # Two rows this refuses even when the user authored them
+ *
+ *  - **A split row.** Invariant I8 is a HARD stop: parts sum exactly to
+ *    `amount_minor`. Moving the parent out from under its parts would put the
+ *    log in a state `check.ts` reports as broken, from a legal op. Restate the
+ *    split first.
+ *  - **An unparsed row**, whose empty money shape is I12's, and whose only
+ *    surface is the review queue. Giving it an amount by edit is the same
+ *    refusal `amount_home_minor` gets a few lines below.
+ */
+function applyMoneyEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
+  const named = MONEY_OWNED.filter((k) => p[k] !== undefined);
+  if (named.length === 0) return;
+
+  if (t.provenance !== "user") {
+    anomaly(s, seq, "unsupported_edit_field", `${t.id}: ${named.join(", ")} may only change via txn_superseded on a transaction the mailbox produced`);
+    return;
+  }
+  if (t.unparsed) {
+    anomaly(s, seq, "unsupported_edit_field", `${t.id}: ${named.join(", ")} cannot be set on an unparsed transaction, whose only surface is the review queue`);
+    return;
+  }
+  if (p.amount_minor !== undefined && t.splits.length > 0) {
+    anomaly(s, seq, "unsupported_edit_field", `${t.id}: amount_minor cannot change while the transaction is split into ${t.splits.length} parts, which would no longer sum to it`);
+    return;
+  }
+
+  // Out of the bucket keyed by the OLD currency before the key moves. A no-op
+  // for a row that is already frozen, which is not in the index at all.
+  const live = t.superseded_by === null;
+  if (live) clearPending(s, t);
+  if (p.amount_minor !== undefined) t.amount_minor = p.amount_minor;
+  if (p.currency !== undefined) t.currency = p.currency;
+  if (p.direction !== undefined) t.direction = p.direction;
+  // A retired row is out of the live indexes and stays out (see `retire`); its
+  // snapshot is history and is not recomputed. An edit that carries
+  // `amount_home_minor` refiles the row itself, in {@link applyTxnEdit} below.
+  if (live && p.amount_home_minor === undefined) freezeIfPossible(s, t);
+}
+
 function applyTxnEdit(s: State, t: Txn, p: EditPayload, seq: bigint): void {
   if (p.rejected.length > 0) {
-    // amount_minor / currency / direction come from the PARSE. Correcting them
-    // is what reprocessing and `txn_superseded` are for, and only a supersede
-    // recomputes the FX snapshot at its own position; an edit that changed them
-    // would leave a snapshot based on a number that no longer exists.
+    // What the parse READ. Re-reading a message is what `txn_superseded` is for.
     anomaly(s, seq, "unsupported_edit_field", `${t.id}: ${p.rejected.join(", ")} may only change via txn_superseded`);
   }
   const before = fingerprint(t);
+  applyMoneyEdit(s, t, p, seq);
   if (p.merchant_raw !== undefined) t.merchant_raw = p.merchant_raw;
   if (p.last4 !== undefined) t.last4 = p.last4;
   if (p.posted_at !== undefined) t.posted_at = p.posted_at;
@@ -1204,6 +1262,9 @@ interface EditPayload {
   needs_review?: boolean;
   amount_home_minor?: bigint | null;
   possible_duplicate_of?: string | null;
+  amount_minor?: bigint;
+  currency?: string;
+  direction?: "debit" | "credit";
   rejected: string[];
 }
 interface DuplicateDispositionPayload {
@@ -1397,20 +1458,56 @@ function parseErrorOf(v: unknown): string | null {
 }
 
 /**
- * Fields an edit may not touch: they come from the parse (spec §3.7:129).
+ * Fields an edit may never touch, on any row: they describe the READING of a
+ * message, and re-reading a message is what `txn_superseded` is for.
  *
- * `unparsed`, `tier` and `parse_error` are on this list for the same reason the
- * money fields are — re-reading a message is what `txn_superseded` is for, and
- * it is the only op that recomputes the FX snapshot at its own position. Being
- * on the list matters even though {@link applyTxnEdit} never assigns them: a
- * decoder that simply does not read a key ignores it *silently*, and a client
- * correcting a row would watch its op land, consume a version and change
+ * Being on the list matters even though {@link applyTxnEdit} never assigns
+ * them: a decoder that simply does not read a key ignores it *silently*, and a
+ * client correcting a row would watch its op land, consume a version and change
  * nothing, with no anomaly anywhere. §2 says nothing is ever silently dropped.
  */
-const PARSE_OWNED = ["amount_minor", "currency", "direction", "unparsed", "tier", "parse_error"];
+const PARSE_ONLY = ["unparsed", "tier", "parse_error"];
+
+/**
+ * The money, which an edit may restate only on a row the ingest writer did not
+ * author. The decision is {@link applyTxnEdit}'s, because it needs the ROW.
+ *
+ * # Why this is not simply "parse-owned"
+ *
+ * These three used to sit beside {@link PARSE_ONLY} and were refused
+ * everywhere. The reason was never the fields; it was the pipeline that owns
+ * them. On a row a parser produced, an edit that moved the amount would be
+ * overwriting an extraction, and the next reprocess would move it straight
+ * back — the user and the pipeline fighting over one number, with the log
+ * showing both.
+ *
+ * A hand-typed row has no pipeline behind it. There is no cold blob to
+ * reprocess from — `oplog.AppendClient` refuses the cold stream to every client
+ * (invariant I16), and `ingest.reprocessStored` walks that stream and nothing
+ * else — so no supersede will ever arrive to contradict the edit. The guard was
+ * protecting a conflict that cannot happen, at the cost of making the most
+ * likely mistake in hand entry, a typo in the amount, permanent.
+ *
+ * # Why the row, and never the payload
+ *
+ * `provenance` is derived in {@link createTxn} from `writer_id ===
+ * INGEST_WRITER_ID` and from nothing else, and `oplog.AppendClient` refuses the
+ * ingest writer id to every device. So "did the pipeline author this row" is a
+ * question the fold answers and a client cannot lie about. `entry_method` —
+ * which a client writes freely — must never be read here; a payload flag would
+ * make the relaxation claimable on any row in the log.
+ */
+const MONEY_OWNED = ["amount_minor", "currency", "direction"] as const;
 
 function decodeEditPayload(p: Record<string, unknown>): EditPayload {
-  const out: EditPayload = { rejected: PARSE_OWNED.filter((k) => p[k] !== undefined) };
+  const out: EditPayload = { rejected: PARSE_ONLY.filter((k) => p[k] !== undefined) };
+  // Decoded with the SAME validators as a create, whoever the row belongs to: a
+  // malformed amount is a bad op wherever it lands, and this decoder cannot see
+  // the row. Well-formed money on a pipeline row decodes here and is refused
+  // below, where the provenance is known.
+  if (p["amount_minor"] !== undefined) out.amount_minor = positiveMoney(p["amount_minor"], "amount_minor");
+  if (p["currency"] !== undefined) out.currency = currencyOf(p, "currency");
+  if (p["direction"] !== undefined) out.direction = direction(p["direction"]);
   const merchant = optionalString(p["merchant_raw"], "merchant_raw");
   if (merchant !== undefined) out.merchant_raw = merchant;
   const last4 = optionalString(p["last4"], "last4");

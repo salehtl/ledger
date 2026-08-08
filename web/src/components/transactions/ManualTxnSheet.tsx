@@ -14,15 +14,18 @@
  * What cannot be read is refused **in words**, in the `role="status"` line under
  * the field, while it is being typed. Nothing here rewrites what was typed.
  *
- * # Why a correction cannot change the amount
+ * # When a correction can change the amount, and when it cannot
  *
- * `txn_edited` owns the merchant, the date and the category. The money —
- * `amount_minor`, `currency`, `direction` — is `PARSE_OWNED` in `replay.ts`, and
- * an edit naming any of it raises an `unsupported_edit_field` anomaly and
- * changes nothing. The op that can restate an amount is `txn_superseded`, which
- * `ingest/reprocess.go` says a device must not author. So the three money fields
- * are locked on a correction and the sheet says why, rather than accepting an
- * edit the fold would drop in silence.
+ * On a row you typed, it can: nothing will ever reparse it, so there is no
+ * pipeline for an edit to contradict, and `replay.ts` accepts
+ * `amount_minor`/`currency`/`direction` in a `txn_edited` there. A typo in the
+ * amount is the likeliest mistake in hand entry and has to be fixable.
+ *
+ * On a row from the mailbox, it cannot: those three come from the parse, a
+ * reprocess would move them back, and the fold refuses the edit with an
+ * `unsupported_edit_field` anomaly. `moneyLocked` follows that same line — it is
+ * `!moneyEditable(txn)` in `sources/transactions.ts`, read from the row's
+ * provenance — so the sheet never offers a field whose op would be discarded.
  */
 
 import { useMemo, useState } from "react";
@@ -41,9 +44,14 @@ export function emptyDraft(currency: string, now?: Date): ManualDraft {
   return { amount: "", currency, direction: "debit", merchant: "", date: todayISO(now), category: null };
 }
 
-export function ManualTxnSheet({ mode, initial, categories, currencies, error, onClose, onSave }: {
+export function ManualTxnSheet({ mode, moneyLocked = false, initial, categories, currencies, error, onClose, onSave }: {
   /** `"add"` authors a new row; `"edit"` corrects one this device already has. */
   mode: "add" | "edit";
+  /**
+   * Whether the amount, currency and type are read-only. Pass
+   * `!moneyEditable(txn)` — a row from the mailbox, or one already split.
+   */
+  moneyLocked?: boolean;
   initial: ManualDraft;
   /** The names the category picker offers, in the screen's own vocabulary. */
   categories: readonly string[];
@@ -58,7 +66,8 @@ export function ManualTxnSheet({ mode, initial, categories, currencies, error, o
   const set = <K extends keyof ManualDraft>(key: K, value: ManualDraft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
-  const locked = mode === "edit";
+  const editing = mode === "edit";
+  const locked = moneyLocked;
   // The row's own category may predate the grid — a rule wrote it, or it came
   // from an import — and a picker that could not show the current answer would
   // look like it had none.
@@ -75,7 +84,7 @@ export function ManualTxnSheet({ mode, initial, categories, currencies, error, o
   );
 
   return (
-    <Dialog title={locked ? "Edit transaction" : "Add transaction"} onClose={onClose}>
+    <Dialog title={editing ? "Edit transaction" : "Add transaction"} onClose={onClose}>
       <div className="space-y-3">
         <label className="block text-sm" htmlFor="manual-amount">
           Amount
@@ -100,7 +109,7 @@ export function ManualTxnSheet({ mode, initial, categories, currencies, error, o
         {/* Announced as it changes, so the amount that will be saved is known
             before it is saved. */}
         <p role="status" className="-mt-2 text-xs text-muted">
-          {locked ? "The amount, currency and type can't be changed." : manualAmountAdvice(draft.amount, draft.currency)}
+          {locked ? "This came from your inbox, so the amount, currency and type can't be changed." : manualAmountAdvice(draft.amount, draft.currency)}
         </p>
 
         <label className="block text-sm" htmlFor="manual-currency">
@@ -175,7 +184,7 @@ export function ManualTxnSheet({ mode, initial, categories, currencies, error, o
 
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" onClick={() => onSave(draft)}>{locked ? "Save" : "Add"}</Button>
+        <Button variant="primary" onClick={() => onSave(draft)}>{editing ? "Save" : "Add"}</Button>
       </DialogFooter>
     </Dialog>
   );

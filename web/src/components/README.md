@@ -834,10 +834,13 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `v2/sources/transactions.ts`'s `manualTxnPayload`, the same rule
   `MonthlyTotalField` sets out. What cannot be read is refused in words in the
   `role="status"` line; nothing is rewritten on blur.
-  **On a correction the amount, currency and type are locked**, and the sheet
-  says so: those three are `PARSE_OWNED` in `replay.ts`, so a `txn_edited`
-  naming any of them raises `unsupported_edit_field` and changes nothing, and the
-  op that could restate them (`txn_superseded`) is one a device must not author.
+  **`moneyLocked` decides whether the amount, currency and type are editable**,
+  and it follows the ROW, not the mode: pass `!moneyEditable(txn)` from
+  `v2/sources/transactions.ts`. On a hand-typed row they are open — nothing will
+  ever reparse it, so `replay.ts` accepts them in a `txn_edited`. On a row from
+  the mailbox they are locked and the `role="status"` line says why: there they
+  are the parse's, a reprocess would move them back, and the fold answers with
+  `unsupported_edit_field`.
   Reach for it only on projection-backed screens; v1's `AddTransactionSheet`
   stays with the v1 REST screens.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,

@@ -11,7 +11,7 @@ import { setPlatform } from "@ledger/client/platform.registry";
 import { webPlatform } from "@ledger/client/platform.web";
 import { project } from "@ledger/client/replay/projection";
 import { fold, INGEST_WRITER_ID, type LogEntry } from "@ledger/client/replay/replay";
-import type { State } from "@ledger/client/replay/state";
+import type { State, Txn } from "@ledger/client/replay/state";
 import type { OpSpec } from "@ledger/client/outbox/outbox";
 import type { Op } from "@ledger/client/wire/op";
 import { validateOp } from "@ledger/client/wire/op";
@@ -27,6 +27,7 @@ import {
   manualTxnOps,
   manualTxnPayload,
   matchesFilters,
+  moneyEditable,
   newIngestID,
   sqlTxnSource,
   txnMarkers,
@@ -80,6 +81,13 @@ function foldSpecs(specs: readonly OpSpec[], writer: string = DEVICE): State {
     ...specs.map((s, i) => ({ op: opOf(s, i + 1), seq: BigInt(i + 2), writer_id: writer })),
   ];
   return fold(log);
+}
+
+/** The correction ops for one row, or a throw naming the refusal. */
+function editSpecs(txn: Txn, draft: ManualDraft): OpSpec[] {
+  const built = manualEditOps({ txn, draft, projectedVersion: txn.version, pending: [] });
+  if (!built.ok) throw new Error(`the correction was refused: ${built.reason}`);
+  return built.specs;
 }
 
 function manualSpecs(draft: ManualDraft = DRAFT): OpSpec[] {
@@ -192,12 +200,7 @@ describe("correcting a manual entry", () => {
     const before = [...foldSpecs(created).txns.values()][0]!;
     expect(before.needs_review).toBe(true);
 
-    const edits = manualEditOps({
-      txn: before,
-      draft: { ...draftOf(before), merchant: "CORNER CAFE", date: "2026-08-10", category: "eating out" },
-      projectedVersion: before.version,
-      pending: [],
-    });
+    const edits = editSpecs(before, { ...draftOf(before), merchant: "CORNER CAFE", date: "2026-08-10", category: "eating out" });
     const after = [...foldSpecs([...created, ...edits]).txns.values()][0]!;
 
     expect(after.merchant_raw).toBe("CORNER CAFE");
@@ -208,32 +211,100 @@ describe("correcting a manual entry", () => {
 
   it("appends nothing when nothing the op owns changed", () => {
     const before = [...foldSpecs(manualSpecs()).txns.values()][0]!;
-    expect(manualEditOps({ txn: before, draft: draftOf(before), projectedVersion: before.version, pending: [] })).toEqual([]);
+    expect(manualEditOps({ txn: before, draft: draftOf(before), projectedVersion: before.version, pending: [] }))
+      .toEqual({ ok: true, specs: [] });
   });
 
-  it("never names a money field, which replay would refuse as unsupported_edit_field", () => {
+  it("corrects the amount, the currency and the type, and the fold takes them", () => {
     const created = manualSpecs();
     const before = [...foldSpecs(created).txns.values()][0]!;
-    // A draft whose money has been changed in every way the sheet's locked
-    // fields would allow if they were not locked.
-    const edits = manualEditOps({
-      txn: before,
-      draft: { ...draftOf(before), amount: "999.99", currency: "USD", direction: "credit", merchant: "STILL EDITABLE" },
-      projectedVersion: before.version,
+    expect(before.amount_minor).toBe(1250n);
+
+    const edits = editSpecs(before, { ...draftOf(before), amount: "999.99", currency: "USD", direction: "credit" });
+    const state = foldSpecs([...created, ...edits]);
+    const after = [...state.txns.values()][0]!;
+
+    // No anomaly: the fold ACCEPTED the money, it did not merely tolerate the op.
+    expect(state.anomalies).toEqual([]);
+    expect(after.amount_minor).toBe(99999n);
+    expect(after.currency).toBe("USD");
+    expect(after.direction).toBe("credit");
+  });
+
+  it("corrects an amount above 2^53 minor units exactly", () => {
+    const created = manualSpecs();
+    const before = [...foldSpecs(created).txns.values()][0]!;
+    const big = 9007199254740993n;
+    expect(BigInt(Number(big))).not.toBe(big); // it really is past the float boundary
+
+    const edits = editSpecs(before, { ...draftOf(before), amount: "90071992547409.93" });
+    const after = [...foldSpecs([...created, ...edits]).txns.values()][0]!;
+    expect(after.amount_minor).toBe(big);
+  });
+
+  it("refuses an unreadable amount in words rather than authoring an op", () => {
+    const before = [...foldSpecs(manualSpecs()).txns.values()][0]!;
+    for (const [amount, reason] of [["", "How much was it?"], ["0", "A transaction moves money, so it has to be more than AED 0.00."]] as const) {
+      const built = manualEditOps({ txn: before, draft: { ...draftOf(before), amount }, projectedVersion: before.version, pending: [] });
+      expect(built).toEqual({ ok: false, reason });
+    }
+  });
+
+  it("names only what moved, so an unchanged amount does not reconvert the snapshot", () => {
+    const created = manualSpecs();
+    const before = [...foldSpecs(created).txns.values()][0]!;
+    const built = manualEditOps({ txn: before, draft: { ...draftOf(before), merchant: "CORNER CAFE" }, projectedVersion: before.version, pending: [] });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.specs[0]!.payload).toEqual({ merchant_raw: "CORNER CAFE" });
+  });
+
+  it("never names the money of a row the mailbox produced, and the fold would refuse it if it did", () => {
+    const created = manualSpecs();
+    // The same payload under the INGEST writer: a bank row, unforgeably.
+    const bankRow = [...foldSpecs(created, INGEST_WRITER_ID).txns.values()][0]!;
+    expect(bankRow.provenance).toBe("ingest");
+    expect(moneyEditable(bankRow)).toBe(false);
+
+    const built = manualEditOps({
+      txn: bankRow,
+      draft: { ...draftOf(bankRow), amount: "999.99", currency: "USD", direction: "credit", merchant: "STILL EDITABLE" },
+      projectedVersion: bankRow.version,
       pending: [],
     });
-    for (const spec of edits) {
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    for (const spec of built.specs) {
       for (const key of ["amount_minor", "currency", "direction", "unparsed", "tier", "parse_error"]) {
         expect(spec.payload).not.toHaveProperty(key);
       }
     }
-    const state = foldSpecs([...created, ...edits]);
-    expect(state.anomalies).toEqual([]);
-    const after = [...state.txns.values()][0]!;
-    expect(after.merchant_raw).toBe("STILL EDITABLE");
+
+    // And the other half of the rule: had it named them, replay would refuse.
+    const forced = foldSpecs([
+      ...created,
+      { type: "txn_edited", entity: { kind: "txn", id: bankRow.id }, parentVersion: 1, payload: { amount_minor: "99999", merchant_raw: "FIXED" } },
+    ], INGEST_WRITER_ID);
+    const after = [...forced.txns.values()][0]!;
     expect(after.amount_minor).toBe(1250n);
-    expect(after.currency).toBe("AED");
-    expect(after.direction).toBe("debit");
+    expect(after.merchant_raw).toBe("FIXED");
+    expect(forced.anomalies.map((a) => a.kind)).toContain("unsupported_edit_field");
+  });
+
+  it("cannot be bought with entry_method — the writer decides, and a device cannot be the ingest writer", () => {
+    const created = manualSpecs();
+    const bankRow = [...foldSpecs(created, INGEST_WRITER_ID).txns.values()][0]!;
+    const forced = foldSpecs([
+      ...created,
+      {
+        type: "txn_edited",
+        entity: { kind: "txn", id: bankRow.id },
+        parentVersion: 1,
+        payload: { amount_minor: "1", entry_method: "manual" },
+      },
+    ], INGEST_WRITER_ID);
+    expect([...forced.txns.values()][0]!.amount_minor).toBe(1250n);
+    expect(forced.anomalies.map((a) => a.kind)).toContain("unsupported_edit_field");
   });
 });
 

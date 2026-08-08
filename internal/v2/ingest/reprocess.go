@@ -681,9 +681,27 @@ func (p *Pipeline) appendSupersede(ctx context.Context, userID uuid.UUID,
 //
 // Only the two CREATE op types are decoded. The user's edits and
 // categorizations are skipped without being parsed: they cannot change any of
-// the eight compared fields (replay refuses an edit to amount, currency or
-// direction with unsupported_edit_field), and reading them would be the server
-// folding a user's private history for no answer it needs.
+// the eight compared fields on any row that reaches here, and reading them
+// would be the server folding a user's private history for no answer it needs.
+//
+// That claim used to be "replay refuses an edit to amount, currency or
+// direction" full stop. It no longer is: replay permits those three on a row
+// the ingest writer did not author, so that a hand-typed transaction's amount
+// can be corrected. Every ingest id in `want` came from a cold-stream raw body,
+// and [oplog.AppendClient] refuses the cold stream to every client (invariant
+// I16), so a hand-typed transaction has no cold blob, is never in `want`, and
+// is never reprocessed. On the rows that DO reach here the create op is the
+// ingest writer's, and the refusal is unchanged.
+//
+// The one exception is a row whose latest create is a device-authored
+// txn_superseded — which the loop below does read, and which the contract says
+// a device must not write (see the note on AppendClient's type_flag further
+// down). Such a row folds to provenance "user", so replay would now accept an
+// edit to its money, and this comparison would not see that edit. It is not a
+// new loss: the rescue op itself already restated the money, and a reprocess
+// that disagrees supersedes the row and takes the user's version with it either
+// way. It is the reason the exception is worth closing at the source, in the
+// client that writes it, rather than being absorbed here.
 //
 // # A blob this build cannot read is not the same as a broken one
 //

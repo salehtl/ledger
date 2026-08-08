@@ -7,7 +7,7 @@
  * looked at the DOM.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -16,6 +16,7 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 import type { Op } from "@ledger/client/wire/op";
 
 import { MotionProvider } from "../app/MotionProvider";
+import { ManualTxnSheet } from "../components/transactions/ManualTxnSheet";
 import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { sqlReviewSource } from "../v2/sources/review";
@@ -181,7 +182,7 @@ describe("adding a transaction by hand", () => {
 });
 
 describe("correcting a hand-typed transaction", () => {
-  it("opens the whole row, edits what txn_edited owns, and locks the money", async () => {
+  it("opens the whole row, with every field of a hand-typed entry open to correction", async () => {
     const writer = recorder();
     mount(await projectionWith(), writer);
     let user = await openAddSheet();
@@ -195,9 +196,10 @@ describe("correcting a hand-typed transaction", () => {
     await screen.findByRole("dialog");
     // The typo sheet, not the categorizer: a hand-typed row opens as a whole row.
     expect(screen.getByRole("heading", { name: "Edit transaction" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Amount")).toBeDisabled();
-    expect(screen.getByLabelText("Currency")).toBeDisabled();
-    expect(screen.getByLabelText("Type")).toBeDisabled();
+    // Nothing parsed this row, so nothing owns its money but the user.
+    expect(screen.getByLabelText("Amount")).toBeEnabled();
+    expect(screen.getByLabelText("Currency")).toBeEnabled();
+    expect(screen.getByLabelText("Type")).toBeEnabled();
 
     const merchant = screen.getByLabelText("Merchant");
     await user.clear(merchant);
@@ -210,6 +212,81 @@ describe("correcting a hand-typed transaction", () => {
     expect(edit.payload).toEqual({ merchant_raw: "CORNER COFFEE" });
     // The list shows the correction straight away, not after the next sync.
     expect(await screen.findByText("CORNER COFFEE")).toBeInTheDocument();
+  });
+
+  it("corrects a typo in the amount, which is the mistake hand entry actually makes", async () => {
+    const writer = recorder();
+    mount(await projectionWith(), writer);
+    let user = await openAddSheet();
+    // A slipped decimal point: 125.00 for a 12.50 coffee.
+    await user.type(screen.getByLabelText("Amount"), "125.00");
+    await user.type(screen.getByLabelText("Merchant"), "CORNER COFFEE");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByText("CORNER COFFEE");
+
+    user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open CORNER COFFEE" }));
+    await screen.findByRole("dialog");
+    const amount = screen.getByLabelText("Amount") as HTMLInputElement;
+    expect(amount.value).toBe("125.00");
+    await user.clear(amount);
+    await user.type(amount, "12.50");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writer.queued).toHaveLength(2));
+    const edit = writer.queued[1]!;
+    expect(edit.type).toBe("txn_edited");
+    // A decimal STRING, never a JSON number: a float64 would round an int64.
+    expect(edit.payload).toEqual({ amount_minor: "1250" });
+    // And the ROW says the new number before the next sync, not the old one.
+    // Scoped to the row on purpose: the fixture's CARREFOUR is 125.00, which a
+    // bare text query would have matched instead of the row under test.
+    const row = await screen.findByRole("button", { name: "Open CORNER COFFEE" });
+    expect(within(row).getByText(/12\.50/)).toBeInTheDocument();
+    expect(within(row).queryByText(/125\.00/)).toBeNull();
+  });
+
+  it("refuses an emptied amount on a correction, the same way it does on a creation", async () => {
+    const writer = recorder();
+    mount(await projectionWith(), writer);
+    let user = await openAddSheet();
+    await user.type(screen.getByLabelText("Amount"), "12.50");
+    await user.type(screen.getByLabelText("Merchant"), "CORNER COFFEE");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByText("CORNER COFFEE");
+
+    user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open CORNER COFFEE" }));
+    await screen.findByRole("dialog");
+    const amount = screen.getByLabelText("Amount") as HTMLInputElement;
+    await user.clear(amount);
+    expect(amount.value).toBe("");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("How much was it?");
+    expect(writer.queued).toHaveLength(1);
+  });
+
+  it("locks the money on a row from the mailbox, and says why", () => {
+    render(
+      <MotionProvider>
+        <ManualTxnSheet
+          mode="edit"
+          moneyLocked
+          initial={{ amount: "250.00", currency: "AED", direction: "debit", merchant: "CARREFOUR", date: "2026-08-09", category: null }}
+          categories={["groceries"]}
+          currencies={["AED"]}
+          onClose={() => {}}
+          onSave={() => {}}
+        />
+      </MotionProvider>,
+    );
+    expect(screen.getByLabelText("Amount")).toBeDisabled();
+    expect(screen.getByLabelText("Currency")).toBeDisabled();
+    expect(screen.getByLabelText("Type")).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("This came from your inbox, so the amount, currency and type can't be changed.");
+    // The rest of the row is still correctable.
+    expect(screen.getByLabelText("Merchant")).toBeEnabled();
   });
 
   it("appends nothing when the sheet is saved unchanged", async () => {

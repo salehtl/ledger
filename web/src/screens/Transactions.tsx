@@ -39,6 +39,7 @@ import {
   EMPTY_FILTERS,
   filtersActive,
   manualEditOps,
+  moneyEditable,
   manualTxnOps,
   matchesFilters,
   newIngestID,
@@ -344,7 +345,9 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
         // never `txn.version`, which is the object the list rendered and can be
         // minutes old. An op naming a stale parent forks against yourself.
         const head = reviewSource === null ? null : await reviewSource.version(txn.id);
-        specs = manualEditOps({ txn, draft, projectedVersion: head ?? txn.version, pending: writer.pending });
+        const built = manualEditOps({ txn, draft, projectedVersion: head ?? txn.version, pending: writer.pending });
+        if (!built.ok) { setManualError(built.reason); return; }
+        specs = built.specs;
         // Nothing the op owns changed. Closing without appending is the honest
         // answer; an op that consumes a version and asserts nothing is a fork
         // risk against the user's own second device.
@@ -543,6 +546,10 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
       {manual !== null && (
         <ManualTxnSheet
           mode={manual.mode}
+          // The row decides, not the mode: money is correctable on a row this
+          // account authored and frozen on one the mailbox produced, and
+          // `provenance` is derived from the create op's writer.
+          moneyLocked={manual.txn !== null && !moneyEditable(manual.txn)}
           initial={manual.txn === null ? emptyDraft(homeCurrency ?? "AED") : draftOf(manual.txn)}
           categories={categoryNames}
           currencies={currencyChoices}

@@ -45,7 +45,7 @@
 
 import type { OpSpec } from "@ledger/client/outbox/outbox";
 import type { Rule, Txn } from "@ledger/client/replay/state";
-import type { Op } from "@ledger/client/wire/op";
+import { parseDecimal, type Op } from "@ledger/client/wire/op";
 
 import type { PendingAnswer } from "./sources/review";
 import { optimisticTxn } from "./sources/transactions";
@@ -129,10 +129,21 @@ export function recordAuthored(store: Authored, txnID: string, specs: readonly O
  *
  * Only the keys `applyTxnEdit` in `replay.ts` actually assigns, and only when
  * present: a key absent from the payload means "unchanged", not "clear".
+ *
+ * The money is applied here without checking provenance, because every row in
+ * `created` came from {@link optimisticTxn}, which returns a row this device
+ * authored and therefore `provenance: "user"` — the case `replay.ts` permits.
+ * `amount_home_minor` stays whatever it was: the snapshot is frozen at the op's
+ * log position, and that has not happened yet.
  */
 function editedCopy(t: Txn, payload: unknown): Txn {
   const p = payload as Record<string, unknown>;
   const next: Txn = { ...t, version: t.version + 1 };
+  // A decimal STRING on the wire, for the same reason it is one on a create: a
+  // JSON number is a float64 and would round an int64 amount.
+  if (typeof p["amount_minor"] === "string") next.amount_minor = parseDecimal(p["amount_minor"]);
+  if (typeof p["currency"] === "string") next.currency = p["currency"];
+  if (p["direction"] === "debit" || p["direction"] === "credit") next.direction = p["direction"];
   if (typeof p["merchant_raw"] === "string") next.merchant_raw = p["merchant_raw"];
   if (typeof p["last4"] === "string") next.last4 = p["last4"];
   if (typeof p["posted_at"] === "string") next.posted_at = p["posted_at"];

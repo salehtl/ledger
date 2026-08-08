@@ -704,25 +704,48 @@ export function manualTxnOps(args: ManualTxnArgs): ManualTxnResult {
   };
 }
 
+/** A correction's ops, or the reason it was refused — same shape as a creation. */
+export type ManualEditResult = { ok: true; specs: OpSpec[] } | { ok: false; reason: string };
+
+/**
+ * Whether this row's amount, currency and type can be corrected by an edit.
+ *
+ * True for a row this account authored, false for one the mailbox produced.
+ * `provenance` is derived in `replay.ts` from `writer_id === INGEST_WRITER_ID`,
+ * and `oplog.AppendClient` refuses the ingest writer id to every device — so
+ * this is a question a device cannot answer in its own favour.
+ *
+ * A split row is excluded because the parts must sum to the parent (invariant
+ * I8, a HARD stop), and the fold refuses an amount edit that would break it.
+ * The screen and the fold have to agree, or the sheet offers a field whose op
+ * is discarded.
+ */
+export function moneyEditable(txn: Txn): boolean {
+  return txn.provenance === "user" && !txn.unparsed && txn.splits.length === 0;
+}
+
 /**
  * Fields a correction may change, and the ones it may not.
  *
  * `txn_edited` owns `merchant_raw`, `last4`, `posted_at`, `category`,
- * `needs_review`, `amount_home_minor` and `possible_duplicate_of`. The money
- * itself — `amount_minor`, `currency`, `direction` — is `PARSE_OWNED` in
- * `replay.ts`, and an edit naming any of it raises an `unsupported_edit_field`
- * anomaly and changes nothing.
+ * `needs_review`, `amount_home_minor` and `possible_duplicate_of` on every row.
+ * The money — `amount_minor`, `currency`, `direction` — it owns only on a row
+ * the ingest writer did not author (`MONEY_OWNED` in `replay.ts`): on a bank
+ * row the fold answers an edit naming them with an `unsupported_edit_field`
+ * anomaly and changes nothing, so this never names them there.
  *
- * The op that CAN restate an amount is `txn_superseded`, and this does not
- * author one: `ingest/reprocess.go` records that "a device that authored its own
- * `txn_superseded` would be outside the contract". So the sheet locks the three
- * money fields on a correction and says so, rather than offering an edit the
- * fold would refuse in silence. That gap is real and is written down in the task
- * report.
+ * {@link moneyEditable} is the test, and what it reads is not this file's to
+ * decide: `provenance` is derived in `replay.ts` from the WRITER of the create
+ * op, and no device can be the ingest writer. `entry_method` is a payload key
+ * this same file writes, so it can be claimed and is never the test.
  *
- * Returns `[]` when nothing the op owns actually changed — an op that consumes a
- * version and asserts nothing is still a fork risk against the user's own second
- * device.
+ * The amount goes through the same checker a creation uses, so a correction
+ * refuses exactly what a creation refuses — empty, negative, zero, over-precise
+ * — in the same words, rather than authoring an op the fold has to answer.
+ *
+ * Returns no specs when nothing the op owns actually changed — an op that
+ * consumes a version and asserts nothing is still a fork risk against the
+ * user's own second device.
  */
 export function manualEditOps(args: {
   txn: Txn;
@@ -731,9 +754,20 @@ export function manualEditOps(args: {
   projectedVersion: number;
   /** Ops already queued on this device, for {@link nextParentVersion}. */
   pending: readonly Op[];
-}): OpSpec[] {
+}): ManualEditResult {
   const { txn, draft } = args;
   const payload: Record<string, unknown> = {};
+  if (moneyEditable(txn)) {
+    const currency = draft.currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, reason: "Pick a currency." };
+    const amount = checkAmount(draft.amount, currency);
+    if (!amount.ok) return { ok: false, reason: amount.reason };
+    // Only what actually moved. An edit that restated the same amount would
+    // reconvert the FX snapshot against today's rate for no reason.
+    if (amount.minor !== txn.amount_minor) payload["amount_minor"] = amount.minor.toString(10);
+    if (currency !== txn.currency) payload["currency"] = currency;
+    if (draft.direction !== txn.direction) payload["direction"] = draft.direction;
+  }
   const merchant = draft.merchant.trim();
   if (merchant !== "" && merchant !== txn.merchant_raw) payload["merchant_raw"] = merchant;
   if (/^\d{4}-\d{2}-\d{2}$/.test(draft.date) && draft.date !== txn.posted_at.slice(0, 10)) {
@@ -746,15 +780,18 @@ export function manualEditOps(args: {
     // back to null does not un-answer it, so the flag is left alone there.
     if (category !== null && txn.needs_review) payload["needs_review"] = false;
   }
-  if (Object.keys(payload).length === 0) return [];
-  return [
-    {
-      type: "txn_edited",
-      entity: { kind: "txn", id: txn.id },
-      parentVersion: nextParentVersion(txn.id, args.projectedVersion, args.pending),
-      payload,
-    },
-  ];
+  if (Object.keys(payload).length === 0) return { ok: true, specs: [] };
+  return {
+    ok: true,
+    specs: [
+      {
+        type: "txn_edited",
+        entity: { kind: "txn", id: txn.id },
+        parentVersion: nextParentVersion(txn.id, args.projectedVersion, args.pending),
+        payload,
+      },
+    ],
+  };
 }
 
 /**

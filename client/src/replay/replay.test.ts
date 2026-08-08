@@ -1184,6 +1184,114 @@ test("an edit may not rewrite the parsed amount or currency — that is what sup
   expect(kinds(s)).toContain("unsupported_edit_field");
 });
 
+// ---------------------------------------------------------------------------
+// Money on a row nobody parsed
+//
+// The relaxation and, more importantly, its edge. `ingested(..., "dev-a")` is a
+// hand-typed row: the writer is not `ingest`, so `provenance` folds to `"user"`
+// and no cold body exists for it to ever be reprocessed from. `ingested(...)`
+// with its default writer is the mail pipeline's, and its money stays frozen.
+// ---------------------------------------------------------------------------
+
+test("an edit may restate the money of a row the ingest writer did not author", () => {
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "25000", currency: "AED" }, "dev-a")),
+    at(2n, edited("t1", 1, { amount_minor: "9900", currency: "USD", direction: "credit" })),
+  ]);
+  const t = s.txns.get("t1")!;
+  expect(t.amount_minor).toBe(9900n);
+  expect(t.currency).toBe("USD");
+  expect(t.direction).toBe("credit");
+  expect(kinds(s)).not.toContain("unsupported_edit_field");
+});
+
+test("a corrected amount round-trips exactly above 2^53 minor units", () => {
+  // Written as a string, because a literal of this value is rounded by the
+  // PARSER before any code runs. The assertion is the round trip, not a compare
+  // against a number: `Number(9007199254740993n) !== 9007199254740993` is false.
+  const big = "9007199254740993";
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "1" }, "dev-a")),
+    at(2n, edited("t1", 1, { amount_minor: big })),
+  ]);
+  const got = s.txns.get("t1")!.amount_minor;
+  expect(got).toBe(BigInt(big));
+  expect(BigInt(Number(got)) === got).toBe(false); // it really is past 2^53
+});
+
+test("an edit still may not rewrite the money of a row the ingest pipeline parsed", () => {
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "25000", currency: "AED" })),
+    at(2n, edited("t1", 1, { amount_minor: "9900", currency: "USD", merchant_raw: "FIXED" })),
+  ]);
+  expect(s.txns.get("t1")!.amount_minor).toBe(25000n);
+  expect(s.txns.get("t1")!.currency).toBe("AED");
+  expect(s.txns.get("t1")!.merchant_raw).toBe("FIXED"); // the rest of the edit still lands
+  expect(kinds(s)).toContain("unsupported_edit_field");
+});
+
+test("entry_method cannot buy the relaxation — the writer decides, and a client cannot be the ingest writer", () => {
+  // The payload claims to be hand-typed on a row the ingest writer created. The
+  // fold reads the WRITER, never the payload, so the money stays frozen.
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "25000" })),
+    at(2n, edited("t1", 1, { amount_minor: "1", entry_method: "manual" })),
+  ]);
+  expect(s.txns.get("t1")!.amount_minor).toBe(25000n);
+  expect(kinds(s)).toContain("unsupported_edit_field");
+});
+
+test("a corrected amount is reconverted at the edit's own position", () => {
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, rateSet("USD", "3672000")),
+    at(3n, ingested("i1", "t1", { amount_minor: "10000", currency: "USD" }, "dev-a")),
+    at(4n, edited("t1", 1, { amount_minor: "20000" })),
+  ]);
+  // 20000 × 3.672, not the 36720 the create froze.
+  expect(s.txns.get("t1")!.amount_home_minor).toBe(73440n);
+});
+
+test("a corrected currency moves the row's pending bucket with it", () => {
+  const s = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, ingested("i1", "t1", { amount_minor: "10000", currency: "USD" }, "dev-a")),
+    at(3n, edited("t1", 1, { currency: "GBP" })),
+  ]);
+  expect(s.pendingByCurrency.get("USD")).toBeUndefined();
+  expect([...(s.pendingByCurrency.get("GBP") ?? [])]).toEqual(["t1"]);
+  // And the bucket it now sits in is the one a later rate drains.
+  const after = fold([
+    at(1n, homeCurrency("AED")),
+    at(2n, ingested("i1", "t1", { amount_minor: "10000", currency: "USD" }, "dev-a")),
+    at(3n, edited("t1", 1, { currency: "GBP" })),
+    at(4n, rateSet("GBP", "4600000")),
+  ]);
+  expect(after.txns.get("t1")!.amount_home_minor).toBe(46000n);
+});
+
+test("an amount cannot be restated out from under a split", () => {
+  const s = fold([
+    at(1n, ingested("i1", "t1", { amount_minor: "10000" }, "dev-a")),
+    at(2n, split("t1", 1, [["dining", "6000"], ["groceries", "4000"]])),
+    at(3n, edited("t1", 2, { amount_minor: "50000", merchant_raw: "FIXED" })),
+  ]);
+  expect(s.txns.get("t1")!.amount_minor).toBe(10000n);
+  expect(s.txns.get("t1")!.merchant_raw).toBe("FIXED");
+  expect(kinds(s)).toContain("unsupported_edit_field");
+});
+
+test("an edit may not give an unparsed row an amount, whoever authored it", () => {
+  const s = fold([
+    at(1n, unparsedIngest("i1", "t1", {}, "dev-a")),
+    at(2n, edited("t1", 1, { amount_minor: "9900", currency: "AED", direction: "debit" })),
+  ]);
+  const t = s.txns.get("t1")!;
+  expect(t.amount_minor).toBe(0n);
+  expect(t.currency).toBe("");
+  expect(kinds(s)).toContain("unsupported_edit_field");
+});
+
 test("an edit to a superseded row is applied but surfaced — a lost categorization is never silent", () => {
   const s = fold([
     at(1n, ingested("i1", "t1")),
