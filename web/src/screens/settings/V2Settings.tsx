@@ -286,6 +286,25 @@ export function V2Settings({
    * existing), and an empty field is `null` — which is not a plan and cannot be
    * saved. `seededSplit` guards the seeding so a sync landing mid-edit cannot
    * overwrite what the user is typing.
+   *
+   * # It seeds from a USABLE snapshot only, and that is a data-loss fix
+   *
+   * `sqlBudgetSource` answers an unusable projection with a PLACEHOLDER —
+   * `{usable: false, split: DEFAULT_BUDGET_SPLIT, monthlyTotal: null}` — and a
+   * placeholder is not `undefined`, so `heldSplit !== undefined` was true of it
+   * and the latch closed over 50/30/20 and an empty total. The log's 60/20/20
+   * and AED 12,000 then never arrived, the fields sat on values nobody chose,
+   * and "Save plan" authored them over the user's real plan.
+   *
+   * That is not a rare state. A projection is unusable for the whole of a
+   * rebuild (`project` clears `complete` before the first row), and every
+   * existing device rebuilds once on a `PROJECTION_VERSION` bump — of which
+   * this commit is one. Opening Settings during that window is the ordinary
+   * case, not the unlucky one.
+   *
+   * So: `usable === true` or nothing is seeded, and the save control stays
+   * disabled until something has been. An unsaveable plan for a second is a
+   * delay; a saved wrong one is the user's budget gone.
    */
   const [splitDraft, setSplitDraft] = useState<BudgetSplitDraft>(DEFAULT_BUDGET_SPLIT);
   // The monthly total's TEXT, seeded from the projection alongside the
@@ -296,20 +315,22 @@ export function V2Settings({
   const [seededSplit, setSeededSplit] = useState(false);
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
-  const heldSplit = budget.data?.split;
-  const heldTotal = budget.data?.monthlyTotal;
+  const heldPlan = budget.data?.usable === true ? budget.data : undefined;
   useEffect(() => {
-    if (seededSplit || heldSplit === undefined) return;
-    setSplitDraft(heldSplit);
-    setTotalText(minorToDraft(heldTotal ?? null));
+    if (seededSplit || heldPlan === undefined) return;
+    setSplitDraft(heldPlan.split);
+    setTotalText(minorToDraft(heldPlan.monthlyTotal));
     setSeededSplit(true);
-  }, [seededSplit, heldSplit, heldTotal]);
+  }, [seededSplit, heldPlan]);
   const savedSplit = completeSplit(splitDraft);
   const savedTotal = parseMinorDraft(totalText);
   const currency = budget.data?.homeCurrency ?? null;
 
   const saveSplit = useCallback(async (): Promise<void> => {
-    if (savedSplit === null || savedTotal.state === "refused" || writer === null) return;
+    // `seededSplit` is a GUARD here, not bookkeeping: until the projection has
+    // been read, these fields hold defaults nobody chose, and writing them would
+    // replace the plan in the log with them.
+    if (!seededSplit || savedSplit === null || savedTotal.state === "refused" || writer === null) return;
     // An empty field is "no total", which is a plan a user can hold and the way
     // a total is REMOVED — `budget_split_set` carries the whole plan, so an op
     // with no total states that there is none.
@@ -334,7 +355,7 @@ export function V2Settings({
     } finally {
       setSplitSaving(false);
     }
-  }, [savedSplit, savedTotal, currency, writer, qc]);
+  }, [seededSplit, savedSplit, savedTotal, currency, writer, qc]);
 
   /**
    * The banks, in two halves that must not be confused: what ledger can READ
@@ -561,7 +582,7 @@ export function V2Settings({
           <MonthlyTotalField value={totalText} onChange={setTotalText} currency={currency} idPrefix="settings-total" />
           <Button
             variant="primary"
-            disabled={savedSplit === null || savedTotal.state === "refused" || splitSaving}
+            disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}
             onClick={() => void saveSplit()}
           >
             {splitSaving ? "Saving…" : "Save plan"}

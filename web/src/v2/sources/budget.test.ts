@@ -345,12 +345,17 @@ describe("budgetSplitOps", () => {
     // second place for the floor to be wrong.
     //
     // With no total, the payload is byte-identical to the one this function
-    // authored before the field existed — the key is ABSENT, not null. That is
-    // the whole backwards-compatibility claim, checked with an exact `toEqual`
-    // so an added `monthly_total_minor: null` fails here.
-    expect(budgetSplitOps({ need: 60, want: 20, saving: 20 }, null)).toEqual([
-      { type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } },
-    ]);
+    // authored before the field existed — the key is ABSENT, not null and not
+    // undefined. That is the whole backwards-compatibility claim, and `toEqual`
+    // is too weak to check it: it IGNORES keys whose value is `undefined`, so it
+    // would pass on `monthly_total_minor: undefined` — which is a different set
+    // of keys and, more to the point, a different question than the one this
+    // test's name asks. `toStrictEqual` compares the key sets, and the
+    // stringify is the byte claim itself.
+    const ops = budgetSplitOps({ need: 60, want: 20, saving: 20 }, null);
+    expect(ops).toStrictEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
+    expect(Object.keys(ops[0]!.payload as object)).toStrictEqual(["need", "want", "saving"]);
+    expect(JSON.stringify(ops[0]!.payload)).toBe('{"need":60,"want":20,"saving":20}');
   });
 
   it("carries a total as minor units in a decimal STRING, never a JSON number", () => {

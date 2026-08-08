@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 
-import { V2_QUERY_ROOT, invalidateAfterSync, serializeFilters, v2Keys } from "./queries";
+import { NULL_CATEGORY_KEY, V2_QUERY_ROOT, invalidateAfterSync, serializeDrillTarget, serializeFilters, v2Keys } from "./queries";
 import { EMPTY_FILTERS } from "./sources/transactions";
+
+describe("the null-category sentinel", () => {
+  it("is a NUL written as an escape, and stays one", () => {
+    // The VALUE is a NUL; the SOURCE must not contain one. A literal NUL byte
+    // makes git call the file binary and print no diff, and makes grep and rg
+    // skip it silently — this file hid a screen's whole data path from a code
+    // review that way. The code-point assertion is what stops the escape being
+    // "tidied" into something else; the source-shape assertion is what stops it
+    // being pasted back as a literal.
+    expect(NULL_CATEGORY_KEY).toBe("\x00null");
+    expect(NULL_CATEGORY_KEY.codePointAt(0)).toBe(0);
+    expect(NULL_CATEGORY_KEY.slice(1)).toBe("null");
+  });
+
+  it("keeps a null category distinguishable from the string 'null' and from empty", () => {
+    expect(serializeDrillTarget({ type: "category", category: null, name: "Uncategorized" })).toBe(`category:${NULL_CATEGORY_KEY}`);
+    expect(serializeDrillTarget({ type: "category", category: "null", name: "null" })).toBe("category:null");
+    expect(serializeDrillTarget({ type: "category", category: "", name: "" })).toBe("category:");
+  });
+});
 
 describe("v2Keys", () => {
   it("prefixes every key with the v2 root, so one invalidation reaches all of them", () => {

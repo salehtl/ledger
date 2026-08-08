@@ -65,7 +65,10 @@ describe("BudgetSplitStep", () => {
     await userEvent.click(screen.getByRole("button", { name: /save plan/i }));
     // No `monthly_total_minor` key at all: an account that skips the question
     // authors byte-identical bytes to the build that predates the field.
-    expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
+    // `toStrictEqual` because `toEqual` ignores keys whose value is `undefined`,
+    // and "the key is absent" is exactly the claim.
+    expect(specs).toStrictEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
+    expect(JSON.stringify(specs[0]!.payload)).toBe('{"need":50,"want":30,"saving":20}');
   });
 
   it("authors a typed total as minor units in a string, and says so back", async () => {

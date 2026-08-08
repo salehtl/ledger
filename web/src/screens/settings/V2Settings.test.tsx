@@ -284,6 +284,51 @@ describe("V2Settings", () => {
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
   });
 
+  /**
+   * The one that can destroy data.
+   *
+   * `sqlBudgetSource` returns a PLACEHOLDER snapshot while the projection is
+   * unusable — `{split: DEFAULT_BUDGET_SPLIT, monthlyTotal: null}` — and that
+   * placeholder is not `undefined`, so a presence check passes on it. Seeding
+   * from it and latching means the fields sit on 50/30/20 and empty while the
+   * log holds 60/20/20 and AED 12,000; pressing "Save plan" then authors the
+   * user's plan away.
+   *
+   * `PROJECTION_VERSION` 6→7 makes this the LIKELY state, not a rare one: every
+   * existing device rebuilds its projection on first open of this build, and
+   * `project` writes `complete = 0` for the whole run.
+   */
+  it("never seeds the plan from an unusable projection, and picks up the real one when it lands", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,60,20,20,'1200000')").run();
+    // Mid-rebuild: the rows are there, the projection is not readable yet.
+    db.prepare("UPDATE projection_meta SET complete = 0 WHERE id = 1").run();
+    wrap({ writer });
+
+    // While it is unusable the plan must not be presented as an answer at all:
+    // showing 50/30/20 over a stored 60/20/20 is a wrong number, and the save
+    // button beside it would write it.
+    const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
+    expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
+
+    // The rebuild finishes and the queries are invalidated.
+    db.prepare("UPDATE projection_meta SET complete = 1 WHERE id = 1").run();
+    await user.click(screen.getByRole("button", { name: /sync now/i }));
+
+    await waitFor(() => {
+      expect(needs.value).toBe("60");
+    });
+    expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12000.00");
+
+    // And the save that follows carries the user's plan, not the default.
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(specs).toEqual([
+      { type: "budget_split_set", payload: { need: 60, want: 20, saving: 20, monthly_total_minor: "1200000" } },
+    ]);
+  });
+
   it("edits the bank list with the same control the bank step uses, one op per change", async () => {
     const user = userEvent.setup();
     const specs: unknown[] = [];

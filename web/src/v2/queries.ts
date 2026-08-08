@@ -308,13 +308,27 @@ export function useInsightsSnapshot(
 }
 
 /**
+ * The sentinel standing in for the `null` category in a query key.
+ *
+ * Written as `\x00`, NOT as a literal NUL byte. It was a literal one from
+ * f5989c1 until now, and the consequence is not cosmetic: git classifies a file
+ * containing a NUL as binary and prints no diff for it, and `grep`/`rg` skip it
+ * silently. That has cost this branch four times — `replay/snapshot.ts` hid a
+ * whole module from two audits, and THIS file hid a screen's entire data path
+ * from a code review and then cost a Phase 3 reviewer time again. The string
+ * value is identical; only the file stays reviewable. `queries.test.ts` pins the
+ * code point so the escape cannot be "tidied" back into something else.
+ */
+export const NULL_CATEGORY_KEY = "\x00null";
+
+/**
  * A stable key for a drill target. `null` is a real category ("uncategorized")
  * and has to be distinguishable from the empty string, hence the sentinel.
  */
-function serializeDrillTarget(t: DrillTarget): string {
+export function serializeDrillTarget(t: DrillTarget): string {
   if (t.type === "merchant") return `merchant:${t.merchant}`;
   if (t.type === "bucket") return `bucket:${t.bucket}`;
-  return `category:${t.category === null ? " null" : t.category}`;
+  return `category:${t.category === null ? NULL_CATEGORY_KEY : t.category}`;
 }
 
 /** The transactions behind one breakdown row. See `sources/insights.ts`'s `DrillPage`. */

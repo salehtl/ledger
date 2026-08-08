@@ -183,6 +183,22 @@ export function bucketOfCategory(
  * `usable` mirrors {@link projectionIsUsable} exactly. When `false`, every
  * other field is a safe zero/empty placeholder, never a real (and therefore
  * misleading) partial total.
+ *
+ * # A placeholder is not an answer, and it does not look like an absence
+ *
+ * "Safe" means safe **to render**. It is not safe to LATCH, to seed an editable
+ * field from, or to treat as the user's data — and nothing in the shape stops
+ * you, because a placeholder is not `undefined`, so every presence check passes
+ * on it. `V2Settings` seeded its plan from one and locked: the fields showed
+ * 50/30/20 with an empty total over a log holding 60/20/20 and AED 12,000, and
+ * the save beside them would have written the placeholder into the log.
+ *
+ * That is the third instance of this shape on this branch (Home's hero rendered
+ * a placeholder zero as fact; a required prop was satisfied with `[]`). **Read
+ * `usable` before you use any other field for anything but painting pixels.**
+ * The type cannot enforce it — `split` has to stay non-null for the screens that
+ * render labels while warming — so the rule is written here and gated at each
+ * consumer that can write.
  */
 export interface BudgetSnapshot {
   usable: boolean;
