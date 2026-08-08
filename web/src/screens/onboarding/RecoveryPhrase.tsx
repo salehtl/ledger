@@ -166,10 +166,16 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
             </li>
           ))}
         </ol>
-        <Notice title="What this protects">
-          <p>{RECOVERY_PHRASE_COPY.whatItProtects}</p>
-          <p>{RECOVERY_PHRASE_COPY.whatItDoesNot}</p>
-        </Notice>
+        {/*
+          "What this protects" is NOT here, deliberately. This step's whole job
+          is copying twelve words down, and it opened with an intro, a
+          two-paragraph explanation of what encryption covers and a
+          three-paragraph danger notice — six paragraphs above the fold, between
+          the user and the one thing to do. The pair moved to the confirmation
+          step, still adjacent and still both on screen in this flow; the danger
+          notice stayed, because THIS is where the user decides where to keep
+          the words and `alsoWrites` is what changes that decision.
+        */}
         <Notice tone="danger" title="If you lose these words">
           <p>{RECOVERY_PHRASE_COPY.noWayBack}</p>
           {/* Directly above the advice about where to keep them, because that
@@ -270,6 +276,17 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
           {RECOVERY_PHRASE_COPY.confirmWrong}
         </p>
       )}
+      {/*
+        The encryption pair, moved off the "write these down" step — see the
+        comment there. The two halves stay ADJACENT and in this order: the claim
+        that is true, and immediately the window it does not close. Splitting
+        them is how "encrypted at rest" turns into "we can't see it" in a
+        reader's head.
+      */}
+      <Notice title="What this protects">
+        <p>{RECOVERY_PHRASE_COPY.whatItProtects}</p>
+        <p>{RECOVERY_PHRASE_COPY.whatItDoesNot}</p>
+      </Notice>
     </Step>
   );
 }

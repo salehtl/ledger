@@ -721,8 +721,8 @@ export const WAITING_FOR_FIRST_MAIL = {
   title: "Waiting for your first bank email",
   body:
     "There is no code to enter. This step finishes on its own when your bank's first transaction email arrives, " +
-    "so leave this open or come back later. Mail ledger cannot prove came from a bank is held rather than " +
-    "filed, and listed below.",
+    "so leave this open or come back later. Mail ledger cannot prove came from a bank is held, not filed. " +
+    "Anything held is listed below.",
 } as const;
 
 /**

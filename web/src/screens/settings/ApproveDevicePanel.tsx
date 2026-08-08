@@ -79,8 +79,8 @@ function refusalCopy(error: unknown): string {
     case "rejected":
       return (
         "That device was not added, and the server does not say why. Most likely it is already added, or this " +
-        "device's key is no longer accepted for changes. Check the other device first; if it still cannot make " +
-        "changes, set this device up on the account again."
+        "device's key is no longer accepted for changes. Check the other device first. If it still cannot make " +
+        "changes, this device has to be set up on the account again before it can approve one."
       );
     case "revoked":
       // A 403 for a signing key the server no longer accepts: the fault is on

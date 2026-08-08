@@ -600,10 +600,18 @@ export function Verification({
 
       {items.length === 0 ? (
         <Notice testId="verification-no-bank-mail">
+          {/*
+            The `readingCode` arm carries what its opening (`QUARANTINE_HELD`)
+            does not: that the step ends by itself. The other arm's opening is
+            `WAITING_FOR_FIRST_MAIL`, which already says that, says the mail
+            ledger cannot prove came from a bank is held, and says held mail is
+            listed here — so it said all of it twice, a screen apart from
+            itself.
+          */}
           <p>
             {readingCode
               ? "Nothing yet. A confirmation code, if your provider sends one, appears here — and so does your first bank email. This step finishes on its own, so leave the app open or come back later."
-              : "Nothing yet. This step finishes on its own when your first bank email arrives, so leave the app open or come back later. Anything ledger cannot prove came from a bank appears here rather than being filed."}
+              : "Nothing has arrived yet."}
           </p>
         </Notice>
       ) : (

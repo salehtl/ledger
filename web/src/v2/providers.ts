@@ -114,6 +114,13 @@ export const PROVIDERS: readonly Provider[] = [
       "Open Yahoo Mail's Settings, then More Settings, then Mailboxes, and select your account.",
       "Under Forwarding, add the address above.",
       "Yahoo emails a confirmation to that address. The next screen lists that message.",
+      // Every other provider's steps say this in one form or another, and the
+      // forwarding screen's closing notice used to say it once for all of them.
+      // The notice is gone (it repeated the steps under the steps), so the one
+      // list that lacked the line carries it now. Conditional, because Yahoo's
+      // own forwarding setting is mailbox-wide and this file does not claim to
+      // know what any provider can filter on — see the header.
+      "If Yahoo can forward only the mail matching a rule, match your bank's sender address — forward the bank, not the whole mailbox.",
     ],
   },
   {

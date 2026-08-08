@@ -255,10 +255,10 @@ export function Welcome({
         intro="Your passkey is fine and the server accepted it. The data left here by a different ledger account is in the way."
       >
         <Notice tone="danger" announce title="Two accounts cannot share one browser profile" testId="account-mismatch">
-          <p>
-            ledger keeps each account&rsquo;s records in this browser&rsquo;s own storage and will not mix two of
-            them together, so it refused rather than letting you in.
-          </p>
+          {/* The notice's first paragraph said ledger "keeps each account's
+              records in this browser's own storage and will not mix two of them
+              together" — the title again, in a longer sentence. The title is
+              the claim; this is now only what to do about it. */}
           {/*
             The narrow truth, and only the narrow truth. This used to say the
             other account's records were "untouched on the server" full stop,

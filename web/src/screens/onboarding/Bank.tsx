@@ -163,9 +163,12 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
       >
         <Notice testId="waitlist-confirmation">
           <p>
+            {/* "That count is the whole of how the next parser gets chosen" was
+                here, and it is our roadmap rather than the user's business. What
+                the request does and what it does not record are the two things
+                they are owed. */}
             A request adds one number to a count of how many people bank with <strong>{waitlisted.bank}</strong>.
-            It records nothing about you — not your name, not your address, not that it was you who asked. That
-            count is the whole of how the next parser gets chosen.
+            It records nothing about you — not your name, not your address, not that it was you who asked.
           </p>
           <p>
             You can carry on setting up now. Mail from a bank ledger cannot read yet is not lost: it is held, and

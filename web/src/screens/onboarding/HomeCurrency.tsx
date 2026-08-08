@@ -182,10 +182,13 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
         appears after the choice is a receipt.
       */}
       <Notice tone="danger" title="Pick carefully — this one is permanent" testId="home-currency-permanence">
+        {/* The mechanism — "ledger converts each foreign purchase once, when it
+            arrives, and keeps that figure" — is `confirmCopy.meaning`, one tap
+            later, where the currency being weighed has a name. Here the user is
+            still choosing, and what they need is the consequence. */}
         <p>
-          ledger converts each foreign purchase once, when it arrives, and keeps that figure. Because of that there
-          is no way to change your home currency afterwards; the only way out is to delete your account and start
-          again.
+          There is no way to change your home currency afterwards. The only way out is to delete your account and
+          start again.
         </p>
       </Notice>
 

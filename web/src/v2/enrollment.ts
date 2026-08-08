@@ -87,8 +87,8 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
         title: "This device can no longer prove who it is",
         body:
           "You're signed in and this account knows this device, but the key that signed for it is gone from this " +
-          "browser. Nothing on the server was lost. This device cannot make changes until a device that still " +
-          "has its key adds it back, which this beta cannot do yet.",
+          "browser. Clearing site data does not carry it. Nothing on the server was lost. This device cannot " +
+          "make changes until a device that still has its key adds it back, which this beta cannot do yet.",
         retry: false,
       };
   }

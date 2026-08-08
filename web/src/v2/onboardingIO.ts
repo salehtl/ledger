@@ -271,8 +271,8 @@ export const CONFIRM_CONFLICT_COPY: Record<string, string> = {
     "That is your mail provider, not your bank. Trusting it would trust everything that passes through your " +
     "mailbox. Confirm the bank's own verified domain instead.",
   origin_unproven:
-    "Nothing held here carries a verified signature from that domain, so there is nothing to trust yet. Mail " +
-    "that cannot be verified stays held.",
+    "Nothing held for your account carries a verified signature from that domain, so there is nothing to trust " +
+    "yet. Mail that cannot be verified stays held.",
   rate_limited:
     "ledger is filing mail as fast as the server allows. Wait about a minute, then confirm again. Nothing was " +
     "lost and the held mail is still there.",

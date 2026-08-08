@@ -224,8 +224,8 @@ export function Address({
         */}
         <Notice title="If your bank will not let you" testId="direct-caveat">
           <p>
-            Some banks keep only one alert address, so setting this one stops those emails going where they go
-            now. If it cannot be changed, or you would rather keep it, use the forwarding button below instead.
+            Some banks keep only one alert address. Setting this one would stop those emails arriving where they
+            do now. If it cannot be changed, or you would rather keep it, use the forwarding button below instead.
           </p>
         </Notice>
       </Step>
@@ -274,13 +274,15 @@ export function Address({
             <li key={step}>{step}</li>
           ))}
         </ol>
-
-        <Notice>
-          <p>
-            Forward with a rule, not everything: ledger then receives only the messages you chose. Anything else
-            that reaches this address is held rather than read.
-          </p>
-        </Notice>
+        {/*
+          There is deliberately no closing notice under the steps. It said
+          "forward with a rule, not everything", which every provider's own
+          steps already say in their own words — a paragraph of instructions
+          repeated under the instructions. Its second half ("anything else that
+          reaches this address is held rather than read") is the next screen's
+          opening line, `WAITING_FOR_FIRST_MAIL`, so nothing is lost from the
+          flow either.
+        */}
       </Step>
     );
   }
