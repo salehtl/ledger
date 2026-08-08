@@ -93,7 +93,9 @@ export function PasskeyUnlockPanel({ client, server = "", fetch: doFetch, creden
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Keyed on the session and the server only. `deps` and `credentials` are
+    // rebuilt on every render, so listing them would re-run the ceremony probe
+    // on every keystroke in the phrase field.
   }, [client.sessionToken, server]);
 
   const turnOn = useCallback(async () => {
