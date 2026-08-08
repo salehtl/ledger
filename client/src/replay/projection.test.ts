@@ -11,6 +11,7 @@ import {
   readMeta,
   readRates,
   readRateUpdatedAt,
+  readBanks,
   readBudgetSplit,
   readCategories,
   readRules,
@@ -536,7 +537,7 @@ test("a projection written by another version is unusable, and is rebuilt rather
 test("an empty state projects to empty tables and a complete meta row", async () => {
   const d = db();
   const report = await project(d, emptyState());
-  expect(report).toEqual({ txns: 0, splits: 0, rules: 0, rates: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 });
+  expect(report).toEqual({ txns: 0, splits: 0, rules: 0, rates: 0, banks: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 });
   expect(projectionIsUsable(d)).toBe(true);
   expect(readTxns(d).size).toBe(0);
 });
@@ -558,7 +559,7 @@ test("literal v1 projection is unusable and is fully rebuilt at the current vers
     INSERT INTO rate VALUES ('USD', '3672500');
     INSERT INTO projection_meta VALUES (1, 1, '9', '0', 'AED', 1);
   `);
-  expect(PROJECTION_VERSION).toBe(5);
+  expect(PROJECTION_VERSION).toBe(6);
   expect(projectionIsUsable(d)).toBe(false);
   const state = emptyState();
   state.homeCurrency = "AED";
@@ -664,6 +665,13 @@ function configured(): State {
   opCounter = 0;
   return fold(
     log([
+      op("bank_declared", "dev-a", { v: 3, payload: { bank: "dib", active: true } }, "2026-05-01T00:00:00Z"),
+      op("bank_declared", "dev-b", { v: 3, payload: { bank: "enbd", active: true } }, "2026-05-01T00:01:00Z"),
+      // Declared and then retired. It must project as a row with `active = 0`,
+      // never as an absence: "the user removed this" is a fact in the log, and
+      // a reader that lost it could not tell it from a bank never declared.
+      op("bank_declared", "dev-a", { v: 3, payload: { bank: "adcb", active: true } }, "2026-05-01T00:02:00Z"),
+      op("bank_declared", "dev-b", { v: 3, payload: { bank: "adcb", active: false } }, "2026-05-01T00:03:00Z"),
       op("budget_split_set", "dev-a", { v: 3, payload: { need: 60, want: 20, saving: 20 } }, "2026-06-01T00:00:00Z"),
       op(
         "category_defined",
@@ -702,12 +710,38 @@ test("an account with NO configuration ops projects to no split and no categorie
   const s = fixture();
   expect(s.budgetSplit).toBeNull();
   expect(s.categories.size).toBe(0);
+  expect(s.banks.size).toBe(0);
   const d = db();
   await project(d, s);
+  expect(readBanks(d)).toEqual(new Map());
   // Absence, not a defaulted row: the default belongs to the consumer, so that
   // "no op" reads exactly as it did before these ops existed.
   expect(readBudgetSplit(d)).toBeNull();
   expect(readCategories(d)).toEqual(new Map());
+});
+
+test("every declared bank round-trips, retired ones as rows rather than absences", async () => {
+  const s = configured();
+  const d = db();
+  await project(d, s);
+
+  const back = readBanks(d);
+  expect(back).toEqual(s.banks);
+  expect(back.get("dib")).toBe(true);
+  expect(back.get("enbd")).toBe(true);
+  // The whole point of `active: false`: present, and false. `has` and `get`
+  // disagree only if the retirement was dropped.
+  expect(back.has("adcb")).toBe(true);
+  expect(back.get("adcb")).toBe(false);
+});
+
+test("declared banks come back in fold order", () => {
+  // Settings lists these, so the order is the one the user built it in. Read
+  // back by primary key SQLite would answer adcb, dib, enbd.
+  const d = db();
+  return project(d, configured()).then(() => {
+    expect([...readBanks(d).keys()]).toEqual(["dib", "enbd", "adcb"]);
+  });
 });
 
 test("the budget split and every category definition round-trip, retired ones included", async () => {
@@ -764,4 +798,5 @@ test("a re-projection replaces configuration rather than accumulating it", async
   await project(d, fixture());
   expect(readCategories(d)).toEqual(new Map());
   expect(readBudgetSplit(d)).toBeNull();
+  expect(readBanks(d)).toEqual(new Map());
 });

@@ -74,7 +74,7 @@ import type {
  * information that is not recomputable from the log, so a migration would be
  * code with no reason to exist and one more thing that can be wrong.
  */
-export const PROJECTION_VERSION = 5;
+export const PROJECTION_VERSION = 6;
 
 /**
  * Rows written per transaction, and per yield.
@@ -178,6 +178,25 @@ CREATE TABLE IF NOT EXISTS category (
   active INTEGER NOT NULL
 );
 
+-- The banks the user declared. A row per bank, 'active = 0' for a retired one,
+-- for the same reason the category table keeps its retired rows: "the user
+-- removed this" is a fact the log holds, and an absence cannot be told from a
+-- bank that was never declared.
+--
+-- 'ord' is the fold order, as it is for categories — Settings lists these, so
+-- the order is the one the user built it in rather than SQLite's by-primary-key.
+--
+-- NOTHING in the trust path may read this table. Declared banks route the
+-- waitlist and drive the UI; the sender allowlist is the server's
+-- ('sender_allowlist', written by the quarantine trust decision) and the two are
+-- deliberately unconnected — removing a bank here does not untrust a sender, and
+-- must never be described as if it did.
+CREATE TABLE IF NOT EXISTS bank (
+  name   TEXT    PRIMARY KEY,
+  ord    INTEGER NOT NULL,
+  active INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fork_notice (
   idx         INTEGER PRIMARY KEY,
   entity_kind TEXT    NOT NULL,
@@ -210,6 +229,8 @@ export interface ProjectReport {
   splits: number;
   rules: number;
   rates: number;
+  /** Declared banks, retired ones included. */
+  banks: number;
   /** Category definitions, retired ones included. */
   categories: number;
   forks: number;
@@ -254,6 +275,7 @@ interface Stmts {
   rule: SqlStatement;
   rate: SqlStatement;
   split_plan: SqlStatement;
+  bank: SqlStatement;
   category: SqlStatement;
   fork: SqlStatement;
   anomaly: SqlStatement;
@@ -272,6 +294,7 @@ function prepare(db: SqlDriver): Stmts {
     rule: db.prepare("INSERT INTO rule (id, pattern, match, category, priority, version) VALUES (?, ?, ?, ?, ?, ?)"),
     rate: db.prepare("INSERT INTO rate (currency, rate_micro, updated_at) VALUES (?, ?, ?)"),
     split_plan: db.prepare("INSERT INTO budget_split (id, need, want, saving) VALUES (1, ?, ?, ?)"),
+    bank: db.prepare("INSERT INTO bank (name, ord, active) VALUES (?, ?, ?)"),
     category: db.prepare("INSERT INTO category (id, ord, name, kind, bucket, color, active) VALUES (?, ?, ?, ?, ?, ?, ?)"),
     fork: db.prepare(
       "INSERT INTO fork_notice (idx, entity_kind, entity_id, winner_op, loser_op, at_seq) VALUES (?, ?, ?, ?, ?, ?)",
@@ -323,13 +346,13 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
   // back as incomplete rather than as a short log, which is the difference
   // between "rebuild me" and "the user lost half their transactions".
   db.transaction(() => {
-    for (const t of ["txn", "txn_split", "rule", "rate", "budget_split", "category", "fork_notice", "anomaly"]) {
+    for (const t of ["txn", "txn_split", "rule", "rate", "budget_split", "bank", "category", "fork_notice", "anomaly"]) {
       db.exec(`DELETE FROM ${t}`);
     }
     writeMeta(st, s, false);
   });
 
-  const report: ProjectReport = { txns: 0, splits: 0, rules: 0, rates: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 };
+  const report: ProjectReport = { txns: 0, splits: 0, rules: 0, rates: 0, banks: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 };
   const total = s.txns.size;
   const it = s.txns.values();
 
@@ -377,6 +400,11 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
     // The configuration. `null` writes NO row, which is the projected form of
     // "the user never chose" — see the schema comment.
     if (s.budgetSplit !== null) st.split_plan.run(s.budgetSplit.need, s.budgetSplit.want, s.budgetSplit.saving);
+    let bankOrd = 0;
+    for (const [name, active] of s.banks) {
+      st.bank.run(name, bankOrd++, active ? 1 : 0);
+      report.banks++;
+    }
     let ord = 0;
     for (const [id, c] of s.categories) {
       writeCategory(st, id, ord++, c);
@@ -637,6 +665,27 @@ export function readBudgetSplit(db: SqlDriver): BudgetSplit | null {
     | undefined;
   if (row === undefined) return null;
   return { need: num(row["need"], "need"), want: num(row["want"], "want"), saving: num(row["saving"], "saving") };
+}
+
+/**
+ * Every bank the user declared, RETIRED ONES INCLUDED, in fold order.
+ *
+ * The same `Map<string, boolean>` shape `State.banks` folds to, so a caller
+ * reads `[...readBanks(db)].filter(([, active]) => active)` for the live set
+ * exactly as it would off the state. A retired bank is `false`, never a missing
+ * key: the difference between "removed" and "never declared" is a fact, and a
+ * reader that dropped it would make a restore look like a first declaration.
+ *
+ * Nothing in the trust path may call this. See the table's schema comment.
+ */
+export function readBanks(db: SqlDriver): Map<string, boolean> {
+  ensureProjection(db);
+  const out = new Map<string, boolean>();
+  for (const raw of db.prepare("SELECT name, active FROM bank ORDER BY ord").all()) {
+    const r = raw as Record<string, unknown>;
+    out.set(text(r["name"], "name"), num(r["active"], "active") !== 0);
+  }
+  return out;
 }
 
 /**
