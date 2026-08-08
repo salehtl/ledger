@@ -51,18 +51,25 @@ import { parseDecimal, type Op } from "@ledger/client/wire/op";
  * The hot payload carries `tier`, `needs_review` and `unparsed` and nothing else
  * about why, so this is the finest distinction the wire supports today.
  */
-export type ReviewReason = "unreadable" | "pattern_guess" | "unsigned_headers" | "entered";
+export type ReviewReason = "unreadable" | "pattern_guess" | "unsigned_headers" | "entered" | "uncategorized";
 
 /**
  * Why one row is in the queue.
  *
- * The order of the tests is the point. `unparsed` is checked first because it is
- * the only field that means "there is nothing here" — `tier === "none"` does not
- * imply it (every client-authored op reads as `"none"` and carries real money),
- * and reading the tier first would file every import under "we couldn't read
- * this".
+ * The order of the tests is the point. The lane comes first because the other
+ * four reasons all describe *how the row was read*, and the `uncategorized` lane
+ * is not about the reading at all — a row that reached it was read cleanly, by a
+ * template, with nothing uncertain about it. Calling that card "Signed, but not
+ * the encoding" (which is what the tier alone says about every DIB message)
+ * would put an alarming sentence on the one card that has nothing wrong with it.
+ *
+ * After that, `unparsed` is checked first because it is the only field that
+ * means "there is nothing here" — `tier === "none"` does not imply it (every
+ * client-authored op reads as `"none"` and carries real money), and reading the
+ * tier first would file every import under "we couldn't read this".
  */
-export function reasonOf(t: Txn): ReviewReason {
+export function reasonOf(t: Txn, lane: Lane | null = laneOf(t)): ReviewReason {
+  if (lane === "uncategorized") return "uncategorized";
   if (t.unparsed) return "unreadable";
   if (t.tier === "heuristic") return "pattern_guess";
   if (t.tier === "template") return "unsigned_headers";
@@ -100,22 +107,37 @@ export const REVIEW_REASON_COPY: Record<ReviewReason, ReasonCopy> = {
     title: "Added by you",
     detail: "This came from an import or a manual entry rather than from an email.",
   },
+  uncategorized: {
+    title: "Needs a category",
+    detail: "This one was read cleanly. It just hasn't been filed under anything yet.",
+  },
 };
 
 // ---------------------------------------------------------------------------
 // 2. Lanes
 // ---------------------------------------------------------------------------
 
-export type Lane = "needs_review" | "unparsed" | "duplicate" | "forks";
+export type Lane = "needs_review" | "unparsed" | "duplicate" | "uncategorized" | "forks";
 
-export const LANES: readonly Lane[] = ["needs_review", "unparsed", "duplicate", "forks"];
+export const LANES: readonly Lane[] = ["needs_review", "unparsed", "duplicate", "uncategorized", "forks"];
 
 export const LANE_TITLE: Record<Lane, string> = {
   needs_review: "To confirm",
   unparsed: "Couldn't read",
   duplicate: "Possible duplicates",
+  uncategorized: "Needs a category",
   forks: "Resolved edits",
 };
+
+/**
+ * The lanes the confirm deck can actually answer, in the order it deals them.
+ *
+ * Both are answered by the same gesture and the same op — a `txn_categorized`
+ * through {@link categorizeOps} — which is the whole test for whether a lane
+ * belongs here. `unparsed` and `duplicate` do not: they need a typed-in row and
+ * a yes/no, whose ops this screen does not author.
+ */
+export const DECK_LANES: readonly Lane[] = ["needs_review", "uncategorized"];
 
 /**
  * Which lane a transaction belongs to, or `null` if it is not a review item.
@@ -125,12 +147,24 @@ export const LANE_TITLE: Record<Lane, string> = {
  * different in kind (there is no amount to confirm); and a duplicate notice
  * outranks a plain review flag, because "is this the same purchase twice" has to
  * be answered before "what category is it" is a sensible question.
+ *
+ * `uncategorized` is last for the same reason, one step further on: "the parse
+ * is uncertain" and "this needs a category" are different questions, and only
+ * once the first is settled is the second worth asking. It is also the lane the
+ * screen was missing entirely — a template-tier row with every capture group
+ * filled is never `needs_review`, so before this it belonged to no lane and the
+ * queue said "All caught up" over a transaction nothing had ever filed.
+ *
+ * A row whose SPLITS carry the categories is not in it: `txn_split` leaves the
+ * transaction's own `category` null while the parts hold the answer, so asking
+ * again would be asking a question the user has already answered.
  */
 export function laneOf(t: Txn): Lane | null {
   if (t.superseded_by !== null) return null;
   if (t.unparsed) return "unparsed";
   if (t.possible_duplicate_of !== null && (t.duplicate_disposition ?? null) === null) return "duplicate";
   if (t.needs_review) return "needs_review";
+  if ((t.category ?? "") === "" && t.splits.length === 0) return "uncategorized";
   return null;
 }
 
@@ -236,6 +270,24 @@ export function reviewMoney(rows: Iterable<Txn>): ReviewMoney {
   return { counted, excluded, totalHomeMinor, awaitingRate };
 }
 
+/**
+ * Two lanes' summaries as one, for a screen that deals from both.
+ *
+ * The lanes are disjoint, so no row is counted twice, and `totalHomeMinor` stays
+ * `bigint` the whole way through — a merge that went via `Number` would be the
+ * one place in this file money stopped being exact.
+ */
+export function mergeMoney(parts: Iterable<ReviewMoney>): ReviewMoney {
+  const total: ReviewMoney = { counted: 0, excluded: 0, totalHomeMinor: 0n, awaitingRate: 0 };
+  for (const p of parts) {
+    total.counted += p.counted;
+    total.excluded += p.excluded;
+    total.awaitingRate += p.awaitingRate;
+    total.totalHomeMinor += p.totalHomeMinor;
+  }
+  return total;
+}
+
 // ---------------------------------------------------------------------------
 // 5. The one table this screen owns
 // ---------------------------------------------------------------------------
@@ -299,6 +351,17 @@ export function laneWhere(lane: Lane): string {
       return "t.superseded_by IS NULL AND t.unparsed = 0 AND t.possible_duplicate_of IS NOT NULL AND t.duplicate_disposition IS NULL";
     case "needs_review":
       return "t.superseded_by IS NULL AND t.unparsed = 0 AND t.possible_duplicate_of IS NULL AND t.needs_review = 1";
+    case "uncategorized":
+      // The duplicate test is spelled in full rather than as
+      // `possible_duplicate_of IS NULL`: a notice the user has already disposed
+      // of is no longer a duplicate item, and `laneOf` files that row here — so
+      // the looser spelling would make the SQL disagree with it.
+      return (
+        "t.superseded_by IS NULL AND t.unparsed = 0 AND t.needs_review = 0 " +
+        "AND NOT (t.possible_duplicate_of IS NOT NULL AND t.duplicate_disposition IS NULL) " +
+        "AND (t.category IS NULL OR t.category = '') " +
+        "AND NOT EXISTS (SELECT 1 FROM txn_split s WHERE s.txn_id = t.id)"
+      );
     case "forks":
       // The fork lane does not read `txn` at all; it is here so that a new lane
       // cannot be added without deciding what it selects.
@@ -352,6 +415,7 @@ export function laneCounts(db: SqlDriver): LaneCounts {
     needs_review: one("needs_review"),
     unparsed: one("unparsed"),
     duplicate: one("duplicate"),
+    uncategorized: one("uncategorized"),
     forks: forkCount(db),
   };
 }
@@ -398,7 +462,10 @@ export function lanePage(db: SqlDriver, lane: Lane, opts: PageOptions = {}): Rev
     const t = decodeTxnRow(raw, splits.get(textOf(raw, "id")) ?? []);
     const key = lane === "duplicate" ? duplicateKey(t) : itemKey(t);
     const other = t.possible_duplicate_of === null ? null : (counterparts.get(t.possible_duplicate_of) ?? null);
-    return { key, lane, reason: reasonOf(t), txn: t, counterpart: other };
+    // The lane is passed rather than re-derived: it is the one the row was
+    // SELECTed under, so the card's sentence and the query that produced it can
+    // never be about two different questions.
+    return { key, lane, reason: reasonOf(t, lane), txn: t, counterpart: other };
   });
 }
 

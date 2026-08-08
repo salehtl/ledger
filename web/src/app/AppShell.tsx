@@ -46,6 +46,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useV2OrThrow } from "../v2/BootGate";
 import { invalidateAfterSync, useReviewFeed, useReviewSource } from "../v2/queries";
+import { DECK_LANES } from "../v2/sources/review";
 import { BottomNav } from "../components/ui/BottomNav";
 import { TopBar } from "../components/ui/TopBar";
 import { type TabId } from "./nav";
@@ -116,10 +117,14 @@ export function AppShell() {
 
   const bounds = scopeBounds(scope);
 
-  // The same key the Review screen reads, so the badge and the deck are one
-  // pass of the projection rather than two that can disagree.
-  const reviewFeed = useReviewFeed(useReviewSource(), "needs_review");
-  const reviewCount = reviewFeed.data?.counts.needs_review ?? 0;
+  // The same key AND the same lanes the Review screen reads, so the badge and
+  // the deck are one pass of the projection rather than two that can disagree.
+  // The badge counts what the deck can answer — flagged rows and rows with no
+  // category — and nothing else: a badge that counted a lane with no control
+  // behind it would send the user to a screen that cannot clear it.
+  const reviewFeed = useReviewFeed(useReviewSource(), DECK_LANES);
+  const counts = reviewFeed.data?.counts;
+  const reviewCount = (counts?.needs_review ?? 0) + (counts?.uncategorized ?? 0);
 
   // Drill-ins are opaque full-screen panels laid over the tabs, so everything
   // underneath is covered but still in the tab order and the screen-reader

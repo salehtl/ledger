@@ -41,6 +41,7 @@ import type { Rule } from "@ledger/client/replay/state";
 import { useV2 } from "./BootGate";
 import { sqlBudgetSource, type BudgetSnapshot, type BudgetSource } from "./sources/budget";
 import {
+  mergeMoney,
   sqlReviewSource,
   type ForkItem,
   type Lane,
@@ -309,7 +310,7 @@ export function useInsightsDrill(
   });
 }
 
-/** Everything one review lane's screen renders, read in one pass. */
+/** Everything the review screen renders, read in one pass. */
 export interface ReviewFeed {
   counts: LaneCounts;
   items: ReviewItem[];
@@ -320,26 +321,36 @@ export interface ReviewFeed {
 }
 
 /**
- * One lane's feed.
+ * The feed for a set of lanes, dealt in the order they are given.
  *
- * Six reads under one key rather than six queries, because they are one screen:
- * six keys would give the deck six independent loading states and let the badge
- * render against a different pass of the projection than the list under it.
+ * Everything under one key rather than a query per read, because they are one
+ * screen: separate keys would give the deck several independent loading states
+ * and let the badge render against a different pass of the projection than the
+ * list under it.
+ *
+ * The lanes' pages are read **in order, one after another**, not in parallel.
+ * The order the deck deals its cards is the lanes' precedence order, and it is
+ * the same order every read — a `Promise.all` would leave the deck's contents up
+ * to which query settled first.
  */
-export function useReviewFeed(source: ReviewSource | null, lane: Lane): UseQueryResult<ReviewFeed> {
+export function useReviewFeed(source: ReviewSource | null, lanes: readonly Lane[]): UseQueryResult<ReviewFeed> {
   return useQuery({
     ...PROJECTION_QUERY,
-    queryKey: v2Keys.reviewLane(lane),
+    queryKey: v2Keys.reviewLane(lanes.join("+")),
     queryFn: async (): Promise<ReviewFeed> => {
-      const [counts, items, forks, money, categories, rules] = await Promise.all([
+      const items: ReviewItem[] = [];
+      const moneys: ReviewMoney[] = [];
+      for (const lane of lanes) {
+        if (lane !== "forks") items.push(...(await source!.page(lane)));
+        moneys.push(await source!.money(lane));
+      }
+      const [counts, forks, categories, rules] = await Promise.all([
         source!.counts(),
-        lane === "forks" ? Promise.resolve<ReviewItem[]>([]) : source!.page(lane),
         source!.forks(),
-        source!.money(lane),
         source!.categories(),
         source!.rules(),
       ]);
-      return { counts, items, forks, money, categories, rules };
+      return { counts, items, forks, money: mergeMoney(moneys), categories, rules };
     },
     enabled: source !== null,
   });

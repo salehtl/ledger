@@ -26,7 +26,7 @@ import { setPlatform } from "@ledger/client/platform.registry";
 import { webPlatform } from "@ledger/client/platform.web";
 import { fold, INGEST_WRITER_ID, type LogEntry } from "@ledger/client/replay/replay";
 import { project, readTxns } from "@ledger/client/replay/projection";
-import { emptyState, type State } from "@ledger/client/replay/state";
+import { emptyState, type State, type Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 import { validateOp, type Op } from "@ledger/client/wire/op";
 
@@ -255,6 +255,12 @@ function fixtureLog(): LogEntry[] {
     ),
   );
 
+  // 9. The row the operator actually hit: a message the template read cleanly,
+  //    with every capture group filled, so nothing about it is uncertain — and
+  //    no category. Before the `uncategorized` lane existed this row was in NO
+  //    lane, and the screen said "All caught up" while it sat there.
+  rows.push(ingested("c1", "m7", { ...DIB, needs_review: false, merchant_raw: "ADNOC", amount_minor: "12000" }));
+
   return rows;
 }
 
@@ -298,7 +304,7 @@ describe("the fixture is the log it claims to be", () => {
 
 describe("lane counts", () => {
   it("holds what each lane should", () => {
-    expect(laneCounts(db)).toEqual({ needs_review: 3, unparsed: 2, duplicate: 1, forks: 1 });
+    expect(laneCounts(db)).toEqual({ needs_review: 3, unparsed: 2, duplicate: 1, uncategorized: 1, forks: 1 });
   });
 
   it("treats the same-day unparsed messages as TWO items, not one", () => {
@@ -319,7 +325,7 @@ describe("lane counts", () => {
     // them from drifting; without it a badge could count a set the list does not
     // show.
     const byLane = new Map<string, Lane>();
-    for (const lane of ["needs_review", "unparsed", "duplicate"] as Lane[]) {
+    for (const lane of ["needs_review", "unparsed", "duplicate", "uncategorized"] as Lane[]) {
       for (const item of lanePage(db, lane, { limit: 100 })) byLane.set(item.txn.id, lane);
     }
     let checked = 0;
@@ -333,11 +339,114 @@ describe("lane counts", () => {
 
   it("puts a superseded row in no lane, and neither its replacement", () => {
     const ids = new Set<string>();
-    for (const lane of ["needs_review", "unparsed", "duplicate"] as Lane[]) {
+    for (const lane of ["needs_review", "unparsed", "duplicate", "uncategorized"] as Lane[]) {
       for (const item of lanePage(db, lane, { limit: 100 })) ids.add(item.txn.id);
     }
     expect(ids.has("u3")).toBe(false);
     expect(ids.has("u3b")).toBe(false);
+  });
+});
+
+describe("the uncategorized lane", () => {
+  const txnOf = (id: string): Txn => {
+    const t = readTxns(db).get(id);
+    if (t === undefined) throw new Error(`fixture has no ${id}`);
+    return t;
+  };
+
+  it("queues a cleanly-parsed row that carries no category", () => {
+    const page = lanePage(db, "uncategorized", { limit: 100 });
+    expect(page.map((i) => i.txn.id)).toEqual(["c1"]);
+    expect(laneOf(txnOf("c1"))).toBe("uncategorized");
+    // The question it asks is "what is this", not "did we read this right".
+    expect(page[0]!.reason).toBe("uncategorized");
+  });
+
+  it("does not queue a row that already has one", () => {
+    // `d1` is read cleanly, not flagged, not the flagged half of the duplicate
+    // notice — and categorised. It is the negative half of the same rule.
+    expect(laneOf(txnOf("d1"))).toBeNull();
+    expect(lanePage(db, "uncategorized", { limit: 100 }).map((i) => i.txn.id)).not.toContain("d1");
+  });
+
+  it("yields to every lane above it, so the lanes stay disjoint", () => {
+    // A flagged row has no category either, and it belongs to `needs_review`:
+    // "is this right" is answered before "what is it".
+    expect(txnOf("t1").category).toBeNull();
+    expect(laneOf(txnOf("t1"))).toBe("needs_review");
+    // Same for a message nothing was read out of, and for the flagged half of a
+    // duplicate notice.
+    expect(laneOf(txnOf("u1"))).toBe("unparsed");
+    expect(laneOf(txnOf("d2"))).toBe("duplicate");
+  });
+
+  it("does not queue a row whose parts carry the categories", async () => {
+    // A split transaction's own `category` stays null while its parts hold the
+    // categories. Asking for one again would ask a question already answered.
+    const log = [
+      ...fixtureLog(),
+      entry(
+        op({
+          type: "txn_split",
+          entity: { kind: "txn", id: "c1" },
+          parentVersion: 1,
+          payload: {
+            parts: [
+              { category: "Fuel", amount_minor: "9000" },
+              { category: "Snacks", amount_minor: "3000" },
+            ],
+          },
+        }),
+        DEVICE,
+      ),
+    ];
+    const db2 = await openBrowserDriver(`review-split-${crypto.randomUUID()}`);
+    const split = fold(log, emptyState());
+    await project(db2, split);
+    expect(split.txns.get("c1")!.category).toBeNull();
+    expect(laneOf(split.txns.get("c1")!)).toBeNull();
+    expect(lanePage(db2, "uncategorized", { limit: 100 })).toEqual([]);
+    db2.close();
+  });
+
+  it("clears the item once it is answered, and touches no other lane", async () => {
+    // The deck's own commit path — the one author of a categorisation — and
+    // then the fold the sync would perform.
+    const specs = confirmOps({
+      txn: readTxns(db).get("c1")!,
+      category: "Fuel",
+      projectedVersion: 1,
+      pending: [],
+      rules: [],
+      newID: () => "rule-new",
+    });
+    // The base log is built FIRST: `entry` hands out sequence numbers in call
+    // order, and an answer numbered before the ingest it answers is a log no
+    // fold will accept.
+    const base = fixtureLog();
+    const answered = specs.map((spec) =>
+      entry(
+        op({
+          type: spec.type,
+          entity: spec.entity!,
+          parentVersion: spec.parentVersion ?? null,
+          payload: spec.payload,
+          authoredAt: "2026-06-07T10:00:00.000Z",
+        }),
+        DEVICE,
+      ),
+    );
+    const db2 = await openBrowserDriver(`review-answered-${crypto.randomUUID()}`);
+    const after = fold([...base, ...answered], emptyState());
+    await project(db2, after);
+
+    expect(lanePage(db2, "uncategorized", { limit: 100 })).toEqual([]);
+    expect(after.txns.get("c1")!.category).toBe("Fuel");
+    // And the flagged rows are untouched: answering "what category" must not
+    // clear a review flag another row legitimately carries.
+    expect(after.txns.get("t1")!.needs_review).toBe(true);
+    expect(laneCounts(db2)).toEqual({ needs_review: 3, unparsed: 2, duplicate: 1, uncategorized: 0, forks: 1 });
+    db2.close();
   });
 });
 
@@ -520,7 +629,7 @@ describe("the rest of what the screen reads", () => {
 describe("the source the screen is handed", () => {
   it("answers every question the screen asks", async () => {
     const src = sqlReviewSource(db, () => "2026-06-07T00:00:00Z");
-    expect(await src.counts()).toEqual({ needs_review: 3, unparsed: 2, duplicate: 1, forks: 1 });
+    expect(await src.counts()).toEqual({ needs_review: 3, unparsed: 2, duplicate: 1, uncategorized: 1, forks: 1 });
     expect((await src.page("unparsed")).length).toBe(2);
     expect((await src.forks()).length).toBe(1);
     expect((await src.money("unparsed")).excluded).toBe(2);

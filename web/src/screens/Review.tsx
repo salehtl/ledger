@@ -8,9 +8,10 @@
  * frozen, and this screen changes exactly two things: where the cards come from
  * and what answering one does.
  *
- *  - **The feed** is `v2/sources/review.ts`'s `needs_review` lane over SQLite,
- *    not `GET /api/transactions?status=needs_review`. There is no `fetch` on
- *    this screen at all, and its test asserts that.
+ *  - **The feed** is `v2/sources/review.ts`'s `DECK_LANES` — the flagged rows
+ *    and the ones with no category — over SQLite, not
+ *    `GET /api/transactions?status=needs_review`. There is no `fetch` on this
+ *    screen at all, and its test asserts that.
  *  - **The commit** appends a `txn_categorized` op (plus, first time for a
  *    merchant, a `rule_added`) through the outbox. `Client.emit` commits before
  *    it returns, so the card leaves the deck the moment the user answers rather
@@ -50,7 +51,14 @@ import { loadSwipeConfig } from "../lib/swipe";
 import { formatMinor } from "../lib/minorMoney";
 import { cardIdSource, deckCategories, deckRows, type DeckRow } from "../v2/reviewDeck";
 import { useHomeCurrency, useReviewFeed, useReviewSource, useTxnSource, v2Keys } from "../v2/queries";
-import { categorizeOps, isSettled, settledBy, undoConfirmOps, type ReviewSource } from "../v2/sources/review";
+import {
+  categorizeOps,
+  DECK_LANES,
+  isSettled,
+  settledBy,
+  undoConfirmOps,
+  type ReviewSource,
+} from "../v2/sources/review";
 import { useWriter, type Writer } from "../v2/writer";
 
 export interface ReviewProps {
@@ -70,7 +78,17 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
   const toast = useToast();
   const homeCurrency = useHomeCurrency(useTxnSource());
 
-  const feed = useReviewFeed(source, "needs_review");
+  /**
+   * Both lanes the deck can answer, dealt flagged-first.
+   *
+   * `uncategorized` is here because the deck already answers exactly its
+   * question. A template-tier parse with every capture group filled is never
+   * `needs_review`, so a real transaction with no category used to belong to no
+   * lane at all — the queue said "All caught up" over a row nothing had filed,
+   * and there was no way to categorise it from this screen. The card, the
+   * gesture and the commit are unchanged; only the feed grew.
+   */
+  const feed = useReviewFeed(source, DECK_LANES);
 
   /**
    * Every row the lane page returned, adapted, in the page's own order.

@@ -102,6 +102,59 @@ async function projection(): Promise<ReviewSource> {
   return sqlReviewSource(db);
 }
 
+/**
+ * A row the template read cleanly — nothing uncertain, so never flagged — with
+ * or without a category.
+ *
+ * This is the shape the operator's real DIB transaction has, and the one that
+ * used to belong to no lane at all.
+ */
+function clean(id: string, n: number, merchant: string, amount: string, category: string | null): LogEntry {
+  return entry({
+    v: 1,
+    type: "txn_ingested",
+    op_id: `op-${id}`,
+    authored_at: "2026-07-01T00:00:00.000Z",
+    entity: { kind: "txn", id },
+    parent_version: null,
+    ingest_id: n.toString(16).padStart(64, "0"),
+    payload: {
+      amount_minor: amount,
+      currency: "AED",
+      direction: "debit",
+      posted_at: `2026-07-0${n}T08:00:00Z`,
+      merchant_raw: merchant,
+      last4: "3701",
+      category,
+      needs_review: false,
+      tier: "template",
+    },
+  });
+}
+
+/** A projection whose only work is a row that needs a category. */
+async function cleanProjection(): Promise<ReviewSource> {
+  const db = await openBrowserDriver(`review-clean-${crypto.randomUUID()}`);
+  await project(
+    db,
+    fold([
+      entry({
+        v: 1,
+        type: "home_currency_set",
+        op_id: "op-home",
+        authored_at: "2026-07-01T00:00:00.000Z",
+        parent_version: null,
+        payload: { currency: "AED" },
+      }),
+      clean("c1", 4, "ADNOC", "12000", null),
+      // The same row WITH a category. It is not a review item, and the deck
+      // must never be handed it.
+      clean("c2", 5, "LULU", "1000", "Groceries"),
+    ]),
+  );
+  return sqlReviewSource(db);
+}
+
 interface Recorder extends Writer {
   queued: OpSpec[];
 }
@@ -273,6 +326,10 @@ describe("Review", () => {
       ...base,
       page: async (lane, opts) => {
         const rows = await base.page(lane, opts);
+        // Only the flagged lane is counted: the deck reads several lanes per
+        // pass, and `reads` has to go on meaning "how many times THIS lane was
+        // asked for" or the assertion below stops being about the sync.
+        if (lane !== "needs_review") return rows;
         // First read is the deck's; every read after it is the post-confirm one.
         return ++reads === 1 ? rows : rows.filter((r) => r.txn.id !== "t2");
       },
@@ -329,6 +386,7 @@ describe("Review", () => {
       ...base,
       page: async (lane, opts) => {
         const rows = await base.page(lane, opts);
+        if (lane !== "needs_review") return rows;
         return ++reads === 1 ? rows : rows.filter((r) => r.txn.id !== "t2");
       },
     };
@@ -375,12 +433,49 @@ describe("Review", () => {
     expect(screen.queryByText("SPINNEYS")).not.toBeInTheDocument();
   });
 
+  it("puts a cleanly-parsed transaction with no category on the deck", async () => {
+    // The operator's bug: a DIB message the template read with every capture
+    // group filled, so `needs_review` is false and it is in no other lane. The
+    // queue said "All caught up" over it and offered no way to categorise it.
+    mount(await cleanProjection(), recorder());
+    expect(await screen.findByText("ADNOC")).toBeInTheDocument();
+    expect(screen.queryByText("All caught up")).not.toBeInTheDocument();
+    // The same row WITH a category is not a review item.
+    expect(screen.queryByText("LULU")).not.toBeInTheDocument();
+    // And the card says the true thing about it: it was read fine, it just has
+    // no category. Nothing about signatures or encodings.
+    expect(screen.getByText("Needs a category")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lets the deck answer it, through the one categorisation author", async () => {
+    const user = userEvent.setup();
+    const writer = recorder();
+    mount(await cleanProjection(), writer);
+    await screen.findByText("ADNOC");
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+    expect(writer.queued[0]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "c1" },
+      parentVersion: 1,
+      payload: { category: "Groceries", needs_review: false },
+    });
+    // The same op group the flagged lane authors — `categorizeOps`, not a
+    // second author bolted on for this lane.
+    expect(writer.queued[1]).toMatchObject({ type: "rule_added", payload: { match: "exact", category: "Groceries" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("says the queue is clear only when it is", async () => {
     const source = await projection();
     const empty: ReviewSource = {
       ...source,
       page: async () => [],
-      counts: async () => ({ needs_review: 0, unparsed: 0, duplicate: 0, forks: 0 }),
+      counts: async () => ({ needs_review: 0, unparsed: 0, duplicate: 0, uncategorized: 0, forks: 0 }),
     };
     mount(empty, recorder());
     expect(await screen.findByText("All caught up")).toBeInTheDocument();
