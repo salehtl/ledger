@@ -361,7 +361,13 @@ export function sqlInsightsSource(db: SqlDriver, override?: BudgetMapping): Insi
       const categories: CategoryDelta[] = [...new Set([...cur.keys(), ...was.keys()])]
         .map((category) => ({
           ...delta(
-            category === null ? " uncategorized" : `cat:${category}`,
+            // The null-category row's key. The NUL prefix is what keeps it from
+            // ever colliding with a real `cat:` key, since no category string
+            // can start with one. Written as `\x00`, NOT as a literal NUL byte:
+            // a literal made git and grep classify this file as binary. Same
+            // single code point, pinned in insights.test.ts; see
+            // client/src/diag/nul.test.ts for why.
+            category === null ? "\x00uncategorized" : `cat:${category}`,
             category ?? UNCATEGORIZED,
             cur.get(category) ?? 0n,
             was.get(category) ?? 0n,

@@ -271,10 +271,23 @@ export function applyDictionaryDelta(db: SqlDriver, delta: DictionaryDelta): Dic
   return { applied: keep.size, removed: drop.size, refused, cursor: delta.version };
 }
 
+/**
+ * The separator in the composite key below: a NUL, which cannot occur in either
+ * field (both are canonicalized, and `validateDictEntry` refuses an unprintable)
+ * and so cannot make two distinct entries collide.
+ *
+ * Written as `\x00`, NOT as a literal NUL byte. It was a literal one until the
+ * repo-wide sweep, which made git and grep classify this whole file as binary —
+ * `grep` found nothing in it and `git diff` printed "Bin ... bytes". The escape
+ * is the same single code point; see `client/src/diag/nul.test.ts`.
+ *
+ * Exported only so `dictionary.test.ts` can pin the code point.
+ */
+export const KEY_SEPARATOR = "\x00";
+
 function key(e: DictEntry): string {
-  // The primary key `dict_entries` uses. ` ` cannot occur in either field:
-  // both are canonicalized, and `validateDictEntry` refuses an unprintable.
-  return `${e.pattern} ${e.category}`;
+  // The primary key `dict_entries` uses.
+  return `${e.pattern}${KEY_SEPARATOR}${e.category}`;
 }
 
 /**

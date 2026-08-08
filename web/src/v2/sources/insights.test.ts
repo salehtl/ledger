@@ -66,6 +66,27 @@ async function setup(complete = 1) {
 const TREND = ["2026-06", "2026-07", "2026-08"];
 
 describe("sqlInsightsSource", () => {
+  // The null-category breakdown row's key is NUL-prefixed so it can never
+  // collide with a real `cat:` key. That NUL is spelled `\x00` in insights.ts
+  // rather than written as a literal byte (which made git and grep treat the
+  // file as binary — see client/src/diag/nul.test.ts). The spelling changed;
+  // this pins the VALUE, code point by code point, so it cannot drift with it.
+  it("keys the uncategorized breakdown row with a literal U+0000 prefix", async () => {
+    const { db, add } = await setup();
+    add("u", { home: "70", category: null });
+    add("g", { home: "500", category: "groceries" });
+
+    const got = sqlInsightsSource(db).read("2026-08", TREND);
+    const uncategorized = got.categories.find((c) => c.category === null);
+    expect(uncategorized).toBeDefined();
+    expect(uncategorized!.key).toBe("\x00uncategorized");
+    expect([...uncategorized!.key].map((c) => c.codePointAt(0))).toEqual([
+      0, 117, 110, 99, 97, 116, 101, 103, 111, 114, 105, 122, 101, 100,
+    ]);
+    // And it is distinct from every real category key, which is the point.
+    expect(got.categories.filter((c) => c.key === uncategorized!.key)).toHaveLength(1);
+  });
+
   it("buckets the focus month's confirmed spending and keeps credits as income", async () => {
     const { db, add } = await setup();
     add("g", { home: "500", category: "groceries", posted: "2026-08-02T00:00:00.000Z" });

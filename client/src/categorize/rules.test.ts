@@ -285,9 +285,17 @@ test("a dictionary entry claiming `regex` is refused, whatever it would have mat
 });
 
 test("the dictionary gate mirrors dict.Canonicalize's other refusals", () => {
+  // `carre\x00four` is the unprintable sentinel. It is spelled with the escape
+  // rather than as a literal NUL byte, which used to make git and grep treat
+  // this whole test file as binary — see client/src/diag/nul.test.ts. Pinned by
+  // code point below so the spelling change cannot quietly become a space (and
+  // turn this case into an assertion about something else entirely).
+  const unprintable = "carre\x00four";
+  expect([...unprintable].map((c) => c.codePointAt(0))).toEqual([99, 97, 114, 114, 101, 0, 102, 111, 117, 114]);
+
   const cases: Array<[DictEntry, string]> = [
     [{ pattern: "----", match: "contains", category: "groceries" }, "pattern_not_alnum"],
-    [{ pattern: "carre four", match: "contains", category: "groceries" }, "pattern_unprintable"],
+    [{ pattern: unprintable, match: "contains", category: "groceries" }, "pattern_unprintable"],
     [{ pattern: "x".repeat(65), match: "contains", category: "groceries" }, "pattern_too_long"],
     [{ pattern: "carrefour", match: "contains", category: "Groceries & Fresh!" }, "category_not_a_label"],
     [{ pattern: "carrefour", match: "contains", category: "" }, "empty_category"],

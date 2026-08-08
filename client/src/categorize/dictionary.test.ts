@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import {
   CANDIDATE_CHUNK,
   DictionaryProtocolError,
+  KEY_SEPARATOR,
   applyDictionaryDelta,
   countUncategorized,
   decodeDictionaryDelta,
@@ -20,6 +21,16 @@ import { type DictEntry, type UserRule, prepare } from "./rules";
 import { project } from "../replay/projection";
 import { emptyState, type Txn } from "../replay/state";
 import { bunDriver, type SqlDriver } from "../store/driver";
+
+// The dedupe key's separator is spelled `\x00` in source rather than as a
+// literal NUL (which would make git and grep treat dictionary.ts as binary —
+// see client/src/diag/nul.test.ts). The spelling changed; the VALUE must not,
+// or two entries that used to be distinct could collide. Pinned by code point.
+test("the dictionary key separator is exactly one U+0000", () => {
+  expect(KEY_SEPARATOR).toHaveLength(1);
+  expect(KEY_SEPARATOR.codePointAt(0)).toBe(0x00);
+  expect([...KEY_SEPARATOR].map((c) => c.codePointAt(0))).toEqual([0]);
+});
 
 const drivers: SqlDriver[] = [];
 
