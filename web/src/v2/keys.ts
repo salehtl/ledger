@@ -411,7 +411,7 @@ export interface KeysIO {
  * between "generate a new key set" and "ask for the recovery phrase".
  */
 export async function readPublishedKeys(io: KeysIO): Promise<PublishedKeys | null> {
-  const res = await call(io, "GET", null);
+  const res = await call(io, "GET", "/api/v1/keys", null);
   if (res === null) return null;
   const body = res as {
     ingest_pubkey?: unknown;
@@ -439,7 +439,7 @@ export async function publishKeys(
   io: KeysIO,
   keys: { ingestPub: Uint8Array; recoveryPub: Uint8Array; wrapped: Uint8Array },
 ): Promise<void> {
-  await call(io, "PUT", {
+  await call(io, "PUT", "/api/v1/keys", {
     ingest_pubkey: webPlatform.toBase64(keys.ingestPub),
     recovery_pubkey: webPlatform.toBase64(keys.recoveryPub),
     wrapped_keys: webPlatform.toBase64(keys.wrapped),
@@ -447,11 +447,75 @@ export async function publishKeys(
   });
 }
 
-async function call(io: KeysIO, method: "GET" | "PUT", body: unknown): Promise<unknown> {
+/**
+ * One credential's PRF wrap, as `GET /api/v1/keys/wraps` returns it.
+ *
+ * `credentialId` is the raw credential id — the bytes the browser calls
+ * `rawId` — so an assertion can be matched against this list without a second
+ * encoding to agree about.
+ */
+export interface KeyWrapRecord {
+  credentialId: Uint8Array;
+  wrapped: Uint8Array;
+  wrapVersion: number;
+}
+
+/**
+ * `GET /api/v1/keys/wraps`.
+ *
+ * An empty list is the normal answer for an account that has never enrolled a
+ * passkey unlock, and it is not a failure: the recovery phrase is the way in
+ * either way.
+ */
+export async function readKeyWraps(io: KeysIO): Promise<KeyWrapRecord[]> {
+  const res = await call(io, "GET", "/api/v1/keys/wraps", null);
+  const wraps = (res as { wraps?: unknown } | null)?.wraps;
+  if (!Array.isArray(wraps)) throw new ApiError(200, "", "", "GET /api/v1/keys/wraps: unreadable response");
+  return wraps.map((raw) => {
+    const w = raw as { credential_id?: unknown; wrapped?: unknown; wrap_version?: unknown };
+    if (typeof w.credential_id !== "string" || typeof w.wrapped !== "string") {
+      throw new ApiError(200, "", "", "GET /api/v1/keys/wraps: unreadable response");
+    }
+    return {
+      credentialId: webPlatform.fromBase64(w.credential_id),
+      wrapped: webPlatform.fromBase64(w.wrapped),
+      wrapVersion: typeof w.wrap_version === "number" ? w.wrap_version : 0,
+    };
+  });
+}
+
+/** `POST /api/v1/keys/wraps`. Replaces any wrap this credential already had. */
+export async function putKeyWrap(
+  io: KeysIO,
+  wrap: { credentialId: Uint8Array; wrapped: Uint8Array; wrapVersion: number },
+): Promise<void> {
+  await call(io, "POST", "/api/v1/keys/wraps", {
+    credential_id: webPlatform.toBase64(wrap.credentialId),
+    wrapped: webPlatform.toBase64(wrap.wrapped),
+    wrap_version: wrap.wrapVersion,
+  });
+}
+
+/**
+ * `DELETE /api/v1/keys/wraps`.
+ *
+ * Safe in a way `PUT /api/v1/keys` is not: a deleted wrap costs convenience and
+ * nothing else, because the recovery phrase opens the same keys.
+ */
+export async function deleteKeyWrap(io: KeysIO, credentialId: Uint8Array): Promise<void> {
+  await call(io, "DELETE", "/api/v1/keys/wraps", { credential_id: webPlatform.toBase64(credentialId) });
+}
+
+async function call(
+  io: KeysIO,
+  method: "GET" | "PUT" | "POST" | "DELETE",
+  route: string,
+  body: unknown,
+): Promise<unknown> {
   const token = io.sessionToken;
-  if (token === null || token === "") throw new ApiError(401, "unauthorized", "", `${method} /api/v1/keys: no session`);
+  if (token === null || token === "") throw new ApiError(401, "unauthorized", "", `${method} ${route}: no session`);
   const doFetch = io.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
-  const path = `${io.server ?? ""}/api/v1/keys`;
+  const path = `${io.server ?? ""}${route}`;
 
   let res: Response;
   try {
@@ -464,7 +528,7 @@ async function call(io: KeysIO, method: "GET" | "PUT", body: unknown): Promise<u
       ...(body === null ? {} : { body: JSON.stringify(body) }),
     });
   } catch (err) {
-    throw new NetworkError(`${method} /api/v1/keys: ${err instanceof Error ? err.message : String(err)}`, err);
+    throw new NetworkError(`${method} ${route}: ${err instanceof Error ? err.message : String(err)}`, err);
   }
 
   const text = await res.text();
@@ -479,13 +543,13 @@ async function call(io: KeysIO, method: "GET" | "PUT", body: unknown): Promise<u
     } catch {
       detail = text.slice(0, 200);
     }
-    throw new ApiError(res.status, code, detail, `${method} /api/v1/keys: ${res.status} ${code}`);
+    throw new ApiError(res.status, code, detail, `${method} ${route}: ${res.status} ${code}`);
   }
   if (text === "") return {};
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new ApiError(res.status, "", text.slice(0, 200), `${method} /api/v1/keys: unreadable response`);
+    throw new ApiError(res.status, "", text.slice(0, 200), `${method} ${route}: unreadable response`);
   }
 }
 
@@ -618,6 +682,34 @@ export async function recoverAccountKeys(args: {
   phrase: string;
   published: PublishedKeys;
   vault: KeyVault;
+  /** See {@link adoptAccountKeys}, which this hands the unwrapped keys to. */
+  authorize?: (sign: (msg: Uint8Array) => Uint8Array) => Promise<void>;
+}): Promise<StoredKeys> {
+  const keys = await unwrapAccountKeys(args.phrase, args.published.wrapped, webPlatform);
+  return adoptAccountKeys({
+    accountId: args.accountId,
+    keys,
+    published: args.published,
+    vault: args.vault,
+    ...(args.authorize === undefined ? {} : { authorize: args.authorize }),
+  });
+}
+
+/**
+ * Everything after a key set has been unwrapped, whichever wrap it came out of:
+ * check it against what the account published, optionally use the recovery
+ * authorizer, install it, and destroy the raw bytes on every exit.
+ *
+ * It is shared by the phrase ceremony and by the PRF unlock (`prf.ts`) so the
+ * two cannot drift on the checks that matter. The wrap that was opened is not a
+ * fact about the keys — both wraps carry byte-identical bodies, which
+ * `client/src/crypto/prf.test.ts` proves — so nothing here branches on it.
+ */
+export async function adoptAccountKeys(args: {
+  accountId: string;
+  keys: AccountKeys;
+  published: PublishedKeys;
+  vault: KeyVault;
   /**
    * Run with the account's recovery authorizer, before the seed is destroyed.
    *
@@ -631,7 +723,7 @@ export async function recoverAccountKeys(args: {
    */
   authorize?: (sign: (msg: Uint8Array) => Uint8Array) => Promise<void>;
 }): Promise<StoredKeys> {
-  const keys = await unwrapAccountKeys(args.phrase, args.published.wrapped, webPlatform);
+  const keys = args.keys;
   // The blob authenticates itself, so these cannot fail for a phrase that
   // opened it — unless the server served a blob belonging to another account,
   // which is exactly what they are here to catch. The recovery half matters as

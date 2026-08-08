@@ -262,6 +262,31 @@ describe("WebAuthn option and credential shaping", () => {
     });
   });
 
+  // The PRF results carry the secret that unlocks the account's keys. Uploading
+  // it would hand the server the one thing the wrap exists to keep from it, and
+  // "an ArrayBuffer stringifies as {}" is an accident of a serialiser rather
+  // than a decision. So it is removed by name, on both ceremonies.
+  it("never uploads the PRF extension results", () => {
+    const first = new Uint8Array(32).fill(7);
+    const registration = registrationCredential();
+    registration.getClientExtensionResults = () => ({ credProps: { rk: true }, prf: { enabled: true } });
+    const created = encodeRegistrationCredential(registration as unknown as PublicKeyCredential);
+    expect(created["clientExtensionResults"]).toEqual({ credProps: { rk: true } });
+    expect(JSON.stringify(created)).not.toContain("prf");
+
+    const assertion = assertionCredential();
+    assertion.getClientExtensionResults = () => ({ prf: { results: { first: buf(first) } } });
+    const asserted = encodeAssertionCredential(assertion as unknown as PublicKeyCredential);
+    expect(asserted["clientExtensionResults"]).toEqual({});
+    expect(JSON.stringify(asserted)).not.toContain("prf");
+
+    // The same again with the secret already turned into something JSON keeps —
+    // which is what a helper that base64s buffers would produce, and the only
+    // reason the current shape is safe.
+    assertion.getClientExtensionResults = () => ({ prf: { results: { first: Array.from(first) } } });
+    expect(JSON.stringify(encodeAssertionCredential(assertion as unknown as PublicKeyCredential))).not.toContain("7,7,7");
+  });
+
   it("encodes an assertion credential, carrying the discoverable user handle", () => {
     const out = encodeAssertionCredential(assertionCredential() as unknown as PublicKeyCredential);
     expect(out["response"]).toEqual({

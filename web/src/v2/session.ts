@@ -254,10 +254,30 @@ export function encodeAssertionCredential(cred: PublicKeyCredential): Json {
   };
 }
 
+/**
+ * The client extension results, **with `prf` removed**.
+ *
+ * `getClientExtensionResults()` is whatever the browser put in it, and this
+ * function's output is uploaded to the server. The PRF extension's results
+ * carry `prf.results.first` — the 32-byte secret that unlocks the account's
+ * keys (`client/src/crypto/prf.ts`). Sending it would hand the server the one
+ * thing the wrap exists to keep from it.
+ *
+ * Today it would not survive `JSON.stringify` anyway: an `ArrayBuffer`
+ * serialises as `{}`. That is an accident of a serialiser, not a decision, and
+ * it stops being true the moment anything upstream converts the buffer to
+ * base64 or an array before this runs. So the key material is removed by NAME,
+ * here, where the upload happens.
+ *
+ * Nothing downstream wants it: go-webauthn has no PRF awareness at all and
+ * passes extensions through as `map[string]any`. `prf.enabled` — the only part
+ * a caller needs — is read from the credential directly at the call site.
+ */
 function extensionResults(cred: PublicKeyCredential): Json {
-  return typeof cred.getClientExtensionResults === "function"
-    ? (cred.getClientExtensionResults() as unknown as Json)
-    : {};
+  if (typeof cred.getClientExtensionResults !== "function") return {};
+  const results = { ...(cred.getClientExtensionResults() as unknown as Json) };
+  delete results["prf"];
+  return results;
 }
 
 // ---------------------------------------------------------------------------
