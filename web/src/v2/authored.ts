@@ -44,10 +44,11 @@
  */
 
 import type { OpSpec } from "@ledger/client/outbox/outbox";
-import type { Rule } from "@ledger/client/replay/state";
+import type { Rule, Txn } from "@ledger/client/replay/state";
 import type { Op } from "@ledger/client/wire/op";
 
 import type { PendingAnswer } from "./sources/review";
+import { optimisticTxn } from "./sources/transactions";
 import type { Writer } from "./writer";
 
 export interface Authored {
@@ -55,6 +56,20 @@ export interface Authored {
   answers: Map<string, PendingAnswer>;
   /** Every rule this device has queued, in {@link Rule} shape. */
   rules: Rule[];
+  /**
+   * Transactions this device CREATED — manual entries — by id.
+   *
+   * The window above bites hardest here. A categorisation that briefly reverts
+   * is wrong; a row the user has just typed that briefly *does not exist* reads
+   * as the app having thrown the entry away, and the natural response is to type
+   * it again — which, because a manual `ingest_id` is random rather than a
+   * content hash, is a second real transaction rather than a refused duplicate.
+   *
+   * These do not expire on a version the way {@link answers} do. A create has no
+   * parent version to outgrow; it is dropped once the projection can produce the
+   * row itself, which the screen decides by id.
+   */
+  created: Map<string, Txn>;
 }
 
 const stores = new WeakMap<Writer, Authored>();
@@ -62,7 +77,7 @@ const stores = new WeakMap<Writer, Authored>();
 export function authoredBy(writer: Writer): Authored {
   const held = stores.get(writer);
   if (held !== undefined) return held;
-  const made: Authored = { answers: new Map(), rules: [] };
+  const made: Authored = { answers: new Map(), rules: [], created: new Map() };
   stores.set(writer, made);
   return made;
 }
@@ -76,7 +91,19 @@ export function authoredBy(writer: Writer): Authored {
  */
 export function recordAuthored(store: Authored, txnID: string, specs: readonly OpSpec[]): void {
   for (const spec of specs) {
-    if (spec.type === "txn_categorized") {
+    if (spec.type === "txn_ingested") {
+      // Decoded from the op, like everything else here. `optimisticTxn` returns
+      // null for anything that is not a well-formed client create, so a
+      // half-built spec produces no phantom row.
+      const made = optimisticTxn(spec);
+      if (made !== null) store.created.set(made.id, made);
+    } else if (spec.type === "txn_edited") {
+      // A correction to a row this device is still holding optimistically has
+      // to move that copy too, or the sheet saves and the list shows the old
+      // merchant until the next sync.
+      const held = store.created.get(txnID);
+      if (held !== undefined) store.created.set(txnID, editedCopy(held, spec.payload));
+    } else if (spec.type === "txn_categorized") {
       const p = spec.payload as { category?: unknown; needs_review?: unknown };
       store.answers.set(txnID, {
         category: typeof p.category === "string" ? p.category : null,
@@ -95,6 +122,23 @@ export function recordAuthored(store: Authored, txnID: string, specs: readonly O
       });
     }
   }
+}
+
+/**
+ * One optimistic row with a `txn_edited` payload applied.
+ *
+ * Only the keys `applyTxnEdit` in `replay.ts` actually assigns, and only when
+ * present: a key absent from the payload means "unchanged", not "clear".
+ */
+function editedCopy(t: Txn, payload: unknown): Txn {
+  const p = payload as Record<string, unknown>;
+  const next: Txn = { ...t, version: t.version + 1 };
+  if (typeof p["merchant_raw"] === "string") next.merchant_raw = p["merchant_raw"];
+  if (typeof p["last4"] === "string") next.last4 = p["last4"];
+  if (typeof p["posted_at"] === "string") next.posted_at = p["posted_at"];
+  if ("category" in p) next.category = typeof p["category"] === "string" && p["category"] !== "" ? p["category"] : null;
+  if (typeof p["needs_review"] === "boolean") next.needs_review = p["needs_review"];
+  return next;
 }
 
 /**

@@ -4,10 +4,16 @@
  *
  * A port of the READ half of `app/src/lib/transactions.ts` plus
  * `app/src/screens/transactions/source.ts`'s `sqlTxnSource`, with the import
- * paths pointed at the web tree. The write half of the native source (`edit`,
- * `split`, `recomputeHome`) is deliberately NOT here: those author ops through
- * an outbox, which Task 9 wires up, and a read-only screen that carried
- * half-connected mutation seams would be the worse kind of stub.
+ * paths pointed at the web tree. Most of the write half of the native source
+ * (`split`, `recomputeHome`) is still deliberately NOT here: those author ops
+ * through an outbox, and a read-only screen that carried half-connected
+ * mutation seams would be the worse kind of stub.
+ *
+ * The exception is **manual entry** — {@link manualTxnOps} and
+ * {@link manualEditOps} at the end of this file. A hand-typed transaction is a
+ * read-model concern as much as a write one: it has to fingerprint, filter,
+ * total and mark itself exactly like an ingested row, so its payload is built
+ * beside the code that reads one back.
  *
  * # The list reads a WINDOW, never the table
  *
@@ -57,13 +63,17 @@
  * Both are bound parameters and both are covered in `transactions.test.ts`.
  */
 
+import type { OpSpec } from "@ledger/client/outbox/outbox";
+import { webPlatform } from "@ledger/client/platform.web";
 import { decodeTxnRow, ensureProjection, readMeta, TXN_COLUMNS } from "@ledger/client/replay/projection";
 import { countsTowardMoney } from "@ledger/client/replay/state";
 import type { ForkNotice, Split, Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
+import type { Op } from "@ledger/client/wire/op";
 import { parseDecimal } from "@ledger/client/wire/op";
 
-import { signedMinor, type MinorFlow } from "../../lib/minorMoney";
+import { formatMoney, minorToDraft, parseMinorDraft, signedMinor, type MinorFlow } from "../../lib/minorMoney";
+import { nextParentVersion } from "./review";
 
 export type Direction = "debit" | "credit";
 export type Provenance = Txn["provenance"];
@@ -423,7 +433,14 @@ export function splitLabel(splits: readonly Split[]): string {
   return `${names[0]} + ${names.length - 1} more`;
 }
 
-export type MarkerKind = "ingest" | "unparsed" | "needs_review" | "possible_duplicate" | "superseded" | "split";
+export type MarkerKind =
+  | "ingest"
+  | "manual"
+  | "unparsed"
+  | "needs_review"
+  | "possible_duplicate"
+  | "superseded"
+  | "split";
 
 export interface Marker {
   kind: MarkerKind;
@@ -439,10 +456,24 @@ export interface Marker {
  * blob was stored intact and proves **nothing** about whether the operator was
  * honest about what went into it. It is derived from `provenance`, which comes
  * from the writer the blob was attributed to and is AAD-bound.
+ *
+ * # Both halves are said out loud, and neither is a payload claim
+ *
+ * `manual` is the same fact from the other side, and it is a marker rather than
+ * a gap because a gap is a signal you have to already know to look for. Before
+ * it, a hand-typed row was distinguished from a bank one only by the ABSENCE of
+ * "From your inbox", which nobody reads as a statement.
+ *
+ * Neither label can be forged. `Txn.provenance` is set in `replay.ts` from
+ * `writer_id === INGEST_WRITER_ID` and is never read from a payload, and
+ * `oplog/chain.go` refuses the ingest writer id on the client upload path. So a
+ * device can author a transaction, and it cannot author one that says a bank
+ * sent it.
  */
 export function txnMarkers(t: Txn): Marker[] {
   const out: Marker[] = [];
   if (t.provenance === "ingest") out.push({ kind: "ingest", label: "From your inbox" });
+  else out.push({ kind: "manual", label: "Added by you" });
   if (t.unparsed) out.push({ kind: "unparsed", label: "Couldn't read this one" });
   else if (t.needs_review) out.push({ kind: "needs_review", label: "Needs review" });
   if (t.possible_duplicate_of !== null) out.push({ kind: "possible_duplicate", label: "Possible duplicate" });
@@ -497,6 +528,342 @@ export function sqlTxnSource(db: SqlDriver): TxnSource {
     },
     homeCurrency: () => readMeta(db)?.homeCurrency ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Manual entry
+// ---------------------------------------------------------------------------
+
+/**
+ * A hand-typed transaction, as the sheet holds it.
+ *
+ * **`amount` is the TEXT, not the amount** — the rule `MonthlyTotalField.tsx`
+ * spells out at length. A `number` here would corrupt past 2^53 and, worse,
+ * `Number("") === 0`, so an empty field would spring back to a zero-dirham
+ * purchase rather than staying empty. It is parsed once, by
+ * {@link parseMinorDraft}, into a `bigint`.
+ */
+export interface ManualDraft {
+  /** Major units, exactly as typed: `12.50`, `""`, `12.`. */
+  amount: string;
+  /** ISO 4217 alpha-3. The sheet defaults it to `TxnSource.homeCurrency()`. */
+  currency: string;
+  direction: Direction;
+  merchant: string;
+  /** `YYYY-MM-DD`, from a native date field. */
+  date: string;
+  category: string | null;
+}
+
+/** Refused in words rather than repaired — the money-field rule, again. */
+export type ManualCheck = { ok: true; payload: Record<string, unknown> } | { ok: false; reason: string };
+
+/** The `entry_method` a hand-typed op carries. */
+export const MANUAL_ENTRY_METHOD = "manual";
+
+/**
+ * A fresh ingest id for a row that has no raw body: sha256 of a random UUID.
+ *
+ * `validateOp` requires 64 lower-case hex on `txn_ingested` whatever authored
+ * it, because `state.ts:fingerprint` keys an unparsed row as
+ * `unparsed|${ingest_id}` and leans on hex being unable to contain a `|`.
+ *
+ * **It is random, never a hash of the fields.** Two identical coffees on one day
+ * are two coffees; content-hashing would give the second the same ingest id as
+ * the first, and `createTxn` answers a repeated ingest id with a
+ * `duplicate_ingest` anomaly and drops the op — a transaction the user typed,
+ * gone, with only an anomaly to say so.
+ */
+export function newIngestID(): string {
+  const bytes = webPlatform.sha256(new TextEncoder().encode(webPlatform.randomUUID()));
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  return out;
+}
+
+/**
+ * What the sentence under the amount field says, while it is being typed.
+ *
+ * Pure and exported so the words are testable without a DOM — the same shape as
+ * `monthlyTotalAdvice`, with this field's own refusals: a budget may be zero and
+ * a transaction may not, and "negative" here means the user wanted Income.
+ */
+export function manualAmountAdvice(text: string, currency: string): string {
+  const checked = checkAmount(text, currency);
+  return checked.ok ? `${formatMoney(checked.minor, currency)}.` : checked.reason;
+}
+
+function checkAmount(text: string, currency: string): { ok: true; minor: bigint } | { ok: false; reason: string } {
+  const t = text.trim();
+  if (t === "") return { ok: false, reason: "How much was it?" };
+  // Checked before `parseMinorDraft`, whose refusal for this case is written for
+  // a budget field ("a budget… cannot be negative") and would be the wrong
+  // sentence here: the user who typed a minus meant money coming in.
+  if (t.startsWith("-") || t.startsWith("−")) {
+    return { ok: false, reason: "Amounts are never negative. Pick Income if money came in." };
+  }
+  const draft = parseMinorDraft(t);
+  if (draft.state === "refused") return { ok: false, reason: draft.reason };
+  // Unreachable — "" returned above — but `empty` is a real state of the type
+  // and falling through it would build a payload with no amount at all.
+  if (draft.state === "empty") return { ok: false, reason: "How much was it?" };
+  if (draft.minor <= 0n) {
+    // `positiveMoney` in `replay.ts` refuses this too, but there the op is
+    // already in the log and the refusal is an anomaly nobody asked for.
+    return { ok: false, reason: `A transaction moves money, so it has to be more than ${formatMoney(0n, currency)}.` };
+  }
+  return { ok: true, minor: draft.minor };
+}
+
+/**
+ * The `txn_ingested` payload a hand-typed row carries, or the reason it is
+ * refused.
+ *
+ * # Why `txn_ingested` and not an op type of its own
+ *
+ * Nothing in this payload is ingest-only. `verified_origin_domain` is the one
+ * field that would be a lie from a client, and `client.ts:buildAuthoredOp`
+ * already **throws** if a client supplies it — it is server-attested. Replay
+ * says the same thing from its side: "`tier: "none"` with `unparsed: false` is
+ * every client-authored op — a CSV import, a manual entry — and those carry real
+ * money" (`replay.ts`, `decodeTxnPayload`).
+ *
+ * A new op type would cost `SCHEMA_VERSION` 4, and a v3 device meeting a v4 op
+ * raises `UnknownNewerVersionError`, which stops that device's WHOLE sync rather
+ * than skipping one op. The user's other phone would stop receiving
+ * categorisations, rates and bank mail until it updated, in exchange for a
+ * hand-typed coffee.
+ *
+ * `entry_method` is an added OPTIONAL key, which needs no version bump —
+ * `budget_split_set.monthly_total_minor` is the precedent. Nothing reads it yet:
+ * the row's provenance already comes from the writer, unforgeably, so this is a
+ * record for whoever later wants to tell a typed row from an imported one.
+ */
+export function manualTxnPayload(d: ManualDraft): ManualCheck {
+  const currency = d.currency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, reason: "Pick a currency." };
+  const amount = checkAmount(d.amount, currency);
+  if (!amount.ok) return { ok: false, reason: amount.reason };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return { ok: false, reason: "Pick a date." };
+  const merchant = d.merchant.trim();
+  if (merchant === "") return { ok: false, reason: "Who was it? A shop, a person, a name you'll know later." };
+  const category = normalizeCategory(d.category);
+  return {
+    ok: true,
+    payload: {
+      // A decimal STRING, not a JSON number: `JSON.parse` of a number is a
+      // float64, so an int64 amount would round on the way through the wire.
+      amount_minor: amount.minor.toString(10),
+      currency,
+      direction: d.direction,
+      // Midnight UTC on the day the user picked, so `substr(posted_at, 1, 10)`
+      // — which every period filter on this screen uses — reads back the same
+      // day in Dubai and in Los Angeles. A local midnight converted to UTC
+      // would move the row to the day before for anyone east of Greenwich.
+      posted_at: `${d.date}T00:00:00.000Z`,
+      merchant_raw: merchant,
+      last4: "",
+      category,
+      // A row with no category is a review item, which is what replay would
+      // default to anyway; stated rather than implied.
+      needs_review: category === null,
+      unparsed: false,
+      tier: "none",
+      entry_method: MANUAL_ENTRY_METHOD,
+    },
+  };
+}
+
+export interface ManualTxnArgs {
+  draft: ManualDraft;
+  /** From {@link newIngestID}. Injected so a test can pin it. */
+  ingestID: string;
+  /** A ULID source — `newEntityID`. Injected so a test can pin ids. */
+  newID: () => string;
+}
+
+export type ManualTxnResult = { ok: true; id: string; specs: OpSpec[] } | { ok: false; reason: string };
+
+/** The single op one hand-typed transaction appends. */
+export function manualTxnOps(args: ManualTxnArgs): ManualTxnResult {
+  const checked = manualTxnPayload(args.draft);
+  if (!checked.ok) return checked;
+  const id = args.newID();
+  return {
+    ok: true,
+    id,
+    specs: [
+      {
+        type: "txn_ingested",
+        entity: { kind: "txn", id },
+        parentVersion: null,
+        ingestId: args.ingestID,
+        payload: checked.payload,
+      },
+    ],
+  };
+}
+
+/**
+ * Fields a correction may change, and the ones it may not.
+ *
+ * `txn_edited` owns `merchant_raw`, `last4`, `posted_at`, `category`,
+ * `needs_review`, `amount_home_minor` and `possible_duplicate_of`. The money
+ * itself — `amount_minor`, `currency`, `direction` — is `PARSE_OWNED` in
+ * `replay.ts`, and an edit naming any of it raises an `unsupported_edit_field`
+ * anomaly and changes nothing.
+ *
+ * The op that CAN restate an amount is `txn_superseded`, and this does not
+ * author one: `ingest/reprocess.go` records that "a device that authored its own
+ * `txn_superseded` would be outside the contract". So the sheet locks the three
+ * money fields on a correction and says so, rather than offering an edit the
+ * fold would refuse in silence. That gap is real and is written down in the task
+ * report.
+ *
+ * Returns `[]` when nothing the op owns actually changed — an op that consumes a
+ * version and asserts nothing is still a fork risk against the user's own second
+ * device.
+ */
+export function manualEditOps(args: {
+  txn: Txn;
+  draft: ManualDraft;
+  /** The version the projection currently holds. */
+  projectedVersion: number;
+  /** Ops already queued on this device, for {@link nextParentVersion}. */
+  pending: readonly Op[];
+}): OpSpec[] {
+  const { txn, draft } = args;
+  const payload: Record<string, unknown> = {};
+  const merchant = draft.merchant.trim();
+  if (merchant !== "" && merchant !== txn.merchant_raw) payload["merchant_raw"] = merchant;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(draft.date) && draft.date !== txn.posted_at.slice(0, 10)) {
+    payload["posted_at"] = `${draft.date}T00:00:00.000Z`;
+  }
+  const category = normalizeCategory(draft.category);
+  if (category !== txn.category) {
+    payload["category"] = category;
+    // Naming a category answers the question the flag was asking. Clearing it
+    // back to null does not un-answer it, so the flag is left alone there.
+    if (category !== null && txn.needs_review) payload["needs_review"] = false;
+  }
+  if (Object.keys(payload).length === 0) return [];
+  return [
+    {
+      type: "txn_edited",
+      entity: { kind: "txn", id: txn.id },
+      parentVersion: nextParentVersion(txn.id, args.projectedVersion, args.pending),
+      payload,
+    },
+  ];
+}
+
+/**
+ * The row a just-enqueued `txn_ingested` will become, for the screen to show
+ * until the fold produces the real one.
+ *
+ * Built from the OP's payload rather than from the sheet's own variables, so the
+ * screen cannot render something the log will not say. It is deliberately
+ * conservative about the fields replay computes rather than copies:
+ * `amount_home_minor` is `null` (the FX snapshot is frozen at the op's log
+ * position, which has not happened yet — §3.7's null is a waiting state, not a
+ * zero), `possible_duplicate_of` is `null` (the fingerprint index is replay's),
+ * and `provenance` is `"user"` because this device is not the ingest writer and
+ * cannot be.
+ *
+ * Returns `null` for any op that is not a client-authored transaction create.
+ */
+export function optimisticTxn(spec: OpSpec): Txn | null {
+  if (spec.type !== "txn_ingested") return null;
+  const id = spec.entity?.id;
+  const ingestID = spec.ingestId;
+  if (id === undefined || ingestID === undefined) return null;
+  const p = spec.payload as Record<string, unknown>;
+  const amount = typeof p["amount_minor"] === "string" ? p["amount_minor"] : "0";
+  return {
+    id,
+    ingest_id: ingestID,
+    amount_minor: parseDecimal(amount),
+    currency: String(p["currency"] ?? ""),
+    direction: String(p["direction"] ?? ""),
+    posted_at: String(p["posted_at"] ?? ""),
+    merchant_raw: String(p["merchant_raw"] ?? ""),
+    last4: String(p["last4"] ?? ""),
+    category: typeof p["category"] === "string" && p["category"] !== "" ? p["category"] : null,
+    needs_review: p["needs_review"] === true,
+    unparsed: p["unparsed"] === true,
+    tier: "none",
+    parse_error: null,
+    provenance: "user",
+    amount_home_minor: null,
+    splits: [],
+    superseded_by: null,
+    possible_duplicate_of: null,
+    duplicate_disposition: null,
+    verified_origin_domain: null,
+    version: 1,
+  } as Txn;
+}
+
+/** The draft a correction sheet opens on: the row as it stands. */
+export function draftOf(txn: Txn): ManualDraft {
+  return {
+    // `minorToDraft`, not `formatMinor`: the field's own parser refuses a
+    // grouping comma, so seeding it with `12,000.00` would open a sheet on text
+    // the same sheet then calls unreadable.
+    amount: minorToDraft(txn.amount_minor),
+    currency: txn.currency,
+    direction: txn.direction === "credit" ? "credit" : "debit",
+    merchant: txn.merchant_raw,
+    date: txn.posted_at.slice(0, 10),
+    category: txn.category,
+  };
+}
+
+/**
+ * Whether one row belongs in the list as it is currently filtered.
+ *
+ * The SQL in {@link buildTxnQuery} is the only filter the LIST uses; this is for
+ * the rows the screen holds optimistically, which are not in SQLite yet because
+ * the projection does not move until a sync folds. Two spellings of one filter
+ * is a drift risk, so `transactions.test.ts` runs both over the same fixture and
+ * requires the same ids back.
+ */
+export function matchesFilters(t: Txn, f: TxnFilters): boolean {
+  if (!f.includeSuperseded && t.superseded_by !== null) return false;
+  if (f.directions.length > 0 && !f.directions.includes(t.direction as Direction)) return false;
+  if (f.currencies.length > 0 && !f.currencies.includes(t.currency)) return false;
+  if (f.provenance.length > 0 && !f.provenance.includes(t.provenance)) return false;
+  if (f.categories.length > 0 && !f.categories.includes(t.category)) return false;
+  if (f.flags.length > 0 && !f.flags.some((flag) => hasFlag(t, flag))) return false;
+  const q = f.query.trim();
+  // SQLite's LIKE is case-insensitive for ASCII and the merchant query is
+  // wrapped in `%…%`, so this is `includes` on the lower-cased pair.
+  if (q !== "" && !t.merchant_raw.toLowerCase().includes(q.toLowerCase())) return false;
+  const day = t.posted_at.slice(0, 10);
+  if (f.from !== "" && day < f.from) return false;
+  if (f.to !== "" && day > f.to) return false;
+  return true;
+}
+
+function hasFlag(t: Txn, flag: TxnFlag): boolean {
+  switch (flag) {
+    case "needs_review":
+      return t.needs_review;
+    case "unparsed":
+      return t.unparsed;
+    case "possible_duplicate":
+      return t.possible_duplicate_of !== null;
+    case "split":
+      return t.splits.length > 0;
+    case "confirmed":
+      return !t.needs_review && !t.unparsed;
+  }
+}
+
+function normalizeCategory(v: string | null): string | null {
+  if (v === null) return null;
+  const trimmed = v.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 // ---------------------------------------------------------------------------

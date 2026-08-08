@@ -9,6 +9,7 @@ import {
   EMPTY_FILTERS,
   filtersActive,
   withFilterToggled,
+  type Provenance,
   type TxnFacets,
   type TxnFilters,
   type TxnFlag,
@@ -41,8 +42,21 @@ const FLAG_OPTS: { value: TxnFlag; label: string }[] = [
   { value: "possible_duplicate", label: "Possible duplicate" },
   { value: "split", label: "Split" },
 ];
+/**
+ * Where a row came from — the same two words `txnMarkers` puts on the row.
+ *
+ * `provenance` is derived from the writer that authored the op and never from a
+ * payload, so this filter separates bank mail from hand-typed entries on a fact
+ * a device cannot forge. It was a `TxnFilters` dimension with no control from
+ * the day the strip landed; a filter nothing can reach is a filter nobody has.
+ */
+const PROVENANCE_OPTS: { value: Provenance; label: string }[] = [
+  { value: "ingest", label: "From your inbox" },
+  { value: "user", label: "Added by you" },
+];
 const DIRECTION_LABEL: Record<string, string> = { debit: "Spending", credit: "Income" };
 const FLAG_LABEL: Record<string, string> = Object.fromEntries(FLAG_OPTS.map((o) => [o.value, o.label]));
+const PROVENANCE_LABEL: Record<string, string> = Object.fromEntries(PROVENANCE_OPTS.map((o) => [o.value, o.label]));
 const UNCATEGORIZED = "Uncategorized";
 
 /**
@@ -109,6 +123,7 @@ export function ProjectionFilterBar({ filters, facets, categoryDefs, open, onCha
     ...filters.categories.map((c) => ({ key: `c${c ?? "∅"}`, label: c ?? UNCATEGORIZED, remove: () => onChange(withFilterToggled(filters, "categories", c)) })),
     ...filters.currencies.map((c) => ({ key: `u${c}`, label: c, remove: () => onChange(withFilterToggled(filters, "currencies", c)) })),
     ...filters.flags.map((f) => ({ key: `f${f}`, label: FLAG_LABEL[f] ?? f, remove: () => onChange(withFilterToggled(filters, "flags", f)) })),
+    ...filters.provenance.map((p) => ({ key: `p${p}`, label: PROVENANCE_LABEL[p] ?? p, remove: () => onChange(withFilterToggled(filters, "provenance", p)) })),
   ];
 
   return (
@@ -165,6 +180,20 @@ export function ProjectionFilterBar({ filters, facets, categoryDefs, open, onCha
                   label={o.label}
                   active={filters.flags.includes(o.value)}
                   onClick={() => onChange(withFilterToggled(filters, "flags", o.value))}
+                />
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <SectionLabel className="mb-2">Source</SectionLabel>
+            <div className="flex flex-wrap gap-2">
+              {PROVENANCE_OPTS.map((o) => (
+                <Chip
+                  key={o.value}
+                  label={o.label}
+                  active={filters.provenance.includes(o.value)}
+                  onClick={() => onChange(withFilterToggled(filters, "provenance", o.value))}
                 />
               ))}
             </div>

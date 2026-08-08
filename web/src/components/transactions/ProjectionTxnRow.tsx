@@ -51,9 +51,14 @@ export function ProjectionTxnRow({ txn, categoryDefs, onOpen }: {
   // Home's buckets cannot disagree. A category the user defined as a need is a
   // need here too, retired or not, because the rows filed under it still count.
   const bucket = useMemo(() => bucketOfCategory(txn.category, categoryDefs), [txn.category, categoryDefs]);
-  // Only the markers a row can act on belong in the line; provenance is on the
-  // detail, not here, or every single row carries the same pill.
-  const pills = txnMarkers(txn).filter((mk) => mk.kind === "needs_review" || mk.kind === "unparsed" || mk.kind === "possible_duplicate");
+  // Only the markers a row can act on, plus `manual`. "From your inbox" is not
+  // in the line because on a mail-fed account it is on EVERY row, and a pill
+  // every row carries says nothing. "Added by you" is the rare one and is
+  // therefore the informative one — and it is the half a user could otherwise
+  // only infer from an absence, which is not a signal anyone reads.
+  const pills = txnMarkers(txn).filter(
+    (mk) => mk.kind === "needs_review" || mk.kind === "unparsed" || mk.kind === "possible_duplicate" || mk.kind === "manual",
+  );
 
   return (
     <div>

@@ -15,7 +15,9 @@ import { Pressable } from "../components/ui/Pressable";
 import { useToast } from "../components/Toast";
 import { ProjectionTxnRow } from "../components/transactions/ProjectionTxnRow";
 import { ProjectionFilterBar } from "../components/transactions/ProjectionFilterBar";
-import { AlertTriangle, ListOrdered, Search, SlidersHorizontal } from "../components/ui/PixelIcon";
+import { emptyDraft, ManualTxnSheet } from "../components/transactions/ManualTxnSheet";
+import { Fab } from "../components/ui/Fab";
+import { AlertTriangle, ListOrdered, Plus, Search, SlidersHorizontal } from "../components/ui/PixelIcon";
 import { useFirstReveal } from "../hooks/useFirstReveal";
 import { DUR, EASE_OUT } from "../lib/motion";
 import { formatMinor } from "../lib/minorMoney";
@@ -33,15 +35,21 @@ import {
   type ReviewSource,
 } from "../v2/sources/review";
 import {
+  draftOf,
   EMPTY_FILTERS,
   filtersActive,
+  manualEditOps,
+  manualTxnOps,
+  matchesFilters,
+  newIngestID,
   txnAmountLabel,
   txnTotals,
+  type ManualDraft,
   type TxnFilters,
   type TxnFlag,
   type TxnSource,
 } from "../v2/sources/transactions";
-import { useCategoryChoices, useReviewSource, useTxnFacets, useTxnList, useTxnSource, v2Keys } from "../v2/queries";
+import { useCategoryChoices, useHomeCurrency, useReviewSource, useTxnFacets, useTxnList, useTxnSource, v2Keys } from "../v2/queries";
 import { useWriter, type Writer } from "../v2/writer";
 
 /**
@@ -70,6 +78,19 @@ import { useWriter, type Writer } from "../v2/writer";
  * The ops are authored by `sources/review.ts`'s `categorizeOps`, the same
  * function the deck commits through, so there is one answer to "what does a
  * categorisation record" rather than two that drift.
+ *
+ * # Adding one by hand
+ *
+ * The Fab authors a client-side `txn_ingested` — the same op the mail pipeline
+ * writes, deliberately, because nothing in that payload is ingest-only and a new
+ * op type would cost `SCHEMA_VERSION` 4, which hard-stops a v3 device's entire
+ * sync. `v2/sources/transactions.ts` holds the reasoning and the payload.
+ *
+ * The row cannot claim to be a bank row: `provenance` is derived in `replay.ts`
+ * from `writer_id === INGEST_WRITER_ID`, never from a payload, and the server
+ * refuses the ingest writer id on the client upload path. It therefore carries
+ * "Added by you", which is the positive half of a signal that used to be an
+ * absence.
  *
  * The one filter that changed meaning is the segmented control's fourth
  * segment: v1 had "Archived", and there is no archive op, so the segments are
@@ -121,6 +142,9 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
   const toast = useToast();
   const choices = useCategoryChoices(reviewSource);
   const [editing, setEditing] = useState<Txn | null>(null);
+  /** The manual sheet: a new row, an existing one being corrected, or closed. */
+  const [manual, setManual] = useState<{ mode: "add" | "edit"; txn: Txn | null } | null>(null);
+  const [manualError, setManualError] = useState("");
   // Bumped when this screen authors something, because the store it authors
   // into is mutated in place and React cannot see that on its own.
   const [authoredTick, setAuthoredTick] = useState(0);
@@ -177,10 +201,40 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
     // eslint-disable-next-line react-hooks/exhaustive-deps -- authoredTick is the store's change signal
     [authored, authoredTick, writer?.pending],
   );
-  const rows = useMemo(
-    () => (list.data?.rows ?? []).map((t) => withPendingCategory(t, answered)),
-    [list.data, answered],
-  );
+  /**
+   * The page, plus the rows this device created that the projection has not
+   * folded yet.
+   *
+   * A manual entry is durable the moment `enqueueMany` returns, and invisible
+   * until the next sync projects — the window `authored.ts` documents. For a
+   * categorisation that window is a wrong label for a few seconds; for a create
+   * it is the row simply not being there, which reads as the app having dropped
+   * what was just typed. A user's answer to that is to type it again, and
+   * because the ingest id is random rather than a content hash, the second entry
+   * is a second real transaction.
+   *
+   * Filtered through {@link matchesFilters} rather than pinned to the top, so a
+   * new row obeys the same period, segment, chips and search as every other row
+   * — an optimistic row that ignored the filters would be the list lying about
+   * what it is showing. Dropped as soon as the projection can produce the row
+   * itself, by id.
+   */
+  const rows = useMemo(() => {
+    const page = (list.data?.rows ?? []).map((t) => withPendingCategory(t, answered));
+    const held = authored?.created;
+    if (held === undefined || held.size === 0) return page;
+    const known = new Set(page.map((t) => t.id));
+    const extra = [...held.values()]
+      .map((t) => withPendingCategory(t, answered))
+      .filter((t) => !known.has(t.id) && matchesFilters(t, filters));
+    if (extra.length === 0) return page;
+    // The list's own order, newest first, with `id` as the tiebreak `posted_at`
+    // is not unique enough to be.
+    return [...page, ...extra].sort((a, b) =>
+      a.posted_at === b.posted_at ? (a.id < b.id ? 1 : -1) : a.posted_at < b.posted_at ? 1 : -1,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- authoredTick is the store's change signal
+  }, [list.data, answered, authored, authoredTick, filters]);
   /**
    * Every rule this device knows about.
    *
@@ -197,6 +251,17 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
     [choices.data, authored, authoredTick, writer?.pending],
   );
   const totals = useMemo(() => txnTotals(rows), [rows]);
+  const homeCurrency = useHomeCurrency(source);
+  /**
+   * What the manual sheet's currency picker offers: the home currency first,
+   * then every currency already on the account. An account with one currency
+   * gets a one-item picker rather than a list of every ISO code, which is the
+   * whole point of drawing this from facets instead of a table.
+   */
+  const currencyChoices = useMemo(
+    () => [...new Set([homeCurrency ?? "", ...(facets.data?.currencies ?? [])].filter((c) => c !== ""))],
+    [homeCurrency, facets.data],
+  );
   const firstReveal = useFirstReveal(rows.length > 0);
   const activeChips = filtersActive(chips);
 
@@ -244,6 +309,58 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
       });
     },
     [reviewSource, writer, authored, knownRules, qc, toast],
+  );
+
+  /**
+   * Records a hand-typed transaction, or a correction to one.
+   *
+   * The ops are enqueued as ONE group, and remembered from the SPECS rather than
+   * from the sheet's own variables, so the screen cannot show something the log
+   * will not say. The flush is not awaited: `Client.emit` has already committed
+   * the op, and a sheet that stalled on the network would be unusable in exactly
+   * the places this app is used.
+   */
+  const saveManual = useCallback(
+    async (mode: "add" | "edit", txn: Txn | null, draft: ManualDraft): Promise<void> => {
+      if (writer === null || authored === null) return;
+      let specs;
+      let id: string;
+      if (mode === "add") {
+        const built = manualTxnOps({
+          draft,
+          // sha256 of a fresh random UUID. NEVER a hash of the fields: two
+          // identical coffees on one day are two coffees, and a content hash
+          // would make the second a `duplicate_ingest` anomaly that drops it.
+          ingestID: newIngestID(),
+          newID: newEntityID,
+        });
+        if (!built.ok) { setManualError(built.reason); return; }
+        specs = built.specs;
+        id = built.id;
+      } else {
+        if (txn === null) return;
+        id = txn.id;
+        // A fresh read of the projection, plus what this device has queued —
+        // never `txn.version`, which is the object the list rendered and can be
+        // minutes old. An op naming a stale parent forks against yourself.
+        const head = reviewSource === null ? null : await reviewSource.version(txn.id);
+        specs = manualEditOps({ txn, draft, projectedVersion: head ?? txn.version, pending: writer.pending });
+        // Nothing the op owns changed. Closing without appending is the honest
+        // answer; an op that consumes a version and asserts nothing is a fork
+        // risk against the user's own second device.
+        if (specs.length === 0) { setManual(null); setManualError(""); return; }
+      }
+      writer.enqueueMany(specs);
+      recordAuthored(authored, id, specs);
+      setAuthoredTick((n) => n + 1);
+      setManual(null);
+      setManualError("");
+      await qc.invalidateQueries({ queryKey: v2Keys.all });
+      writer.flush().catch(() => {
+        toast.show({ message: "Saved on this device — it will sync when you're back online" });
+      });
+    },
+    [writer, authored, reviewSource, qc, toast],
   );
 
   /**
@@ -375,7 +492,21 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
                     <ProjectionTxnRow
                       txn={t}
                       categoryDefs={categoryDefs}
-                      onOpen={canCategorize ? (row) => { fire("selection"); setEditing(row); } : undefined}
+                      // A hand-typed row opens the sheet that made it — the
+                      // whole row, not just its category, because the typo a
+                      // user needs to fix is usually the merchant or the day.
+                      // A bank row has nothing a `txn_edited` should be
+                      // second-guessing, so it opens the categorizer.
+                      onOpen={
+                        canCategorize
+                          ? (row) => {
+                              fire("selection");
+                              setManualError("");
+                              if (row.provenance === "user") setManual({ mode: "edit", txn: row });
+                              else setEditing(row);
+                            }
+                          : undefined
+                      }
                     />
                   </div>
                 </m.li>
@@ -396,6 +527,29 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
             </p>
           )}
         </>
+      )}
+
+      {/* Only when there is somewhere to append to. A create button with no
+          writer would take an entry and drop it, which is the failure this
+          screen's header is about. */}
+      {writer !== null && (
+        <Fab
+          icon={Plus}
+          label="Add transaction"
+          onClick={() => { setManualError(""); setManual({ mode: "add", txn: null }); }}
+        />
+      )}
+
+      {manual !== null && (
+        <ManualTxnSheet
+          mode={manual.mode}
+          initial={manual.txn === null ? emptyDraft(homeCurrency ?? "AED") : draftOf(manual.txn)}
+          categories={categoryNames}
+          currencies={currencyChoices}
+          error={manualError}
+          onClose={() => { setManual(null); setManualError(""); }}
+          onSave={(draft) => void saveManual(manual.mode, manual.txn, draft)}
+        />
       )}
 
       {editing !== null && (

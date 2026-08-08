@@ -797,7 +797,11 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   an `int64`, so one component serving both would mean a `Number()` on money.
   Absent versus v1, for want of an op behind them: the project chip and the
   "archived" status pill. Splits, the no-home-rate pill and the review/unread/
-  duplicate markers are all present.
+  duplicate markers are all present, plus **"Added by you"** on a hand-typed row.
+  "From your inbox" is deliberately *not* in the line — on a mail-fed account it
+  would be on every row, and a pill every row carries says nothing; the rare
+  half is the informative one, and it is the half a user could otherwise only
+  infer from an absence.
   **`categoryDefs` is required and has no default.** The leading stripe is a
   bucket claim, and it must be the same claim Home's 50/30/20 makes for the same
   category — both go through `layeredMapping` (`v2/sources/budget.ts`), which
@@ -817,6 +821,25 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   claim and has to agree with every other surface making one. A retired
   definition still colours its chip — the rows filed under it, which is what the
   chip selects, still count in their bucket.
+  The `Source` section (From your inbox / Added by you) filters on
+  `Txn.provenance`, which `replay.ts` derives from the writer that authored the
+  op and never from a payload — so it separates bank mail from hand-typed rows on
+  a fact a device cannot forge.
+- `ManualTxnSheet` (`transactions/`) — add a transaction by hand, and correct one
+  that was added by hand. Composed from `Dialog` + `Input`/`Select`. Field layout
+  and the "Spending"/"Income" wording come from v1's `AddTransactionSheet`; the
+  **money handling deliberately does not** — that sheet holds a `number` in a
+  `NumberField`, and a v2 amount is `bigint` minor units. This one holds the
+  amount as **text exactly as typed** and parses it once, in
+  `v2/sources/transactions.ts`'s `manualTxnPayload`, the same rule
+  `MonthlyTotalField` sets out. What cannot be read is refused in words in the
+  `role="status"` line; nothing is rewritten on blur.
+  **On a correction the amount, currency and type are locked**, and the sheet
+  says so: those three are `PARSE_OWNED` in `replay.ts`, so a `txn_edited`
+  naming any of them raises `unsupported_edit_field` and changes nothing, and the
+  op that could restate them (`txn_superseded`) is one a device must not author.
+  Reach for it only on projection-backed screens; v1's `AddTransactionSheet`
+  stays with the v1 REST screens.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
   left = trailing. Full-swipe past the commit threshold fires it (haptic +
   spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is
