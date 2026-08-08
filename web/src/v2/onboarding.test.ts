@@ -167,6 +167,46 @@ describe("resumeFacts", () => {
     expect(stepFor(f)).toBe("first_mail_confirmed");
   });
 
+  /**
+   * The one that destroys data.
+   *
+   * `keysReady` is an ACCESS gate — "does this browser hold the account's keys
+   * right now" — and it is false on every second device, after cleared site
+   * data, after the WebKit `CryptoKey` loss, and whenever `GET /api/v1/keys`
+   * fails. Deriving `setupSeen` through the whole milestone table let that one
+   * false fact read as "this account was never set up": the walk resumed at the
+   * recovery step (correct), and then, the moment the phrase was accepted,
+   * dropped the user on the FINISH screen — which carries `BudgetSplitStep`,
+   * whose "Save plan" authors a full `budget_split_set` over the plan the log
+   * already holds.
+   *
+   * Setup history is the ACCOUNT's; key access is this device's.
+   */
+  it("does not read a locked key vault as an account that was never set up", () => {
+    const f = resumeFacts(fromTheLog({ keysReady: false }));
+    expect(f.setupSeen).toBe(true);
+    // Still gated: the device does not get into the product without keys, it
+    // gets the recovery step.
+    expect(stepFor(f)).toBe("invited");
+    expect(screenFor(stepFor(f))).toBe("recovery");
+  });
+
+  it("re-enters the product, not the finish walk, once a locked device is unlocked", () => {
+    const unlocked = onboardingReducer(resumeFacts(fromTheLog({ keysReady: false })), { type: "keys_secured" });
+    expect(stepFor(unlocked)).toBe("done");
+    expect(screenFor(stepFor(unlocked))).toBe("product");
+  });
+
+  it("still walks a genuinely new account through setup when its keys are not ready", () => {
+    // The guard on the fix: ignoring `keysReady` must not let an account with
+    // nothing in its log skip the steps that put something there.
+    const fresh = resumeFacts(
+      fromTheLog({ keysReady: false, banks: [], inboundAddress: null, firstMailConfirmedAt: null, homeCurrency: null }),
+    );
+    expect(fresh.setupSeen).toBe(false);
+    expect(stepFor(onboardingReducer(fresh, { type: "keys_secured" }))).toBe("keys_secured");
+  });
+
   it("prefers the server's address and falls back to the cached one when offline", () => {
     const local = encodeLocal(complete());
     expect(

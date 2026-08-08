@@ -37,6 +37,7 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import type { SecretStore } from "@ledger/client/store/store";
+import type { SqlDriver } from "@ledger/client/store/driver";
 
 import {
   firstMailAt,
@@ -49,6 +50,7 @@ import {
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
 import { bankDeclaredOps } from "../../v2/sources/banks";
+import { sqlBudgetSource, type BudgetSource } from "../../v2/sources/budget";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { browserKeyVault, keyStatus, type KeyStatus, type KeyVault } from "../../v2/keys";
 import { Address } from "./Address";
@@ -77,6 +79,12 @@ export interface OnboardingProps {
   pollMs?: number;
   /** Injected by tests. Defaults to the browser's IndexedDB key vault. */
   vault?: KeyVault;
+  /**
+   * Injected by tests. Defaults to this device's projection — the finish
+   * screen's plan control must read the plan the account already holds before
+   * it can offer to replace it.
+   */
+  budgetSource?: BudgetSource;
 }
 
 export function Onboarding({
@@ -89,6 +97,7 @@ export function Onboarding({
   server = SERVER,
   pollMs,
   vault,
+  budgetSource,
 }: OnboardingProps) {
   const [facts, dispatch] = useReducer(onboardingReducer, initial);
   const step = stepFor(facts);
@@ -215,6 +224,8 @@ export function Onboarding({
         <Finish
           facts={facts}
           commit={commit}
+          driver={handle.driver}
+          {...(budgetSource === undefined ? {} : { budgetSource })}
           onFinish={() => dispatch({ type: "finished" })}
         />
       );
@@ -337,12 +348,23 @@ function RecoveryStep({
 function Finish({
   facts,
   commit,
+  driver,
+  budgetSource,
   onFinish,
 }: {
   facts: OnboardingFacts;
   commit: (ops: readonly OpSpec[]) => void;
+  driver: SqlDriver;
+  budgetSource?: BudgetSource;
   onFinish: () => void;
 }) {
+  /*
+    Built HERE and not in `Onboarding`, so it is constructed only when this
+    screen is actually on the glass: `sqlBudgetSource` runs `ensureProjection`
+    against the driver, and the earlier steps must not depend on a projection
+    that a device part-way through setup may not have written yet.
+  */
+  const source = useMemo(() => budgetSource ?? sqlBudgetSource(driver), [budgetSource, driver]);
   return (
     <Step
       testId="onboarding-finish"
@@ -379,7 +401,7 @@ function Finish({
           because the machine's steps are derived from milestones that must be
           MET — see `BudgetSplitStep`'s header. "Open ledger" above is a complete
           answer to it, and an account that ignores it keeps 50/30/20. */}
-      <BudgetSplitStep commit={commit} currency={facts.homeCurrency ?? null} />
+      <BudgetSplitStep commit={commit} currency={facts.homeCurrency ?? null} source={source} />
     </Step>
   );
 }

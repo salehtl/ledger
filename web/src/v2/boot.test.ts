@@ -7,7 +7,7 @@ import type { State } from "@ledger/client/replay/state";
 import { memSecretStore } from "@ledger/client/store/store";
 
 import { boot, type BootDeps } from "./boot";
-import { encodeLocal, loadLocalRecord, ONBOARDING_LOCAL_KEY } from "./onboarding";
+import { encodeLocal, loadLocalRecord, onboardingReducer, ONBOARDING_LOCAL_KEY, screenFor, stepFor } from "./onboarding";
 import { EnrollmentError } from "./session";
 
 const CLEAN: SyncResult = { pulled: 0, applied: 0, violations: [], halted: false };
@@ -325,6 +325,41 @@ describe("boot", () => {
     if (state.step !== "onboarding") throw new Error("unreachable");
     expect(state.facts.banks).toEqual([]);
   });
+
+  // -- an empty key vault ---------------------------------------------------
+
+  /**
+   * Three ways a set-up device reads as having no keys, and none of them is
+   * "this account was never set up".
+   *
+   * `keysReadyOrFalse` answers a failed `GET /api/v1/keys` with `false`, which
+   * is right for the gate it feeds — the device cannot be let in — and was
+   * catastrophic for the setup question: the walk unlocked, then landed on the
+   * FINISH screen and offered "Save plan" over a plan the account already held.
+   *
+   * What each case must produce is the same: keys are missing (so the recovery
+   * step), and setup is REMEMBERED (so unlocking opens the app).
+   */
+  const lockedOut: [string, Partial<BootDeps>][] = [
+    ["a second device that holds no keys", { keysReady: async () => false }],
+    ["cleared site data", { keysReady: async () => false, secrets: memSecretStore() }],
+    ["a failing GET /api/v1/keys", { keysReady: () => Promise.reject(new NetworkError("offline", new Error("fetch failed"))) }],
+  ];
+
+  for (const [what, over] of lockedOut) {
+    it(`remembers that setup happened when the key vault reads empty: ${what}`, async () => {
+      const state = await boot(deps(over));
+      expect(state.step).toBe("onboarding");
+      if (state.step !== "onboarding") throw new Error("unreachable");
+      expect(state.facts.keysReady).toBe(false);
+      // The recovery step, which is the honest answer to "this browser has no key".
+      expect(screenFor(stepFor(state.facts))).toBe("recovery");
+      // And unlocking goes to the product, NOT to the finish screen whose plan
+      // control would author over the account's plan.
+      const unlocked = onboardingReducer(state.facts, { type: "keys_secured" });
+      expect(screenFor(stepFor(unlocked))).toBe("product");
+    });
+  }
 
   // -- the address ----------------------------------------------------------
 

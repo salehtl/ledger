@@ -8,11 +8,15 @@
  * currency actually puts ops in the outbox rather than merely advancing a step.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { SqlDriver } from "@ledger/client/store/driver";
+
 import { MotionProvider } from "../../app/MotionProvider";
+import { projectionWith } from "../../test/projectionFixture";
 import { emptyFacts, type OnboardingFacts } from "../../v2/onboarding";
 import { AccountMismatchError, EnrollmentError, PasskeyError, type V2Handle } from "../../v2/session";
 import type { SecretStore } from "@ledger/client/store/store";
@@ -25,6 +29,22 @@ import { Welcome } from "./Welcome";
 // ---------------------------------------------------------------------------
 
 const ADDRESS = "u-7f3a91c4@in.sirdab.ae";
+
+/**
+ * A REAL projection behind every rig, because the finish screen reads one.
+ *
+ * The stub `{} as never` that used to sit in `driver` was fine while no step
+ * touched the database, and stopped being fine the moment the plan control had
+ * to read the plan the account already holds before offering to replace it —
+ * which is the whole of Task 1. A stub there fails as a thrown render, not as a
+ * quiet wrong answer, but the walk that reaches the finish screen is driven by
+ * several tests here and all of them need it.
+ */
+let db: SqlDriver;
+
+beforeEach(async () => {
+  db = await projectionWith();
+});
 
 function memorySecrets(): SecretStore {
   const held = new Map<string, string>();
@@ -58,7 +78,7 @@ function handleRig(over: { signUp?: () => Promise<void>; signIn?: () => Promise<
     enrol: async () => {},
     signOut: async () => {},
     close: () => {},
-    driver: {} as never,
+    driver: db,
     client: {
       get userId() {
         return "u_1";
@@ -136,9 +156,12 @@ function scriptedFetch(
 
 function mount(facts: OnboardingFacts, rig: HandleRig, doFetch: typeof fetch, done = vi.fn()) {
   const secrets = memorySecrets();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MotionProvider>
-      <Onboarding handle={rig.handle} facts={facts} done={done} fetch={doFetch} secrets={secrets} pollMs={0} />
+      <QueryClientProvider client={qc}>
+        <Onboarding handle={rig.handle} facts={facts} done={done} fetch={doFetch} secrets={secrets} pollMs={0} />
+      </QueryClientProvider>
     </MotionProvider>,
   );
   return { done, secrets };
@@ -573,5 +596,67 @@ describe("the home currency picker", () => {
     const panel = screen.getByTestId("home-currency-consequence");
     expect(within(panel).getByText(/delete your account/i)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/change this later|change it later|in settings later/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finish
+// ---------------------------------------------------------------------------
+
+/**
+ * The finish screen carries the plan control, and the plan control authors a
+ * whole `budget_split_set` — which REPLACES the plan. Every device that had to
+ * secure keys used to land here: a second phone, a cleared browser, a failing
+ * `GET /api/v1/keys`. `resumeFacts` no longer routes them here, and this is the
+ * other half — that the control, when it IS shown, reads what the account
+ * already holds first.
+ *
+ * The driver is a REAL projection and no source is injected, so what is under
+ * test is the production wiring: `Onboarding` handing the finish screen this
+ * device's projection.
+ */
+describe("the finish screen", () => {
+  function atFinish(): OnboardingFacts {
+    return {
+      ...invited(),
+      banks: ["dib"],
+      inboundAddress: ADDRESS,
+      forwardingDeclared: true,
+      firstMailConfirmedAt: "2026-08-01T00:00:00Z",
+      homeCurrency: "AED",
+    };
+  }
+
+  function mountFinish(): HandleRig {
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,60,20,20,'1200000')").run();
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    mount(atFinish(), rig, doFetch);
+    return rig;
+  }
+
+  it("shows the plan the account already holds rather than an empty picker", async () => {
+    mountFinish();
+    await screen.findByTestId("onboarding-finish");
+    const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
+    await waitFor(() => {
+      expect(needs.value).toBe("60");
+    });
+    expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12000.00");
+  });
+
+  it("does not clear a monthly total set on another device", async () => {
+    const user = userEvent.setup();
+    const rig = mountFinish();
+    await screen.findByTestId("onboarding-finish");
+    const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
+    await waitFor(() => {
+      expect(needs).toBeEnabled();
+    });
+
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(rig.emitted).toEqual([
+      { type: "budget_split_set", payload: { need: 60, want: 20, saving: 20, monthly_total_minor: "1200000" } },
+    ]);
   });
 });

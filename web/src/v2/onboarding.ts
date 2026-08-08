@@ -45,8 +45,13 @@
  *     that one exists was never evidence of anything, only a device's memory of
  *     a button press.
  *   - **Finished** is the prerequisites being met. {@link resumeFacts} sets
- *     {@link OnboardingFacts.setupSeen} when every milestone behind it is
- *     already true, so a cold launch on a set-up account opens the app.
+ *     {@link OnboardingFacts.setupSeen} when every ACCOUNT milestone behind it
+ *     is already true, so a cold launch on a set-up account opens the app.
+ *     Deliberately not every milestone: {@link OnboardingFacts.keysReady} is
+ *     this device's access to the account, not evidence about its history, and
+ *     conflating the two walked a locked device onto the finish screen — where
+ *     the plan control then authored over the account's plan. See
+ *     {@link accountSetupComplete}.
  *
  * What remains device-local is the address hint below, and nothing else.
  *
@@ -195,10 +200,12 @@ export interface OnboardingFacts {
    * the same frame it appeared.
    *
    * In-memory within a session, and re-derived at boot: {@link resumeFacts} sets
-   * it when every milestone behind it is already met, which is what opens the
-   * app on a second device instead of a finish screen for a setup that happened
-   * on another phone. The cost is that reloading between the currency op and the
-   * button skips that screen once, on a device whose account is by then set up.
+   * it when every ACCOUNT milestone behind it is already met — see
+   * {@link accountSetupComplete} for why {@link keysReady} is excluded — which
+   * is what opens the app on a second device instead of a finish screen for a
+   * setup that happened on another phone. The cost is that reloading between the
+   * currency op and the button skips that screen once, on a device whose account
+   * is by then set up.
    */
   setupSeen: boolean;
 }
@@ -250,6 +257,38 @@ export function stepFor(f: OnboardingFacts): OnboardingPosition {
 /** The boot gate's question, in one place so it cannot be re-derived wrongly. */
 export function onboardingComplete(f: OnboardingFacts): boolean {
   return stepFor(f) === "done";
+}
+
+/**
+ * Whether the ACCOUNT has been set up — every milestone met except the one that
+ * is about this device's access rather than about the account's history.
+ *
+ * # `keysReady` is a gate, not a memory, and reading it as one destroyed data
+ *
+ * {@link OnboardingFacts.keysReady} answers "does this browser hold the
+ * account's keys right now". It is false on every second device, after cleared
+ * site data, after the WebKit `CryptoKey` loss, and whenever `GET
+ * /api/v1/keys` fails — `boot`'s `keysReadyOrFalse` turns a failed read into
+ * `false`, which is the right answer for a gate and no answer at all about
+ * history.
+ *
+ * {@link resumeFacts} used to ask {@link stepFor} directly, and `stepFor` stops
+ * at the FIRST unmet milestone. So one false `keysReady` made a fully set-up
+ * account read as never set up: `setupSeen` stayed false, the walk correctly
+ * showed the recovery step, and then — the instant the phrase was accepted —
+ * dropped the user on the finish screen. The finish screen carries
+ * `BudgetSplitStep`, whose "Save plan" authors a whole `budget_split_set`, and
+ * `budget_split_set` REPLACES the plan. A monthly total set on another device
+ * was wiped by a screen the user had no reason to think was destructive.
+ *
+ * So this asks the same table with the access gate held open. Everything else
+ * is still required, and in the prefix order the table sets — an account with
+ * nothing in its log still has to walk, keys or no keys.
+ */
+export function accountSetupComplete(f: OnboardingFacts): boolean {
+  // `setupSeen: false` as well as `keysReady: true`, so the answer is about the
+  // milestones BEHIND `done` whatever the caller happens to hold.
+  return stepFor({ ...f, keysReady: true, setupSeen: false }) === "home_currency_set";
 }
 
 // ---------------------------------------------------------------------------
@@ -416,11 +455,13 @@ export function resumeFacts(args: {
     homeCurrency: args.homeCurrency,
     setupSeen: false,
   };
-  // "Finished" is the prerequisites being met. Asked through `stepFor` rather
-  // than by re-listing the milestones, so this can never drift from the table:
-  // one position short of `done` with `setupSeen` false means everything else
-  // is already true.
-  return stepFor(base) === "home_currency_set" ? { ...base, setupSeen: true } : base;
+  // "Finished" is the ACCOUNT's prerequisites being met. Asked through
+  // {@link accountSetupComplete} rather than by re-listing the milestones, so
+  // this can never drift from the table — and through that rather than through
+  // `stepFor` directly, because this device's key access says nothing about
+  // whether the account was ever set up. See that function for the data loss
+  // the difference caused.
+  return accountSetupComplete(base) ? { ...base, setupSeen: true } : base;
 }
 
 /**
