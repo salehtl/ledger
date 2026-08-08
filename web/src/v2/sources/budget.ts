@@ -240,6 +240,37 @@ export interface BudgetSource {
 }
 
 /**
+ * The user's plan, or `undefined` when the snapshot cannot answer.
+ *
+ * **Every writer must go through this.** Reading `snapshot.split` directly is
+ * how the placeholder gets into the log: it is not `undefined`, so every
+ * presence check passes on it, and a screen that seeds an editable field from it
+ * latches 50/30/20 and an empty total over whatever the user actually chose.
+ *
+ * The doc on {@link BudgetSnapshot} says that in words. This exists because
+ * words did not stop it — the same shape reached review three times on this
+ * branch. An accessor cannot be forgotten the way a rule can: there is no way to
+ * get a plan out of an unusable snapshot, so the bug is unwritable rather than
+ * merely documented.
+ *
+ * It takes `BudgetSnapshot | undefined` so a react-query `data` needs one check
+ * and not two, and it is deliberately NOT a type guard: narrowing the snapshot
+ * would not help, because `split` has to stay non-null on both branches for the
+ * screens that render bucket labels while warming. What is returned is the plan
+ * itself, which is the thing a writer needs.
+ *
+ * `{split: DEFAULT_BUDGET_SPLIT, monthlyTotal: null}` from a USABLE snapshot is
+ * a real answer — "this user has no plan" — and is not the placeholder. That
+ * distinction is the whole point, and it is the one the raw fields lose.
+ */
+export function usablePlan(
+  snapshot: BudgetSnapshot | undefined,
+): { split: BudgetSplit; monthlyTotal: bigint | null } | undefined {
+  if (snapshot === undefined || !snapshot.usable) return undefined;
+  return { split: snapshot.split, monthlyTotal: snapshot.monthlyTotal };
+}
+
+/**
  * What "counts" — exported so `sources/insights.ts` slices the *same* set of
  * transactions this screen totals. Two copies of this predicate is how Home and
  * Insights eventually print two different numbers for the same month.

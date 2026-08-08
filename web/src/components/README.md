@@ -332,6 +332,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   "the three do not sum to 100".
 - **Draft state is `BudgetSplitDraft` (`number | null`), not `BudgetSplit`.** A
   field has to be emptiable to be retyped; `null` is "mid-edit", never a 0.
+- **`disabled` is for the window before the stored plan has been read**, when
+  the values shown are a placeholder the seeding is about to replace. Pass an
+  explanation beside it — a locked control with no reason is its own defect.
+  Get the plan with `usablePlan(snapshot)` (`v2/sources/budget.ts`), never
+  `snapshot.split`: a placeholder is not `undefined`, so every presence check
+  passes on it, and seeding from one wrote a plan nobody chose into the log.
 - **Don't:** build a second percentage control, and don't clamp or repair in
   your own `onChange`.
 
@@ -357,6 +363,8 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 - **Seed it with `minorToDraft`, not `formatMinor`.** `formatMinor` groups
   (`12,000.00`) and the field's own parser refuses a comma, so a grouped seed is
   a value the same screen immediately calls unreadable.
+- **`disabled`** covers the same pre-seed window as `BudgetSplitPicker`'s, with
+  the same obligation to explain it.
 - **Don't:** clamp, strip characters, or reformat on blur.
 
 ### BankPicker (`BankPicker.tsx`)

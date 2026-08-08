@@ -29,6 +29,14 @@ describe("completeSplit", () => {
 });
 
 describe("BudgetSplitPicker", () => {
+  it("can be locked while the plan it shows is not the user's yet", () => {
+    // For the window before a screen has read the stored plan: the three
+    // percentages on display are a placeholder the seeding is about to replace,
+    // and typing into them is work that will be thrown away.
+    render(<BudgetSplitPicker value={{ need: 50, want: 30, saving: 20 }} onChange={() => {}} disabled />);
+    for (const label of [/Needs/, /Wants/, /Savings/]) expect(screen.getByLabelText(label)).toBeDisabled();
+  });
+
   it("says the sum while it is being typed, not after saving", () => {
     render(<Harness initial={{ need: 50, want: 30, saving: 20 }} />);
     expect(screen.getByRole("status")).toHaveTextContent("Adds up to 100%.");

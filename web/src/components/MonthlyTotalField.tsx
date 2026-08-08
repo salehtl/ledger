@@ -42,9 +42,21 @@ export interface MonthlyTotalFieldProps {
   currency: string | null;
   /** Prefixes the field id, so two of these can coexist in one document. */
   idPrefix?: string;
+  /**
+   * Locks the field while the amount it shows is not the user's yet — the same
+   * window `BudgetSplitPicker`'s `disabled` covers, and the caller owes the same
+   * explanation beside it.
+   */
+  disabled?: boolean;
 }
 
-export function MonthlyTotalField({ value, onChange, currency, idPrefix = "monthly-total" }: MonthlyTotalFieldProps) {
+export function MonthlyTotalField({
+  value,
+  onChange,
+  currency,
+  idPrefix = "monthly-total",
+  disabled = false,
+}: MonthlyTotalFieldProps) {
   const id = `${idPrefix}-amount`;
   return (
     <div className="flex flex-col gap-2">
@@ -64,6 +76,7 @@ export function MonthlyTotalField({ value, onChange, currency, idPrefix = "month
         autoComplete="off"
         placeholder="Leave empty for none"
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         className="tnum"
       />

@@ -9,6 +9,10 @@ function Harness({ initial = "", currency = "AED" }: { initial?: string; currenc
   return <MonthlyTotalField value={text} onChange={setText} currency={currency} />;
 }
 
+function MonthlyTotalFieldLocked() {
+  return <MonthlyTotalField value="" onChange={() => {}} currency="AED" disabled />;
+}
+
 describe("MonthlyTotalField", () => {
   it("starts empty and says what leaving it empty means", () => {
     render(<Harness />);
@@ -75,6 +79,14 @@ describe("MonthlyTotalField", () => {
     expect(field).toHaveAttribute("inputmode", "decimal");
     expect(field).toHaveAttribute("type", "text");
     expect(field.className).toContain("text-base");
+  });
+
+  it("can be locked while the amount it shows is not the user's yet", () => {
+    render(<MonthlyTotalFieldLocked />);
+    // For the window before a screen has read the stored plan. Typing into a
+    // field whose contents are about to be replaced is work thrown away, and a
+    // disabled control is the honest version of "not yet".
+    expect(screen.getByLabelText(/monthly budget/i)).toBeDisabled();
   });
 
   it("prints an unknown home currency bare rather than guessing one", () => {

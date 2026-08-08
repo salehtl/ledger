@@ -39,6 +39,15 @@ export interface BudgetSplitPickerProps {
   onChange: (next: BudgetSplitDraft) => void;
   /** Prefixes the field ids, so two pickers can coexist in one document. */
   idPrefix?: string;
+  /**
+   * Locks the fields while the plan they show is not the user's yet.
+   *
+   * For the window before a screen has read the stored plan: what is on display
+   * is a placeholder about to be replaced by the seeding, so an enabled field
+   * invites typing that is then silently thrown away. The caller owes an
+   * explanation beside it — a locked control with no reason is its own defect.
+   */
+  disabled?: boolean;
 }
 
 const FIELDS = [
@@ -69,7 +78,7 @@ export function splitAdvice(draft: BudgetSplitDraft): string {
   return `Adds up to ${sum}% — it has to be 100%.`;
 }
 
-export function BudgetSplitPicker({ value, onChange, idPrefix = "split" }: BudgetSplitPickerProps) {
+export function BudgetSplitPicker({ value, onChange, idPrefix = "split", disabled = false }: BudgetSplitPickerProps) {
   return (
     <div className="flex flex-col gap-3">
       {FIELDS.map((f) => (
@@ -88,6 +97,7 @@ export function BudgetSplitPicker({ value, onChange, idPrefix = "split" }: Budge
               max={100}
               allowDecimal={false}
               allowEmpty
+              disabled={disabled}
               enterKeyHint="done"
             />
             <span aria-hidden className="text-sm text-muted">

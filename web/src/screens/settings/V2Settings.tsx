@@ -60,7 +60,7 @@ import { formatMoney, minorToDraft, parseMinorDraft } from "../../lib/minorMoney
 import { activeBanks, bankDeclaredOps } from "../../v2/sources/banks";
 import { isDeclarableBankID } from "../../v2/bank";
 import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
-import { budgetSplitOps, DEFAULT_BUDGET_SPLIT } from "../../v2/sources/budget";
+import { budgetSplitOps, DEFAULT_BUDGET_SPLIT, usablePlan } from "../../v2/sources/budget";
 import {
   invalidateAfterSync,
   useBanksSource,
@@ -284,27 +284,40 @@ export function V2Settings({
    * A draft rather than a controlled read of the snapshot, because the fields
    * have to be emptiable to be retyped (`NumberField`'s whole reason for
    * existing), and an empty field is `null` — which is not a plan and cannot be
-   * saved. `seededSplit` guards the seeding so a sync landing mid-edit cannot
-   * overwrite what the user is typing.
+   * saved.
+   *
+   * # What `seededSplit` guards, stated exactly
+   *
+   * It fires ONCE, on the first usable snapshot. After it has fired, a sync
+   * landing mid-edit cannot overwrite what the user is typing — that is the
+   * guarantee, and it holds.
+   *
+   * Before it has fired the opposite is true: the seeding *will* replace what
+   * is in these fields, because what is in them is a placeholder and not the
+   * user's plan. Rather than leave that as a trap — a reviewer typed 70 and
+   * 5000 into the pre-seed window and watched both vanish — the controls are
+   * DISABLED until the seeding has happened, with a line saying why. Nothing
+   * typed there could have reached the log (the save is gated on the same flag),
+   * so the old behaviour was safe and merely disrespectful of the typing.
    *
    * # It seeds from a USABLE snapshot only, and that is a data-loss fix
    *
    * `sqlBudgetSource` answers an unusable projection with a PLACEHOLDER —
    * `{usable: false, split: DEFAULT_BUDGET_SPLIT, monthlyTotal: null}` — and a
-   * placeholder is not `undefined`, so `heldSplit !== undefined` was true of it
-   * and the latch closed over 50/30/20 and an empty total. The log's 60/20/20
-   * and AED 12,000 then never arrived, the fields sat on values nobody chose,
-   * and "Save plan" authored them over the user's real plan.
+   * placeholder is not `undefined`, so a presence check passed on it and the
+   * latch closed over 50/30/20 and an empty total. The log's 60/20/20 and AED
+   * 12,000 then never arrived, the fields sat on values nobody chose, and "Save
+   * plan" authored them over the user's real plan.
    *
    * That is not a rare state. A projection is unusable for the whole of a
    * rebuild (`project` clears `complete` before the first row), and every
-   * existing device rebuilds once on a `PROJECTION_VERSION` bump — of which
-   * this commit is one. Opening Settings during that window is the ordinary
-   * case, not the unlucky one.
+   * existing device rebuilds once on a `PROJECTION_VERSION` bump — of which the
+   * monthly total's commit is one. Opening Settings during that window is the
+   * ordinary case, not the unlucky one.
    *
-   * So: `usable === true` or nothing is seeded, and the save control stays
-   * disabled until something has been. An unsaveable plan for a second is a
-   * delay; a saved wrong one is the user's budget gone.
+   * The check is {@link usablePlan}, not `budget.data?.usable === true` written
+   * here: an accessor cannot be forgotten the way a rule in a comment can, and
+   * this exact shape reached review three times on this branch.
    */
   const [splitDraft, setSplitDraft] = useState<BudgetSplitDraft>(DEFAULT_BUDGET_SPLIT);
   // The monthly total's TEXT, seeded from the projection alongside the
@@ -315,7 +328,7 @@ export function V2Settings({
   const [seededSplit, setSeededSplit] = useState(false);
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
-  const heldPlan = budget.data?.usable === true ? budget.data : undefined;
+  const heldPlan = usablePlan(budget.data);
   useEffect(() => {
     if (seededSplit || heldPlan === undefined) return;
     setSplitDraft(heldPlan.split);
@@ -578,8 +591,28 @@ export function V2Settings({
             How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean to
             spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
           </p>
-          <BudgetSplitPicker value={splitDraft} onChange={setSplitDraft} idPrefix="settings-split" />
-          <MonthlyTotalField value={totalText} onChange={setTotalText} currency={currency} idPrefix="settings-total" />
+          {/* Locked until the stored plan has been read, because until then
+              these fields hold a placeholder the seeding is about to replace —
+              and a control that discards what you typed is worse than one that
+              would not let you type. The line says which of the two it is. */}
+          <BudgetSplitPicker
+            value={splitDraft}
+            onChange={setSplitDraft}
+            idPrefix="settings-split"
+            disabled={!seededSplit}
+          />
+          <MonthlyTotalField
+            value={totalText}
+            onChange={setTotalText}
+            currency={currency}
+            idPrefix="settings-total"
+            disabled={!seededSplit}
+          />
+          {!seededSplit && (
+            <p data-testid="settings-plan-warming" role="status" className="text-sm text-muted">
+              Reading your plan from this device. It will be ready in a moment — nothing is wrong.
+            </p>
+          )}
           <Button
             variant="primary"
             disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}

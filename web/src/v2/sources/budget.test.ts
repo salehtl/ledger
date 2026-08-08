@@ -18,6 +18,7 @@ import {
   budgetSplitOps,
   splitSum,
   sqlBudgetSource,
+  usablePlan,
   type BudgetMapping,
 } from "./budget";
 
@@ -328,6 +329,49 @@ describe("the monthly budget total", () => {
   it("an unusable projection reports no total rather than a half-read one", async () => {
     const db = await blank();
     expect(sqlBudgetSource(db).read(Date.now()).monthlyTotal).toBeNull();
+  });
+});
+
+/**
+ * The accessor that makes the latch bug unwritable.
+ *
+ * Prose did not stop this shape three times. `usablePlan` is the enforceable
+ * version of the rule: there is no way to get the plan out of an unusable
+ * snapshot, so a writer cannot latch a placeholder by forgetting to check.
+ */
+describe("usablePlan", () => {
+  it("is undefined for an unusable snapshot, whatever its placeholder fields say", async () => {
+    const db = await blank();
+    const snapshot = sqlBudgetSource(db).read(Date.now());
+    // The trap in one assertion: the placeholder's fields pass every presence
+    // check — they are not `undefined` — and the accessor is undefined anyway.
+    expect(snapshot.usable).toBe(false);
+    expect(snapshot.split).toBeDefined();
+    expect(snapshot.monthlyTotal).toBeNull();
+    expect(usablePlan(snapshot)).toBeUndefined();
+  });
+
+  it("is undefined for no snapshot at all, so one check covers both", () => {
+    expect(usablePlan(undefined)).toBeUndefined();
+  });
+
+  it("hands back the stored plan when the projection is usable", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,60,20,20,'1200000')").run();
+    const snapshot = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    expect(usablePlan(snapshot)).toEqual({ split: { need: 60, want: 20, saving: 20 }, monthlyTotal: 1_200_000n });
+  });
+
+  it("hands back the default split and a null total for a usable projection with no plan", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    // Usable and empty is a REAL answer — the user has no plan — and is not the
+    // same as the placeholder above, which is the absence of an answer.
+    expect(usablePlan(sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z")))).toEqual({
+      split: DEFAULT_BUDGET_SPLIT,
+      monthlyTotal: null,
+    });
   });
 });
 

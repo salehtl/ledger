@@ -44,6 +44,20 @@ function wrap(props: Partial<V2SettingsProps> = {}, rt: Partial<FakeRuntimeOptio
   return { ...view, runtime, runs };
 }
 
+/**
+ * The plan's controls are locked until the stored plan has been read — a
+ * placeholder is not the user's plan, and a field that discards what you typed
+ * is worse than one that would not let you type. Every test that edits the plan
+ * waits for that, exactly as a person would.
+ */
+async function planReady(): Promise<HTMLElement> {
+  const needs = await screen.findByLabelText(/Needs/);
+  await waitFor(() => {
+    expect(needs).toBeEnabled();
+  });
+  return needs;
+}
+
 describe("V2Settings", () => {
   it("shows the inbound address the server actually holds, and copies it", async () => {
     const user = userEvent.setup();
@@ -194,7 +208,7 @@ describe("V2Settings", () => {
     wrap({ writer });
 
     // It opens on what the log holds — nothing, so the rule.
-    const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
+    const needs = (await planReady()) as HTMLInputElement;
     expect(needs.value).toBe("50");
 
     // 60/30/20 is a plausible plan that does not add up. The screen says so
@@ -222,7 +236,8 @@ describe("V2Settings", () => {
 
     // Nothing in the log, so the field opens empty — and an untouched field
     // authors a payload with no `monthly_total_minor` key at all.
-    expect(await screen.findByLabelText(/monthly budget/i)).toHaveValue("");
+    await planReady();
+    expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("");
     await user.click(screen.getByRole("button", { name: /save plan/i }));
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
   });
@@ -233,7 +248,8 @@ describe("V2Settings", () => {
     const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
     wrap({ writer });
 
-    await user.type(await screen.findByLabelText(/monthly budget/i), "12000");
+    await planReady();
+    await user.type(screen.getByLabelText(/monthly budget/i), "12000");
     expect(screen.getByText(/AED 12,000\.00 a month/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save plan/i }));
     expect(specs).toEqual([
@@ -259,7 +275,8 @@ describe("V2Settings", () => {
     const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
     wrap({ writer });
 
-    const field = await screen.findByLabelText(/monthly budget/i);
+    await planReady();
+    const field = screen.getByLabelText(/monthly budget/i);
     await user.type(field, "12.345");
     expect(screen.getByText(/two decimal places/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
@@ -275,7 +292,8 @@ describe("V2Settings", () => {
     db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,50,30,20,'1200000')").run();
     wrap({ writer });
 
-    const field = await screen.findByLabelText(/monthly budget/i);
+    await planReady();
+    const field = screen.getByLabelText(/monthly budget/i);
     await waitFor(() => {
       expect(field).toHaveValue("12000.00");
     });
@@ -313,6 +331,14 @@ describe("V2Settings", () => {
     const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
     expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
 
+    // And the fields are not merely unsaveable, they are DISABLED and say why.
+    // An enabled field whose contents are about to be replaced by the seeding
+    // is an invitation to type something that will be silently thrown away —
+    // which is exactly what a reviewer did.
+    expect(needs).toBeDisabled();
+    expect(screen.getByLabelText(/monthly budget/i)).toBeDisabled();
+    expect(screen.getByTestId("settings-plan-warming")).toHaveTextContent(/reading your plan/i);
+
     // The rebuild finishes and the queries are invalidated.
     db.prepare("UPDATE projection_meta SET complete = 1 WHERE id = 1").run();
     await user.click(screen.getByRole("button", { name: /sync now/i }));
@@ -321,6 +347,11 @@ describe("V2Settings", () => {
       expect(needs.value).toBe("60");
     });
     expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12000.00");
+    // Once the plan is in, the fields are the user's to edit and the warming
+    // line is gone — it must not linger over a screen that is now live.
+    expect(needs).toBeEnabled();
+    expect(screen.getByLabelText(/monthly budget/i)).toBeEnabled();
+    expect(screen.queryByTestId("settings-plan-warming")).toBeNull();
 
     // And the save that follows carries the user's plan, not the default.
     await user.click(screen.getByRole("button", { name: /save plan/i }));
