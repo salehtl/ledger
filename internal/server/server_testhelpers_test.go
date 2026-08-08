@@ -13,6 +13,13 @@ func newTestServerStore(t *testing.T) *store.Store {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	// main.go always calls this at boot (see cmd/ledger/main.go), and
+	// computeEnvelopeSummary now reads AppSettings.BudgetMode on every
+	// envelope request — without the singleton row, that read 500s in tests
+	// that never call EnsureAppSettings themselves.
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatalf("EnsureAppSettings: %v", err)
+	}
 	return st
 }
 

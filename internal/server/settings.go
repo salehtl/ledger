@@ -11,6 +11,7 @@ import (
 type SettingsStore interface {
 	SelectAppSettings() (store.AppSettings, error)
 	UpdateAppSettings(store.AppSettings) error
+	UpdateBudgetMode(mode string) error
 }
 
 // SetSettingsStore wires the settings store. Required for /api/settings.
@@ -35,6 +36,12 @@ type settingsDTO struct {
 	// AI calls are currently blocked. The store clears the latch when
 	// AIEnabled is set true; the client cannot set this field directly.
 	AICapLatched bool `json:"ai_cap_latched"`
+	// BudgetMode is the budgeting method (BudgetModeSimple/BudgetModeEnvelope).
+	// A pointer, same pattern as AISpendCapMuUSD: on GET it is always
+	// populated (never nil); on PUT nil means "omitted, leave unchanged" — a
+	// hidden switch, so an older client that has never heard of it can never
+	// silently flip the user back to envelope mode.
+	BudgetMode *string `json:"budget_mode"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +62,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		AIKeyPresent:      s.aiKeyPresent,
 		AISpendCapMuUSD:   &a.SpendCapMuUSD,
 		AICapLatched:      a.CapLatched,
+		BudgetMode:        &a.BudgetMode,
 	})
 }
 
@@ -70,6 +78,15 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if dto.AIThreshold <= 0 || dto.AIThreshold > 1 {
 		dto.AIThreshold = 0.85
+	}
+	// Hidden switch: omitted (nil) leaves the stored mode untouched. An
+	// explicit unknown value is rejected rather than silently normalised, so a
+	// typo surfaces immediately instead of quietly landing in simple mode.
+	if dto.BudgetMode != nil {
+		if err := s.settingsStore.UpdateBudgetMode(*dto.BudgetMode); err != nil {
+			http.Error(w, `{"error":"invalid budget_mode"}`, http.StatusBadRequest)
+			return
+		}
 	}
 	// Single read of the current settings, reused below for both the
 	// IngestSilenceDays fallback and the CapLatched carry-forward.

@@ -16,9 +16,10 @@ import (
 // transaction — a mid-write failure must never leave assigned money vanished
 // or a half-applied plan.
 type EnvelopeStore interface {
-	EnvelopeMonthSummary(month string) ([]store.EnvelopeMonthRow, error)
+	EnvelopeMonthSummary(month string, mode string) ([]store.EnvelopeMonthRow, error)
 	SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error)
 	SelectBudgetConfig() (store.BudgetConfig, error)
+	SelectAppSettings() (store.AppSettings, error)
 	SelectMonthIncome(period string) (int64, error)
 	UpsertEnvelopeAssignments(month string, byCategory map[int64]int64) error
 	MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryID, amountFils int64) error
@@ -52,13 +53,17 @@ func (s *Server) computeEnvelopeSummary(month string) (budget.EnvelopeSummary, s
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
+	set, err := s.envelopeStore.SelectAppSettings()
+	if err != nil {
+		return budget.EnvelopeSummary{}, cfg, err
+	}
 	income := cfg.MonthlyIncome
 	if cfg.IncomeSource == "categories" {
 		if income, err = s.envelopeStore.SelectMonthIncome(month); err != nil {
 			return budget.EnvelopeSummary{}, cfg, err
 		}
 	}
-	rows, err := s.envelopeStore.EnvelopeMonthSummary(month)
+	rows, err := s.envelopeStore.EnvelopeMonthSummary(month, set.BudgetMode)
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}

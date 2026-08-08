@@ -282,7 +282,7 @@ func TestSeedAssignments_SeededMonthsAreNeverChargedOverspendDebt(t *testing.T) 
 
 	for i := 1; i <= 3; i++ {
 		month := monthsFromNow(i)
-		rows, err := st.EnvelopeMonthSummary(month)
+		rows, err := st.EnvelopeMonthSummary(month, BudgetModeEnvelope)
 		if err != nil {
 			t.Fatalf("summary %s: %v", month, err)
 		}
