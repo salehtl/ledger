@@ -144,9 +144,15 @@ function mount(facts: OnboardingFacts, rig: HandleRig, doFetch: typeof fetch, do
   return { done, secrets };
 }
 
-/** Signed in and invited: the state the boot gate hands the onboarding slot. */
+/**
+ * Signed in, invited, and this device already holds the account keys.
+ *
+ * `keysReady` is true because the recovery step is covered by its own file:
+ * every test here is about a step BEHIND it, and a fixture that left it false
+ * would put the recovery screen on the glass for all of them.
+ */
 function invited(): OnboardingFacts {
-  return { ...emptyFacts(), hasSession: true, accountId: "u_1" };
+  return { ...emptyFacts(), hasSession: true, accountId: "u_1", keysReady: true };
 }
 
 // ---------------------------------------------------------------------------

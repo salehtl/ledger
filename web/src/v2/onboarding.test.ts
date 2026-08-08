@@ -6,6 +6,8 @@ import type { State, Txn } from "@ledger/client/replay/state";
 import {
   ONBOARDING_STEPS,
   QUARANTINE_HELD,
+  RECOVERY_ENTRY_COPY,
+  RECOVERY_PHRASE_COPY,
   TRUST_ONLY_YOUR_BANK,
   decodeLocal,
   emptyFacts,
@@ -24,6 +26,7 @@ function complete(over: Partial<OnboardingFacts> = {}): OnboardingFacts {
   return {
     hasSession: true,
     accountId: "u_1",
+    keysReady: true,
     banks: ["dib"],
     inboundAddress: "u-abc@in.sirdab.ae",
     forwardingDeclared: true,
@@ -39,6 +42,7 @@ function fromTheLog(over: Partial<Parameters<typeof resumeFacts>[0]> = {}) {
   return {
     hasSession: true,
     accountId: "u_1",
+    keysReady: true,
     banks: ["dib"],
     inboundAddress: "u-abc@in.sirdab.ae",
     firstMailConfirmedAt: "2026-08-01T00:00:00Z",
@@ -63,13 +67,14 @@ describe("stepFor", () => {
     // walk must stop at the bank, not skip to the currency — otherwise the
     // device lands in the product with no forwarding rule set up.
     const reinstalled = complete({ banks: [], forwardingDeclared: false, setupSeen: false });
-    expect(stepFor(reinstalled)).toBe("invited");
+    expect(stepFor(reinstalled)).toBe("keys_secured");
   });
 
   it("walks the declared step order", () => {
     expect([...ONBOARDING_STEPS]).toEqual([
       "signed_in",
       "invited",
+      "keys_secured",
       "banks_declared",
       "address_issued",
       "forwarding_configured",
@@ -273,5 +278,62 @@ describe("the held-mail trust warning", () => {
    */
   it("does not assume the user set up a forwarding rule", () => {
     expect(TRUST_ONLY_YOUR_BANK.body.toLowerCase()).not.toMatch(/forwarding rule/);
+  });
+});
+
+/**
+ * The encryption copy, which is the strictest text in this product: it is a
+ * privacy claim made to someone who will sign a consent document.
+ *
+ * Spec §"The decision that overrides the request" sets the rule and explains
+ * why the operator's requested sentence — "only you can access it" — will not be
+ * written: bank mail arrives over SMTP in plaintext and is read in memory before
+ * it is sealed, so there is a window on our machine where the plaintext exists,
+ * and a live compromised server could log it. These assertions exist because
+ * that sentence is exactly what a well-meaning edit reaches for.
+ */
+describe("the encryption copy", () => {
+  const everySentence = [
+    ...Object.values(RECOVERY_PHRASE_COPY),
+    ...Object.values(RECOVERY_ENTRY_COPY),
+  ].filter((v): v is string => typeof v === "string");
+
+  it("never claims only the user can access their data", () => {
+    for (const s of everySentence) {
+      const t = s.toLowerCase();
+      expect(t).not.toMatch(/only you can (access|see|read)/);
+      expect(t).not.toMatch(/zero[- ]access/);
+      expect(t).not.toMatch(/we (can'?t|cannot|never) (see|read|access)/);
+      expect(t).not.toMatch(/nobody (but you )?(can|could) (see|read)/);
+      expect(t).not.toMatch(/end[- ]to[- ]end/);
+    }
+  });
+
+  // The claim that IS true, and the one it must be said next to. Stating the
+  // first without the second is how "encrypted at rest" becomes "we can't see
+  // it" in a reader's head.
+  it("says both what encryption protects and what it does not", () => {
+    expect(RECOVERY_PHRASE_COPY.whatItProtects).toMatch(/encrypted before they are stored/);
+    expect(RECOVERY_PHRASE_COPY.whatItProtects.toLowerCase()).toMatch(/ciphertext/);
+    expect(RECOVERY_PHRASE_COPY.whatItDoesNot.toLowerCase()).toMatch(/does see each email/);
+    expect(RECOVERY_PHRASE_COPY.whatItDoesNot.toLowerCase()).toMatch(/unencrypted/);
+  });
+
+  // The consequence of losing the phrase, said plainly and without hedging.
+  // "may not be able to" and "difficult to recover" are the softenings that
+  // would make this untrue by implication.
+  it("says the account is unrecoverable without the phrase, in both ceremonies", () => {
+    for (const s of [RECOVERY_PHRASE_COPY.noWayBack, RECOVERY_ENTRY_COPY.noWayBack]) {
+      expect(s.toLowerCase()).toMatch(/no copy|nothing to reset|nobody/);
+      expect(s.toLowerCase()).not.toMatch(/may not|might not|difficult|contact (us|support)/);
+    }
+    expect(RECOVERY_PHRASE_COPY.noWayBack.toLowerCase()).toMatch(/the account is gone/);
+  });
+
+  // There is no skip, so there is no copy for one.
+  it("offers nothing that sounds like a way to defer this", () => {
+    for (const s of everySentence) {
+      expect(s.toLowerCase()).not.toMatch(/\bskip\b|\blater\b|not now|remind me/);
+    }
   });
 });

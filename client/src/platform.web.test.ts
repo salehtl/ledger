@@ -313,3 +313,98 @@ describe("webPlatform gunzip cap", () => {
     expect(() => bunPlatform.gunzip(corrupt, 1 << 20)).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The Phase 3 key-material primitives
+// ---------------------------------------------------------------------------
+
+describe("x25519 (web)", () => {
+  // RFC 7748 §6.1, on the noble side. `platform.test.ts` runs the same two
+  // vectors against `node:crypto`; the point of running them twice is that the
+  // two implementations are independent and both are pinned to the RFC rather
+  // than to each other.
+  test("derives RFC 7748's published public keys", () => {
+    expect(W.toHex(W.x25519PublicKey(hexToBytes("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")))).toBe(
+      "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    );
+    expect(W.toHex(W.x25519PublicKey(hexToBytes("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")))).toBe(
+      "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    );
+  });
+
+  // The equivalence that matters for recovery: a key generated on one host must
+  // derive the same public half on the other, or a phrase written down on a
+  // laptop would unwrap to a key the server has never sealed to.
+  test("agrees with bunPlatform on 50 generated keys, in both directions", () => {
+    for (let i = 0; i < 50; i++) {
+      const web = W.x25519GenerateKey();
+      expect(W.toHex(bunPlatform.x25519PublicKey(web.priv))).toBe(W.toHex(web.pub));
+      const bun = bunPlatform.x25519GenerateKey();
+      expect(W.toHex(W.x25519PublicKey(bun.priv))).toBe(W.toHex(bun.pub));
+    }
+  });
+
+  test("a private key that is not 32 bytes is refused", () => {
+    expect(() => W.x25519PublicKey(new Uint8Array(31))).toThrow();
+  });
+});
+
+describe("argon2id (web)", () => {
+  test("RFC 9106 §5.3", () => {
+    const tag = W.argon2id(new Uint8Array(32).fill(1), new Uint8Array(16).fill(2), {
+      t: 3,
+      m: 32,
+      p: 4,
+      dkLen: 32,
+      key: new Uint8Array(8).fill(3),
+      ad: new Uint8Array(12).fill(4),
+    });
+    expect(W.toHex(tag)).toBe("0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
+  });
+
+  test("agrees with bunPlatform byte for byte", () => {
+    const params = { t: 2, m: 64, p: 1, dkLen: 32 } as const;
+    for (const phrase of ["abandon abandon about", "zone zoo zebra", ""]) {
+      const pw = W.utf8Encode(phrase);
+      const salt = W.sha256(pw).subarray(0, 16);
+      expect(W.toHex(W.argon2id(pw, salt, params))).toBe(W.toHex(bunPlatform.argon2id(pw, salt, params)));
+    }
+  });
+});
+
+describe("aes-256-gcm (web)", () => {
+  test("the published all-zero AES-256 cases", async () => {
+    expect(W.toHex(await W.aesGcmSeal(new Uint8Array(32), new Uint8Array(12), new Uint8Array(0), new Uint8Array(0)))).toBe(
+      "530f8afbc74536b9a963b4f1c4cb738b",
+    );
+    expect(W.toHex(await W.aesGcmSeal(new Uint8Array(32), new Uint8Array(12), new Uint8Array(0), new Uint8Array(16)))).toBe(
+      "cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919",
+    );
+  });
+
+  // Cross-host: what one seals the other must open. A wrapped blob is written
+  // by a browser and — in the migration and in `ledgerd`'s tooling — read
+  // wherever this library runs, so this is the property, not the round trip.
+  test("bunPlatform opens what webPlatform sealed, and the reverse", async () => {
+    const key = W.randomBytes(32);
+    const nonce = W.randomBytes(12);
+    const aad = W.utf8Encode("ledger-v2-account-keys-1");
+    const pt = W.randomBytes(65);
+    const byWeb = await W.aesGcmSeal(key, nonce, aad, pt);
+    const byBun = await bunPlatform.aesGcmSeal(key, nonce, aad, pt);
+    expect(W.toHex(byWeb)).toBe(W.toHex(byBun));
+    expect(W.toHex(await bunPlatform.aesGcmOpen(key, nonce, aad, byWeb))).toBe(W.toHex(pt));
+    expect(W.toHex(await W.aesGcmOpen(key, nonce, aad, byBun))).toBe(W.toHex(pt));
+  });
+
+  test("a flipped bit anywhere is a rejection, never a wrong plaintext", async () => {
+    const key = W.randomBytes(32);
+    const nonce = W.randomBytes(12);
+    const sealed = await W.aesGcmSeal(key, nonce, new Uint8Array(0), W.utf8Encode("the private half"));
+    for (let i = 0; i < sealed.length; i++) {
+      const flipped = Uint8Array.from(sealed);
+      flipped[i] = (flipped[i]! ^ 0x01) & 0xff;
+      expect(W.aesGcmOpen(key, nonce, new Uint8Array(0), flipped)).rejects.toThrow();
+    }
+  });
+});

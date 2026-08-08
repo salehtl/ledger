@@ -47,8 +47,35 @@
  */
 
 import { setPlatform } from "./platform.registry";
+import { aesGcmOpen, aesGcmSeal } from "./platform.aead";
+import { argon2idOf } from "./platform.argon2";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+
+/**
+ * Argon2id's cost parameters, named as RFC 9106 names them.
+ *
+ * `key` and `ad` are the RFC's optional secret and associated data. Nothing in
+ * this product passes either, and they are on the interface for one reason: RFC
+ * 9106 §5.3's published Argon2id vector uses both, and it is the only fixed
+ * vector that pins the MODE — argon2i and argon2d produce different tags for
+ * the same inputs, and an implementation that quietly ran the wrong one would
+ * pass every round-trip test ever written.
+ */
+export interface Argon2idParams {
+  /** Passes. RFC 9106's `t`. */
+  t: number;
+  /** Memory, in **kibibytes**. RFC 9106's `m`. */
+  m: number;
+  /** Lanes. RFC 9106's `p`. */
+  p: number;
+  /** Output length in bytes. */
+  dkLen: number;
+  /** RFC 9106's optional secret value. Test vectors only. */
+  key?: Uint8Array;
+  /** RFC 9106's optional associated data. Test vectors only. */
+  ad?: Uint8Array;
+}
 
 /**
  * Every host primitive `client/src` needs, and nothing else.
@@ -89,6 +116,40 @@ export interface Platform {
 
   /** PureEdDSA over `msg` with a 32-byte seed. 64 bytes out, deterministic. */
   ed25519Sign(priv: Uint8Array, msg: Uint8Array): Uint8Array;
+
+  /**
+   * A fresh X25519 keypair — the account's INGEST key (Phase 3 §3.4), whose
+   * public half the server seals bank mail to. `priv` and `pub` are both the
+   * 32-byte raw forms, never DER.
+   */
+  x25519GenerateKey(): { priv: Uint8Array; pub: Uint8Array };
+
+  /** The public key for a 32-byte X25519 private key. Throws if `priv` is not 32 bytes. */
+  x25519PublicKey(priv: Uint8Array): Uint8Array;
+
+  /**
+   * Argon2id (RFC 9106), the KDF that turns the recovery phrase into the key
+   * that wraps the account keys.
+   *
+   * Synchronous, and therefore a real cost on the calling thread: at the
+   * parameters `crypto/keys.ts` uses it is roughly a second on a desktop and
+   * several on a phone. That is affordable **only** because it runs twice in
+   * the life of an account — once at onboarding, once on a recovering device —
+   * and never on a render or fold path. Do not reach for it anywhere else.
+   */
+  argon2id(password: Uint8Array, salt: Uint8Array, params: Argon2idParams): Uint8Array;
+
+  /**
+   * AES-256-GCM, sealing to ciphertext || 16-byte tag.
+   *
+   * **The one asynchronous method on this seam**, and the one with a single
+   * shared implementation rather than two — `platform.aead.ts` explains both,
+   * and the reasoning is not a precedent for the rest of the interface.
+   */
+  aesGcmSeal(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array): Promise<Uint8Array>;
+
+  /** The inverse. Every way of being wrong is one indistinguishable rejection. */
+  aesGcmOpen(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, sealed: Uint8Array): Promise<Uint8Array>;
 
   /** A random v4 UUID, from a cryptographic source. */
   randomUUID(): string;
@@ -164,11 +225,16 @@ const PKCS8_ED25519_PREFIX = new Uint8Array([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
 ]);
 
-function seedToPKCS8(seed: Uint8Array): Buffer {
+/** The same prelude for X25519: identical but for the OID's last byte, 0x6e (1.3.101.110). */
+const PKCS8_X25519_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+]);
+
+function seedToPKCS8(seed: Uint8Array, prefix = PKCS8_ED25519_PREFIX): Buffer {
   if (seed.length !== 32) throw new TypeError(`ed25519 private key must be 32 bytes, got ${seed.length}`);
-  const der = new Uint8Array(PKCS8_ED25519_PREFIX.length + 32);
-  der.set(PKCS8_ED25519_PREFIX, 0);
-  der.set(seed, PKCS8_ED25519_PREFIX.length);
+  const der = new Uint8Array(prefix.length + 32);
+  der.set(prefix, 0);
+  der.set(seed, prefix.length);
   return Buffer.from(der);
 }
 
@@ -212,6 +278,42 @@ export const bunPlatform: Platform = {
 
   ed25519Sign(priv: Uint8Array, msg: Uint8Array): Uint8Array {
     return new Uint8Array(sign(null, msg, createPrivateKey({ key: seedToPKCS8(priv), format: "der", type: "pkcs8" })));
+  },
+
+  // X25519 through `node:crypto`, mirroring the Ed25519 methods above, so this
+  // side and `platform.web.ts`'s noble side stay two independent
+  // implementations checked against RFC 7748's vectors rather than one.
+  x25519GenerateKey(): { priv: Uint8Array; pub: Uint8Array } {
+    const { privateKey } = generateKeyPairSync("x25519");
+    const jwk = privateKey.export({ format: "jwk" }) as { x?: string; d?: string };
+    if (typeof jwk.x !== "string" || typeof jwk.d !== "string") throw new Error("x25519 key did not export as a JWK");
+    return { priv: new Uint8Array(Buffer.from(jwk.d, "base64url")), pub: new Uint8Array(Buffer.from(jwk.x, "base64url")) };
+  },
+
+  x25519PublicKey(priv: Uint8Array): Uint8Array {
+    if (priv.length !== 32) throw new TypeError(`x25519 private key must be 32 bytes, got ${priv.length}`);
+    const pub = createPublicKey(
+      createPrivateKey({ key: seedToPKCS8(priv, PKCS8_X25519_PREFIX), format: "der", type: "pkcs8" }),
+    );
+    const jwk = pub.export({ format: "jwk" }) as { x?: string };
+    if (typeof jwk.x !== "string") throw new Error("x25519 public key did not export as a JWK");
+    return new Uint8Array(Buffer.from(jwk.x, "base64url"));
+  },
+
+  // `node:crypto` has no Argon2 at all, so unlike every other method here this
+  // one is the SAME implementation the browser runs. There is nothing to
+  // cross-check it against on this side; RFC 9106 §5.3's vector is what pins it,
+  // and it runs on both.
+  argon2id(password: Uint8Array, salt: Uint8Array, params: Argon2idParams): Uint8Array {
+    return argon2idOf(password, salt, params);
+  },
+
+  aesGcmSeal(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array): Promise<Uint8Array> {
+    return aesGcmSeal(key, nonce, aad, plaintext);
+  },
+
+  aesGcmOpen(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, sealed: Uint8Array): Promise<Uint8Array> {
+    return aesGcmOpen(key, nonce, aad, sealed);
   },
 
   randomUUID(): string {

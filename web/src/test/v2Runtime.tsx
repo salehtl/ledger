@@ -85,7 +85,7 @@ export function fakeRuntime(opts: FakeRuntimeOptions): FakeRuntime {
       coordinator,
       sync,
       userId: "u_1",
-      facts: { ...emptyFacts(), hasSession: true, accountId: "u_1", homeCurrency: "AED", ...opts.facts },
+      facts: { ...emptyFacts(), hasSession: true, accountId: "u_1", keysReady: true, homeCurrency: "AED", ...opts.facts },
     },
   };
 }

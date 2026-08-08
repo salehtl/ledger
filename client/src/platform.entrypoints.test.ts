@@ -201,6 +201,12 @@ const MAY_IMPORT_INSTALLER = new Set([
   "store/driver.ts",
   "platform.test.ts",
   "platform.web.test.ts",
+  // Phase 3's key material. Both files import `bunPlatform` for the same reason
+  // `platform.web.test.ts` does: the property under test is that a blob wrapped
+  // on one host unwraps on the other, and that cannot be checked from one side.
+  // Tests are never in a browser bundle.
+  "crypto/keys.test.ts",
+  "crypto/phrase.test.ts",
 ]);
 
 /** Every `client/src` file, recursively. */

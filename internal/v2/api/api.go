@@ -10,6 +10,8 @@
 //	POST /api/v1/writers/challenge {}                              -> {nonce}
 //	POST /api/v1/writers/register  {writer_id, pubkey, nonce, sig} -> 204
 //	GET  /api/v1/writers                                           -> {writers:[...]}
+//	GET  /api/v1/keys                                              -> {ingest_pubkey, wrapped_keys, key_version, created_at} | 404 no_keys
+//	PUT  /api/v1/keys {ingest_pubkey, wrapped_keys, key_version}   -> 204 | 409 keys_already_published
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
 //	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
@@ -701,6 +703,10 @@ func (s *Server) Handler() http.Handler {
 	// See keyhistory.go — it was appended to on every registration and read by
 	// nothing for the whole of Phase 1.
 	mux.HandleFunc("GET /api/v1/key-history", s.requireSession(s.handleKeyHistory))
+	// The account's Phase 3 at-rest key material — a different thing entirely
+	// from the writer roster above, which is about who may AUTHOR. See keys.go.
+	mux.HandleFunc("GET /api/v1/keys", s.requireSession(s.handleGetKeys))
+	mux.HandleFunc("PUT /api/v1/keys", s.requireSession(s.handlePublishKeys))
 	mux.HandleFunc("GET /api/v1/sync", s.requireSession(s.handlePull))
 	mux.HandleFunc("GET /api/v1/sync/hashes", s.requireSession(s.handleHashes))
 	mux.HandleFunc("POST /api/v1/sync", s.requireSession(s.handleUpload))

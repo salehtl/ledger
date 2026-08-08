@@ -42,6 +42,7 @@ function settledSecrets() {
       encodeLocal({
         hasSession: true,
         accountId: "u_1",
+        keysReady: true,
         banks: ["dib"],
         inboundAddress: "u-abc@in.sirdab.ae",
         forwardingDeclared: true,
@@ -71,6 +72,10 @@ function deps(over: Partial<BootDeps> = {}): BootDeps & { order: string[] } {
     address: async () => {
       order.push("address");
       return "u-abc@in.sirdab.ae";
+    },
+    keysReady: async () => {
+      order.push("keysReady");
+      return true;
     },
     secrets: settledSecrets(),
     wipe: async () => {

@@ -66,6 +66,7 @@ import type { Halt } from "@ledger/client/invariants/surface";
 import type { Client } from "@ledger/client/net/client";
 
 import { readAddress } from "./address";
+import { browserKeyVault, keyStatus } from "./keys";
 import { IDB_NAME } from "./db/driver";
 import { boot, handleDeps, type BootState } from "./boot";
 import { haltFromReason } from "./halt";
@@ -251,6 +252,12 @@ export interface BootGateProps {
   /** Injected by tests. `GET /api/v1/address`. */
   address?: (handle: V2Handle) => Promise<string | null>;
   /**
+   * Injected by tests. Whether this device holds the account's at-rest keys —
+   * see `BootDeps.keysReady`, which is what decides whether the walk opens on
+   * the recovery step.
+   */
+  keysReady?: (handle: V2Handle) => Promise<boolean>;
+  /**
    * How to BUILD an engine — not how to get one. Defaults to
    * {@link startEngine}, which constructs a real `SyncEngine` and so runs the
    * projection's DDL against the real driver.
@@ -270,6 +277,7 @@ export function BootGate({
   open = openV2,
   wipe = wipeLocalData,
   address = addressOf,
+  keysReady = keysReadyOf,
   engine = startEngine,
 }: BootGateProps) {
   const [handle, setHandle] = useState<V2Handle | null>(null);
@@ -308,8 +316,8 @@ export function BootGate({
 
   // Held so the boot effect does not re-run when a caller re-creates one of
   // these inline, which is the ordinary way to pass a function prop.
-  const io = useRef({ open, wipe, address, engine });
-  io.current = { open, wipe, address, engine };
+  const io = useRef({ open, wipe, address, keysReady, engine });
+  io.current = { open, wipe, address, keysReady, engine };
 
   useEffect(() => {
     let live = true;
@@ -334,6 +342,7 @@ export function BootGate({
             haltReason: () => c.haltReason,
             secrets: webSecretStore(PROFILE),
             address: () => io.current.address(h),
+            keysReady: () => io.current.keysReady(h),
             wipe: () => io.current.wipe(h),
           }),
         );
@@ -639,6 +648,21 @@ function Unbuilt({ what, owner }: { what: string; owner: string }) {
 
 function addressOf(handle: V2Handle): Promise<string | null> {
   return readAddress(handle.client, { server: SERVER });
+}
+
+/**
+ * Whether this device holds the account's at-rest keys.
+ *
+ * The account id comes from the client rather than from the gate's state,
+ * because `keyStatus` compares it: handles belonging to a DIFFERENT account are
+ * not this account's keys, however present they are (see `v2/keys.ts`).
+ */
+async function keysReadyOf(handle: V2Handle): Promise<boolean> {
+  const status = await keyStatus(handle.client.userId, browserKeyVault(), {
+    sessionToken: handle.client.sessionToken,
+    server: SERVER,
+  });
+  return status.kind === "ready";
 }
 
 /**

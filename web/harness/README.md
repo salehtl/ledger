@@ -278,3 +278,32 @@ const field = page.locator('input[inputmode="numeric"]').first();
 await field.fill("");
 console.log("after clearing:", await field.inputValue()); // should be "", not "0"
 ```
+
+## `recovery.mjs` — the at-rest keys, and a browser with nothing in it
+
+The rest of this directory is about layout and gesture. `recovery.mjs` is about
+a different kind of claim: **a browser whose site data has been cleared, given
+twelve words, gets its keys back.** Every layer of that is a real browser
+behaviour — IndexedDB actually being gone, a `CryptoKey` actually refusing to
+export, WebAuthn actually finding a discoverable credential — and jsdom
+simulates none of them, so it cannot be a vitest file however well written.
+
+It needs a v2 stack rather than the v1 one `stack.sh` brings up: a Postgres
+cluster, a scratch `ledgerd`, and a vite dev server pointed at it. The script's
+own header carries the four commands. It mints nothing itself — hand it a
+single-use invite code:
+
+```bash
+node harness/recovery.mjs <invite-code>
+```
+
+It creates an account, walks the recovery step, **attempts to export the stored
+private key material and requires Chromium to refuse**, declares a bank, then
+throws the browser context away and does the whole thing again from the phrase.
+
+One thing it documents rather than tests: a cleared browser is a new device
+*writer*, because the writer's identity key was in the database that was just
+destroyed — so it stops at the enrolment wall before the onboarding walk. That
+gate is the writer roster's, not the key material's, and the script says so
+where it steps around it.
+

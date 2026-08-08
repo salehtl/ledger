@@ -32,7 +32,7 @@
  * would strand an offline user on the last step of setup.
  */
 
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
@@ -50,7 +50,9 @@ import {
 import { PROFILE, SERVER } from "../../v2/BootGate";
 import { bankDeclaredOps } from "../../v2/sources/banks";
 import { webSecretStore, type V2Handle } from "../../v2/session";
+import { browserKeyVault, keyStatus, type KeyStatus, type KeyVault } from "../../v2/keys";
 import { Address } from "./Address";
+import { RecoveryPhrase } from "./RecoveryPhrase";
 import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
@@ -73,6 +75,8 @@ export interface OnboardingProps {
   secrets?: SecretStore;
   server?: string;
   pollMs?: number;
+  /** Injected by tests. Defaults to the browser's IndexedDB key vault. */
+  vault?: KeyVault;
 }
 
 export function Onboarding({
@@ -84,6 +88,7 @@ export function Onboarding({
   secrets,
   server = SERVER,
   pollMs,
+  vault,
 }: OnboardingProps) {
   const [facts, dispatch] = useReducer(onboardingReducer, initial);
   const step = stepFor(facts);
@@ -133,6 +138,17 @@ export function Onboarding({
   );
 
   switch (screenFor(step)) {
+    case "recovery":
+      return (
+        <RecoveryStep
+          handle={handle}
+          vault={vault ?? browserKeyVault()}
+          server={server}
+          {...(doFetch === undefined ? {} : { fetch: doFetch })}
+          onSecured={() => dispatch({ type: "keys_secured" })}
+        />
+      );
+
     case "bank":
       return (
         <Bank
@@ -219,6 +235,93 @@ export function Onboarding({
         </Step>
       );
   }
+}
+
+/**
+ * The recovery step, with the one question it has to answer first: does the
+ * ACCOUNT already have keys?
+ *
+ * Both ceremonies live in `RecoveryPhrase`, and which one it shows is decided by
+ * `keyStatus` — so the read happens here rather than in the boot gate, whose
+ * `keysReady` deliberately collapses the three states into one boolean. A
+ * `ready` answer at this point means another tab finished the ceremony while
+ * this one sat on the step; reporting the fact is the right response to that,
+ * not rendering a screen asking for keys that already exist.
+ */
+function RecoveryStep({
+  handle,
+  vault,
+  server,
+  fetch: doFetch,
+  onSecured,
+}: {
+  handle: V2Handle;
+  vault: KeyVault;
+  server: string;
+  fetch?: typeof fetch;
+  onSecured: () => void;
+}) {
+  const [status, setStatus] = useState<KeyStatus | null>(null);
+  const [failed, setFailed] = useState(false);
+  const io = useMemo(
+    () => ({
+      sessionToken: handle.client.sessionToken,
+      server,
+      ...(doFetch === undefined ? {} : { fetch: doFetch }),
+    }),
+    [handle, server, doFetch],
+  );
+
+  useEffect(() => {
+    let live = true;
+    void keyStatus(handle.client.userId, vault, io).then(
+      (s) => {
+        if (!live) return;
+        if (s.kind === "ready") onSecured();
+        else setStatus(s);
+      },
+      () => {
+        if (live) setFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [handle, vault, io, onSecured]);
+
+  if (failed) {
+    return (
+      <Step title="Setting up encryption" testId="onboarding-recovery-unavailable">
+        <Notice tone="danger" announce title="ledger could not reach the server">
+          <p>
+            Setting up encryption needs one call to the server, and this device could not make it. Nothing is lost —
+            reopen ledger when you have a connection and this step will pick up where it left off.
+          </p>
+        </Notice>
+      </Step>
+    );
+  }
+
+  if (status === null) {
+    return (
+      <Step title="Setting up encryption" testId="onboarding-recovery">
+        <div className="flex items-center gap-3 text-muted" role="status">
+          <PixelSpinner size={12} />
+          <span className="text-sm">One moment…</span>
+        </div>
+      </Step>
+    );
+  }
+
+  return (
+    <RecoveryPhrase
+      accountId={handle.client.userId}
+      vault={vault}
+      io={io}
+      published={status.kind === "needs_recovery" ? status.published : null}
+      onSecured={onSecured}
+    />
+  );
 }
 
 /**

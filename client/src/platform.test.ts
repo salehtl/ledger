@@ -375,6 +375,128 @@ describe("random", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The Phase 3 key-material primitives
+// ---------------------------------------------------------------------------
+
+describe("x25519", () => {
+  // RFC 7748 §6.1. Alice's private key and the public key it derives to.
+  const ALICE_PRIV = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
+  const ALICE_PUB = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
+  // Bob's, from the same section — the second vector catches an implementation
+  // that gets the first right by accident.
+  const BOB_PRIV = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
+  const BOB_PUB = "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f";
+
+  test("derives RFC 7748's published public keys", () => {
+    expect(P.toHex(P.x25519PublicKey(hexToBytes(ALICE_PRIV)))).toBe(ALICE_PUB);
+    expect(P.toHex(P.x25519PublicKey(hexToBytes(BOB_PRIV)))).toBe(BOB_PUB);
+  });
+
+  test("a generated key's public half is the one derived from its private half", () => {
+    const { priv, pub } = P.x25519GenerateKey();
+    expect(priv.length).toBe(32);
+    expect(pub.length).toBe(32);
+    expect(P.toHex(P.x25519PublicKey(priv))).toBe(P.toHex(pub));
+  });
+
+  test("two generated keys differ", () => {
+    expect(P.toHex(P.x25519GenerateKey().priv)).not.toBe(P.toHex(P.x25519GenerateKey().priv));
+  });
+
+  test("a private key that is not 32 bytes is refused", () => {
+    expect(() => P.x25519PublicKey(new Uint8Array(31))).toThrow();
+    expect(() => P.x25519PublicKey(new Uint8Array(33))).toThrow();
+  });
+});
+
+describe("argon2id", () => {
+  // RFC 9106 §5.3's published Argon2id vector, in full: it is the only fixed
+  // vector that pins the mode (argon2i and argon2d produce different tags for
+  // these inputs), the lane count and the pass count all at once. `key` and
+  // `ad` exist ONLY to make this vector checkable — nothing in the product
+  // passes either, and see `platform.ts` for why they are still on the seam.
+  test("RFC 9106 §5.3", () => {
+    const tag = P.argon2id(new Uint8Array(32).fill(1), new Uint8Array(16).fill(2), {
+      t: 3,
+      m: 32,
+      p: 4,
+      dkLen: 32,
+      key: new Uint8Array(8).fill(3),
+      ad: new Uint8Array(12).fill(4),
+    });
+    expect(P.toHex(tag)).toBe("0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
+  });
+
+  test("is deterministic, and every parameter changes the answer", () => {
+    const pw = P.utf8Encode("abandon abandon about");
+    const salt = new Uint8Array(16).fill(7);
+    const base = { t: 2, m: 64, p: 1, dkLen: 32 } as const;
+    const a = P.toHex(P.argon2id(pw, salt, base));
+    expect(P.toHex(P.argon2id(pw, salt, base))).toBe(a);
+    expect(P.toHex(P.argon2id(pw, salt, { ...base, t: 3 }))).not.toBe(a);
+    expect(P.toHex(P.argon2id(pw, salt, { ...base, m: 128 }))).not.toBe(a);
+    expect(P.toHex(P.argon2id(pw, salt, { ...base, p: 2 }))).not.toBe(a);
+    expect(P.toHex(P.argon2id(pw, new Uint8Array(16).fill(8), base))).not.toBe(a);
+  });
+
+  test("dkLen decides the output length", () => {
+    const pw = P.utf8Encode("x");
+    const salt = new Uint8Array(16);
+    expect(P.argon2id(pw, salt, { t: 1, m: 64, p: 1, dkLen: 16 }).length).toBe(16);
+    expect(P.argon2id(pw, salt, { t: 1, m: 64, p: 1, dkLen: 64 }).length).toBe(64);
+  });
+});
+
+describe("aes-256-gcm", () => {
+  // NIST SP 800-38D / the GCM specification's published AES-256 cases. The
+  // seam returns ciphertext||tag, so the expectation is the concatenation.
+  const ZERO_KEY = new Uint8Array(32);
+  const ZERO_IV = new Uint8Array(12);
+
+  test("the published all-zero AES-256 cases", async () => {
+    expect(P.toHex(await P.aesGcmSeal(ZERO_KEY, ZERO_IV, new Uint8Array(0), new Uint8Array(0)))).toBe(
+      "530f8afbc74536b9a963b4f1c4cb738b",
+    );
+    expect(P.toHex(await P.aesGcmSeal(ZERO_KEY, ZERO_IV, new Uint8Array(0), new Uint8Array(16)))).toBe(
+      "cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919",
+    );
+  });
+
+  test("round-trips with associated data", async () => {
+    const key = P.randomBytes(32);
+    const nonce = P.randomBytes(12);
+    const aad = P.utf8Encode("ledger-v2-wrap-1");
+    const pt = P.utf8Encode("the private half");
+    const sealed = await P.aesGcmSeal(key, nonce, aad, pt);
+    expect(P.toHex(sealed)).not.toContain(P.toHex(pt));
+    expect(P.toHex(await P.aesGcmOpen(key, nonce, aad, sealed))).toBe(P.toHex(pt));
+  });
+
+  test("a wrong key, nonce, aad or tag is a rejection and never a wrong plaintext", async () => {
+    const key = P.randomBytes(32);
+    const nonce = P.randomBytes(12);
+    const aad = P.utf8Encode("aad");
+    const sealed = await P.aesGcmSeal(key, nonce, aad, P.utf8Encode("secret"));
+    const other = P.randomBytes(32);
+    expect(P.aesGcmOpen(other, nonce, aad, sealed)).rejects.toThrow();
+    expect(P.aesGcmOpen(key, P.randomBytes(12), aad, sealed)).rejects.toThrow();
+    expect(P.aesGcmOpen(key, nonce, P.utf8Encode("aad!"), sealed)).rejects.toThrow();
+    const flipped = Uint8Array.from(sealed);
+    flipped[flipped.length - 1] = (sealed[sealed.length - 1]! ^ 1) & 0xff;
+    expect(P.aesGcmOpen(key, nonce, aad, flipped)).rejects.toThrow();
+  });
+
+  test("a key that is not 32 bytes, or a nonce that is not 12, is refused", async () => {
+    expect(P.aesGcmSeal(new Uint8Array(16), new Uint8Array(12), new Uint8Array(0), new Uint8Array(0))).rejects.toThrow();
+    expect(P.aesGcmSeal(new Uint8Array(32), new Uint8Array(16), new Uint8Array(0), new Uint8Array(0))).rejects.toThrow();
+  });
+
+  test("ciphertext shorter than the tag is refused rather than decoded", async () => {
+    expect(P.aesGcmOpen(new Uint8Array(32), new Uint8Array(12), new Uint8Array(0), new Uint8Array(15))).rejects.toThrow();
+  });
+});
+
 describe("the registry", () => {
   test("bunPlatform is installed on import", () => {
     expect(platform()).toBe(bunPlatform);

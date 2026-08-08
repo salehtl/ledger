@@ -11,9 +11,11 @@
  */
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { gzipSync, Gunzip } from "fflate";
-import type { Platform } from "./platform";
+import { aesGcmOpen, aesGcmSeal } from "./platform.aead";
+import { argon2idOf } from "./platform.argon2";
+import type { Argon2idParams, Platform } from "./platform";
 
 const HEX = "0123456789abcdef";
 const HEX_STRICT = /^([0-9a-f]{2})*$/;
@@ -160,6 +162,32 @@ export const webPlatform: Platform = {
   ed25519Sign(priv: Uint8Array, msg: Uint8Array): Uint8Array {
     if (priv.length !== 32) throw new TypeError(`ed25519 private key must be 32 bytes, got ${priv.length}`);
     return ed25519.sign(msg, priv);
+  },
+
+  // noble's X25519, against `platform.ts`'s `node:crypto` one. Two
+  // implementations, RFC 7748's vectors on both — the same arrangement Ed25519
+  // above already has.
+  x25519GenerateKey(): { priv: Uint8Array; pub: Uint8Array } {
+    const priv = x25519.utils.randomSecretKey();
+    return { priv, pub: x25519.getPublicKey(priv) };
+  },
+
+  x25519PublicKey(priv: Uint8Array): Uint8Array {
+    if (priv.length !== 32) throw new TypeError(`x25519 private key must be 32 bytes, got ${priv.length}`);
+    return x25519.getPublicKey(priv);
+  },
+
+  // The same implementation `bunPlatform` runs — see `platform.argon2.ts`.
+  argon2id(password: Uint8Array, salt: Uint8Array, params: Argon2idParams): Uint8Array {
+    return argon2idOf(password, salt, params);
+  },
+
+  aesGcmSeal(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array): Promise<Uint8Array> {
+    return aesGcmSeal(key, nonce, aad, plaintext);
+  },
+
+  aesGcmOpen(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, sealed: Uint8Array): Promise<Uint8Array> {
+    return aesGcmOpen(key, nonce, aad, sealed);
   },
 
   randomUUID(): string {

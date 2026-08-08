@@ -175,6 +175,15 @@ var seeders = map[string]seeder{
 		  VALUES ($2, 'add', $1, $3, '{"challenge":"x"}'::jsonb, now(), now() + interval '5 minutes')`,
 			u, u.String()+"-ceremony", randBytes(t, 32))
 	},
+	// The account's at-rest key material. It is user-scoped in the schema
+	// precisely so it is discovered here and leaves with the account: a wrapped
+	// key blob that outlived its user would be the one artefact capable of
+	// opening that user's data, kept after they asked to be forgotten.
+	"public.user_keys": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO user_keys
+		  (user_id, ingest_pubkey, wrapped_keys, key_version, created_at, updated_at)
+		  VALUES ($1, $2, $3, 1, now(), now())`, u, randBytes(t, 32), randBytes(t, 117))
+	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
 		               VALUES ($1, 'alpha-plaintext-v1', now(), now() + interval '90 days')

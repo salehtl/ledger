@@ -84,6 +84,12 @@ import type { SecretStore } from "@ledger/client/store/store";
 export const ONBOARDING_STEPS = [
   "signed_in",
   "invited",
+  // Phase 3. It sits HERE, before anything else the account records, because
+  // every fact the walk collects after it — the declared banks, the home
+  // currency, the budget — becomes op-log content, and content authored before
+  // an account has keys is content that would have to be re-sealed later. An
+  // account acquires its keys before it acquires anything to protect.
+  "keys_secured",
   "banks_declared",
   "address_issued",
   "forwarding_configured",
@@ -104,6 +110,7 @@ export type OnboardingPosition = OnboardingStep | "signed_out";
 export type OnboardingScreen =
   | "sign_in"
   | "confirming"
+  | "recovery"
   | "bank"
   | "address"
   | "forwarding"
@@ -118,7 +125,8 @@ const SCREEN_FOR: Record<OnboardingPosition, OnboardingScreen> = {
   // real state, not a formality: this is where a `410 account_deleted`
   // surfaces on a device that was signed in yesterday.
   signed_in: "confirming",
-  invited: "bank",
+  invited: "recovery",
+  keys_secured: "bank",
   banks_declared: "address",
   address_issued: "forwarding",
   forwarding_configured: "verification",
@@ -140,6 +148,20 @@ export interface OnboardingFacts {
   hasSession: boolean;
   /** The server answered with a user id, so the account exists and is invited. */
   accountId: string | null;
+  /**
+   * This device holds the account's keys, and they are the ones the account
+   * published (`v2/keys.ts`'s `keyStatus`).
+   *
+   * **Not device-local state that could be remembered.** It is re-derived at
+   * every boot from what is actually in the key vault against what the server
+   * actually published, because the two ways it can be false are different
+   * screens: an account that has published nothing needs a phrase generated,
+   * and an account that has published keys this browser does not hold needs one
+   * typed in. A stored boolean could say "yes" for a browser whose site data was
+   * cleared five minutes ago, which is precisely the case the recovery step
+   * exists for.
+   */
+  keysReady: boolean;
   /**
    * The banks the user has declared, ACTIVE ONES ONLY, read from the folded log
    * (`bank_declared`) through {@link declaredBanksOf}. Several, editable later,
@@ -185,6 +207,7 @@ export function emptyFacts(): OnboardingFacts {
   return {
     hasSession: false,
     accountId: null,
+    keysReady: false,
     banks: [],
     inboundAddress: null,
     forwardingDeclared: false,
@@ -198,6 +221,7 @@ export function emptyFacts(): OnboardingFacts {
 const MILESTONES: readonly (readonly [OnboardingStep, (f: OnboardingFacts) => boolean])[] = [
   ["signed_in", (f) => f.hasSession],
   ["invited", (f) => f.accountId !== null],
+  ["keys_secured", (f) => f.keysReady],
   ["banks_declared", (f) => f.banks.length > 0],
   ["address_issued", (f) => f.inboundAddress !== null],
   ["forwarding_configured", (f) => f.forwardingDeclared],
@@ -235,6 +259,7 @@ export function onboardingComplete(f: OnboardingFacts): boolean {
 export type OnboardingEvent =
   | { type: "session"; hasSession: boolean }
   | { type: "account_confirmed"; accountId: string }
+  | { type: "keys_secured" }
   | { type: "banks_declared"; banks: readonly string[] }
   | { type: "address_issued"; address: string }
   | { type: "forwarding_declared" }
@@ -267,6 +292,12 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
 
     case "account_confirmed":
       return f.accountId === e.accountId ? f : { ...f, accountId: e.accountId };
+
+    case "keys_secured":
+      // One direction only. Nothing in the product un-secures keys: a device
+      // that has them keeps them until the site data is cleared, and that is a
+      // fresh boot rather than an event.
+      return f.keysReady ? f : { ...f, keysReady: true };
 
     case "banks_declared": {
       // Same object when the set is unchanged, so a re-declaration is visibly a
@@ -357,6 +388,12 @@ export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
 export function resumeFacts(args: {
   hasSession: boolean;
   accountId: string | null;
+  /**
+   * **Measured at this boot**, never read from `local`: it is the answer to
+   * "does this browser hold the account's keys right now", and a cached one
+   * would be wrong for exactly the browser the recovery step exists to serve.
+   */
+  keysReady: boolean;
   /** **From the log**, through {@link declaredBanksOf}. Active ones only. */
   banks: readonly string[];
   /** The server's answer, or null when it could not be asked. */
@@ -369,6 +406,7 @@ export function resumeFacts(args: {
   const base: OnboardingFacts = {
     hasSession: args.hasSession,
     accountId: args.accountId,
+    keysReady: args.keysReady,
     banks: args.banks,
     inboundAddress: args.inboundAddress ?? local?.inboundAddress ?? null,
     // DEMONSTRATED, not remembered. Mail in the log is the only evidence a
@@ -711,6 +749,99 @@ export const RECOVERY_WARNING = {
   advice:
     "Save the passkey somewhere that outlives one handset: iCloud Keychain, a Google or password-manager account " +
     "that syncs, or a hardware key. Then add a second one below.",
+} as const;
+
+/**
+ * The recovery-phrase step's words.
+ *
+ * # Every sentence here is one the code honours, and the ones it cannot make
+ * true are absent
+ *
+ * This is a privacy claim made to someone who will sign a consent document, at
+ * the moment they are deciding whether to trust us, so the spec (§"The decision
+ * that overrides the request") sets a hard rule: **do not write "only you can
+ * access it", "zero-access", or "we can't see it".** They are false. Bank mail
+ * arrives over SMTP in plaintext — it must, the bank sends it that way — and the
+ * server reads it in memory to extract the transaction before sealing it. There
+ * is a window, on our machine, where the plaintext exists, and a live,
+ * compromised server could log it.
+ *
+ * `onboarding.test.ts` asserts those phrasings are absent, so a later, kinder
+ * edit cannot reintroduce them.
+ *
+ * What is written instead is stronger and survives scrutiny:
+ *
+ *   - encrypted before it is stored, with a key only this device holds;
+ *   - a stolen disk, backup or subpoena of the database yields ciphertext;
+ *   - **and** we do see each email for the moment it arrives, because the bank
+ *     sends it unencrypted;
+ *   - and losing the phrase and the devices loses the history, permanently.
+ *
+ * # There is no skip, and the copy says why
+ *
+ * The native design treated a phrase as a backstop because iCloud Keychain
+ * syncs a device wrap key. A browser has no Keychain. If this browser's site
+ * data is cleared and no phrase was written down, the account is unrecoverable —
+ * not "hard to recover", unrecoverable, because nobody holds anything that could
+ * restore it. That is the sentence, and it is why this step has no way past it.
+ */
+export const RECOVERY_PHRASE_COPY = {
+  title: "Write down your recovery phrase",
+  intro:
+    "These twelve words are the key to everything ledger records for you. They are generated on this device and " +
+    "sent nowhere.",
+  whatItProtects:
+    "Your transactions and the bank emails they came from are encrypted before they are stored, with a key only " +
+    "your devices hold. A stolen disk, a stolen backup or a subpoena of our database yields ciphertext.",
+  whatItDoesNot:
+    "ledger does see each email for the moment it arrives, because your bank sends it to us unencrypted. It is " +
+    "read to pull out the transaction, sealed, and the original discarded. That window is real and this phrase " +
+    "does not close it.",
+  noWayBack:
+    "If you clear this browser's data and do not have these words, the account is gone. There is nothing to reset " +
+    "and nobody to ask: ledger holds no copy of this key and cannot restore your history.",
+  advice:
+    "Write them on paper, or put them in a password manager. A screenshot in your photo library is better than " +
+    "nothing and worse than either.",
+  recorded: "I have written these down",
+  // The confirmation step. A checkbox alone is a claim; this is a check.
+  confirmTitle: "Now type three of them back",
+  confirmIntro:
+    "This is the only way to tell a phrase that was written down from one that was looked at. If you cannot answer, " +
+    "go back — the words are still on the previous screen, and this is the last moment they will be.",
+  confirmWrong: "That is not the word at that position. Check what you wrote down.",
+  back: "Show me the words again",
+  publish: "Finish setting up encryption",
+  working: "Setting up encryption…",
+  failed:
+    "ledger could not finish setting up encryption just now. Nothing is lost and the phrase has not changed — " +
+    "try again when you have a connection.",
+} as const;
+
+/**
+ * The other side of the same step: a browser that holds no keys for an account
+ * that has them.
+ *
+ * This is what a reinstall, a cleared cache or a second device sees, and the
+ * copy has to be calm about it — the account is fine, this browser simply has
+ * nothing in it.
+ */
+export const RECOVERY_ENTRY_COPY = {
+  title: "Enter your recovery phrase",
+  intro:
+    "This browser holds no key for your account — that is what clearing site data, a reinstall or a new device " +
+    "looks like. Your records are safe on the server and encrypted; the twelve words are what makes them readable " +
+    "again.",
+  noWayBack:
+    "There is no way around this screen. ledger holds no copy of your key, so nobody here can let you in without " +
+    "the phrase — not the person running this beta, not with proof of who you are.",
+  label: "Your twelve words",
+  placeholder: "twelve words, separated by spaces",
+  action: "Unlock my account",
+  working: "Checking…",
+  failed:
+    "Those words did not open your account. Every word is checked against the list ledger uses, so a wrong one is " +
+    "usually a typo or two words swapped round.",
 } as const;
 
 export const ADD_PASSKEY_COPY = {

@@ -17,6 +17,7 @@ const CLEAN: SyncResult = CLEAN_SYNC;
 const SETTLED = encodeLocal({
   hasSession: true,
   accountId: "u_1",
+  keysReady: true,
   banks: ["dib"],
   inboundAddress: "u-abc@in.sirdab.ae",
   forwardingDeclared: true,
@@ -113,6 +114,7 @@ function mount(r: Rig, props: Partial<Parameters<typeof BootGate>[0]> = {}) {
       open={async () => r.handle}
       engine={() => r.coordinator}
       address={async () => "u-abc@in.sirdab.ae"}
+      keysReady={async () => true}
       wipe={async () => {}}
       {...props}
     >
@@ -728,6 +730,7 @@ describe("BootGate, re-authenticating in the same document", () => {
         open={async () => r.handle}
         engine={r.build}
         address={async () => "u-abc@in.sirdab.ae"}
+      keysReady={async () => true}
         wipe={async () => {}}
         signIn={({ done }) => (
           <button

@@ -144,6 +144,19 @@ export interface BootDeps {
   state(): Pick<State, "txns" | "homeCurrency" | "banks">;
   /** `GET /api/v1/address`, which mints on first read. */
   address(): Promise<string | null>;
+  /**
+   * Whether this device holds the account's at-rest keys — `v2/keys.ts`'s
+   * `keyStatus`, reduced to the one bit the milestone table needs.
+   *
+   * Measured at every boot rather than remembered, and a device that cannot
+   * ANSWER (the server did not reply) reports `false`, which routes to the
+   * recovery step. That is the safe direction and it is also the honest one:
+   * "this device is not set up to read your data yet" is true of an offline
+   * device with no keys, and the step it lands on says exactly that. The other
+   * direction would let a device proceed to author ops it could not later
+   * protect.
+   */
+  keysReady(): Promise<boolean>;
   /** Where the device-local half of the onboarding facts lives. */
   secrets: SecretStore;
   /** Delete this account's local data. Only ever called for `410 account_deleted`. */
@@ -215,6 +228,7 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     const facts = resumeFacts({
       hasSession: true,
       accountId: userId,
+      keysReady: await keysReadyOrFalse(deps),
       banks: declaredBanksOf(folded),
       inboundAddress: await addressOrNull(deps),
       firstMailConfirmedAt: firstMailAt(folded),
@@ -248,6 +262,22 @@ async function addressOrNull(deps: BootDeps): Promise<string | null> {
   } catch (error) {
     if (sessionAnswerOf(error) !== null) throw error;
     return null;
+  }
+}
+
+/**
+ * Whether this device holds the account's keys, with a failure reading as "no".
+ *
+ * A session answer (`401`/`410`) still travels, exactly as `addressOrNull` lets
+ * it: that is a fact about the account rather than about the connection, and
+ * swallowing it here would hide a deleted account behind a recovery screen.
+ */
+async function keysReadyOrFalse(deps: BootDeps): Promise<boolean> {
+  try {
+    return await deps.keysReady();
+  } catch (error) {
+    if (sessionAnswerOf(error) !== null) throw error;
+    return false;
   }
 }
 
@@ -294,6 +324,7 @@ export function handleDeps(args: {
   haltReason: () => string | null;
   secrets: SecretStore;
   address: () => Promise<string | null>;
+  keysReady: () => Promise<boolean>;
   wipe: () => Promise<void>;
 }): BootDeps {
   return {
@@ -304,6 +335,7 @@ export function handleDeps(args: {
     haltReason: args.haltReason,
     state: () => args.handle.client.state(),
     address: args.address,
+    keysReady: args.keysReady,
     secrets: args.secrets,
     wipe: args.wipe,
     clearSession: () => {
