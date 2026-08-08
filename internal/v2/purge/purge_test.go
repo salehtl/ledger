@@ -184,6 +184,18 @@ var seeders = map[string]seeder{
 		  (user_id, ingest_pubkey, wrapped_keys, key_version, recovery_pubkey, created_at, updated_at)
 		  VALUES ($1, $2, $3, 1, $4, now(), now())`, u, randBytes(t, 32), randBytes(t, 149), randBytes(t, 32))
 	},
+	// The PRF wraps: the same key material again, sealed under a secret held by
+	// one of the account's passkeys. It rides on a credential row, so the
+	// credential is seeded first and the wrap hangs off it.
+	"public.user_key_wraps": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		credential := randBytes(t, 20)
+		exec(t, pool, `INSERT INTO webauthn_credentials
+		  (credential_id, user_id, user_handle, public_key, sign_count, backup_eligible, backup_state, created_at)
+		  VALUES ($2, $1, $3, $4, 1, true, true, now())`,
+			u, credential, randBytes(t, 32), randBytes(t, 77))
+		exec(t, pool, `INSERT INTO user_key_wraps (user_id, credential_id, wrapped, wrap_version, created_at)
+		               VALUES ($1, $2, $3, 1, now())`, u, credential, randBytes(t, 159))
+	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
 		               VALUES ($1, 'alpha-plaintext-v1', now(), now() + interval '90 days')
