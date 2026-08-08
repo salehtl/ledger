@@ -167,6 +167,51 @@ export interface Rule {
 }
 
 /**
+ * The needs/wants/savings plan, as whole percentages summing to exactly 100.
+ *
+ * **Percentages, not money**, so these are `number` and not `bigint` — the
+ * money rule is about amounts, and a percentage cannot approach 2^53. The
+ * arithmetic that applies them to money stays in `bigint`, in the consumer.
+ *
+ * `null` on {@link State.budgetSplit} means the user never chose, which is not
+ * the same as 50/30/20: the default belongs to the consumer, so that "no op"
+ * folds to exactly the behaviour that predates these ops.
+ */
+export interface BudgetSplit {
+  need: number;
+  want: number;
+  saving: number;
+}
+
+/** Which of the three buckets a spending category counts towards. */
+export type BudgetBucket = "need" | "want" | "saving";
+
+/**
+ * A category the user defined, keyed by {@link CategoryDef.id}.
+ *
+ * The v1 taxonomy, kept: a category is born knowing its kind, and a `spending`
+ * one is born knowing its bucket. `income` and `excluded` carry no bucket at
+ * all — a null rather than a default, because "this is income" and "this is a
+ * need" are not the same claim and defaulting one to the other is how money
+ * lands in a bucket nobody chose.
+ *
+ * `active: false` RETIRES a category rather than deleting it. There is
+ * deliberately no delete op: a transaction categorised before its category was
+ * retired must still read correctly, and `category` on a transaction stays a
+ * bare string rather than a foreign key precisely so that stays true.
+ */
+export interface CategoryDef {
+  id: string;
+  name: string;
+  kind: "spending" | "income" | "excluded";
+  /** Non-null exactly when `kind === "spending"`. */
+  bucket: BudgetBucket | null;
+  /** A writer's chosen colour, or null to let the surface derive one. */
+  color: string | null;
+  active: boolean;
+}
+
+/**
  * The current head of one versioned entity, plus the identity of the op that
  * owns it. The last three fields exist only for fork resolution.
  */
@@ -240,6 +285,21 @@ export interface State {
   rates: Map<string, bigint | null>;
   /** Canonical authored_at of the positional op that installed each explicit rate head. */
   rateUpdatedAt: Map<string, string>;
+  /**
+   * The banks the user declared, in the order the latest `banks_declared` op
+   * listed them. An ARRAY rather than a `Set`: the order is the user's, it is
+   * shown back to them, and `serializeState` renders a Set sorted — which would
+   * make two devices agree on a state they display differently.
+   *
+   * Empty means "never declared", which is what every pre-v3 account folds to.
+   * Nothing in the trust path may read this (spec: declared banks route the
+   * waitlist and drive the UI; they never influence parsing or the allowlist).
+   */
+  banks: string[];
+  /** The user's plan, or null when they never chose — see {@link BudgetSplit}. */
+  budgetSplit: BudgetSplit | null;
+  /** id → the latest definition of that category. Last write per id wins. */
+  categories: Map<string, CategoryDef>;
   /** currency → live txn ids whose snapshot is still null. Task 12 drains these. */
   pendingByCurrency: Map<string, Set<string>>;
   /** The heads from the LATEST `writer_checkpoint`; earlier ones are history. */
@@ -294,6 +354,9 @@ export function emptyState(): State {
     homeCurrency: null,
     rates: new Map(),
     rateUpdatedAt: new Map(),
+    banks: [],
+    budgetSplit: null,
+    categories: new Map(),
     pendingByCurrency: new Map(),
     checkpoints: [],
     forks: [],

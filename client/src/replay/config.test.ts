@@ -1,0 +1,271 @@
+/**
+ * The three configuration ops, end to end: wire, fold, state.
+ *
+ * They are the `home_currency_set` / `rate_set` shape — parent-free append-only
+ * facts folded by position — so the tests here mirror the FX ones rather than
+ * the versioned-entity ones. Record-level last-write-wins is forbidden for
+ * transactions and splits (spec §3.3, because it breaks invariants across
+ * records) and is correct for a keyed configuration value, where there is no
+ * invariant across keys; `category_defined` therefore has no `parent_version`
+ * and no fork resolution, and the last op naming an id is what that id means.
+ *
+ * The FIRST test in this file is the backwards-compatibility one, on purpose: a
+ * log with no configuration ops must fold to exactly the state it folded to
+ * before these ops existed, or the schema bump is not a no-op for data.
+ */
+
+import { expect, test } from "bun:test";
+import { SCHEMA_VERSION, UnknownNewerVersionError, decodeBlobOps, encodeBlobOps, type Op, type OpType } from "../wire/op";
+import { emptyState, serializeState, type State } from "./state";
+import { applyOp, fold, type LogEntry } from "./replay";
+
+let n = 0;
+
+function op(type: OpType, payload: unknown, over: Partial<Op> = {}): Op {
+  return {
+    v: SCHEMA_VERSION,
+    type,
+    op_id: `cfg-${++n}`,
+    authored_at: "2026-06-05T10:00:00Z",
+    parent_version: null,
+    payload,
+    ...over,
+  };
+}
+
+function entries(...ops: Op[]): LogEntry[] {
+  return ops.map((o, i) => ({ op: o, seq: BigInt(i + 1), writer_id: "dev-a" }));
+}
+
+function foldOps(...ops: Op[]): State {
+  return fold(entries(...ops));
+}
+
+const anomalyKinds = (s: State): string[] => s.anomalies.map((a) => a.kind);
+
+// ---------------------------------------------------------------------------
+// Backwards compatibility, first
+// ---------------------------------------------------------------------------
+
+test("an account with no configuration ops folds to today's defaults", () => {
+  const s = foldOps(op("home_currency_set", { currency: "AED" }));
+  expect(s.banks).toEqual([]);
+  expect(s.budgetSplit).toBeNull();
+  expect(s.categories.size).toBe(0);
+  expect(s.anomalies).toEqual([]);
+});
+
+test("the empty state carries the configuration fields, so every consumer sees the same absence", () => {
+  const s = emptyState();
+  expect(s.banks).toEqual([]);
+  expect(s.budgetSplit).toBeNull();
+  expect([...s.categories]).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// The wire
+// ---------------------------------------------------------------------------
+
+test("each configuration op round-trips through the blob encoder", () => {
+  const ops = [
+    op("banks_declared", { banks: ["dib", "enbd"] }),
+    op("budget_split_set", { need: 50, want: 30, saving: 20 }),
+    op("category_defined", { id: "cat-1", name: "Groceries", kind: "spending", bucket: "need", color: "#88aa66", active: true }),
+  ];
+  const decoded = decodeBlobOps(encodeBlobOps(ops));
+  expect(decoded.map((o) => o.type)).toEqual(["banks_declared", "budget_split_set", "category_defined"]);
+  expect(decoded[2]!.payload).toEqual(ops[2]!.payload);
+});
+
+test("configuration ops are parent-free: an entity or a parent_version is refused by the wire", () => {
+  for (const type of ["banks_declared", "budget_split_set", "category_defined"] as const) {
+    expect(() => encodeBlobOps([op(type, {}, { entity: { kind: "config", id: "x" } })])).toThrow(/parent-free/);
+    expect(() => encodeBlobOps([op(type, {}, { parent_version: 1 })])).toThrow(/parent-free/);
+  }
+});
+
+test("configuration ops require schema v3, so an older client cannot read one as a v2-legal op", () => {
+  for (const type of ["banks_declared", "budget_split_set", "category_defined"] as const) {
+    expect(() => encodeBlobOps([op(type, {}, { v: 2 })])).toThrow(/requires schema v3/);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// banks_declared
+// ---------------------------------------------------------------------------
+
+test("banks_declared replaces the set", () => {
+  const s = foldOps(op("banks_declared", { banks: ["dib"] }), op("banks_declared", { banks: ["enbd", "adcb"] }));
+  expect(s.banks).toEqual(["enbd", "adcb"]);
+  expect(s.anomalies).toEqual([]);
+});
+
+test("banks_declared with an empty list clears the set", () => {
+  const s = foldOps(op("banks_declared", { banks: ["dib"] }), op("banks_declared", { banks: [] }));
+  expect(s.banks).toEqual([]);
+});
+
+test("a malformed banks_declared is an invalid_payload anomaly and leaves the set alone", () => {
+  for (const payload of [{}, { banks: "dib" }, { banks: [1] }, { banks: [""] }, { banks: ["dib", "dib"] }, []]) {
+    const s = foldOps(op("banks_declared", { banks: ["dib"] }), op("banks_declared", payload));
+    expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+    expect(s.banks).toEqual(["dib"]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// budget_split_set
+// ---------------------------------------------------------------------------
+
+test("budget_split_set replaces the split", () => {
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20 }), op("budget_split_set", { need: 60, want: 20, saving: 20 }));
+  expect(s.budgetSplit).toEqual({ need: 60, want: 20, saving: 20 });
+  expect(s.anomalies).toEqual([]);
+});
+
+test("a split that does not sum to 100 is an invalid_payload anomaly, never a normalisation", () => {
+  const s = foldOps(op("budget_split_set", { need: 60, want: 30, saving: 20 }));
+  expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+  expect(s.anomalies[0]!.detail).toContain("110");
+  expect(s.budgetSplit).toBeNull();
+});
+
+test("split percentages are integers, and a fractional or negative one is refused", () => {
+  for (const payload of [
+    { need: 50.5, want: 29.5, saving: 20 },
+    { need: -10, want: 60, saving: 50 },
+    { need: "50", want: 30, saving: 20 },
+    { need: 50, want: 30 },
+    {},
+  ]) {
+    const s = foldOps(op("budget_split_set", payload));
+    expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+    expect(s.budgetSplit).toBeNull();
+  }
+});
+
+test("a valid split survives a later invalid one", () => {
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20 }), op("budget_split_set", { need: 1, want: 1, saving: 1 }));
+  expect(s.budgetSplit).toEqual({ need: 50, want: 30, saving: 20 });
+  expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+});
+
+// ---------------------------------------------------------------------------
+// category_defined
+// ---------------------------------------------------------------------------
+
+const cat = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: "cat-1",
+  name: "Groceries",
+  kind: "spending",
+  bucket: "need",
+  color: "#88aa66",
+  active: true,
+  ...over,
+});
+
+test("category_defined is last write per id", () => {
+  const s = foldOps(
+    op("category_defined", cat()),
+    op("category_defined", cat({ id: "cat-2", name: "Salary", kind: "income", bucket: null })),
+    op("category_defined", cat({ name: "Food", bucket: "want" })),
+  );
+  expect(s.categories.get("cat-1")).toEqual({ id: "cat-1", name: "Food", kind: "spending", bucket: "want", color: "#88aa66", active: true });
+  expect(s.categories.get("cat-2")).toEqual({ id: "cat-2", name: "Salary", kind: "income", bucket: null, color: "#88aa66", active: true });
+  expect(s.anomalies).toEqual([]);
+});
+
+test("active:false retires a category rather than deleting it, so history stays readable", () => {
+  const s = foldOps(op("category_defined", cat()), op("category_defined", cat({ active: false })));
+  expect(s.categories.get("cat-1")?.active).toBe(false);
+  expect(s.categories.get("cat-1")?.name).toBe("Groceries");
+  expect(s.categories.size).toBe(1);
+});
+
+test("a spending category needs a bucket and the other kinds must not carry one", () => {
+  const bad = [
+    cat({ bucket: null }),
+    cat({ bucket: undefined }),
+    cat({ kind: "income", bucket: "need" }),
+    cat({ kind: "excluded", bucket: "saving" }),
+    cat({ kind: "spending", bucket: "misc" }),
+  ];
+  for (const payload of bad) {
+    const s = foldOps(op("category_defined", payload));
+    expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+    expect(s.categories.size).toBe(0);
+  }
+  for (const payload of [cat({ kind: "income", bucket: null }), cat({ kind: "excluded" })]) {
+    const ok = foldOps(op("category_defined", { ...payload, bucket: null }));
+    expect(ok.anomalies).toEqual([]);
+    expect(ok.categories.get("cat-1")?.bucket).toBeNull();
+  }
+});
+
+test("a category needs an id, a name, a known kind and an active flag", () => {
+  for (const payload of [
+    cat({ id: "" }),
+    cat({ id: 7 }),
+    cat({ name: "" }),
+    cat({ kind: "spendy" }),
+    cat({ active: "yes" }),
+    cat({ color: 7 }),
+    {},
+  ]) {
+    const s = foldOps(op("category_defined", payload));
+    expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+    expect(s.categories.size).toBe(0);
+  }
+});
+
+test("colour is optional: a writer that does not choose one leaves it null", () => {
+  const { color: _color, ...rest } = cat();
+  const s = foldOps(op("category_defined", rest));
+  expect(s.anomalies).toEqual([]);
+  expect(s.categories.get("cat-1")?.color).toBeNull();
+});
+
+test("an invalid redefinition leaves the previous definition standing", () => {
+  const s = foldOps(op("category_defined", cat()), op("category_defined", cat({ kind: "nope" })));
+  expect(s.categories.get("cat-1")?.kind).toBe("spending");
+  expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+});
+
+// ---------------------------------------------------------------------------
+// Determinism
+// ---------------------------------------------------------------------------
+
+test("configuration is witnessed by serializeState, so a divergence in it is reported", () => {
+  const a = foldOps(op("banks_declared", { banks: ["dib"] }), op("budget_split_set", { need: 60, want: 20, saving: 20 }), op("category_defined", cat()));
+  const b = foldOps(op("banks_declared", { banks: ["dib"] }), op("budget_split_set", { need: 60, want: 20, saving: 20 }), op("category_defined", cat()));
+  expect(serializeState(a)).toBe(serializeState(b));
+  const c = foldOps(op("banks_declared", { banks: ["enbd"] }), op("budget_split_set", { need: 60, want: 20, saving: 20 }), op("category_defined", cat()));
+  expect(serializeState(c)).not.toBe(serializeState(a));
+});
+
+// ---------------------------------------------------------------------------
+// The hard stop the version bump trades on
+// ---------------------------------------------------------------------------
+
+test("a newer client's configuration op hard-stops an older reader instead of being skipped", () => {
+  // The mechanism under test is `v > this build's SCHEMA_VERSION`, which is the
+  // same comparison a v2 build makes against the v3 ops this task adds. It is
+  // exercised one version above THIS build so it cannot silently stop being a
+  // test the moment SchemaVersion moves again.
+  const good = op("banks_declared", { banks: ["dib"] });
+  const newer = op("banks_declared", { banks: ["enbd"] }, { v: SCHEMA_VERSION + 1 });
+  const body = new TextEncoder().encode(JSON.stringify({ v: SCHEMA_VERSION + 1, kind: "ops", ops: [good, newer] }));
+
+  // STOP, not skip: the whole blob is refused, including the op before it that
+  // this build understands perfectly well.
+  expect(() => decodeBlobOps(body)).toThrow(UnknownNewerVersionError);
+
+  // And at the fold, where it must escape applyOp's catch-all rather than
+  // becoming an anomaly.
+  const s = emptyState();
+  applyOp(s, { op: good, seq: 1n, writer_id: "dev-a" });
+  expect(s.banks).toEqual(["dib"]);
+  expect(() => applyOp(s, { op: newer, seq: 2n, writer_id: "dev-a" })).toThrow(UnknownNewerVersionError);
+  expect(s.banks).toEqual(["dib"]);
+  expect(s.anomalies).toEqual([]);
+});

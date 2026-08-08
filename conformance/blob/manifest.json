@@ -82,7 +82,7 @@
       },
       "expect_aad": "11111111-1111-1111-1111-111111111111|hot|dev-a|11",
       "expect_bucket": 1024,
-      "expect_plaintext_base64": "eyJ2IjoxLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjoxLCJ0eXBlIjoidHhuX2VkaXRlZCIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwRzEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDBaIiwiZW50aXR5Ijp7ImtpbmQiOiJ0eG4iLCJpZCI6IlQxIn0sInBhcmVudF92ZXJzaW9uIjoxLCJwYXlsb2FkIjp7Im1lcmNoYW50X3JhdyI6ItmD2KfYsdmB2YjYsSIsIm5vdGUiOiJTbWl0aCBcdTAwMjYgU29ucyBcdTAwM2NmbGFnZ2VkXHUwMDNlIFx1MjAyOCBzZWNvbmQgbGluZSBcdTIwMjkgZW5kIiwiYW1vdW50X21pbm9yIjoiMjUwMDAifX1dfQ==",
+      "expect_plaintext_base64": "eyJ2IjozLCJraW5kIjoib3BzIiwib3BzIjpbeyJ2IjozLCJ0eXBlIjoidHhuX2VkaXRlZCIsIm9wX2lkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwRzEiLCJhdXRob3JlZF9hdCI6IjIwMjYtMDYtMDVUMTA6MDA6MDBaIiwiZW50aXR5Ijp7ImtpbmQiOiJ0eG4iLCJpZCI6IlQxIn0sInBhcmVudF92ZXJzaW9uIjoxLCJwYXlsb2FkIjp7Im1lcmNoYW50X3JhdyI6ItmD2KfYsdmB2YjYsSIsIm5vdGUiOiJTbWl0aCBcdTAwMjYgU29ucyBcdTAwM2NmbGFnZ2VkXHUwMDNlIFx1MjAyOCBzZWNvbmQgbGluZSBcdTIwMjkgZW5kIiwiYW1vdW50X21pbm9yIjoiMjUwMDAifX1dfQ==",
       "expect_pre_pad_length": 340
     },
     {

@@ -1247,7 +1247,10 @@ test("an op from an unknown newer schema version hard-stops the fold", () => {
 
 test("an unknown newer version inside a blob hard-stops, and does not become a set-aside", () => {
   const s = emptyState();
-  const body = new TextEncoder().encode(`{"v":1,"kind":"ops","ops":[{"v":3,"type":"txn_ingested"}]}`);
+  // Arithmetic on SCHEMA_VERSION, never a literal: a literal stops testing the
+  // hard stop the moment the schema is bumped past it, which is what v2 -> v3
+  // did to this line.
+  const body = new TextEncoder().encode(`{"v":1,"kind":"ops","ops":[{"v":${SCHEMA_VERSION + 1},"type":"txn_ingested"}]}`);
   expect(() =>
     foldBlobs([{ pos: { writer_id: "ingest", stream: "hot", writer_counter: 1n, seq: 1n }, body }], s),
   ).toThrow(UnknownNewerVersionError);

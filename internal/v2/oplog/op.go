@@ -56,6 +56,31 @@
 // this is enforced by [Op.Validate] rather than left to convention. A
 // writer_checkpoint is likewise a standalone attestation.
 //
+// # Configuration ops (schema v3)
+//
+// banks_declared, budget_split_set and category_defined carry USER
+// CONFIGURATION, and they are the same shape for the same reason: a fact the
+// user chose, folded by position, last write wins per key. The alternative —
+// server-side tables — stays plaintext permanently, and after the crypto phase
+// the op log does not; a user's own category names ("Therapy", "Legal fees")
+// are exactly the data that must not be readable by the operator. See
+// docs/superpowers/specs/2026-08-08-user-configuration.md, which records that
+// decision and the version bump it costs.
+//
+// Record-level last-write-wins is FORBIDDEN for transactions and splits (spec
+// §3.3, because it breaks invariants that hold across records) and is correct
+// here, because a keyed configuration value has no invariant across keys.
+//
+// Their PAYLOADS are not validated here, and that is deliberate rather than an
+// omission: payload shapes belong to the executor that folds them, and only the
+// TypeScript executor folds. Validating the percentages in two places is how the
+// two ends start disagreeing about what a valid op is. What IS pinned on both
+// sides is the vocabulary — the type set, the parent-free set and the minimum
+// schema version each type requires — via conformance/op/manifest.json.
+//
+// The trust path never reads any of this. Declared banks route the waitlist and
+// drive the UI; nothing in internal/v2/origin may consult them.
+//
 // # Unknown newer versions hard-stop; unopenable blobs do not
 //
 // [ErrUnknownNewerVersion] is a HARD STOP: a client that meets an op it cannot
@@ -85,7 +110,12 @@ import (
 
 // SchemaVersion is the op schema this build understands. It versions the OPS;
 // blob.Version versions the framing around them.
-const SchemaVersion = 2
+//
+// v3 added the three configuration ops (see the package doc). Bumping it makes
+// an older client HARD-STOP rather than fold a half-understood log into money,
+// which is the property the bump trades on — do not weaken it to ease an
+// upgrade.
+const SchemaVersion = 3
 
 // Blob kinds. KindOf reports which one a decoded blob claims to be.
 const (
@@ -113,23 +143,43 @@ const (
 	OpRateSet                 OpType = "rate_set"
 	OpRateUnset               OpType = "rate_unset"
 	OpHomeCurrencySet         OpType = "home_currency_set"
+	OpBanksDeclared           OpType = "banks_declared"
+	OpBudgetSplitSet          OpType = "budget_split_set"
+	OpCategoryDefined         OpType = "category_defined"
 	OpWriterCheckpoint        OpType = "writer_checkpoint"
 )
 
 // Types lists every op type at SchemaVersion, in wire order.
 var Types = []OpType{
 	OpTxnIngested, OpTxnSuperseded, OpTxnCategorized, OpTxnSplit, OpTxnEdited, OpTxnDuplicateDisposition,
-	OpRuleAdded, OpRateSet, OpRateUnset, OpHomeCurrencySet, OpWriterCheckpoint,
+	OpRuleAdded, OpRateSet, OpRateUnset, OpHomeCurrencySet,
+	OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined,
+	OpWriterCheckpoint,
 }
 
 // Valid reports whether t is a type this schema version defines.
 func (t OpType) Valid() bool { return slices.Contains(Types, t) }
 
-func (t OpType) minVersion() int {
-	if t == OpTxnDuplicateDisposition {
+// MinVersion is the lowest SchemaVersion at which t exists.
+//
+// It is the second half of the forward-compatibility mechanism, and the half
+// that is easy to leave out: a v3 writer that stamped a configuration op v1
+// would hand an older reader an op it treats as v1-legal and then refuses as an
+// "unknown type" — a per-op refusal, not the hard stop. Requiring v3 is what
+// makes an older client meet ErrUnknownNewerVersion and STOP.
+//
+// Exported so conformance/op/manifest.json can pin it: the TypeScript mirror has
+// its own copy of this table, and a table nothing compares is a table that
+// drifts.
+func (t OpType) MinVersion() int {
+	switch t {
+	case OpTxnDuplicateDisposition:
 		return 2
+	case OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined:
+		return 3
+	default:
+		return 1
 	}
-	return 1
 }
 
 // ParentFree reports whether t is an append-only fact rather than a mutation of
@@ -137,7 +187,8 @@ func (t OpType) minVersion() int {
 // and are folded purely by position — see the package doc on FX determinism.
 func (t OpType) ParentFree() bool {
 	switch t {
-	case OpRateSet, OpRateUnset, OpHomeCurrencySet, OpWriterCheckpoint:
+	case OpRateSet, OpRateUnset, OpHomeCurrencySet, OpWriterCheckpoint,
+		OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined:
 		return true
 	default:
 		return false
@@ -204,8 +255,8 @@ func (o Op) Validate() error {
 	if !o.Type.Valid() {
 		return fmt.Errorf("op %s: unknown type %q", o.OpID, o.Type)
 	}
-	if o.V < o.Type.minVersion() {
-		return fmt.Errorf("op %s: type %q requires schema v%d", o.OpID, o.Type, o.Type.minVersion())
+	if o.V < o.Type.MinVersion() {
+		return fmt.Errorf("op %s: type %q requires schema v%d", o.OpID, o.Type, o.Type.MinVersion())
 	}
 	if o.OpID == "" {
 		return fmt.Errorf("op of type %s: op_id is empty", o.Type)

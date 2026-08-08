@@ -190,6 +190,18 @@ type opManifest struct {
 	SchemaVersion                       int               `json:"schema_version"`
 	Types                               []string          `json:"types"`
 	ParentFree                          []string          `json:"parent_free"`
+	// MinVersions is each op type's lowest legal schema version. Pinned because
+	// it is the half of forward compatibility that has no other witness: the type
+	// SET drifting is caught by Types, but a configuration op stamped v1 by one
+	// executor and v3 by the other is two builds disagreeing about whether an
+	// older client hard-stops or merely refuses the op, and nothing else compares
+	// the two tables.
+	MinVersions map[string]int `json:"min_versions"`
+	// ConfigOpsBase64 is a Go-encoded blob carrying one of each schema-v3
+	// configuration op. Go never folds these payloads -- only the TypeScript
+	// executor does -- so this fixture is what makes the new types visible to the
+	// shared-bytes half of the contract at all.
+	ConfigOpsBase64 string `json:"config_ops_base64"`
 	GoldenOpsBase64                     string            `json:"golden_ops_base64"`
 	GoldenRawBodyBase64                 string            `json:"golden_raw_body_base64"`
 	GoldenCheckpointBase64              string            `json:"golden_checkpoint_base64"`
@@ -345,6 +357,26 @@ func verifiedOriginOps() []Op {
 	return []Op{{V: 2, Type: OpTxnIngested, OpID: "01J000000000000000000000O1",
 		AuthoredAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC), Entity: &EntityRef{Kind: "txn", ID: "T2"},
 		IngestID: strings.Repeat("a", 64), Payload: json.RawMessage(`{"amount_minor":"1","currency":"AED","direction":"debit","posted_at":"2026-06-05T10:00:00Z","merchant_raw":"BANK","last4":"","needs_review":false,"unparsed":false,"tier":"template","verified_origin_domain":"bank.example"}`)}}
+}
+
+// configOps is one of each schema-v3 configuration op, parent-free and at v3.
+//
+// The payloads are the shapes the TypeScript executor folds. Go does not
+// interpret them (see the package doc on why validating them twice is how the
+// two ends drift), so what this fixture pins from this side is that the bytes
+// round-trip and that the vocabulary, the parent-free rule and the v3 minimum
+// hold — and from the other side, that the TypeScript fold reads exactly these
+// payloads out of Go-authored bytes.
+func configOps() []Op {
+	at := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	return []Op{
+		{V: 3, Type: OpBanksDeclared, OpID: "01J000000000000000000000B1", AuthoredAt: at,
+			Payload: json.RawMessage(`{"banks":["dib","enbd"]}`)},
+		{V: 3, Type: OpBudgetSplitSet, OpID: "01J000000000000000000000S1", AuthoredAt: at,
+			Payload: json.RawMessage(`{"need":50,"want":30,"saving":20}`)},
+		{V: 3, Type: OpCategoryDefined, OpID: "01J000000000000000000000C1", AuthoredAt: at,
+			Payload: json.RawMessage(`{"id":"cat-1","name":"Groceries","kind":"spending","bucket":"need","color":"#88aa66","active":true}`)},
+	}
 }
 
 func mustEncodeBlob(t *testing.T, ops []Op) []byte {
@@ -608,6 +640,8 @@ func TestWriteConformanceFixtures(t *testing.T) {
 			"is how a canonical form outside the shared four-digit-year grammar (years 10000 and -1 " +
 			"are both reachable from a wire-legal input) becomes visible to the suite at all.",
 		SchemaVersion:              SchemaVersion,
+		MinVersions:                map[string]int{},
+		ConfigOpsBase64:            base64.StdEncoding.EncodeToString(mustEncodeBlob(t, configOps())),
 		GoldenOpsBase64:            base64.StdEncoding.EncodeToString(ops),
 		GoldenRawBodyBase64:        base64.StdEncoding.EncodeToString(raw),
 		GoldenCheckpointBase64:     base64.StdEncoding.EncodeToString(checkpoint),
@@ -622,6 +656,7 @@ func TestWriteConformanceFixtures(t *testing.T) {
 	}
 	for _, ty := range Types {
 		opMan.Types = append(opMan.Types, string(ty))
+		opMan.MinVersions[string(ty)] = ty.MinVersion()
 		if ty.ParentFree() {
 			opMan.ParentFree = append(opMan.ParentFree, string(ty))
 		}
@@ -917,6 +952,44 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 	for _, ty := range man.ParentFree {
 		if !OpType(ty).ParentFree() {
 			t.Fatalf("manifest calls %q parent-free and this build does not", ty)
+		}
+	}
+	// And the other direction, which the loop above cannot see: a type this
+	// build calls parent-free but the manifest does not list is the same
+	// disagreement with the sign flipped, and it is the direction a NEW op
+	// arrives from.
+	for _, ty := range Types {
+		if ty.ParentFree() && !slices.Contains(man.ParentFree, string(ty)) {
+			t.Fatalf("this build calls %q parent-free and the manifest does not", ty)
+		}
+	}
+	if len(man.MinVersions) != len(Types) {
+		t.Fatalf("manifest pins %d minimum versions, this build has %d op types", len(man.MinVersions), len(Types))
+	}
+	for _, ty := range Types {
+		if got, ok := man.MinVersions[string(ty)]; !ok || got != ty.MinVersion() {
+			t.Fatalf("%q requires schema v%d here, manifest says v%d (present: %t)", ty, ty.MinVersion(), got, ok)
+		}
+	}
+
+	configBytes, err := base64.StdEncoding.DecodeString(man.ConfigOpsBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := DecodeBlob(configBytes)
+	if err != nil {
+		t.Fatalf("the shared configuration fixture no longer decodes here: %v", err)
+	}
+	wantConfig := []OpType{OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined}
+	if len(config) != len(wantConfig) {
+		t.Fatalf("configuration fixture decoded %d ops, want %d", len(config), len(wantConfig))
+	}
+	for i, ty := range wantConfig {
+		if config[i].Type != ty {
+			t.Fatalf("configuration op %d is %q, want %q", i, config[i].Type, ty)
+		}
+		if config[i].V != 3 {
+			t.Fatalf("configuration op %d is v%d, want v3", i, config[i].V)
 		}
 	}
 

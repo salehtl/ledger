@@ -41,6 +41,67 @@ func TestDuplicateDispositionRequiresSchemaV2AndClosedPayload(t *testing.T) {
 	}
 }
 
+// TestConfigurationOpsAreParentFreeV3Facts pins the three schema-v3
+// configuration ops against the shape they were chosen for: parent-free
+// append-only facts, folded by position, at a version an older client cannot
+// mistake for one of its own.
+//
+// The v3 minimum is the load-bearing half. Without it a v3 writer could stamp
+// banks_declared v1, and a v2 reader would then see a v1-legal op of an unknown
+// type -- refusing that ONE op and folding the rest of the log -- instead of
+// meeting ErrUnknownNewerVersion and stopping. The bump only buys a hard stop
+// if the new ops actually declare v3.
+func TestConfigurationOpsAreParentFreeV3Facts(t *testing.T) {
+	for _, o := range configOps() {
+		if err := o.Validate(); err != nil {
+			t.Fatalf("%s: %v", o.Type, err)
+		}
+		if !o.Type.ParentFree() {
+			t.Fatalf("%s must be parent-free: configuration is a positional fact, not a versioned entity", o.Type)
+		}
+		if o.Type.MinVersion() != 3 {
+			t.Fatalf("%s requires schema v%d, want v3", o.Type, o.Type.MinVersion())
+		}
+
+		older := o
+		older.V = 2
+		if err := older.Validate(); err == nil {
+			t.Fatalf("%s at v2 must be refused: a v2 client would read it as one of its own", o.Type)
+		}
+
+		entity := o
+		entity.Entity = &EntityRef{Kind: "config", ID: "x"}
+		if err := entity.Validate(); err == nil {
+			t.Fatalf("%s naming an entity must be refused", o.Type)
+		}
+
+		parent := int64(1)
+		versioned := o
+		versioned.ParentVersion = &parent
+		if err := versioned.Validate(); err == nil {
+			t.Fatalf("%s carrying a parent_version must be refused", o.Type)
+		}
+	}
+}
+
+// TestConfigurationOpsHardStopAnOlderReader is the property the version bump
+// trades on, from the Go side: a blob a newer build wrote is refused WHOLE, with
+// ErrUnknownNewerVersion, rather than having its unreadable ops skipped.
+func TestConfigurationOpsHardStopAnOlderReader(t *testing.T) {
+	body := []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[` +
+		`{"v":` + strconv.Itoa(SchemaVersion) + `,"type":"banks_declared","op_id":"01J000000000000000000000B1",` +
+		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"banks":["dib"]}},` +
+		`{"v":` + newerVersion() + `,"type":"banks_declared","op_id":"01J000000000000000000000B2",` +
+		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"banks":["enbd"]}}]}`)
+	ops, err := DecodeBlob(body)
+	if !errors.Is(err, ErrUnknownNewerVersion) {
+		t.Fatalf("DecodeBlob = %v, want ErrUnknownNewerVersion", err)
+	}
+	if ops != nil {
+		t.Fatalf("a hard stop must yield no ops, got %d -- skipping the unknown op and folding the rest is exactly what this forbids", len(ops))
+	}
+}
+
 func txnOp() Op {
 	return Op{
 		V:          SchemaVersion,

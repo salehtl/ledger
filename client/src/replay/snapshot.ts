@@ -92,6 +92,9 @@ import { fold, type LogEntry } from "./replay";
 import {
   serializeState,
   type Anomaly,
+  type BudgetBucket,
+  type BudgetSplit,
+  type CategoryDef,
   type CheckpointEntry,
   type EntityHead,
   type ForkNotice,
@@ -123,7 +126,7 @@ import { compareUTF8, parseDecimal, type Op, type OpType } from "../wire/op";
  * noticed. {@link foldFingerprint} is the mechanism that does not need anyone
  * to notice.
  */
-export const SNAPSHOT_VERSION = 2;
+export const SNAPSHOT_VERSION = 3;
 
 /**
  * The largest payload this module will store without complaint.
@@ -388,6 +391,14 @@ function CANARY(): LogEntry[] {
     canaryOp("txn_superseded", "ingest", { entity: { kind: "txn", id: id(6) }, ingest_id: ing(2), payload: txn(6) }, ++n),
     canaryOp("rule_added", "dev-a", { entity: { kind: "rule", id: "r1" }, payload: { pattern: "CANARY", match: "contains", category: "misc", priority: 10 } }, ++n),
     canaryOp("rule_added", "dev-b", { entity: { kind: "rule", id: "r2" }, payload: { pattern: "^CAN", match: "regex", category: "other", priority: 90 } }, ++n),
+    // The v3 configuration ops. `v: 3` because each requires it (`opMinVersion`),
+    // and a redefinition plus a retirement so the last-write-per-id fold and the
+    // `active` flag both contribute to the digest.
+    canaryOp("banks_declared", "dev-a", { v: 3, payload: { banks: ["dib", "enbd"] } }, ++n),
+    canaryOp("budget_split_set", "dev-a", { v: 3, payload: { need: 60, want: 20, saving: 20 } }, ++n),
+    canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Groceries", kind: "spending", bucket: "need", color: "#88aa66", active: true } }, ++n),
+    canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Food", kind: "spending", bucket: "want", color: "#88aa66", active: true } }, ++n),
+    canaryOp("category_defined", "dev-b", { v: 3, payload: { id: "k2", name: "Salary", kind: "income", bucket: null, active: false } }, ++n),
     canaryOp(
       "writer_checkpoint",
       "dev-a",
@@ -803,6 +814,9 @@ export const SNAPSHOT_FIELDS: readonly (keyof State)[] = [
   "homeCurrency",
   "rates",
   "rateUpdatedAt",
+  "banks",
+  "budgetSplit",
+  "categories",
   "pendingByCurrency",
   "checkpoints",
   "forks",
@@ -839,6 +853,9 @@ function decodeSnapshot(stateJSON: string, appliedJSON: string): { state: State;
     homeCurrency: r["homeCurrency"] === null ? null : str(r["homeCurrency"], "homeCurrency"),
     rates: pairs(r["rates"], "rates", (v, w) => (v === null ? null : parseDecimal(str(v, w)))),
     rateUpdatedAt: pairs(r["rateUpdatedAt"], "rateUpdatedAt", (v, w) => str(v, w)),
+    banks: list(r["banks"], "banks", (v, w) => str(v, w)),
+    budgetSplit: r["budgetSplit"] === null ? null : decodeBudgetSplit(r["budgetSplit"], "budgetSplit"),
+    categories: pairs(r["categories"], "categories", decodeCategory),
     pendingByCurrency: pairs(r["pendingByCurrency"], "pendingByCurrency", (v, w) => new Set(list(v, w, (x, y) => str(x, y)))),
     checkpoints: list(r["checkpoints"], "checkpoints", decodeCheckpoint),
     forks: list(r["forks"], "forks", decodeFork),
@@ -883,6 +900,41 @@ function decodeTxn(v: unknown, where: string): Txn {
 function decodeSplit(v: unknown, where: string): Split {
   const r = obj(v, where);
   return { category: str(r["category"], `${where}.category`), amount_minor: parseDecimal(str(r["amount_minor"], `${where}.amount_minor`)) };
+}
+
+function decodeBudgetSplit(v: unknown, where: string): BudgetSplit {
+  const r = obj(v, where);
+  return {
+    need: int(r["need"], `${where}.need`),
+    want: int(r["want"], `${where}.want`),
+    saving: int(r["saving"], `${where}.saving`),
+  };
+}
+
+function decodeCategory(v: unknown, where: string): CategoryDef {
+  const r = obj(v, where);
+  return {
+    id: str(r["id"], `${where}.id`),
+    name: str(r["name"], `${where}.name`),
+    kind: categoryKind(r["kind"], `${where}.kind`),
+    bucket: r["bucket"] === null ? null : budgetBucket(r["bucket"], `${where}.bucket`),
+    color: r["color"] === null ? null : str(r["color"], `${where}.color`),
+    active: bool(r["active"], `${where}.active`),
+  };
+}
+
+function categoryKind(v: unknown, where: string): CategoryDef["kind"] {
+  if (v !== "spending" && v !== "income" && v !== "excluded") {
+    throw new SnapshotDecodeError(`${where} is ${JSON.stringify(v)}, want spending, income or excluded`);
+  }
+  return v;
+}
+
+function budgetBucket(v: unknown, where: string): BudgetBucket {
+  if (v !== "need" && v !== "want" && v !== "saving") {
+    throw new SnapshotDecodeError(`${where} is ${JSON.stringify(v)}, want need, want or saving`);
+  }
+  return v;
 }
 
 function decodeRule(v: unknown, where: string): Rule {

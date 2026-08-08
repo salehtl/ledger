@@ -4,6 +4,7 @@ import { emptyState, entityKey, fingerprint, serializeState, type State } from "
 import { openBlob, sealBlob, type Stream } from "../wire/blob";
 import { ZERO_HASH, chainHash, chainKey, type ChainKey, type HashRow, type Head } from "../wire/chain";
 import {
+  SCHEMA_VERSION,
   decodeBlobOps,
   encodeBlobOps,
   encodeCheckpointPayload,
@@ -667,7 +668,7 @@ test("I5 accepts every rung of the ladder", () => {
 
 test("I6 fires on an op from a newer schema version", () => {
   const input = cleanInput();
-  input.ops[0]!.op.v = 3;
+  input.ops[0]!.op.v = SCHEMA_VERSION + 1;
   expect(stopIDs(checkAll(input))).toContain("I6_schema_version");
 });
 
@@ -2218,7 +2219,7 @@ const FIRING: Firing[] = [
     what: "an op is from a newer schema version than this build",
     build: () => {
       const input = cleanInput();
-      input.ops[0]!.op.v = 3;
+      input.ops[0]!.op.v = SCHEMA_VERSION + 1;
       return input;
     },
   },

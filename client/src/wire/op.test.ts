@@ -14,6 +14,7 @@ import {
   encodeRawBody,
   isParentFree,
   kindOf,
+  opMinVersion,
   parseDecimal,
   parseInstantMs,
   validateOp,
@@ -25,6 +26,8 @@ const manifest: {
   schema_version: number;
   types: string[];
   parent_free: string[];
+  min_versions: Record<string, number>;
+  config_ops_base64: string;
   golden_ops_base64: string;
   golden_raw_body_base64: string;
   golden_checkpoint_base64: string;
@@ -71,7 +74,43 @@ test("the op type set and the parent-free set match Go's", () => {
   expect(OP_TYPES.filter(isParentFree)).toEqual(manifest.parent_free as Op["type"][]);
   // Named explicitly as well as compared: a manifest regenerated from a broken
   // Go build would otherwise agree with a broken mirror.
-  expect(manifest.parent_free).toEqual(["rate_set", "rate_unset", "home_currency_set", "writer_checkpoint"]);
+  expect(manifest.parent_free).toEqual([
+    "rate_set",
+    "rate_unset",
+    "home_currency_set",
+    "banks_declared",
+    "budget_split_set",
+    "category_defined",
+    "writer_checkpoint",
+  ]);
+});
+
+test("the minimum schema version of every op type matches Go's", () => {
+  // The half of forward compatibility with no other witness. A configuration op
+  // stamped v1 by one executor and v3 by the other is the two builds disagreeing
+  // about whether an OLDER client hard-stops or merely refuses that one op, and
+  // the type set drifting is the only thing the manifest otherwise catches.
+  const mine = Object.fromEntries(OP_TYPES.map((t) => [t, opMinVersion(t)]));
+  expect(mine).toEqual(manifest.min_versions);
+  expect(manifest.min_versions["banks_declared"]).toBe(3);
+  expect(manifest.min_versions["budget_split_set"]).toBe(3);
+  expect(manifest.min_versions["category_defined"]).toBe(3);
+});
+
+test("the Go-authored schema-v3 configuration blob decodes to the payloads this executor folds", () => {
+  const ops = decodeBlobOps(new Uint8Array(Buffer.from(manifest.config_ops_base64, "base64")));
+  expect(ops.map((o) => o.type)).toEqual(["banks_declared", "budget_split_set", "category_defined"]);
+  expect(ops.every((o) => o.v === 3 && o.entity === undefined && o.parent_version === null)).toBe(true);
+  expect(ops[0]!.payload).toEqual({ banks: ["dib", "enbd"] });
+  expect(ops[1]!.payload).toEqual({ need: 50, want: 30, saving: 20 });
+  expect(ops[2]!.payload).toEqual({
+    id: "cat-1",
+    name: "Groceries",
+    kind: "spending",
+    bucket: "need",
+    color: "#88aa66",
+    active: true,
+  });
 });
 
 test("the shared schema-v2 duplicate disposition fixture decodes", () => {
@@ -363,11 +402,16 @@ test("FX conversion must be BigInt: the intermediate product overflows 2^53", ()
 // ---------------------------------------------------------------------------
 
 test("an unknown newer version hard-stops, at the blob level and the op level", () => {
-  expect(() => decodeBlobOps(opsBlob(`{"v":3,"kind":"ops","ops":[]}`))).toThrow(UnknownNewerVersionError);
+  // `newer` is arithmetic on SCHEMA_VERSION rather than a literal, for the
+  // reason `oplog/op_test.go` writes out: a literal quietly becomes an assertion
+  // about a version the build DOES understand the moment the schema is bumped,
+  // and this test asserted the opposite of its own name after v2 -> v3.
+  const newer = SCHEMA_VERSION + 1;
+  expect(() => decodeBlobOps(opsBlob(`{"v":${newer},"kind":"ops","ops":[]}`))).toThrow(UnknownNewerVersionError);
   expect(() =>
     decodeBlobOps(
       opsBlob(
-        `{"v":1,"kind":"ops","ops":[{"v":3,"type":"rate_set","op_id":"R1",` +
+        `{"v":1,"kind":"ops","ops":[{"v":${newer},"type":"rate_set","op_id":"R1",` +
           `"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{}}]}`,
       ),
     ),
@@ -504,7 +548,7 @@ test("encodeBlobOps refuses to write an op the log could never take back", () =>
   expect(() => encodeBlobOps([{ ...rateOp(), op_id: "" }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), authored_at: "whenever" }])).toThrow();
   expect(() => encodeBlobOps([{ ...rateOp(), payload: undefined }])).toThrow();
-  expect(() => encodeBlobOps([{ ...rateOp(), v: 3 }])).toThrow(UnknownNewerVersionError);
+  expect(() => encodeBlobOps([{ ...rateOp(), v: SCHEMA_VERSION + 1 }])).toThrow(UnknownNewerVersionError);
 });
 
 // ---------------------------------------------------------------------------

@@ -72,6 +72,9 @@ import {
   entityKey,
   fingerprint,
   markPending,
+  type BudgetBucket,
+  type BudgetSplit,
+  type CategoryDef,
   type ParseTier,
   type Split,
   type State,
@@ -403,6 +406,12 @@ function dispatch(s: State, e: LogEntry): void {
       return applyRateUnset(s, e);
     case "home_currency_set":
       return applyHomeCurrencySet(s, e);
+    case "banks_declared":
+      return applyBanksDeclared(s, e);
+    case "budget_split_set":
+      return applyBudgetSplitSet(s, e);
+    case "category_defined":
+      return applyCategoryDefined(s, e);
     case "writer_checkpoint":
       return applyCheckpoint(s, e);
     default:
@@ -485,6 +494,137 @@ function applyRateUnset(s: State, e: LogEntry): void {
   // transactions frozen before it stay frozen (spec §3.7:127).
   onRateUnset(s, ccy);
   s.rateUpdatedAt.set(ccy, canonicalTime(e.op.authored_at));
+}
+
+// ---------------------------------------------------------------------------
+// Configuration (schema v3)
+//
+// Three parent-free facts, folded by position, last write wins per key — the
+// `rate_set` shape, not the versioned-entity shape. Record-level LWW is
+// forbidden for transactions and splits (spec §3.3, because it breaks
+// invariants that hold across records); it is correct here, where a keyed
+// configuration value has no invariant across keys.
+//
+// # Validation lives here, at the fold, and produces an anomaly
+//
+// Not in `validateOp`, and not in Go. Payload shapes belong to the executor
+// that folds them (`Op.Validate` says as much and interprets only the
+// duplicate-disposition payload, which the SERVER also has to reason about);
+// only this executor folds configuration, so a second copy of "the percentages
+// sum to 100" in Go would be a rule that can drift with nothing comparing the
+// two. What Go does pin is the vocabulary — the type set, the parent-free set
+// and each type's minimum schema version — through conformance/op/manifest.json.
+//
+// Every refusal below throws {@link PayloadError}, which `applyOp` records as an
+// `invalid_payload` anomaly and then CARRIES ON. That is the whole contract: not
+// a crash (one bad op must never strand a device) and not a silent accept (a
+// half-read configuration is a lie the UI would repeat back). In every case the
+// previous value stands, because a refused op is not an instruction.
+// ---------------------------------------------------------------------------
+
+/**
+ * `banks_declared` REPLACES the declared set — it is not a union, so removing a
+ * bank is a declaration of the shorter list rather than a delete op.
+ *
+ * Duplicates are refused rather than collapsed. A UI cannot offer the same bank
+ * twice, so a repeated entry is a defect in the writer, and quietly deduping it
+ * would make the state disagree with the op that produced it — the class of
+ * quiet correction this branch has been removing everywhere else.
+ */
+function applyBanksDeclared(s: State, e: LogEntry): void {
+  const raw = payloadObject(e.op)["banks"];
+  if (!Array.isArray(raw)) throw new PayloadError(`banks must be an array of strings, got ${showValue(raw)}`);
+  const banks: string[] = [];
+  for (const [i, b] of raw.entries()) {
+    if (typeof b !== "string" || b === "") throw new PayloadError(`banks[${i}] must be a non-empty string, got ${showValue(b)}`);
+    if (banks.includes(b)) throw new PayloadError(`banks lists ${showValue(b)} twice`);
+    banks.push(b);
+  }
+  s.banks = banks;
+}
+
+/**
+ * `budget_split_set` REPLACES the plan. The three percentages must be integers
+ * summing to exactly 100.
+ *
+ * They are NOT normalised. A user who typed 60/30/20 meant something, and
+ * rewriting it to 55/27/18 is a change to their plan that nothing told them
+ * about; the sum is a UI-time check first (the plan says so before the user
+ * saves) and an anomaly here second, for a writer that got past it.
+ */
+function applyBudgetSplitSet(s: State, e: LogEntry): void {
+  const p = payloadObject(e.op);
+  const split: BudgetSplit = {
+    need: percent(p["need"], "need"),
+    want: percent(p["want"], "want"),
+    saving: percent(p["saving"], "saving"),
+  };
+  const sum = split.need + split.want + split.saving;
+  if (sum !== 100) {
+    throw new PayloadError(`need + want + saving must be 100, got ${sum} (${split.need}/${split.want}/${split.saving})`);
+  }
+  s.budgetSplit = split;
+}
+
+/** A whole percentage: an integer in [0, 100], carried as a raw JSON number. */
+function percent(v: unknown, what: string): number {
+  const n = intField(v, what);
+  if (n < 0 || n > 100) throw new PayloadError(`${what} is ${n}, and a percentage is between 0 and 100`);
+  return n;
+}
+
+/**
+ * `category_defined` is last write per `id`: a redefinition replaces the whole
+ * record, and `active: false` retires it without removing it, so a transaction
+ * categorised before the retirement still reads and still buckets.
+ */
+function applyCategoryDefined(s: State, e: LogEntry): void {
+  const p = payloadObject(e.op);
+  const id = nonEmptyString(p["id"], "id");
+  const kind = p["kind"];
+  if (kind !== "spending" && kind !== "income" && kind !== "excluded") {
+    throw new PayloadError(`kind must be spending, income or excluded, got ${showValue(kind)}`);
+  }
+  const def: CategoryDef = {
+    id,
+    name: nonEmptyString(p["name"], "name"),
+    kind,
+    bucket: bucketFor(kind, p["bucket"]),
+    // Absent and null both mean "the surface picks one", so a writer that has no
+    // palette opinion does not have to invent a colour to author a category.
+    color: p["color"] === undefined || p["color"] === null ? null : nonEmptyString(p["color"], "color"),
+    active: boolField(p["active"], "active"),
+  };
+  s.categories.set(id, def);
+}
+
+/**
+ * A `spending` category carries a bucket and the other two kinds carry none.
+ *
+ * Both directions are refused rather than one. A bucket on an `income` category
+ * would silently join the user's spending plan; a `spending` category without
+ * one has no bucket to be counted in, and defaulting it to `want` would put
+ * money somewhere nobody chose.
+ */
+function bucketFor(kind: "spending" | "income" | "excluded", v: unknown): BudgetBucket | null {
+  if (kind !== "spending") {
+    if (v !== undefined && v !== null) throw new PayloadError(`a ${kind} category must not carry a bucket, got ${showValue(v)}`);
+    return null;
+  }
+  if (v !== "need" && v !== "want" && v !== "saving") {
+    throw new PayloadError(`a spending category needs a bucket of need, want or saving, got ${showValue(v)}`);
+  }
+  return v;
+}
+
+function nonEmptyString(v: unknown, what: string): string {
+  if (typeof v !== "string" || v === "") throw new PayloadError(`${what} must be a non-empty string, got ${showValue(v)}`);
+  return v;
+}
+
+function boolField(v: unknown, what: string): boolean {
+  if (typeof v !== "boolean") throw new PayloadError(`${what} must be a boolean, got ${showValue(v)}`);
+  return v;
 }
 
 function applyCheckpoint(s: State, e: LogEntry): void {

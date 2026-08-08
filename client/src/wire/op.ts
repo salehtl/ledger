@@ -62,8 +62,15 @@
 
 import { platform } from "../platform.registry";
 
-/** The op schema this build understands. `blob.ts`'s VERSION versions the framing. */
-export const SCHEMA_VERSION = 2;
+/**
+ * The op schema this build understands. `blob.ts`'s VERSION versions the framing.
+ *
+ * v3 added the three configuration ops. Bumping it makes an older client
+ * HARD-STOP rather than fold a half-understood log into money, which is the
+ * property the bump trades on — see {@link UnknownNewerVersionError}, and do not
+ * weaken it to ease an upgrade.
+ */
+export const SCHEMA_VERSION = 3;
 
 export const KIND_OPS = "ops";
 export const KIND_RAW_BODY = "raw_body";
@@ -80,6 +87,9 @@ export type OpType =
   | "rate_set"
   | "rate_unset"
   | "home_currency_set"
+  | "banks_declared"
+  | "budget_split_set"
+  | "category_defined"
   | "writer_checkpoint";
 
 /** Every op type at SCHEMA_VERSION, in wire order (mirrors `oplog.Types`). */
@@ -94,6 +104,9 @@ export const OP_TYPES: readonly OpType[] = [
   "rate_set",
   "rate_unset",
   "home_currency_set",
+  "banks_declared",
+  "budget_split_set",
+  "category_defined",
   "writer_checkpoint",
 ];
 
@@ -106,12 +119,39 @@ const OP_TYPE_SET: ReadonlySet<string> = new Set(OP_TYPES);
  * resolution into FX, and the two readings produce different numbers across the
  * two executors — which is why this is enforced by {@link validateOp} rather
  * than left to convention.
+ *
+ * The three configuration ops are the same shape for the same reason: a fact
+ * the user chose, folded by position, last write wins per key. Record-level
+ * last-write-wins is forbidden for transactions and splits (spec §3.3, because
+ * it breaks invariants that hold across records) and is correct here, where a
+ * keyed configuration value has no invariant across keys — which is why they are
+ * NOT modelled as versioned entities with a `parent_version`.
  */
 const PARENT_FREE: ReadonlySet<string> = new Set<OpType>([
   "rate_set",
   "rate_unset",
   "home_currency_set",
+  "banks_declared",
+  "budget_split_set",
+  "category_defined",
   "writer_checkpoint",
+]);
+
+/**
+ * The lowest SCHEMA_VERSION each op type exists at. Mirrors `oplog.MinVersion`,
+ * and pinned against it by `conformance/op/manifest.json`.
+ *
+ * It is the second half of the forward-compatibility mechanism and the half that
+ * is easy to leave out: a v3 writer stamping a configuration op v1 would hand an
+ * older reader an op it treats as v1-legal and then refuses as an unknown type —
+ * a per-op refusal, not the hard stop. Requiring v3 is what makes an older client
+ * meet {@link UnknownNewerVersionError} and STOP.
+ */
+const MIN_VERSION: ReadonlyMap<OpType, number> = new Map<OpType, number>([
+  ["txn_duplicate_disposition", 2],
+  ["banks_declared", 3],
+  ["budget_split_set", 3],
+  ["category_defined", 3],
 ]);
 
 export function isOpType(s: unknown): s is OpType {
@@ -119,7 +159,7 @@ export function isOpType(s: unknown): s is OpType {
 }
 
 export function opMinVersion(type: OpType): number {
-  return type === "txn_duplicate_disposition" ? 2 : 1;
+  return MIN_VERSION.get(type) ?? 1;
 }
 
 export function isParentFree(t: OpType): boolean {
