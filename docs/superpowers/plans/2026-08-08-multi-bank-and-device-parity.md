@@ -95,6 +95,51 @@ This is the task the operator actually asked for. Verify it by simulating a genu
 
 ---
 
+### Task 4b: The client actually uses the merchant dictionary
+
+**Files:** Create `web/src/v2/dictionary.ts` + test; modify the categorisation path and `web/src/v2/queries.ts`.
+
+**This is a gap, not a feature.** 221 rules were seeded from the operator's v1 database and published on 2026-08-07. The client has never fetched them: `grep dictionary web/src/v2/` returns nothing. `GET /api/v1/dictionary` is served and unused, which is why nothing auto-categorises. Task 4c depends on this — without it, every transaction lands in the uncategorised lane.
+
+- [ ] **Step 1:** Read `internal/v2/api/dict.go` for the real response shape, and `client/src/categorize/rules.ts` for how a pattern matches. Do not restate the matching rules; reuse them.
+- [ ] **Step 2:** Failing test: a transaction whose merchant matches a published dictionary entry is categorised without the user acting.
+- [ ] **Step 3:** Run, see it fail. **Step 4:** Implement — fetch, cache, and apply.
+- [ ] **Step 5: precedence is the load-bearing part.** A user's own categorisation and their own `rule_added` must ALWAYS beat a dictionary entry. Test it directly, in both orders (dictionary first then user, and user first then dictionary arriving later).
+- [ ] **Step 6:** Decide and state in the report whether applying the dictionary AUTHORS `txn_categorized` ops or is derived at read time. Derived is preferable — it costs no ops, cannot fork, and re-applies automatically when the dictionary grows. If you author ops, they must be idempotent under replay and must never overwrite a user's own answer.
+- [ ] **Step 7:** History matters: a dictionary entry published after a transaction arrived must still categorise it. That is the operator's exact situation today.
+- [ ] **Step 8:** Commit.
+
+---
+
+### Task 4c: A new transaction lands in the right queue
+
+**Files:** Modify `web/src/v2/sources/review.ts` (`Lane`, `LANES`, `LANE_TITLE`, `laneOf`, `reasonOf`), `web/src/screens/Review.tsx`. Tests alongside.
+
+**The problem the operator hit:** a real DIB transaction parsed cleanly (`dib.card.v1`, no empty capture groups), so `needs_review` was false, so `laneOf` returned `null` and it entered no queue. The Review screen correctly said "All caught up" while a transaction sat uncategorised. "The parse is uncertain" and "this needs a category" are different questions, and only the first has a lane.
+
+- [ ] **Step 1:** Failing test: a cleanly-parsed transaction with no category appears in the Review queue; one WITH a category does not.
+- [ ] **Step 2:** Run, see it fail (today `laneOf` returns `null` for both).
+- [ ] **Step 3:** Add an `uncategorized` lane at the LOWEST precedence — after `unparsed`, `duplicate` and `needs_review`. The existing doc comment already argues this order: "'is this the same purchase twice' has to be answered before 'what category is it' is a sensible question." Keep lanes disjoint.
+- [ ] **Step 4:** The deck's commit path already writes `txn_categorized`; confirm answering an `uncategorized` item clears it from the lane and does not also clear `needs_review` on a row that legitimately still has it.
+- [ ] **Step 5: do not let this become a wall of everything.** With Task 4b applying the dictionary, most transactions arrive categorised and this lane holds only genuinely unknown merchants. Verify that ordering assumption holds in a test with a dictionary present — if the lane still fills, say so rather than shipping a queue nobody can clear.
+- [ ] **Step 6:** Check the empty state stays honest. "All caught up · Nothing is waiting for a decision" must be true when the lane is empty, and the counts line must not claim a lane it cannot show.
+- [ ] **Step 7:** Commit.
+
+---
+
+### Task 4d: The rules manager
+
+**Files:** Modify `web/src/screens/RulesManager.tsx`, nav. Tests alongside.
+
+Carried from the previous plan, where it was never dispatched.
+
+- [ ] **Step 1:** List the user's own rules from the projection (`readRules`) and author new ones through the SAME path Task 1 of the feature-parity plan established (`sources/review.ts`'s `categorizeOps`) — do not write a second author.
+- [ ] **Step 2:** Deleting a rule needs an op that does not exist, and `SCHEMA_VERSION` stays 2 by this plan's constraint. So the manager is add-and-list only. **The UI must not offer a delete it cannot perform** — say plainly that a rule can be replaced by categorising the merchant again, if that is true, or say nothing.
+- [ ] **Step 3:** Show which rules came from the dictionary and which are the user's own, if the data distinguishes them. If it does not, do not imply that it does.
+- [ ] **Step 4:** Commit.
+
+---
+
 ### Task 5: Keep the disclosures true
 
 **Files:** Modify `docs/superpowers/specs/2026-07-31-multi-user-beta-design.md` §2, `docs/alpha-consent.md`.
