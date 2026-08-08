@@ -154,7 +154,16 @@ income-category credits).
 }
 ```
 
-Semantics:
+Semantics — **all of the carryover/overspend behaviour below is gated by the
+`budget_mode` setting** (see `GET`/`PUT /api/settings` at the end of this
+section). In `budget_mode: "envelope"` it is exactly as described. In the
+default `budget_mode: "simple"` the prior-month era-fold is skipped
+entirely: `carryover_fils` and `overspend_debt_fils` are always `0` for
+every envelope, `available_fils` reduces to `assigned − activity`, and
+`ready_to_assign_fils = income − assigned` (overspend debt never enters the
+formula because there is none to enter). The envelope-mode math is retained
+code, not deleted — it is reachable any time `budget_mode` is set to
+`"envelope"`, it is just not the default and has no UI toggle today.
 
 - `available_fils = carryover + assigned − activity`. `overspent` ⇔ available < 0.
 - `carryover_fils` is always ≥ 0. Uncovered cash overspend surfaces as
@@ -179,7 +188,8 @@ Semantics:
   back to counting restores the activity (recomputed on read, like the jars).
   Split lines follow their **parent's** project link.
 - `ready_to_assign_fils = income − assigned − overspend_debt`; **may be
-  negative** (over-assignment is allowed — render red).
+  negative** (over-assignment is allowed — render red). In `simple` mode
+  `overspend_debt` is always `0`, so this is just `income − assigned`.
 - `target` is omitted for envelopes with no target. `due_date` /
   `months_left` only on `save_by_date` targets. `needed_fils` is this month's
   full ask; `still_needed_fils = max(0, needed − assigned)`.
@@ -226,6 +236,30 @@ so any non-200 response means neither envelope changed.
 
 One-call distribution of a positive RTA: targets funded first (row order),
 leftover pro-rata by the 50/30/20 bucket weights across untargeted envelopes.
+
+### `budget_mode` on `GET`/`PUT /api/settings`
+
+The existing settings resource gains one field:
+
+```json
+{ "budget_mode": "simple", "…": "(other existing settings fields, unchanged)" }
+```
+
+- Values: `"simple"` | `"envelope"`. Default (and what a fresh or
+  never-set-it DB reports): `"simple"`.
+- On `GET`, `budget_mode` is always populated. On `PUT`, it is a **hidden
+  switch**: the field is optional and `null`/omitted means "leave the stored
+  mode unchanged" — an older client that has never heard of this field can
+  never silently flip a user back to envelope mode. An explicit value other
+  than `"simple"`/`"envelope"` is rejected with `400
+  {"error":"invalid budget_mode"}` rather than silently normalized.
+- There is currently no UI control for this setting — it exists so envelope
+  budgeting (carryover + overspend-debt) can be switched back on later
+  without new code. Both modes are live, tested code paths; `simple` is just
+  the default.
+- Switching modes is instant and non-destructive: assignment rows are never
+  rewritten, only how `GET /api/envelopes` folds them changes on the next
+  read.
 
 Request: `{ "month": "2026-07" }` (`month` optional, defaults current).
 
@@ -759,9 +793,10 @@ UI's Recurring lists refresh live; the settings gate the interrupting push.)
 }
 ```
 
-- `scope`: `"envelope"` (limit = carryover + assigned) or `"bucket"` (limit =
-  income × bucket pct — the jar target; `category_id` omitted, `name` is the
-  bucket name).
+- `scope`: `"envelope"` (limit = carryover + assigned; in `budget_mode:
+  "simple"` carryover is always 0, so the limit is just `assigned`) or
+  `"bucket"` (limit = income × bucket pct — the jar target; `category_id`
+  omitted, `name` is the bucket name).
 - `level`: `80` or `100`. Emitted **once per upward crossing** per month
   (in-memory state; a restart re-primes silently, never re-spams).
   Evaluated after every transaction confirm/categorize, split change,
