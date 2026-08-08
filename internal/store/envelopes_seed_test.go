@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -10,9 +11,28 @@ import (
 // earlier, so tests that must succeed have to use it or later.
 func thisMonth() string { return time.Now().UTC().Format("2006-01") }
 
+// monthsFromNow offsets the current calendar month by n, normalising year and
+// month arithmetic directly. It deliberately does NOT use time.AddDate, which
+// normalises DAY overflow (Jan 31 + 1 month → Mar 3) and would therefore skip a
+// month whenever the suite runs on the 29th–31st — silently moving the horizon
+// boundary these tests pin down.
 func monthsFromNow(n int) string {
-	return time.Now().UTC().AddDate(0, n, 0).Format("2006-01")
+	now := time.Now().UTC()
+	y, m := now.Year(), int(now.Month())+n
+	y, m = y+floorDiv(m-1, 12), floorMod(m-1, 12)+1
+	return fmt.Sprintf("%04d-%02d", y, m)
 }
+
+// Go's / and % truncate toward zero, which is wrong for negative offsets.
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
+
+func floorMod(a, b int) int { return a - floorDiv(a, b)*b }
 
 func assign(t *testing.T, st *Store, month string, categoryID, fils int64) {
 	t.Helper()
@@ -183,22 +203,132 @@ func TestSeedAssignments_CopiesOnlyNonZero(t *testing.T) {
 	}
 }
 
-// Negative assignments are legal (move-money over-draws a source envelope) and
-// are part of the plan, so they carry too.
-func TestSeedAssignments_CarriesNegativeAssignments(t *testing.T) {
+// Negative assignments are legal (move-money over-draws a source envelope) but
+// record a ONE-OFF correction, not a recurring plan element, so they must not
+// carry forward. See the long note on SeedEnvelopeAssignmentsFromPreviousMonth.
+func TestSeedAssignments_DoesNotCarryNegativeAssignments(t *testing.T) {
 	st := newTestStore(t)
 	a := seedCat(t, st, "Healthcare")
+	b := seedCat(t, st, "Groceries")
 	prev, next := thisMonth(), monthsFromNow(1)
 	assign(t, st, prev, a, 150000)
 	if _, err := st.AddToEnvelopeAssignment(prev, a, -400000); err != nil {
 		t.Fatal(err)
 	}
+	assign(t, st, prev, b, 150000) // keeps prev eligible as a source
 
-	if _, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(next); err != nil {
+	n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(next)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := assignedIn(t, st, next); got[a] != -250000 {
-		t.Errorf("assignment = %d, want -250000 carried", got[a])
+	if n != 1 {
+		t.Errorf("seeded %d rows, want 1 (the positive one only)", n)
+	}
+	got := assignedIn(t, st, next)
+	if v, present := got[a]; present {
+		t.Errorf("a negative assignment was carried forward: %d", v)
+	}
+	if got[b] != 150000 {
+		t.Errorf("positive assignment = %d, want 150000", got[b])
+	}
+}
+
+// A month whose only non-zero rows are NEGATIVE is not a plan, so it must not
+// be selected as a seed source — picking it would copy nothing and leave the
+// target looking untouched forever.
+func TestSeedAssignments_IgnoresSourceMonthWithOnlyNegativeRows(t *testing.T) {
+	st := newTestStore(t)
+	a := seedCat(t, st, "Healthcare")
+	assign(t, st, thisMonth(), a, -250000)
+
+	n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(monthsFromNow(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("seeded %d rows from an all-negative month, want 0", n)
+	}
+}
+
+// THE REGRESSION THAT MATTERS. Checking the copied number alone is not enough —
+// the original test did exactly that and passed while the bug was live. What
+// makes a carried negative a bug is what envelopeEraFold does with it: the
+// running era balance is b += assigned − activity, and the RISE in the negative
+// high-water mark is charged to the next month's Ready to Assign. Copy the
+// negative forward and every seeded month is billed fresh "overspend debt" for
+// spending that never happened.
+//
+// The category is given a positive buffer in an earlier month that exactly
+// absorbs the one-off over-draw, so the era balance never goes negative on its
+// own. Any debt observed here is therefore manufactured purely by seeding.
+func TestSeedAssignments_SeededMonthsAreNeverChargedOverspendDebt(t *testing.T) {
+	st := newTestStore(t)
+	health := seedCat(t, st, "Healthcare")
+	groceries := seedCat(t, st, "Groceries")
+
+	// Era opens with a buffer, then a one-off over-draw cancels it exactly.
+	assign(t, st, monthsFromNow(-1), health, 250000)
+	assign(t, st, thisMonth(), health, -250000)
+	assign(t, st, thisMonth(), groceries, 150000) // the real, positive plan
+
+	// Walk forward the way the UI does: open three consecutive months, each
+	// seeding from the one before.
+	for i := 1; i <= 3; i++ {
+		month := monthsFromNow(i)
+		if _, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(month); err != nil {
+			t.Fatalf("seed %s: %v", month, err)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		month := monthsFromNow(i)
+		rows, err := st.EnvelopeMonthSummary(month)
+		if err != nil {
+			t.Fatalf("summary %s: %v", month, err)
+		}
+		for _, r := range rows {
+			if r.OverspendDebtFils != 0 {
+				t.Errorf("%s: %s charged %d fils of overspend debt with zero activity — "+
+					"a negative assignment was carried forward and folded as fresh debt",
+					month, r.CategoryName, r.OverspendDebtFils)
+			}
+			if r.CategoryID == health && r.AssignedFils != 0 {
+				t.Errorf("%s: Healthcare assigned = %d, want 0 (the negative must not carry)",
+					month, r.AssignedFils)
+			}
+		}
+	}
+}
+
+// Seeding is bounded: the month picker has no upper bound, and every seeded
+// month counts as "touched" forever, so a month far in the future must not be
+// silently frozen with today's plan.
+func TestSeedAssignments_RefusesMonthsBeyondTheHorizon(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		month string
+		want  int
+	}{
+		{"just inside the horizon", monthsFromNow(seedHorizonMonths), 1},
+		{"just beyond the horizon", monthsFromNow(seedHorizonMonths + 1), 0},
+		{"absurdly far ahead", "9999-12", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestStore(t)
+			a := seedCat(t, st, "Groceries")
+			assign(t, st, thisMonth(), a, 150000)
+
+			n, err := st.SeedEnvelopeAssignmentsFromPreviousMonth(tc.month)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != tc.want {
+				t.Errorf("seeded %d rows into %s, want %d", n, tc.month, tc.want)
+			}
+			if rowCount(t, st, tc.month) != tc.want {
+				t.Errorf("%s has %d rows, want %d", tc.month, rowCount(t, st, tc.month), tc.want)
+			}
+		})
 	}
 }
 
