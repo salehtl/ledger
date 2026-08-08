@@ -15,7 +15,7 @@ func TestEnvelopeMonthValidation(t *testing.T) {
 			if _, err := st.AddToEnvelopeAssignment(month, 1, 100); !errors.Is(err, ErrEnvelopeInvalid) {
 				t.Fatalf("add %q: want ErrEnvelopeInvalid, got %v", month, err)
 			}
-			if _, err := st.EnvelopeMonthSummary(month); !errors.Is(err, ErrEnvelopeInvalid) {
+			if _, err := st.EnvelopeMonthSummary(month, BudgetModeEnvelope); !errors.Is(err, ErrEnvelopeInvalid) {
 				t.Fatalf("summary %q: want ErrEnvelopeInvalid, got %v", month, err)
 			}
 		})
@@ -100,7 +100,7 @@ func TestEnvelopeMonthSummary(t *testing.T) {
 	// Pending rows never count as activity.
 	insertTxn(t, st, grocery, "debit", 99_000, "2026-07-07", "needs_review")
 
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestEnvelopeActivityIncludesSplitLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestEnvelopeActivityIncludesSplitLines(t *testing.T) {
 	// Splits in a prior month flow into overspend debt the same way — but only
 	// inside the category's envelope era: budgeted grocery's July overspend is
 	// charged (once) to August, never-assigned dining enters August clean.
-	rows, err = st.EnvelopeMonthSummary("2026-08")
+	rows, err = st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestEnvelopeCarryoverScopedToEnvelopeEra(t *testing.T) {
 	for _, day := range []string{"2026-01-10", "2026-02-10", "2026-03-10", "2026-04-10", "2026-05-10", "2026-06-10"} {
 		insertTxn(t, st, grocery, "debit", 100_000, day, "confirmed")
 	}
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestEnvelopeCarryoverScopedToEnvelopeEra(t *testing.T) {
 		t.Fatal(err)
 	}
 	insertTxn(t, st, grocery, "debit", 90_000, "2026-07-15", "confirmed")
-	rows, err = st.EnvelopeMonthSummary("2026-08")
+	rows, err = st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestEnvelopeOverspendChargedExactlyOnce(t *testing.T) {
 	insertTxn(t, st, cat, "debit", 10_000, "2026-07-10", "confirmed")
 
 	// August: the July overspend is charged, once, and settles the envelope.
-	rows, err := st.EnvelopeMonthSummary("2026-08")
+	rows, err := st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestEnvelopeOverspendChargedExactlyOnce(t *testing.T) {
 
 	// September, nothing covered by hand: the SAME overspend must NOT charge
 	// again — the August charge already settled it.
-	rows, err = st.EnvelopeMonthSummary("2026-09")
+	rows, err = st.EnvelopeMonthSummary("2026-09", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestEnvelopeOverspendChargedExactlyOnce(t *testing.T) {
 	if err := st.UpsertEnvelopeAssignment("2026-09", cat, 10_000); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = st.EnvelopeMonthSummary("2026-10")
+	rows, err = st.EnvelopeMonthSummary("2026-10", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,14 +281,14 @@ func TestEnvelopeRepeatedOverspendChargesOnlyNewDebt(t *testing.T) {
 	}
 	insertTxn(t, st, cat, "debit", 10_000, "2026-07-15", "confirmed")
 
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if g := summaryFor(t, rows, cat); g.OverspendDebtFils != 10_000 {
 		t.Fatalf("Jul debt=%d, want 10000 (June's unfunded overspend)", g.OverspendDebtFils)
 	}
-	rows, err = st.EnvelopeMonthSummary("2026-08")
+	rows, err = st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestEnvelopeActivityIgnoresUnconvertedForeign(t *testing.T) {
 	aedID := insertTxn(t, st, cat, "debit", 4_000, "2026-06-12", "confirmed")
 	_ = aedID
 
-	rows, err := st.EnvelopeMonthSummary("2026-06")
+	rows, err := st.EnvelopeMonthSummary("2026-06", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestEnvelopeActivityIgnoresUnconvertedForeign(t *testing.T) {
 		t.Fatalf("activity=%d want 4000 (unconverted GBP contributes 0, matching SelectMonthSpend)", g.ActivityFils)
 	}
 	// And it never becomes phantom overspend debt in the next month.
-	rows, err = st.EnvelopeMonthSummary("2026-07")
+	rows, err = st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestEnvelopeSplitActivityExactForForeignCurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestEnvelopeActivityHonorsProjectCarveOut(t *testing.T) {
 	}
 
 	// Carved out: no envelope activity in July…
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestEnvelopeActivityHonorsProjectCarveOut(t *testing.T) {
 		t.Fatalf("July activity = %d, want 0 (carved-out project spend)", g.ActivityFils)
 	}
 	// …and no overspend debt charged to August's RTA; the assignment carries.
-	rows, err = st.EnvelopeMonthSummary("2026-08")
+	rows, err = st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,14 +526,14 @@ func TestEnvelopeActivityHonorsProjectCarveOut(t *testing.T) {
 	if err := st.UpdateProject(p); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = st.EnvelopeMonthSummary("2026-07")
+	rows, err = st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if g := summaryFor(t, rows, grocery); g.ActivityFils != 500_000 {
 		t.Fatalf("July activity after toggle = %d, want 500000", g.ActivityFils)
 	}
-	rows, err = st.EnvelopeMonthSummary("2026-08")
+	rows, err = st.EnvelopeMonthSummary("2026-08", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +566,7 @@ func TestEnvelopeSplitActivityHonorsProjectCarveOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := st.EnvelopeMonthSummary("2026-07")
+	rows, err := st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +582,7 @@ func TestEnvelopeSplitActivityHonorsProjectCarveOut(t *testing.T) {
 	if err := st.UpdateProject(p); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = st.EnvelopeMonthSummary("2026-07")
+	rows, err = st.EnvelopeMonthSummary("2026-07", BudgetModeEnvelope)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -573,7 +573,14 @@ func (s *Store) envelopeActivity(op, month string) (map[int64]map[string]int64, 
 // envelopeEraFold). Categories with no assignments/activity still appear (all
 // zeros) so the Plan screen can list every envelope; ordering is bucket
 // (need, want, saving) then name.
-func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
+//
+// mode selects the budgeting method (see BudgetModeSimple/BudgetModeEnvelope
+// and NormalizeBudgetMode): in BudgetModeSimple the prior-month era-fold is
+// skipped entirely and CarryoverFils/OverspendDebtFils stay at their zero
+// values, so a category's available is just assigned minus this month's
+// activity. Any mode other than BudgetModeEnvelope behaves as simple. The
+// envelope fold itself is untouched — sunset, not removed.
+func (s *Store) EnvelopeMonthSummary(month string, mode string) ([]EnvelopeMonthRow, error) {
 	if !validMonth(month) {
 		return nil, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
 	}
@@ -582,6 +589,13 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 		return nil, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
 	}
 	prevMonth := monthStart.AddDate(0, -1, 0).Format("2006-01")
+
+	// Simple mode is monthly budgets: the assignment persists but nothing
+	// carries in either direction, so the whole prior-month era-fold is skipped
+	// — both because its result would be discarded and because it is the
+	// expensive part of this query. The fold itself is untouched and still
+	// reachable via BudgetModeEnvelope; it is sunset, not removed.
+	simple := NormalizeBudgetMode(mode) == BudgetModeSimple
 
 	catRows, err := s.DB.Query(
 		`SELECT id, name, COALESCE(bucket,'')
@@ -606,11 +620,17 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 	}
 
 	// Assignments: this month flat, prior months per month (the fold needs the
-	// calendar position of every prior assignment, not just their sum).
+	// calendar position of every prior assignment, not just their sum). In
+	// simple mode only this month's row is needed, so the query is scoped to
+	// month=? — the prior-month scan never runs.
 	priorAssigned := make(map[int64]map[string]int64)
+	assignmentOp := "<="
+	if simple {
+		assignmentOp = "="
+	}
 	rows, err := s.DB.Query(
 		`SELECT category_id, month, COALESCE(SUM(assigned_fils),0)
-		   FROM envelope_assignments WHERE month <= ? GROUP BY category_id, month`, month)
+		   FROM envelope_assignments WHERE month `+assignmentOp+` ? GROUP BY category_id, month`, month)
 	if err != nil {
 		return nil, err
 	}
@@ -644,9 +664,11 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	prior, err := s.envelopeActivity("<", month)
-	if err != nil {
-		return nil, err
+	var prior map[int64]map[string]int64
+	if !simple {
+		if prior, err = s.envelopeActivity("<", month); err != nil {
+			return nil, err
+		}
 	}
 	for catID, byMonth := range current {
 		if i, ok := index[catID]; ok {

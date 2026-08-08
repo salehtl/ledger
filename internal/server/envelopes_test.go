@@ -270,6 +270,12 @@ func TestEnvelopesRejectNonEnvelopeCategories(t *testing.T) {
 // available that later evaporates).
 func TestEnvelopesOverspendSettlesForItsExactCost(t *testing.T) {
 	srv, st, cats := newEnvelopeTestServer(t)
+	// This regression is specifically about envelope-mode carryover/debt
+	// accounting; the default is now BudgetModeSimple (see budget_mode), so
+	// this test must opt into envelope mode explicitly to still exercise it.
+	if err := st.UpdateBudgetMode(store.BudgetModeEnvelope); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.UpsertEnvelopeAssignment("2026-01", cats[1], 200_00); err != nil {
 		t.Fatal(err)
 	}

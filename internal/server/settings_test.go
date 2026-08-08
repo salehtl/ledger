@@ -2,7 +2,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +28,18 @@ func (st *stubSettings) UpdateAppSettings(a store.AppSettings) error {
 	st.s = a
 	return nil
 }
+
+// UpdateBudgetMode mirrors store.Store.UpdateBudgetMode's validation so
+// handler-level tests exercise the real reject-unknown-values contract.
+func (st *stubSettings) UpdateBudgetMode(mode string) error {
+	if mode != store.BudgetModeSimple && mode != store.BudgetModeEnvelope {
+		return errInvalidBudgetMode
+	}
+	st.s.BudgetMode = mode
+	return nil
+}
+
+var errInvalidBudgetMode = errors.New("invalid budget_mode")
 
 func TestGetSettings(t *testing.T) {
 	srv := New(nil, fstest()) // mirror existing server-test construction
@@ -305,5 +319,56 @@ func TestPutSettingsOmittedSilenceDaysPreserved(t *testing.T) {
 	}
 	if stub.s.IngestSilenceDays != 7 {
 		t.Fatalf("IngestSilenceDays=%d, want preserved 7", stub.s.IngestSilenceDays)
+	}
+}
+
+// The hidden budget_mode switch round-trips through GET/PUT against the real
+// store: default simple, flips to envelope, and rejects an unknown value.
+func TestSettings_BudgetModeRoundTrip(t *testing.T) {
+	st := newTestServerStore(t)
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServerWithStore(t, st)
+	srv.SetSettingsStore(st)
+
+	get := func() string {
+		r := httptest.NewRequest("GET", "/api/settings", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /api/settings = %d; body: %s", w.Code, w.Body)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := out["budget_mode"].(string)
+		return s
+	}
+
+	if got := get(); got != store.BudgetModeSimple {
+		t.Errorf("default budget_mode = %q, want %q", got, store.BudgetModeSimple)
+	}
+
+	body, _ := json.Marshal(map[string]any{"budget_mode": store.BudgetModeEnvelope})
+	r := httptest.NewRequest("PUT", "/api/settings", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT budget_mode = %d; body: %s", w.Code, w.Body)
+	}
+	if got := get(); got != store.BudgetModeEnvelope {
+		t.Errorf("after PUT, budget_mode = %q, want %q", got, store.BudgetModeEnvelope)
+	}
+
+	bad, _ := json.Marshal(map[string]any{"budget_mode": "nonsense"})
+	r = httptest.NewRequest("PUT", "/api/settings", bytes.NewReader(bad))
+	r.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT invalid budget_mode = %d, want 400", w.Code)
 	}
 }
