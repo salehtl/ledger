@@ -188,40 +188,71 @@ func (s *Store) MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryI
 	return tx.Commit()
 }
 
+// seedHorizonMonths is how far beyond the current calendar month seeding will
+// reach. The month picker has no upper bound and both the Plan screen and the
+// Home strip hit GET /api/envelopes, so without a ceiling a few taps of "next
+// month" write a full plan into each month passed through. That is worse than
+// wasted rows: a seeded month HAS rows, so it counts as "touched" forever and
+// can never re-inherit a later revision of the plan — the stale snapshot is
+// frozen in. A year of look-ahead is far more than the UI is used for.
+const seedHorizonMonths = 12
+
 // SeedEnvelopeAssignmentsFromPreviousMonth copies the most recent planned
-// month's non-zero assignments into month, so a stable budget does not have to
+// month's positive assignments into month, so a stable budget does not have to
 // be re-entered every month. Returns how many rows it wrote; 0 when it
 // declines. Idempotent.
 //
-// It declines unless all three hold:
+// It declines unless all four hold:
 //
 //   - month has NO rows at all. Zeroing a month through the assign sheet
 //     WRITES rows, so "has rows" is the faithful record of "the user has
 //     touched this month" — a month deliberately emptied stays empty instead
 //     of refilling itself. Do not weaken this to "has no non-zero rows".
-//   - some earlier month has a non-zero assignment to a category still
+//   - some earlier month has a POSITIVE assignment to a category still
 //     eligible (active, kind='spending' — the same predicate
 //     envelopeCategoryOK/EnvelopeMonthSummary use). The greatest such month
 //     wins, so jumping ahead over empty months inherits the last real plan
-//     rather than an empty one. A month whose only non-zero rows belong to a
-//     category since deactivated or re-kinded (e.g. edited to 'income') is
-//     not eligible as a source at all — otherwise it would be picked and then
-//     nothing would be copied, silently producing a zero-row "seed" that
-//     leaves the target month looking untouched forever.
+//     rather than an empty one. A month with no positive eligible row — every
+//     row zero, negative, or belonging to a category since deactivated or
+//     re-kinded (e.g. edited to 'income') — is not eligible as a source at
+//     all; otherwise it would be picked and then nothing would be copied,
+//     silently producing a zero-row "seed" that leaves the target month
+//     looking untouched forever.
 //   - month is the current calendar month or later. Browsing back through
 //     history must never rewrite it.
+//   - month is at most seedHorizonMonths beyond the current calendar month
+//     (see that constant).
 //
-// Negative assignments carry: move-money may over-draw a source envelope, and
-// that is part of the plan, not a corruption of it. Rows belonging to a
-// category that is no longer an active spending category are never copied —
-// EnvelopeMonthSummary would never surface them, so copying them would
-// produce assigned fils invisible to every budget view (silently breaking the
-// RTA identity).
+// Negative assignments do NOT carry, and this is load-bearing. A negative
+// assigned_fils is legitimate — move-money may over-draw a source envelope —
+// but it records a ONE-OFF correction ("I took money out of this envelope this
+// month to fund another"), not a recurring plan element. envelopeEraFold runs
+// the era balance as b += assigned − activity and charges the RISE in the
+// negative high-water mark to the next month's Ready to Assign; a carried
+// negative therefore drives the balance further negative every month it is
+// copied, and each copy is billed as fresh overspend debt for spending that
+// never happened. Seeding three months ahead of a single −218,510 over-draw
+// used to charge that amount against RTA three separate times and render the
+// envelope overspent in months with zero activity.
+//
+// Rows belonging to a category that is no longer an active spending category
+// are never copied — EnvelopeMonthSummary would never surface them, so copying
+// them would produce assigned fils invisible to every budget view (silently
+// breaking the RTA identity).
 func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error) {
 	if !validMonth(month) {
 		return 0, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
 	}
-	if month < time.Now().UTC().Format("2006-01") {
+	now := time.Now().UTC()
+	if month < now.Format("2006-01") {
+		return 0, nil
+	}
+	// Build the horizon by normalising year/month arithmetic rather than
+	// time.AddDate, which normalises DAY overflow (Jan 31 + 1 month → Mar 3)
+	// and would shift the boundary by a whole month at the end of long months.
+	horizonY, horizonM := now.Year(), int(now.Month())+seedHorizonMonths
+	horizonY, horizonM = horizonY+(horizonM-1)/12, (horizonM-1)%12+1
+	if month > fmt.Sprintf("%04d-%02d", horizonY, horizonM) {
 		return 0, nil
 	}
 
@@ -246,7 +277,7 @@ func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, err
 	err = tx.QueryRow(
 		`SELECT MAX(ea.month) FROM envelope_assignments ea
 		   JOIN categories c ON c.id = ea.category_id
-		  WHERE ea.month < ? AND ea.assigned_fils != 0
+		  WHERE ea.month < ? AND ea.assigned_fils > 0
 		    AND c.is_active=1 AND c.kind='spending'`,
 		month).Scan(&source)
 	if err != nil {
@@ -261,7 +292,7 @@ func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, err
 		 SELECT ?, ea.category_id, ea.assigned_fils, ?
 		   FROM envelope_assignments ea
 		   JOIN categories c ON c.id = ea.category_id
-		  WHERE ea.month = ? AND ea.assigned_fils != 0
+		  WHERE ea.month = ? AND ea.assigned_fils > 0
 		    AND c.is_active=1 AND c.kind='spending'`,
 		month, isoNow(s), source.String)
 	if err != nil {
