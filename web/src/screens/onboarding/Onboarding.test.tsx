@@ -83,7 +83,9 @@ function handleRig(over: { signUp?: () => Promise<void>; signIn?: () => Promise<
 }
 
 /** A `fetch` that answers exactly the routes onboarding calls, and 404s the rest. */
-function scriptedFetch(over: { quarantine?: unknown; waitlistStatus?: number; waitlistBody?: unknown } = {}) {
+function scriptedFetch(
+  over: { quarantine?: unknown; waitlistStatus?: number; waitlistBody?: unknown; hostileTemplates?: boolean } = {},
+) {
   const calls: { url: string; method: string; body: unknown }[] = [];
   const doFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -100,6 +102,16 @@ function scriptedFetch(over: { quarantine?: unknown; waitlistStatus?: number; wa
         version: "7",
         removed: [],
         templates: [
+          // A template's `bank` is a free JSON string set by whoever published
+          // it. Nothing on the wire holds it to the grammar `bank_declared` is
+          // keyed on, so the picker has to survive both an id it cannot store
+          // and one that only survives by being changed.
+          ...(over.hostileTemplates === true
+            ? [
+                { id: "adib.card.v1", bank: "adib_uae", version: 1, normalizer_version: 1, definition: {}, status: "published" },
+                { id: "dib.upper.v1", bank: "DIB", version: 1, normalizer_version: 1, definition: {}, status: "published" },
+              ]
+            : []),
           { id: "dib.card.v1", bank: "dib", version: 1, normalizer_version: 1, definition: {}, status: "published" },
           { id: "dib.account.v1", bank: "dib", version: 1, normalizer_version: 1, definition: {}, status: "published" },
           { id: "enbd.alert.v1", bank: "enbd", version: 1, normalizer_version: 1, definition: {}, status: "published" },
@@ -383,6 +395,49 @@ describe("the bank and address walk", () => {
     await waitFor(() => {
       expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
     });
+  });
+
+  it("does not offer a template id it could not declare, rather than blanking the app on the tap", async () => {
+    // `bankDeclaredOps` throws for a name the grammar cannot store, and there is
+    // no error boundary in web/src — a throw in this onClick unmounts the tree
+    // and the user sees a blank page. The id is left out of the list instead.
+    // "DIB" is the quiet one: it folds to "dib", so declaring it would key a row
+    // the picker cannot then untick.
+    const user = userEvent.setup();
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch({ hostileTemplates: true });
+    mount(invited(), rig, doFetch);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("bank-row-dib")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("bank-row-adib_uae")).toBeNull();
+    expect(screen.queryByTestId("bank-row-DIB")).toBeNull();
+    // One row for `dib`, not two, and it still declares cleanly.
+    expect(screen.getAllByRole("checkbox", { name: /dubai islamic bank/i })).toHaveLength(1);
+    await user.click(screen.getByTestId("bank-row-dib"));
+    await user.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
+  });
+
+  it("ticks the supported bank instead of waitlisting one ledger already reads", async () => {
+    // Typing the display name of a bank on the list used to declare
+    // `dubai islamic bank` — a phantom third row for one bank — and ask the
+    // demand counter for a parser that already exists.
+    const user = userEvent.setup();
+    const rig = handleRig();
+    const { doFetch, calls } = scriptedFetch();
+    mount(invited(), rig, doFetch);
+
+    await user.type(await screen.findByLabelText("Bank name"), "Dubai Islamic Bank");
+    await user.click(screen.getByRole("button", { name: /request support/i }));
+
+    expect(calls.some((c) => c.url.includes("/api/v1/waitlist"))).toBe(false);
+    expect(screen.getByTestId("bank-row-dib").getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("bank-already-supported").textContent).toMatch(/already reads dubai islamic bank/i);
+
+    await user.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
   });
 
   it("cannot be left with nothing declared — Continue is dead until a bank is ticked", async () => {

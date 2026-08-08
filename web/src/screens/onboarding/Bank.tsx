@@ -16,6 +16,12 @@
  * them, so a template published after this bundle shipped appears here without a
  * deploy — which is the whole reason the list is fetched rather than hard-coded.
  *
+ * It is also why the ids are FILTERED through {@link isDeclarableBankID} before
+ * anything draws them: a template's `bank` is a free JSON string, and an id the
+ * `bank_declared` grammar refuses would throw inside an onClick — with no error
+ * boundary in this app, that is a blank page. See that function for the second,
+ * quieter failure it also catches.
+ *
  * # The waitlist may never decide whether onboarding continues
  *
  * It is a demand counter: `internal/v2/admin/waitlist.go` writes
@@ -56,7 +62,14 @@ import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
-import { BANK_NAME_RULE, normalizeBankName, WAITLIST_BANK } from "../../v2/bank";
+import {
+  BANK_NAME_RULE,
+  bankDisplayName,
+  isDeclarableBankID,
+  normalizeBankName,
+  supportedMatch,
+  WAITLIST_BANK,
+} from "../../v2/bank";
 import { joinWaitlist, readSupportedBanks, type SupportedBank, type TokenSource } from "../../v2/onboardingIO";
 import { Notice, Step } from "./Shell";
 
@@ -75,6 +88,8 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
   const [picked, setPicked] = useState<string[]>([]);
   const [other, setOther] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  /** Set when a typed name turned out to be a bank already on the list. */
+  const [already, setAlready] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Non-null once the counter has been asked; the walk stops here. */
   const [waitlisted, setWaitlisted] = useState<{ bank: string; recorded: boolean; detail: string } | null>(null);
@@ -84,7 +99,10 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
     void (async () => {
       try {
         const banks = await readSupportedBanks(client, { ...(server === undefined ? {} : { server }), ...(doFetch === undefined ? {} : { fetch: doFetch }) });
-        if (live) setListing({ kind: "ready", banks });
+        // Filtered HERE, once, so no later path has to remember: an id this
+        // build could not declare is not offered rather than offered as a
+        // control that throws. The "another bank" path below still works for it.
+        if (live) setListing({ kind: "ready", banks: banks.filter((b) => isDeclarableBankID(b.id)) });
       } catch {
         // Not fatal, and not a retry loop: the "another bank" path below works
         // with no listing at all, so a failed read costs the shortcut and
@@ -106,6 +124,18 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
       return;
     }
     setProblem(null);
+    // Typing the name of a bank that IS on the list is not a support request:
+    // it would ask the demand counter for a parser that already exists and
+    // declare a second key for one bank, which the picker would then draw as a
+    // phantom row. Tick the real one instead and say so.
+    const supported = listing.kind === "ready" ? supportedMatch(name.bank, listing.banks.map((b) => b.id)) : null;
+    if (supported !== null) {
+      setPicked((held) => withBank(held, supported));
+      setOther("");
+      setAlready(supported);
+      return;
+    }
+    setAlready(null);
     setBusy(true);
     try {
       await joinWaitlist(client, name.bank, { ...(server === undefined ? {} : { server }), ...(doFetch === undefined ? {} : { fetch: doFetch }) });
@@ -205,6 +235,7 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
             onChange={(e) => {
               setOther(e.target.value);
               setProblem(null);
+              setAlready(null);
             }}
             autoCapitalize="words"
             autoCorrect="off"
@@ -219,6 +250,11 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
         <p className={`text-xs ${problem === null ? "text-muted" : "text-bad"}`} data-testid="bank-name-rule">
           {problem ?? BANK_NAME_RULE}
         </p>
+        {already !== null && (
+          <p role="status" data-testid="bank-already-supported" className="text-xs text-muted">
+            ledger already reads {bankDisplayName(already)} — it is ticked above.
+          </p>
+        )}
         <Button variant="secondary" disabled={other.trim() === "" || busy} onClick={() => void request()}>
           Request support
         </Button>

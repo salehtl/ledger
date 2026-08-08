@@ -56,6 +56,7 @@ import { passkeyFailureCopy } from "../../v2/passkeyCopy";
 import { BankPicker } from "../../components/BankPicker";
 import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
 import { activeBanks, bankDeclaredOps } from "../../v2/sources/banks";
+import { isDeclarableBankID } from "../../v2/bank";
 import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
 import { budgetSplitOps, DEFAULT_BUDGET_SPLIT } from "../../v2/sources/budget";
 import {
@@ -330,10 +331,24 @@ export function V2Settings({
   });
   const declared = useDeclaredBanks(useBanksSource());
   const declaredActive = useMemo(() => activeBanks(declared.data ?? []), [declared.data]);
+  /**
+   * A template's `bank` is a free JSON string, so an id that `bank_declared`'s
+   * grammar refuses would throw inside the toggle below — and with no error
+   * boundary in this app that is a blank Settings screen. Such an id is not
+   * offered; see `v2/bank.ts`'s `isDeclarableBankID` for the quieter second
+   * failure it also catches.
+   */
+  const supportedIDs = useMemo(
+    () => (supported.data ?? []).map((b) => b.id).filter(isDeclarableBankID),
+    [supported.data],
+  );
 
   const toggleBank = useCallback(
     (bank: string, next: boolean): void => {
       if (writer === null) return;
+      // Belt as well as braces: the list above is filtered, and this is the
+      // author. A row that could not be declared must be a no-op, never a throw.
+      if (!isDeclarableBankID(bank)) return;
       // One op per bank, and a removal is a declaration (`active: false`) rather
       // than a delete — so a bank taken off and put back is one keyed record.
       writer.enqueueMany(bankDeclaredOps(bank, next));
@@ -443,7 +458,7 @@ export function V2Settings({
               )}
               <BankPicker
                 idPrefix="settings-bank"
-                supported={(supported.data ?? []).map((b) => b.id)}
+                supported={supportedIDs}
                 selected={declaredActive}
                 onToggle={toggleBank}
               />
@@ -457,10 +472,17 @@ export function V2Settings({
             transaction is removed. Saying anything stronger would be describing
             a feature this product does not have.
           */}
+          {/*
+            The cut clause said this list "is what it counts when choosing which
+            parser to write next". Nothing counts it: demand is the server-side
+            `waitlist` table, written only by the explicit request button on the
+            setup step. In a note whose whole purpose is to claim only what the
+            code honours, that was the one sentence that did not.
+          */}
           <p data-testid="settings-banks-note" className="text-xs leading-relaxed text-muted">
-            This list is what ledger asks about and what it counts when choosing which parser to write next.
-            Taking a bank off it leaves everything else as it is: mail sent to your address is still filed, senders
-            you have already trusted are still trusted, and transactions already recorded are still there.
+            This is the list ledger asked you for during setup, kept here so you can change it. Taking a bank off
+            it leaves everything else as it is: mail sent to your address is still filed, senders you have already
+            trusted are still trusted, and transactions already recorded are still there.
           </p>
         </Card>
       </section>

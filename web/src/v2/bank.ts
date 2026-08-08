@@ -138,3 +138,40 @@ const BANK_DISPLAY_NAMES: Record<string, string> = {
 export function bankDisplayName(id: string): string {
   return BANK_DISPLAY_NAMES[id.trim().toLowerCase()] ?? id;
 }
+
+/**
+ * Whether a bank id from the server can be DECLARED as it stands.
+ *
+ * `GET /api/v1/templates` reports a template's `bank` as a free JSON string set
+ * by whoever published the template; nothing on the wire constrains it to the
+ * grammar `bank_declared` is keyed on. Two things go wrong without this check,
+ * and the quiet one is worse:
+ *
+ *   - An id the grammar refuses (`adib_uae` — underscore) makes
+ *     `bankDeclaredOps` THROW inside an onClick. `web/src` has no error
+ *     boundary, so React unmounts the tree and the user gets a blank page.
+ *   - An id that merely folds (`DIB` -> `dib`) declares a key that no longer
+ *     matches the row it came from, so the picker draws two rows and the ticked
+ *     one cannot be unticked.
+ *
+ * Requiring the id to survive the fold UNCHANGED catches both, and the answer is
+ * to leave such an id out of the list rather than to offer a control that cannot
+ * work. The "another bank" path is unaffected, so nobody is stranded.
+ */
+export function isDeclarableBankID(id: string): boolean {
+  const folded = normalizeBankName(id);
+  return folded.ok && folded.bank === id;
+}
+
+/**
+ * The supported id a typed bank name is really naming, or null.
+ *
+ * Typing "Dubai Islamic Bank" while `dib` is already on the list used to declare
+ * `dubai islamic bank` — a second, phantom row for one bank, and a waitlist
+ * request for a bank ledger already reads. It matches the folded name against
+ * the id and against the display name, which are the two spellings a person
+ * could reasonably type.
+ */
+export function supportedMatch(folded: string, supported: readonly string[]): string | null {
+  return supported.find((id) => id === folded || bankDisplayName(id).toLowerCase() === folded) ?? null;
+}

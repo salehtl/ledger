@@ -239,6 +239,22 @@ describe("V2Settings", () => {
     expect(specs[1]).toEqual({ type: "bank_declared", payload: { bank: "dib", active: false } });
   });
 
+  it("does not offer a template id it could not declare, rather than blanking Settings on the tap", async () => {
+    // Same hazard as the bank step: a template's `bank` is a free JSON string,
+    // `bankDeclaredOps` throws for one the grammar refuses, and a throw in this
+    // onClick unmounts the tree — there is no error boundary in web/src.
+    wrap({
+      templates: async () => [
+        { id: "dib", templates: 1 },
+        { id: "adib_uae", templates: 1 },
+        { id: "DIB", templates: 1 },
+      ],
+    });
+    expect(await screen.findByTestId("settings-bank-row-dib")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-bank-row-adib_uae")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-bank-row-DIB")).not.toBeInTheDocument();
+  });
+
   it("says exactly what removing a bank does, and does not claim it stops mail or untrusts a sender", async () => {
     // The allowlist is a separate, server-side thing (`sender_allowlist`,
     // written by the quarantine trust decision). This list drives the UI and the
