@@ -27,7 +27,21 @@ var (
 	digitsRe    = regexp.MustCompile(`[0-9]`)
 )
 
+// isEnglishMoneyTransfer reports whether textBody is DIB's English "Money
+// Transfer" confirmation layout — a second, duplicate notification for a fund
+// transfer already recorded from its sibling Arabic account-transaction
+// email (see the DIBParser doc comment). It requires two signals unique to
+// this English layout, neither of which can appear in the Arabic layouts
+// this parser otherwise handles.
+func isEnglishMoneyTransfer(textBody string) bool {
+	return strings.Contains(textBody, "Money Transfer") &&
+		strings.Contains(textBody, "Beneficiary Bank")
+}
+
 func (DIBParser) Parse(subject, textBody string) (ParsedTxn, error) {
+	if isEnglishMoneyTransfer(textBody) {
+		return ParsedTxn{}, ErrIgnoreEmail
+	}
 	am := dibAmountRe.FindStringSubmatch(textBody)
 	if am == nil {
 		return ParsedTxn{}, fmt.Errorf("dib: amount anchor المبلغ not found")

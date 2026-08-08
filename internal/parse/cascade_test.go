@@ -134,6 +134,24 @@ func TestCascadeUnparsedCapturesValidationError(t *testing.T) {
 	}
 }
 
+// TestCascadeIgnoresEnglishMoneyTransfer is a guard: DIB's English "Money
+// Transfer" confirmation duplicates a transaction already recorded from its
+// sibling Arabic email. The template must reject it via ErrIgnoreEmail, and
+// the cascade must stop right there — NOT fall through to the heuristic,
+// which (pre-fix) misparses this body into a bogus credit dated 2026-08-02.
+// This is the terminal-ness guard: Tier must not be heuristic, and Status
+// must be exactly "ignored".
+func TestCascadeIgnoresEnglishMoneyTransfer(t *testing.T) {
+	c := newCascade(DisabledExtractor{})
+	res := c.Run(context.Background(), "DIB.notification@dib.ae", "DIB Notification", dibEnglishMoneyTransfer, time.Time{})
+	if res.Tier == TierHeuristic {
+		t.Fatalf("heuristic got a chance at this body (tier=%q); the ignore must be terminal", res.Tier)
+	}
+	if res.Status != StatusIgnored {
+		t.Fatalf("status = %q, want %q (err=%q tier=%q)", res.Status, StatusIgnored, res.Err, res.Tier)
+	}
+}
+
 func TestCascadeValidationFailureFallsThrough(t *testing.T) {
 	ai := stubExtractor{p: ParsedTxn{AmountFils: 0, Currency: "AED", Direction: DirectionDebit, Tier: TierAI}}
 	c := newCascade(ai)

@@ -89,6 +89,13 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
 		}
+		if res.Status == StatusIgnored {
+			// A recognized non-transactional email: no transaction, and the raw
+			// body stays in ingest_log (never deleted). SelectForParse only picks
+			// up unparsed/low_confidence rows, so this status is never revisited.
+			_ = p.store.MarkParsed(row.ID, StatusIgnored, res.Tier, "")
+			continue
+		}
 		// One email must never yield two transactions. The fingerprint index
 		// won't dedup a re-parse whose extracted text drifted (a fixed template
 		// vs the earlier AI wording), so a row that already produced a
