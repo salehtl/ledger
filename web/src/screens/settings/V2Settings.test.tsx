@@ -214,6 +214,76 @@ describe("V2Settings", () => {
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
   });
 
+  it("saves the plan with no monthly total exactly as it did before the field existed", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
+    wrap({ writer });
+
+    // Nothing in the log, so the field opens empty — and an untouched field
+    // authors a payload with no `monthly_total_minor` key at all.
+    expect(await screen.findByLabelText(/monthly budget/i)).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
+  });
+
+  it("saves a monthly total as minor units in a string, and keeps it on the next save", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
+    wrap({ writer });
+
+    await user.type(await screen.findByLabelText(/monthly budget/i), "12000");
+    expect(screen.getByText(/AED 12,000\.00 a month/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(specs).toEqual([
+      { type: "budget_split_set", payload: { need: 50, want: 30, saving: 20, monthly_total_minor: "1200000" } },
+    ]);
+    expect((await screen.findByTestId("settings-split-note")).textContent ?? "").toMatch(/AED 12,000\.00 a month/);
+  });
+
+  it("seeds the total from the log, exactly, past 2^53", async () => {
+    // The projection is where a `number` would have already lost this: the
+    // column is TEXT and the read is a bigint.
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,60,20,20,'9007199254740993')").run();
+    wrap();
+    const field = await screen.findByLabelText(/monthly budget/i);
+    await waitFor(() => {
+      expect(field).toHaveValue("90071992547409.93");
+    });
+  });
+
+  it("refuses a total it cannot read, in words, and will not save while it stands", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
+    wrap({ writer });
+
+    const field = await screen.findByLabelText(/monthly budget/i);
+    await user.type(field, "12.345");
+    expect(screen.getByText(/two decimal places/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
+    expect(specs).toEqual([]);
+    // Nothing is rounded behind the user: the text is what they typed.
+    expect(field).toHaveValue("12.345");
+  });
+
+  it("clearing the total is how a total is removed, and the op says so", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = { pending: [], enqueueMany: (s: readonly unknown[]) => void specs.push(...s), flush: async () => {} };
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,50,30,20,'1200000')").run();
+    wrap({ writer });
+
+    const field = await screen.findByLabelText(/monthly budget/i);
+    await waitFor(() => {
+      expect(field).toHaveValue("12000.00");
+    });
+    await user.clear(field);
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
+  });
+
   it("edits the bank list with the same control the bank step uses, one op per change", async () => {
     const user = userEvent.setup();
     const specs: unknown[] = [];

@@ -85,6 +85,14 @@
 // sides is the vocabulary — the type set, the parent-free set and the minimum
 // schema version each type requires — via conformance/op/manifest.json.
 //
+// That is also why budget_split_set's optional monthly total — a money amount
+// in minor units, carried as a decimal STRING under monthly_total_minor —
+// needed no change here and no version bump. An OPTIONAL payload key is not a
+// vocabulary change: a reader that does not know it ignores it, a reader that
+// does gets "no total" from an op authored without it, and SchemaVersion stays
+// 3. Adding an op TYPE would have been the other thing, and would have cost a
+// bump. See client/src/replay/replay.ts's applyBudgetSplitSet for the fold.
+//
 // The trust path never reads any of this. Declared banks route the waitlist and
 // drive the UI; nothing in internal/v2/origin may consult them.
 //

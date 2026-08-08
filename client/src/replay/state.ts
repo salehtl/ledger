@@ -308,6 +308,25 @@ export interface State {
   banks: Map<string, boolean>;
   /** The user's plan, or null when they never chose — see {@link BudgetSplit}. */
   budgetSplit: BudgetSplit | null;
+  /**
+   * What the user means to spend in a month, in MINOR UNITS, or null when they
+   * never said.
+   *
+   * `bigint`, and carried on the wire as a decimal string, for the reason every
+   * amount in this codebase is: `JSON.parse` of a number is a float64.
+   *
+   * It is a SEPARATE field from {@link State.budgetSplit} and is written by the
+   * same op, `budget_split_set` — the total and the percentages are one plan the
+   * user authors together, and one op is what makes them last-write-wins
+   * together. It is separate rather than a fourth member of `BudgetSplit`
+   * because that type is percentages and only percentages: a `bigint` of money
+   * sitting beside three `number`s invites the arithmetic that mixes them.
+   *
+   * `null` is not zero. Zero is a total a user can state ("I plan to spend
+   * nothing this month"); `null` is that they never stated one, and a consumer
+   * that showed 0.00 for it would be inventing a plan.
+   */
+  budgetMonthlyTotal: bigint | null;
   /** id → the latest definition of that category. Last write per id wins. */
   categories: Map<string, CategoryDef>;
   /** currency → live txn ids whose snapshot is still null. Task 12 drains these. */
@@ -366,6 +385,7 @@ export function emptyState(): State {
     rateUpdatedAt: new Map(),
     banks: new Map(),
     budgetSplit: null,
+    budgetMonthlyTotal: null,
     categories: new Map(),
     pendingByCurrency: new Map(),
     checkpoints: [],

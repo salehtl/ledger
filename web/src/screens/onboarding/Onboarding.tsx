@@ -276,7 +276,7 @@ function Finish({
           because the machine's steps are derived from milestones that must be
           MET — see `BudgetSplitStep`'s header. "Open ledger" above is a complete
           answer to it, and an account that ignores it keeps 50/30/20. */}
-      <BudgetSplitStep commit={commit} />
+      <BudgetSplitStep commit={commit} currency={facts.homeCurrency ?? null} />
     </Step>
   );
 }

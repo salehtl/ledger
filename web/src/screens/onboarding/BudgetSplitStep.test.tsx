@@ -52,7 +52,49 @@ describe("BudgetSplitStep", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /save plan/i }));
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
-    expect(await screen.findByText(/Saved\. Needs 60%, wants 20%, savings 20%\./)).toBeInTheDocument();
+    // The confirmation says the total too, and says its absence rather than
+    // leaving the user to guess what an untouched field did.
+    expect(await screen.findByText(/Saved\. Needs 60%, wants 20%, savings 20%, and no monthly budget\./)).toBeInTheDocument();
+  });
+
+  it("leaves the total empty, and saving without one authors the op it always did", async () => {
+    const specs: OpSpec[] = [];
+    render(<BudgetSplitStep commit={(ops) => void specs.push(...ops)} currency="AED" />);
+    expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("");
+
+    await userEvent.click(screen.getByRole("button", { name: /save plan/i }));
+    // No `monthly_total_minor` key at all: an account that skips the question
+    // authors byte-identical bytes to the build that predates the field.
+    expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } }]);
+  });
+
+  it("authors a typed total as minor units in a string, and says so back", async () => {
+    const specs: OpSpec[] = [];
+    render(<BudgetSplitStep commit={(ops) => void specs.push(...ops)} currency="AED" />);
+    await userEvent.type(screen.getByLabelText(/monthly budget/i), "12000");
+    await userEvent.click(screen.getByRole("button", { name: /save plan/i }));
+
+    expect(specs).toEqual([
+      { type: "budget_split_set", payload: { need: 50, want: 30, saving: 20, monthly_total_minor: "1200000" } },
+    ]);
+    expect(await screen.findByText(/on AED 12,000\.00 a month\./)).toBeInTheDocument();
+  });
+
+  it("refuses an unreadable total visibly, and saves nothing while it stands", async () => {
+    const commit = vi.fn();
+    render(<BudgetSplitStep commit={commit} currency="AED" />);
+    await userEvent.type(screen.getByLabelText(/monthly budget/i), "12.345");
+
+    expect(screen.getByText(/two decimal places/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
+    expect(commit).not.toHaveBeenCalled();
+    // And the text stays exactly as typed — nothing is rounded behind them.
+    expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12.345");
+  });
+
+  it("stays skippable: the copy says an empty total is a complete answer", () => {
+    render(<BudgetSplitStep commit={() => {}} currency="AED" />);
+    expect(screen.getByText(/Leave the budget empty and ledger just shows what you spend/i)).toBeInTheDocument();
   });
 
   it("says a failed save is not a dead end", async () => {

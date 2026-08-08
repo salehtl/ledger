@@ -291,6 +291,46 @@ describe("the budget split", () => {
   });
 });
 
+/**
+ * The monthly total the user set, alongside the split.
+ *
+ * The FIRST test is the absent one, for the same reason the split's first test
+ * is: a plan with no total must read exactly as it did before the field existed.
+ */
+describe("the monthly budget total", () => {
+  it("with no total set, every reader sees null and nothing else changes", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    const before = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    expect(before.monthlyTotal).toBeNull();
+
+    // A split with no total is still a plan, and the total is still absent —
+    // null is "never said", never a defaulted 0.
+    db.prepare("INSERT INTO budget_split (id,need,want,saving) VALUES (1,60,20,20)").run();
+    const after = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    expect(after.split).toEqual({ need: 60, want: 20, saving: 20 });
+    expect(after.monthlyTotal).toBeNull();
+  });
+
+  it("carries the total the log holds, exactly, past 2^53", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    // sql.js hands an INTEGER column back as a JS `number`; the column is TEXT
+    // precisely so this value survives the trip.
+    db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,50,30,20,'9007199254740993')").run();
+    const got = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    expect(got.monthlyTotal).toBe(9_007_199_254_740_993n);
+    expect(typeof got.monthlyTotal).toBe("bigint");
+    // The total is a plan, not money that happened: the buckets are untouched.
+    expect(got.buckets).toEqual({ need: 500n, want: 0n, saving: 0n });
+  });
+
+  it("an unusable projection reports no total rather than a half-read one", async () => {
+    const db = await blank();
+    expect(sqlBudgetSource(db).read(Date.now()).monthlyTotal).toBeNull();
+  });
+});
+
 describe("splitSum", () => {
   it("names the sum so a screen can say it BEFORE the user saves", () => {
     expect(splitSum({ need: 60, want: 30, saving: 20 })).toBe(110);
@@ -303,16 +343,50 @@ describe("budgetSplitOps", () => {
     // No `v` here on purpose: `Client.buildAuthoredOp` stamps each type's own
     // minimum (3, for this one), and a spec that carried its own would be a
     // second place for the floor to be wrong.
-    expect(budgetSplitOps({ need: 60, want: 20, saving: 20 })).toEqual([
+    //
+    // With no total, the payload is byte-identical to the one this function
+    // authored before the field existed — the key is ABSENT, not null. That is
+    // the whole backwards-compatibility claim, checked with an exact `toEqual`
+    // so an added `monthly_total_minor: null` fails here.
+    expect(budgetSplitOps({ need: 60, want: 20, saving: 20 }, null)).toEqual([
       { type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } },
     ]);
+  });
+
+  it("carries a total as minor units in a decimal STRING, never a JSON number", () => {
+    const ops = budgetSplitOps({ need: 50, want: 30, saving: 20 }, 1_200_000n);
+    expect(ops).toEqual([
+      { type: "budget_split_set", payload: { need: 50, want: 30, saving: 20, monthly_total_minor: "1200000" } },
+    ]);
+    const payload = ops[0]!.payload as Record<string, unknown>;
+    expect(typeof payload["monthly_total_minor"]).toBe("string");
+    // A number in the payload is the rounding bug the string rule exists for.
+    expect(JSON.parse(JSON.stringify(payload))["monthly_total_minor"]).toBe("1200000");
+  });
+
+  it("survives a total above 2^53 through JSON, which is where a number would lose it", () => {
+    const huge = 9_007_199_254_740_993n;
+    const ops = budgetSplitOps({ need: 50, want: 30, saving: 20 }, huge);
+    const round = JSON.parse(JSON.stringify(ops[0]!.payload)) as Record<string, unknown>;
+    expect(round["monthly_total_minor"]).toBe("9007199254740993");
+    expect(BigInt(String(round["monthly_total_minor"]))).toBe(huge);
+  });
+
+  it("zero is a total, and is not the same op as no total", () => {
+    expect(budgetSplitOps({ need: 50, want: 30, saving: 20 }, 0n)[0]!.payload).toEqual({
+      need: 50, want: 30, saving: 20, monthly_total_minor: "0",
+    });
+  });
+
+  it("refuses a negative total rather than writing one the fold would reject", () => {
+    expect(() => budgetSplitOps({ need: 50, want: 30, saving: 20 }, -1n)).toThrow(/negative/i);
   });
 
   it("refuses a split that does not sum to 100 rather than normalising it", () => {
     // Silently rewriting 60/30/20 to 55/27/18 is a change to the user's plan
     // that nothing told them about. The fold refuses it as an `invalid_payload`
     // anomaly; the author refuses to write it in the first place.
-    expect(() => budgetSplitOps({ need: 60, want: 30, saving: 20 })).toThrow(/100/);
-    expect(() => budgetSplitOps({ need: 33.5, want: 46.5, saving: 20 })).toThrow(/whole/);
+    expect(() => budgetSplitOps({ need: 60, want: 30, saving: 20 }, null)).toThrow(/100/);
+    expect(() => budgetSplitOps({ need: 33.5, want: 46.5, saving: 20 }, null)).toThrow(/whole/);
   });
 });

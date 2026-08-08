@@ -553,6 +553,26 @@ function applyBankDeclared(s: State, e: LogEntry): void {
  * rewriting it to 55/27/18 is a change to their plan that nothing told them
  * about; the sum is a UI-time check first (the plan says so before the user
  * saves) and an anomaly here second, for a writer that got past it.
+ *
+ * # `monthly_total_minor` is OPTIONAL, and its absence is a statement
+ *
+ * The op also carries what the user means to spend in a month, in minor units
+ * as a decimal STRING (`JSON.parse` of a number is a float64 — a total is
+ * money). Absent and `null` both mean "no total", which is what every op
+ * authored before the field existed says, so such a log folds to exactly the
+ * state it folded to then. That is what makes this an additive change and NOT a
+ * schema bump: `SCHEMA_VERSION` stays 3, an older reader ignores a key it does
+ * not know, and a newer reader of an older op gets `null`.
+ *
+ * It follows that the op carries the WHOLE plan: an author that sets the split
+ * without repeating the total clears the total, exactly as it would clear a
+ * percentage it omitted. That is the price of last-write-wins over one record,
+ * and it is the reason `budgetSplitOps` in the web tree takes the total as a
+ * required argument rather than an optional one — a caller that forgets is a
+ * compile error rather than a plan the user silently loses.
+ *
+ * Zero is a legal total and is not `null`: "I plan to spend nothing" is a thing
+ * a person can mean, and "I never said" is not it.
  */
 function applyBudgetSplitSet(s: State, e: LogEntry): void {
   const p = payloadObject(e.op);
@@ -565,7 +585,12 @@ function applyBudgetSplitSet(s: State, e: LogEntry): void {
   if (sum !== 100) {
     throw new PayloadError(`need + want + saving must be 100, got ${sum} (${split.need}/${split.want}/${split.saving})`);
   }
+  const raw = p["monthly_total_minor"];
+  // Both assignments happen after every check, so a refused op leaves the
+  // previous plan whole — the split cannot survive a total that did not.
+  const total = raw === undefined || raw === null ? null : parseMoney(raw, "monthly_total_minor");
   s.budgetSplit = split;
+  s.budgetMonthlyTotal = total;
 }
 
 /** A whole percentage: an integer in [0, 100], carried as a raw JSON number. */

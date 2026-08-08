@@ -335,6 +335,30 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 - **Don't:** build a second percentage control, and don't clamp or repair in
   your own `onChange`.
 
+### MonthlyTotalField (`MonthlyTotalField.tsx`)
+- **Purpose:** the monthly budget total — an amount of MONEY — beside the
+  split. Used by the onboarding budget step and by Settings, the same two
+  surfaces and for the same reason as `BudgetSplitPicker`.
+- **Use it for money, and never `NumberField`.** `NumberField` commits a
+  `number` and clamps on blur; both are right for a percentage and wrong for an
+  amount. A `number` corrupts past 2^53, and a clamp *rewrites what was typed* —
+  with `allowDecimal={false}` a typed `33.3` arrives as `333` and is then pulled
+  to the field's max. The budget that was typed and the budget that was saved
+  have to be the same number.
+- **The value is TEXT, not an amount.** The parent holds the draft string and
+  reads it with `parseMinorDraft` (`lib/minorMoney.ts`) into `bigint` minor
+  units. That keeps `""` ("no total"), `"0"` ("nothing") and `"12.345"` ("not an
+  amount") three distinguishable states; a `bigint | null` prop collapses them.
+- **It refuses in words rather than repairing.** More than two decimals, a
+  negative, or anything that is not a plain decimal amount produces a sentence
+  in the `role="status"` line and leaves the text alone — no rounded version is
+  ever shown. There is no ceiling to clamp to. The caller disables its save
+  control while `parseMinorDraft(text).state === "refused"`.
+- **Seed it with `minorToDraft`, not `formatMinor`.** `formatMinor` groups
+  (`12,000.00`) and the field's own parser refuses a comma, so a grouped seed is
+  a value the same screen immediately calls unreadable.
+- **Don't:** clamp, strip characters, or reformat on blur.
+
 ### BankPicker (`BankPicker.tsx`)
 - **Purpose:** which banks a person banks with, as a multi-select. Used by the
   onboarding bank step and by Settings — one control, so the two cannot

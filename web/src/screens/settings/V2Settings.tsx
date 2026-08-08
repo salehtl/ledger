@@ -55,6 +55,8 @@ import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
 import { BankPicker } from "../../components/BankPicker";
 import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
+import { MonthlyTotalField } from "../../components/MonthlyTotalField";
+import { formatMoney, minorToDraft, parseMinorDraft } from "../../lib/minorMoney";
 import { activeBanks, bankDeclaredOps } from "../../v2/sources/banks";
 import { isDeclarableBankID } from "../../v2/bank";
 import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
@@ -286,27 +288,43 @@ export function V2Settings({
    * overwrite what the user is typing.
    */
   const [splitDraft, setSplitDraft] = useState<BudgetSplitDraft>(DEFAULT_BUDGET_SPLIT);
+  // The monthly total's TEXT, seeded from the projection alongside the
+  // percentages. `minorToDraft` and not `formatMinor`: the field's own parser
+  // refuses a grouping comma, so a seeded "12,000.00" would be a value this
+  // screen calls unreadable the moment it is displayed.
+  const [totalText, setTotalText] = useState("");
   const [seededSplit, setSeededSplit] = useState(false);
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
   const heldSplit = budget.data?.split;
+  const heldTotal = budget.data?.monthlyTotal;
   useEffect(() => {
     if (seededSplit || heldSplit === undefined) return;
     setSplitDraft(heldSplit);
+    setTotalText(minorToDraft(heldTotal ?? null));
     setSeededSplit(true);
-  }, [seededSplit, heldSplit]);
+  }, [seededSplit, heldSplit, heldTotal]);
   const savedSplit = completeSplit(splitDraft);
+  const savedTotal = parseMinorDraft(totalText);
+  const currency = budget.data?.homeCurrency ?? null;
 
   const saveSplit = useCallback(async (): Promise<void> => {
-    if (savedSplit === null || writer === null) return;
+    if (savedSplit === null || savedTotal.state === "refused" || writer === null) return;
+    // An empty field is "no total", which is a plan a user can hold and the way
+    // a total is REMOVED — `budget_split_set` carries the whole plan, so an op
+    // with no total states that there is none.
+    const totalMinor = savedTotal.state === "amount" ? savedTotal.minor : null;
     setSplitSaving(true);
     try {
       // `budgetSplitOps` refuses anything that does not sum to 100, so the
       // disabled button and the op author agree — and the fold refuses it a
       // third time. There is no path by which a plan that does not add up
       // reaches the log.
-      writer.enqueueMany(budgetSplitOps(savedSplit));
-      setSplitNote(`Saved. Needs ${savedSplit.need}%, wants ${savedSplit.want}%, savings ${savedSplit.saving}%.`);
+      writer.enqueueMany(budgetSplitOps(savedSplit, totalMinor));
+      setSplitNote(
+        `Saved. Needs ${savedSplit.need}%, wants ${savedSplit.want}%, savings ${savedSplit.saving}%` +
+          (totalMinor === null ? ", and no monthly budget." : `, on ${formatMoney(totalMinor, currency ?? "")} a month.`),
+      );
       await invalidateAfterSync(qc);
       // Not awaited: the op is durable the moment it is queued, and a screen
       // that stalled on the network would be unusable offline.
@@ -316,7 +334,7 @@ export function V2Settings({
     } finally {
       setSplitSaving(false);
     }
-  }, [savedSplit, writer, qc]);
+  }, [savedSplit, savedTotal, currency, writer, qc]);
 
   /**
    * The banks, in two halves that must not be confused: what ledger can READ
@@ -536,11 +554,16 @@ export function V2Settings({
         <SectionLabel as="h2" className="px-1">Your plan</SectionLabel>
         <Card className="space-y-3">
           <p className="text-sm leading-relaxed text-muted">
-            How you mean to divide what you earn: needs, wants, and what is saved or paid down. ledger shows your
-            spending against it — it never moves money or blocks a purchase.
+            How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean to
+            spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
           </p>
           <BudgetSplitPicker value={splitDraft} onChange={setSplitDraft} idPrefix="settings-split" />
-          <Button variant="primary" disabled={savedSplit === null || splitSaving} onClick={() => void saveSplit()}>
+          <MonthlyTotalField value={totalText} onChange={setTotalText} currency={currency} idPrefix="settings-total" />
+          <Button
+            variant="primary"
+            disabled={savedSplit === null || savedTotal.state === "refused" || splitSaving}
+            onClick={() => void saveSplit()}
+          >
             {splitSaving ? "Saving…" : "Save plan"}
           </Button>
           {splitNote !== null && (

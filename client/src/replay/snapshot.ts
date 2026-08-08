@@ -126,7 +126,7 @@ import { compareUTF8, parseDecimal, type Op, type OpType } from "../wire/op";
  * noticed. {@link foldFingerprint} is the mechanism that does not need anyone
  * to notice.
  */
-export const SNAPSHOT_VERSION = 3;
+export const SNAPSHOT_VERSION = 4;
 
 /**
  * The largest payload this module will store without complaint.
@@ -398,6 +398,11 @@ function CANARY(): LogEntry[] {
     canaryOp("bank_declared", "dev-b", { v: 3, payload: { bank: "enbd", active: true } }, ++n),
     canaryOp("bank_declared", "dev-a", { v: 3, payload: { bank: "enbd", active: false } }, ++n),
     canaryOp("budget_split_set", "dev-a", { v: 3, payload: { need: 60, want: 20, saving: 20 } }, ++n),
+    // A second one carrying the optional monthly total, so the digest covers
+    // BOTH branches of that field: the op above states no total, this one states
+    // a total no float64 can hold. A canary that only ever exercised the absent
+    // branch would be blind to a fold that dropped the money path.
+    canaryOp("budget_split_set", "dev-b", { v: 3, payload: { need: 50, want: 30, saving: 20, monthly_total_minor: "9007199254740993" } }, ++n),
     canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Groceries", kind: "spending", bucket: "need", color: "#88aa66", active: true } }, ++n),
     canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Food", kind: "spending", bucket: "want", color: "#88aa66", active: true } }, ++n),
     canaryOp("category_defined", "dev-b", { v: 3, payload: { id: "k2", name: "Salary", kind: "income", bucket: null, active: false } }, ++n),
@@ -818,6 +823,7 @@ export const SNAPSHOT_FIELDS: readonly (keyof State)[] = [
   "rateUpdatedAt",
   "banks",
   "budgetSplit",
+  "budgetMonthlyTotal",
   "categories",
   "pendingByCurrency",
   "checkpoints",
@@ -857,6 +863,11 @@ function decodeSnapshot(stateJSON: string, appliedJSON: string): { state: State;
     rateUpdatedAt: pairs(r["rateUpdatedAt"], "rateUpdatedAt", (v, w) => str(v, w)),
     banks: pairs(r["banks"], "banks", (v, w) => bool(v, w)),
     budgetSplit: r["budgetSplit"] === null ? null : decodeBudgetSplit(r["budgetSplit"], "budgetSplit"),
+    // Money: revived through `parseDecimal` into a `bigint`, like every other
+    // amount here. Left as the string `JSON.parse` produced it, the round-trip
+    // test would still pass — see this section's header.
+    budgetMonthlyTotal:
+      r["budgetMonthlyTotal"] === null ? null : parseDecimal(str(r["budgetMonthlyTotal"], "budgetMonthlyTotal")),
     categories: pairs(r["categories"], "categories", decodeCategory),
     pendingByCurrency: pairs(r["pendingByCurrency"], "pendingByCurrency", (v, w) => new Set(list(v, w, (x, y) => str(x, y)))),
     checkpoints: list(r["checkpoints"], "checkpoints", decodeCheckpoint),

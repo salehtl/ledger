@@ -74,7 +74,7 @@ import type {
  * information that is not recomputable from the log, so a migration would be
  * code with no reason to exist and one more thing that can be wrong.
  */
-export const PROJECTION_VERSION = 6;
+export const PROJECTION_VERSION = 7;
 
 /**
  * Rows written per transaction, and per yield.
@@ -152,11 +152,17 @@ CREATE TABLE IF NOT EXISTS rate (
 -- An ABSENT row means the user never chose, which is not the same as 50/30/20 —
 -- the default belongs to the consumer so that "no op" reads exactly as it did
 -- before these ops existed.
+-- 'monthly_total_minor' is TEXT and NULLABLE, and both matter. TEXT because it
+-- is MONEY: an int64 comes back from sql.js as a lossy JS 'number', which is
+-- the whole reason 'txn.amount_minor' is TEXT too. NULL because "the user never
+-- stated a total" is not "zero" — a screen that read a null as 0.00 would print
+-- a plan nobody made.
 CREATE TABLE IF NOT EXISTS budget_split (
   id     INTEGER PRIMARY KEY CHECK (id = 1),
   need   INTEGER NOT NULL,
   want   INTEGER NOT NULL,
-  saving INTEGER NOT NULL
+  saving INTEGER NOT NULL,
+  monthly_total_minor TEXT
 );
 
 -- 'ord' is the fold order, and it is stored for the same reason 'txn_split.idx'
@@ -293,7 +299,7 @@ function prepare(db: SqlDriver): Stmts {
     split: db.prepare("INSERT INTO txn_split (txn_id, idx, category, amount_minor, amount_home_minor) VALUES (?, ?, ?, ?, ?)"),
     rule: db.prepare("INSERT INTO rule (id, pattern, match, category, priority, version) VALUES (?, ?, ?, ?, ?, ?)"),
     rate: db.prepare("INSERT INTO rate (currency, rate_micro, updated_at) VALUES (?, ?, ?)"),
-    split_plan: db.prepare("INSERT INTO budget_split (id, need, want, saving) VALUES (1, ?, ?, ?)"),
+    split_plan: db.prepare("INSERT INTO budget_split (id, need, want, saving, monthly_total_minor) VALUES (1, ?, ?, ?, ?)"),
     bank: db.prepare("INSERT INTO bank (name, ord, active) VALUES (?, ?, ?)"),
     category: db.prepare("INSERT INTO category (id, ord, name, kind, bucket, color, active) VALUES (?, ?, ?, ?, ?, ?, ?)"),
     fork: db.prepare(
@@ -322,6 +328,11 @@ export function ensureProjection(db: SqlDriver): void {
   if (!txnColumns.includes("verified_origin_domain")) db.exec("ALTER TABLE txn ADD COLUMN verified_origin_domain TEXT");
   const splitColumns = db.prepare("PRAGMA table_info(txn_split)").all().map((raw) => String((raw as Record<string, unknown>)["name"]));
   if (!splitColumns.includes("amount_home_minor")) db.exec("ALTER TABLE txn_split ADD COLUMN amount_home_minor TEXT");
+  // `budget_split` predates the monthly total. Same reasoning as `rate` above:
+  // the ALTER only makes the old table WRITABLE long enough for `project` to
+  // replace it under the bumped projection version.
+  const planColumns = db.prepare("PRAGMA table_info(budget_split)").all().map((raw) => String((raw as Record<string, unknown>)["name"]));
+  if (!planColumns.includes("monthly_total_minor")) db.exec("ALTER TABLE budget_split ADD COLUMN monthly_total_minor TEXT");
 }
 
 /**
@@ -399,7 +410,16 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
     }
     // The configuration. `null` writes NO row, which is the projected form of
     // "the user never chose" — see the schema comment.
-    if (s.budgetSplit !== null) st.split_plan.run(s.budgetSplit.need, s.budgetSplit.want, s.budgetSplit.saving);
+    // One row carries the whole plan, total included, because one op authors it.
+    // `.toString(10)` and never a bound `bigint`: the column is TEXT.
+    if (s.budgetSplit !== null) {
+      st.split_plan.run(
+        s.budgetSplit.need,
+        s.budgetSplit.want,
+        s.budgetSplit.saving,
+        s.budgetMonthlyTotal === null ? null : s.budgetMonthlyTotal.toString(10),
+      );
+    }
     let bankOrd = 0;
     for (const [name, active] of s.banks) {
       st.bank.run(name, bankOrd++, active ? 1 : 0);
@@ -665,6 +685,27 @@ export function readBudgetSplit(db: SqlDriver): BudgetSplit | null {
     | undefined;
   if (row === undefined) return null;
   return { need: num(row["need"], "need"), want: num(row["want"], "want"), saving: num(row["saving"], "saving") };
+}
+
+/**
+ * What the user means to spend in a month, in minor units, or `null` when they
+ * never said — which is every account that predates the field and every account
+ * that skipped the question.
+ *
+ * A `bigint` read from TEXT through {@link parseDecimal}, never `Number(row)`:
+ * this is money, and the column is TEXT for exactly that reason.
+ *
+ * `null` is separate from {@link readBudgetSplit} returning `null`: a user can
+ * have a split and no total. A caller wanting both should read both.
+ */
+export function readBudgetMonthlyTotal(db: SqlDriver): bigint | null {
+  ensureProjection(db);
+  const row = db.prepare("SELECT monthly_total_minor FROM budget_split WHERE id = 1").all()[0] as
+    | Record<string, unknown>
+    | undefined;
+  const raw = row?.["monthly_total_minor"];
+  if (raw === undefined || raw === null) return null;
+  return parseDecimal(text(raw, "monthly_total_minor"));
 }
 
 /**

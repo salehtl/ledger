@@ -13,6 +13,7 @@ import {
   readRateUpdatedAt,
   readBanks,
   readBudgetSplit,
+  readBudgetMonthlyTotal,
   readCategories,
   readRules,
   readTxns,
@@ -559,7 +560,7 @@ test("literal v1 projection is unusable and is fully rebuilt at the current vers
     INSERT INTO rate VALUES ('USD', '3672500');
     INSERT INTO projection_meta VALUES (1, 1, '9', '0', 'AED', 1);
   `);
-  expect(PROJECTION_VERSION).toBe(6);
+  expect(PROJECTION_VERSION).toBe(7);
   expect(projectionIsUsable(d)).toBe(false);
   const state = emptyState();
   state.homeCurrency = "AED";
@@ -787,6 +788,82 @@ test("percentages are stored as INTEGER, and are the only numbers on this path",
   expect(typeof row["need"]).toBe("number");
   expect(typeof row["want"]).toBe("number");
   expect(typeof row["saving"]).toBe("number");
+});
+
+test("a plan with no monthly total projects a NULL, and reads back as null rather than zero", async () => {
+  // `configured()`'s split carries no total, which is what every plan authored
+  // before the field existed looks like. It must not become 0: "never said" and
+  // "plans to spend nothing" are different statements.
+  const d = db();
+  await project(d, configured());
+  expect(readBudgetMonthlyTotal(d)).toBeNull();
+  const row = d.prepare("SELECT monthly_total_minor FROM budget_split WHERE id = 1").all()[0] as Record<string, unknown>;
+  expect(row["monthly_total_minor"]).toBeNull();
+  // And an account with no plan at all is still null, with no row to read.
+  const empty = db();
+  await project(empty, fixture());
+  expect(readBudgetMonthlyTotal(empty)).toBeNull();
+});
+
+test("a monthly total round-trips exactly through the projection, above 2^53 included", async () => {
+  const huge = 9_007_199_254_740_993n; // 2^53 + 1: a float64 rounds this to …992
+  const s = configured();
+  s.budgetMonthlyTotal = huge;
+  const d = db();
+  await project(d, s);
+
+  const back = readBudgetMonthlyTotal(d);
+  expect(back).toBe(huge);
+  expect(typeof back).toBe("bigint");
+  expect(back?.toString(10)).toBe("9007199254740993");
+  // Stored as TEXT, so the driver never has an integer to round on the way out.
+  const row = d.prepare("SELECT monthly_total_minor FROM budget_split WHERE id = 1").all()[0] as Record<string, unknown>;
+  expect(row["monthly_total_minor"]).toBe("9007199254740993");
+  expect(typeof row["monthly_total_minor"]).toBe("string");
+  // The split is unaffected — one row, two independent readings.
+  expect(readBudgetSplit(d)).toEqual({ need: 60, want: 20, saving: 20 });
+});
+
+test("zero is stored and read back as zero, not as an absent total", async () => {
+  const s = configured();
+  s.budgetMonthlyTotal = 0n;
+  const d = db();
+  await project(d, s);
+  expect(readBudgetMonthlyTotal(d)).toBe(0n);
+});
+
+test("a budget_split table without the monthly_total column is migrated by ensureProjection", async () => {
+  // What an existing device looks like the instant it opens this build: the
+  // table already exists, so `CREATE TABLE IF NOT EXISTS` is a no-op against it
+  // and the new column would simply not be there. Deleting the ALTER in
+  // `projection.ts` leaves every other test in this file green, because they all
+  // start from a database where `budget_split` is created fresh WITH the column.
+  const d = db();
+  d.exec(`
+    CREATE TABLE budget_split (id INTEGER PRIMARY KEY CHECK (id = 1), need INTEGER NOT NULL, want INTEGER NOT NULL, saving INTEGER NOT NULL);
+    CREATE TABLE projection_meta (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, cursor_hot TEXT NOT NULL, cursor_cold TEXT NOT NULL, home_currency TEXT, complete INTEGER NOT NULL);
+    INSERT INTO budget_split (id, need, want, saving) VALUES (1, 50, 30, 20);
+    INSERT INTO projection_meta VALUES (1, 6, '5', '0', 'AED', 1);
+  `);
+
+  ensureProjection(d);
+  const cols = d
+    .prepare("PRAGMA table_info(budget_split)")
+    .all()
+    .map((r) => String((r as Record<string, unknown>)["name"]));
+  expect(cols).toContain("monthly_total_minor");
+  // The old plan survives the ALTER with no total, which is the truth about it.
+  expect(readBudgetSplit(d)).toEqual({ need: 50, want: 30, saving: 20 });
+  expect(readBudgetMonthlyTotal(d)).toBeNull();
+  // Readable is not trustworthy: the stale version is what keeps it unusable.
+  expect(projectionIsUsable(d)).toBe(false);
+
+  const s = configured();
+  s.budgetMonthlyTotal = 1_200_000n;
+  await project(d, s);
+  expect(readMeta(d)?.version).toBe(PROJECTION_VERSION);
+  expect(projectionIsUsable(d)).toBe(true);
+  expect(readBudgetMonthlyTotal(d)).toBe(1_200_000n);
 });
 
 test("a re-projection replaces configuration rather than accumulating it", async () => {

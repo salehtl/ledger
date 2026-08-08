@@ -163,6 +163,73 @@ test("a valid split survives a later invalid one", () => {
 });
 
 // ---------------------------------------------------------------------------
+// budget_split_set's optional monthly total
+//
+// The FIRST test is the absent one, for the same reason the file's first test
+// is: an account that never sets a total must fold exactly as it did before the
+// field existed, or this is not an additive change.
+// ---------------------------------------------------------------------------
+
+test("a budget_split_set with no monthly total folds exactly as it did before the field existed", () => {
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20 }));
+  expect(s.budgetSplit).toEqual({ need: 50, want: 30, saving: 20 });
+  expect(s.budgetMonthlyTotal).toBeNull();
+  expect(s.anomalies).toEqual([]);
+  // Explicit null is the same statement as absence: "no total".
+  const cleared = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20, monthly_total_minor: null }));
+  expect(cleared.budgetMonthlyTotal).toBeNull();
+  expect(cleared.anomalies).toEqual([]);
+});
+
+test("the empty state carries a null monthly total", () => {
+  expect(emptyState().budgetMonthlyTotal).toBeNull();
+});
+
+test("a monthly total is minor units as a decimal string, folded to a bigint", () => {
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20, monthly_total_minor: "1200000" }));
+  expect(s.budgetMonthlyTotal).toBe(1_200_000n);
+  expect(s.anomalies).toEqual([]);
+});
+
+test("a monthly total above 2^53 minor units round-trips exactly", () => {
+  const huge = "9007199254740993"; // 2^53 + 1, the smallest integer a float64 cannot hold
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20, monthly_total_minor: huge }));
+  expect(s.budgetMonthlyTotal).toBe(BigInt(huge));
+  expect(s.budgetMonthlyTotal?.toString(10)).toBe(huge);
+  // The whole point: a `number` cannot hold this, so nothing on the path may be one.
+  expect(Number(huge).toString()).not.toBe(huge);
+  expect(serializeState(s)).toContain(`"budgetMonthlyTotal":"${huge}"`);
+});
+
+test("a monthly total that is a JSON number, negative, or not an integer is an invalid_payload anomaly", () => {
+  for (const total of [1200000, "12.5", "", "-1", "1e6", " 12 ", "0x10", true] as unknown[]) {
+    const s = foldOps(
+      op("budget_split_set", { need: 50, want: 30, saving: 20 }),
+      op("budget_split_set", { need: 60, want: 20, saving: 20, monthly_total_minor: total }),
+    );
+    expect(anomalyKinds(s)).toEqual(["invalid_payload"]);
+    // Refused whole: neither half of the rejected op took effect.
+    expect(s.budgetSplit).toEqual({ need: 50, want: 30, saving: 20 });
+    expect(s.budgetMonthlyTotal).toBeNull();
+  }
+});
+
+test("a later split with no total clears the total, because one op carries the whole plan", () => {
+  const s = foldOps(
+    op("budget_split_set", { need: 50, want: 30, saving: 20, monthly_total_minor: "1200000" }),
+    op("budget_split_set", { need: 60, want: 20, saving: 20 }),
+  );
+  expect(s.budgetSplit).toEqual({ need: 60, want: 20, saving: 20 });
+  expect(s.budgetMonthlyTotal).toBeNull();
+  expect(s.anomalies).toEqual([]);
+});
+
+test("zero is a total a user can state, and is not the same as no total", () => {
+  const s = foldOps(op("budget_split_set", { need: 50, want: 30, saving: 20, monthly_total_minor: "0" }));
+  expect(s.budgetMonthlyTotal).toBe(0n);
+});
+
+// ---------------------------------------------------------------------------
 // category_defined
 // ---------------------------------------------------------------------------
 

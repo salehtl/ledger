@@ -8,16 +8,25 @@
  *
  * # What is NOT in here, and why the Home screen therefore lost widgets
  *
- * There are no envelopes, no per-bucket targets, no monthly plan and no
- * projection-to-month-end: `client/src/replay/state.ts` has `txns`, `rules`,
- * `homeCurrency`, `rates`, `forks` and `anomalies` and nothing else, so no op
- * in the v2 vocabulary can author a target. v1's Home read those from
- * `/api/summary`, which `ledgerd` does not serve. The bucket percentages are
- * the *rule* (50/30/20), applied by the screen as labels; the money is the sum
- * of what actually happened.
+ * There are no envelopes, no PER-BUCKET targets and no projection-to-month-end.
+ * v1's Home read those from `/api/summary`, which `ledgerd` does not serve, and
+ * no op in the v2 vocabulary authors a per-bucket target. The bucket
+ * percentages are the *rule* the user chose (50/30/20 by default), applied by
+ * the screen as labels; the money is the sum of what actually happened.
+ *
+ * What the log CAN author is the plan itself: `budget_split_set` carries the
+ * three percentages and, optionally, a whole-month total
+ * ({@link BudgetSnapshot.monthlyTotal}). Both are statements of intent — they
+ * change what the buckets mean and never what is in them.
  */
 
-import { ensureProjection, projectionIsUsable, readBudgetSplit, readMeta } from "@ledger/client/replay/projection";
+import {
+  ensureProjection,
+  projectionIsUsable,
+  readBudgetMonthlyTotal,
+  readBudgetSplit,
+  readMeta,
+} from "@ledger/client/replay/projection";
 import type { BudgetSplit } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
@@ -57,15 +66,38 @@ export function splitSum(split: BudgetSplit): number {
  * one would append a permanent record of a plan that never took effect — the
  * worst of both: the user's screen says 60/30/20 and their ledger has no plan at
  * all.
+ *
+ * # `monthlyTotalMinor` is REQUIRED, and its `null` is meaningful
+ *
+ * `budget_split_set` replaces the whole plan, so an op that omits the total
+ * clears it. Making the argument required rather than optional is what turns
+ * "this caller forgot the total" from a plan the user silently loses into a
+ * compile error. `null` says, explicitly, that there is no total — which is
+ * what an account that skipped the question holds, and what every op authored
+ * before the field existed says.
+ *
+ * Money is `bigint` in, decimal STRING out. Never `Number`.
  */
-export function budgetSplitOps(split: BudgetSplit): { type: string; payload: unknown }[] {
+export function budgetSplitOps(
+  split: BudgetSplit,
+  monthlyTotalMinor: bigint | null,
+): { type: string; payload: unknown }[] {
   for (const [what, value] of Object.entries(split)) {
     if (!Number.isInteger(value)) throw new Error(`${what} must be a whole percentage, got ${value}`);
     if (value < 0 || value > 100) throw new Error(`${what} is ${value}, and a percentage is between 0 and 100`);
   }
   const sum = splitSum(split);
   if (sum !== 100) throw new Error(`needs, wants and savings must add up to 100, not ${sum}`);
-  return [{ type: "budget_split_set", payload: { need: split.need, want: split.want, saving: split.saving } }];
+  if (monthlyTotalMinor !== null && monthlyTotalMinor < 0n) {
+    throw new Error(`a monthly total is what you plan to spend and cannot be negative, got ${monthlyTotalMinor}`);
+  }
+  const payload: Record<string, unknown> = { need: split.need, want: split.want, saving: split.saving };
+  // ABSENT, not null, when there is no total: an account that never sets one
+  // authors exactly the bytes this function authored before the field existed.
+  // `.toString(10)` and never the bigint itself — `JSON.stringify` throws on a
+  // bigint, and a JSON number would be a float64.
+  if (monthlyTotalMinor !== null) payload["monthly_total_minor"] = monthlyTotalMinor.toString(10);
+  return [{ type: "budget_split_set", payload }];
 }
 
 export interface BudgetMapping {
@@ -161,6 +193,18 @@ export interface BudgetSnapshot {
    * MEAN and never what is in them: the money is still the sum of what happened.
    */
   split: BudgetSplit;
+  /**
+   * What the user means to spend in a month, in MINOR UNITS, or `null` when
+   * they never said — which is most accounts, and every account that predates
+   * the field.
+   *
+   * `bigint`, like every other amount here, and `null` rather than `0n` for the
+   * absence: a screen that printed 0.00 for "no total" would be stating a plan
+   * the user never made. Unlike {@link BudgetSnapshot.split} there is no
+   * default to fall back to — there is no sensible monthly total for someone
+   * who has not told us one.
+   */
+  monthlyTotal: bigint | null;
   buckets: Record<BudgetBucket, bigint>;
   income: bigint;
   unassigned: bigint;
@@ -219,6 +263,7 @@ function unusable(homeCurrency: string | null): BudgetSnapshot {
     // The rule, not a half-read plan: an unusable projection is a "come back in
     // a moment" state, and the labels it renders under are still the default.
     split: DEFAULT_BUDGET_SPLIT,
+    monthlyTotal: null,
     buckets: { need: 0n, want: 0n, saving: 0n },
     income: 0n,
     unassigned: 0n,
@@ -287,6 +332,7 @@ export function sqlBudgetSource(db: SqlDriver, mapping?: BudgetMapping): BudgetS
         usable: true,
         homeCurrency: meta.homeCurrency,
         split: readBudgetSplit(db) ?? DEFAULT_BUDGET_SPLIT,
+        monthlyTotal: readBudgetMonthlyTotal(db),
         buckets,
         income,
         unassigned,
