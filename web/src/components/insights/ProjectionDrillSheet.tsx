@@ -1,3 +1,5 @@
+import type { CategoryDef } from "@ledger/client/replay/state";
+
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../EmptyState";
 import { Skeleton } from "../Skeleton";
@@ -37,13 +39,19 @@ export const DRILL_LIMIT = 100;
  * split's own printed amount is still the whole transaction — both are stated
  * in words rather than silently folded into a number.
  */
-export function ProjectionDrillSheet({ target, period, currency, source, onClose }: {
+export function ProjectionDrillSheet({ target, period, currency, source, categoryDefs, onClose }: {
   target: DrillTarget;
   /** `YYYY-MM` — the month the breakdown was computed over. */
   period: string;
   /** The home currency the totals are in, or `""` when the log has not set one. */
   currency: string;
   source: InsightsSource | null;
+  /**
+   * The user's category definitions, passed straight through to the rows so
+   * their bucket stripes match the bars this sheet was opened from. Required
+   * rather than defaulted, for the reason `ProjectionTxnRow` states.
+   */
+  categoryDefs: readonly CategoryDef[];
   onClose: () => void;
 }) {
   const page = useInsightsDrill(source, period, target, DRILL_LIMIT);
@@ -83,7 +91,7 @@ export function ProjectionDrillSheet({ target, period, currency, source, onClose
           <ul className="mt-2 divide-y divide-border">
             {d.rows.map((t) => (
               <li key={t.id}>
-                <ProjectionTxnRow txn={t} />
+                <ProjectionTxnRow txn={t} categoryDefs={categoryDefs} />
               </li>
             ))}
           </ul>

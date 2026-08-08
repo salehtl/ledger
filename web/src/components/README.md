@@ -738,13 +738,25 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   Absent versus v1, for want of an op behind them: the project chip and the
   "archived" status pill. Splits, the no-home-rate pill and the review/unread/
   duplicate markers are all present.
+  **`categoryDefs` is required and has no default.** The leading stripe is a
+  bucket claim, and it must be the same claim Home's 50/30/20 makes for the same
+  category — both go through `layeredMapping` (`v2/sources/budget.ts`), which
+  layers the user's own definitions over the built-in table. This prop read
+  `DEFAULT_BUDGET_MAPPING` directly once, and a user-defined "Gym → need"
+  counted as a need on Home while drawing the grey no-bucket stripe here. An
+  implicit `[]` is how that happened, so a caller with no definitions has to say
+  so out loud.
 - `ProjectionFilterBar` (`transactions/`) — `FilterBar` for projection-backed
   screens: type / state / category / currency chips built from
   `TxnSource.facets()` (the distinct values actually present, including
   `null` = Uncategorized) rather than from a category table, with the same
   removable token row. No bucket dimension — a bucket is a read-time mapping,
   not a column. "Clear all" leaves the screen's period and search alone; they
-  are not this panel's to clear.
+  are not this panel's to clear. **`categoryDefs` is required and has no
+  default**, for the same reason as `ProjectionTxnRow`: a chip's dot is a bucket
+  claim and has to agree with every other surface making one. A retired
+  definition still colours its chip — the rows filed under it, which is what the
+  chip selects, still count in their bucket.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
   left = trailing. Full-swipe past the commit threshold fires it (haptic +
   spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is

@@ -23,7 +23,7 @@ import {
 } from "../lib/lens";
 import { insightsFocus, DEFAULT_SCOPE, type Scope } from "../lib/scope";
 import type { CategoryDelta, InsightsSource } from "../v2/sources/insights";
-import { useInsightsSnapshot, useInsightsSource } from "../v2/queries";
+import { useCategoryChoices, useInsightsSnapshot, useInsightsSource, useReviewSource } from "../v2/queries";
 
 /**
  * Insights, on the local projection.
@@ -93,6 +93,10 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource }: InsightsProp
 
   const source = useInsightsSource(insightsSource);
   const snapshot = useInsightsSnapshot(source, period, trendPeriods);
+  // For the drill-in's rows: a bucket stripe there has to agree with the bar it
+  // was opened from, which means the same layered mapping the totals used.
+  const choices = useCategoryChoices(useReviewSource());
+  const categoryDefs = useMemo(() => choices.data?.categoryDefs ?? [], [choices.data]);
 
   const [lens, setLens] = useState<Lens>("categories");
   const [drill, setDrill] = useState<DrillTarget | null>(null);
@@ -201,6 +205,7 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource }: InsightsProp
           period={period}
           currency={currency}
           source={source}
+          categoryDefs={categoryDefs}
           onClose={() => setDrill(null)}
         />
       )}

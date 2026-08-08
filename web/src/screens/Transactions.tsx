@@ -254,9 +254,19 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
    * filled, so a new account's sheet is not empty. Reused rather than rebuilt so
    * the two screens never offer different vocabularies for the same log.
    */
+  /**
+   * The user's definitions, read once for the whole screen.
+   *
+   * The sheet's grid, the rows' bucket stripes and the filter chips' dots are
+   * all answers to "which bucket is this category in", and they must be the
+   * SAME answer the 50/30/20 read gives — `layeredMapping` underneath both.
+   * Memoised so the identity is stable: `ProjectionTxnRow` memoises on it, and
+   * a fresh `[]` every render would recompute a mapping per row per render.
+   */
+  const categoryDefs = useMemo(() => choices.data?.categoryDefs ?? [], [choices.data]);
   const categoryNames = useMemo(
-    () => deckCategories(choices.data?.categories ?? [], choices.data?.categoryDefs ?? []).map((c) => c.Name),
-    [choices.data],
+    () => deckCategories(choices.data?.categories ?? [], categoryDefs).map((c) => c.Name),
+    [choices.data, categoryDefs],
   );
 
   // No writer, no local ledger to append to — so the rows do not open a sheet
@@ -319,6 +329,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
         <ProjectionFilterBar
           filters={chips}
           facets={facets.data ?? { categories: [], currencies: [] }}
+          categoryDefs={categoryDefs}
           open={filterOpen}
           onChange={(f) => { setChips(f); setLimit(PAGE); }}
         />
@@ -363,6 +374,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
                   <div className="px-4">
                     <ProjectionTxnRow
                       txn={t}
+                      categoryDefs={categoryDefs}
                       onOpen={canCategorize ? (row) => { fire("selection"); setEditing(row); } : undefined}
                     />
                   </div>

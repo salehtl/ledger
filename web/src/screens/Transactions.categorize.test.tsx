@@ -28,6 +28,7 @@ import type { Op } from "@ledger/client/wire/op";
 import { MotionProvider } from "../app/MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { FIXTURE_ROWS, projectionWith } from "../test/projectionFixture";
+import { sqlBudgetSource } from "../v2/sources/budget";
 import { sqlReviewSource, type ReviewSource } from "../v2/sources/review";
 import { sqlTxnSource } from "../v2/sources/transactions";
 import type { Writer } from "../v2/writer";
@@ -394,6 +395,29 @@ describe("categorising from the transaction list", () => {
     expect(screen.queryByRole("button", { name: /^groceries$/i })).toBeNull();
     // …and the sheet did not lose the rest of the grid along with it.
     expect(screen.getByRole("button", { name: "Dining" })).toBeInTheDocument();
+  });
+
+  it("gives a user-defined category the SAME bucket the 50/30/20 read gives it", async () => {
+    // The divergence this exists to forbid: Home counts "Gym" as a need
+    // because `budgetMappingFor` layers the user's definitions over the
+    // built-in table, and this row drew the grey no-bucket stripe because it
+    // read `DEFAULT_BUDGET_MAPPING` directly. One transaction, two answers.
+    //
+    // Asserted on the HUE, not the maths — the maths already agreed.
+    const db = await projectionWith([
+      ...FIXTURE_ROWS,
+      { id: "t8", amount: "5000", posted_at: "2026-08-08T10:00:00Z", merchant: "FITNESS FIRST", category: "Gym" },
+    ]);
+    db.prepare("INSERT INTO category (id,ord,name,kind,bucket,color,active) VALUES ('c1',0,'Gym','spending','need',NULL,1)").run();
+
+    mount(db, recorder());
+    const row = await screen.findByRole("button", { name: "Open FITNESS FIRST" });
+    const stripe = row.querySelector("span[aria-hidden]");
+    expect(stripe).not.toBeNull();
+    expect((stripe as HTMLElement).style.background).toBe("var(--color-need)");
+
+    // The same category on the same projection, through the budget read.
+    expect(sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z")).buckets.need).toBe(5000n + 12500n);
   });
 
   it("does not offer a categorisation it could not record", async () => {

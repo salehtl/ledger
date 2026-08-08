@@ -3,7 +3,8 @@ import { X } from "../ui/PixelIcon";
 import { SectionLabel } from "../ui/SectionLabel";
 import { Pressable } from "../ui/Pressable";
 import { bucketColor } from "../../lib/insights";
-import { DEFAULT_BUDGET_MAPPING } from "../../v2/sources/budget";
+import type { CategoryDef } from "@ledger/client/replay/state";
+import { bucketOfCategory } from "../../v2/sources/budget";
 import {
   EMPTY_FILTERS,
   filtersActive,
@@ -44,9 +45,18 @@ const DIRECTION_LABEL: Record<string, string> = { debit: "Spending", credit: "In
 const FLAG_LABEL: Record<string, string> = Object.fromEntries(FLAG_OPTS.map((o) => [o.value, o.label]));
 const UNCATEGORIZED = "Uncategorized";
 
-function dotFor(category: string | null): string | undefined {
-  if (category === null) return undefined;
-  const bucket = DEFAULT_BUDGET_MAPPING.categories[category.toLowerCase()];
+/**
+ * A chip's dot is a BUCKET CLAIM, so it reads the same layered mapping the
+ * 50/30/20 does — the user's own definitions over the built-in table. Without
+ * that, a category defined as a need is a need on Home and a colourless "we
+ * don't know" here, for the same transactions.
+ *
+ * A retired definition still colours its chip: retiring stops a category being
+ * offered, and the rows already filed under it — which is exactly what this
+ * chip filters — still count in the bucket they were filed in.
+ */
+function dotFor(category: string | null, defs: readonly CategoryDef[]): string | undefined {
+  const bucket = bucketOfCategory(category, defs);
   return bucket === undefined ? undefined : bucketColor(bucket);
 }
 
@@ -70,9 +80,16 @@ function Chip({ label, active, dot, onClick }: { label: string; active: boolean;
   );
 }
 
-export function ProjectionFilterBar({ filters, facets, open, onChange }: {
+export function ProjectionFilterBar({ filters, facets, categoryDefs, open, onChange }: {
   filters: TxnFilters;
   facets: TxnFacets;
+  /**
+   * The user's category definitions, for the chips' bucket dots. **Required,
+   * with no default** — see {@link dotFor}: an implicit `[]` is how this strip
+   * went on reading the built-in table alone after the rest of the app started
+   * layering, and a caller with nothing to pass has to say so.
+   */
+  categoryDefs: readonly CategoryDef[];
   open: boolean;
   onChange: (f: TxnFilters) => void;
 }) {
@@ -176,7 +193,7 @@ export function ProjectionFilterBar({ filters, facets, open, onChange }: {
                     // so a chip's hue and Home's buckets cannot disagree. A
                     // category the mapping doesn't know gets no dot rather than
                     // a neutral one that reads as a colour it was assigned.
-                    dot={dotFor(c)}
+                    dot={dotFor(c, categoryDefs)}
                     active={filters.categories.includes(c)}
                     onClick={() => onChange(withFilterToggled(filters, "categories", c))}
                   />

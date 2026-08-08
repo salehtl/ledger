@@ -53,6 +53,10 @@ function wrap(db: SqlDriver | null, target: DrillTarget) {
           period="2026-08"
           currency="AED"
           source={db === null ? null : sqlInsightsSource(db)}
+          // This fixture defines no categories, so the rows fall back to the
+          // built-in table — said explicitly, because the prop is required
+          // precisely so that an empty set is a decision rather than a default.
+          categoryDefs={[]}
           onClose={() => {}}
         />
       </QueryClientProvider>

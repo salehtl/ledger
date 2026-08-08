@@ -21,7 +21,7 @@ import { ensureProjection, projectionIsUsable, readBudgetSplit, readMeta } from 
 import type { BudgetSplit } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
-import { categoryMapping, readCategoryDefs } from "./categories";
+import { categoryMapping, readCategoryDefs, type CategoryDef } from "./categories";
 
 export type BudgetBucket = "need" | "want" | "saving";
 
@@ -106,9 +106,45 @@ export const DEFAULT_BUDGET_MAPPING: BudgetMapping = {
  * `sources/categories.ts`.
  */
 export function budgetMappingFor(db: SqlDriver): BudgetMapping {
-  const mine = categoryMapping(readCategoryDefs(db));
+  return layeredMapping(readCategoryDefs(db));
+}
+
+/**
+ * The same layering, over definitions a caller already holds.
+ *
+ * It exists because the mapping is not only a SQL concern: a transaction row's
+ * stripe and a filter chip's dot are bucket claims too, and they are rendered
+ * from `categoryDefs` in the browser rather than from a query. They read this,
+ * so there is exactly one answer to "which bucket is this category in" and the
+ * screens cannot drift apart again — which they did, silently, the moment the
+ * SQL path started layering and the two components did not.
+ *
+ * Returns {@link DEFAULT_BUDGET_MAPPING} **by identity** when there is nothing
+ * to layer, so "this account has defined nothing" is checkable with `===`.
+ */
+export function layeredMapping(defs: readonly CategoryDef[]): BudgetMapping {
+  const mine = categoryMapping(defs);
   if (Object.keys(mine).length === 0) return DEFAULT_BUDGET_MAPPING;
   return { categories: { ...DEFAULT_BUDGET_MAPPING.categories, ...mine }, fallback: DEFAULT_BUDGET_MAPPING.fallback };
+}
+
+/**
+ * The bucket one category name counts in, or `undefined` when nothing maps it.
+ *
+ * `undefined` is deliberately not `"want"`: a row with no known bucket draws a
+ * neutral stripe and a chip carries no dot, and guessing here would paint a
+ * confident colour over a category the plan has never heard of.
+ * `reviewDeck.bucketOf` is the other rule — a PICKER has to put a card on some
+ * rail, so it defaults — and the two are separate functions because they answer
+ * different questions.
+ */
+export function bucketOfCategory(
+  category: string | null,
+  defs: readonly CategoryDef[],
+): BudgetBucket | undefined {
+  if (category === null) return undefined;
+  const mapping = layeredMapping(defs);
+  return mapping.categories[category.toLowerCase()] ?? mapping.fallback ?? undefined;
 }
 
 /**

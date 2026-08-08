@@ -1,11 +1,11 @@
-import { useState } from "react";
-import type { Txn } from "@ledger/client/replay/state";
+import { useMemo, useState } from "react";
+import type { CategoryDef, Txn } from "@ledger/client/replay/state";
 import { Pill } from "../ui/Pill";
 import { Pressable } from "../ui/Pressable";
 import { ChevronDown, ChevronRight } from "../ui/PixelIcon";
 import { bucketColor } from "../../lib/insights";
 import { formatMinor } from "../../lib/minorMoney";
-import { DEFAULT_BUDGET_MAPPING } from "../../v2/sources/budget";
+import { bucketOfCategory } from "../../v2/sources/budget";
 import { txnAmountLabel, txnCategoryLabel, txnMarkers } from "../../v2/sources/transactions";
 
 /**
@@ -28,15 +28,29 @@ import { txnAmountLabel, txnCategoryLabel, txnMarkers } from "../../v2/sources/t
  * split — come from `txnMarkers`, which is spec §3.3(b)'s requirement that a
  * server-ingested row be distinguishable from a user-authored one.
  */
-export function ProjectionTxnRow({ txn, onOpen }: { txn: Txn; onOpen?: (t: Txn) => void }) {
+export function ProjectionTxnRow({ txn, categoryDefs, onOpen }: {
+  txn: Txn;
+  /**
+   * The user's category definitions, so the stripe reads the same layered
+   * mapping the 50/30/20 does. **Required, with no default**, and that is the
+   * point: an implicit `[]` is exactly how this component kept reading the
+   * built-in table alone after every other surface had moved on, and a caller
+   * with nothing to pass has to say so.
+   */
+  categoryDefs: readonly CategoryDef[];
+  onOpen?: (t: Txn) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const amount = txnAmountLabel(txn);
   const split = txn.splits.length > 0;
   const merchant = txn.merchant_raw;
   const meta = [txnCategoryLabel(txn), txn.posted_at.slice(0, 10)].join(" · ");
   // The stripe colour comes from the SAME category→bucket mapping the 50/30/20
-  // read uses, so a row's hue and Home's buckets cannot disagree.
-  const bucket = txn.category === null ? undefined : DEFAULT_BUDGET_MAPPING.categories[txn.category.toLowerCase()];
+  // read uses — `budgetMappingFor` over a database, this over the definitions a
+  // screen already holds, both `layeredMapping` underneath — so a row's hue and
+  // Home's buckets cannot disagree. A category the user defined as a need is a
+  // need here too, retired or not, because the rows filed under it still count.
+  const bucket = useMemo(() => bucketOfCategory(txn.category, categoryDefs), [txn.category, categoryDefs]);
   // Only the markers a row can act on belong in the line; provenance is on the
   // detail, not here, or every single row carries the same pill.
   const pills = txnMarkers(txn).filter((mk) => mk.kind === "needs_review" || mk.kind === "unparsed" || mk.kind === "possible_duplicate");
