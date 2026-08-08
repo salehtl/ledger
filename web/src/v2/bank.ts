@@ -61,12 +61,17 @@ export const BANK_NAME_RULE =
   "Letters, digits, spaces and & . ' - only, up to 64 characters. Write “Mashreq”, not “Mashreq (UAE)”.";
 
 /**
- * The bank a waitlist entry records in the onboarding facts.
+ * The bank declared by the one exit that names no bank at all.
  *
- * {@link stepFor} gates `bank_picked` on `facts.bank !== null`, so without a
- * sentinel a user whose bank is unsupported — the exact user the waitlist exists
- * for — could not leave the bank step except by claiming a bank they do not
- * have. The value matches the one `admin.NormalizeBank`'s refusal message names.
+ * `stepFor` gates `banks_declared` on the declared set being non-empty, so
+ * without a sentinel a user whose bank name the grammar cannot represent —
+ * Arabic, an en dash, a Turkish dotted I — could not leave the bank step except
+ * by claiming a bank they do not have. The value matches the one
+ * `admin.NormalizeBank`'s refusal message names.
+ *
+ * A bank that merely lacks a parser is NOT this: the waitlist path declares the
+ * name the user typed, because it is a real bank they really use and Settings
+ * has to be able to show and remove it.
  */
 export const WAITLIST_BANK = "other";
 

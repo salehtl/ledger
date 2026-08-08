@@ -6,27 +6,28 @@
  *
  * `screenFor(stepFor(facts))` decides what is on the glass. This component
  * holds no step number, no `next()` and no ordering of its own — every screen
- * reports a FACT (`bank_picked`, `address_issued`, …) and the position falls out
+ * reports a FACT (`banks_declared`, `address_issued`, …) and the position falls out
  * of the milestone table. That is what makes a force-quit free: nothing here is
  * a resume cursor that could disagree with what the log and the server say.
  *
  * The boot gate owns the layer above: it decides signed-out vs onboarding vs
  * ready, and re-derives the facts from scratch every time `done` is called. So
  * `done` is the only exit, and it is called once — when the machine reaches
- * `done`, which needs `finishedAt`, which the finish screen sets.
+ * `done`, which needs `setupSeen`, which the finish screen sets.
  *
- * # The device-local half is written on every change, not at the end
+ * # The device-local half is one field wide, and it is written on every change
  *
  * `saveLocalRecord` runs from an effect on the facts, so a tab closed between
- * two steps resumes at the second one. Writing only at the end is what makes a
- * user re-pick their bank after a crash — cheap to repeat, but the point of the
- * record is that they do not have to.
+ * two steps keeps the address it was given. Everything else a resumed walk needs
+ * — the banks, the currency, whether mail has arrived — is in the log and on the
+ * server, which is what makes a SECOND device resume at the same place rather
+ * than at the beginning (`v2/onboarding.ts`'s header).
  *
  * # Ops go through `emitMany`, and the outbox is the receipt
  *
- * The currency step commits by handing `Client.emitMany` the specs
- * `homeCurrencyOps` built. Nothing here waits for a push: an op in the outbox is
- * durable (`emitMany` commits the client state before it returns), and the sync
+ * The bank step and the currency step both commit by handing `Client.emitMany`
+ * the specs their pure module built. Nothing here waits for a push: an op in the
+ * outbox is durable (`emitMany` commits the client state before it returns), and the sync
  * engine drains it. A screen that awaited a network round trip before advancing
  * would strand an offline user on the last step of setup.
  */
@@ -47,6 +48,7 @@ import {
   type OpSpec,
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
+import { bankDeclaredOps } from "../../v2/sources/banks";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { Address } from "./Address";
 import { Bank } from "./Bank";
@@ -132,7 +134,19 @@ export function Onboarding({
 
   switch (screenFor(step)) {
     case "bank":
-      return <Bank client={handle.client} onPicked={(bank) => dispatch({ type: "bank_picked", bank })} {...io} />;
+      return (
+        <Bank
+          client={handle.client}
+          onDeclared={(banks) => {
+            // The ops FIRST, then the fact. The log is what a second device
+            // reads — a fact dispatched without them would advance this walk and
+            // leave the next phone at the bank step.
+            commit(banks.flatMap((bank) => bankDeclaredOps(bank, true)));
+            dispatch({ type: "banks_declared", banks });
+          }}
+          {...io}
+        />
+      );
 
     case "address":
       return (
@@ -185,7 +199,7 @@ export function Onboarding({
         <Finish
           facts={facts}
           commit={commit}
-          onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })}
+          onFinish={() => dispatch({ type: "finished" })}
         />
       );
 
@@ -208,12 +222,14 @@ export function Onboarding({
 }
 
 /**
- * The last screen, and the reason `finishedAt` is a fact at all.
+ * The last screen, and the reason `setupSeen` is a fact at all.
  *
  * The currency op is emitted the instant the picker is confirmed, so without
  * this the screen explaining what happens next would be skipped in the same
- * frame it appeared. It is device-local because it is about what this person has
- * been shown, not about the account.
+ * frame it appeared. It is in-memory because it is about what this person has
+ * been shown in this session, not about the account — and on a device that has
+ * never seen it for an account that is already set up, `resumeFacts` treats the
+ * prerequisites being met as answer enough, so a second phone opens the app.
  */
 function Finish({
   facts,

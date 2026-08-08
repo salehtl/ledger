@@ -82,6 +82,7 @@ import {
   HALT_WITHOUT_REASON,
 } from "./halt";
 import {
+  declaredBanksOf,
   firstMailAt,
   loadLocalRecord,
   onboardingComplete,
@@ -105,6 +106,20 @@ export type BootState =
    */
   | { step: "unenrolled"; kind: EnrollmentKind; copy: EnrollmentCopy }
   /**
+   * Signed in, enrolled, and this device could not fetch the account's
+   * configuration — so it does not know whether setup has already happened.
+   *
+   * It exists because the alternative is worse than a wall. Setup lives in the
+   * op log now (banks, the budget split, the categories, the home currency), so
+   * an offline device that has not synced reads an account with none of it. Sent
+   * to onboarding, it would ask a user with a working account to choose their
+   * bank and set up mail forwarding again — which looks exactly like their
+   * records having been thrown away, and is the most damaging thing this UI can
+   * imply. Saying "ledger could not reach the server" and offering a retry is
+   * both honest and recoverable.
+   */
+  | { step: "config_unavailable"; userId: string }
+  /**
    * `offline` records that the launch sync could not reach the server. The app
    * still opens, on the local projection, because that is the honest answer —
    * see the header.
@@ -125,8 +140,8 @@ export interface BootDeps {
   sync(): Promise<SyncResult>;
   /** `SyncCoordinator.haltReason`. */
   haltReason(): string | null;
-  /** The folded log, read after the sync. */
-  state(): Pick<State, "txns" | "homeCurrency">;
+  /** The folded log, read after the sync. `banks` is the declared set. */
+  state(): Pick<State, "txns" | "homeCurrency" | "banks">;
   /** `GET /api/v1/address`, which mints on first read. */
   address(): Promise<string | null>;
   /** Where the device-local half of the onboarding facts lives. */
@@ -200,6 +215,7 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     const facts = resumeFacts({
       hasSession: true,
       accountId: userId,
+      banks: declaredBanksOf(folded),
       inboundAddress: await addressOrNull(deps),
       firstMailConfirmedAt: firstMailAt(folded),
       homeCurrency: folded.homeCurrency,
@@ -209,9 +225,12 @@ export async function boot(deps: BootDeps): Promise<BootState> {
     // other field round-trips unchanged from what was just loaded.
     saveLocalRecord(deps.secrets, facts);
 
-    return onboardingComplete(facts)
-      ? { step: "ready", userId, facts, offline }
-      : { step: "onboarding", userId, facts, offline };
+    if (onboardingComplete(facts)) return { step: "ready", userId, facts, offline };
+    // Incomplete AND out of touch with the server: this device cannot tell an
+    // account that is not set up from one whose setup it failed to fetch, and
+    // guessing the first is the damaging guess. See `BootState`.
+    if (offline) return { step: "config_unavailable", userId };
+    return { step: "onboarding", userId, facts, offline };
   } catch (error) {
     const forced = await classify(deps, error);
     if (forced !== null) return forced;

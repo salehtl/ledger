@@ -1,6 +1,6 @@
 /**
- * Settings, in v2: the four facts about this account, and the three controls
- * that are not reachable anywhere else.
+ * Settings, in v2: the facts about this account, and the controls that are not
+ * reachable anywhere else.
  *
  * # This is a NEW screen, and `screens/Settings.tsx` is untouched
  *
@@ -53,13 +53,18 @@ import { useV2OrThrow } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
+import { BankPicker } from "../../components/BankPicker";
 import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
+import { activeBanks, bankDeclaredOps } from "../../v2/sources/banks";
+import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
 import { budgetSplitOps, DEFAULT_BUDGET_SPLIT } from "../../v2/sources/budget";
 import {
   invalidateAfterSync,
+  useBanksSource,
   useBudgetSnapshot,
   useBudgetSource,
   useCategoryChoices,
+  useDeclaredBanks,
   useHomeCurrency,
   useReviewSource,
   useTxnSource,
@@ -78,6 +83,8 @@ export interface V2SettingsProps {
   addAnotherPasskey?: (handle: V2Handle) => Promise<string>;
   /** Test seam. Defaults to `GET /api/v1/address`. */
   address?: (handle: V2Handle) => Promise<string | null>;
+  /** Test seam. Defaults to `GET /api/v1/templates`, collapsed per bank. */
+  templates?: (handle: V2Handle) => Promise<SupportedBank[]>;
   /** Test seam. Defaults to {@link signOutAndReload}. */
   signOut?: (handle: V2Handle) => Promise<void>;
   /** Test seam. Defaults to the Clipboard API. */
@@ -128,6 +135,7 @@ export function V2Settings({
   onOpenQuarantine,
   addAnotherPasskey = (h) => addPasskey({ client: h.client }),
   address = (h) => readAddress(h.client),
+  templates = (h) => readSupportedBanks(h.client),
   signOut = signOutAndReload,
   copy = writeClipboard,
   keyHistory = (h) => h.keyHistory(),
@@ -309,6 +317,34 @@ export function V2Settings({
     }
   }, [savedSplit, writer, qc]);
 
+  /**
+   * The banks, in two halves that must not be confused: what ledger can READ
+   * (`GET /api/v1/templates`, server truth) and what the user DECLARED (the op
+   * log, through the projection). `BankPicker` draws the union, so a bank on the
+   * waitlist — declared and unsupported — is still visible and still removable.
+   */
+  const supported = useQuery({
+    queryKey: v2Keys.templates(),
+    queryFn: () => templates(handle),
+    staleTime: 5 * 60_000,
+  });
+  const declared = useDeclaredBanks(useBanksSource());
+  const declaredActive = useMemo(() => activeBanks(declared.data ?? []), [declared.data]);
+
+  const toggleBank = useCallback(
+    (bank: string, next: boolean): void => {
+      if (writer === null) return;
+      // One op per bank, and a removal is a declaration (`active: false`) rather
+      // than a delete — so a bank taken off and put back is one keyed record.
+      writer.enqueueMany(bankDeclaredOps(bank, next));
+      void invalidateAfterSync(qc);
+      // Not awaited, for the reason the split's save is not: the op is durable
+      // the moment it is queued.
+      writer.flush().catch(() => {});
+    },
+    [writer, qc],
+  );
+
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (sync.lastCompletedAt === null) return;
@@ -385,6 +421,47 @@ export function V2Settings({
           {onOpenQuarantine !== undefined && (
             <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
           )}
+        </Card>
+      </section>
+
+      {/* ---- The banks ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Your banks</SectionLabel>
+        <Card className="space-y-3">
+          {supported.isPending ? (
+            <div className="flex items-center gap-3 text-muted" role="status">
+              <PixelSpinner size={12} />
+              <span className="text-sm">Checking which banks ledger can read…</span>
+            </div>
+          ) : (
+            <>
+              {supported.isError && (
+                <p className="text-xs text-warn">
+                  ledger could not fetch the list of banks it can read. The banks you have already added are below
+                  and can still be changed.
+                </p>
+              )}
+              <BankPicker
+                idPrefix="settings-bank"
+                supported={(supported.data ?? []).map((b) => b.id)}
+                selected={declaredActive}
+                onToggle={toggleBank}
+              />
+            </>
+          )}
+          {/*
+            Every clause here is one the code honours. Removing a bank writes
+            `bank_declared {active:false}` and NOTHING else: mail keeps arriving
+            at the inbound address, the sender allowlist — a separate, server-side
+            table written by the held-mail decision — is untouched, and no
+            transaction is removed. Saying anything stronger would be describing
+            a feature this product does not have.
+          */}
+          <p data-testid="settings-banks-note" className="text-xs leading-relaxed text-muted">
+            This list is what ledger asks about and what it counts when choosing which parser to write next.
+            Taking a bank off it leaves everything else as it is: mail sent to your address is still filed, senders
+            you have already trusted are still trusted, and transactions already recorded are still there.
+          </p>
         </Card>
       </section>
 

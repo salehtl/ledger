@@ -24,12 +24,26 @@ function complete(over: Partial<OnboardingFacts> = {}): OnboardingFacts {
   return {
     hasSession: true,
     accountId: "u_1",
-    bank: "dib",
+    banks: ["dib"],
     inboundAddress: "u-abc@in.sirdab.ae",
     forwardingDeclared: true,
     firstMailConfirmedAt: "2026-08-01T00:00:00Z",
     homeCurrency: "AED",
-    finishedAt: "2026-08-02T00:00:00Z",
+    setupSeen: true,
+    ...over,
+  };
+}
+
+/** The three facts a fresh device reads out of the log and the server. */
+function fromTheLog(over: Partial<Parameters<typeof resumeFacts>[0]> = {}) {
+  return {
+    hasSession: true,
+    accountId: "u_1",
+    banks: ["dib"],
+    inboundAddress: "u-abc@in.sirdab.ae",
+    firstMailConfirmedAt: "2026-08-01T00:00:00Z",
+    homeCurrency: "AED",
+    local: null,
     ...over,
   };
 }
@@ -41,14 +55,14 @@ describe("stepFor", () => {
 
   it("reaches done only when every milestone is met", () => {
     expect(stepFor(complete())).toBe("done");
-    expect(stepFor(complete({ finishedAt: null }))).toBe("home_currency_set");
+    expect(stepFor(complete({ setupSeen: false }))).toBe("home_currency_set");
   });
 
   it("stops at a GAP rather than at the highest true milestone", () => {
     // A reinstall: the log's facts survive, the device-local ones do not. The
     // walk must stop at the bank, not skip to the currency — otherwise the
     // device lands in the product with no forwarding rule set up.
-    const reinstalled = complete({ bank: null, forwardingDeclared: false, finishedAt: null });
+    const reinstalled = complete({ banks: [], forwardingDeclared: false, setupSeen: false });
     expect(stepFor(reinstalled)).toBe("invited");
   });
 
@@ -56,7 +70,7 @@ describe("stepFor", () => {
     expect([...ONBOARDING_STEPS]).toEqual([
       "signed_in",
       "invited",
-      "bank_picked",
+      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "first_mail_confirmed",
@@ -104,57 +118,64 @@ describe("onboardingReducer", () => {
 
 describe("resumeFacts", () => {
   it("takes the home currency from the log and from nowhere else", () => {
-    const f = resumeFacts({
-      hasSession: true,
-      accountId: "u_1",
-      inboundAddress: null,
-      firstMailConfirmedAt: null,
-      homeCurrency: "SAR",
-      // A record carrying a currency (an older build, a hand-edited value) is
-      // ignored — the log is the only authority.
-      local: { ...encodeLocal(complete()), homeCurrency: "USD" } as never,
-    });
+    const f = resumeFacts(
+      fromTheLog({
+        inboundAddress: null,
+        firstMailConfirmedAt: null,
+        homeCurrency: "SAR",
+        // A record carrying a currency (an older build, a hand-edited value) is
+        // ignored — the log is the only authority.
+        local: { ...encodeLocal(complete()), homeCurrency: "USD" } as never,
+      }),
+    );
     expect(f.homeCurrency).toBe("SAR");
+  });
+
+  it("takes the declared banks from the log, and an old record's bank is not one of them", () => {
+    // The device-local record used to carry the bank. A build that still read
+    // it would make a browser profile the authority on a fact the account owns.
+    const f = resumeFacts(
+      fromTheLog({
+        banks: ["enbd"],
+        local: { bank: "dib", forwardingDeclared: true, finishedAt: "x", inboundAddress: null } as never,
+      }),
+    );
+    expect(f.banks).toEqual(["enbd"]);
+  });
+
+  it("lands a device with NO record at all on done when the log and the server carry the setup", () => {
+    // The second-device case, at the level of the machine. `boot.test.ts` proves
+    // it end to end; this is the rule it depends on.
+    expect(stepFor(resumeFacts(fromTheLog()))).toBe("done");
+  });
+
+  it("treats forwarding as DEMONSTRATED by mail arriving, never as remembered", () => {
+    // Nothing device-local says a forward exists any more, and nothing should:
+    // the only evidence a forward works is a transaction in the log.
+    expect(resumeFacts(fromTheLog()).forwardingDeclared).toBe(true);
+    expect(resumeFacts(fromTheLog({ firstMailConfirmedAt: null })).forwardingDeclared).toBe(false);
+  });
+
+  it("does not call setup finished while a milestone behind it is missing", () => {
+    const f = resumeFacts(fromTheLog({ homeCurrency: null }));
+    expect(f.setupSeen).toBe(false);
+    expect(stepFor(f)).toBe("first_mail_confirmed");
   });
 
   it("prefers the server's address and falls back to the cached one when offline", () => {
     const local = encodeLocal(complete());
     expect(
-      resumeFacts({
-        hasSession: true,
-        accountId: "u_1",
-        inboundAddress: "u-new@in.sirdab.ae",
-        firstMailConfirmedAt: null,
-        homeCurrency: null,
-        local,
-      }).inboundAddress,
+      resumeFacts(fromTheLog({ inboundAddress: "u-new@in.sirdab.ae", local })).inboundAddress,
     ).toBe("u-new@in.sirdab.ae");
 
-    expect(
-      resumeFacts({
-        hasSession: true,
-        accountId: "u_1",
-        inboundAddress: null,
-        firstMailConfirmedAt: null,
-        homeCurrency: null,
-        local,
-      }).inboundAddress,
-    ).toBe("u-abc@in.sirdab.ae");
+    expect(resumeFacts(fromTheLog({ inboundAddress: null, local })).inboundAddress).toBe("u-abc@in.sirdab.ae");
   });
 
   it("does not send a finished device back through onboarding just because it is offline", () => {
     // The whole reason the address is cached: without it, one failed GET at
     // boot walks a fully set-up user back to the address step.
     const local = encodeLocal(complete());
-    const f = resumeFacts({
-      hasSession: true,
-      accountId: "u_1",
-      inboundAddress: null,
-      firstMailConfirmedAt: "2026-08-01T00:00:00Z",
-      homeCurrency: "AED",
-      local,
-    });
-    expect(stepFor(f)).toBe("done");
+    expect(stepFor(resumeFacts(fromTheLog({ inboundAddress: null, local })))).toBe("done");
   });
 });
 
@@ -170,10 +191,18 @@ describe("the device-local record", () => {
   });
 
   it("refuses a partially-readable record rather than half-applying it", () => {
-    expect(decodeLocal({ bank: "dib", forwardingDeclared: "yes", finishedAt: null })).toBeNull();
-    expect(decodeLocal({ bank: 7, forwardingDeclared: true, finishedAt: null, inboundAddress: null })).toBeNull();
+    expect(decodeLocal({ inboundAddress: 7 })).toBeNull();
     expect(decodeLocal(null)).toBeNull();
     expect(decodeLocal("{}")).toBeNull();
+  });
+
+  it("reads a record written by the build before this one, ignoring the fields it dropped", () => {
+    // The one live account has a record with `bank`, `forwardingDeclared` and
+    // `finishedAt` in it. Refusing it would cost the cached address, which is
+    // the only thing in there this build still uses.
+    expect(
+      decodeLocal({ bank: "dib", forwardingDeclared: true, finishedAt: "2026-08-02T00:00:00Z", inboundAddress: "u-abc@in.sirdab.ae" }),
+    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae" });
   });
 
   it("survives unreadable JSON by re-deriving rather than throwing", () => {
@@ -182,13 +211,11 @@ describe("the device-local record", () => {
     expect(loadLocalRecord(secrets)).toBeNull();
   });
 
-  it("has no field for a home currency — §3.7 makes that log state", () => {
-    expect(Object.keys(encodeLocal(complete())).sort()).toEqual([
-      "bank",
-      "finishedAt",
-      "forwardingDeclared",
-      "inboundAddress",
-    ]);
+  it("holds the address hint and NOTHING else — every other fact is the account's", () => {
+    // The device-local half is now one field wide. A bank, a forwarding claim
+    // or a "finished" flag stored here is a fact a second device cannot see,
+    // which is precisely what made a new device re-run setup.
+    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["inboundAddress"]);
   });
 });
 

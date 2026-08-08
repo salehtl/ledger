@@ -1,6 +1,14 @@
 /**
  * The bank step: which bank's mail can ledger actually read?
  *
+ * # It is a MULTI-SELECT, because people bank in more than one place
+ *
+ * The step used to advance on the first bank pressed. A user with a salary
+ * account at one bank and a card at another had no way to say so, and the second
+ * bank's mail then arrived looking like something ledger had not been told
+ * about. Declaring is per bank (`bank_declared`, one op each) so the set
+ * converges across devices instead of one device's list replacing another's.
+ *
  * # The supported set is the SERVER'S, not a constant in this build
  *
  * `GET /api/v1/templates` answers one entry per published template, and a bank
@@ -15,21 +23,23 @@
  * entire output is "write the Mashreq parser next". So there are three ways off
  * this screen and the server can close none of them:
  *
- *   - **A supported bank** advances immediately.
+ *   - **The supported banks that were ticked** advance the walk on "Continue".
  *   - **A name the counter can store** is recorded, and the confirmation is
  *     where the walk STOPS — deliberately, because the honest thing to say to
  *     somebody whose bank cannot be read yet is that it cannot be read yet, not
  *     to march them into a mail-forwarding setup that will file nothing. They
- *     carry on from there with one more tap, and the fact recorded is
- *     {@link WAITLIST_BANK}. If the request itself fails — offline, a 500, a
+ *     carry on from there with one more tap. If the request itself fails — offline, a 500, a
  *     grammar the server tightened after this build — the confirmation still
  *     appears and says plainly that the request was not recorded. Retrying
  *     cannot help them and their place in the flow is not the counter's to
- *     withhold.
- *   - **"Continue without adding it"** advances with no request at all. This is
- *     the path for a name the grammar cannot represent — Arabic, an en dash, a
- *     Turkish dotted I — where no amount of retyping will work. Without it, a
- *     grammar refusal is a dead end wearing a helpful message.
+ *     withhold. The bank they named is declared under the name they typed —
+ *     ledger cannot read it yet, but it is still where they bank, and Settings
+ *     has to be able to show and remove it.
+ *   - **"Continue without adding it"** advances with no request at all, under
+ *     {@link WAITLIST_BANK}. This is the path for a name the grammar cannot
+ *     represent — Arabic, an en dash, a Turkish dotted I — where no amount of
+ *     retyping will work. Without it, a grammar refusal is a dead end wearing a
+ *     helpful message.
  *
  * A refusal from {@link normalizeBankName} is the one case that does not advance
  * by itself, and deliberately: it is instantly correctable, the message names
@@ -41,26 +51,28 @@ import { useEffect, useState } from "react";
 
 import { ApiError } from "@ledger/client/net/client";
 
+import { BankPicker } from "../../components/BankPicker";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
-import { Pressable } from "../../components/ui/Pressable";
 import { SectionLabel } from "../../components/ui/SectionLabel";
-import { BANK_NAME_RULE, bankDisplayName, normalizeBankName, WAITLIST_BANK } from "../../v2/bank";
+import { BANK_NAME_RULE, normalizeBankName, WAITLIST_BANK } from "../../v2/bank";
 import { joinWaitlist, readSupportedBanks, type SupportedBank, type TokenSource } from "../../v2/onboardingIO";
 import { Notice, Step } from "./Shell";
 
 export interface BankProps {
   client: TokenSource;
-  onPicked: (bank: string) => void;
+  /** Every bank the user declared, in one call. The caller authors the ops. */
+  onDeclared: (banks: readonly string[]) => void;
   server?: string;
   fetch?: typeof fetch;
 }
 
 type Listing = { kind: "loading" } | { kind: "ready"; banks: SupportedBank[] } | { kind: "failed" };
 
-export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
+export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) {
   const [listing, setListing] = useState<Listing>({ kind: "loading" });
+  const [picked, setPicked] = useState<string[]>([]);
   const [other, setOther] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -98,6 +110,7 @@ export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
     try {
       await joinWaitlist(client, name.bank, { ...(server === undefined ? {} : { server }), ...(doFetch === undefined ? {} : { fetch: doFetch }) });
       setWaitlisted({ bank: name.bank, recorded: true, detail: "" });
+      setOther("");
     } catch (error) {
       const detail =
         error instanceof ApiError && error.detail !== "" ? error.detail : "the request did not go through";
@@ -129,11 +142,14 @@ export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
             it becomes transactions the day the parser lands.
           </p>
         </Notice>
-        <Button variant="primary" onClick={() => onPicked(WAITLIST_BANK)}>
+        {/* The bank is declared under the name that was typed — it is where
+            this person banks, whether or not ledger can read it yet — alongside
+            anything already ticked. */}
+        <Button variant="primary" onClick={() => onDeclared(withBank(picked, waitlisted.bank))}>
           Carry on setting up
         </Button>
         <Button variant="ghost" onClick={() => setWaitlisted(null)}>
-          Pick a different bank
+          Add another bank
         </Button>
       </Step>
     );
@@ -142,8 +158,8 @@ export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
   return (
     <Step
       testId="bank"
-      title="Which bank sends your alerts?"
-      intro="ledger reads the transaction emails your bank already sends. It needs to know how yours are written."
+      title="Which banks send your alerts?"
+      intro="ledger reads the transaction emails your banks already send. It needs to know how yours are written. Pick as many as you use."
     >
       {listing.kind === "loading" && (
         <div className="flex items-center gap-3 text-muted" role="status">
@@ -164,17 +180,17 @@ export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
       {listing.kind === "ready" && listing.banks.length > 0 && (
         <div className="flex flex-col gap-2">
           <SectionLabel as="h2">Supported today</SectionLabel>
-          <div className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border">
-            {listing.banks.map((bank) => (
-              <Pressable
-                key={bank.id}
-                className="min-h-11 px-4 py-3 text-left text-sm font-medium hover:bg-surface-2 transition-colors"
-                onClick={() => onPicked(bank.id)}
-              >
-                {bankDisplayName(bank.id)}
-              </Pressable>
-            ))}
-          </div>
+          <p className="text-xs text-muted">Tick every bank whose mail you will forward. You can change this later in Settings.</p>
+          <BankPicker
+            supported={listing.banks.map((b) => b.id)}
+            selected={picked}
+            onToggle={(bank, next) => {
+              setPicked((held) => (next ? withBank(held, bank) : held.filter((b) => b !== bank)));
+            }}
+          />
+          <Button variant="primary" disabled={picked.length === 0} onClick={() => onDeclared(picked)}>
+            Continue
+          </Button>
         </div>
       )}
 
@@ -208,9 +224,14 @@ export function Bank({ client, onPicked, server, fetch: doFetch }: BankProps) {
         </Button>
       </div>
 
-      <Button variant="ghost" disabled={busy} onClick={() => onPicked(WAITLIST_BANK)}>
+      <Button variant="ghost" disabled={busy} onClick={() => onDeclared(withBank(picked, WAITLIST_BANK))}>
         Continue without adding it
       </Button>
     </Step>
   );
+}
+
+/** Appends a bank once. Order is the user's, so it is not sorted. */
+function withBank(held: readonly string[], bank: string): string[] {
+  return held.includes(bank) ? [...held] : [...held, bank];
 }

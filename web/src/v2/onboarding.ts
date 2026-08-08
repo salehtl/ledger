@@ -25,10 +25,30 @@
  *     `home_currency_reset` anomaly no later op can repair.
  *
  * The prefix rule is deliberately strict: a gap is never skipped, however much
- * sits behind it. A cleared browser profile keeps the log and the server's
- * facts and loses the device-local half, so it re-runs the bank and forwarding
- * steps — cheap and repeatable — while walking *past* the currency step,
- * because that fact is in the log.
+ * sits behind it.
+ *
+ * # There is almost nothing device-local left, and that is the point
+ *
+ * This module used to keep the chosen bank, a "the forward is set up" boolean
+ * and a "finished" timestamp in {@link LocalOnboardingRecord}. A second device
+ * has none of those, so a fully set-up account opened on a new phone re-ran the
+ * bank step and then the ADDRESS step — which, to the person holding it, is
+ * indistinguishable from their account having been lost.
+ *
+ * All three are now derived from facts the account owns:
+ *
+ *   - **Banks** are `bank_declared` ops, folded into `State.banks` and read
+ *     through {@link declaredBanksOf}. The log syncs; a browser profile does not.
+ *   - **Forwarding** is DEMONSTRATED by {@link OnboardingFacts.firstMailConfirmedAt},
+ *     which is a transaction in the log. The app cannot see a Gmail filter, and
+ *     the only evidence a forward works is mail arriving — so a stored claim
+ *     that one exists was never evidence of anything, only a device's memory of
+ *     a button press.
+ *   - **Finished** is the prerequisites being met. {@link resumeFacts} sets
+ *     {@link OnboardingFacts.setupSeen} when every milestone behind it is
+ *     already true, so a cold launch on a set-up account opens the app.
+ *
+ * What remains device-local is the address hint below, and nothing else.
  *
  * # One deliberate divergence from the native port: the address is cached
  *
@@ -57,13 +77,14 @@ import type { SecretStore } from "@ledger/client/store/store";
 // ---------------------------------------------------------------------------
 
 /**
- * Each name is a **milestone that is done**, so the position `bank_picked`
- * means "a bank has been chosen and the next thing to do is the address".
+ * Each name is a **milestone that is done**, so the position `banks_declared`
+ * means "at least one bank has been declared and the next thing to do is the
+ * address".
  */
 export const ONBOARDING_STEPS = [
   "signed_in",
   "invited",
-  "bank_picked",
+  "banks_declared",
   "address_issued",
   "forwarding_configured",
   "first_mail_confirmed",
@@ -98,7 +119,7 @@ const SCREEN_FOR: Record<OnboardingPosition, OnboardingScreen> = {
   // surfaces on a device that was signed in yesterday.
   signed_in: "confirming",
   invited: "bank",
-  bank_picked: "address",
+  banks_declared: "address",
   address_issued: "forwarding",
   forwarding_configured: "verification",
   first_mail_confirmed: "home_currency",
@@ -119,14 +140,26 @@ export interface OnboardingFacts {
   hasSession: boolean;
   /** The server answered with a user id, so the account exists and is invited. */
   accountId: string | null;
-  /** The chosen bank, or the sentinel a waitlist entry uses. Device-local. */
-  bank: string | null;
+  /**
+   * The banks the user has declared, ACTIVE ONES ONLY, read from the folded log
+   * (`bank_declared`) through {@link declaredBanksOf}. Several, editable later,
+   * and never device-local: this is the fact whose old home in
+   * {@link LocalOnboardingRecord} made a second device re-run setup.
+   *
+   * {@link WAITLIST_BANK} counts, deliberately — a user whose bank cannot be
+   * read yet has still answered the question.
+   */
+  banks: readonly string[];
   /** The inbound address, minted server-side on first read. */
   inboundAddress: string | null;
   /**
-   * The user said the forward is set up. Device-local, and it has to be: the
-   * app cannot see a Gmail filter, and the only evidence that a forward works
-   * is mail arriving, which is the *next* step rather than this one.
+   * The user said the forward is set up.
+   *
+   * IN-MEMORY ONLY. It advances the walk within one session, because the step
+   * after it is "wait for mail" and there has to be something to advance ON. It
+   * is deliberately not persisted: a stored claim is a device's memory of a
+   * button press, not evidence, and {@link resumeFacts} re-derives it from mail
+   * having actually arrived.
    */
   forwardingDeclared: boolean;
   /** A genuine bank message has been confirmed (spec §3.2 makes this a step). */
@@ -134,24 +167,30 @@ export interface OnboardingFacts {
   /** **From the log.** Never from a device setting, never cached locally. */
   homeCurrency: string | null;
   /**
-   * The user has seen the finish screen. Device-local, and the reason `done` is
-   * not simply "the currency is set": the op is emitted the instant the picker
-   * is confirmed, and without this the screen that explains what happens next
-   * would be skipped in the same frame it appeared.
+   * The user has seen the finish screen — the reason `done` is not simply "the
+   * currency is set": the op is emitted the instant the picker is confirmed,
+   * and without this the screen explaining what happens next would be skipped in
+   * the same frame it appeared.
+   *
+   * In-memory within a session, and re-derived at boot: {@link resumeFacts} sets
+   * it when every milestone behind it is already met, which is what opens the
+   * app on a second device instead of a finish screen for a setup that happened
+   * on another phone. The cost is that reloading between the currency op and the
+   * button skips that screen once, on a device whose account is by then set up.
    */
-  finishedAt: string | null;
+  setupSeen: boolean;
 }
 
 export function emptyFacts(): OnboardingFacts {
   return {
     hasSession: false,
     accountId: null,
-    bank: null,
+    banks: [],
     inboundAddress: null,
     forwardingDeclared: false,
     firstMailConfirmedAt: null,
     homeCurrency: null,
-    finishedAt: null,
+    setupSeen: false,
   };
 }
 
@@ -159,12 +198,12 @@ export function emptyFacts(): OnboardingFacts {
 const MILESTONES: readonly (readonly [OnboardingStep, (f: OnboardingFacts) => boolean])[] = [
   ["signed_in", (f) => f.hasSession],
   ["invited", (f) => f.accountId !== null],
-  ["bank_picked", (f) => f.bank !== null],
+  ["banks_declared", (f) => f.banks.length > 0],
   ["address_issued", (f) => f.inboundAddress !== null],
   ["forwarding_configured", (f) => f.forwardingDeclared],
   ["first_mail_confirmed", (f) => f.firstMailConfirmedAt !== null],
   ["home_currency_set", (f) => f.homeCurrency !== null],
-  ["done", (f) => f.finishedAt !== null],
+  ["done", (f) => f.setupSeen],
 ];
 
 /**
@@ -196,12 +235,12 @@ export function onboardingComplete(f: OnboardingFacts): boolean {
 export type OnboardingEvent =
   | { type: "session"; hasSession: boolean }
   | { type: "account_confirmed"; accountId: string }
-  | { type: "bank_picked"; bank: string }
+  | { type: "banks_declared"; banks: readonly string[] }
   | { type: "address_issued"; address: string }
   | { type: "forwarding_declared" }
   | { type: "first_mail_confirmed"; at: string }
   | { type: "home_currency_set"; currency: string }
-  | { type: "finished"; at: string }
+  | { type: "finished" }
   | { type: "signed_out" }
   | { type: "account_deleted" };
 
@@ -229,8 +268,13 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
     case "account_confirmed":
       return f.accountId === e.accountId ? f : { ...f, accountId: e.accountId };
 
-    case "bank_picked":
-      return f.bank === e.bank ? f : { ...f, bank: e.bank };
+    case "banks_declared": {
+      // Same object when the set is unchanged, so a re-declaration is visibly a
+      // no-op rather than a rewrite that lands on the same value.
+      const next = [...new Set(e.banks)];
+      const same = next.length === f.banks.length && next.every((b, i) => f.banks[i] === b);
+      return same ? f : { ...f, banks: next };
+    }
 
     case "address_issued":
       return f.inboundAddress === e.address ? f : { ...f, inboundAddress: e.address };
@@ -253,7 +297,7 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
     }
 
     case "finished":
-      return f.finishedAt === null ? { ...f, finishedAt: e.at } : f;
+      return f.setupSeen ? f : { ...f, setupSeen: true };
 
     case "signed_out":
       // The log is not touched. Signing out drops a bearer token; it does not
@@ -272,42 +316,36 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
 // Resuming
 // ---------------------------------------------------------------------------
 
-/** The device-local half, persisted as JSON. See this module's header. */
+/**
+ * The device-local half, persisted as JSON — **one field wide**.
+ *
+ * `bank`, `forwardingDeclared` and `finishedAt` were here and are gone; see this
+ * module's header for why each is now derived from the account rather than from
+ * the browser profile. A record written by that earlier build still decodes:
+ * the extra keys are ignored rather than refused, because the address hint in it
+ * is the one thing this build still wants and losing it would cost a set-up
+ * device its offline resume.
+ */
 export interface LocalOnboardingRecord {
-  bank: string | null;
-  forwardingDeclared: boolean;
-  finishedAt: string | null;
   /** A resume hint, not a display value. See the header. */
   inboundAddress: string | null;
 }
 
-export const LOCAL_RECORD_KEYS = ["bank", "forwardingDeclared", "finishedAt", "inboundAddress"] as const;
+export const LOCAL_RECORD_KEYS = ["inboundAddress"] as const;
 
 export function encodeLocal(f: OnboardingFacts): LocalOnboardingRecord {
-  return {
-    bank: f.bank,
-    forwardingDeclared: f.forwardingDeclared,
-    finishedAt: f.finishedAt,
-    inboundAddress: f.inboundAddress,
-  };
+  return { inboundAddress: f.inboundAddress };
 }
 
 /** Refuses a partially-readable record rather than half-applying it. */
 export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
   if (typeof v !== "object" || v === null) return null;
   const r = v as Record<string, unknown>;
-  const bank = r["bank"];
-  const fwd = r["forwardingDeclared"];
-  const fin = r["finishedAt"];
-  // Absent reads as null rather than as a refusal: this field was added after
-  // the shape was first written, and a record from before it is complete in
-  // every way that decides a step.
+  // Absent reads as null rather than as a refusal: a record from before this
+  // field existed is complete in every way that decides a step.
   const addr = r["inboundAddress"] ?? null;
-  if (bank !== null && typeof bank !== "string") return null;
-  if (typeof fwd !== "boolean") return null;
-  if (fin !== null && typeof fin !== "string") return null;
   if (addr !== null && typeof addr !== "string") return null;
-  return { bank: bank ?? null, forwardingDeclared: fwd, finishedAt: fin ?? null, inboundAddress: addr };
+  return { inboundAddress: addr };
 }
 
 /**
@@ -319,6 +357,8 @@ export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
 export function resumeFacts(args: {
   hasSession: boolean;
   accountId: string | null;
+  /** **From the log**, through {@link declaredBanksOf}. Active ones only. */
+  banks: readonly string[];
   /** The server's answer, or null when it could not be asked. */
   inboundAddress: string | null;
   firstMailConfirmedAt: string | null;
@@ -326,16 +366,38 @@ export function resumeFacts(args: {
   local: LocalOnboardingRecord | null;
 }): OnboardingFacts {
   const local = args.local;
-  return {
+  const base: OnboardingFacts = {
     hasSession: args.hasSession,
     accountId: args.accountId,
-    bank: local?.bank ?? null,
+    banks: args.banks,
     inboundAddress: args.inboundAddress ?? local?.inboundAddress ?? null,
-    forwardingDeclared: local?.forwardingDeclared ?? false,
+    // DEMONSTRATED, not remembered. Mail in the log is the only evidence a
+    // forward works, and it is evidence a second device has too.
+    forwardingDeclared: args.firstMailConfirmedAt !== null,
     firstMailConfirmedAt: args.firstMailConfirmedAt,
     homeCurrency: args.homeCurrency,
-    finishedAt: local?.finishedAt ?? null,
+    setupSeen: false,
   };
+  // "Finished" is the prerequisites being met. Asked through `stepFor` rather
+  // than by re-listing the milestones, so this can never drift from the table:
+  // one position short of `done` with `setupSeen` false means everything else
+  // is already true.
+  return stepFor(base) === "home_currency_set" ? { ...base, setupSeen: true } : base;
+}
+
+/**
+ * The banks the user has declared and not retired, read from the folded log.
+ * The only sanctioned source — see this module's header.
+ *
+ * `State.banks` is keyed per bank with a boolean, so a retired one is `false`
+ * rather than absent; the filter is what turns that into the live set, and the
+ * Map's insertion order is the fold order, which is the order the user built.
+ *
+ * **Nothing in the trust path may call this.** Declared banks route the waitlist
+ * and drive the UI; the sender allowlist is separate and the server's.
+ */
+export function declaredBanksOf(s: Pick<State, "banks">): string[] {
+  return [...s.banks].filter(([, active]) => active).map(([bank]) => bank);
 }
 
 /** The home currency, read from the folded log. The only sanctioned source. */

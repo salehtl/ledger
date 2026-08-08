@@ -335,6 +335,28 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 - **Don't:** build a second percentage control, and don't clamp or repair in
   your own `onChange`.
 
+### BankPicker (`BankPicker.tsx`)
+- **Purpose:** which banks a person banks with, as a multi-select. Used by the
+  onboarding bank step and by Settings — one control, so the two cannot
+  disagree about what "declared" means or about what a row does.
+- **It draws the UNION of "supported" and "declared", never just the server's
+  list.** `GET /api/v1/templates` says what ledger can *read*; the op log says
+  what the user *declared*, and the two disagree in both directions. A bank on
+  the waitlist is declared and unsupported — build the list off the server's
+  answer alone and that bank is not drawn at all, so it cannot be removed.
+  `bankRows` is that rule, exported and pure.
+- **Rows are `role="checkbox"` with `aria-checked`, and the whole 44px row is
+  the target** — not a native input with a 20px box beside it.
+- **It authors nothing.** `onToggle(bank, next)` hands the decision back with
+  the state the row would move *to*; the onboarding step turns that into a fact
+  and an op, Settings into an op through the writer. A control that emitted for
+  itself would be a second author of `bank_declared`.
+- **Removing a bank is `active: false`, not a delete**, and the copy beside it
+  may not claim more than that: mail keeps arriving, the sender allowlist
+  (server-side, written by the held-mail decision) is untouched, and no
+  transaction is removed.
+- **Don't:** sort the rows, or build a second bank list.
+
 ### Dialog
 - **Purpose:** the one modal/bottom-sheet. Scrim, slide-up, focus trap,
   Escape, drag-to-dismiss, safe-area padding, `85dvh` scroll containment.
@@ -411,7 +433,13 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   `v2/halt.ts`'s `classifySyncFailure` puts that ahead of every other arm.
 - **Don't:** show a wall for being offline. A failed sync is not a verdict; the
   projection is local and readable, so the app stays on screen. `v2/halt.ts` is
-  the only thing allowed to make that call.
+  the only thing allowed to make that call. **The one exception is
+  `config_unavailable`**: a device that is offline *and* has never fetched the
+  account's setup cannot tell "not set up yet" from "not fetched yet", and the
+  alternative to this wall is walking a working account back through the bank
+  and address steps — which reads as data loss. It says only what is true
+  (nothing was changed, the setup is stored with the records) and carries a
+  Try-again that re-runs boot.
 
 ### Step / Notice (`screens/onboarding/Shell.tsx`)
 - **Purpose:** the page shape every onboarding step shares — title, optional

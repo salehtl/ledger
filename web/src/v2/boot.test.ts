@@ -12,18 +12,28 @@ import { EnrollmentError } from "./session";
 
 const CLEAN: SyncResult = { pulled: 0, applied: 0, violations: [], halted: false };
 
-function foldedState(over: Partial<Pick<State, "txns" | "homeCurrency">> = {}): Pick<
+function foldedState(over: Partial<Pick<State, "txns" | "homeCurrency" | "banks">> = {}): Pick<
   State,
-  "txns" | "homeCurrency"
+  "txns" | "homeCurrency" | "banks"
 > {
   return {
     txns: new Map([["t1", { posted_at: "2026-08-01T00:00:00Z" } as never]]),
     homeCurrency: "AED",
+    // The declared banks are LOG state, exactly as the home currency is. This
+    // is the whole of what device B inherits about them.
+    banks: new Map([["dib", true]]),
     ...over,
-  } as Pick<State, "txns" | "homeCurrency">;
+  } as Pick<State, "txns" | "homeCurrency" | "banks">;
 }
 
-/** A device that has been all the way through onboarding on this browser. */
+/**
+ * A device that has been all the way through onboarding on this browser.
+ *
+ * The record is one field wide now — the address, and only as a resume hint.
+ * Everything else about setup comes from the log or the server, which is what
+ * makes {@link settledSecrets} and {@link memSecretStore} interchangeable for
+ * an account that is actually set up.
+ */
 function settledSecrets() {
   const secrets = memSecretStore();
   secrets.set(
@@ -32,12 +42,12 @@ function settledSecrets() {
       encodeLocal({
         hasSession: true,
         accountId: "u_1",
-        bank: "dib",
+        banks: ["dib"],
         inboundAddress: "u-abc@in.sirdab.ae",
         forwardingDeclared: true,
         firstMailConfirmedAt: "2026-08-01T00:00:00Z",
         homeCurrency: "AED",
-        finishedAt: "2026-08-02T00:00:00Z",
+        setupSeen: true,
       }),
     ),
   );
@@ -95,10 +105,13 @@ describe("boot", () => {
   });
 
   it("routes an incomplete device to onboarding with the facts it has", async () => {
+    // No address could be minted, so the walk stops there — but the facts the
+    // LOG carries come through regardless of what this device remembers.
     const state = await boot(deps({ secrets: memSecretStore(), address: async () => null }));
     expect(state.step).toBe("onboarding");
     if (state.step !== "onboarding") throw new Error("unreachable");
-    expect(state.facts.bank).toBeNull();
+    expect(state.facts.banks).toEqual(["dib"]);
+    expect(state.facts.inboundAddress).toBeNull();
     expect(state.facts.homeCurrency).toBe("AED");
   });
 
@@ -246,15 +259,66 @@ describe("boot", () => {
     expect(state.step).toBe("halted");
   });
 
-  it("routes an offline device with no local data to onboarding, not to a wall", async () => {
+  it("SAYS SO rather than restarting onboarding when it is offline and setup cannot be read", async () => {
+    // This reverses an earlier behaviour deliberately. When the device-local
+    // record was the source of truth for setup, "offline with nothing local"
+    // meant "a new device", and onboarding was the right answer. Configuration
+    // now lives in the log, so the same situation means "ledger could not fetch
+    // this account's setup" — and walking a working account back to the address
+    // step looks exactly like data loss.
     const state = await boot(
       deps({
         secrets: memSecretStore(),
         address: async () => null,
+        state: () => ({ txns: new Map(), homeCurrency: null, banks: new Map() }) as never,
         sync: () => Promise.reject(new TypeError("Failed to fetch")),
       }),
     );
+    expect(state.step).toBe("config_unavailable");
+  });
+
+  it("does not wall a device that IS set up just because it is offline", async () => {
+    const state = await boot(
+      deps({ secrets: memSecretStore(), sync: () => Promise.reject(new TypeError("Failed to fetch")) }),
+    );
+    expect(state.step).toBe("ready");
+  });
+
+  // -- a second device ------------------------------------------------------
+
+  /**
+   * THE TEST THAT MATTERS.
+   *
+   * Device A finished onboarding. Device B is this browser: signed in, enrolled,
+   * and holding NOTHING locally — no onboarding record at all. It must land in
+   * the product on the same address and the same banks, because every one of
+   * those facts is in the log or on the server. Anything else is a working
+   * account being asked to set itself up again.
+   */
+  it("lands a SECOND DEVICE with empty local storage straight in the app, with the same address and banks", async () => {
+    const state = await boot(
+      deps({
+        secrets: memSecretStore(),
+        state: () => foldedState({ banks: new Map([["dib", true], ["enbd", true], ["adcb", false]]) }),
+      }),
+    );
+    expect(state.step).toBe("ready");
+    if (state.step !== "ready") throw new Error("unreachable");
+    expect(state.facts.inboundAddress).toBe("u-abc@in.sirdab.ae");
+    // The retired one is not inherited as declared — `active: false` is the
+    // user's removal, and it has to survive the trip to a new device.
+    expect([...state.facts.banks]).toEqual(["dib", "enbd"]);
+  });
+
+  it("routes a second device to onboarding only where the LOG is genuinely short of a fact", async () => {
+    // Not a device-local question: the account has no bank declared anywhere, so
+    // the bank step is the honest answer even on a device that has synced.
+    const state = await boot(
+      deps({ secrets: memSecretStore(), state: () => foldedState({ banks: new Map() }) }),
+    );
     expect(state.step).toBe("onboarding");
+    if (state.step !== "onboarding") throw new Error("unreachable");
+    expect(state.facts.banks).toEqual([]);
   });
 
   // -- the address ----------------------------------------------------------

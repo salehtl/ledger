@@ -349,17 +349,48 @@ describe("the bank and address walk", () => {
     mount(invited(), rig, doFetch);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /dubai islamic bank/i })).toBeTruthy();
+      expect(screen.getByRole("checkbox", { name: /dubai islamic bank/i })).toBeTruthy();
     });
     // Two templates for `dib`, one row.
-    expect(screen.getAllByRole("button", { name: /dubai islamic bank/i })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: /emirates nbd/i })).toBeTruthy();
+    expect(screen.getAllByRole("checkbox", { name: /dubai islamic bank/i })).toHaveLength(1);
+    expect(screen.getByRole("checkbox", { name: /emirates nbd/i })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: /dubai islamic bank/i }));
+    await user.click(screen.getByRole("checkbox", { name: /dubai islamic bank/i }));
+    await user.click(screen.getByRole("button", { name: /^continue$/i }));
 
+    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
     await waitFor(() => {
       expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
     });
+  });
+
+  it("declares SEVERAL banks, one op each, because people bank in more than one place", async () => {
+    // The multi-select. One op per bank rather than one carrying a list: two
+    // devices each adding a different bank offline both survive.
+    const user = userEvent.setup();
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    mount(invited(), rig, doFetch);
+
+    await user.click(await screen.findByRole("checkbox", { name: /dubai islamic bank/i }));
+    await user.click(screen.getByRole("checkbox", { name: /emirates nbd/i }));
+    await user.click(screen.getByRole("button", { name: /^continue$/i }));
+
+    expect(rig.emitted).toEqual([
+      { type: "bank_declared", payload: { bank: "dib", active: true } },
+      { type: "bank_declared", payload: { bank: "enbd", active: true } },
+    ]);
+    await waitFor(() => {
+      expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
+    });
+  });
+
+  it("cannot be left with nothing declared — Continue is dead until a bank is ticked", async () => {
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    mount(invited(), rig, doFetch);
+    expect(await screen.findByRole("button", { name: /^continue$/i })).toHaveProperty("disabled", true);
+    expect(rig.emitted).toHaveLength(0);
   });
 
   it("records an unsupported bank on the waitlist and still lets the user through", async () => {
@@ -382,6 +413,31 @@ describe("the bank and address walk", () => {
     // Stops on the confirmation rather than walking straight on: the point of
     // the step is that this bank cannot be read yet.
     expect(screen.queryByTestId("inbound-address")).toBeNull();
+    expect(rig.emitted).toHaveLength(0);
+
+    // Carrying on declares the bank under the name they typed: ledger cannot
+    // read it yet, but it is still where they bank, and Settings lists it.
+    await user.click(screen.getByRole("button", { name: /carry on setting up/i }));
+    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "mashreq", active: true } }]);
+    await waitFor(() => {
+      expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
+    });
+  });
+
+  it("keeps the grammar refusal from being a dead end, and declares the sentinel on the way past", async () => {
+    const user = userEvent.setup();
+    const rig = handleRig();
+    const { doFetch, calls } = scriptedFetch();
+    mount(invited(), rig, doFetch);
+
+    await user.type(await screen.findByLabelText("Bank name"), "Mashreq (UAE)");
+    await user.click(screen.getByRole("button", { name: /request support/i }));
+    // Refused here, with the rule, rather than as a 400 rendered "Try again."
+    expect(screen.getByTestId("bank-name-rule").textContent).toMatch(/not a name this list can store/i);
+    expect(calls.some((c) => c.url.includes("/api/v1/waitlist"))).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: /continue without adding it/i }));
+    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "other", active: true } }]);
   });
 
   /**
@@ -396,7 +452,7 @@ describe("the bank and address walk", () => {
     const user = userEvent.setup();
     const rig = handleRig();
     const { doFetch } = scriptedFetch();
-    mount({ ...invited(), bank: "dib", inboundAddress: ADDRESS }, rig, doFetch);
+    mount({ ...invited(), banks: ["dib"], inboundAddress: ADDRESS }, rig, doFetch);
 
     await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
     await user.click(screen.getByRole("button", { name: /i have set this address with my bank/i }));
@@ -417,7 +473,7 @@ describe("the home currency picker", () => {
   function atCurrency(): OnboardingFacts {
     return {
       ...invited(),
-      bank: "dib",
+      banks: ["dib"],
       inboundAddress: ADDRESS,
       forwardingDeclared: true,
       firstMailConfirmedAt: "2026-08-01T00:00:00Z",

@@ -39,6 +39,7 @@ import { useQuery, type QueryClient, type UseQueryResult } from "@tanstack/react
 import type { CategoryDef, Rule } from "@ledger/client/replay/state";
 
 import { useV2 } from "./BootGate";
+import { sqlBanksSource, type BanksSource, type DeclaredBank } from "./sources/banks";
 import { sqlBudgetSource, type BudgetSnapshot, type BudgetSource } from "./sources/budget";
 import {
   mergeMoney,
@@ -132,6 +133,17 @@ export const v2Keys = {
    * would make the other's invalidation look accidental.
    */
   categories: () => [V2_QUERY_ROOT, "categories"] as const,
+  /**
+   * The banks the user declared, from the projection. Not under `categories`:
+   * they are a different question with a different author, and one screen's
+   * invalidation reaching the other would be accidental.
+   */
+  banks: () => [V2_QUERY_ROOT, "banks"] as const,
+  /**
+   * `GET /api/v1/templates` — which banks ledger can READ. Server truth, and a
+   * different question from which banks the user declared.
+   */
+  templates: () => [V2_QUERY_ROOT, "templates"] as const,
   /** `GET /api/v1/address` — server truth, not the projection. */
   address: () => [V2_QUERY_ROOT, "address"] as const,
 } as const;
@@ -228,6 +240,16 @@ export function useBudgetSource(injected?: BudgetSource): BudgetSource | null {
   return useMemo(() => {
     if (injected !== undefined) return injected;
     return driver === null ? null : sqlBudgetSource(driver);
+  }, [injected, driver]);
+}
+
+/** The declared-banks source over this device's projection, or `null`. See {@link useTxnSource}. */
+export function useBanksSource(injected?: BanksSource): BanksSource | null {
+  const runtime = useV2();
+  const driver = runtime?.handle.driver ?? null;
+  return useMemo(() => {
+    if (injected !== undefined) return injected;
+    return driver === null ? null : sqlBanksSource(driver);
   }, [injected, driver]);
 }
 
@@ -413,6 +435,20 @@ export function useTxnFacets(source: TxnSource | null): UseQueryResult<TxnFacets
     ...PROJECTION_QUERY,
     queryKey: v2Keys.facets(),
     queryFn: () => source!.facets(),
+    enabled: source !== null,
+  });
+}
+
+/**
+ * Every declaration the log holds, RETIRED ONES INCLUDED — the picker filters,
+ * this does not, for the same reason `useCategoryChoices` hands over retired
+ * definitions: Settings has to be able to bring one back.
+ */
+export function useDeclaredBanks(source: BanksSource | null): UseQueryResult<DeclaredBank[]> {
+  return useQuery({
+    ...PROJECTION_QUERY,
+    queryKey: v2Keys.banks(),
+    queryFn: () => source!.read(),
     enabled: source !== null,
   });
 }

@@ -17,12 +17,12 @@ const CLEAN: SyncResult = CLEAN_SYNC;
 const SETTLED = encodeLocal({
   hasSession: true,
   accountId: "u_1",
-  bank: "dib",
+  banks: ["dib"],
   inboundAddress: "u-abc@in.sirdab.ae",
   forwardingDeclared: true,
   firstMailConfirmedAt: "2026-08-01T00:00:00Z",
   homeCurrency: "AED",
-  finishedAt: "2026-08-02T00:00:00Z",
+  setupSeen: true,
 });
 
 interface Rig {
@@ -40,6 +40,8 @@ function rig(
     sync?: () => Promise<SyncResult>;
     halted?: string | null;
     homeCurrency?: string | null;
+    /** The folded log's declared banks. `undefined` is the ordinary one-bank account. */
+    banks?: Map<string, boolean>;
     local?: unknown;
   } = {},
 ): Rig {
@@ -81,6 +83,7 @@ function rig(
         state: () => ({
           txns: new Map([["t1", { posted_at: "2026-08-01T00:00:00Z" }]]),
           homeCurrency: over.homeCurrency === undefined ? "AED" : over.homeCurrency,
+          banks: over.banks ?? new Map([["dib", true]]),
         }),
         /** The property every write path reads. Throws until enrolment lands. */
         get writerId(): string {
@@ -149,16 +152,50 @@ describe("BootGate", () => {
     expect(screen.getByText(/Task 7/)).toBeInTheDocument();
   });
 
-  it("resumes onboarding, with the facts, when the device is not set up", async () => {
+  it("resumes onboarding, with the facts, when the ACCOUNT is not set up", async () => {
     const seen: string[] = [];
-    mount(rig({ local: { bank: null, forwardingDeclared: false, finishedAt: null, inboundAddress: null } }), {
+    mount(rig({ banks: new Map(), local: { inboundAddress: null } }), {
       onboarding: ({ facts }) => {
-        seen.push(String(facts.bank));
+        seen.push(facts.banks.join(","));
         return <div data-testid="onboarding">onboarding</div>;
       },
     });
     expect(await screen.findByTestId("onboarding")).toBeInTheDocument();
-    expect(seen).toContain("null");
+    expect(seen).toContain("");
+    expect(screen.queryByTestId("app")).not.toBeInTheDocument();
+  });
+
+  /**
+   * THE SECOND-DEVICE PROOF, at the gate rather than at `resumeFacts`.
+   *
+   * `localStorage` is empty — no onboarding record was ever written in this
+   * browser — and the account is fully set up in the log and on the server. The
+   * app renders. Not the bank step, not the address step.
+   */
+  it("opens the app on a device with EMPTY local storage when the account is already set up", async () => {
+    localStorage.clear();
+    const r = rig({ banks: new Map([["dib", true], ["enbd", true]]) });
+    localStorage.removeItem(`ledger-v2:ledger:${ONBOARDING_LOCAL_KEY}`);
+    const onboarding = vi.fn(() => <div data-testid="onboarding">onboarding</div>);
+    mount(r, { onboarding });
+    expect(await screen.findByTestId("app")).toBeInTheDocument();
+    expect(onboarding).not.toHaveBeenCalled();
+  });
+
+  it("says it could not fetch the setup, retryably, rather than restarting onboarding offline", async () => {
+    localStorage.clear();
+    const r = rig({
+      banks: new Map(),
+      homeCurrency: null,
+      sync: () => Promise.reject(new TypeError("Failed to fetch")),
+    });
+    localStorage.removeItem(`ledger-v2:ledger:${ONBOARDING_LOCAL_KEY}`);
+    const onboarding = vi.fn(() => <div data-testid="onboarding">onboarding</div>);
+    mount(r, { onboarding, address: async () => null });
+
+    expect(await screen.findByText(/could not (reach|fetch)/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    expect(onboarding).not.toHaveBeenCalled();
     expect(screen.queryByTestId("app")).not.toBeInTheDocument();
   });
 
@@ -493,7 +530,8 @@ describe("BootGate", () => {
     // have. The two tests below pin the other side of that line.
     let halted = false;
     const r = rig({
-      local: { bank: null, forwardingDeclared: false, finishedAt: null, inboundAddress: null },
+      banks: new Map(),
+      local: { inboundAddress: null },
       sync: async () => (halted ? { pulled: 0, applied: 0, violations: [], halted: true } : CLEAN),
     });
     mount(r, { onboarding: () => <div data-testid="onboarding">onboarding</div> });
@@ -611,6 +649,7 @@ function sessionRig() {
     state: () => ({
       txns: new Map([["t1", { posted_at: "2026-08-01T00:00:00Z" }]]),
       homeCurrency: "AED",
+      banks: new Map([["dib", true]]),
     }),
     get writerId() {
       return "web-1";

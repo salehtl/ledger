@@ -420,6 +420,38 @@ export function BootGate({
         </Wall>
       );
 
+    /*
+      Offline, and this device has never fetched the account's setup. It is NOT
+      routed to onboarding, and that is the whole point of the state: setup lives
+      in the op log, so a device that could not sync reads an account with no
+      bank, no home currency and no address — and asking a user with a working
+      account to choose their bank and re-do mail forwarding is indistinguishable
+      from their data having been lost.
+
+      Every sentence below is one the code honours: nothing was changed (boot
+      wrote no ops), the records are on the server (this device simply has not
+      pulled them), and the retry is a real re-boot.
+    */
+    case "config_unavailable":
+      return (
+        <Wall>
+          <Notice
+            title="ledger could not reach the server"
+            body={
+              "Your setup — the banks you added, your budget and your categories — is stored with your records, " +
+              "and this device has not fetched them yet. Rather than start setting up an account that may " +
+              "already be set up, ledger has stopped here. Nothing was changed and nothing was lost. Reconnect " +
+              "and try again."
+            }
+          />
+          <div>
+            <Button variant="primary" onClick={again}>
+              Try again
+            </Button>
+          </div>
+        </Wall>
+      );
+
     case "onboarding":
       if (handle === null || onboarding === undefined) return <Unbuilt what="Onboarding" owner="Task 7" />;
       // Onboarding syncs (see the `useSync` condition), so it can raise a halt,

@@ -214,6 +214,42 @@ describe("V2Settings", () => {
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
   });
 
+  it("edits the bank list with the same control the bank step uses, one op per change", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = {
+      pending: [],
+      enqueueMany: (s: readonly unknown[]) => void specs.push(...s),
+      flush: async () => {},
+    };
+    // Declared in the LOG, which is what a second device reads — not in this
+    // browser's storage.
+    db.prepare("INSERT INTO bank (name,ord,active) VALUES (?,?,?)").run("dib", 0, 1);
+    wrap({ writer, templates: async () => [{ id: "dib", templates: 2 }, { id: "enbd", templates: 1 }] });
+
+    const dib = await screen.findByTestId("settings-bank-row-dib");
+    expect(dib.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("settings-bank-row-enbd").getAttribute("aria-checked")).toBe("false");
+
+    await user.click(screen.getByTestId("settings-bank-row-enbd"));
+    expect(specs).toEqual([{ type: "bank_declared", payload: { bank: "enbd", active: true } }]);
+
+    // Removing is a declaration too — `active: false`, never a delete.
+    await user.click(dib);
+    expect(specs[1]).toEqual({ type: "bank_declared", payload: { bank: "dib", active: false } });
+  });
+
+  it("says exactly what removing a bank does, and does not claim it stops mail or untrusts a sender", async () => {
+    // The allowlist is a separate, server-side thing (`sender_allowlist`,
+    // written by the quarantine trust decision). This list drives the UI and the
+    // waitlist and nothing else, so the copy may not imply otherwise.
+    wrap({ templates: async () => [{ id: "dib", templates: 1 }] });
+    const note = (await screen.findByTestId("settings-banks-note")).textContent ?? "";
+    expect(note).toMatch(/mail|transactions/i);
+    expect(note).toMatch(/still/i);
+    expect(note).not.toMatch(/stop|block|untrust|delete/i);
+  });
+
   it("opens the categories the user owns, and defines one into the log", async () => {
     const user = userEvent.setup();
     const specs: unknown[] = [];
