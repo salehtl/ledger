@@ -179,12 +179,12 @@ export function Address({
         >
           <RouteRow
             title="Set this address with your bank directly"
-            detail="Recommended. Most banks let you choose where alerts are sent, and there is no forwarding rule in between to be switched off."
+            detail="Recommended. Most banks let you choose where alerts go, and there is no forwarding rule in between to break."
             onClick={() => setRoute("direct")}
           />
           <RouteRow
             title="Forward it from my email"
-            detail="One rule in the mailbox your bank already writes to. Works with any provider, and with a bank that will not let the address be changed."
+            detail="One rule in the mailbox your bank already writes to. Works with any provider, and with a bank that will not change the address."
             onClick={() => setRoute("forward")}
           />
         </div>
@@ -197,7 +197,7 @@ export function Address({
       <Step
         testId="forwarding"
         title="Give this address to your bank"
-        intro="Your bank writes to ledger, and nothing sits in between. Nothing else on this device needs setting up."
+        intro="Your bank writes to ledger, with nothing in between."
         footer={
           <>
             <Button variant="primary" onClick={() => onForwardingDeclared(false)}>
@@ -216,7 +216,7 @@ export function Address({
             set — often under your profile, contact details or notification settings.
           </li>
           <li>Set it to the address above.</li>
-          <li>That is all. Each transaction email your bank sends becomes a transaction as it arrives.</li>
+          <li>That is all. Each transaction email becomes a transaction as it arrives.</li>
         </ol>
         {/*
           The two ways this route fails, said on the screen that proposes it
@@ -224,9 +224,8 @@ export function Address({
         */}
         <Notice title="If your bank will not let you" testId="direct-caveat">
           <p>
-            Some banks keep only one alert address, so setting this one stops those emails arriving where they
-            arrive now. If that address cannot be changed at all, or you would rather keep it, forward from your
-            email instead — the button below switches.
+            Some banks keep only one alert address, so setting this one stops those emails going where they go
+            now. If it cannot be changed, or you would rather keep it, use the forwarding button below instead.
           </p>
         </Notice>
       </Step>
@@ -278,8 +277,8 @@ export function Address({
 
         <Notice>
           <p>
-            A rule rather than blanket forwarding is the point: ledger only ever receives the messages you chose,
-            and anything else that reaches this address is held rather than read.
+            Forward with a rule, not everything: ledger then receives only the messages you chose. Anything else
+            that reaches this address is held rather than read.
           </p>
         </Notice>
       </Step>
@@ -290,7 +289,7 @@ export function Address({
     <Step
       testId="address"
       title="Your inbound address"
-      intro="This address is yours alone. Bank mail sent here becomes transactions in ledger; nothing else about your mailbox is read, and ledger never holds a password to it."
+      intro="This address is yours alone. Bank mail sent here becomes transactions. Nothing else about your mailbox is read, and ledger never holds a password to it."
       footer={
         address === null ? undefined : (
           <Button variant="primary" onClick={() => onIssued(address)}>
@@ -309,10 +308,7 @@ export function Address({
       {failed && !busy && (
         <>
           <Notice tone="danger" announce title="ledger could not get your address" testId="address-failed">
-            <p>
-              Nothing is wrong with this device and nothing has been lost — the address is created on the server
-              the first time it is asked for, so trying again is safe.
-            </p>
+            <p>Nothing is wrong with this device and nothing was lost. Trying again is safe.</p>
           </Notice>
           <Button variant="secondary" onClick={() => void load()}>
             Try again

@@ -19,7 +19,7 @@ export function passkeyFailureCopy(kind: PasskeyFailureKind): { title: string; b
     case "unsupported":
       return {
         title: "This browser cannot use passkeys",
-        body: "ledger signs you in with a passkey and this browser has no support for them. A current Safari, Chrome, Edge or Firefox will work.",
+        body: "ledger signs you in with a passkey, and this browser does not support them. A current Safari, Chrome, Edge or Firefox will work.",
       };
     case "cancelled":
       return {
@@ -29,7 +29,7 @@ export function passkeyFailureCopy(kind: PasskeyFailureKind): { title: string; b
     case "rejected":
       return {
         title: "That passkey was not accepted",
-        body: "The signature did not check out, or the credential is not one this account knows. If you are trying to get into an existing account, use the device that holds its passkey.",
+        body: "The signature did not check out, or this account does not know that passkey. To get into an existing account, use the device that holds its passkey.",
       };
     case "rate_limited":
       return {
@@ -39,7 +39,7 @@ export function passkeyFailureCopy(kind: PasskeyFailureKind): { title: string; b
     case "offline":
       return {
         title: "ledger could not reach the server",
-        body: "There was no answer at all, which is almost always the connection. Nothing was created, so trying again is safe.",
+        body: "There was no answer, which is almost always the connection. Nothing was created, so trying again is safe.",
       };
     case "not_invited":
     case "unavailable":

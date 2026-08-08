@@ -103,8 +103,8 @@ export function PendingDevicePanel({ request, loadKeyHistory, onRecheck, copy = 
             </p>
           )}
           <p className="text-xs leading-relaxed text-muted">
-            It contains this device&rsquo;s name and its public key. It is not a secret and it cannot be used to
-            read your ledger — but the device you send it to will be able to add this one.
+            It holds this device&rsquo;s name and public key. It is not a secret and cannot read your ledger —
+            but whoever you send it to can add this device.
           </p>
         </Card>
       </section>
@@ -128,15 +128,15 @@ export function PendingDevicePanel({ request, loadKeyHistory, onRecheck, copy = 
               <>
                 <p className="font-mono text-2xl tracking-widest tnum">{check.code}</p>
                 <p className="text-xs leading-relaxed text-muted">
-                  Both devices work this out for themselves, from the account&rsquo;s key history and the key in the
-                  code above. If the two do not match, do not approve: something changed the code on its way over.
+                  Both devices work this out for themselves. If the two do not match, do not approve — something
+                  changed the code on its way over.
                 </p>
               </>
             ) : (
               <p className="text-sm leading-relaxed text-warn">
-                ledger could not work out the check code on this device — it could not read the account&rsquo;s key
-                history. Nothing is shown in its place, because a check code that was not computed is not a check.
-                Your other device will refuse to approve without one too.
+                ledger could not work out the check code here — it could not read the account&rsquo;s key history.
+                Nothing is shown in its place, because a code that was not computed is not a check. Your other
+                device will refuse to approve without one too.
               </p>
             )}
           </div>
@@ -149,15 +149,15 @@ export function PendingDevicePanel({ request, loadKeyHistory, onRecheck, copy = 
         </SectionLabel>
         <Card className="space-y-3">
           <p className="text-sm leading-relaxed text-muted">
-            ledger is not told when the other device approves, so this device has to look. Press this once you have
+            ledger is not told when the other device approves, so this one has to look. Press this once you have
             approved it.
           </p>
           <Button variant="primary" onClick={onRecheck}>
             Check again
           </Button>
           <p className="text-xs leading-relaxed text-muted">
-            If no other device is signed in to this account, this device cannot be added — the account&rsquo;s one
-            self-approval was used when it was set up, and there is no way to grant a second.
+            If no other device is signed in to this account, this device cannot be added this way — the
+            account&rsquo;s one self-approval was used when it was set up.
           </p>
         </Card>
       </section>

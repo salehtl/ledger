@@ -458,10 +458,9 @@ export function BootGate({
           <Notice
             title="ledger could not reach the server"
             body={
-              "Your setup — the banks you added, your budget and your categories — is stored with your records, " +
-              "and this device has not fetched them yet. Rather than start setting up an account that may " +
-              "already be set up, ledger has stopped here. Nothing was changed and nothing was lost. Reconnect " +
-              "and try again."
+              "Your setup — banks, budget, categories — is stored with your records, and this device has not " +
+              "fetched them yet. Rather than set up an account that may already be set up, ledger stopped here. " +
+              "Nothing was changed and nothing was lost. Reconnect and try again."
             }
           />
           <div>
@@ -647,7 +646,7 @@ function Unbuilt({ what, owner }: { what: string; owner: string }) {
     <Wall>
       <Notice
         title={`${what} is not built yet`}
-        body={`${owner} fills this slot. The gate reached it, so the wiring underneath is working — there is simply no screen here yet.`}
+        body={`${owner} fills this slot. The gate reached it, so the wiring works — there is simply no screen here yet.`}
       />
     </Wall>
   );

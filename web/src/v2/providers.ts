@@ -70,7 +70,7 @@ export const PROVIDERS: readonly Provider[] = [
     steps: [
       "On a computer, open Gmail's Settings, then See all settings, then Forwarding and POP/IMAP.",
       "Press “Add a forwarding address” and paste the address above.",
-      "Gmail emails a confirmation code to that address. ledger holds that message rather than filing it — the next screen lists it so you can read the code.",
+      "Gmail emails a confirmation code to that address. The next screen lists that message so you can read the code.",
       "Back in Gmail, create a filter for your bank's sender address and tick “Forward it to” your ledger address. Forward the bank, not the whole mailbox.",
     ],
   },
@@ -91,7 +91,7 @@ export const PROVIDERS: readonly Provider[] = [
       "iCloud does not send a confirmation code. Mail starts arriving once the rule is saved.",
     ],
     caveat:
-      "Use a Rule, as the steps do — not iCloud's Forwarding setting. That setting forwards your whole mailbox to the address rather than only your bank's mail.",
+      "Use a Rule, as the steps do — not iCloud's Forwarding setting, which forwards your whole mailbox rather than only your bank's mail.",
   },
   {
     id: "outlook",
@@ -101,10 +101,10 @@ export const PROVIDERS: readonly Provider[] = [
       "Open Outlook on the web, then Settings, then Mail, then Forwarding.",
       "Enable forwarding, enter the address above and save.",
       "To send only your bank's mail, add a rule under Settings, then Mail, then Rules, matching your bank's sender address with the action “Forward to”.",
-      "If Outlook emails a confirmation code, ledger holds that message and the next screen lists it.",
+      "If Outlook emails a confirmation code, the next screen lists that message.",
     ],
     caveat:
-      "A work or school account on Microsoft 365 may refuse to forward outside the organisation at all. That is an anti-fraud default an administrator controls, and no setting inside Outlook overrides it — if forwarding is blocked, set the address with your bank directly instead.",
+      "A work or school account on Microsoft 365 may refuse to forward outside the organisation. An administrator controls that, and no Outlook setting overrides it — if forwarding is blocked, set the address with your bank directly instead.",
   },
   {
     id: "yahoo",
@@ -113,7 +113,7 @@ export const PROVIDERS: readonly Provider[] = [
     steps: [
       "Open Yahoo Mail's Settings, then More Settings, then Mailboxes, and select your account.",
       "Under Forwarding, add the address above.",
-      "Yahoo emails a confirmation to that address. ledger holds that message and the next screen lists it.",
+      "Yahoo emails a confirmation to that address. The next screen lists that message.",
     ],
   },
   {
@@ -122,7 +122,7 @@ export const PROVIDERS: readonly Provider[] = [
     needsConfirmation: true,
     steps: [
       "Open Proton Mail's settings, then Forward emails, and add the address above.",
-      "Proton emails a confirmation to that address. ledger holds that message and the next screen lists it.",
+      "Proton emails a confirmation to that address. The next screen lists that message.",
       "To send only your bank's mail, add a filter matching your bank's sender address instead of forwarding everything.",
     ],
     caveat: "Forwarding to an address outside Proton is a paid-plan feature.",
@@ -143,7 +143,7 @@ export const GENERIC: Provider = {
   steps: [
     "Find the forwarding or auto-forward setting in your mail provider's settings, and add the address above.",
     "If your provider can forward only mail matching a rule, match your bank's sender address — forward the bank, not the whole mailbox.",
-    "If your provider emails a confirmation code to the address, ledger holds that message and the next screen lists it so you can read the code.",
+    "If your provider emails a confirmation code, the next screen lists that message so you can read the code.",
   ],
 };
 

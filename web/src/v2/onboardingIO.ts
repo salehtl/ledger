@@ -269,13 +269,13 @@ export type TrustScope = "outer" | "inner";
 export const CONFIRM_CONFLICT_COPY: Record<string, string> = {
   forwarder_domain:
     "That is your mail provider, not your bank. Trusting it would trust everything that passes through your " +
-    "mailbox — confirm the bank's own verified domain instead.",
+    "mailbox. Confirm the bank's own verified domain instead.",
   origin_unproven:
-    "Nothing held for this account carries a verified signature from that domain, so there is nothing to trust " +
-    "yet. Mail that cannot be verified stays held.",
+    "Nothing held here carries a verified signature from that domain, so there is nothing to trust yet. Mail " +
+    "that cannot be verified stays held.",
   rate_limited:
-    "ledger is filing mail as fast as the server will let it. Wait about a minute before confirming again — " +
-    "nothing was lost, and the held mail is still there.",
+    "ledger is filing mail as fast as the server allows. Wait about a minute, then confirm again. Nothing was " +
+    "lost and the held mail is still there.",
 };
 
 /**

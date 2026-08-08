@@ -206,7 +206,7 @@ describe("Verification", () => {
     // in component state, so "setup will wait here until they are filed" — what
     // this said — becomes untrue the moment the tab is reloaded.
     const notice = screen.getByTestId("verification-partial").textContent ?? "";
-    expect(notice).toMatch(/keep trying to file/i);
+    expect(notice).toMatch(/keeps trying to file/i);
     expect(notice).not.toMatch(/wait here until/i);
     // Task 10: this is no longer the ONLY screen that can file it, so the copy
     // must not say so — Settings owns held mail now.

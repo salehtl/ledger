@@ -33,17 +33,13 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
     case "offline":
       return {
         title: "ledger could not finish setting up this device",
-        body:
-          "You're signed in. Letting this device make changes needs a connection. Nothing was lost — try again " +
-          "when you are online.",
+        body: "You're signed in. Setting this device up needs a connection. Nothing was lost — try again when you are online.",
         retry: true,
       };
     case "unavailable":
       return {
         title: "ledger could not finish setting up this device",
-        body:
-          "You're signed in. The server could not let this device make changes. Nothing was lost — try again in a " +
-          "moment.",
+        body: "You're signed in. The server could not set this device up. Nothing was lost — try again in a moment.",
         retry: true,
       };
     case "misconfigured":
@@ -54,14 +50,14 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
       return {
         title: "ledger could not finish setting up this device",
         body:
-          "You're signed in. This copy of ledger is not set up correctly, so this device cannot make changes. " +
+          "You're signed in, but this copy of ledger is not set up correctly, so this device cannot make changes. " +
           "Nothing was lost, and nothing you do here will fix it — this is ours to repair.",
         retry: false,
       };
     case "rate_limited":
       return {
         title: "Too many attempts",
-        body: "Setting this device up was tried too many times in a row. Wait a minute and try again.",
+        body: "Setting this device up was tried too many times. Wait a minute and try again.",
         retry: true,
       };
     case "rejected":
@@ -82,17 +78,17 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
       return {
         title: "This device's access was withdrawn",
         body:
-          "This device was on this account and was removed from it. It can still read what it already has, but it " +
-          "cannot make changes, and signing in again will not restore it.",
+          "This device was removed from this account. It can still read what it already has, but it cannot make " +
+          "changes. Signing in again will not restore it.",
         retry: false,
       };
     case "key_lost":
       return {
         title: "This device can no longer prove who it is",
         body:
-          "You're signed in, and this account knows this device — but the key that signed for it is gone from this " +
-          "browser. Clearing site data does not carry it. Nothing on the server was lost. This device cannot make " +
-          "changes until a device that still has its key adds it back, which this beta cannot do yet.",
+          "You're signed in and this account knows this device, but the key that signed for it is gone from this " +
+          "browser. Nothing on the server was lost. This device cannot make changes until a device that still " +
+          "has its key adds it back, which this beta cannot do yet.",
         retry: false,
       };
   }

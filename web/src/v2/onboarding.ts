@@ -611,12 +611,11 @@ export function confirmCopy(currency: string): ConfirmCopy {
   return {
     title: `Set ${c} as your home currency?`,
     consequence:
-      `There is no way to change this once it is set. If ${c} turns out to be the wrong choice, the only way ` +
-      `to fix it is to delete your account and start again, which deletes everything ledger has recorded for you.`,
+      `There is no way to change this once it is set. The only fix is to delete your account and start again, ` +
+      `which erases everything ledger has recorded for you.`,
     meaning:
-      `Every total and every budget is kept in ${c}. A purchase in another currency is converted once, when it ` +
-      `arrives, and that converted figure is frozen — so changing the base afterwards would silently re-value ` +
-      `everything already recorded.`,
+      `Every total and budget is kept in ${c}. A purchase in another currency is converted once, when it arrives, ` +
+      `and that figure is then frozen.`,
     acknowledgement: `I understand ${c} is permanent.`,
     confirm: `Set ${c} as my home currency`,
     back: "Choose a different currency",
@@ -666,9 +665,9 @@ export const QUARANTINE_HELD = {
   title: "Held mail is held on purpose",
   body:
     "ledger files mail only when it can prove it came from a bank. A forwarding confirmation is signed by your " +
-    "mail provider rather than by a bank, so it is held to one side instead of filed — that is ledger working as " +
-    "intended, not a fault. Everything held is listed below with the domain that signed it, and any message " +
-    "ledger could authenticate can be opened and read here. Reading one does not file it.",
+    "mail provider, not your bank, so it is held instead of filed. That is normal, not a fault. Everything held " +
+    "is listed below with the domain that signed it. You can open and read any message ledger could " +
+    "authenticate; reading one does not file it.",
 } as const;
 
 /**
@@ -703,11 +702,10 @@ export const QUARANTINE_HELD = {
 export const TRUST_ONLY_YOUR_BANK = {
   title: "Press this only on mail from your bank",
   body:
-    "Each message below is filed under the domain that signed it. On your bank's own mail that domain is the " +
-    "bank's, and trusting it files the bank's alerts from now on. Your mail provider signs its own confirmation " +
-    "message, so pressing it there asks ledger to trust that provider instead — everything it relays to this " +
-    "address, not just your bank. ledger refuses that for the providers it recognises and tells you why, but the " +
-    "safe rule is simply: only your bank.",
+    "Each message below is filed under the domain that signed it. Press it on your bank's mail and ledger files " +
+    "the bank's alerts from now on. Press it on your mail provider's own confirmation and you trust everything " +
+    "that provider relays to this address, not just your bank. ledger blocks that for the providers it " +
+    "recognises, but the safe rule is: only your bank.",
 } as const;
 
 /**
@@ -722,9 +720,9 @@ export const TRUST_ONLY_YOUR_BANK = {
 export const WAITING_FOR_FIRST_MAIL = {
   title: "Waiting for your first bank email",
   body:
-    "There is no confirmation code to enter. This step finishes on its own once a transaction email from your " +
-    "bank arrives and ledger files it, so you can leave this open or come back later. Mail ledger cannot prove " +
-    "came from a bank is held rather than filed, and anything held is listed below.",
+    "There is no code to enter. This step finishes on its own when your bank's first transaction email arrives, " +
+    "so leave this open or come back later. Mail ledger cannot prove came from a bank is held rather than " +
+    "filed, and listed below.",
 } as const;
 
 /**
@@ -743,12 +741,12 @@ export const WAITING_FOR_FIRST_MAIL = {
 export const RECOVERY_WARNING = {
   title: "If you lose this passkey, the account is gone",
   body:
-    "There is no password to reset and no recovery email. Nobody — including the person running this beta — can " +
-    "let you back in, because nobody holds anything that could. If your only passkey is on one device and that " +
-    "device is lost, wiped or replaced, the account and everything recorded in it cannot be reached again.",
+    "There is no password to reset and no recovery email. Nobody, including the person running this beta, can " +
+    "let you back in. If your only passkey is on one device and that device is lost, wiped or replaced, the " +
+    "account and everything in it cannot be reached again.",
   advice:
-    "Save the passkey somewhere that outlives one handset: iCloud Keychain, a Google or password-manager account " +
-    "that syncs, or a hardware key. Then add a second one below.",
+    "Save the passkey somewhere that outlives one phone: iCloud Keychain, a syncing password manager, or a " +
+    "hardware key. Then add a second one below.",
 } as const;
 
 /**
@@ -789,7 +787,7 @@ export const RECOVERY_PHRASE_COPY = {
   title: "Write down your recovery phrase",
   intro: "Twelve words, made on this device and sent nowhere. They are the key to everything ledger records for you.",
   whatItProtects:
-    "Your transactions and the bank emails behind them are encrypted before they are stored, with a key only your " +
+    "Your transactions and the emails behind them are encrypted before they are stored, with a key only your " +
     "devices hold. A stolen disk, a stolen backup or a subpoena of our database yields ciphertext.",
   whatItDoesNot:
     "ledger does see each email as it arrives — your bank sends it unencrypted. We read the transaction out, seal " +
@@ -810,15 +808,14 @@ export const RECOVERY_PHRASE_COPY = {
   // The confirmation step. A checkbox alone is a claim; this is a check.
   confirmTitle: "Now type three of them back",
   confirmIntro:
-    "This is what tells a phrase that was written down from one that was looked at. Go back if you cannot answer — " +
-    "the words are still there, and this is the last time they will be.",
+    "Go back if you cannot answer. The words are still there, and this is the last time they will be.",
   confirmWrong: "That is not the word at that position. Check what you wrote down.",
   back: "Show me the words again",
   publish: "Finish setting up encryption",
   working: "Setting up encryption…",
   failed:
-    "ledger could not finish setting up encryption. Nothing is lost and the phrase has not changed. Try again when " +
-    "you have a connection.",
+    "ledger could not finish setting up encryption. Nothing is lost and your phrase has not changed. Try again " +
+    "when you are online.",
 } as const;
 
 /**
@@ -843,29 +840,27 @@ export const RECOVERY_ENTRY_COPY = {
   signedIn: "You're signed in. This browser needs your recovery phrase before it can show your records.",
   title: "Enter your recovery phrase",
   intro:
-    "This browser holds no key for your account. That is what a reinstall, a new device or cleared site data looks " +
-    "like. Your records are safe and encrypted on the server; these twelve words make them readable again, and let " +
-    "this device write to them.",
+    "This browser holds no key for your account — normal after a reinstall, a new device or cleared site data. " +
+    "Your records are safe and encrypted on the server. These twelve words make them readable again and let this " +
+    "device write to them.",
   // The button on this screen enrols a writer. Saying only "readable" would be
   // true of what the phrase decrypts and false about what pressing it does.
   alsoWrites: "Anyone with these words can also add a device that writes to your records, not just read them.",
   noWayBack:
-    "There is no way around this screen. ledger holds no copy of your key, so nobody here can let you in without " +
-    "the phrase — not the person running this beta, not with proof of who you are.",
+    "There is no way around this screen. ledger holds no copy of your key, so nobody can let you in without the " +
+    "phrase — not the person running this beta, not with proof of who you are.",
   label: "Your twelve words",
   placeholder: "twelve words, separated by spaces",
   action: "Unlock my account",
   working: "Checking…",
-  failed:
-    "Those words did not open your account. Every word is checked against ledger's list, so a wrong one is usually " +
-    "a typo or two words swapped.",
+  failed: "Those words did not open your account. It is usually a typo, or two words swapped.",
 } as const;
 
 export const ADD_PASSKEY_COPY = {
   title: "Add a second passkey",
   body:
-    "A second passkey on a different device — another phone, a laptop, a hardware key — is the only backup this " +
-    "product can offer. Either one will sign you in on its own.",
+    "A second passkey on another device — a phone, a laptop, a hardware key — is the only backup ledger can " +
+    "offer. Either one signs you in on its own.",
   action: "Add another passkey",
   done: "Second passkey added.",
   skip: "Not now",

@@ -253,7 +253,7 @@ export function Verification({
       );
       if (live.current) setItems(page.items);
     } catch {
-      if (live.current) setMessage("Could not check for held mail. ledger will keep trying.");
+      if (live.current) setMessage("Could not check for held mail. ledger keeps trying.");
     } finally {
       if (live.current) setBusy(false);
     }
@@ -443,8 +443,8 @@ export function Verification({
           const now = result.reingest?.remaining ?? 0;
           if (result.reingest?.incomplete === true) {
             setMessage(
-              "ledger filed part of the mail held for that sender and then hit an error. The rest is still held " +
-                "and still safe — try filing it again.",
+              "ledger filed part of that sender's held mail, then hit an error. The rest is still held and " +
+                "still safe — try filing it again.",
             );
             left = now;
             break;
@@ -553,12 +553,10 @@ export function Verification({
             DURABILITY, not for keeping a sentence the code does not honour.
           */}
           <p>
-            ledger files a bounded batch at a time, and {partial.remaining}{" "}
-            {partial.remaining === 1 ? "message" : "messages"} from{" "}
+            {partial.remaining} {partial.remaining === 1 ? "message" : "messages"} from{" "}
             <span className="font-mono">{partial.domain}</span> {partial.remaining === 1 ? "is" : "are"} still
-            held. Nothing is lost, and ledger will keep trying to file{" "}
-            {partial.remaining === 1 ? "it" : "them"} while you are here. You can also finish this any time from
-            Settings, under Held mail.
+            held. Nothing is lost. ledger keeps trying to file {partial.remaining === 1 ? "it" : "them"} while
+            you are here, and you can finish this any time from Settings, under Held mail.
           </p>
           <Button variant="primary" disabled={busy} onClick={() => void confirm(partial.domain, partial.scope)}>
             File the rest
@@ -604,8 +602,8 @@ export function Verification({
         <Notice testId="verification-no-bank-mail">
           <p>
             {readingCode
-              ? "Nothing has arrived yet. If your mail provider sends a confirmation code, it will appear here — and so will your first bank email. This step finishes on its own when a bank email arrives, so you can leave the app open or come back later."
-              : "Nothing has arrived yet. This step finishes on its own when your first bank email arrives, so you can leave the app open or come back later. Anything ledger cannot prove came from a bank appears here rather than being filed."}
+              ? "Nothing yet. A confirmation code, if your provider sends one, appears here — and so does your first bank email. This step finishes on its own, so leave the app open or come back later."
+              : "Nothing yet. This step finishes on its own when your first bank email arrives, so leave the app open or come back later. Anything ledger cannot prove came from a bank appears here rather than being filed."}
           </p>
         </Notice>
       ) : (
@@ -639,8 +637,8 @@ export function Verification({
 
               {open && scan === null && (
                 <p data-testid="verification-no-body">
-                  This message is held but its contents were not sent to this device. Open it from held mail in
-                  settings once you are through setup.
+                  This message is held, but its contents were not sent to this device. Open it from Held mail in
+                  Settings once setup is done.
                 </p>
               )}
               {open && scan !== null && (

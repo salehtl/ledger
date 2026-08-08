@@ -223,8 +223,8 @@ export function V2Settings({
       // and nothing that enumerates — so this must not imply a count it cannot
       // check. It names the one place that does know instead.
       setPasskeyNote(
-        "A new passkey was added to this account. ledger cannot show you a list of them — check your " +
-          "authenticator or password manager to see every passkey you hold.",
+        "A new passkey was added. ledger cannot list your passkeys — check your authenticator or password " +
+          "manager to see them all.",
       );
     } catch (error) {
       const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
@@ -468,8 +468,8 @@ export function V2Settings({
                 lost) rather than what it cannot know.
               */
               <p className="text-xs text-warn">
-                The last sync did not finish. Nothing was lost — this usually means ledger could not reach the
-                server. {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
+                The last sync did not finish. Nothing was lost — ledger usually just could not reach the server.{" "}
+                {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
               </p>
             ) : (
               <p className="text-xs text-muted">
@@ -504,8 +504,8 @@ export function V2Settings({
             <>
               {supported.isError && (
                 <p className="text-xs text-warn">
-                  ledger could not fetch the list of banks it can read. The banks you have already added are below
-                  and can still be changed.
+                  ledger could not fetch the list of banks it can read. The banks you added are below and can
+                  still be changed.
                 </p>
               )}
               <BankPicker

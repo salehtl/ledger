@@ -357,7 +357,7 @@ export function heldBody(blobBase64: string, receivedAt: string): HeldBody {
 
 /** Said when no code was found. It must never read as a failure of the user's. */
 export const NO_CODE_COPY =
-  "ledger could not find a confirmation code in this message. The message itself is below, exactly as it arrived " +
-  "and not trusted — if there is a code, it is somewhere in it, and copying it from there works just as well.";
+  "ledger could not find a confirmation code in this message. The message is below, exactly as it arrived and " +
+  "not trusted — if there is a code, it is in there.";
 
 export const UNTRUSTED_BODY_LABEL = "Raw message, shown as text. ledger has not verified anything in it.";

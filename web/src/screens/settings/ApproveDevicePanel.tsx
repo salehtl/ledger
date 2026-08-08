@@ -78,9 +78,9 @@ function refusalCopy(error: unknown): string {
       return "That device was not added: too many attempts in a row. Wait a minute and try again.";
     case "rejected":
       return (
-        "That device was not added. The server does not say why — the likeliest causes are that it is already " +
-        "added, or that this device's key is no longer accepted for changes. Check the other device first; if it " +
-        "still cannot make changes, this device has to be set up on the account again before it can approve one."
+        "That device was not added, and the server does not say why. Most likely it is already added, or this " +
+        "device's key is no longer accepted for changes. Check the other device first; if it still cannot make " +
+        "changes, set this device up on the account again."
       );
     case "revoked":
       // A 403 for a signing key the server no longer accepts: the fault is on
@@ -90,7 +90,7 @@ function refusalCopy(error: unknown): string {
       // The LOCAL refusal `V2Handle.approveDevice` raises before any request:
       // this device holds no enrolled writer, so it has nothing to sign with.
       // It must not read as a server answer — nothing was asked.
-      return "That device was not added. This device is signed in but has not been set up to make changes itself, so it cannot approve another one. Use a device that can.";
+      return "That device was not added. This device is signed in but cannot make changes itself, so it cannot approve another one. Use a device that can.";
     case "misconfigured":
       return "That device was not added: this copy of ledger is not set up correctly. Nothing you do here will fix it — this is ours to repair.";
     case "unavailable":

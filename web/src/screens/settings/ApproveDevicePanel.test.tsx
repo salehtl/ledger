@@ -152,7 +152,7 @@ describe("ApproveDevicePanel", () => {
     await userEvent.click(await screen.findByTestId("comparison-confirm"));
     await userEvent.click(screen.getByTestId("approve-device"));
     const note = await screen.findByTestId("approve-failure");
-    expect(note).toHaveTextContent(/has not been set up to make changes itself/i);
+    expect(note).toHaveTextContent(/this device is signed in but cannot make changes itself/i);
     expect(note).not.toHaveTextContent(/server/i);
     expect(note).not.toHaveTextContent(/fresh code/i);
   });

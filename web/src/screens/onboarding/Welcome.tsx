@@ -206,8 +206,8 @@ export function Welcome({
         added: false,
         note:
           kind === "cancelled"
-            ? "No second passkey was added. You can add one later from Settings."
-            : `${failureCopy(kind).title}. Your account is fine — a second passkey can be added later from Settings.`,
+            ? "No second passkey was added. You can add one from Settings."
+            : `${failureCopy(kind).title}. Your account is fine — you can add a second passkey from Settings.`,
       });
     }
   }, [handle, addSecondPasskey]);
@@ -218,7 +218,7 @@ export function Welcome({
       <Step
         testId="welcome-created"
         title="Your account is ready"
-        intro="One thing before you carry on, and it is the one thing nobody can fix for you later."
+        intro="One thing first — it is the one thing nobody can fix for you later."
         footer={
           <>
             <Button variant="primary" disabled={phase.adding} onClick={() => void addAnother()}>
@@ -252,13 +252,12 @@ export function Welcome({
       <Step
         testId="welcome-account-mismatch"
         title="This browser is already holding another account"
-        intro="Your passkey is fine and the server accepted it. What is in the way is the data left here by a different ledger account."
+        intro="Your passkey is fine and the server accepted it. The data left here by a different ledger account is in the way."
       >
         <Notice tone="danger" announce title="Two accounts cannot share one browser profile" testId="account-mismatch">
           <p>
-            ledger keeps each account&rsquo;s records in this browser&rsquo;s own storage, and it will not mix two
-            of them together — sync positions from one account applied to another&rsquo;s records would corrupt
-            both. So it refused rather than letting you in.
+            ledger keeps each account&rsquo;s records in this browser&rsquo;s own storage and will not mix two of
+            them together, so it refused rather than letting you in.
           </p>
           {/*
             The narrow truth, and only the narrow truth. This used to say the
@@ -289,11 +288,11 @@ export function Welcome({
             <p>
               {phase.unsynced < 0
                 ? "This browser's ledger data could not be read well enough to say whether it holds anything the server has not received. Clearing it would destroy anything that is there."
-                : `Those ${phase.unsynced === 1 ? "was" : "were"} recorded on this device for the other account and exist nowhere else. Clearing this browser's data deletes ${phase.unsynced === 1 ? "it" : "them"} permanently — no copy is kept, and the operator cannot restore ${phase.unsynced === 1 ? "it" : "them"}.`}
+                : `${phase.unsynced === 1 ? "It was" : "They were"} recorded on this device for the other account and exist nowhere else. Clearing this browser's data deletes ${phase.unsynced === 1 ? "it" : "them"} permanently. No copy is kept, and nobody can restore ${phase.unsynced === 1 ? "it" : "them"}.`}
             </p>
             <p>
-              The way to keep {phase.unsynced === 1 ? "it" : "them"} is to go back and sign in as the other account
-              first, on a device holding its passkey. Once it has synced, this data is safe to clear.
+              To keep {phase.unsynced === 1 ? "it" : "them"}, go back and sign in as the other account first, on a
+              device holding its passkey. Once it has synced, this data is safe to clear.
             </p>
             {/*
               An explicit acknowledgement, not a second confirm dialog: the
@@ -382,8 +381,8 @@ export function Welcome({
 
         <Notice testId="not-invited">
           <p>
-            Codes are handed out one at a time by the person running this beta, and each one works once — a code
-            that has already been redeemed will not work again.
+            The person running this beta hands out codes one at a time, and each one works once. A code that has
+            already been used will not work again.
           </p>
           <p>There is no waiting list to join from inside the app.</p>
         </Notice>
@@ -406,7 +405,7 @@ export function Welcome({
     <Step
       testId="welcome"
       title="ledger"
-      intro="Your bank already emails you every transaction. Forward those emails here and ledger keeps the running picture — on your device, for you only."
+      intro="Your bank already emails you every transaction. Forward those emails here and ledger keeps the running picture."
     >
       {copy !== null && (
         <Notice tone="danger" announce title={copy.title} testId="welcome-failure">
