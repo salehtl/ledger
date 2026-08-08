@@ -36,9 +36,11 @@ import { MAX_CATEGORY_RUNES, MIN_CATEGORY_RUNES, MIN_EXACT_RUNES, subjectOf } fr
 import type { OpSpec } from "@ledger/client/outbox/outbox";
 import { decodeTxnRow, ensureProjection, TXN_COLUMNS } from "@ledger/client/replay/projection";
 import { countsTowardMoney } from "@ledger/client/replay/state";
-import type { ForkNotice, Rule, Split, Txn } from "@ledger/client/replay/state";
+import type { CategoryDef, ForkNotice, Rule, Split, Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 import { parseDecimal, type Op } from "@ledger/client/wire/op";
+
+import { readCategoryDefs } from "./categories";
 
 // ---------------------------------------------------------------------------
 // 1. Why a row is here
@@ -1045,6 +1047,15 @@ export interface ReviewSource {
   forks(opts?: PageOptions): Promise<ForkItem[]>;
   money(lane: Lane): Promise<ReviewMoney>;
   categories(): Promise<string[]>;
+  /**
+   * The categories the user DEFINED, retired ones included.
+   *
+   * Separate from {@link ReviewSource.categories}, which is the set they have
+   * USED — the two answer different questions, and the picker needs both: the
+   * definitions supply kind, bucket and colour, and the retirements are what
+   * take a name out of the grid.
+   */
+  categoryDefs(): Promise<CategoryDef[]>;
   rules(): Promise<Rule[]>;
   version(txnID: string): Promise<number | null>;
   dismiss(itemKey: string, lane: Lane, answer: Disposition): Promise<void>;
@@ -1069,6 +1080,7 @@ export function sqlReviewSource(db: SqlDriver, now: () => string = () => new Dat
     forks: async (opts) => forkPage(db, opts),
     money: (lane) => laneMoney(db, lane, { between: yieldToUI }),
     categories: async () => topCategories(db),
+    categoryDefs: async () => readCategoryDefs(db),
     rules: async () => rulesOf(db),
     version: async (id) => versionOf(db, id),
     dismiss: async (key, lane, answer) => setDisposition(db, key, lane, answer, now()),

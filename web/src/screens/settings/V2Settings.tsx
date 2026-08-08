@@ -59,10 +59,13 @@ import {
   invalidateAfterSync,
   useBudgetSnapshot,
   useBudgetSource,
+  useCategoryChoices,
   useHomeCurrency,
+  useReviewSource,
   useTxnSource,
   v2Keys,
 } from "../../v2/queries";
+import { V2CategoriesPanel } from "./V2CategoriesPanel";
 import { useWriter, type Writer } from "../../v2/writer";
 import { isPasskeyError, type V2Handle } from "../../v2/session";
 import type { EnrolmentRequest, KeyHistoryEntry } from "../../v2/deviceEnrolment";
@@ -163,6 +166,11 @@ export function V2Settings({
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  // The definitions, not the categories the user has USED: this screen manages
+  // the set on offer, and a retired one has to stay visible here so it can be
+  // brought back.
+  const categoryDefs = useCategoryChoices(useReviewSource()).data?.categoryDefs ?? [];
 
   // Bound here rather than inline in the JSX so the panel's fetch effect, which
   // depends on the identity of its loader, runs once per opening instead of on
@@ -444,6 +452,22 @@ export function V2Settings({
         </Card>
       </section>
 
+      {/* ---- Categories ---- */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Categories</SectionLabel>
+        <Card className="!p-0 divide-y divide-border overflow-hidden">
+          <HubRow
+            label="Your categories"
+            value={
+              categoryDefs.length === 0
+                ? "The built-in set"
+                : `${categoryDefs.filter((c) => c.active).length} of your own`
+            }
+            onClick={() => setCategoriesOpen(true)}
+          />
+        </Card>
+      </section>
+
       {/* ---- Home currency: stated, never offered ---- */}
       <section className="space-y-2">
         <SectionLabel as="h2" className="px-1">Home currency</SectionLabel>
@@ -508,6 +532,16 @@ export function V2Settings({
       </section>
 
       <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+
+      {categoriesOpen && (
+        <Dialog title="Your categories" onClose={() => setCategoriesOpen(false)}>
+          <V2CategoriesPanel
+            defs={categoryDefs}
+            writer={writer}
+            onAuthored={() => void invalidateAfterSync(qc)}
+          />
+        </Dialog>
+      )}
 
       {addDeviceOpen && (
         <Dialog title="Add a device" onClose={() => setAddDeviceOpen(false)}>

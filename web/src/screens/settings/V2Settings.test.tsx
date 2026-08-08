@@ -214,6 +214,31 @@ describe("V2Settings", () => {
     expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
   });
 
+  it("opens the categories the user owns, and defines one into the log", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = {
+      pending: [],
+      enqueueMany: (s: readonly unknown[]) => void specs.push(...s),
+      flush: async () => {},
+    };
+    wrap({ writer });
+
+    // An account that has defined nothing says so rather than implying an
+    // empty list: the built-in set is what it is using.
+    await user.click(await screen.findByRole("button", { name: /your categories/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /add to needs/i }));
+    await user.type(within(dialog).getByLabelText(/new category in needs/i), "Gym");
+    await user.click(within(dialog).getByRole("button", { name: /add gym/i }));
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({
+      type: "category_defined",
+      payload: { name: "Gym", kind: "spending", bucket: "need", active: true },
+    });
+  });
+
   it("makes no v1 HTTP call — ledgerd does not serve those routes", async () => {
     wrap();
     await screen.findByTestId("settings-inbound-address");

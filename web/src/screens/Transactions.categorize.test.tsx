@@ -373,6 +373,29 @@ describe("categorising from the transaction list", () => {
     expect(screen.queryByText("groceries · 2026-08-07")).toBeNull();
   });
 
+  it("offers a category the user defined, and stops offering a retired one", async () => {
+    const db = await projectionWith([...FIXTURE_ROWS, TRUSTED_UNCATEGORISED]);
+    const define = (id: string, ord: number, name: string, active: number) =>
+      db
+        .prepare("INSERT INTO category (id,ord,name,kind,bucket,color,active) VALUES (?,?,?,'spending','need',NULL,?)")
+        .run(id, ord, name, active);
+    define("c1", 0, "Gym", 1);
+    // "Groceries" is in the built-in seed, so retiring it proves a retirement
+    // withholds a name the grid would otherwise supply itself.
+    define("c2", 1, "Groceries", 0);
+
+    mount(db, recorder());
+    await openSheetFor("DIB CARD PURCHASE");
+
+    expect(screen.getByRole("button", { name: "Gym" })).toBeInTheDocument();
+    // Case-insensitive: the same name arrives from the user's history as
+    // "groceries" and from the built-in seed as "Groceries", and a retirement
+    // has to withhold both.
+    expect(screen.queryByRole("button", { name: /^groceries$/i })).toBeNull();
+    // …and the sheet did not lose the rest of the grid along with it.
+    expect(screen.getByRole("button", { name: "Dining" })).toBeInTheDocument();
+  });
+
   it("does not offer a categorisation it could not record", async () => {
     // No writer means no local ledger to append to. The row still renders; what
     // it no longer does is open a sheet, rather than opening one that silently

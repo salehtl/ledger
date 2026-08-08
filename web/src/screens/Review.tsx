@@ -143,7 +143,10 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
     const settlement = settledBy(writer?.pending ?? []);
     return allRows.filter((r) => !isSettled(r.item.txn, settlement));
   }, [allRows, writer?.pending]);
-  const categories = useMemo(() => deckCategories(feed.data?.categories ?? []), [feed.data]);
+  const categories = useMemo(
+    () => deckCategories(feed.data?.categories ?? [], feed.data?.categoryDefs ?? []),
+    [feed.data],
+  );
 
   /**
    * Appends one answer.

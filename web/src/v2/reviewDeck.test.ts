@@ -132,4 +132,50 @@ describe("deckCategories", () => {
     expect(cats.filter((c) => c.Name.toLowerCase() === "groceries").length).toBe(1);
     expect(cats.every((c) => c.IsActive)).toBe(true);
   });
+
+  it("with NO definitions the grid is exactly what it has always been", () => {
+    // Backwards compatibility, asserted against the call every caller made
+    // before definitions existed.
+    expect(deckCategories(["Groceries", "Falconry"], [])).toEqual(deckCategories(["Groceries", "Falconry"]));
+  });
+
+  it("offers a defined category, in the bucket it was defined in", () => {
+    const cats = deckCategories([], [
+      { id: "c1", name: "Gym", kind: "spending", bucket: "need", color: "#1373d9", active: true },
+    ]);
+    const gym = cats.find((c) => c.Name === "Gym");
+    // A need, from its definition — not `bucketOf`'s "nothing maps it, so want".
+    expect(gym).toMatchObject({ Kind: "spending", Bucket: "need", Color: "#1373d9" });
+    expect(cats[0]!.Name).toBe("Gym");
+  });
+
+  it("stops offering a retired one, even where the user has already used it", () => {
+    const retired = [
+      { id: "c1", name: "Gym", kind: "spending", bucket: "need", color: null, active: false } as const,
+    ];
+    // "Gym" is in the used-names list — it is in the user's history — and it
+    // must still leave the picker: retiring is what "stop offering this" means.
+    const cats = deckCategories(["Gym", "Groceries"], retired);
+    expect(cats.some((c) => c.Name.toLowerCase() === "gym")).toBe(false);
+    expect(cats.some((c) => c.Name === "Groceries")).toBe(true);
+  });
+
+  it("a retired name that clashes with a built-in one is still withheld", () => {
+    // "Dining" is seeded from DEFAULT_BUDGET_MAPPING, so a retirement has to be
+    // able to remove a name the grid would otherwise supply itself.
+    const cats = deckCategories([], [
+      { id: "c2", name: "Dining", kind: "spending", bucket: "want", color: null, active: false },
+    ]);
+    expect(cats.some((c) => c.Name.toLowerCase() === "dining")).toBe(false);
+  });
+
+  it("buckets a category by the user's definition, retired or not", () => {
+    const defs = [
+      { id: "c1", name: "Falconry", kind: "spending", bucket: "need", color: null, active: false } as const,
+    ];
+    // The money already filed under a retired category still belongs to its
+    // bucket, so the lookup must not care whether it is active.
+    expect(bucketOf("Falconry", defs)).toBe("need");
+    expect(bucketOf("Falconry")).toBe("want");
+  });
 });

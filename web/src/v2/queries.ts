@@ -36,7 +36,7 @@
 
 import { useMemo } from "react";
 import { useQuery, type QueryClient, type UseQueryResult } from "@tanstack/react-query";
-import type { Rule } from "@ledger/client/replay/state";
+import type { CategoryDef, Rule } from "@ledger/client/replay/state";
 
 import { useV2 } from "./BootGate";
 import { sqlBudgetSource, type BudgetSnapshot, type BudgetSource } from "./sources/budget";
@@ -317,6 +317,8 @@ export interface ReviewFeed {
   forks: ForkItem[];
   money: ReviewMoney;
   categories: string[];
+  /** The user's own definitions — what the grid offers, and what it withholds. */
+  categoryDefs: CategoryDef[];
   rules: Rule[];
 }
 
@@ -344,13 +346,14 @@ export function useReviewFeed(source: ReviewSource | null, lanes: readonly Lane[
         if (lane !== "forks") items.push(...(await source!.page(lane)));
         moneys.push(await source!.money(lane));
       }
-      const [counts, forks, categories, rules] = await Promise.all([
+      const [counts, forks, categories, categoryDefs, rules] = await Promise.all([
         source!.counts(),
         source!.forks(),
         source!.categories(),
+        source!.categoryDefs(),
         source!.rules(),
       ]);
-      return { counts, items, forks, money: mergeMoney(moneys), categories, rules };
+      return { counts, items, forks, money: mergeMoney(moneys), categories, categoryDefs, rules };
     },
     enabled: source !== null,
   });
@@ -360,6 +363,8 @@ export function useReviewFeed(source: ReviewSource | null, lanes: readonly Lane[
 export interface CategoryChoices {
   /** The categories this user actually uses, most-used first. */
   categories: string[];
+  /** The categories this user DEFINED, retired ones included. Different question. */
+  categoryDefs: CategoryDef[];
   /** Every materialised rule, so a merchant categorised twice does not write the same rule twice. */
   rules: Rule[];
 }
@@ -378,8 +383,12 @@ export function useCategoryChoices(source: ReviewSource | null): UseQueryResult<
     ...PROJECTION_QUERY,
     queryKey: v2Keys.categories(),
     queryFn: async (): Promise<CategoryChoices> => {
-      const [categories, rules] = await Promise.all([source!.categories(), source!.rules()]);
-      return { categories, rules };
+      const [categories, categoryDefs, rules] = await Promise.all([
+        source!.categories(),
+        source!.categoryDefs(),
+        source!.rules(),
+      ]);
+      return { categories, categoryDefs, rules };
     },
     enabled: source !== null,
   });

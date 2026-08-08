@@ -55,6 +55,7 @@ import type { Category, Txn as ApiTxn } from "../api/types";
 import type { AmountDisplay } from "../components/swipe/SwipeCard";
 import { formatMinor, signedMinor } from "../lib/minorMoney";
 import { DEFAULT_BUDGET_MAPPING, type BudgetBucket } from "./sources/budget";
+import { categoryMapping, type CategoryDef } from "./sources/categories";
 import { REVIEW_REASON_COPY, type ReviewItem } from "./sources/review";
 
 /** One card: what the deck renders, and the item it stands for. */
@@ -166,9 +167,17 @@ export function deckRows(
 // Categories
 // ---------------------------------------------------------------------------
 
-/** The bucket a v2 category string sorts into, or `want` when nothing maps it. */
-export function bucketOf(category: string): BudgetBucket {
-  return DEFAULT_BUDGET_MAPPING.categories[category.toLowerCase()] ?? "want";
+/**
+ * The bucket a v2 category string sorts into, or `want` when nothing maps it.
+ *
+ * The user's own definitions win over the built-in table, and a RETIRED one
+ * still counts: the money already filed under it belongs to the bucket it was
+ * filed in, so this lookup deliberately does not care whether the category is
+ * still on offer. Only the picker cares about that.
+ */
+export function bucketOf(category: string, defs: readonly CategoryDef[] = []): BudgetBucket {
+  const key = category.toLowerCase();
+  return categoryMapping(defs)[key] ?? DEFAULT_BUDGET_MAPPING.categories[key] ?? "want";
 }
 
 /** What a category the user has never used yet is titled in the grid. */
@@ -185,16 +194,27 @@ function titleCase(s: string): string {
  * the two the grid cannot derive: the panel shows `Kind: "excluded"` behind the
  * Transfer rail and `Kind: "income"` for a credit.
  */
-export function deckCategories(names: readonly string[]): Category[] {
+export function deckCategories(names: readonly string[], defs: readonly CategoryDef[] = []): Category[] {
   const out: Category[] = [];
   const seen = new Set<string>();
-  const add = (name: string, kind: string, bucket: string): void => {
+  // A retirement has to be able to withhold a name the grid would otherwise
+  // supply itself — from the user's own history, or from the built-in seed —
+  // so the refusal is by NAME and is applied to every source below.
+  const retired = new Set(defs.filter((c) => !c.active).map((c) => c.name.toLowerCase()));
+  const add = (name: string, kind: string, bucket: string, color = ""): void => {
     const key = name.toLowerCase();
-    if (name === "" || seen.has(key)) return;
+    if (name === "" || seen.has(key) || retired.has(key)) return;
     seen.add(key);
-    out.push({ ID: out.length + 1, Name: name, Kind: kind, Bucket: bucket, IsActive: true, Color: "" });
+    out.push({ ID: out.length + 1, Name: name, Kind: kind, Bucket: bucket, IsActive: true, Color: color });
   };
-  for (const name of names) add(name, "spending", bucketOf(name));
+  // The user's own definitions first, and with their OWN kind and bucket: a
+  // "Gym" they filed under needs must not arrive here as a want because the
+  // built-in table has never heard of it.
+  for (const c of defs) {
+    if (!c.active) continue;
+    add(c.name, c.kind, c.bucket ?? "", c.color ?? "");
+  }
+  for (const name of names) add(name, "spending", bucketOf(name, defs));
   for (const [name, bucket] of Object.entries(DEFAULT_BUDGET_MAPPING.categories)) {
     add(titleCase(name), "spending", bucket);
   }

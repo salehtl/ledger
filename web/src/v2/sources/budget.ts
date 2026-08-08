@@ -21,6 +21,8 @@ import { ensureProjection, projectionIsUsable, readBudgetSplit, readMeta } from 
 import type { BudgetSplit } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
+import { categoryMapping, readCategoryDefs } from "./categories";
+
 export type BudgetBucket = "need" | "want" | "saving";
 
 export type { BudgetSplit };
@@ -89,6 +91,25 @@ export const DEFAULT_BUDGET_MAPPING: BudgetMapping = {
   },
   fallback: null,
 };
+
+/**
+ * The built-in table with the user's own categories layered over it.
+ *
+ * A layer, not a replacement: an account that has defined nothing gets
+ * {@link DEFAULT_BUDGET_MAPPING} back unchanged (asserted in
+ * `categories.test.ts`), and one that has defined "Gym" gets that name too. A
+ * user's definition of a name the table already knows WINS — otherwise moving
+ * "Dining" to needs would be a control that does not control anything.
+ *
+ * Retired categories are still mapped. The money filed under them is still in
+ * the ledger and still belongs to the bucket it was filed in; see
+ * `sources/categories.ts`.
+ */
+export function budgetMappingFor(db: SqlDriver): BudgetMapping {
+  const mine = categoryMapping(readCategoryDefs(db));
+  if (Object.keys(mine).length === 0) return DEFAULT_BUDGET_MAPPING;
+  return { categories: { ...DEFAULT_BUDGET_MAPPING.categories, ...mine }, fallback: DEFAULT_BUDGET_MAPPING.fallback };
+}
 
 /**
  * `usable` mirrors {@link projectionIsUsable} exactly. When `false`, every
@@ -172,10 +193,16 @@ function unusable(homeCurrency: string | null): BudgetSnapshot {
   };
 }
 
-export function sqlBudgetSource(db: SqlDriver, mapping: BudgetMapping = DEFAULT_BUDGET_MAPPING): BudgetSource {
+/**
+ * `mapping` is a test seam and an override. Left out — which is what production
+ * does — the mapping is read from the projection on every `read`, so a category
+ * defined on another device starts bucketing as soon as its op is folded.
+ */
+export function sqlBudgetSource(db: SqlDriver, mapping?: BudgetMapping): BudgetSource {
   ensureProjection(db);
   return {
     read(nowMs) {
+      const table = mapping ?? budgetMappingFor(db);
       // A projection written by an older build, or left half-written, must
       // never be summed and shown as fact: correctness depends on
       // `txn_split.amount_home_minor` having been written by THIS build, which
@@ -186,7 +213,7 @@ export function sqlBudgetSource(db: SqlDriver, mapping: BudgetMapping = DEFAULT_
       const buckets: Record<BudgetBucket, bigint> = { need: 0n, want: 0n, saving: 0n };
       let income = 0n;
       let unassigned = 0n;
-      const mapped = mappingSQL(mapping);
+      const mapped = mappingSQL(table);
       const rows = db
         .prepare(
           `WITH parts AS (

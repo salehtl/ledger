@@ -255,7 +255,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
    * the two screens never offer different vocabularies for the same log.
    */
   const categoryNames = useMemo(
-    () => deckCategories(choices.data?.categories ?? []).map((c) => c.Name),
+    () => deckCategories(choices.data?.categories ?? [], choices.data?.categoryDefs ?? []).map((c) => c.Name),
     [choices.data],
   );
 

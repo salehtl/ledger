@@ -39,8 +39,8 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { monthLabel } from "../../lib/insights";
 import {
+  budgetMappingFor,
   CONFIRMED,
-  DEFAULT_BUDGET_MAPPING,
   DEFAULT_BUDGET_SPLIT,
   type BudgetBucket,
   type BudgetMapping,
@@ -316,9 +316,16 @@ function drillPredicate(mapping: BudgetMapping, target: DrillTarget): { sql: str
   return arms.length === 0 ? { sql: "1=0", args: [] } : { sql: `(${arms.join(" OR ")})`, args };
 }
 
-export function sqlInsightsSource(db: SqlDriver, mapping: BudgetMapping = DEFAULT_BUDGET_MAPPING): InsightsSource {
+/**
+ * `mapping` is a test seam and an override. Left out — which is what production
+ * does — it is read from the projection on every call, so this screen and the
+ * 50/30/20 read bucket a category the same way the moment its definition folds.
+ */
+export function sqlInsightsSource(db: SqlDriver, override?: BudgetMapping): InsightsSource {
+  const mappingNow = (): BudgetMapping => override ?? budgetMappingFor(db);
   return {
     read(period, trendPeriods) {
+      const mapping = mappingNow();
       const meta = readMeta(db);
       if (meta === null || !projectionIsUsable(db)) return unusable(period, meta?.homeCurrency ?? null);
       const prev = previousPeriod(period);
@@ -439,7 +446,7 @@ export function sqlInsightsSource(db: SqlDriver, mapping: BudgetMapping = DEFAUL
 
       // Spending only, like the breakdown it came from: a credit is income
       // context there and would be a row here that belongs to no bar.
-      const where = drillPredicate(mapping, target);
+      const where = drillPredicate(mappingNow(), target);
       const scope = `WHERE period = ? AND direction = 'debit' AND ${where.sql}`;
       const args = [period, ...where.args];
 
