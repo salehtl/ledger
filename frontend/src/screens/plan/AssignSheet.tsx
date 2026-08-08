@@ -86,7 +86,7 @@ export function AssignSheet({ envelope, claim, month, canMoveIn, color, onClose,
       onClose={onClose}
     >
       <div className="grid grid-cols-2 gap-y-1 font-mono text-xs tracking-[0.04em] tnum" data-testid="envelope-math">
-        <MathRow label="carried over" fils={e.carryover_fils} />
+        {e.carryover_fils !== 0 && <MathRow label="carried over" fils={e.carryover_fils} />}
         <MathRow label="assigned" fils={e.assigned_fils} />
         <MathRow label="spent" fils={e.activity_fils} />
         <MathRow label="available" fils={e.available_fils} strong />
