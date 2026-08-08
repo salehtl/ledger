@@ -325,7 +325,7 @@ describe("recoverAccountKeys, authorizing an enrolment", () => {
     const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
 
     let escaped: ((msg: Uint8Array) => Uint8Array) | null = null;
-    const msg = webPlatform.utf8Encode("ledger-v2-writer-registration …");
+    const msg = webPlatform.utf8Encode("ledger-v2-writer-registration\x00…");
     let signature: Uint8Array | null = null;
 
     await recoverAccountKeys({
