@@ -222,32 +222,32 @@ func NewPasskeys(pool *pgxpool.Pool, rpID, rpDisplayName string, origins []strin
 // WebAuthnName/WebAuthnDisplayName travel to the authenticator and are shown in
 // the platform's passkey picker.
 //
-// The name is therefore the relying party's own, plus a short prefix of the
-// handle so two accounts on one device are distinguishable. It is not an email,
-// not a username, and there is no field on `users` it could have come from.
+// The name is just the relying party's own name — no per-account suffix. It is
+// not an email, not a username, and there is no field on `users` it could have
+// come from. Earlier this appended a short prefix of the user handle so two
+// accounts on one device would look different in a picker like Keychain; that
+// made the RP display name and this name look like the same word twice with
+// noise after it (e.g. "Ledger" over "Ledger YHeaynbu"). Dropped: two accounts
+// on one device now render identically in Keychain, accepted for a closed
+// beta. Login never depends on this string — see WebAuthnID.
 type passkeyUser struct {
 	handle      []byte
 	credentials []webauthn.Credential
 	rpName      string
 }
 
+// WebAuthnID is the actual identity: 32 random bytes minted once at
+// registration (see BeginRegistration) and never derived from, or influenced
+// by, WebAuthnName/WebAuthnDisplayName. Discoverable login resolves entirely
+// off this handle (BeginDiscoverableLogin, handleSubject) — the display name
+// is cosmetic and is never read back from an assertion.
 func (u passkeyUser) WebAuthnID() []byte { return u.handle }
 
-func (u passkeyUser) WebAuthnName() string {
-	return u.rpName + " " + shortHandle(u.handle)
-}
+func (u passkeyUser) WebAuthnName() string { return u.rpName }
 
 func (u passkeyUser) WebAuthnDisplayName() string { return u.rpName }
 
 func (u passkeyUser) WebAuthnCredentials() []webauthn.Credential { return u.credentials }
-
-func shortHandle(handle []byte) string {
-	s := handleSubject(handle)
-	if len(s) > 8 {
-		s = s[:8]
-	}
-	return s
-}
 
 // handleSubject is the one definition of "the subject a handle names". Every
 // SubjectHash call in this package goes through it, so the encoding cannot drift

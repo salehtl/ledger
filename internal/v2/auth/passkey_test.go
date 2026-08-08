@@ -325,6 +325,73 @@ func TestPasskeyLoginReturnsTheSameUserTheRegistrationCreated(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// WebAuthnName carries no per-account suffix and is never a lookup key
+// ---------------------------------------------------------------------------
+
+// TestPasskeyUserNameIsTheRPNameAloneRegardlessOfHandle guards the display
+// string directly: WebAuthnName/WebAuthnDisplayName must equal the RP's own
+// name and must NOT vary with the handle. A handle-derived suffix is exactly
+// what made Keychain read "Ledger" over "Ledger YHeaynbu".
+func TestPasskeyUserNameIsTheRPNameAloneRegardlessOfHandle(t *testing.T) {
+	a := passkeyUser{handle: []byte{1, 2, 3}, rpName: "Ledger by Sirdab"}
+	b := passkeyUser{handle: []byte{9, 9, 9, 9, 9, 9}, rpName: "Ledger by Sirdab"}
+
+	if a.WebAuthnName() != "Ledger by Sirdab" {
+		t.Fatalf("WebAuthnName = %q, want the bare RP name", a.WebAuthnName())
+	}
+	if a.WebAuthnDisplayName() != "Ledger by Sirdab" {
+		t.Fatalf("WebAuthnDisplayName = %q, want the bare RP name", a.WebAuthnDisplayName())
+	}
+	if a.WebAuthnName() != b.WebAuthnName() {
+		t.Fatalf("WebAuthnName differs across handles (%q vs %q); it must be handle-independent",
+			a.WebAuthnName(), b.WebAuthnName())
+	}
+}
+
+// TestTwoAccountsWithIdenticalPasskeyNamesStillLoginToDistinctAccounts proves
+// discoverable login is unaffected by dropping the handle suffix from
+// WebAuthnName: two real accounts share the exact same WebAuthnName (both
+// just the RP's name — see above) yet each authenticator still resolves to
+// its own account. Login is keyed on the user handle returned in the
+// assertion (BeginDiscoverableLogin, handleSubject), never on this string. If
+// a future change made the name load-bearing for lookup, one of these two
+// logins would resolve to the wrong account (or fail), and this test would
+// catch it.
+func TestTwoAccountsWithIdenticalPasskeyNamesStillLoginToDistinctAccounts(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	first, aAuth := enroll(t, p, mustMint(t, pool, "account one"))
+	second, bAuth := enroll(t, p, mustMint(t, pool, "account two"))
+	if first == second {
+		t.Fatal("fixture bug: enroll produced the same account twice")
+	}
+
+	id1, opts1, err := p.BeginLogin(bgctx)
+	if err != nil {
+		t.Fatalf("BeginLogin (a): %v", err)
+	}
+	got1, _, err := p.FinishLogin(bgctx, id1, aAuth.Assert(t, opts1, aAuth.Counter+1))
+	if err != nil {
+		t.Fatalf("FinishLogin (a): %v", err)
+	}
+	if got1 != first {
+		t.Fatalf("authenticator a logged in as %s, want %s", got1, first)
+	}
+
+	id2, opts2, err := p.BeginLogin(bgctx)
+	if err != nil {
+		t.Fatalf("BeginLogin (b): %v", err)
+	}
+	got2, _, err := p.FinishLogin(bgctx, id2, bAuth.Assert(t, opts2, bAuth.Counter+1))
+	if err != nil {
+		t.Fatalf("FinishLogin (b): %v", err)
+	}
+	if got2 != second {
+		t.Fatalf("authenticator b logged in as %s, want %s", got2, second)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // (d) an unknown credential
 // ---------------------------------------------------------------------------
 

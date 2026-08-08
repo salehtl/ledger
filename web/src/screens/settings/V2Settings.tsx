@@ -668,6 +668,9 @@ export function V2Settings({
             <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
           </div>
           <p className="text-sm leading-relaxed text-muted">{ADD_PASSKEY_COPY.body}</p>
+          <p className="text-sm leading-relaxed text-muted">
+            A passkey you already have keeps its old name until you remove and re-add it.
+          </p>
           <Button variant="primary" disabled={adding} onClick={() => void addPasskeyNow()}>
             {adding ? "Waiting for your authenticator…" : ADD_PASSKEY_COPY.action}
           </Button>

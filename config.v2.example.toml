@@ -114,7 +114,7 @@ session_ttl       = "720h"        # 30 days; opaque server-side session lifetime
 # the six /api/v1/auth/passkey routes are NOT SERVED at all, rather than served
 # and unable to verify anything.
 rp_id             = ""                       # e.g. "ledger.example.com"  (LEDGER_RP_ID)
-rp_display_name   = "Ledger"                 # shown in the platform's passkey prompt (LEDGER_RP_DISPLAY_NAME)
+rp_display_name   = "Ledger by Sirdab"       # shown in the platform's passkey prompt (LEDGER_RP_DISPLAY_NAME)
 rp_origins        = []                       # e.g. ["https://ledger.example.com"] (LEDGER_RP_ORIGINS, comma-separated)
 
 # --- TEST-ONLY command-line switches. They have NO TOML KEY AT ALL. ---
