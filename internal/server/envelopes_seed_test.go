@@ -1,16 +1,33 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"ledger/internal/store"
 )
 
+// seedMonth offsets the current calendar month by n. It normalises year/month
+// arithmetic directly rather than using time.AddDate, which normalises DAY
+// overflow (Jan 31 + 1 month → Mar 3) and would silently shift these months by
+// one whenever the suite runs on the 29th–31st.
 func seedMonth(n int) string {
-	return time.Now().UTC().AddDate(0, n, 0).Format("2006-01")
+	now := time.Now().UTC()
+	y, m := now.Year(), int(now.Month())+n
+	for m < 1 {
+		y, m = y-1, m+12
+	}
+	y, m = y+(m-1)/12, (m-1)%12+1
+	return fmt.Sprintf("%04d-%02d", y, m)
 }
 
 // getEnvelopes fetches the summary for a month and returns assigned_fils by
@@ -105,6 +122,72 @@ func TestGetEnvelopes_DoesNotSeedPastMonth(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("past month gained %d assignment rows from a read", n)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent writes: the default logger
+// is process-global, so goroutines from other tests may write to it while this
+// one reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// failingSeedStore is a real store whose seeding always fails, to exercise the
+// degraded path. Everything else is the genuine implementation.
+type failingSeedStore struct{ *store.Store }
+
+var errSeedBoom = errors.New("disk on fire")
+
+func (failingSeedStore) SeedEnvelopeAssignmentsFromPreviousMonth(string) (int, error) {
+	return 0, errSeedBoom
+}
+
+// A seeding failure must degrade, not blank the screen: still 200 with the
+// unseeded summary — but it must be LOGGED. Swallowed, a month that quietly
+// stops inheriting its plan is indistinguishable from one the user emptied on
+// purpose, and there is no signal anywhere that seeding broke.
+func TestGetEnvelopes_LogsSeedFailureAndStillServes(t *testing.T) {
+	st := newTestServerStore(t)
+	if err := st.EnsureBudgetConfig(); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServerWithStore(t, st)
+	srv.SetEnvelopeStore(failingSeedStore{st})
+	seedServerCategory(t, st, "Groceries")
+
+	// Capture the default logger, restoring the REAL previous writer on
+	// cleanup: log.SetOutput(nil) leaves a nil writer that panics any goroutine
+	// still logging from another test. The buffer is mutex-guarded for the same
+	// reason — background senders may log concurrently with this test.
+	logs := &syncBuffer{}
+	prevOut := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(prevOut) })
+
+	month := seedMonth(1)
+	r := httptest.NewRequest("GET", "/api/envelopes?month="+month, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a seeding failure must not blank the screen", w.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, errSeedBoom.Error()) || !strings.Contains(got, month) {
+		t.Errorf("seed failure was not logged with the month and cause; log was %q", got)
 	}
 }
 

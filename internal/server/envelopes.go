@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -106,11 +107,17 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	// envelopeMu is the same lock the mutation handlers take, so two
 	// simultaneous page loads cannot double-seed.
 	//
-	// A seeding failure must not blank the screen: log nothing, fall through,
-	// and serve the (unseeded) summary rather than 500.
+	// A seeding failure must not blank the screen: fall through and serve the
+	// (unseeded) summary rather than 500. It must still be LOGGED, though —
+	// discarding the error entirely means a month that silently stops
+	// inheriting its plan looks exactly like a month the user emptied on
+	// purpose, with no signal anywhere that seeding is broken.
 	s.envelopeMu.Lock()
-	_, _ = s.envelopeStore.SeedEnvelopeAssignmentsFromPreviousMonth(month)
+	_, seedErr := s.envelopeStore.SeedEnvelopeAssignmentsFromPreviousMonth(month)
 	s.envelopeMu.Unlock()
+	if seedErr != nil {
+		log.Printf("envelopes: seeding %s from the previous month failed: %v", month, seedErr)
+	}
 
 	s.writeEnvelopeSummary(w, month)
 }
