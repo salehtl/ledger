@@ -19,11 +19,17 @@ func (d DriftStat) SuccessRate() float64 {
 
 // SelectDriftStats returns per-from_addr parse stats for emails received after
 // `since`. Only senders with at least `minVolume` emails are included.
+//
+// 'ignored' rows count toward Parsed alongside 'parsed': a bank template can
+// deliberately mark an email as intentionally non-transactional (e.g. DIB's
+// duplicate English "Money Transfer" confirmation restating a transfer already
+// recorded by the Arabic notification). That is the parser doing its job, not
+// a failure, and must not depress the drift success rate.
 func (s *Store) SelectDriftStats(since time.Time, minVolume int) ([]DriftStat, error) {
 	rows, err := s.DB.Query(`
 		SELECT from_addr,
 		       COUNT(*) AS total,
-		       SUM(CASE WHEN parse_status = 'parsed' THEN 1 ELSE 0 END) AS parsed
+		       SUM(CASE WHEN parse_status IN ('parsed', 'ignored') THEN 1 ELSE 0 END) AS parsed
 		FROM ingest_log
 		WHERE created_at >= ? AND from_addr IS NOT NULL
 		GROUP BY from_addr
