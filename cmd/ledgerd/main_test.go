@@ -691,6 +691,41 @@ func TestTheAdminConsoleIsNotMountedOnThePublicListener(t *testing.T) {
 	}
 }
 
+// The operator PANEL is not on the public listener either.
+//
+// It is a separate test from the one above because the panel is a separate
+// hazard. Its assets are served UNAUTHENTICATED — a browser cannot put a bearer
+// token on a navigation — which is safe only for as long as the only listener
+// carrying them is the tailnet-bound one. Spec §8 refused publishing this
+// surface outright: a single static token on the open internet is not an
+// authorization story, and `admin.sirdab.ae` resolves to the Tailscale IP for
+// exactly that reason.
+//
+// The panel and the roster must both be present on the admin listener, so a
+// wiring change that dropped them shows up here as a failure rather than as a
+// silently green "not on the public listener".
+func TestTheOperatorPanelIsNotOnThePublicListener(t *testing.T) {
+	pub, adm := publicAndAdminHandlers(t)
+	panelPaths := []string{"/admin/ui/", "/admin/ui/console.css", "/admin/ui/console.js", "/admin/accounts"}
+	for _, p := range panelPaths {
+		rec := httptest.NewRecorder()
+		pub.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("the PUBLIC listener answered %s with %d; the operator panel must not exist there", p, rec.Code)
+		}
+	}
+	for _, p := range panelPaths {
+		rec := httptest.NewRecorder()
+		adm.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		// The three assets serve; /admin/accounts is guarded and answers 401
+		// with no credential. Either way it must not be a 404: that would mean
+		// the console shipped without the panel.
+		if rec.Code == http.StatusNotFound {
+			t.Errorf("the ADMIN listener answered %s with 404; the panel is not mounted", p)
+		}
+	}
+}
+
 // publicAndAdminHandlers builds both routers over a pool that is never
 // connected.
 //

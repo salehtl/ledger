@@ -644,8 +644,85 @@ contain `/admin/` patterns at all.
 | Quarantine | `GET /admin/quarantine?user=<uuid>[&include_blob=1]` |
 | Diagnostics | `GET /admin/diagnostics` |
 | Accounting | `GET /admin/accounting` |
+| Accounts | `GET /admin/accounts` |
+| Panel | `GET /admin/ui/` (plus `console.css`, `console.js`); `GET /` redirects to it |
 
 There is **no `/admin/parse-rate`** — that instrument is CLI-only.
+
+### 5.1 The panel
+
+A browser UI over the routes above, served from this listener and nowhere else.
+Open `http://127.0.0.1:8079/` on the box, or the Tailscale name below, and paste
+`LEDGER_ADMIN_TOKEN` when it asks. The token is kept in `sessionStorage`: it is
+gone when the tab closes, and it is sent as a bearer header, never a cookie —
+which is also why the console needs no CSRF defence.
+
+It is three embedded files (`internal/v2/admin/ui/`), not a bundle. Nothing to
+build, nothing to remember at deploy time; `go build` carries them.
+
+**The three asset paths are not behind the token, on purpose.** A browser cannot
+put an `Authorization` header on a navigation, so a guarded `index.html` could
+never be opened. The assets carry no data — markup, style, and the code that
+asks for a token. Every byte of content still comes from a guarded route.
+
+**It shows operational data only**: accounts, inbound addresses, forwarding
+health, parse rate by sender, arrivals that did not parse, held-mail counts,
+template health, the donated-format queue, the moderation queue, the waitlist.
+No transactions, no amounts, no balances. That is a design constraint rather
+than a preference: from Phase 3 the server cannot read those things at all, and
+a panel written as though it could would break on sealing.
+
+**`GET /admin/quarantine` is called without `include_blob`**, so the panel never
+puts a raw message on screen. Reading the Gmail verification link is still the
+`curl` above.
+
+### 5.2 `admin.sirdab.ae` — the operator applies this, it is not in the repo
+
+The hostname resolves to the **Tailscale IP**, so the panel is reachable by name
+and not from the public internet. Do **not** add it to `tls_domains`, and do not
+put it behind the public listener; `config.CheckAdminBind` and
+`TestTheAdminConsoleIsNotMountedOnThePublicListener` both exist to stop that.
+
+1. Read the box's Tailscale address:
+
+   ```bash
+   tailscale ip -4        # e.g. 100.x.y.z
+   ```
+
+2. In the `sirdab.ae` DNS zone, add one **A record**: `admin` → that
+   `100.x.y.z`. No AAAA unless you also want the `100::/64` address; no CNAME to
+   the public host. RFC 6598 space is unroutable on the internet, so a stranger
+   who resolves the name reaches nothing. Publishing it does disclose the
+   tailnet address — accepted, because that address is useless without an
+   enrolled device.
+
+3. **Certificate.** `admin_listen` speaks plain HTTP and must stay that way (the
+   bind check permits loopback and `100.64.0.0/10`, and terminating TLS in the
+   process would not change what is reachable). Two workable options:
+
+   - **Plain HTTP, no certificate.** `http://admin.sirdab.ae:8079/`. The link is
+     already encrypted by WireGuard between the two devices. This is the least
+     moving parts and the recommendation.
+   - **Tailscale-issued TLS**, if you want a padlock and a name with no port.
+     Requires MagicDNS and HTTPS certificates enabled in the tailnet, and it
+     serves under the tailnet name (`dinosaur.<tailnet>.ts.net`), **not** under
+     `admin.sirdab.ae` — Tailscale only issues for names in its own zone:
+
+     ```bash
+     sudo tailscale serve --bg --https=8443 http://127.0.0.1:8079
+     ```
+
+     `admin.sirdab.ae` over HTTPS would need a certificate for a name whose only
+     A record is a private address. That means a DNS-01 challenge and a
+     certificate on disk for a host that is not public. Not worth it for a
+     one-operator console; use the tailnet name if you want TLS.
+
+4. Check it, from an enrolled device:
+
+   ```bash
+   curl -sI http://admin.sirdab.ae:8079/admin/ui/     # 200
+   curl -sI https://<public host>/admin/ui/           # 404 — must stay a 404
+   ```
 
 **Why it stays off the internet.** The binding is the control; the bearer token
 stops an accident inside the tailnet, not an attacker outside it. What a caller

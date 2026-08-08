@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Ledger operator console</title>
+<link rel="stylesheet" href="console.css">
+<script src="console.js" defer></script>
+</head>
+<body>
+
+<!-- The token gate. It is not a login: there is one shared operator token and
+     no accounts here. The token is kept in sessionStorage, so it is gone when
+     the tab closes and it is never sent to another origin. -->
+<div id="gate" class="gate" hidden>
+  <form id="gate-form" class="gate-panel" autocomplete="off">
+    <h1 class="gate-title">Ledger operator console</h1>
+    <p class="gate-note">This console runs on the tailnet only. Paste the operator token to read it.</p>
+    <label class="label" for="token">Operator token</label>
+    <input id="token" class="input" type="password" name="token" autocomplete="off" spellcheck="false">
+    <p id="gate-error" class="gate-error" hidden></p>
+    <button class="btn btn-primary" type="submit">Open</button>
+  </form>
+</div>
+
+<div id="shell" class="shell" hidden>
+  <header class="topbar">
+    <span class="brand">Ledger operator</span>
+    <span class="spacer"></span>
+    <button id="refresh" class="btn" type="button">Refresh</button>
+    <button id="signout" class="btn" type="button">Forget token</button>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Console sections">
+    <button class="tab" type="button" data-view="accounts">Accounts</button>
+    <button class="tab" type="button" data-view="mail">Mail</button>
+    <button class="tab" type="button" data-view="templates">Templates</button>
+    <button class="tab" type="button" data-view="samples">Donated formats</button>
+    <button class="tab" type="button" data-view="dictionary">Dictionary</button>
+    <button class="tab" type="button" data-view="waitlist">Waitlist</button>
+  </nav>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <footer class="footer">
+    <!-- Precise on purpose. The dictionary DOES show merchant patterns, so a
+         blanket "never shows merchants" would be a sentence the page breaks two
+         tabs away. -->
+    <p>Operational data only. No transactions, amounts or balances. The dictionary shows merchant
+       patterns people submitted, never who submitted them.</p>
+  </footer>
+</div>
+
+</body>
+</html>

@@ -236,6 +236,7 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	mux.HandleFunc("POST /admin/templates/{id}/{version}/reprocess", guard(h.reprocessTemplate))
 	mux.HandleFunc("GET /admin/diagnostics", guard(h.diagnostics))
 	mux.HandleFunc("GET /admin/accounting", guard(h.accounting))
+	mux.HandleFunc("GET /admin/accounts", guard(h.accounts))
 	mux.HandleFunc("GET /admin/waitlist", guard(h.listWaitlist))
 	mux.HandleFunc("POST /admin/waitlist", guard(h.recordWaitlist))
 	if h.Quarantine != nil {
@@ -251,6 +252,12 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 			return err
 		}
 	}
+
+	// The operator's panel: three static files that call the routes above. It
+	// is mounted LAST of the real routes and before the catch-all, and it is
+	// deliberately NOT guarded — see ui.go's header for why a page a browser has
+	// to navigate to cannot be, and why that costs nothing.
+	h.uiRoutes(mux)
 
 	// Catch-all, for the same reason the public API has one: an unrouted
 	// /admin/ path must answer 404 rather than falling through to whatever is
