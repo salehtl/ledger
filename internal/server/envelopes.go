@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -22,6 +23,7 @@ type EnvelopeStore interface {
 	UpsertEnvelopeAssignments(month string, byCategory map[int64]int64) error
 	MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryID, amountFils int64) error
 	ApplyEnvelopeDeltas(month string, deltas []store.EnvelopeDelta) error
+	SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error)
 }
 
 // SetEnvelopeStore wires the envelope store. Required for /api/envelopes.
@@ -96,6 +98,27 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Opening a month the user has never planned carries the previous month's
+	// assignments into it, so a stable budget survives the month boundary
+	// without being re-typed. This is a write on a GET — a real smell, kept
+	// because the alternative (a month-rollover job) can only ever seed the
+	// CURRENT month, so planning ahead would still land on an empty screen.
+	// The store guards it to fire at most once per month and never on history;
+	// envelopeMu is the same lock the mutation handlers take, so two
+	// simultaneous page loads cannot double-seed.
+	//
+	// A seeding failure must not blank the screen: fall through and serve the
+	// (unseeded) summary rather than 500. It must still be LOGGED, though —
+	// discarding the error entirely means a month that silently stops
+	// inheriting its plan looks exactly like a month the user emptied on
+	// purpose, with no signal anywhere that seeding is broken.
+	s.envelopeMu.Lock()
+	_, seedErr := s.envelopeStore.SeedEnvelopeAssignmentsFromPreviousMonth(month)
+	s.envelopeMu.Unlock()
+	if seedErr != nil {
+		log.Printf("envelopes: seeding %s from the previous month failed: %v", month, seedErr)
+	}
+
 	s.writeEnvelopeSummary(w, month)
 }
 
