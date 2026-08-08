@@ -45,6 +45,7 @@
 
 import type { OpSpec } from "@ledger/client/outbox/outbox";
 import type { Rule } from "@ledger/client/replay/state";
+import type { Op } from "@ledger/client/wire/op";
 
 import type { PendingAnswer } from "./sources/review";
 import type { Writer } from "./writer";
@@ -94,4 +95,26 @@ export function recordAuthored(store: Authored, txnID: string, specs: readonly O
       });
     }
   }
+}
+
+/**
+ * What this device has queued for the bank list, last-wins per bank.
+ *
+ * Settings' problem is a plainer version of Transactions': the projection does
+ * not move until a sync round-trips (`writer.ts:28-30`), and `bank_declared` is
+ * one keyed op per bank rather than a whole-set replace (spec §3.3), so a
+ * screen reading the projection alone never sees the second toggle in one
+ * sitting. `pending` rather than `authoredBy` because there is no push/fold
+ * window to bridge here — Settings mounts fresh each visit, so the ops it needs
+ * are always still in the outbox.
+ */
+export function pendingBanks(pending: readonly Op[]): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const op of pending) {
+    if (op.type !== "bank_declared") continue;
+    const payload = op.payload as { bank?: unknown; active?: unknown };
+    if (typeof payload.bank !== "string") continue;
+    out.set(payload.bank, payload.active === true);
+  }
+  return out;
 }

@@ -53,6 +53,7 @@ import { useV2OrThrow } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
+import { pendingBanks } from "../../v2/authored";
 import { BankPicker } from "../../components/BankPicker";
 import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
 import { MonthlyTotalField } from "../../components/MonthlyTotalField";
@@ -382,7 +383,37 @@ export function V2Settings({
     staleTime: 5 * 60_000,
   });
   const declared = useDeclaredBanks(useBanksSource());
-  const declaredActive = useMemo(() => activeBanks(declared.data ?? []), [declared.data]);
+  /**
+   * A render trigger with no other job.
+   *
+   * `declared` only reads `.data` below, and react-query's tracked-query
+   * optimisation means a refetch that returns structurally-equal data (which
+   * `invalidateAfterSync` always does here — no sync has run, so the
+   * projection has not changed) never re-renders this component. Without this,
+   * `declaredActive` is correct the NEXT time something else re-renders this
+   * screen, but not the moment a bank is toggled — same problem `authoredTick`
+   * solves in `Transactions.tsx`.
+   */
+  const [pendingTick, setPendingTick] = useState(0);
+  /**
+   * The projection plus what this device has queued but not yet synced.
+   *
+   * The projection alone does not move until a sync round-trips
+   * (`writer.ts:28-30`), so without the overlay a second bank toggled in the
+   * same sitting never appears: the refetch after the first toggle returns the
+   * identical pre-toggle array. `pendingBanks` is last-wins per bank, laid over
+   * the declared rows so a bank the projection already knows about can still be
+   * flipped off before a sync. Memoised on `writer?.pending` and not `writer`
+   * because `Client.emitMany` REPLACES that array rather than mutating it (see
+   * `Transactions.tsx:169`) — a memo keyed on the writer object would never see
+   * the new value.
+   */
+  const declaredActive = useMemo(() => {
+    const merged = new Map((declared.data ?? []).map((d) => [d.bank, d.active]));
+    for (const [bank, active] of pendingBanks(writer?.pending ?? [])) merged.set(bank, active);
+    return activeBanks([...merged].map(([bank, active]) => ({ bank, active })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pendingTick is the change signal
+  }, [declared.data, writer?.pending, pendingTick]);
   /**
    * A template's `bank` is a free JSON string, so an id that `bank_declared`'s
    * grammar refuses would throw inside the toggle below — and with no error
@@ -404,6 +435,7 @@ export function V2Settings({
       // One op per bank, and a removal is a declaration (`active: false`) rather
       // than a delete — so a bank taken off and put back is one keyed record.
       writer.enqueueMany(bankDeclaredOps(bank, next));
+      setPendingTick((n) => n + 1);
       void invalidateAfterSync(qc);
       // Not awaited, for the reason the split's save is not: the op is durable
       // the moment it is queued.

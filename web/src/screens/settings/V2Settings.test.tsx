@@ -11,6 +11,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SqlDriver } from "@ledger/client/store/driver";
+import type { Op, OpType } from "@ledger/client/wire/op";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { ToastProvider } from "../../components/Toast";
@@ -383,6 +384,55 @@ describe("V2Settings", () => {
     // Removing is a declaration too — `active: false`, never a delete.
     await user.click(dib);
     expect(specs[1]).toEqual({ type: "bank_declared", payload: { bank: "dib", active: false } });
+  });
+
+  it("shows a second bank as selected the moment it is toggled, before any sync round-trip", async () => {
+    // The projection does not move until a sync folds (writer.ts:28-30), so a
+    // writer double whose `pending` array only ever grows models the real
+    // outbox faithfully — and is exactly what would let this test pass for the
+    // wrong reason if `selected` did not read it.
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    let pending: Op[] = [];
+    let n = 0;
+    const writer = {
+      get pending(): readonly Op[] {
+        return pending;
+      },
+      enqueueMany: (s: readonly { type: OpType; payload: unknown }[]) => {
+        specs.push(...s);
+        pending = [
+          ...pending,
+          ...s.map(
+            (spec): Op => ({
+              v: 1,
+              type: spec.type,
+              op_id: `settings-bank-test-${n++}`,
+              authored_at: "2026-06-06T12:00:00.000Z",
+              parent_version: null,
+              payload: spec.payload,
+            }),
+          ),
+        ];
+      },
+      flush: async () => {},
+    };
+    db.prepare("INSERT INTO bank (name,ord,active) VALUES (?,?,?)").run("dib", 0, 1);
+    wrap({ writer, templates: async () => [{ id: "dib", templates: 2 }, { id: "enbd", templates: 1 }] });
+
+    const dib = await screen.findByTestId("settings-bank-row-dib");
+    expect(dib.getAttribute("aria-checked")).toBe("true");
+    const enbd = screen.getByTestId("settings-bank-row-enbd");
+    expect(enbd.getAttribute("aria-checked")).toBe("false");
+
+    await user.click(enbd);
+
+    // Both must read selected now — no sync has run, so this can only come
+    // from the outbox, not the projection.
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-bank-row-enbd").getAttribute("aria-checked")).toBe("true");
+    });
+    expect(screen.getByTestId("settings-bank-row-dib").getAttribute("aria-checked")).toBe("true");
   });
 
   it("does not offer a template id it could not declare, rather than blanking Settings on the tap", async () => {

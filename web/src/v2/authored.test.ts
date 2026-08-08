@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { OpSpec } from "@ledger/client/outbox/outbox";
 import type { Op } from "@ledger/client/wire/op";
 
-import { authoredBy, recordAuthored } from "./authored";
+import { authoredBy, pendingBanks, recordAuthored } from "./authored";
 import type { Writer } from "./writer";
 
 function writerDouble(): Writer {
@@ -77,5 +77,51 @@ describe("what this device authored", () => {
     ]);
     expect(store.answers.size).toBe(0);
     expect(store.rules).toEqual([]);
+  });
+});
+
+function bankDeclared(bank: string, active: boolean, opID: string): Op {
+  return {
+    v: 1,
+    type: "bank_declared",
+    op_id: opID,
+    authored_at: "2026-06-06T12:00:00.000Z",
+    parent_version: null,
+    payload: { bank, active },
+  };
+}
+
+describe("pendingBanks", () => {
+  it("reads what this device has queued but not synced, last-wins per bank", () => {
+    const overlay = pendingBanks([bankDeclared("dib", true, "q1"), bankDeclared("enbd", true, "q2")]);
+    expect(overlay).toEqual(
+      new Map([
+        ["dib", true],
+        ["enbd", true],
+      ]),
+    );
+  });
+
+  it("keeps only the last declaration for a bank toggled twice in one sitting", () => {
+    const overlay = pendingBanks([
+      bankDeclared("dib", true, "q1"),
+      bankDeclared("dib", false, "q2"),
+      bankDeclared("dib", true, "q3"),
+    ]);
+    expect(overlay.get("dib")).toBe(true);
+  });
+
+  it("ignores every other op type", () => {
+    const other: Op = {
+      v: 1,
+      type: "txn_edited",
+      op_id: "q0",
+      authored_at: "2026-06-06T12:00:00.000Z",
+      entity: { kind: "txn", id: "t1" },
+      parent_version: 1,
+      payload: { merchant_raw: "X" },
+    };
+    const overlay = pendingBanks([other, bankDeclared("dib", true, "q1")]);
+    expect(overlay).toEqual(new Map([["dib", true]]));
   });
 });
