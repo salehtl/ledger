@@ -406,8 +406,8 @@ function dispatch(s: State, e: LogEntry): void {
       return applyRateUnset(s, e);
     case "home_currency_set":
       return applyHomeCurrencySet(s, e);
-    case "banks_declared":
-      return applyBanksDeclared(s, e);
+    case "bank_declared":
+      return applyBankDeclared(s, e);
     case "budget_split_set":
       return applyBudgetSplitSet(s, e);
     case "category_defined":
@@ -523,24 +523,26 @@ function applyRateUnset(s: State, e: LogEntry): void {
 // ---------------------------------------------------------------------------
 
 /**
- * `banks_declared` REPLACES the declared set — it is not a union, so removing a
- * bank is a declaration of the shorter list rather than a delete op.
+ * `bank_declared` names ONE bank: last write per bank wins, and `active: false`
+ * retires it rather than deleting it.
  *
- * Duplicates are refused rather than collapsed. A UI cannot offer the same bank
- * twice, so a repeated entry is a defect in the writer, and quietly deduping it
- * would make the state disagree with the op that produced it — the class of
- * quiet correction this branch has been removing everywhere else.
+ * # Why not one op carrying the whole list
+ *
+ * Because that would be last-write-wins over a COLLECTION, which is the shape
+ * spec §3.3 forbids, and the failure it forbids is exactly reachable here: two
+ * devices offline, each adding a different bank to the same starting list, and
+ * the later op silently drops the earlier one's addition. No fork — these are
+ * parent-free, so there is nothing to resolve — no anomaly, and no way for the
+ * user to discover it beyond noticing a bank they added is gone. Per-bank ops
+ * converge instead, which is the property the op log exists to provide, and it
+ * costs one boolean.
+ *
+ * Retiring rather than deleting matches `category_defined` and keeps "the user
+ * removed this" a fact in the log rather than an absence to infer.
  */
-function applyBanksDeclared(s: State, e: LogEntry): void {
-  const raw = payloadObject(e.op)["banks"];
-  if (!Array.isArray(raw)) throw new PayloadError(`banks must be an array of strings, got ${showValue(raw)}`);
-  const banks: string[] = [];
-  for (const [i, b] of raw.entries()) {
-    if (typeof b !== "string" || b === "") throw new PayloadError(`banks[${i}] must be a non-empty string, got ${showValue(b)}`);
-    if (banks.includes(b)) throw new PayloadError(`banks lists ${showValue(b)} twice`);
-    banks.push(b);
-  }
-  s.banks = banks;
+function applyBankDeclared(s: State, e: LogEntry): void {
+  const p = payloadObject(e.op);
+  s.banks.set(nonEmptyString(p["bank"], "bank"), boolField(p["active"], "active"));
 }
 
 /**

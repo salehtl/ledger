@@ -58,7 +58,7 @@
 //
 // # Configuration ops (schema v3)
 //
-// banks_declared, budget_split_set and category_defined carry USER
+// bank_declared, budget_split_set and category_defined carry USER
 // CONFIGURATION, and they are the same shape for the same reason: a fact the
 // user chose, folded by position, last write wins per key. The alternative —
 // server-side tables — stays plaintext permanently, and after the crypto phase
@@ -70,6 +70,13 @@
 // Record-level last-write-wins is FORBIDDEN for transactions and splits (spec
 // §3.3, because it breaks invariants that hold across records) and is correct
 // here, because a keyed configuration value has no invariant across keys.
+//
+// That argument is load-bearing and it is also a CONSTRAINT: each of these ops
+// carries one key, never a collection. bank_declared names one bank, not the
+// whole list. A whole-list replace would be last-write-wins over a COLLECTION,
+// which is the shape §3.3 forbids and for the same reason — two devices each
+// adding a different bank offline would silently drop one, with no anomaly and
+// nothing for the user to notice. Removal is active:false, which converges.
 //
 // Their PAYLOADS are not validated here, and that is deliberate rather than an
 // omission: payload shapes belong to the executor that folds them, and only the
@@ -143,7 +150,7 @@ const (
 	OpRateSet                 OpType = "rate_set"
 	OpRateUnset               OpType = "rate_unset"
 	OpHomeCurrencySet         OpType = "home_currency_set"
-	OpBanksDeclared           OpType = "banks_declared"
+	OpBankDeclared            OpType = "bank_declared"
 	OpBudgetSplitSet          OpType = "budget_split_set"
 	OpCategoryDefined         OpType = "category_defined"
 	OpWriterCheckpoint        OpType = "writer_checkpoint"
@@ -153,7 +160,7 @@ const (
 var Types = []OpType{
 	OpTxnIngested, OpTxnSuperseded, OpTxnCategorized, OpTxnSplit, OpTxnEdited, OpTxnDuplicateDisposition,
 	OpRuleAdded, OpRateSet, OpRateUnset, OpHomeCurrencySet,
-	OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined,
+	OpBankDeclared, OpBudgetSplitSet, OpCategoryDefined,
 	OpWriterCheckpoint,
 }
 
@@ -175,7 +182,7 @@ func (t OpType) MinVersion() int {
 	switch t {
 	case OpTxnDuplicateDisposition:
 		return 2
-	case OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined:
+	case OpBankDeclared, OpBudgetSplitSet, OpCategoryDefined:
 		return 3
 	default:
 		return 1
@@ -188,7 +195,7 @@ func (t OpType) MinVersion() int {
 func (t OpType) ParentFree() bool {
 	switch t {
 	case OpRateSet, OpRateUnset, OpHomeCurrencySet, OpWriterCheckpoint,
-		OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined:
+		OpBankDeclared, OpBudgetSplitSet, OpCategoryDefined:
 		return true
 	default:
 		return false

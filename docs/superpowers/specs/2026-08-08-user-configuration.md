@@ -47,9 +47,20 @@ Parent-free append-only facts, folded by position, last write wins per key — t
 
 | Op | Payload | Fold |
 |---|---|---|
-| `banks_declared` | `{banks: string[]}` | replaces the set |
+| `bank_declared` | `{bank, active}` | last write per `bank` wins; `active: false` retires |
 | `budget_split_set` | `{need, want, saving}` integer percents summing to 100 | replaces the split |
 | `category_defined` | `{id, name, kind, bucket, color, active}` | last write per `id` wins; `active: false` retires |
+
+**Amended 2026-08-08, during implementation, before any v3 op existed in the
+live log.** This table first specified `banks_declared` as `{banks: string[]}`
+replacing the whole set. That is last-write-wins over a COLLECTION, which is the
+shape §3.3 forbids, and the failure it forbids is reachable: two devices offline,
+each adding a different bank to the same starting list, and the later op silently
+drops the earlier one's addition — no fork to resolve (these ops are
+parent-free), no anomaly, and nothing for the user to notice beyond a bank they
+added going missing. The paragraph below is the argument for record-level LWW
+here, and it says *keyed*; a replaced list is not keyed. `bank_declared` names
+one bank, matching `category_defined`, at a cost of one boolean.
 
 `category_defined` carrying `active` removes the need for a delete op — retiring is a definition, not an absence, which also keeps historical transactions referring to a retired category readable.
 

@@ -78,7 +78,7 @@ test("the op type set and the parent-free set match Go's", () => {
     "rate_set",
     "rate_unset",
     "home_currency_set",
-    "banks_declared",
+    "bank_declared",
     "budget_split_set",
     "category_defined",
     "writer_checkpoint",
@@ -92,16 +92,16 @@ test("the minimum schema version of every op type matches Go's", () => {
   // the type set drifting is the only thing the manifest otherwise catches.
   const mine = Object.fromEntries(OP_TYPES.map((t) => [t, opMinVersion(t)]));
   expect(mine).toEqual(manifest.min_versions);
-  expect(manifest.min_versions["banks_declared"]).toBe(3);
+  expect(manifest.min_versions["bank_declared"]).toBe(3);
   expect(manifest.min_versions["budget_split_set"]).toBe(3);
   expect(manifest.min_versions["category_defined"]).toBe(3);
 });
 
 test("the Go-authored schema-v3 configuration blob decodes to the payloads this executor folds", () => {
   const ops = decodeBlobOps(new Uint8Array(Buffer.from(manifest.config_ops_base64, "base64")));
-  expect(ops.map((o) => o.type)).toEqual(["banks_declared", "budget_split_set", "category_defined"]);
+  expect(ops.map((o) => o.type)).toEqual(["bank_declared", "budget_split_set", "category_defined"]);
   expect(ops.every((o) => o.v === 3 && o.entity === undefined && o.parent_version === null)).toBe(true);
-  expect(ops[0]!.payload).toEqual({ banks: ["dib", "enbd"] });
+  expect(ops[0]!.payload).toEqual({ bank: "dib", active: true });
   expect(ops[1]!.payload).toEqual({ need: 50, want: 30, saving: 20 });
   expect(ops[2]!.payload).toEqual({
     id: "cat-1",

@@ -32,7 +32,7 @@ This is the foundation and the riskiest task; everything else builds on it.
 
 - [ ] **Step 1:** Read `home_currency_set` and `rate_set` end to end first — wire type, fold case, state field, Go type, conformance entry. They are the shape to copy. Report what the full set of touch points actually is before changing any of them.
 - [ ] **Step 2:** Failing tests first, in both languages: an op of each new kind round-trips, folds, and appears in state.
-- [ ] **Step 3:** Add `banks_declared`, `budget_split_set`, `category_defined` per the spec's table. Parent-free, folded by position, last write wins per key.
+- [ ] **Step 3:** Add `bank_declared`, `budget_split_set`, `category_defined` per the spec's table. Parent-free, folded by position, last write wins per key. (`banks_declared` in an earlier draft of the spec; amended to per-bank during Task 1 — see the spec's amendment note.)
 - [ ] **Step 4:** Bump `SCHEMA_VERSION` to 3.
 - [ ] **Step 5: prove the hard stop still works.** Write a test where a client at version 3 writes an op and a client pinned at 2 reads the log: it must raise `UnknownNewerVersionError` and stop, not skip the op. This is the safety property the bump trades on.
 - [ ] **Step 6: prove Go and TS cannot drift.** Add a type on one side only and confirm the conformance suite fails. Revert.
@@ -76,7 +76,7 @@ This is the foundation and the riskiest task; everything else builds on it.
 
 This supersedes Tasks 1–4 of `2026-08-08-multi-bank-and-device-parity.md`, which assumed a server table. Tasks 5 and 6 of that plan (disclosures, gate) still stand and are not repeated here.
 
-- [ ] **Step 1:** `OnboardingFacts.bank: string | null` becomes `banks: string[]`, sourced from the folded log rather than `LocalOnboardingRecord`. `bank_picked` becomes `banks_declared`, satisfied by a non-empty list.
+- [ ] **Step 1:** `OnboardingFacts.bank: string | null` becomes `banks: string[]`, sourced from the folded log rather than `LocalOnboardingRecord`. `bank_picked` becomes `bank_declared` (one op per bank, `active: false` to remove), satisfied by at least one active bank. Read the active set as `[...state.banks].filter(([, active]) => active)`.
 - [ ] **Step 2:** Delete `bank`, `forwardingDeclared` and `finishedAt` from `LocalOnboardingRecord`. Per the earlier analysis: forwarding is demonstrated by `firstMailConfirmedAt` (already folded), and "finished" is the prerequisites being met. That empties the device-local half entirely.
 - [ ] **Step 3: the test that matters.** An account that finished onboarding on device A, booting on device B with EMPTY local storage, lands on the main app — not the bank step, not the address step — with the same inbound address and the same banks. Write it first and watch it fail.
 - [ ] **Step 4:** `Bank.tsx` becomes a multi-select over the supported set from `GET /api/v1/templates` (note: it returns one entry per TEMPLATE, not per bank, so collapse on `bank` or Dubai Islamic Bank appears twice). Keep its three exits: proceed, waitlist an unsupported bank, and a grammar refusal that is not a dead end.

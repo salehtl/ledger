@@ -685,6 +685,38 @@ describe("authoring", () => {
     );
   });
 
+  /**
+   * A client-authored op declares the version IT needs, not the version this
+   * build happens to be. Stamping SCHEMA_VERSION on everything makes an older
+   * reader hard-stop over ops that need nothing new — permanently, since the log
+   * is append-only and the stamp rides in the bytes.
+   */
+  test("an authored op is stamped its type's own minimum version, not the build ceiling", async () => {
+    const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
+    const c = new Client({ store: openMemStore(), server: srv.url, writerId: "dev-a", fetch: srv.fetch });
+    await c.login("apple", "dev:alice");
+
+    const [rate, split] = c.emitMany([
+      { type: "rate_set", payload: { currency: "USD", rate_micro: "3672500" } },
+      { type: "budget_split_set", payload: { need: 50, want: 30, saving: 20 } },
+    ]);
+    expect(rate!.v).toBe(1);
+    expect(split!.v).toBe(3);
+    expect(split!.v).toBe(SCHEMA_VERSION);
+
+    // The one payload field with a floor above its type's minimum is a SERVER
+    // attestation, so the client refuses to author it rather than quietly
+    // stamping a version that would make the fold reject the transaction.
+    expect(() =>
+      c.emit({
+        type: "txn_ingested",
+        entity: { kind: "txn", id: "t1" },
+        ingestId: "a".repeat(64),
+        payload: { amount_minor: "1", currency: "AED", verified_origin_domain: "bank.example" },
+      }),
+    ).toThrow(/verified_origin_domain/);
+  });
+
   test("emitMany rolls live state back when the one durable save fails", async () => {
     const srv = serve({ writers: [{ writer_id: "dev-a", kind: "device", revoked_at: null }] });
     const inner = openMemStore();

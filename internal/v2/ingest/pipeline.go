@@ -814,6 +814,33 @@ type txnPayload struct {
 	VerifiedOriginDomain string `json:"verified_origin_domain,omitempty"`
 }
 
+// schemaVersion is the LOWEST op schema version at which this payload folds
+// correctly, which is what a writer must stamp on the op carrying it.
+//
+// Not oplog.SchemaVersion. Stamping "whatever this build understands" on every
+// op is a hard stop charged to readers that had no reason to pay it: an
+// ordinary txn_ingested needs nothing past v1, so stamping it v3 would make
+// every un-upgraded client stop syncing over ordinary transaction traffic, and
+// — because the log is append-only — every one of those rows would carry a
+// version floor it never needed, forever.
+//
+// Not oplog.OpTxnIngested.MinVersion() either, and that is the half that is
+// easy to miss: the type's minimum is 1, but verified_origin_domain arrived at
+// v2 and the TypeScript executor REFUSES it below that
+// (replay.ts decodeTxnPayload, "verified_origin_domain requires schema v2").
+// A v1-stamped op carrying that field is not merely over-permissive — it folds
+// to an invalid_payload anomaly and the transaction never appears, permanently.
+// So the floor is the type's minimum RAISED by whatever the payload itself
+// requires, and it lives next to the struct because that is where the field
+// whose presence decides it lives.
+func (tp txnPayload) schemaVersion(t oplog.OpType) int {
+	v := t.MinVersion()
+	if tp.VerifiedOriginDomain != "" && v < 2 {
+		v = 2
+	}
+	return v
+}
+
 // appendOps writes the two blobs this message produces.
 //
 // ONE call, two blobs, and they land on independent chains: chains are per
@@ -839,7 +866,7 @@ func (p *Pipeline) appendOps(ctx context.Context, d smtpd.Delivery, ingestID []b
 	}
 
 	op := oplog.Op{
-		V:    oplog.SchemaVersion,
+		V:    tp.schemaVersion(oplog.OpTxnIngested),
 		Type: oplog.OpTxnIngested,
 		OpID: newULID(receivedAt),
 		// The arrival instant, not now(): authored_at is the fork tiebreak, and

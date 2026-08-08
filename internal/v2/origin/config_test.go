@@ -26,7 +26,7 @@ func TestTrustPathNeverReadsUserConfiguration(t *testing.T) {
 	// The op vocabulary that carries user configuration. Named literally rather
 	// than imported from oplog: importing the package to name its constants is
 	// itself the dependency this test forbids.
-	forbidden := []string{"banks_declared", "budget_split_set", "category_defined", "OpBanksDeclared", "OpBudgetSplitSet", "OpCategoryDefined", "ledger/internal/v2/oplog"}
+	forbidden := []string{"bank_declared", "budget_split_set", "category_defined", "OpBankDeclared", "OpBudgetSplitSet", "OpCategoryDefined", "ledger/internal/v2/oplog"}
 
 	entries, err := os.ReadDir(".")
 	if err != nil {

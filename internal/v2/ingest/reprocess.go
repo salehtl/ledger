@@ -635,7 +635,10 @@ func (p *Pipeline) appendSupersede(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("ingest: reprocess: encode payload: %w", err)
 	}
 	op := oplog.Op{
-		V:    oplog.SchemaVersion,
+		// The payload's own floor, not this build's ceiling — see
+		// txnPayload.schemaVersion. A supersede carries the same fields as an
+		// ingest, verified_origin_domain included, so it takes the same rule.
+		V:    tp.schemaVersion(oplog.OpTxnSuperseded),
 		Type: oplog.OpTxnSuperseded,
 		OpID: newULID(at),
 		// The instant the CORRECTION was made, not the mail's arrival:

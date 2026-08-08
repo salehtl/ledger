@@ -286,16 +286,26 @@ export interface State {
   /** Canonical authored_at of the positional op that installed each explicit rate head. */
   rateUpdatedAt: Map<string, string>;
   /**
-   * The banks the user declared, in the order the latest `banks_declared` op
-   * listed them. An ARRAY rather than a `Set`: the order is the user's, it is
-   * shown back to them, and `serializeState` renders a Set sorted — which would
-   * make two devices agree on a state they display differently.
+   * bank → whether it is currently declared. Last write per bank wins, and
+   * `false` is a retirement rather than an absence, exactly like a category.
+   *
+   * **Keyed, not a replaced list**, and that is the whole point: a
+   * `{banks: string[]}` op would be last-write-wins over a COLLECTION, so two
+   * devices each declaring a different bank while offline would silently drop
+   * one — no anomaly, no notice, and the user simply finds a bank they added
+   * missing. Per-bank ops converge instead, which is what the op log is for.
+   *
+   * Insertion order is first-declaration order and is the same on every replica
+   * (the fold is by `seq`), so a surface may display it. It is NOT witnessed by
+   * {@link serializeState}, which sorts map keys — the same as `rates` and
+   * `categories`, and acceptable for the same reason: nothing derives money or
+   * an ordered decision from it.
    *
    * Empty means "never declared", which is what every pre-v3 account folds to.
    * Nothing in the trust path may read this (spec: declared banks route the
    * waitlist and drive the UI; they never influence parsing or the allowlist).
    */
-  banks: string[];
+  banks: Map<string, boolean>;
   /** The user's plan, or null when they never chose — see {@link BudgetSplit}. */
   budgetSplit: BudgetSplit | null;
   /** id → the latest definition of that category. Last write per id wins. */
@@ -354,7 +364,7 @@ export function emptyState(): State {
     homeCurrency: null,
     rates: new Map(),
     rateUpdatedAt: new Map(),
-    banks: [],
+    banks: new Map(),
     budgetSplit: null,
     categories: new Map(),
     pendingByCurrency: new Map(),

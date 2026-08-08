@@ -70,12 +70,12 @@ import {
   type HashRow,
 } from "../wire/chain";
 import {
-  SCHEMA_VERSION,
   compareUTF8,
   decodeBlobOps,
   encodeBlobOps,
   encodeCheckpointPayload,
   isOpType,
+  opMinVersion,
   parseDecimal,
   validateOp,
   type CheckpointHead,
@@ -1554,8 +1554,25 @@ export class Client {
     ingestId?: string;
   }): Op {
     if (!isOpType(spec.type)) throw new Error(`unknown op type ${JSON.stringify(spec.type)}`);
+    // The type's OWN minimum, not this build's ceiling. Stamping SCHEMA_VERSION
+    // on everything charges every older reader a hard stop for ops that need
+    // nothing from the newer schema — and the log is append-only, so each of
+    // those ops would carry a version floor it never needed, forever. A
+    // txn_categorized stays v1 and a budget_split_set is v3, which is exactly
+    // the set of ops a v2 client should refuse to fold.
+    //
+    // Safe here in a way it is not on the server: the one payload field with a
+    // floor above its type is verified_origin_domain (v2), which is a SERVER
+    // attestation this client must never claim (§3.3(b)) — asserted just below
+    // rather than assumed, because the version stamp is only correct if it holds.
+    if (spec.type === "txn_ingested" || spec.type === "txn_superseded") {
+      const p: unknown = spec.payload;
+      if (typeof p === "object" && p !== null && (p as Record<string, unknown>)["verified_origin_domain"] !== undefined) {
+        throw new Error(`${spec.type}: a client must not claim verified_origin_domain — it is server-attested`);
+      }
+    }
     const op: Op = {
-      v: SCHEMA_VERSION,
+      v: opMinVersion(spec.type),
       type: spec.type as OpType,
       op_id: ulid(),
       // The one wall-clock reading in this file. It is the fork tiebreak and

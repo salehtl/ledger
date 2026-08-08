@@ -47,7 +47,7 @@ func TestDuplicateDispositionRequiresSchemaV2AndClosedPayload(t *testing.T) {
 // mistake for one of its own.
 //
 // The v3 minimum is the load-bearing half. Without it a v3 writer could stamp
-// banks_declared v1, and a v2 reader would then see a v1-legal op of an unknown
+// bank_declared v1, and a v2 reader would then see a v1-legal op of an unknown
 // type -- refusing that ONE op and folding the rest of the log -- instead of
 // meeting ErrUnknownNewerVersion and stopping. The bump only buys a hard stop
 // if the new ops actually declare v3.
@@ -88,11 +88,16 @@ func TestConfigurationOpsAreParentFreeV3Facts(t *testing.T) {
 // trades on, from the Go side: a blob a newer build wrote is refused WHOLE, with
 // ErrUnknownNewerVersion, rather than having its unreadable ops skipped.
 func TestConfigurationOpsHardStopAnOlderReader(t *testing.T) {
-	body := []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[` +
-		`{"v":` + strconv.Itoa(SchemaVersion) + `,"type":"banks_declared","op_id":"01J000000000000000000000B1",` +
-		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"banks":["dib"]}},` +
-		`{"v":` + newerVersion() + `,"type":"banks_declared","op_id":"01J000000000000000000000B2",` +
-		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"banks":["enbd"]}}]}`)
+	// The HEADER is at SchemaVersion, deliberately. With the header itself set
+	// newer, DecodeBlob short-circuits at `h.V > SchemaVersion` and never reaches
+	// the per-op loop -- so the "understood op followed by a newer one" case goes
+	// unexercised and the test passes even if that loop learns to SKIP. This is
+	// the same shape as the six version-literal tests the v2 -> v3 bump disarmed.
+	body := []byte(`{"v":` + strconv.Itoa(SchemaVersion) + `,"kind":"ops","ops":[` +
+		`{"v":` + strconv.Itoa(SchemaVersion) + `,"type":"bank_declared","op_id":"01J000000000000000000000B1",` +
+		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"bank":"dib","active":true}},` +
+		`{"v":` + newerVersion() + `,"type":"bank_declared","op_id":"01J000000000000000000000B2",` +
+		`"authored_at":"2026-06-05T10:00:00Z","parent_version":null,"payload":{"bank":"enbd","active":true}}]}`)
 	ops, err := DecodeBlob(body)
 	if !errors.Is(err, ErrUnknownNewerVersion) {
 		t.Fatalf("DecodeBlob = %v, want ErrUnknownNewerVersion", err)

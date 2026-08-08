@@ -394,7 +394,9 @@ function CANARY(): LogEntry[] {
     // The v3 configuration ops. `v: 3` because each requires it (`opMinVersion`),
     // and a redefinition plus a retirement so the last-write-per-id fold and the
     // `active` flag both contribute to the digest.
-    canaryOp("banks_declared", "dev-a", { v: 3, payload: { banks: ["dib", "enbd"] } }, ++n),
+    canaryOp("bank_declared", "dev-a", { v: 3, payload: { bank: "dib", active: true } }, ++n),
+    canaryOp("bank_declared", "dev-b", { v: 3, payload: { bank: "enbd", active: true } }, ++n),
+    canaryOp("bank_declared", "dev-a", { v: 3, payload: { bank: "enbd", active: false } }, ++n),
     canaryOp("budget_split_set", "dev-a", { v: 3, payload: { need: 60, want: 20, saving: 20 } }, ++n),
     canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Groceries", kind: "spending", bucket: "need", color: "#88aa66", active: true } }, ++n),
     canaryOp("category_defined", "dev-a", { v: 3, payload: { id: "k1", name: "Food", kind: "spending", bucket: "want", color: "#88aa66", active: true } }, ++n),
@@ -853,7 +855,7 @@ function decodeSnapshot(stateJSON: string, appliedJSON: string): { state: State;
     homeCurrency: r["homeCurrency"] === null ? null : str(r["homeCurrency"], "homeCurrency"),
     rates: pairs(r["rates"], "rates", (v, w) => (v === null ? null : parseDecimal(str(v, w)))),
     rateUpdatedAt: pairs(r["rateUpdatedAt"], "rateUpdatedAt", (v, w) => str(v, w)),
-    banks: list(r["banks"], "banks", (v, w) => str(v, w)),
+    banks: pairs(r["banks"], "banks", (v, w) => bool(v, w)),
     budgetSplit: r["budgetSplit"] === null ? null : decodeBudgetSplit(r["budgetSplit"], "budgetSplit"),
     categories: pairs(r["categories"], "categories", decodeCategory),
     pendingByCurrency: pairs(r["pendingByCurrency"], "pendingByCurrency", (v, w) => new Set(list(v, w, (x, y) => str(x, y)))),

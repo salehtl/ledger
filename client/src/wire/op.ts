@@ -87,7 +87,7 @@ export type OpType =
   | "rate_set"
   | "rate_unset"
   | "home_currency_set"
-  | "banks_declared"
+  | "bank_declared"
   | "budget_split_set"
   | "category_defined"
   | "writer_checkpoint";
@@ -104,7 +104,7 @@ export const OP_TYPES: readonly OpType[] = [
   "rate_set",
   "rate_unset",
   "home_currency_set",
-  "banks_declared",
+  "bank_declared",
   "budget_split_set",
   "category_defined",
   "writer_checkpoint",
@@ -126,12 +126,17 @@ const OP_TYPE_SET: ReadonlySet<string> = new Set(OP_TYPES);
  * it breaks invariants that hold across records) and is correct here, where a
  * keyed configuration value has no invariant across keys — which is why they are
  * NOT modelled as versioned entities with a `parent_version`.
+ *
+ * Each carries ONE key, never a collection, and that is a constraint rather than
+ * a detail: `bank_declared` names one bank because a whole-list replace would be
+ * last-write-wins over a collection — the shape §3.3 forbids — under which two
+ * devices each adding a different bank offline silently drop one.
  */
 const PARENT_FREE: ReadonlySet<string> = new Set<OpType>([
   "rate_set",
   "rate_unset",
   "home_currency_set",
-  "banks_declared",
+  "bank_declared",
   "budget_split_set",
   "category_defined",
   "writer_checkpoint",
@@ -149,7 +154,7 @@ const PARENT_FREE: ReadonlySet<string> = new Set<OpType>([
  */
 const MIN_VERSION: ReadonlyMap<OpType, number> = new Map<OpType, number>([
   ["txn_duplicate_disposition", 2],
-  ["banks_declared", 3],
+  ["bank_declared", 3],
   ["budget_split_set", 3],
   ["category_defined", 3],
 ]);

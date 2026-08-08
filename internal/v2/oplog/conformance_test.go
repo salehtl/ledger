@@ -370,8 +370,8 @@ func verifiedOriginOps() []Op {
 func configOps() []Op {
 	at := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
 	return []Op{
-		{V: 3, Type: OpBanksDeclared, OpID: "01J000000000000000000000B1", AuthoredAt: at,
-			Payload: json.RawMessage(`{"banks":["dib","enbd"]}`)},
+		{V: 3, Type: OpBankDeclared, OpID: "01J000000000000000000000B1", AuthoredAt: at,
+			Payload: json.RawMessage(`{"bank":"dib","active":true}`)},
 		{V: 3, Type: OpBudgetSplitSet, OpID: "01J000000000000000000000S1", AuthoredAt: at,
 			Payload: json.RawMessage(`{"need":50,"want":30,"saving":20}`)},
 		{V: 3, Type: OpCategoryDefined, OpID: "01J000000000000000000000C1", AuthoredAt: at,
@@ -980,7 +980,7 @@ func TestOpConformanceManifestMatchesThisBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the shared configuration fixture no longer decodes here: %v", err)
 	}
-	wantConfig := []OpType{OpBanksDeclared, OpBudgetSplitSet, OpCategoryDefined}
+	wantConfig := []OpType{OpBankDeclared, OpBudgetSplitSet, OpCategoryDefined}
 	if len(config) != len(wantConfig) {
 		t.Fatalf("configuration fixture decoded %d ops, want %d", len(config), len(wantConfig))
 	}
