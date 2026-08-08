@@ -11,6 +11,8 @@ import {
   readMeta,
   readRates,
   readRateUpdatedAt,
+  readBudgetSplit,
+  readCategories,
   readRules,
   readTxns,
 } from "./projection";
@@ -534,7 +536,7 @@ test("a projection written by another version is unusable, and is rebuilt rather
 test("an empty state projects to empty tables and a complete meta row", async () => {
   const d = db();
   const report = await project(d, emptyState());
-  expect(report).toEqual({ txns: 0, splits: 0, rules: 0, rates: 0, forks: 0, anomalies: 0, chunks: 0 });
+  expect(report).toEqual({ txns: 0, splits: 0, rules: 0, rates: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 });
   expect(projectionIsUsable(d)).toBe(true);
   expect(readTxns(d).size).toBe(0);
 });
@@ -556,7 +558,7 @@ test("literal v1 projection is unusable and is fully rebuilt at the current vers
     INSERT INTO rate VALUES ('USD', '3672500');
     INSERT INTO projection_meta VALUES (1, 1, '9', '0', 'AED', 1);
   `);
-  expect(PROJECTION_VERSION).toBe(4);
+  expect(PROJECTION_VERSION).toBe(5);
   expect(projectionIsUsable(d)).toBe(false);
   const state = emptyState();
   state.homeCurrency = "AED";
@@ -644,4 +646,122 @@ test("the indices the list, review and budget screens need are actually created"
     .map((r) => JSON.stringify(r))
     .join(" ");
   expect(plan).toContain("txn_needs_review");
+});
+
+// ---------------------------------------------------------------------------
+// Configuration (schema v3): the budget split and the user's categories
+//
+// The fold has carried these since the op kinds landed, but `web/` reads the
+// PROJECTION and never the folded `State` — so until they are here, a split a
+// user chose and a category they defined are invisible to every screen. These
+// tests close that gap, and the first of them is the one that makes the upgrade
+// a no-op for data: an account with no configuration ops projects to exactly
+// the absence the consumers' defaults stand in for.
+// ---------------------------------------------------------------------------
+
+/** A fold of just the configuration ops, so the assertions are about them alone. */
+function configured(): State {
+  opCounter = 0;
+  return fold(
+    log([
+      op("budget_split_set", "dev-a", { v: 3, payload: { need: 60, want: 20, saving: 20 } }, "2026-06-01T00:00:00Z"),
+      op(
+        "category_defined",
+        "dev-a",
+        { v: 3, payload: { id: "c-gym", name: "Gym", kind: "spending", bucket: "need", color: "#1373d9", active: true } },
+        "2026-06-01T00:01:00Z",
+      ),
+      // Retired, and it must still project: a transaction categorised "Gym"
+      // before the retirement still reads "Gym" and still buckets as a need.
+      op(
+        "category_defined",
+        "dev-a",
+        { v: 3, payload: { id: "c-gym", name: "Gym", kind: "spending", bucket: "need", color: "#1373d9", active: false } },
+        "2026-06-01T00:02:00Z",
+      ),
+      // No bucket and no colour: the two nullable fields, so a projection that
+      // wrote a constant or dropped a NULL fails here rather than passing on a
+      // fixture whose rows agree.
+      op(
+        "category_defined",
+        "dev-a",
+        { v: 3, payload: { id: "c-salary", name: "Salary", kind: "income", active: true } },
+        "2026-06-01T00:03:00Z",
+      ),
+      op(
+        "category_defined",
+        "dev-a",
+        { v: 3, payload: { id: "c-transfer", name: "Transfer", kind: "excluded", color: null, active: true } },
+        "2026-06-01T00:04:00Z",
+      ),
+    ]),
+  );
+}
+
+test("an account with NO configuration ops projects to no split and no categories", async () => {
+  const s = fixture();
+  expect(s.budgetSplit).toBeNull();
+  expect(s.categories.size).toBe(0);
+  const d = db();
+  await project(d, s);
+  // Absence, not a defaulted row: the default belongs to the consumer, so that
+  // "no op" reads exactly as it did before these ops existed.
+  expect(readBudgetSplit(d)).toBeNull();
+  expect(readCategories(d)).toEqual(new Map());
+});
+
+test("the budget split and every category definition round-trip, retired ones included", async () => {
+  const s = configured();
+  const d = db();
+  await project(d, s);
+
+  expect(readBudgetSplit(d)).toEqual({ need: 60, want: 20, saving: 20 });
+  expect(readCategories(d)).toEqual(s.categories);
+  // Named individually so a failure says which row: the retired one, the
+  // bucket-less income one and the explicit null colour are three distinct
+  // shapes a single `toEqual` reports as one diff.
+  const back = readCategories(d);
+  expect(back.get("c-gym")).toEqual({
+    id: "c-gym", name: "Gym", kind: "spending", bucket: "need", color: "#1373d9", active: false,
+  });
+  expect(back.get("c-salary")).toEqual({
+    id: "c-salary", name: "Salary", kind: "income", bucket: null, color: null, active: true,
+  });
+  expect(back.get("c-transfer")).toEqual({
+    id: "c-transfer", name: "Transfer", kind: "excluded", bucket: null, color: null, active: true,
+  });
+});
+
+test("categories come back in fold order, not in whatever order SQLite chose", () => {
+  // The picker shows these to the user, so the order is the user's. A Map read
+  // back by primary key would sort them alphabetically and quietly reorder a
+  // screen that two devices must render identically.
+  const d = db();
+  return project(d, configured()).then(() => {
+    expect([...readCategories(d).keys()]).toEqual(["c-gym", "c-salary", "c-transfer"]);
+  });
+});
+
+test("percentages are stored as INTEGER, and are the only numbers on this path", async () => {
+  // Money is TEXT because sql.js hands an INTEGER back as a JS `number` and
+  // that corrupts past 2^53. A percentage is bounded by 100, so it is an
+  // INTEGER — and this asserts it came back as one rather than as text that
+  // happened to compare equal.
+  const d = db();
+  await project(d, configured());
+  const row = d.prepare("SELECT need, want, saving FROM budget_split WHERE id = 1").all()[0] as Record<string, unknown>;
+  expect(typeof row["need"]).toBe("number");
+  expect(typeof row["want"]).toBe("number");
+  expect(typeof row["saving"]).toBe("number");
+});
+
+test("a re-projection replaces configuration rather than accumulating it", async () => {
+  const d = db();
+  await project(d, configured());
+  expect(readCategories(d).size).toBe(3);
+  // The same full-replace property the transactions have: a state that no
+  // longer holds a category must not leave the old row behind.
+  await project(d, fixture());
+  expect(readCategories(d)).toEqual(new Map());
+  expect(readBudgetSplit(d)).toBeNull();
 });

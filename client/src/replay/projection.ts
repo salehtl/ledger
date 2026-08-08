@@ -54,7 +54,18 @@
 
 import type { SqlDriver, SqlStatement } from "../store/driver";
 import { parseDecimal } from "../wire/op";
-import type { Anomaly, ForkNotice, ParseTier, Rule, Split, State, Txn } from "./state";
+import type {
+  Anomaly,
+  BudgetBucket,
+  BudgetSplit,
+  CategoryDef,
+  ForkNotice,
+  ParseTier,
+  Rule,
+  Split,
+  State,
+  Txn,
+} from "./state";
 
 /**
  * The projection's schema version.
@@ -63,7 +74,7 @@ import type { Anomaly, ForkNotice, ParseTier, Rule, Split, State, Txn } from "./
  * information that is not recomputable from the log, so a migration would be
  * code with no reason to exist and one more thing that can be wrong.
  */
-export const PROJECTION_VERSION = 4;
+export const PROJECTION_VERSION = 5;
 
 /**
  * Rows written per transaction, and per yield.
@@ -127,6 +138,46 @@ CREATE TABLE IF NOT EXISTS rate (
   updated_at TEXT
 );
 
+-- Configuration (schema v3). Both tables exist because the web app reads the
+-- PROJECTION and never the folded State: a split a user chose and a category
+-- they defined are invisible to every screen until they are here.
+--
+-- The split is a SINGLE ROW rather than three key/value rows, because the three
+-- percentages are one value — they are authored together and they have to sum
+-- to 100, and a shape that can hold a 'need' without a 'saving' is a shape a
+-- half-written read can produce. Percentages are INTEGER, not TEXT: the TEXT
+-- rule is about money (an int64 amount comes back from sql.js as a lossy JS
+-- 'number'), and a whole percentage is bounded by 100.
+--
+-- An ABSENT row means the user never chose, which is not the same as 50/30/20 —
+-- the default belongs to the consumer so that "no op" reads exactly as it did
+-- before these ops existed.
+CREATE TABLE IF NOT EXISTS budget_split (
+  id     INTEGER PRIMARY KEY CHECK (id = 1),
+  need   INTEGER NOT NULL,
+  want   INTEGER NOT NULL,
+  saving INTEGER NOT NULL
+);
+
+-- 'ord' is the fold order, and it is stored for the same reason 'txn_split.idx'
+-- is: this list is shown to the user, so its order is theirs. Reading it back by
+-- primary key would sort it by id — an ordering no user chose, and one two
+-- devices would render identically only by accident.
+--
+-- Retired categories ('active = 0') are ROWS, not absences. A transaction
+-- categorised before its category was retired must still read and still bucket,
+-- and 'txn.category' is a bare string rather than a foreign key precisely so
+-- that stays true.
+CREATE TABLE IF NOT EXISTS category (
+  id     TEXT    PRIMARY KEY,
+  ord    INTEGER NOT NULL,
+  name   TEXT    NOT NULL,
+  kind   TEXT    NOT NULL CHECK (kind IN ('spending','income','excluded')),
+  bucket TEXT    CHECK (bucket IN ('need','want','saving') OR bucket IS NULL),
+  color  TEXT,
+  active INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fork_notice (
   idx         INTEGER PRIMARY KEY,
   entity_kind TEXT    NOT NULL,
@@ -159,6 +210,8 @@ export interface ProjectReport {
   splits: number;
   rules: number;
   rates: number;
+  /** Category definitions, retired ones included. */
+  categories: number;
   forks: number;
   anomalies: number;
   /** Transactions written per chunk; `chunks - 1` yields happened between them. */
@@ -200,6 +253,8 @@ interface Stmts {
   split: SqlStatement;
   rule: SqlStatement;
   rate: SqlStatement;
+  split_plan: SqlStatement;
+  category: SqlStatement;
   fork: SqlStatement;
   anomaly: SqlStatement;
   meta: SqlStatement;
@@ -216,6 +271,8 @@ function prepare(db: SqlDriver): Stmts {
     split: db.prepare("INSERT INTO txn_split (txn_id, idx, category, amount_minor, amount_home_minor) VALUES (?, ?, ?, ?, ?)"),
     rule: db.prepare("INSERT INTO rule (id, pattern, match, category, priority, version) VALUES (?, ?, ?, ?, ?, ?)"),
     rate: db.prepare("INSERT INTO rate (currency, rate_micro, updated_at) VALUES (?, ?, ?)"),
+    split_plan: db.prepare("INSERT INTO budget_split (id, need, want, saving) VALUES (1, ?, ?, ?)"),
+    category: db.prepare("INSERT INTO category (id, ord, name, kind, bucket, color, active) VALUES (?, ?, ?, ?, ?, ?, ?)"),
     fork: db.prepare(
       "INSERT INTO fork_notice (idx, entity_kind, entity_id, winner_op, loser_op, at_seq) VALUES (?, ?, ?, ?, ?, ?)",
     ),
@@ -266,11 +323,13 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
   // back as incomplete rather than as a short log, which is the difference
   // between "rebuild me" and "the user lost half their transactions".
   db.transaction(() => {
-    for (const t of ["txn", "txn_split", "rule", "rate", "fork_notice", "anomaly"]) db.exec(`DELETE FROM ${t}`);
+    for (const t of ["txn", "txn_split", "rule", "rate", "budget_split", "category", "fork_notice", "anomaly"]) {
+      db.exec(`DELETE FROM ${t}`);
+    }
     writeMeta(st, s, false);
   });
 
-  const report: ProjectReport = { txns: 0, splits: 0, rules: 0, rates: 0, forks: 0, anomalies: 0, chunks: 0 };
+  const report: ProjectReport = { txns: 0, splits: 0, rules: 0, rates: 0, categories: 0, forks: 0, anomalies: 0, chunks: 0 };
   const total = s.txns.size;
   const it = s.txns.values();
 
@@ -314,6 +373,14 @@ export async function project(db: SqlDriver, s: State, opts: ProjectOptions = {}
       // `rate_micro` so that distinction survives the projection.
       st.rate.run(ccy, micro === null ? null : micro.toString(10), s.rateUpdatedAt.get(ccy) ?? null);
       report.rates++;
+    }
+    // The configuration. `null` writes NO row, which is the projected form of
+    // "the user never chose" — see the schema comment.
+    if (s.budgetSplit !== null) st.split_plan.run(s.budgetSplit.need, s.budgetSplit.want, s.budgetSplit.saving);
+    let ord = 0;
+    for (const [id, c] of s.categories) {
+      writeCategory(st, id, ord++, c);
+      report.categories++;
     }
     for (const [i, f] of s.forks.entries()) {
       writeFork(st, i, f);
@@ -382,6 +449,10 @@ function writeSplits(st: Stmts, txn: Txn): void {
 
 function writeRule(st: Stmts, id: string, r: Rule): void {
   st.rule.run(id, r.pattern, r.match, r.category, r.priority, r.version);
+}
+
+function writeCategory(st: Stmts, id: string, ord: number, c: CategoryDef): void {
+  st.category.run(id, ord, c.name, c.kind, c.bucket, c.color, c.active ? 1 : 0);
 }
 
 function writeFork(st: Stmts, idx: number, f: ForkNotice): void {
@@ -550,6 +621,61 @@ export function readRateUpdatedAt(db: SqlDriver): Map<string, string> {
     out.set(text(r["currency"], "currency"), text(r["updated_at"], "updated_at"));
   }
   return out;
+}
+
+/**
+ * The plan the user chose, or `null` when they never chose one.
+ *
+ * `null` is not 50/30/20. The default belongs to the consumer, so an account
+ * with no `budget_split_set` op behaves exactly as it did before the op existed
+ * — which is what makes the schema-v3 upgrade a no-op for data.
+ */
+export function readBudgetSplit(db: SqlDriver): BudgetSplit | null {
+  ensureProjection(db);
+  const row = db.prepare("SELECT need, want, saving FROM budget_split WHERE id = 1").all()[0] as
+    | Record<string, unknown>
+    | undefined;
+  if (row === undefined) return null;
+  return { need: num(row["need"], "need"), want: num(row["want"], "want"), saving: num(row["saving"], "saving") };
+}
+
+/**
+ * Every category the user defined, RETIRED ONES INCLUDED, in fold order.
+ *
+ * A retired category is a row with `active: false`, never an absence: a
+ * transaction categorised before the retirement still reads its name and still
+ * counts in its bucket, and a reader that filtered them out here would take that
+ * away from every consumer at once. Filtering belongs to the PICKER, which is
+ * the one surface where "retired" means "do not offer this again".
+ */
+export function readCategories(db: SqlDriver): Map<string, CategoryDef> {
+  ensureProjection(db);
+  const out = new Map<string, CategoryDef>();
+  for (const raw of db.prepare("SELECT id, name, kind, bucket, color, active FROM category ORDER BY ord").all()) {
+    const r = raw as Record<string, unknown>;
+    const kind = categoryKind(r["kind"]);
+    out.set(text(r["id"], "id"), {
+      id: text(r["id"], "id"),
+      name: text(r["name"], "name"),
+      kind,
+      bucket: r["bucket"] === null ? null : bucket(r["bucket"]),
+      color: r["color"] === null ? null : text(r["color"], "color"),
+      active: num(r["active"], "active") !== 0,
+    });
+  }
+  return out;
+}
+
+function categoryKind(v: unknown): CategoryDef["kind"] {
+  const s = text(v, "kind");
+  if (s !== "spending" && s !== "income" && s !== "excluded") throw new Error(`projected category kind ${JSON.stringify(s)} is not a kind`);
+  return s;
+}
+
+function bucket(v: unknown): BudgetBucket {
+  const s = text(v, "bucket");
+  if (s !== "need" && s !== "want" && s !== "saving") throw new Error(`projected bucket ${JSON.stringify(s)} is not a bucket`);
+  return s;
 }
 
 /** Fork notices in fold order. */
