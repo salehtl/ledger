@@ -61,6 +61,41 @@ func TestProcessorParsesUnparsedDIB(t *testing.T) {
 	}
 }
 
+// TestProcessorIgnoresEnglishMoneyTransfer confirms that DIB's English
+// "Money Transfer" duplicate confirmation leaves transactions empty and
+// stamps the ingest row's parse_status as "ignored" rather than creating a
+// bogus duplicate transaction.
+func TestProcessorIgnoresEnglishMoneyTransfer(t *testing.T) {
+	st := procTestStore(t)
+	raw := []byte("From: DIB.notification@dib.ae\r\nSubject: DIB Notification\r\n\r\n" + dibEnglishMoneyTransfer)
+	if _, err := st.InsertIngest(store.IngestRecord{MessageUID: "money-xfer-1", FromAddr: "DIB.notification@dib.ae",
+		Subject: "DIB Notification", ParseStatus: "unparsed", RawBody: raw, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(st, dibCascade())
+	n, err := p.ProcessPending(context.Background(), store.SelectForParseOpts{OnlyUnparsed: true})
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("processed = %d, want 0 (no transaction from an ignored email)", n)
+	}
+	var cnt int
+	if err := st.DB.QueryRow("SELECT COUNT(*) FROM transactions").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 0 {
+		t.Errorf("transactions = %d, want 0", cnt)
+	}
+	var ps string
+	if err := st.DB.QueryRow("SELECT parse_status FROM ingest_log WHERE message_uid='money-xfer-1'").Scan(&ps); err != nil {
+		t.Fatal(err)
+	}
+	if ps != StatusIgnored {
+		t.Errorf("ingest parse_status = %q, want %q", ps, StatusIgnored)
+	}
+}
+
 func TestProcessorMarksUnparsedWhenNothingExtracts(t *testing.T) {
 	st := procTestStore(t)
 	html := "<p>hello, this is not a transaction email</p>"
