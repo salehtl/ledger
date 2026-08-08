@@ -207,6 +207,10 @@ const MAY_IMPORT_INSTALLER = new Set([
   // Tests are never in a browser bundle.
   "crypto/keys.test.ts",
   "crypto/phrase.test.ts",
+  // The same again for the PRF wrap and the HKDF under it: both are checked on
+  // BOTH hosts, because a wrap made on one has to open on the other.
+  "crypto/hkdf.test.ts",
+  "crypto/prf.test.ts",
 ]);
 
 /** Every `client/src` file, recursively. */

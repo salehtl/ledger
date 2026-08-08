@@ -150,7 +150,7 @@ const KEY_BYTES = 32;
 export const WRAPPED_HEADER_BYTES = 1 + 1 + 4 + 1 + 1 + SALT_BYTES + AES_NONCE_BYTES;
 
 /** `[key set version][x25519 private][dek][ed25519 recovery seed]`. */
-const BODY_BYTES = 1 + KEY_BYTES + KEY_BYTES + KEY_BYTES;
+export const BODY_BYTES = 1 + KEY_BYTES + KEY_BYTES + KEY_BYTES;
 
 /**
  * What the server's column admits. Generous against the 149 bytes this build
@@ -263,11 +263,7 @@ export async function wrapAccountKeys(
   const header = encodeHeader({ version: ACCOUNT_KEY_VERSION, kdf: KDF_ARGON2ID, t, m, p: lanes }, salt, nonce);
   const wrapKey = deriveWrapKey(verdict.phrase, salt, { t, m, p: lanes }, p);
 
-  const body = new Uint8Array(BODY_BYTES);
-  body[0] = KEY_SET_VERSION;
-  body.set(keys.ingestPriv, 1);
-  body.set(keys.dek, 1 + KEY_BYTES);
-  body.set(keys.recoverySeed, 1 + KEY_BYTES * 2);
+  const body = encodeKeyBody(keys);
 
   const sealed = await p.aesGcmSeal(wrapKey, nonce, aadFor(header, p), body);
   zero(body);
@@ -313,6 +309,35 @@ export async function unwrapAccountKeys(phrase: string, blob: Uint8Array, p: Pla
     zero(wrapKey);
   }
 
+  return decodeKeyBody(body, p);
+}
+
+/**
+ * The sealed body, and the ONLY place it is laid out:
+ * `[1B key set version][32B x25519 private][32B DEK][32B ed25519 recovery seed]`.
+ *
+ * It is factored out of {@link wrapAccountKeys} because there is now a second
+ * envelope around the same bytes — `prf.ts`'s, sealed under a WebAuthn PRF
+ * output rather than under the phrase — and two hand-written layouts of one key
+ * set is how a device ends up unwrapping a DEK from where a recovery seed was
+ * written. `prf.test.ts` asserts the two envelopes carry byte-identical bodies.
+ */
+export function encodeKeyBody(keys: AccountKeys): Uint8Array {
+  const body = new Uint8Array(BODY_BYTES);
+  body[0] = KEY_SET_VERSION;
+  body.set(keys.ingestPriv, 1);
+  body.set(keys.dek, 1 + KEY_BYTES);
+  body.set(keys.recoverySeed, 1 + KEY_BYTES * 2);
+  return body;
+}
+
+/**
+ * The inverse. **Zeroes `body`**, which is key material either way, and derives
+ * both public halves rather than carrying them — see the module header: a
+ * stored public key that had been tampered with would be a key the client
+ * believed something else was using and it was not.
+ */
+export function decodeKeyBody(body: Uint8Array, p: Platform): AccountKeys {
   if (body.length !== BODY_BYTES || body[0] !== KEY_SET_VERSION) {
     zero(body);
     throw new WrapError(`this blob holds key set version ${body[0]}, which this build does not know how to use`);
@@ -321,9 +346,6 @@ export async function unwrapAccountKeys(phrase: string, blob: Uint8Array, p: Pla
   const dek = body.slice(1 + KEY_BYTES, 1 + KEY_BYTES * 2);
   const recoverySeed = body.slice(1 + KEY_BYTES * 2);
   zero(body);
-  // Both public halves are DERIVED, never carried: see the header. A stored
-  // public key that had been tampered with would be a key the client believed
-  // something else was using and it was not.
   return {
     ingestPriv,
     ingestPub: p.x25519PublicKey(ingestPriv),
