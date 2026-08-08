@@ -170,6 +170,13 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "categories", "color", "TEXT"); err != nil {
 		return err
 	}
+	// Budgeting method. 'simple' (default) is monthly budgets: the assignment
+	// persists, spending resets each month, nothing carries. 'envelope' is the
+	// original carryover + overspend-debt model, kept reachable but off by
+	// default — sunset, not removed.
+	if err := addColumnIfMissing(db, "app_settings", "budget_mode", "TEXT NOT NULL DEFAULT 'simple'"); err != nil {
+		return err
+	}
 	// v3: effective-dated category targets. The uniqueness index is created
 	// here, not in schema.sql, since effective_month doesn't exist yet when
 	// schema.sql first runs on a pre-existing DB (same hazard as idx_tx_project
