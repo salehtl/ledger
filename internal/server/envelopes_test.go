@@ -334,6 +334,57 @@ func TestEnvelopesOverspendSettlesForItsExactCost(t *testing.T) {
 	}
 }
 
+// TestEnvelopesDefaultModeZeroesCarryoverAndDebtAtWireLevel is the
+// wire-level counterpart to internal/store's
+// TestEnvelopeMonthSummary_SimpleModeCarriesNothing: it proves the DEFAULT
+// mode (nothing set explicitly — the same app_settings row a fresh install
+// gets) zeroes carryover_fils and overspend_debt_fils in the actual
+// /api/envelopes JSON, and that ready_to_assign_fils holds the simple-mode
+// identity income − assigned exactly (no debt subtracted).
+//
+// The fixture (assign 200.00 in Jan, spend 300.00, query Feb) is exactly the
+// one TestEnvelopesOverspendSettlesForItsExactCost uses to prove envelope
+// mode charges 100.00 of debt at this same month — so this is not a fixture
+// that happens to produce zero under any interpretation; under envelope mode
+// it demonstrably does not.
+func TestEnvelopesDefaultModeZeroesCarryoverAndDebtAtWireLevel(t *testing.T) {
+	srv, st, cats := newEnvelopeTestServer(t)
+	// No UpdateBudgetMode call: this exercises whatever a fresh app_settings
+	// row defaults to (BudgetModeSimple, per store.NormalizeBudgetMode).
+	if err := st.UpsertEnvelopeAssignment("2026-01", cats[1], 200_00); err != nil {
+		t.Fatal(err)
+	}
+	projInsertTxn(t, st, cats[1], "debit", 300_00, "2026-01-15", "confirmed")
+
+	w := doJSON(t, srv, "GET", "/api/envelopes?month=2026-02", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET 2026-02: status %d body %s", w.Code, w.Body)
+	}
+	feb := decodeSummary(t, w.Body.Bytes())
+
+	var envelope *budget.Envelope
+	for i := range feb.Envelopes {
+		if feb.Envelopes[i].CategoryID == cats[1] {
+			envelope = &feb.Envelopes[i]
+		}
+	}
+	if envelope == nil {
+		t.Fatalf("envelope %d missing from summary", cats[1])
+	}
+	if envelope.CarryoverFils != 0 {
+		t.Errorf("CarryoverFils = %d, want 0 under default (simple) mode", envelope.CarryoverFils)
+	}
+	if envelope.OverspendDebtFils != 0 {
+		t.Errorf("OverspendDebtFils = %d, want 0 under default (simple) mode — envelope mode gives 10000 (100.00 AED) for this exact fixture at this exact month", envelope.OverspendDebtFils)
+	}
+	if feb.OverspendDebtFils != 0 {
+		t.Errorf("summary OverspendDebtFils = %d, want 0 under default (simple) mode", feb.OverspendDebtFils)
+	}
+	if want := feb.IncomeFils - feb.AssignedFils; feb.ReadyToAssignFils != want {
+		t.Errorf("ReadyToAssignFils = %d, want %d (income - assigned, no debt subtracted)", feb.ReadyToAssignFils, want)
+	}
+}
+
 // TestEnvelopesAutoAssignConcurrentRTANonNegative: auto-assign is
 // read-plan-apply — compute the summary, plan against its RTA, apply deltas.
 // Each apply is atomic, but without envelopeMu spanning the PAIR two
