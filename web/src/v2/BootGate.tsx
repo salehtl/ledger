@@ -61,6 +61,7 @@ import {
 import { Button } from "../components/ui/Button";
 import { PixelSpinner } from "../components/ui/PixelSpinner";
 import { PendingDevicePanel } from "../screens/settings/PendingDevicePanel";
+import { RecoverWritePanel } from "../screens/settings/RecoverWritePanel";
 
 import type { Halt } from "@ledger/client/invariants/surface";
 import type { Client } from "@ledger/client/net/client";
@@ -419,6 +420,16 @@ export function BootGate({
             reach — it cannot reach anything until it is enrolled.
           */}
           {state.kind === "rejected" && handle !== null && <PendingDevice handle={handle} onRecheck={again} />}
+          {/*
+            And the way out for a device with NO other device: the recovery
+            phrase. A cleared browser is a new writer whose self-signature the
+            server refuses, and before this it was permanently read-only —
+            holding the phrase that was supposed to make it whole. See
+            `RecoverWritePanel`.
+          */}
+          {state.kind === "rejected" && handle !== null && (
+            <RecoverWritePanel handle={handle} onRecovered={again} profile={PROFILE} server={SERVER} />
+          )}
           {state.copy.retry && (
             <div>
               <Button variant="primary" onClick={again}>

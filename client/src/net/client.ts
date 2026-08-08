@@ -1054,11 +1054,29 @@ export class Client {
    *
    * A peer enrolment must be signed by an enrolled writer: self-signing a key
    * you do not hold is not possible, and the TOFU bootstrap is spent.
+   *
+   * # `authorize`: the RECOVERY-signed enrolment
+   *
+   * `authorize` supplies the signature from OUTSIDE the writer store — the one
+   * caller is the recovery ceremony, which holds the account's Ed25519 recovery
+   * authorizer for the moment it takes to unwrap the blob and never persists it
+   * (`web/src/v2/keys.ts`). The server accepts that signature in place of one
+   * from an enrolled device (`auth.Writers.Register`), which is what lets a
+   * browser whose site data was cleared write again rather than only read.
+   *
+   * It takes the whole message rather than a key, deliberately: a `signWith`
+   * that named a key not in `st.writers` would need that key to be PUT there
+   * first, and the recovery key is precisely the one key this device must not
+   * keep. So it never enters the store, and the closure is torn down with the
+   * seed the moment the ceremony ends.
    */
-  async enroll(writerId: string, opts: { signWith?: string; publicKey?: Uint8Array } = {}): Promise<void> {
+  async enroll(
+    writerId: string,
+    opts: { signWith?: string; publicKey?: Uint8Array; authorize?: (msg: Uint8Array) => Uint8Array } = {},
+  ): Promise<void> {
     requireWriterID(writerId);
     const peer = opts.publicKey !== undefined;
-    if (peer && opts.signWith === undefined) {
+    if (peer && opts.signWith === undefined && opts.authorize === undefined) {
       throw new Error(`enrolling ${JSON.stringify(writerId)} from its public key needs an already-enrolled signer`);
     }
     const pub = peer ? opts.publicKey! : this.ensureWriterKey(writerId);
@@ -1069,14 +1087,22 @@ export class Client {
       // to act on. An Ed25519 public key is 32 bytes; anything else is a typo.
       throw new Error(`the public key for ${JSON.stringify(writerId)} is ${pub.length} bytes, and Ed25519 keys are 32`);
     }
-    const signerID = opts.signWith ?? writerId;
-    const signer = this.st.writers.get(signerID);
-    if (signer === undefined) {
-      throw new Error(`no key for writer ${JSON.stringify(signerID)} in ${this.store.location}`);
+    // An external authorizer bypasses the writer store entirely — it is the
+    // one signer that is deliberately not in it.
+    let sign: (msg: Uint8Array) => Uint8Array;
+    if (opts.authorize !== undefined) {
+      sign = opts.authorize;
+    } else {
+      const signerID = opts.signWith ?? writerId;
+      const signer = this.st.writers.get(signerID);
+      if (signer === undefined) {
+        throw new Error(`no key for writer ${JSON.stringify(signerID)} in ${this.store.location}`);
+      }
+      sign = (msg) => signBytes(signer, msg);
     }
     const { nonce } = await this.request<{ nonce: string }>("POST", "/api/v1/writers/challenge", {});
     const nonceBytes = unbase64(nonce, "challenge nonce");
-    const sig = signBytes(signer, registrationMessage(nonceBytes, writerId, pub));
+    const sig = sign(registrationMessage(nonceBytes, writerId, pub));
     await this.request<void>("POST", "/api/v1/writers/register", {
       writer_id: writerId,
       pubkey: platform().toBase64(pub),

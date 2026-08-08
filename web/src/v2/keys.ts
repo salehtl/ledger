@@ -47,6 +47,7 @@ import {
   type AccountKeys,
 } from "@ledger/client/crypto/keys";
 import { generatePhrase } from "@ledger/client/crypto/phrase";
+import { sessionAnswerOf } from "./halt";
 
 /**
  * The account's keys as this device holds them.
@@ -105,6 +106,9 @@ export async function installAccountKeys(accountId: string, keys: AccountKeys, v
 
   zero(keys.ingestPriv);
   zero(keys.dek);
+  // The recovery authorizer is NOT stored — it is derivable from the phrase and
+  // is needed for one enrolment — so this is the end of its life on this device.
+  zero(keys.recoverySeed);
   return stored;
 }
 
@@ -234,6 +238,8 @@ function isCryptoKey(v: unknown): v is CryptoKey {
 /** What the server holds for an account, or `null` when it holds nothing yet. */
 export interface PublishedKeys {
   ingestPub: Uint8Array;
+  /** The Ed25519 authorizer `auth.Writers.Register` accepts. Not a secret. */
+  recoveryPub: Uint8Array;
   wrapped: Uint8Array;
   keyVersion: number;
 }
@@ -254,21 +260,35 @@ export interface KeysIO {
 export async function readPublishedKeys(io: KeysIO): Promise<PublishedKeys | null> {
   const res = await call(io, "GET", null);
   if (res === null) return null;
-  const body = res as { ingest_pubkey?: unknown; wrapped_keys?: unknown; key_version?: unknown };
-  if (typeof body.ingest_pubkey !== "string" || typeof body.wrapped_keys !== "string") {
+  const body = res as {
+    ingest_pubkey?: unknown;
+    recovery_pubkey?: unknown;
+    wrapped_keys?: unknown;
+    key_version?: unknown;
+  };
+  if (
+    typeof body.ingest_pubkey !== "string" ||
+    typeof body.recovery_pubkey !== "string" ||
+    typeof body.wrapped_keys !== "string"
+  ) {
     throw new ApiError(200, "", "", "GET /api/v1/keys: unreadable response");
   }
   return {
     ingestPub: webPlatform.fromBase64(body.ingest_pubkey),
+    recoveryPub: webPlatform.fromBase64(body.recovery_pubkey),
     wrapped: webPlatform.fromBase64(body.wrapped_keys),
     keyVersion: typeof body.key_version === "number" ? body.key_version : ACCOUNT_KEY_VERSION,
   };
 }
 
 /** `PUT /api/v1/keys`. A 409 travels as an {@link ApiError} carrying `keys_already_published`. */
-export async function publishKeys(io: KeysIO, keys: { ingestPub: Uint8Array; wrapped: Uint8Array }): Promise<void> {
+export async function publishKeys(
+  io: KeysIO,
+  keys: { ingestPub: Uint8Array; recoveryPub: Uint8Array; wrapped: Uint8Array },
+): Promise<void> {
   await call(io, "PUT", {
     ingest_pubkey: webPlatform.toBase64(keys.ingestPub),
+    recovery_pubkey: webPlatform.toBase64(keys.recoveryPub),
     wrapped_keys: webPlatform.toBase64(keys.wrapped),
     key_version: ACCOUNT_KEY_VERSION,
   });
@@ -338,7 +358,44 @@ export type KeyStatus =
  */
 export async function keyStatus(accountId: string, vault: KeyVault, io: KeysIO): Promise<KeyStatus> {
   const held = await vault.read();
-  const published = await readPublishedKeys(io);
+
+  let published: PublishedKeys | null;
+  try {
+    published = await readPublishedKeys(io);
+  } catch (err) {
+    /*
+     * # Offline is not "this device has no keys"
+     *
+     * This is a local-first PWA whose keys are sitting in IndexedDB. Before
+     * this branch, a launch with no network threw here, `boot`'s
+     * `keysReadyOrFalse` swallowed it to `false`, the milestone walk collapsed
+     * to `invited`, and a fully set-up user was shown the RECOVERY PHRASE
+     * SCREEN — asking for the twelve words they wrote down months ago because
+     * a fetch failed. It could not mint a second key set (this function throws
+     * rather than answering `unpublished`, which is what kept that safe), but
+     * "your keys are gone" is close to the worst thing this product can say to
+     * someone whose keys are one function call away.
+     *
+     * So: handles for THIS account, plus no answer from the server, reads as
+     * `ready`. That is the honest local answer — the device really can decrypt
+     * — and it is the same judgement `boot.ts` already makes for a sync that
+     * could not run, which is not an integrity halt.
+     *
+     * A device with NO handles still rethrows: it genuinely cannot tell
+     * "generate a key set" from "ask for the phrase" without the server, and
+     * guessing the first would be the catastrophic guess. The recovery step
+     * renders "ledger could not reach the server" for that case.
+     *
+     * A 401/410 is NOT swallowed — it travels, because it is a fact about the
+     * account rather than about the connection, and hiding a deleted account
+     * behind a working-looking app is the failure `address.ts` already names.
+     */
+    if (held !== null && held.accountId === accountId && sessionAnswerOf(err) === null) {
+      return { kind: "ready", keys: held };
+    }
+    throw err;
+  }
+
   if (published === null) {
     // Held handles for an account that has published nothing are the residue of
     // an abandoned attempt, and they are not what the server will seal to.
@@ -373,9 +430,21 @@ export async function establishAccountKeys(args: {
 }): Promise<StoredKeys> {
   const phrase = generatePhrase(webPlatform);
   const keys = generateAccountKeys(webPlatform);
-  await args.confirmPhrase(phrase);
-  const wrapped = await wrapAccountKeys(phrase, keys, webPlatform);
-  await publishKeys(args.io, { ingestPub: keys.ingestPub, wrapped });
+  try {
+    await args.confirmPhrase(phrase);
+    const wrapped = await wrapAccountKeys(phrase, keys, webPlatform);
+    await publishKeys(args.io, { ingestPub: keys.ingestPub, recoveryPub: keys.recoveryPub, wrapped });
+  } catch (err) {
+    // The raw private material is destroyed on EVERY exit, not only the happy
+    // one. `installAccountKeys` zeroes it on success; before this, a failed or
+    // abandoned publication left three live keys in a closure for as long as
+    // the tab did — and the failure paths here are the ordinary ones (the user
+    // backs out, the network drops), not the exotic ones.
+    zero(keys.ingestPriv);
+    zero(keys.dek);
+    zero(keys.recoverySeed);
+    throw err;
+  }
   return installAccountKeys(args.accountId, keys, args.vault);
 }
 
@@ -391,16 +460,48 @@ export async function recoverAccountKeys(args: {
   phrase: string;
   published: PublishedKeys;
   vault: KeyVault;
+  /**
+   * Run with the account's recovery authorizer, before the seed is destroyed.
+   *
+   * This is how a browser with cleared site data becomes able to WRITE again:
+   * `auth.Writers.Register` accepts a signature from this key in place of one
+   * from an enrolled device, so the caller uses it to enrol a writer and then
+   * has no further use for it — which is why it is a callback rather than a
+   * returned value. The seed is zeroed in the `finally` below whether the
+   * enrolment succeeded, failed or was never attempted, so no code path leaves
+   * a live copy of an authorizer behind.
+   */
+  authorize?: (sign: (msg: Uint8Array) => Uint8Array) => Promise<void>;
 }): Promise<StoredKeys> {
   const keys = await unwrapAccountKeys(args.phrase, args.published.wrapped, webPlatform);
-  // The blob authenticates itself, so this cannot fail for a phrase that opened
-  // it — unless the server served a blob belonging to another account, which is
-  // exactly what it is here to catch.
-  if (!sameBytes(keys.ingestPub, args.published.ingestPub)) {
+  // The blob authenticates itself, so these cannot fail for a phrase that
+  // opened it — unless the server served a blob belonging to another account,
+  // which is exactly what they are here to catch. The recovery half matters as
+  // much as the ingest half: a mismatched authorizer is an enrolment the server
+  // refuses with a bodyless 403, which is unactionable, so it is caught here
+  // where it can be named.
+  if (
+    !sameBytes(keys.ingestPub, args.published.ingestPub) ||
+    !sameBytes(keys.recoveryPub, args.published.recoveryPub)
+  ) {
     zero(keys.ingestPriv);
     zero(keys.dek);
-    throw new Error("the recovered keys do not match the public key this account published");
+    zero(keys.recoverySeed);
+    throw new Error("the recovered keys do not match the public keys this account published");
   }
+
+  if (args.authorize !== undefined) {
+    // A COPY of the seed, so the closure keeps working after `keys.recoverySeed`
+    // is zeroed by `installAccountKeys` below — and so this function owns the
+    // only lifetime that matters.
+    const seed = Uint8Array.from(keys.recoverySeed);
+    try {
+      await args.authorize((msg) => webPlatform.ed25519Sign(seed, msg));
+    } finally {
+      zero(seed);
+    }
+  }
+
   return installAccountKeys(args.accountId, keys, args.vault);
 }
 

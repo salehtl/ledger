@@ -181,8 +181,8 @@ var seeders = map[string]seeder{
 	// opening that user's data, kept after they asked to be forgotten.
 	"public.user_keys": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_keys
-		  (user_id, ingest_pubkey, wrapped_keys, key_version, created_at, updated_at)
-		  VALUES ($1, $2, $3, 1, now(), now())`, u, randBytes(t, 32), randBytes(t, 117))
+		  (user_id, ingest_pubkey, wrapped_keys, key_version, recovery_pubkey, created_at, updated_at)
+		  VALUES ($1, $2, $3, 1, $4, now(), now())`, u, randBytes(t, 32), randBytes(t, 149), randBytes(t, 32))
 	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)

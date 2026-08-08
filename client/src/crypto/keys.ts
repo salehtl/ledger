@@ -4,7 +4,7 @@
  *
  * # What an account holds
  *
- * Two keys, minted once, on the device, at onboarding:
+ * Three keys, minted once, on the device, at onboarding:
  *
  *   - **An X25519 ingest keypair.** The PUBLIC half is published to the server,
  *     which seals incoming bank mail to it (Phase 3 Task 2, in `encv2.go`'s
@@ -14,11 +14,48 @@
  *     under it (Task 3). It is symmetric because the client holds it: there is
  *     no need for a per-record ephemeral when the writer and the reader are the
  *     same key holder.
+ *   - **An Ed25519 recovery authorizer.** Its public half is published, and
+ *     `auth.Writers.Register` accepts its signature as an alternative to a
+ *     signature by an already-enrolled device. See below.
  *
- * They are separate keys rather than one, because they answer to different
- * parties. The server must be able to write to the account without being able to
- * read it, which is what an asymmetric ingest key buys; the client's own writes
- * have no such requirement and would pay 32 bytes per record for nothing.
+ * The first two are separate because they answer to different parties. The
+ * server must be able to write to the account without being able to read it,
+ * which is what an asymmetric ingest key buys; the client's own writes have no
+ * such requirement and would pay 32 bytes per record for nothing.
+ *
+ * # The recovery authorizer, and the dead end it removes
+ *
+ * Task 1's first round proved that a browser with cleared site data recovers its
+ * keys from the phrase and can READ again. It could not WRITE: the device
+ * writer's Ed25519 identity key lived in the database that was cleared, the
+ * account's one TOFU self-approval was spent by the original device, and
+ * `Writers.Register` accepts only a signature by an already-enrolled device. A
+ * one-device user who cleared their browser was therefore permanently
+ * read-only — with their recovery phrase in their hand.
+ *
+ * The fix is this key, and the shape of it matters:
+ *
+ *   - **It is still a cryptographic proof of possession, not a session token.**
+ *     The server holds only the public half and cannot mint a signature under
+ *     it; a stolen session is exactly as useless as it was before.
+ *   - **It does not reopen the TOFU bootstrap.** `hadDevice`'s
+ *     one-self-signature-ever rule is untouched. This is an ADDITIONAL
+ *     authorised signer, not a second chance at the first one.
+ *   - **It is derived from the phrase and is never stored.** Unlike the other
+ *     two it does not become a `CryptoKey` handle in IndexedDB: it is needed for
+ *     the few milliseconds of one enrolment and nowhere else, so keeping it
+ *     would be custody of a capability with no reason to persist. A device that
+ *     needs it again unwraps the blob again.
+ *   - **Its use is visible.** The enrolment it authorises is written to
+ *     key_history as `recovery_registered`, a distinct event from `registered`,
+ *     so a peer device auditing the log — and the cross-device comparison code,
+ *     which hashes the event string — sees that a recovery happened.
+ *
+ * The window to add it was narrow and is the reason it is here rather than in a
+ * later task: publication is write-once by design (409, no DELETE, no rotation
+ * path), so the moment any account publishes a key set, adding a key to the body
+ * is unreachable without building a re-keying path Phase 3 deliberately does not
+ * have. No account had published when this landed.
  *
  * **This module does not seal anything but the keys themselves.** Task 1 changes
  * no data path — at the end of it the system still stores plaintext and simply
@@ -28,9 +65,10 @@
  *
  *     [1B version][1B kdf][4B m KiB, BE][1B t][1B p][16B salt][12B nonce][sealed]
  *
- * `sealed` is AES-256-GCM over `[1B key version][32B x25519 private][32B DEK]`,
- * 65 bytes plus a 16-byte tag, under a key Argon2id derives from the phrase.
- * 117 bytes in total, and it is what the server stores.
+ * `sealed` is AES-256-GCM over
+ * `[1B key set version][32B x25519 private][32B DEK][32B ed25519 recovery seed]`,
+ * 97 bytes plus a 16-byte tag, under a key Argon2id derives from the phrase.
+ * 149 bytes in total, and it is what the server stores.
  *
  * **The whole header is the AEAD's associated data**, not a prefix it merely
  * sits in front of. The parameters are the reason: an attacker holding the blob
@@ -89,8 +127,18 @@ import { PhraseError, normalizePhrase, validatePhrase } from "./phrase";
 /** The envelope version. Bumped only by a format change, never by a parameter change. */
 export const ACCOUNT_KEY_VERSION = 1;
 
-/** The version byte inside the sealed body, so the key SET can grow independently of the envelope. */
-export const KEY_SET_VERSION = 1;
+/**
+ * The version byte inside the sealed body, so the key SET can grow
+ * independently of the envelope.
+ *
+ * **Version 1 is not accepted, and there is nothing to migrate.** It carried
+ * two keys and no recovery authorizer, and it existed for the length of one
+ * unreleased commit — no account ever published one, which is exactly why the
+ * authorizer could be added at all (publication is write-once). Reading a shape
+ * nothing ever wrote would be untested code on the recovery path, so a body
+ * that is not version 2 is refused by name.
+ */
+export const KEY_SET_VERSION = 2;
 
 /** The only KDF identifier this build writes or accepts. */
 export const KDF_ARGON2ID = 1;
@@ -101,8 +149,8 @@ const KEY_BYTES = 32;
 /** `[version][kdf][m:4][t][p][salt:16][nonce:12]`. */
 export const WRAPPED_HEADER_BYTES = 1 + 1 + 4 + 1 + 1 + SALT_BYTES + AES_NONCE_BYTES;
 
-/** `[key set version][x25519 private][dek]`. */
-const BODY_BYTES = 1 + KEY_BYTES + KEY_BYTES;
+/** `[key set version][x25519 private][dek][ed25519 recovery seed]`. */
+const BODY_BYTES = 1 + KEY_BYTES + KEY_BYTES + KEY_BYTES;
 
 /**
  * What the server's column admits. Generous against the 117 bytes this build
@@ -145,6 +193,16 @@ export interface AccountKeys {
   ingestPub: Uint8Array;
   /** AES-256-GCM, 32 bytes. */
   dek: Uint8Array;
+  /**
+   * Ed25519 seed, 32 bytes — the recovery authorizer's private half.
+   *
+   * **Never stored on the device.** It lives for the duration of one enrolment
+   * and is zeroed; a device that needs it again unwraps the blob again. See the
+   * module header.
+   */
+  recoverySeed: Uint8Array;
+  /** Ed25519 public, 32 bytes. Published. Derived from `recoverySeed`, never carried beside it. */
+  recoveryPub: Uint8Array;
 }
 
 /** A blob that will not open, in any of the ways that is possible. */
@@ -158,7 +216,14 @@ export class WrapError extends Error {
 /** Mints an account's keys. Pure but for the platform's randomness. */
 export function generateAccountKeys(p: Platform): AccountKeys {
   const { priv, pub } = p.x25519GenerateKey();
-  return { ingestPriv: priv, ingestPub: pub, dek: p.randomBytes(KEY_BYTES) };
+  const recovery = p.ed25519GenerateKey();
+  return {
+    ingestPriv: priv,
+    ingestPub: pub,
+    dek: p.randomBytes(KEY_BYTES),
+    recoverySeed: recovery.priv,
+    recoveryPub: recovery.pub,
+  };
 }
 
 /** Overridable KDF cost, for tests that do not care what it cost. */
@@ -184,7 +249,7 @@ export async function wrapAccountKeys(
 ): Promise<Uint8Array> {
   const verdict = validatePhrase(phrase, p);
   if (!verdict.ok) throw new PhraseError(verdict.message);
-  if (keys.ingestPriv.length !== KEY_BYTES || keys.dek.length !== KEY_BYTES) {
+  if (keys.ingestPriv.length !== KEY_BYTES || keys.dek.length !== KEY_BYTES || keys.recoverySeed.length !== KEY_BYTES) {
     throw new WrapError(`account keys must be ${KEY_BYTES} bytes each`);
   }
 
@@ -201,6 +266,7 @@ export async function wrapAccountKeys(
   body[0] = KEY_SET_VERSION;
   body.set(keys.ingestPriv, 1);
   body.set(keys.dek, 1 + KEY_BYTES);
+  body.set(keys.recoverySeed, 1 + KEY_BYTES * 2);
 
   const sealed = await p.aesGcmSeal(wrapKey, nonce, aadFor(header, p), body);
   zero(body);
@@ -251,10 +317,19 @@ export async function unwrapAccountKeys(phrase: string, blob: Uint8Array, p: Pla
     throw new WrapError(`this blob holds key set version ${body[0]}, which this build does not know how to use`);
   }
   const ingestPriv = body.slice(1, 1 + KEY_BYTES);
-  const dek = body.slice(1 + KEY_BYTES);
+  const dek = body.slice(1 + KEY_BYTES, 1 + KEY_BYTES * 2);
+  const recoverySeed = body.slice(1 + KEY_BYTES * 2);
   zero(body);
-  // Derived, never carried: see the header.
-  return { ingestPriv, ingestPub: p.x25519PublicKey(ingestPriv), dek };
+  // Both public halves are DERIVED, never carried: see the header. A stored
+  // public key that had been tampered with would be a key the client believed
+  // something else was using and it was not.
+  return {
+    ingestPriv,
+    ingestPub: p.x25519PublicKey(ingestPriv),
+    dek,
+    recoverySeed,
+    recoveryPub: p.ed25519PublicKey(recoverySeed),
+  };
 }
 
 /** The declared envelope version, KDF and cost — readable without the phrase, because the server and the UI both need them. */

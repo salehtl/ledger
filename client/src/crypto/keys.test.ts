@@ -40,13 +40,19 @@ describe("generateAccountKeys", () => {
     expect(k.ingestPriv.length).toBe(32);
     expect(k.ingestPub.length).toBe(32);
     expect(k.dek.length).toBe(32);
+    expect(k.recoverySeed.length).toBe(32);
+    expect(k.recoveryPub.length).toBe(32);
     expect(P.toHex(P.x25519PublicKey(k.ingestPriv))).toBe(P.toHex(k.ingestPub));
+    expect(P.toHex(P.ed25519PublicKey(k.recoverySeed))).toBe(P.toHex(k.recoveryPub));
   });
 
   test("the DEK is not the ingest key, and two accounts share nothing", () => {
     const a = generateAccountKeys(P);
     const b = generateAccountKeys(P);
     expect(P.toHex(a.dek)).not.toBe(P.toHex(a.ingestPriv));
+    expect(P.toHex(a.recoverySeed)).not.toBe(P.toHex(a.dek));
+    expect(P.toHex(a.recoverySeed)).not.toBe(P.toHex(a.ingestPriv));
+    expect(P.toHex(a.recoverySeed)).not.toBe(P.toHex(b.recoverySeed));
     expect(P.toHex(a.dek)).not.toBe(P.toHex(b.dek));
     expect(P.toHex(a.ingestPriv)).not.toBe(P.toHex(b.ingestPriv));
   });
@@ -67,6 +73,24 @@ describe("wrapAccountKeys", () => {
     expect(P.toHex(back.ingestPriv)).toBe(P.toHex(keys.ingestPriv));
     expect(P.toHex(back.ingestPub)).toBe(P.toHex(keys.ingestPub));
     expect(P.toHex(back.dek)).toBe(P.toHex(keys.dek));
+    expect(P.toHex(back.recoverySeed)).toBe(P.toHex(keys.recoverySeed));
+    expect(P.toHex(back.recoveryPub)).toBe(P.toHex(keys.recoveryPub));
+  });
+
+  // The property the whole recovery-authorised enrolment rests on: a phrase
+  // written down on one device reproduces a signing key the SERVER already
+  // knows the public half of. If this drifted, a recovered device would present
+  // a signature under a key nobody authorised and be refused — which is exactly
+  // the dead end this key exists to remove.
+  test("the recovery key round-trips as a working Ed25519 signer", async () => {
+    const keys = generateAccountKeys(P);
+    const pub = Uint8Array.from(keys.recoveryPub);
+    const blob = await wrapAccountKeys(PHRASE, keys, P, FAST);
+    const back = await unwrapAccountKeys(PHRASE, blob, P);
+    const msg = P.utf8Encode("ledger-v2-writer-registration\x00…");
+    const sig = P.ed25519Sign(back.recoverySeed, msg);
+    expect(sig.length).toBe(64);
+    expect(P.toHex(P.ed25519PublicKey(back.recoverySeed))).toBe(P.toHex(pub));
   });
 
   // The blob is stored on a server the user is being asked to trust with
@@ -78,10 +102,12 @@ describe("wrapAccountKeys", () => {
     const hex = P.toHex(blob);
     expect(hex).not.toContain(P.toHex(keys.ingestPriv));
     expect(hex).not.toContain(P.toHex(keys.dek));
+    expect(hex).not.toContain(P.toHex(keys.recoverySeed));
     // Not even a quarter of one: a framing bug that leaked the first eight
     // bytes would pass the two checks above.
     expect(hex).not.toContain(P.toHex(keys.ingestPriv.subarray(0, 8)));
     expect(hex).not.toContain(P.toHex(keys.dek.subarray(0, 8)));
+    expect(hex).not.toContain(P.toHex(keys.recoverySeed.subarray(0, 8)));
   });
 
   test("the same keys wrap to different blobs every time", async () => {
@@ -94,7 +120,7 @@ describe("wrapAccountKeys", () => {
   test("is small enough for the column that holds it", async () => {
     const blob = await wrapAccountKeys(PHRASE, generateAccountKeys(P), P, FAST);
     expect(blob.length).toBeLessThanOrEqual(MAX_WRAPPED_BYTES);
-    expect(blob.length).toBe(WRAPPED_HEADER_BYTES + 65 + 16);
+    expect(blob.length).toBe(WRAPPED_HEADER_BYTES + 97 + 16);
   });
 
   test("normalizes the phrase, so how it was typed does not matter", async () => {
@@ -186,6 +212,7 @@ describe("cross-host", () => {
     const onBun = await unwrapAccountKeys(PHRASE, byWeb, bunPlatform);
     expect(P.toHex(onBun.ingestPriv)).toBe(P.toHex(keys.ingestPriv));
     expect(P.toHex(onBun.dek)).toBe(P.toHex(keys.dek));
+    expect(P.toHex(onBun.recoveryPub)).toBe(P.toHex(keys.recoveryPub));
 
     const byBun = await wrapAccountKeys(PHRASE, keys, bunPlatform, FAST);
     const onWeb = await unwrapAccountKeys(PHRASE, byBun, webPlatform);

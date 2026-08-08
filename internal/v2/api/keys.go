@@ -50,6 +50,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"ledger/internal/v2/auth"
 )
 
 // An X25519 public key, raw. Mirrors user_keys_pubkey_is_256_bits.
@@ -71,16 +73,23 @@ const (
 // blob travels whole: a client that has just been given a recovery phrase needs
 // every byte of it to derive anything at all.
 type KeysResponse struct {
-	IngestPubkey string    `json:"ingest_pubkey"`
-	WrappedKeys  string    `json:"wrapped_keys"`
-	KeyVersion   int       `json:"key_version"`
-	CreatedAt    time.Time `json:"created_at"`
+	IngestPubkey string `json:"ingest_pubkey"`
+	// RecoveryPubkey is the Ed25519 authorizer auth.Writers.Register accepts as
+	// an alternative to an enrolled device (00027_recovery_authorizer.sql). It
+	// is returned so a client can check that what it recovered from the phrase
+	// is what the account actually published, before it tries to enroll under
+	// it and gets an unexplained refusal.
+	RecoveryPubkey string    `json:"recovery_pubkey"`
+	WrappedKeys    string    `json:"wrapped_keys"`
+	KeyVersion     int       `json:"key_version"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type publishKeysRequest struct {
-	IngestPubkey string `json:"ingest_pubkey"`
-	WrappedKeys  string `json:"wrapped_keys"`
-	KeyVersion   int    `json:"key_version"`
+	IngestPubkey   string `json:"ingest_pubkey"`
+	RecoveryPubkey string `json:"recovery_pubkey"`
+	WrappedKeys    string `json:"wrapped_keys"`
+	KeyVersion     int    `json:"key_version"`
 }
 
 // handleGetKeys returns the caller's own key material.
@@ -92,14 +101,16 @@ type publishKeysRequest struct {
 // named error code so the branch is not on a bare status.
 func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	var (
-		pub     []byte
-		wrapped []byte
-		version int
-		created time.Time
+		pub      []byte
+		recovery []byte
+		wrapped  []byte
+		version  int
+		created  time.Time
 	)
 	err := s.Pool.QueryRow(r.Context(),
-		`SELECT ingest_pubkey, wrapped_keys, key_version, created_at FROM user_keys WHERE user_id = $1`,
-		userID).Scan(&pub, &wrapped, &version, &created)
+		`SELECT ingest_pubkey, recovery_pubkey, wrapped_keys, key_version, created_at
+		   FROM user_keys WHERE user_id = $1`,
+		userID).Scan(&pub, &recovery, &wrapped, &version, &created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "no_keys", "")
 		return
@@ -110,10 +121,11 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, userID uu
 		return
 	}
 	writeJSON(w, http.StatusOK, KeysResponse{
-		IngestPubkey: base64.StdEncoding.EncodeToString(pub),
-		WrappedKeys:  base64.StdEncoding.EncodeToString(wrapped),
-		KeyVersion:   version,
-		CreatedAt:    created,
+		IngestPubkey:   base64.StdEncoding.EncodeToString(pub),
+		RecoveryPubkey: base64.StdEncoding.EncodeToString(recovery),
+		WrappedKeys:    base64.StdEncoding.EncodeToString(wrapped),
+		KeyVersion:     version,
+		CreatedAt:      created,
 	})
 }
 
@@ -130,6 +142,22 @@ func (s *Server) handlePublishKeys(w http.ResponseWriter, r *http.Request, userI
 	}
 	if len(pub) != ingestPubkeyBytes {
 		writeErr(w, http.StatusBadRequest, "invalid_pubkey", "an X25519 public key is 32 bytes")
+		return
+	}
+	recovery, ok := decodeKeyField(w, req.RecoveryPubkey, "recovery_pubkey")
+	if !ok {
+		return
+	}
+	// Screened HERE as well as in auth, and not only for its length: the
+	// Ed25519 identity point is a valid 32-byte encoding under which the
+	// signature `identity || 32 zero bytes` verifies for every message, so
+	// storing one would make every enrollment authorizable by anyone holding a
+	// session. auth.CheckPublicKey is the same check auth.Register applies to a
+	// device key, and it must run before this key is written rather than only
+	// when it is read — a stored authorizer that authorizes nothing is an
+	// account that can never be recovered, discovered at the worst moment.
+	if err := auth.CheckPublicKey(recovery); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_recovery_pubkey", "not a usable Ed25519 public key")
 		return
 	}
 	wrapped, ok := decodeKeyField(w, req.WrappedKeys, "wrapped_keys")
@@ -152,10 +180,11 @@ func (s *Server) handlePublishKeys(w http.ResponseWriter, r *http.Request, userI
 	// devices racing to publish cannot both believe they won, because whichever
 	// INSERT lost reads the row the winner wrote and compares against it.
 	tag, err := s.Pool.Exec(r.Context(),
-		`INSERT INTO user_keys (user_id, ingest_pubkey, wrapped_keys, key_version, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $5)
+		`INSERT INTO user_keys
+		   (user_id, ingest_pubkey, recovery_pubkey, wrapped_keys, key_version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6)
 		 ON CONFLICT (user_id) DO NOTHING`,
-		userID, pub, wrapped, req.KeyVersion, now)
+		userID, pub, recovery, wrapped, req.KeyVersion, now)
 	if err != nil {
 		s.logf("api: publish user keys for %s: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
@@ -167,17 +196,18 @@ func (s *Server) handlePublishKeys(w http.ResponseWriter, r *http.Request, userI
 	}
 
 	var (
-		storedPub     []byte
-		storedWrapped []byte
+		storedPub      []byte
+		storedRecovery []byte
+		storedWrapped  []byte
 	)
 	if err := s.Pool.QueryRow(r.Context(),
-		`SELECT ingest_pubkey, wrapped_keys FROM user_keys WHERE user_id = $1`, userID).
-		Scan(&storedPub, &storedWrapped); err != nil {
+		`SELECT ingest_pubkey, recovery_pubkey, wrapped_keys FROM user_keys WHERE user_id = $1`, userID).
+		Scan(&storedPub, &storedRecovery, &storedWrapped); err != nil {
 		s.logf("api: compare user keys for %s: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
-	if bytesEqual(storedPub, pub) && bytesEqual(storedWrapped, wrapped) {
+	if bytesEqual(storedPub, pub) && bytesEqual(storedRecovery, recovery) && bytesEqual(storedWrapped, wrapped) {
 		// The retry. Nothing changed and nothing needed to.
 		w.WriteHeader(http.StatusNoContent)
 		return

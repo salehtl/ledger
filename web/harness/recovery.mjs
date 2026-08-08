@@ -27,11 +27,12 @@
  *
  * # Running it
  *
- *   1. A Postgres cluster:  go run ./internal/v2/pgtest/cmd/boot
- *   2. A scratch ledgerd on 127.0.0.1:8123 with rp_id=localhost and
- *      rp_origins=["http://localhost:5177"], against a scratch database.
- *   3. A vite dev server on 127.0.0.1:5177 with LEDGER_V2_API pointed at it.
- *   4. node harness/recovery.mjs <invite-code>
+ *   harness/v2stack.sh up                 # cluster + ledgerd + vite, prints an invite
+ *   node harness/recovery.mjs <invite>
+ *   harness/v2stack.sh down
+ *
+ * `v2stack.sh` exists because this used to need four hand-run commands, which
+ * is why this file went unrun by its own code reviewer.
  *
  * `localhost` and not `127.0.0.1`: WebAuthn requires a secure context, and
  * `localhost` is one over plain HTTP while a bare IP is not.
@@ -96,6 +97,34 @@ async function confirmPhrase(page, words) {
     await field.fill(words[position - 1]);
   }
   await page.getByRole("button", { name: /Finish setting up encryption/i }).click();
+}
+
+/**
+ * Runs the app's own sync coordinator, and waits for it.
+ *
+ * `emitMany` is durable the moment it returns — the op is in the outbox and a
+ * restart keeps it — but it does NOT upload, and the onboarding walk
+ * deliberately does not block on a round trip (a step that awaited the network
+ * would strand an offline user mid-setup). The next sync TRIGGER drains it,
+ * and in the product that is the verification step, which this run stops short
+ * of. So the harness triggers one itself, through `engineFor` — the same
+ * memoised coordinator the gate uses, not a second client.
+ */
+async function drainOutbox(page) {
+  return page.evaluate(async () => {
+    const { openV2, engineFor } = await import("/src/v2/BootGate.tsx");
+    const result = await engineFor(await openV2()).run("harness");
+    return { pulled: result?.pulled ?? null, applied: result?.applied ?? null, halted: result?.halted ?? null };
+  });
+}
+
+/** How many op rows the account's hot stream holds, read over the live session. */
+async function opCount(page) {
+  return page.evaluate(async () => {
+    const token = Object.entries(localStorage).find(([k]) => k.includes("session"))?.[1] ?? null;
+    const res = await fetch("/api/v1/sync?stream=hot&after=0", { headers: { Authorization: `Bearer ${token}` } });
+    return ((await res.json()).rows ?? []).length;
+  });
 }
 
 /** What is actually in the key vault, and whether the browser will let it out. */
@@ -210,11 +239,13 @@ try {
   await one.page.getByTestId("bank-row-dib").click();
   await one.page.getByRole("button", { name: /^Continue$/ }).click();
   await one.page.getByTestId("inbound-address").waitFor({ timeout: 60_000 });
-  ok("a bank is declared and the walk moves on, so the account has content");
 
   // The op has to actually REACH the server, or the second context has nothing
   // to read back and this would prove only that a local database survived.
-  await one.page.waitForTimeout(3000);
+  await drainOutbox(one.page);
+  const authored = await opCount(one.page);
+  if (authored < 2) fail("the declared bank reaches the server", `the hot stream holds ${authored} row(s)`);
+  ok("a bank is declared and the op reaches the server", `${authored} rows in the hot stream`);
 
   // The credential itself, lifted out of the authenticator so the second
   // context can be given it. This is what models the real situation: the
@@ -252,86 +283,40 @@ try {
   await two.page.getByRole("button", { name: /^Sign in$/i }).click();
 
   /*
-   * # WHERE THIS RUN STOPS BEING A UI WALK, AND WHY
+   * A cleared browser is also a NEW DEVICE WRITER: the writer's Ed25519
+   * identity key lived in the local database that was just destroyed, and the
+   * account's one TOFU self-approval was spent by the original device. So the
+   * gate raises the enrolment wall before the onboarding walk.
    *
-   * A cleared browser is a NEW DEVICE WRITER, because the writer's Ed25519
-   * identity key lived in the local database that was just destroyed. The
-   * account's one self-approval (`auth.Writers.Register`'s TOFU bootstrap) was
-   * spent by the original device, so this browser stops at the enrolment wall
-   * and asks for approval from a device that is already signed in — BEFORE the
-   * onboarding walk, and therefore before the recovery step.
-   *
-   * That gate is not Phase 3's and it is not key material: it is the writer
-   * roster, and it has been there since second-device enrolment shipped. It is
-   * reported in this task's write-up as a finding, because on the web it means
-   * a one-device user who clears their site data cannot WRITE again from the
-   * phrase alone — even though, as the rest of this run shows, they can read.
-   *
-   * So from here the recovery ceremony is driven through the SAME production
-   * modules the screen calls, dynamically imported out of the running dev
-   * server's module graph — `web/src/v2/keys.ts`, `client/src/crypto/keys.ts`
-   * and the real `webPlatform` — in a browser whose storage really was empty a
-   * moment ago, against the real server. It is one layer below the screen and
-   * exactly the same code path; `RecoveryPhrase.test.tsx` covers the screen
-   * that calls it.
+   * The wall is where the phrase is entered, and that is the whole point of the
+   * recovery authorizer: one phrase, one screen, and this device gets its keys
+   * AND its ability to write back with no other device involved. Until the
+   * authorizer existed this run stopped here, permanently read-only.
    */
-  await two.page.waitForTimeout(4000);
-  const sessionPresent = await two.page.evaluate(() =>
-    Object.keys(localStorage).some((k) => k.includes("session")),
+  await two.page.getByTestId("recover-write").waitFor({ timeout: 60_000 });
+  ok("a cleared browser is offered the recovery phrase on the enrolment wall");
+
+  // A well-formed but wrong phrase is refused, and enrolls nothing.
+  await two.page.getByTestId("recover-write-phrase").fill(
+    "legal winner thank year wave sausage worth useful legal winner thank yellow",
   );
-  if (!sessionPresent) fail("the cleared browser signs in with the surviving passkey", "no session was stored");
-  ok("the cleared browser signs in again with the passkey alone");
+  await two.page.getByRole("button", { name: /Unlock this device/i }).click();
+  await two.page.getByRole("alert").waitFor({ timeout: 60_000 });
+  const vaultAfterWrong = await two.page.evaluate(async () => {
+    const keys = await import("/src/v2/keys.ts");
+    return (await keys.browserKeyVault().read()) !== null;
+  });
+  if (vaultAfterWrong) fail("a wrong phrase stores nothing", "the vault holds a key set");
+  ok("a wrong phrase is refused, and stores nothing");
 
-  const recovery = await two.page.evaluate(
-    async ([goodPhrase, badPhrase]) => {
-      const keys = await import("/src/v2/keys.ts");
-      const token = Object.entries(localStorage).find(([k]) => k.includes("session"))?.[1] ?? null;
-      const accountId = Object.entries(localStorage).find(([k]) => k.includes("user_id"))?.[1] ?? null;
-      const io = { sessionToken: token, server: "" };
+  await two.page.getByTestId("recover-write-phrase").fill(phrase);
+  await two.page.getByRole("button", { name: /Unlock this device/i }).click();
 
-      const status = await keys.keyStatus(accountId ?? "", keys.browserKeyVault(), io);
-      const published = await keys.readPublishedKeys(io);
-
-      // A well-formed but wrong phrase must be refused, and must store nothing.
-      let wrongRefused = false;
-      try {
-        await keys.recoverAccountKeys({ accountId, phrase: badPhrase, published, vault: keys.browserKeyVault() });
-      } catch {
-        wrongRefused = true;
-      }
-      const afterWrong = await keys.browserKeyVault().read();
-
-      await keys.recoverAccountKeys({ accountId, phrase: goodPhrase, published, vault: keys.browserKeyVault() });
-
-      // And the account's existing content is readable: the op authored before
-      // the wipe is on the server and comes back over the same session.
-      const res = await fetch("/api/v1/sync?stream=hot&after=0", { headers: { Authorization: `Bearer ${token}` } });
-      const body = await res.json();
-      const blobs = (body.rows ?? []).map((r) => r.blob ?? "").join("|");
-
-      return {
-        statusKind: status.kind,
-        wrongRefused,
-        vaultAfterWrong: afterWrong !== null,
-        opRows: (body.rows ?? []).length,
-        sawBankOp: /YmFua19kZWNsYXJlZA|bank_declared/.test(atob(blobs.split("|")[0] ?? "") || blobs),
-      };
-    },
-    [phrase, "legal winner thank year wave sausage worth useful legal winner thank yellow"],
-  );
-
-  // The account HAS keys and this browser does not: `needs_recovery`, never
-  // `unpublished`. Reading `unpublished` here would be the catastrophic failure
-  // — a second key set minted for an account whose data is sealed to the first.
-  if (recovery.statusKind !== "needs_recovery") {
-    fail("a cleared browser asks for the phrase, never mints a second key set", `it read ${recovery.statusKind}`);
-  }
-  ok("a cleared browser reads `needs_recovery`, never `unpublished`");
-
-  if (!recovery.wrongRefused || recovery.vaultAfterWrong) {
-    fail("a wrong phrase is refused and stores nothing", JSON.stringify(recovery));
-  }
-  ok("a well-formed but wrong phrase is refused, and stores nothing");
+  // Past the wall means the server accepted an enrolment authorised by nothing
+  // but the recovery key — and past the recovery STEP means the handles are
+  // installed and match what the account published.
+  await two.page.getByTestId("inbound-address").waitFor({ timeout: 120_000 });
+  ok("the phrase alone enrolls this device and gets it past the recovery step");
 
   const secondVault = await inspectVault(two.page);
   if (!secondVault.present) fail("the recovered vault holds a key set", "it was empty");
@@ -345,10 +330,60 @@ try {
   if (secondVault.exportAttempts.some((a) => !a.threw)) fail("every export attempt on the recovered keys is refused", "");
   ok("the recovered keys are non-extractable, and every export attempt is refused");
 
-  // And the account's existing content is readable from this browser: the op
-  // authored before the wipe came back over the same session.
-  if (recovery.opRows < 1) fail("the account's existing content is readable after recovery", "the log came back empty");
-  ok("the op authored before the wipe reads back", `${recovery.opRows} row(s) in the hot stream`);
+  // ---------------------------------------------------------------------
+  // And it can WRITE. This is the half the first round could not reach.
+  // ---------------------------------------------------------------------
+  const beforeWrite = await opCount(two.page);
+
+  // A second bank, authored by the writer the recovery phrase just enrolled.
+  await two.page.evaluate(async () => {
+    // Authored through the real client, which is what the screens use: the op
+    // goes to the outbox, the coordinator drains it, and the server applies it
+    // under the writer this device enrolled a moment ago.
+    const { openV2 } = await import("/src/v2/BootGate.tsx");
+    const handle = await openV2();
+    handle.client.emitMany([{ type: "bank_declared", payload: { bank: "enbd", active: true } }]);
+  });
+  await drainOutbox(two.page);
+
+  // The op has to reach the SERVER, not merely the outbox: an op that only ever
+  // existed locally would prove nothing about the enrolment being accepted.
+  const afterWrite = await opCount(two.page);
+  if (afterWrite <= beforeWrite) {
+    fail("an op authored after recovery reaches the server", `the log stayed at ${beforeWrite} rows`);
+  }
+  ok("an op authored after recovery lands on the server", `${beforeWrite} -> ${afterWrite} rows`);
+
+  // And it FOLDS: a row on the server that the replay engine refused would be
+  // a chain this device cannot use, which is not recovery.
+  const folded = await two.page.evaluate(async () => {
+    const { openV2 } = await import("/src/v2/BootGate.tsx");
+    const handle = await openV2();
+    return [...handle.client.state().banks.entries()];
+  });
+  if (!folded.some(([bank, active]) => bank === "enbd" && active)) {
+    fail("the op this device authored folds into its state", JSON.stringify(folded));
+  }
+  // And the one authored BEFORE the wipe folds too, which is the read half of
+  // recovery: this device never saw that op authored, it pulled it.
+  if (!folded.some(([bank, active]) => bank === "dib" && active)) {
+    fail("the op authored before the wipe folds after recovery", JSON.stringify(folded));
+  }
+  ok("both the pre-wipe op and the post-recovery op fold into this device's state", JSON.stringify(folded));
+
+  // The enrolment is VISIBLE as a recovery in the key-history log, which is
+  // what a peer device audits. A silent one would be a key substitution nobody
+  // could tell from an approval.
+  const history = await two.page.evaluate(async () => {
+    const token = Object.entries(localStorage).find(([k]) => k.includes("session"))?.[1] ?? null;
+    const res = await fetch("/api/v1/key-history", { headers: { Authorization: `Bearer ${token}` } });
+    return (await res.json()).entries ?? [];
+  });
+  const recoveredEntries = history.filter((e) => e.event === "recovery_registered");
+  if (recoveredEntries.length !== 1) {
+    fail("the recovery-authorised enrolment is in the key-history log", JSON.stringify(history.map((e) => e.event)));
+  }
+  ok("key_history records it as `recovery_registered`, not as an ordinary approval");
 
   await two.context.close();
   console.log(`\n${steps.length} checks passed.`);

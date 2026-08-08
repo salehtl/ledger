@@ -35,23 +35,50 @@ package auth
 //     an attacker cannot enroll the real device at all, which is a loud failure
 //     rather than a shared account.
 //
-// The consequence to be honest about: a user who loses every enrolled device
-// cannot enroll a new one through this API. There is no self-service
-// re-bootstrap, because a re-bootstrap is indistinguishable from the attack
-// this whole mechanism exists to stop. Recovery of the DATA is the client-side
-// recovery phrase (§3.4); recovery of WRITE capability after total device loss
-// needs an out-of-band operator action, which must itself land in key_history
-// where peers can see it. That path is not built here.
+// # The recovery authorizer, which is the third way an enrollment is authorized
 //
-// The same wall stands one tap closer than device loss: a user who revokes
-// their LAST live device — a legitimate thing to want before selling a phone —
-// permanently loses write capability WHILE STILL HOLDING THE KEY. Re-enrolling
-// that device returns ErrWriterExists (the id is taken) and enrolling it under
-// a new id returns ErrKeyAlreadyEnrolled (the key is taken), and neither is a
-// bug: a revoked key must not be able to reinstate itself, or revocation would
-// mean nothing. A client must therefore refuse to revoke the last live device
-// without enrolling a replacement first. Nothing on the server enforces that
-// today; see the task report's concerns.
+// Phase 3 publishes an Ed25519 RECOVERY key with the account's key set, derived
+// from the user's twelve-word recovery phrase and stored on the server as a
+// public key only (00027_recovery_authorizer.sql). Register accepts its
+// signature as an alternative to a signature by an enrolled device.
+//
+// This paragraph used to say the opposite — "recovery of WRITE capability after
+// total device loss needs an out-of-band operator action ... that path is not
+// built here" — and on a browser that sentence had a sharper edge than it reads
+// like. Clearing site data destroys the device writer's identity key, so a
+// one-device web user who cleared their browser recovered their DATA from the
+// phrase and was then permanently READ-ONLY, holding the very secret that was
+// supposed to make them whole.
+//
+// What it does NOT change, because that is the whole question:
+//
+//   - It is a signature, not a session. The server holds the public half and
+//     cannot produce one; a stolen session token is exactly as useless as
+//     before (TestRecoveryKeyDoesNotReopenTheBootstrapOrHelpAStolenSession).
+//   - hadDevice is untouched. The TOFU bootstrap is still available exactly
+//     once per account and revoking every device still does not reopen it. This
+//     is an ADDITIONAL authorised signer, not a second chance at the first one.
+//   - The signature binds THIS enrollment, like every other one here: a
+//     captured recovery signature authorizes the (writer id, key) pair it was
+//     made for and nothing else.
+//   - It cannot REVOKE. Revocation has no bootstrap path and gains none, so a
+//     phrase cannot be used to retire every device a user owns.
+//   - Its use is recorded as EventRecoveryRegistered, so a peer device auditing
+//     key_history can see that a recovery happened rather than an approval.
+//
+// The residual trust it adds is stated plainly: anyone who holds the recovery
+// phrase can enroll a writer. That is the same authority the phrase already had
+// over the DATA — it decrypts everything — so it grants no new class of access,
+// only the ability to write as well as read. A phrase in the wrong hands was
+// always a total compromise of the account.
+//
+// The old wall stood one tap closer than device loss, and this removes that too:
+// a user who revokes their LAST live device — a legitimate thing to want before
+// selling a phone — used to lose write capability permanently WHILE STILL
+// HOLDING THE KEY, because re-enrolling it returns ErrWriterExists (the id is
+// taken) and enrolling it under a new id returns ErrKeyAlreadyEnrolled (the key
+// is taken). Neither is a bug: a revoked key must not reinstate itself, or
+// revocation would mean nothing. The recovery phrase is now the way out of it.
 //
 // key_history is also server-attested, not self-authenticating: it records what
 // happened, not a proof of it. A compromised server can append a fabricated
@@ -114,6 +141,14 @@ const (
 const (
 	EventRegistered = "registered"
 	EventRevoked    = "revoked"
+	// EventRecoveryRegistered is an enrollment authorized by the account's
+	// RECOVERY key rather than by an enrolled device (see Register). It is a
+	// distinct event on purpose: a peer auditing this log must be able to tell
+	// "another of my devices approved this" from "somebody used the recovery
+	// phrase", and the cross-device comparison code hashes the event string, so
+	// a server that relabelled one as the other would produce codes that do not
+	// match across devices.
+	EventRecoveryRegistered = "recovery_registered"
 )
 
 const (
@@ -203,6 +238,17 @@ func checkPublicKey(pub ed25519.PublicKey) error {
 	}
 	return nil
 }
+
+// CheckPublicKey is checkPublicKey, exported for the ONE caller outside this
+// package that must apply it before this package would: api.handlePublishKeys,
+// which stores the recovery authorizer.
+//
+// A small-order authorizer is not merely useless, it is the total collapse
+// described above — so it has to be refused at WRITE time, with a message the
+// client can act on, and not only screened at read time. Screening it only on
+// read would store an authorizer that authorizes nothing, on a table that is
+// write-once, and the user would discover it at the one moment they needed it.
+func CheckPublicKey(pub ed25519.PublicKey) error { return checkPublicKey(pub) }
 
 // Writer is one row of a user's writer roster.
 type Writer struct {
@@ -463,17 +509,32 @@ func (w *Writers) Register(ctx context.Context, userID uuid.UUID, writerID strin
 		}
 	}
 
+	// The account's recovery authorizer, read under the same lock so it cannot
+	// change between the decision and the insert. Absent for every account that
+	// has not published a key set, and absence is simply "no such authorizer" —
+	// those accounts keep exactly the rules they had.
+	recovery, err := recoveryAuthorizer(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+
 	// The authorization decision, in full.
 	//
 	// hadDevice, not len(enrolled) == 0: the bootstrap window closes the first
 	// time a device is enrolled and never reopens, so revoking the last device
-	// cannot hand a stolen session a self-signed enrollment.
-	if !hadDevice {
-		if !verifiedBy(pub, msg, sig) {
-			return fmt.Errorf("%w (first writer: the key being enrolled must sign for itself)", ErrNotAuthorized)
+	// cannot hand a stolen session a self-signed enrollment. The recovery key
+	// does NOT touch that rule — it is a third authorised signer sitting beside
+	// the two that were already here, and the `authorizedByRecovery` flag is
+	// what makes its use visible in key_history rather than silent.
+	authorizedByRecovery := recovery != nil && verifiedBy(recovery, msg, sig)
+	if !authorizedByRecovery {
+		if !hadDevice {
+			if !verifiedBy(pub, msg, sig) {
+				return fmt.Errorf("%w (first writer: the key being enrolled must sign for itself)", ErrNotAuthorized)
+			}
+		} else if !verifiedByAny(enrolled, msg, sig) {
+			return ErrNotAuthorized
 		}
-	} else if !verifiedByAny(enrolled, msg, sig) {
-		return ErrNotAuthorized
 	}
 	if idTaken {
 		return ErrWriterExists
@@ -489,13 +550,46 @@ func (w *Writers) Register(ctx context.Context, userID uuid.UUID, writerID strin
 		userID, writerID, KindDevice, []byte(pub), now); err != nil {
 		return fmt.Errorf("auth: register writer %s for user %s: %w", writerID, userID, err)
 	}
-	if err := appendKeyHistory(ctx, tx, userID, writerID, pub, EventRegistered, now); err != nil {
+	event := EventRegistered
+	if authorizedByRecovery {
+		event = EventRecoveryRegistered
+	}
+	if err := appendKeyHistory(ctx, tx, userID, writerID, pub, event, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("auth: register writer: commit: %w", err)
 	}
 	return nil
+}
+
+// recoveryAuthorizer returns the account's published recovery key, or nil when
+// it has not published a key set.
+//
+// It reads inside the caller's transaction, under the user row lock the
+// registration already holds, so the key cannot change between the
+// authorization decision and the insert.
+//
+// A key that fails checkPublicKey is returned as nil rather than as an error:
+// the only such key is one that cannot prove possession of anything (the API
+// refuses to store one, so this is a row planted past it), and the correct
+// treatment of an authorizer that authorizes nothing is that there is no
+// authorizer — not a 500 that stops the account from enrolling by any other
+// means. verifiedBy screens it again regardless; this is belt and braces.
+func recoveryAuthorizer(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (ed25519.PublicKey, error) {
+	var pub []byte
+	err := tx.QueryRow(ctx, `SELECT recovery_pubkey FROM user_keys WHERE user_id = $1`, userID).Scan(&pub)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: read recovery authorizer for user %s: %w", userID, err)
+	}
+	key := ed25519.PublicKey(pub)
+	if checkPublicKey(key) != nil {
+		return nil, nil
+	}
+	return key, nil
 }
 
 // Revoke retires a writer. sig must be an Ed25519 signature over

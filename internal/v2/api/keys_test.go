@@ -13,6 +13,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"net/http"
 	"testing"
@@ -22,7 +23,7 @@ import (
 // 36 header bytes + 65 body + 16 tag. The server never parses it; the length is
 // what the CHECK constraint cares about.
 func wrappedBlob(fill byte) []byte {
-	b := make([]byte, 36+65+16)
+	b := make([]byte, 36+97+16)
 	for i := range b {
 		b[i] = fill
 	}
@@ -41,12 +42,24 @@ func pubkey(fill byte) []byte {
 
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
+// A real Ed25519 public key. It cannot be filler: handlePublishKeys screens the
+// recovery authorizer with auth.CheckPublicKey, so an arbitrary 32 bytes is
+// usually not a curve point and is refused — correctly.
+func recoveryKey(t *testing.T) []byte {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
 func TestKeysRequireASession(t *testing.T) {
 	h := newHarness(t)
 	if rec := h.req(http.MethodGet, "/api/v1/keys", "", nil); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated GET = %d, want 401", rec.Code)
 	}
-	body := map[string]any{"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(wrappedBlob(2)), "key_version": 1}
+	body := map[string]any{"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": b64(recoveryKey(t)), "wrapped_keys": b64(wrappedBlob(2)), "key_version": 1}
 	if rec := h.req(http.MethodPut, "/api/v1/keys", "", body); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated PUT = %d, want 401", rec.Code)
 	}
@@ -73,16 +86,19 @@ func TestKeysAreAbsentUntilPublished(t *testing.T) {
 func TestKeysRoundTrip(t *testing.T) {
 	h := newHarness(t)
 	tok := h.session(h.user("alice"))
-	pub, wrapped := pubkey(0x11), wrappedBlob(0x22)
+	pub, wrapped, recovery := pubkey(0x11), wrappedBlob(0x22), recoveryKey(t)
 
 	rec := h.req(http.MethodPut, "/api/v1/keys", tok, map[string]any{
-		"ingest_pubkey": b64(pub), "wrapped_keys": b64(wrapped), "key_version": 1,
+		"ingest_pubkey": b64(pub), "recovery_pubkey": b64(recovery), "wrapped_keys": b64(wrapped), "key_version": 1,
 	})
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("PUT = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
 
 	got := decodeJSON[KeysResponse](t, h.req(http.MethodGet, "/api/v1/keys", tok, nil))
+	if got.RecoveryPubkey != b64(recovery) {
+		t.Fatalf("recovery authorizer round-tripped to %q, want %q", got.RecoveryPubkey, b64(recovery))
+	}
 	gotPub, err := base64.StdEncoding.DecodeString(got.IngestPubkey)
 	if err != nil {
 		t.Fatalf("decode pubkey: %v", err)
@@ -109,14 +125,30 @@ func TestKeysRoundTrip(t *testing.T) {
 func TestKeysCannotBeReplacedWithDifferentMaterial(t *testing.T) {
 	h := newHarness(t)
 	tok := h.session(h.user("alice"))
-	first := map[string]any{"ingest_pubkey": b64(pubkey(0x11)), "wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1}
+	recovery := recoveryKey(t)
+	first := map[string]any{
+		"ingest_pubkey": b64(pubkey(0x11)), "recovery_pubkey": b64(recovery),
+		"wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1,
+	}
 	if rec := h.req(http.MethodPut, "/api/v1/keys", tok, first); rec.Code != http.StatusNoContent {
 		t.Fatalf("first PUT = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
 
 	for name, body := range map[string]map[string]any{
-		"a different public key": {"ingest_pubkey": b64(pubkey(0x33)), "wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1},
-		"a different wrap":       {"ingest_pubkey": b64(pubkey(0x11)), "wrapped_keys": b64(wrappedBlob(0x44)), "key_version": 1},
+		"a different public key": {
+			"ingest_pubkey": b64(pubkey(0x33)), "recovery_pubkey": b64(recovery),
+			"wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1,
+		},
+		"a different wrap": {
+			"ingest_pubkey": b64(pubkey(0x11)), "recovery_pubkey": b64(recovery),
+			"wrapped_keys": b64(wrappedBlob(0x44)), "key_version": 1,
+		},
+		// The one the recovery authorizer adds: replacing it would leave every
+		// device unable to enroll under the phrase the user wrote down.
+		"a different recovery authorizer": {
+			"ingest_pubkey": b64(pubkey(0x11)), "recovery_pubkey": b64(recoveryKey(t)),
+			"wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1,
+		},
 	} {
 		rec := h.req(http.MethodPut, "/api/v1/keys", tok, body)
 		if rec.Code != http.StatusConflict {
@@ -141,7 +173,10 @@ func TestKeysCannotBeReplacedWithDifferentMaterial(t *testing.T) {
 func TestRepublishingIdenticalMaterialIsIdempotent(t *testing.T) {
 	h := newHarness(t)
 	tok := h.session(h.user("alice"))
-	body := map[string]any{"ingest_pubkey": b64(pubkey(0x11)), "wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1}
+	body := map[string]any{
+		"ingest_pubkey": b64(pubkey(0x11)), "recovery_pubkey": b64(recoveryKey(t)),
+		"wrapped_keys": b64(wrappedBlob(0x22)), "key_version": 1,
+	}
 	for i := 0; i < 3; i++ {
 		if rec := h.req(http.MethodPut, "/api/v1/keys", tok, body); rec.Code != http.StatusNoContent {
 			t.Fatalf("PUT %d = %d, want 204: %s", i, rec.Code, rec.Body.String())
@@ -158,7 +193,8 @@ func TestKeysAreScopedToTheCallersAccount(t *testing.T) {
 	bob := h.session(h.user("bob"))
 
 	if rec := h.req(http.MethodPut, "/api/v1/keys", alice, map[string]any{
-		"ingest_pubkey": b64(pubkey(0xa1)), "wrapped_keys": b64(wrappedBlob(0xa2)), "key_version": 1,
+		"ingest_pubkey": b64(pubkey(0xa1)), "recovery_pubkey": b64(recoveryKey(t)),
+		"wrapped_keys": b64(wrappedBlob(0xa2)), "key_version": 1,
 	}); rec.Code != http.StatusNoContent {
 		t.Fatalf("alice PUT = %d", rec.Code)
 	}
@@ -169,7 +205,8 @@ func TestKeysAreScopedToTheCallersAccount(t *testing.T) {
 
 	// Bob publishes his own, and Alice's is unchanged.
 	if rec := h.req(http.MethodPut, "/api/v1/keys", bob, map[string]any{
-		"ingest_pubkey": b64(pubkey(0xb1)), "wrapped_keys": b64(wrappedBlob(0xb2)), "key_version": 1,
+		"ingest_pubkey": b64(pubkey(0xb1)), "recovery_pubkey": b64(recoveryKey(t)),
+		"wrapped_keys": b64(wrappedBlob(0xb2)), "key_version": 1,
 	}); rec.Code != http.StatusNoContent {
 		t.Fatalf("bob PUT = %d", rec.Code)
 	}
@@ -182,19 +219,34 @@ func TestKeysRefuseMalformedSubmissions(t *testing.T) {
 	h := newHarness(t)
 	tok := h.session(h.user("alice"))
 	good := wrappedBlob(0x22)
+	rk := b64(recoveryKey(t))
+
+	// The Ed25519 identity point: a valid 32-byte encoding under which
+	// `identity || 32 zero bytes` verifies for EVERY message. Stored as an
+	// authorizer it would let anyone holding a session enroll a writer, so it
+	// must be refused at write time and not merely at read time.
+	identityPoint := make([]byte, 32)
+	identityPoint[0] = 0x01
 
 	cases := map[string]map[string]any{
-		"a 31-byte public key":   {"ingest_pubkey": b64(make([]byte, 31)), "wrapped_keys": b64(good), "key_version": 1},
-		"a 33-byte public key":   {"ingest_pubkey": b64(make([]byte, 33)), "wrapped_keys": b64(good), "key_version": 1},
-		"no public key":          {"wrapped_keys": b64(good), "key_version": 1},
-		"no wrapped blob":        {"ingest_pubkey": b64(pubkey(1)), "key_version": 1},
-		"a wrapped blob too big": {"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(make([]byte, 4097)), "key_version": 1},
-		"a wrapped blob too small": {
-			"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(make([]byte, 8)), "key_version": 1,
+		"a 31-byte public key":   {"ingest_pubkey": b64(make([]byte, 31)), "recovery_pubkey": rk, "wrapped_keys": b64(good), "key_version": 1},
+		"a 33-byte public key":   {"ingest_pubkey": b64(make([]byte, 33)), "recovery_pubkey": rk, "wrapped_keys": b64(good), "key_version": 1},
+		"no public key":          {"recovery_pubkey": rk, "wrapped_keys": b64(good), "key_version": 1},
+		"no recovery authorizer": {"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(good), "key_version": 1},
+		"a small-order recovery authorizer": {
+			"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": b64(identityPoint), "wrapped_keys": b64(good), "key_version": 1,
 		},
-		"a key version of zero": {"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(good), "key_version": 0},
+		"a 31-byte recovery authorizer": {
+			"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": b64(make([]byte, 31)), "wrapped_keys": b64(good), "key_version": 1,
+		},
+		"no wrapped blob":        {"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": rk, "key_version": 1},
+		"a wrapped blob too big": {"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": rk, "wrapped_keys": b64(make([]byte, 4097)), "key_version": 1},
+		"a wrapped blob too small": {
+			"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": rk, "wrapped_keys": b64(make([]byte, 8)), "key_version": 1,
+		},
+		"a key version of zero": {"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": rk, "wrapped_keys": b64(good), "key_version": 0},
 		"a public key that is not base64": {
-			"ingest_pubkey": "not base64!", "wrapped_keys": b64(good), "key_version": 1,
+			"ingest_pubkey": "not base64!", "recovery_pubkey": rk, "wrapped_keys": b64(good), "key_version": 1,
 		},
 	}
 	for name, body := range cases {
@@ -219,7 +271,8 @@ func TestWrappedBlobBoundMatchesTheColumn(t *testing.T) {
 	// tighter than the column's, and that the column's is not tighter than the
 	// handler's.
 	rec := h.req(http.MethodPut, "/api/v1/keys", tok, map[string]any{
-		"ingest_pubkey": b64(pubkey(1)), "wrapped_keys": b64(make([]byte, maxWrappedKeyBytes)), "key_version": 1,
+		"ingest_pubkey": b64(pubkey(1)), "recovery_pubkey": b64(recoveryKey(t)),
+		"wrapped_keys": b64(make([]byte, maxWrappedKeyBytes)), "key_version": 1,
 	})
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("PUT at the size limit = %d, want 204: %s", rec.Code, rec.Body.String())

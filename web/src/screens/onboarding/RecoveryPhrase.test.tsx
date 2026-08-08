@@ -150,8 +150,9 @@ describe("entering a phrase", () => {
     const phrase = generatePhrase(webPlatform);
     const keys = generateAccountKeys(webPlatform);
     const ingestPub = Uint8Array.from(keys.ingestPub);
+    const recoveryPub = Uint8Array.from(keys.recoveryPub);
     const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
-    return { published: { ingestPub, wrapped, keyVersion: 1 }, phrase };
+    return { published: { ingestPub, recoveryPub, wrapped, keyVersion: 1 }, phrase };
   }
 
   it("recovers the account from the phrase alone", async () => {

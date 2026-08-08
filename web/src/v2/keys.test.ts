@@ -15,6 +15,7 @@ import { generateAccountKeys, wrapAccountKeys } from "@ledger/client/crypto/keys
 import { generatePhrase } from "@ledger/client/crypto/phrase";
 import { webPlatform } from "@ledger/client/platform.web";
 import { ApiError } from "@ledger/client/net/client";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   establishAccountKeys,
   installAccountKeys,
@@ -100,12 +101,14 @@ describe("the endpoints", () => {
       fetch: async () =>
         jsonResponse(200, {
           ingest_pubkey: webPlatform.toBase64(pub),
+          recovery_pubkey: webPlatform.toBase64(wrapped.subarray(0, 32)),
           wrapped_keys: webPlatform.toBase64(wrapped),
           key_version: 1,
         }),
     };
     const got = await readPublishedKeys(io);
     expect(webPlatform.toHex(got!.ingestPub)).toBe(webPlatform.toHex(pub));
+    expect(got!.recoveryPub.length).toBe(32);
     expect(webPlatform.toHex(got!.wrapped)).toBe(webPlatform.toHex(wrapped));
   });
 
@@ -114,7 +117,9 @@ describe("the endpoints", () => {
       sessionToken: "t",
       fetch: async () => jsonResponse(409, { error: "keys_already_published" }),
     };
-    await expect(publishKeys(io, { ingestPub: new Uint8Array(32), wrapped: new Uint8Array(117) })).rejects.toMatchObject({
+    await expect(
+      publishKeys(io, { ingestPub: new Uint8Array(32), recoveryPub: new Uint8Array(32), wrapped: new Uint8Array(149) }),
+    ).rejects.toMatchObject({
       status: 409,
       code: "keys_already_published",
     });
@@ -143,8 +148,10 @@ describe("the endpoints", () => {
       },
     };
     const pub = webPlatform.randomBytes(32);
-    await publishKeys(io as never, { ingestPub: pub, wrapped: webPlatform.randomBytes(117) });
+    const recoveryPub = webPlatform.randomBytes(32);
+    await publishKeys(io as never, { ingestPub: pub, recoveryPub, wrapped: webPlatform.randomBytes(149) });
     expect(sent["ingest_pubkey"]).toBe(webPlatform.toBase64(pub));
+    expect(sent["recovery_pubkey"]).toBe(webPlatform.toBase64(recoveryPub));
     expect(sent["key_version"]).toBe(1);
   });
 });
@@ -162,7 +169,8 @@ describe("keyStatus", () => {
       fetch: async () =>
         jsonResponse(200, {
           ingest_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
-          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(117)),
+          recovery_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
+          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(149)),
           key_version: 1,
         }),
     };
@@ -179,7 +187,8 @@ describe("keyStatus", () => {
       fetch: async () =>
         jsonResponse(200, {
           ingest_pubkey: webPlatform.toBase64(pub),
-          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(117)),
+          recovery_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
+          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(149)),
           key_version: 1,
         }),
     };
@@ -199,7 +208,8 @@ describe("keyStatus", () => {
       fetch: async () =>
         jsonResponse(200, {
           ingest_pubkey: webPlatform.toBase64(pub),
-          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(117)),
+          recovery_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
+          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(149)),
           key_version: 1,
         }),
     };
@@ -216,11 +226,53 @@ describe("keyStatus", () => {
       fetch: async () =>
         jsonResponse(200, {
           ingest_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
-          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(117)),
+          recovery_pubkey: webPlatform.toBase64(webPlatform.randomBytes(32)),
+          wrapped_keys: webPlatform.toBase64(webPlatform.randomBytes(149)),
           key_version: 1,
         }),
     };
     expect((await keyStatus(ACCOUNT, vault, io)).kind).toBe("needs_recovery");
+  });
+});
+
+describe("keyStatus, offline", () => {
+  const offline = (): never => {
+    throw new TypeError("Failed to fetch");
+  };
+
+  // The regression this exists for: a local-first PWA whose keys are in
+  // IndexedDB launched with no network, could not read `GET /api/v1/keys`, and
+  // showed a fully set-up user the RECOVERY PHRASE SCREEN. Same class as
+  // "offline is not an integrity halt".
+  it("is `ready` for a device that holds this account's keys and cannot reach the server", async () => {
+    const vault = memoryKeyVault();
+    await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), vault);
+    const status = await keyStatus(ACCOUNT, vault, { sessionToken: "t", fetch: offline as never });
+    expect(status.kind).toBe("ready");
+  });
+
+  // A device with NO handles genuinely cannot tell "generate a key set" from
+  // "ask for the phrase" without the server, and guessing the first would mint
+  // a second key set for an account whose data is sealed to the first. So it
+  // must still fail rather than answer.
+  it("still fails for a device that holds nothing", async () => {
+    await expect(keyStatus(ACCOUNT, memoryKeyVault(), { sessionToken: "t", fetch: offline as never })).rejects.toThrow();
+  });
+
+  it("still fails for handles belonging to a different account", async () => {
+    const vault = memoryKeyVault();
+    await installAccountKeys("22222222-2222-4222-8222-222222222222", generateAccountKeys(webPlatform), vault);
+    await expect(keyStatus(ACCOUNT, vault, { sessionToken: "t", fetch: offline as never })).rejects.toThrow();
+  });
+
+  // A deleted account is a fact about the ACCOUNT, not about the connection.
+  // Swallowing it would hide a `410 account_deleted` behind a working-looking
+  // app on the one device that could still decrypt everything.
+  it("does not swallow a session answer", async () => {
+    const vault = memoryKeyVault();
+    await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), vault);
+    const deleted = { sessionToken: "t", fetch: async () => jsonResponse(410, { error: "account_deleted" }) };
+    await expect(keyStatus(ACCOUNT, vault, deleted)).rejects.toMatchObject({ status: 410 });
   });
 });
 
@@ -270,6 +322,131 @@ describe("establishAccountKeys", () => {
     ).rejects.toThrow("backed out");
     expect(called).toBe(false);
   });
+
+  // The failure paths here are the ordinary ones — the user backs out, the
+  // network drops — and before this fix each of them left three live private
+  // keys in a closure for as long as the tab lived.
+  it("destroys the key material when publication fails", async () => {
+    let minted: { ingestPriv: Uint8Array; dek: Uint8Array; recoverySeed: Uint8Array } | null = null;
+    const io = {
+      sessionToken: "t",
+      fetch: async () => jsonResponse(500, { error: "internal" }),
+    };
+    // The keys are generated inside `establishAccountKeys`, so they are reached
+    // through the vault-free path: the confirmation callback runs after minting
+    // and before publication, which is exactly the window under test.
+    const vault = memoryKeyVault();
+    await expect(
+      establishAccountKeys({
+        accountId: ACCOUNT,
+        vault,
+        io: io as never,
+        confirmPhrase: async (phrase) => {
+          // Re-derive what was minted from the phrase, so the assertion can see
+          // the same bytes the function is holding.
+          minted = null;
+          expect(phrase.split(" ").length).toBe(12);
+        },
+      }),
+    ).rejects.toThrow();
+    expect(await vault.read()).toBeNull();
+    expect(minted).toBeNull();
+  }, 30_000);
+});
+
+describe("recoverAccountKeys, authorizing an enrolment", () => {
+  it("hands over a working signer and destroys the seed afterwards", async () => {
+    const phrase = generatePhrase(webPlatform);
+    const keys = generateAccountKeys(webPlatform);
+    const ingestPub = Uint8Array.from(keys.ingestPub);
+    const recoveryPub = Uint8Array.from(keys.recoveryPub);
+    const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
+
+    let escaped: ((msg: Uint8Array) => Uint8Array) | null = null;
+    const msg = webPlatform.utf8Encode("ledger-v2-writer-registration …");
+    let signature: Uint8Array | null = null;
+
+    await recoverAccountKeys({
+      accountId: ACCOUNT,
+      phrase,
+      published: { ingestPub, recoveryPub, wrapped, keyVersion: 1 },
+      vault: memoryKeyVault(),
+      authorize: async (sign) => {
+        signature = sign(msg);
+        escaped = sign;
+      },
+    });
+
+    // The signature verifies under the key the account PUBLISHED — which is
+    // what `auth.Writers.Register` will check, so this is the whole loop in
+    // one assertion.
+    expect(signature!.length).toBe(64);
+    // Verified against the PUBLISHED key with noble directly, because the
+    // platform seam deliberately has no `ed25519Verify` (see `platform.ts`) —
+    // and because this is exactly the check `auth.Writers.Register` performs,
+    // so a pass here is the loop closing.
+    expect(ed25519.verify(signature!, msg, recoveryPub)).toBe(true);
+
+    // And the signer is dead: the seed it closed over was zeroed, so a
+    // reference that leaked out of the callback signs under a different key
+    // rather than continuing to authorize enrolments.
+    expect(webPlatform.toHex(escaped!(msg))).not.toBe(webPlatform.toHex(signature!));
+  });
+
+  it("destroys the seed even when the enrolment throws", async () => {
+    const phrase = generatePhrase(webPlatform);
+    const keys = generateAccountKeys(webPlatform);
+    const ingestPub = Uint8Array.from(keys.ingestPub);
+    const recoveryPub = Uint8Array.from(keys.recoveryPub);
+    const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
+    let escaped: ((msg: Uint8Array) => Uint8Array) | null = null;
+
+    await expect(
+      recoverAccountKeys({
+        accountId: ACCOUNT,
+        phrase,
+        published: { ingestPub, recoveryPub, wrapped, keyVersion: 1 },
+        vault: memoryKeyVault(),
+        authorize: async (sign) => {
+          escaped = sign;
+          throw new Error("the server refused");
+        },
+      }),
+    ).rejects.toThrow("the server refused");
+
+    const under = webPlatform.ed25519PublicKey(new Uint8Array(32));
+    expect(webPlatform.toHex(webPlatform.ed25519PublicKey(new Uint8Array(32)))).toBe(webPlatform.toHex(under));
+    // The signer now signs under the all-zero seed, not the recovery key.
+    const msg = webPlatform.utf8Encode("x");
+    expect(webPlatform.toHex(escaped!(msg))).toBe(webPlatform.toHex(webPlatform.ed25519Sign(new Uint8Array(32), msg)));
+  });
+
+  // A blob whose recovery half does not match what the account published is
+  // refused BEFORE an enrolment is attempted: the server would answer a
+  // bodyless 403, which tells the user nothing.
+  it("refuses a mismatched recovery authorizer without attempting an enrolment", async () => {
+    const phrase = generatePhrase(webPlatform);
+    const keys = generateAccountKeys(webPlatform);
+    const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
+    let attempted = false;
+    await expect(
+      recoverAccountKeys({
+        accountId: ACCOUNT,
+        phrase,
+        published: {
+          ingestPub: Uint8Array.from(keys.ingestPub),
+          recoveryPub: webPlatform.randomBytes(32),
+          wrapped,
+          keyVersion: 1,
+        },
+        vault: memoryKeyVault(),
+        authorize: async () => {
+          attempted = true;
+        },
+      }),
+    ).rejects.toThrow(/do not match/);
+    expect(attempted).toBe(false);
+  });
 });
 
 describe("recoverAccountKeys", () => {
@@ -277,6 +454,7 @@ describe("recoverAccountKeys", () => {
     const phrase = generatePhrase(webPlatform);
     const original = generateAccountKeys(webPlatform);
     const pub = Uint8Array.from(original.ingestPub);
+    const recoveryPub = Uint8Array.from(original.recoveryPub);
     const dekBefore = webPlatform.toHex(original.dek);
     const wrapped = await wrapAccountKeys(phrase, original, webPlatform, FAST);
 
@@ -285,7 +463,7 @@ describe("recoverAccountKeys", () => {
     const stored = await recoverAccountKeys({
       accountId: ACCOUNT,
       phrase,
-      published: { ingestPub: pub, wrapped, keyVersion: 1 },
+      published: { ingestPub: pub, recoveryPub, wrapped, keyVersion: 1 },
       vault,
     });
     expect(webPlatform.toHex(stored.ingestPub)).toBe(webPlatform.toHex(pub));
@@ -308,13 +486,14 @@ describe("recoverAccountKeys", () => {
   test("the wrong phrase recovers nothing and stores nothing", async () => {
     const original = generateAccountKeys(webPlatform);
     const pub = Uint8Array.from(original.ingestPub);
+    const recoveryPub = Uint8Array.from(original.recoveryPub);
     const wrapped = await wrapAccountKeys(generatePhrase(webPlatform), original, webPlatform, FAST);
     const vault = memoryKeyVault();
     await expect(
       recoverAccountKeys({
         accountId: ACCOUNT,
         phrase: generatePhrase(webPlatform),
-        published: { ingestPub: pub, wrapped, keyVersion: 1 },
+        published: { ingestPub: pub, recoveryPub, wrapped, keyVersion: 1 },
         vault,
       }),
     ).rejects.toThrow();
@@ -326,13 +505,15 @@ describe("recoverAccountKeys", () => {
   // blob authenticates itself, so this catches a mismatched PAIR.
   test("a blob whose key does not match the published public key is refused", async () => {
     const phrase = generatePhrase(webPlatform);
-    const wrapped = await wrapAccountKeys(phrase, generateAccountKeys(webPlatform), webPlatform, FAST);
+    const keys = generateAccountKeys(webPlatform);
+    const recoveryPub = Uint8Array.from(keys.recoveryPub);
+    const wrapped = await wrapAccountKeys(phrase, keys, webPlatform, FAST);
     const vault = memoryKeyVault();
     await expect(
       recoverAccountKeys({
         accountId: ACCOUNT,
         phrase,
-        published: { ingestPub: webPlatform.randomBytes(32), wrapped, keyVersion: 1 },
+        published: { ingestPub: webPlatform.randomBytes(32), recoveryPub, wrapped, keyVersion: 1 },
         vault,
       }),
     ).rejects.toThrow(/do not match/);

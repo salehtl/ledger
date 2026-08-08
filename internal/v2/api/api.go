@@ -10,8 +10,8 @@
 //	POST /api/v1/writers/challenge {}                              -> {nonce}
 //	POST /api/v1/writers/register  {writer_id, pubkey, nonce, sig} -> 204
 //	GET  /api/v1/writers                                           -> {writers:[...]}
-//	GET  /api/v1/keys                                              -> {ingest_pubkey, wrapped_keys, key_version, created_at} | 404 no_keys
-//	PUT  /api/v1/keys {ingest_pubkey, wrapped_keys, key_version}   -> 204 | 409 keys_already_published
+//	GET  /api/v1/keys                                              -> {ingest_pubkey, recovery_pubkey, wrapped_keys, key_version, created_at} | 404 no_keys
+//	PUT  /api/v1/keys {ingest_pubkey, recovery_pubkey, wrapped_keys, key_version} -> 204 | 409 keys_already_published
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
 //	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
