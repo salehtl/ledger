@@ -57,8 +57,6 @@ export interface HomeProps {
 }
 
 const BUCKET_LABEL: Record<BudgetBucket, string> = { need: "Needs", want: "Wants", saving: "Savings & debt" };
-/** The rule, not a target: 50/30/20 is what the buckets MEAN, not a budget the log holds. */
-const BUCKET_SHARE: Record<BudgetBucket, number> = { need: 50, want: 30, saving: 20 };
 const BUCKETS: BudgetBucket[] = ["need", "want", "saving"];
 const RECENT_LIMIT = 5;
 
@@ -137,10 +135,12 @@ export function Home({ budgetSource, txnSource }: HomeProps) {
             </Card>
           )}
 
-          {/* 50/30/20 — the rule beside the money, with each bucket's share of
-              what was spent. No target: nothing in the log holds one. */}
+          {/* The plan beside the money, with each bucket's share of what was
+              spent. Still not a target — nothing in the log holds one — but the
+              three percentages are now the user's if they chose them, and
+              50/30/20 if they did not (`sources/budget.ts`). */}
           <Card>
-            <p className="text-sm font-medium mb-3">50 / 30 / 20</p>
+            <p className="text-sm font-medium mb-3">{`${s.split.need} / ${s.split.want} / ${s.split.saving}`}</p>
             <div className="space-y-4">
               {BUCKETS.map((bucket) => (
                 <div key={bucket}>
@@ -156,7 +156,7 @@ export function Home({ budgetSource, txnSource }: HomeProps) {
                   </div>
                   <ProgressBar pct={share(s.buckets[bucket])} label={`${BUCKET_LABEL[bucket]} share of spending`} />
                   <div className="flex items-center justify-between mt-1.5 text-xs">
-                    <span className="text-muted">{BUCKET_SHARE[bucket]}% of the rule</span>
+                    <span className="text-muted">{s.split[bucket]}% of the plan</span>
                     <span className="tnum text-muted">{Math.round(share(s.buckets[bucket]) * 100)}% of spending</span>
                   </div>
                 </div>

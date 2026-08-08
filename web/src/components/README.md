@@ -316,6 +316,25 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   "invalid" indistinguishable. Don't clamp in your own `onValueChange`.
 - Parsing rules live in `lib/numericDraft.ts` and are unit-tested there.
 
+### BudgetSplitPicker (`BudgetSplitPicker.tsx`)
+- **Purpose:** the needs / wants / savings plan, as three whole percentages.
+  Three `NumberField`s and one line of arithmetic. Used by the onboarding
+  finish screen and by Settings — one control, so the two cannot disagree about
+  what a valid plan is.
+- **It never normalises, and it says the sum before anything is saved.**
+  `splitAdvice` renders "Adds up to 110% — it has to be 100%." in a
+  `role="status"` while you type. Rewriting a typed 60/30/20 to 55/27/18 would
+  change the user's plan without telling them; `budgetSplitOps` refuses such a
+  split and the fold refuses the op, so a plan that does not add up cannot
+  reach the log by any route.
+- **The caller owns the save control** and disables it while
+  `completeSplit(draft)` is `null` — which covers both "a field is empty" and
+  "the three do not sum to 100".
+- **Draft state is `BudgetSplitDraft` (`number | null`), not `BudgetSplit`.** A
+  field has to be emptiable to be retyped; `null` is "mid-edit", never a 0.
+- **Don't:** build a second percentage control, and don't clamp or repair in
+  your own `onChange`.
+
 ### Dialog
 - **Purpose:** the one modal/bottom-sheet. Scrim, slide-up, focus trap,
   Escape, drag-to-dismiss, safe-area padding, `85dvh` scroll containment.

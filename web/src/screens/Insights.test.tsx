@@ -136,6 +136,18 @@ describe("Insights on the projection", () => {
     expect(screen.queryByText(/Search transactions/i)).toBeNull();
   });
 
+  it("names the plan the buckets are read against, the user's or the rule", async () => {
+    // Backwards compatibility first: with no `budget_split_set` op the sentence
+    // is the rule this screen has always assumed.
+    wrap(await projectionWith(ROWS));
+    expect(await screen.findByText(/50 \/ 30 \/ 20/)).toBeInTheDocument();
+
+    const db = await projectionWith(ROWS);
+    db.prepare("INSERT INTO budget_split (id,need,want,saving) VALUES (1,60,20,20)").run();
+    wrap(db);
+    expect(await screen.findByText(/60 \/ 20 \/ 20/)).toBeInTheDocument();
+  });
+
   it("says the ledger is not open instead of reaching for the network", async () => {
     wrap(null);
 

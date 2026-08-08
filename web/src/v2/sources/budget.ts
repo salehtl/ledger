@@ -17,10 +17,54 @@
  * of what actually happened.
  */
 
-import { ensureProjection, projectionIsUsable, readMeta } from "@ledger/client/replay/projection";
+import { ensureProjection, projectionIsUsable, readBudgetSplit, readMeta } from "@ledger/client/replay/projection";
+import type { BudgetSplit } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
 export type BudgetBucket = "need" | "want" | "saving";
+
+export type { BudgetSplit };
+
+/**
+ * The rule, and what an account with no `budget_split_set` op reads as.
+ *
+ * The default lives HERE, in the consumer, and not in the fold: `State.budgetSplit`
+ * is `null` until a user chooses, so "never chose" and "chose 50/30/20" stay
+ * distinguishable in the log while rendering identically. That is what makes the
+ * schema-v3 upgrade a no-op for data.
+ */
+export const DEFAULT_BUDGET_SPLIT: BudgetSplit = { need: 50, want: 30, saving: 20 };
+
+/**
+ * What the three percentages add up to. Exported because a screen has to say it
+ * BEFORE the user saves.
+ *
+ * There is deliberately no `normalise`: a user who typed 60/30/20 meant
+ * something, and quietly rewriting it to 55/27/18 is a change to their plan that
+ * nothing told them about.
+ */
+export function splitSum(split: BudgetSplit): number {
+  return split.need + split.want + split.saving;
+}
+
+/**
+ * The op one chosen plan authors.
+ *
+ * It REFUSES a split that does not sum to 100 rather than repairing it. The fold
+ * refuses the same op as an `invalid_payload` anomaly (`replay.ts`), so writing
+ * one would append a permanent record of a plan that never took effect — the
+ * worst of both: the user's screen says 60/30/20 and their ledger has no plan at
+ * all.
+ */
+export function budgetSplitOps(split: BudgetSplit): { type: string; payload: unknown }[] {
+  for (const [what, value] of Object.entries(split)) {
+    if (!Number.isInteger(value)) throw new Error(`${what} must be a whole percentage, got ${value}`);
+    if (value < 0 || value > 100) throw new Error(`${what} is ${value}, and a percentage is between 0 and 100`);
+  }
+  const sum = splitSum(split);
+  if (sum !== 100) throw new Error(`needs, wants and savings must add up to 100, not ${sum}`);
+  return [{ type: "budget_split_set", payload: { need: split.need, want: split.want, saving: split.saving } }];
+}
 
 export interface BudgetMapping {
   categories: Readonly<Record<string, BudgetBucket>>;
@@ -54,6 +98,12 @@ export const DEFAULT_BUDGET_MAPPING: BudgetMapping = {
 export interface BudgetSnapshot {
   usable: boolean;
   homeCurrency: string | null;
+  /**
+   * The plan the buckets are read against — the user's if they chose one,
+   * {@link DEFAULT_BUDGET_SPLIT} if they did not. It changes what the buckets
+   * MEAN and never what is in them: the money is still the sum of what happened.
+   */
+  split: BudgetSplit;
   buckets: Record<BudgetBucket, bigint>;
   income: bigint;
   unassigned: bigint;
@@ -109,6 +159,9 @@ function unusable(homeCurrency: string | null): BudgetSnapshot {
   return {
     usable: false,
     homeCurrency,
+    // The rule, not a half-read plan: an unusable projection is a "come back in
+    // a moment" state, and the labels it renders under are still the default.
+    split: DEFAULT_BUDGET_SPLIT,
     buckets: { need: 0n, want: 0n, saving: 0n },
     income: 0n,
     unassigned: 0n,
@@ -170,6 +223,7 @@ export function sqlBudgetSource(db: SqlDriver, mapping: BudgetMapping = DEFAULT_
       return {
         usable: true,
         homeCurrency: meta.homeCurrency,
+        split: readBudgetSplit(db) ?? DEFAULT_BUDGET_SPLIT,
         buckets,
         income,
         unassigned,

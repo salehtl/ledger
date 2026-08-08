@@ -183,6 +183,37 @@ describe("V2Settings", () => {
     });
   });
 
+  it("offers the budget split, and refuses to save one that does not add up", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = {
+      pending: [],
+      enqueueMany: (s: readonly unknown[]) => void specs.push(...s),
+      flush: async () => {},
+    };
+    wrap({ writer });
+
+    // It opens on what the log holds — nothing, so the rule.
+    const needs = (await screen.findByLabelText(/Needs/)) as HTMLInputElement;
+    expect(needs.value).toBe("50");
+
+    // 60/30/20 is a plausible plan that does not add up. The screen says so
+    // BEFORE the save, and the save is not available — it is not silently
+    // normalised to 55/27/18.
+    await user.clear(needs);
+    await user.type(needs, "60");
+    expect(screen.getByText(/adds up to 110% — it has to be 100%/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save plan/i })).toBeDisabled();
+    expect(specs).toEqual([]);
+
+    const wants = screen.getByLabelText(/Wants/);
+    await user.clear(wants);
+    await user.type(wants, "20");
+    expect(screen.getByText(/adds up to 100%/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    expect(specs).toEqual([{ type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } }]);
+  });
+
   it("makes no v1 HTTP call — ledgerd does not serve those routes", async () => {
     wrap();
     await screen.findByTestId("settings-inbound-address");

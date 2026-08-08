@@ -118,6 +118,28 @@ describe("Home on the projection", () => {
     expect(screen.queryByText(/Spent so far/)).toBeNull();
   });
 
+  it("labels the buckets 50 / 30 / 20 when the log holds no plan", async () => {
+    // The backwards-compatibility case, and the one every existing account is
+    // in: no `budget_split_set` op, so the screen reads exactly as it did.
+    const db = await projectionWith();
+    wrap(db);
+    expect(await screen.findByText("50 / 30 / 20")).toBeInTheDocument();
+    expect(screen.getByText("50% of the plan")).toBeInTheDocument();
+    expect(screen.getByText("30% of the plan")).toBeInTheDocument();
+    expect(screen.getByText("20% of the plan")).toBeInTheDocument();
+  });
+
+  it("labels them with the split the user chose", async () => {
+    const db = await projectionWith();
+    db.prepare("INSERT INTO budget_split (id,need,want,saving) VALUES (1,60,20,20)").run();
+    wrap(db);
+    expect(await screen.findByText("60 / 20 / 20")).toBeInTheDocument();
+    expect(screen.getByText("60% of the plan")).toBeInTheDocument();
+    expect(screen.queryByText("50 / 30 / 20")).toBeNull();
+    // The plan is a label: the money underneath it is untouched.
+    expect(screen.getByText("125.00")).toBeInTheDocument();
+  });
+
   it("shows the empty state when the log holds no transactions", async () => {
     const db = await projectionWith([]);
     wrap(db);

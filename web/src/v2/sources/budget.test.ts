@@ -12,7 +12,14 @@ import { describe, expect, it } from "vitest";
 import { ensureProjection, PROJECTION_VERSION } from "@ledger/client/replay/projection";
 import type { SqlDriver } from "@ledger/client/store/driver";
 import { openBrowserDriver } from "../db/driver";
-import { DEFAULT_BUDGET_MAPPING, sqlBudgetSource, type BudgetMapping } from "./budget";
+import {
+  DEFAULT_BUDGET_MAPPING,
+  DEFAULT_BUDGET_SPLIT,
+  budgetSplitOps,
+  splitSum,
+  sqlBudgetSource,
+  type BudgetMapping,
+} from "./budget";
 
 async function blank(): Promise<SqlDriver> {
   const db = await openBrowserDriver(`budget-${crypto.randomUUID()}`);
@@ -231,5 +238,81 @@ describe("sqlBudgetSource", () => {
     expect(got.usable).toBe(false);
     expect(got.homeCurrency).toBeNull();
     expect(got.buckets).toEqual({ need: 0n, want: 0n, saving: 0n });
+  });
+});
+
+/**
+ * The plan the user chose.
+ *
+ * The FIRST test is the backwards-compatibility guarantee, and it is first
+ * deliberately: an account with no `budget_split_set` op must produce byte-
+ * identical maths to the build that predates the op, or the schema-v3 upgrade is
+ * not a no-op for data.
+ */
+describe("the budget split", () => {
+  it("with NO budget_split_set op, the maths is identical to the build that predates it", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    add("d", { home: "300", category: "dining" });
+    add("s", { home: "200", category: "savings" });
+    add("u", { home: "70", category: "unknown" });
+    add("i", { home: "1000", direction: "credit", category: "salary" });
+
+    // The explicit mapping is what every caller got before this change; the
+    // implicit one is what they get now. Compared as whole snapshots so a field
+    // that started reading configuration cannot slip past a spot check.
+    const before = sqlBudgetSource(db, DEFAULT_BUDGET_MAPPING).read(Date.parse("2026-08-20T00:00:00Z"));
+    const after = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    const { split: _s, ...afterRest } = after;
+    const { split: _b, ...beforeRest } = before;
+    expect(afterRest).toEqual(beforeRest);
+    expect(afterRest.buckets).toEqual({ need: 500n, want: 300n, saving: 200n });
+    expect(afterRest.unassigned).toBe(70n);
+
+    // And the split reads as the rule it has always been.
+    expect(after.split).toEqual(DEFAULT_BUDGET_SPLIT);
+    expect(DEFAULT_BUDGET_SPLIT).toEqual({ need: 50, want: 30, saving: 20 });
+  });
+
+  it("carries the split the log holds, not the default", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    db.prepare("INSERT INTO budget_split (id,need,want,saving) VALUES (1,60,20,20)").run();
+    const got = sqlBudgetSource(db).read(Date.parse("2026-08-20T00:00:00Z"));
+    expect(got.split).toEqual({ need: 60, want: 20, saving: 20 });
+    // The plan changes what the buckets MEAN, never what is in them: the money
+    // is still the sum of what happened.
+    expect(got.buckets).toEqual({ need: 500n, want: 0n, saving: 0n });
+  });
+
+  it("an unusable projection reports the default rather than a half-read plan", async () => {
+    const db = await blank();
+    expect(sqlBudgetSource(db).read(Date.now()).split).toEqual(DEFAULT_BUDGET_SPLIT);
+  });
+});
+
+describe("splitSum", () => {
+  it("names the sum so a screen can say it BEFORE the user saves", () => {
+    expect(splitSum({ need: 60, want: 30, saving: 20 })).toBe(110);
+    expect(splitSum({ need: 60, want: 20, saving: 20 })).toBe(100);
+  });
+});
+
+describe("budgetSplitOps", () => {
+  it("authors one parent-free op with the percentages exactly as typed", () => {
+    // No `v` here on purpose: `Client.buildAuthoredOp` stamps each type's own
+    // minimum (3, for this one), and a spec that carried its own would be a
+    // second place for the floor to be wrong.
+    expect(budgetSplitOps({ need: 60, want: 20, saving: 20 })).toEqual([
+      { type: "budget_split_set", payload: { need: 60, want: 20, saving: 20 } },
+    ]);
+  });
+
+  it("refuses a split that does not sum to 100 rather than normalising it", () => {
+    // Silently rewriting 60/30/20 to 55/27/18 is a change to the user's plan
+    // that nothing told them about. The fold refuses it as an `invalid_payload`
+    // anomaly; the author refuses to write it in the first place.
+    expect(() => budgetSplitOps({ need: 60, want: 30, saving: 20 })).toThrow(/100/);
+    expect(() => budgetSplitOps({ need: 33.5, want: 46.5, saving: 20 })).toThrow(/whole/);
   });
 });

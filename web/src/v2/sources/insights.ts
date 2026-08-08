@@ -33,12 +33,19 @@
  * no net worth. See `screens/Insights.tsx` for the panels that came out.
  */
 
-import { decodeTxnRow, projectionIsUsable, readMeta, TXN_COLUMNS } from "@ledger/client/replay/projection";
+import { decodeTxnRow, projectionIsUsable, readBudgetSplit, readMeta, TXN_COLUMNS } from "@ledger/client/replay/projection";
 import type { Txn } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { monthLabel } from "../../lib/insights";
-import { CONFIRMED, DEFAULT_BUDGET_MAPPING, type BudgetBucket, type BudgetMapping } from "./budget";
+import {
+  CONFIRMED,
+  DEFAULT_BUDGET_MAPPING,
+  DEFAULT_BUDGET_SPLIT,
+  type BudgetBucket,
+  type BudgetMapping,
+  type BudgetSplit,
+} from "./budget";
 import { readSplits } from "./transactions";
 
 /** The three rule buckets, plus the remainder that has no category yet. */
@@ -91,6 +98,13 @@ export interface TrendMonth {
 export interface InsightsSnapshot {
   usable: boolean;
   homeCurrency: string | null;
+  /**
+   * The plan the buckets are read against — the user's if they chose one,
+   * {@link DEFAULT_BUDGET_SPLIT} if they did not. Read from the same projection
+   * row `sources/budget.ts` reads, so Home and this screen cannot show two
+   * different plans for the same log.
+   */
+  split: BudgetSplit;
   period: string;
   /** Confirmed debits in `period`, converted to the home currency. */
   spent: bigint;
@@ -234,6 +248,7 @@ function unusable(period: string, homeCurrency: string | null): InsightsSnapshot
   return {
     usable: false,
     homeCurrency,
+    split: DEFAULT_BUDGET_SPLIT,
     period,
     spent: 0n,
     income: 0n,
@@ -404,6 +419,7 @@ export function sqlInsightsSource(db: SqlDriver, mapping: BudgetMapping = DEFAUL
       return {
         usable: true,
         homeCurrency: meta.homeCurrency,
+        split: readBudgetSplit(db) ?? DEFAULT_BUDGET_SPLIT,
         period,
         spent,
         income,

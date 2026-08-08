@@ -50,6 +50,7 @@ import { PROFILE, SERVER } from "../../v2/BootGate";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { Address } from "./Address";
 import { Bank } from "./Bank";
+import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
 import { Verification } from "./Verification";
@@ -180,7 +181,13 @@ export function Onboarding({
       );
 
     case "finish":
-      return <Finish facts={facts} onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })} />;
+      return (
+        <Finish
+          facts={facts}
+          commit={commit}
+          onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })}
+        />
+      );
 
     // `sign_in`, `confirming` and `product` are the boot gate's, not this
     // component's. Reaching one means the gate routed here on facts that no
@@ -208,7 +215,15 @@ export function Onboarding({
  * frame it appeared. It is device-local because it is about what this person has
  * been shown, not about the account.
  */
-function Finish({ facts, onFinish }: { facts: OnboardingFacts; onFinish: () => void }) {
+function Finish({
+  facts,
+  commit,
+  onFinish,
+}: {
+  facts: OnboardingFacts;
+  commit: (ops: readonly OpSpec[]) => void;
+  onFinish: () => void;
+}) {
   return (
     <Step
       testId="onboarding-finish"
@@ -240,6 +255,12 @@ function Finish({ facts, onFinish }: { facts: OnboardingFacts; onFinish: () => v
           adjust whenever you like.
         </p>
       </Notice>
+
+      {/* Optional, and it rides here rather than being a step of its own
+          because the machine's steps are derived from milestones that must be
+          MET — see `BudgetSplitStep`'s header. "Open ledger" above is a complete
+          answer to it, and an account that ignores it keeps 50/30/20. */}
+      <BudgetSplitStep commit={commit} />
     </Step>
   );
 }

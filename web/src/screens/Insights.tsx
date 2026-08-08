@@ -169,6 +169,16 @@ export function Insights({ scope = DEFAULT_SCOPE, insightsSource }: InsightsProp
         onSelectBucket={(b) => setDrill({ type: "bucket", bucket: b.bucket, name: LENS_BUCKET_LABEL[b.bucket] })}
       />
 
+      {/* The plan the buckets above are read against — the user's if they chose
+          one, 50/30/20 if they did not. It is a LABEL and not a target: no bar
+          on this screen is a fraction of it, and nothing here claims a bucket is
+          over. Same figure Home prints, from the same projection row, so the two
+          screens cannot name two different plans for one log. */}
+      <p className="-mt-2 text-xs text-muted">
+        Planned split: <span className="tnum">{`${s.split.need} / ${s.split.want} / ${s.split.saving}`}</span> — needs,
+        wants, savings.
+      </p>
+
       <div>
         <SectionLabel className="mb-1.5">Analyze by</SectionLabel>
         <div className="mb-2 overflow-x-auto -mx-1 px-1">

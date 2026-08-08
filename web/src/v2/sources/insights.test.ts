@@ -295,4 +295,16 @@ describe("sqlInsightsSource", () => {
     add("i", { home: "10000", direction: "credit", category: "salary" });
     expect(sqlInsightsSource(db).read("2026-08", TREND).savingsRate).toBeCloseTo(0.75, 6);
   });
+
+  it("carries the user's plan, and the rule when there is none", async () => {
+    const { db, add } = await setup();
+    add("g", { home: "500", category: "groceries" });
+    // Backwards compatibility first: no `budget_split_set` op, no change.
+    expect(sqlInsightsSource(db).read("2026-08", TREND).split).toEqual({ need: 50, want: 30, saving: 20 });
+    db.prepare("INSERT INTO budget_split (id,need,want,saving) VALUES (1,60,20,20)").run();
+    const got = sqlInsightsSource(db).read("2026-08", TREND);
+    expect(got.split).toEqual({ need: 60, want: 20, saving: 20 });
+    // The plan is a label, never a filter: the money is unchanged.
+    expect(got.buckets.find((b) => b.bucket === "need")?.spent).toBe(500n);
+  });
 });

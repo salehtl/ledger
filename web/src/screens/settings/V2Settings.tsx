@@ -53,7 +53,17 @@ import { useV2OrThrow } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
-import { invalidateAfterSync, useHomeCurrency, useTxnSource, v2Keys } from "../../v2/queries";
+import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
+import { budgetSplitOps, DEFAULT_BUDGET_SPLIT } from "../../v2/sources/budget";
+import {
+  invalidateAfterSync,
+  useBudgetSnapshot,
+  useBudgetSource,
+  useHomeCurrency,
+  useTxnSource,
+  v2Keys,
+} from "../../v2/queries";
+import { useWriter, type Writer } from "../../v2/writer";
 import { isPasskeyError, type V2Handle } from "../../v2/session";
 import type { EnrolmentRequest, KeyHistoryEntry } from "../../v2/deviceEnrolment";
 import { ApproveDevicePanel } from "./ApproveDevicePanel";
@@ -73,6 +83,8 @@ export interface V2SettingsProps {
   keyHistory?: (handle: V2Handle) => Promise<KeyHistoryEntry[]>;
   /** Test seam. Defaults to signing the peer's registration with this device's key. */
   approve?: (handle: V2Handle, request: EnrolmentRequest) => Promise<void>;
+  /** Test seam: a writer that records what the screen would append. */
+  writer?: Writer;
   /** Test seam. */
   now?: () => number;
 }
@@ -117,11 +129,14 @@ export function V2Settings({
   copy = writeClipboard,
   keyHistory = (h) => h.keyHistory(),
   approve = (h, request) => h.approveDevice(request),
+  writer: injectedWriter,
   now = Date.now,
 }: V2SettingsProps) {
   const { handle, sync, coordinator, facts } = useV2OrThrow();
   const qc = useQueryClient();
   const homeCurrency = useHomeCurrency(useTxnSource()) ?? facts.homeCurrency;
+  const writer = useWriter(injectedWriter);
+  const budget = useBudgetSnapshot(useBudgetSource());
 
   // The invalidation is not optional: the projection is the data, so a sync
   // that nothing invalidated moves rows the tree never re-reads. Same pairing
@@ -244,6 +259,48 @@ export function V2Settings({
    * painted. 30 s against a label whose finest unit is a minute means it is
    * never more than half a unit stale, and there is nothing here to watch tick.
    */
+  /**
+   * The plan being typed, seeded from the projection once it has been read.
+   *
+   * A draft rather than a controlled read of the snapshot, because the fields
+   * have to be emptiable to be retyped (`NumberField`'s whole reason for
+   * existing), and an empty field is `null` — which is not a plan and cannot be
+   * saved. `seededSplit` guards the seeding so a sync landing mid-edit cannot
+   * overwrite what the user is typing.
+   */
+  const [splitDraft, setSplitDraft] = useState<BudgetSplitDraft>(DEFAULT_BUDGET_SPLIT);
+  const [seededSplit, setSeededSplit] = useState(false);
+  const [splitSaving, setSplitSaving] = useState(false);
+  const [splitNote, setSplitNote] = useState<string | null>(null);
+  const heldSplit = budget.data?.split;
+  useEffect(() => {
+    if (seededSplit || heldSplit === undefined) return;
+    setSplitDraft(heldSplit);
+    setSeededSplit(true);
+  }, [seededSplit, heldSplit]);
+  const savedSplit = completeSplit(splitDraft);
+
+  const saveSplit = useCallback(async (): Promise<void> => {
+    if (savedSplit === null || writer === null) return;
+    setSplitSaving(true);
+    try {
+      // `budgetSplitOps` refuses anything that does not sum to 100, so the
+      // disabled button and the op author agree — and the fold refuses it a
+      // third time. There is no path by which a plan that does not add up
+      // reaches the log.
+      writer.enqueueMany(budgetSplitOps(savedSplit));
+      setSplitNote(`Saved. Needs ${savedSplit.need}%, wants ${savedSplit.want}%, savings ${savedSplit.saving}%.`);
+      await invalidateAfterSync(qc);
+      // Not awaited: the op is durable the moment it is queued, and a screen
+      // that stalled on the network would be unusable offline.
+      writer.flush().catch(() => {
+        setSplitNote("Saved on this device — it will sync when you're back online.");
+      });
+    } finally {
+      setSplitSaving(false);
+    }
+  }, [savedSplit, writer, qc]);
+
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (sync.lastCompletedAt === null) return;
@@ -357,6 +414,31 @@ export function V2Settings({
             <p role="alert" className="text-sm text-bad">
               ledger could not read your address just now. Nothing is wrong with the address itself — it is created
               on the server and it is still there.
+            </p>
+          )}
+        </Card>
+      </section>
+
+      {/* ---- The plan ----
+          The counterpart of the onboarding step: the same control, the same
+          rule that the three percentages must add up to 100, and the same
+          refusal to normalise them. Unlike the home currency below, this IS
+          changeable — a plan is a label over money that has already been
+          bucketed, so changing it re-labels and never re-values. */}
+      <section className="space-y-2">
+        <SectionLabel as="h2" className="px-1">Your plan</SectionLabel>
+        <Card className="space-y-3">
+          <p className="text-sm leading-relaxed text-muted">
+            How you mean to divide what you earn: needs, wants, and what is saved or paid down. ledger shows your
+            spending against it — it never moves money or blocks a purchase.
+          </p>
+          <BudgetSplitPicker value={splitDraft} onChange={setSplitDraft} idPrefix="settings-split" />
+          <Button variant="primary" disabled={savedSplit === null || splitSaving} onClick={() => void saveSplit()}>
+            {splitSaving ? "Saving…" : "Save plan"}
+          </Button>
+          {splitNote !== null && (
+            <p data-testid="settings-split-note" role="status" className="text-sm text-muted">
+              {splitNote}
             </p>
           )}
         </Card>
