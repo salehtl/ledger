@@ -235,47 +235,9 @@ describe("keyStatus", () => {
   });
 });
 
-describe("keyStatus, offline", () => {
-  const offline = (): never => {
-    throw new TypeError("Failed to fetch");
-  };
-
-  // The regression this exists for: a local-first PWA whose keys are in
-  // IndexedDB launched with no network, could not read `GET /api/v1/keys`, and
-  // showed a fully set-up user the RECOVERY PHRASE SCREEN. Same class as
-  // "offline is not an integrity halt".
-  it("is `ready` for a device that holds this account's keys and cannot reach the server", async () => {
-    const vault = memoryKeyVault();
-    await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), vault);
-    const status = await keyStatus(ACCOUNT, vault, { sessionToken: "t", fetch: offline as never });
-    expect(status.kind).toBe("ready");
-  });
-
-  // A device with NO handles genuinely cannot tell "generate a key set" from
-  // "ask for the phrase" without the server, and guessing the first would mint
-  // a second key set for an account whose data is sealed to the first. So it
-  // must still fail rather than answer.
-  it("still fails for a device that holds nothing", async () => {
-    await expect(keyStatus(ACCOUNT, memoryKeyVault(), { sessionToken: "t", fetch: offline as never })).rejects.toThrow();
-  });
-
-  it("still fails for handles belonging to a different account", async () => {
-    const vault = memoryKeyVault();
-    await installAccountKeys("22222222-2222-4222-8222-222222222222", generateAccountKeys(webPlatform), vault);
-    await expect(keyStatus(ACCOUNT, vault, { sessionToken: "t", fetch: offline as never })).rejects.toThrow();
-  });
-
-  // A deleted account is a fact about the ACCOUNT, not about the connection.
-  // Swallowing it would hide a `410 account_deleted` behind a working-looking
-  // app on the one device that could still decrypt everything.
-  it("does not swallow a session answer", async () => {
-    const vault = memoryKeyVault();
-    await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), vault);
-    const deleted = { sessionToken: "t", fetch: async () => jsonResponse(410, { error: "account_deleted" }) };
-    await expect(keyStatus(ACCOUNT, vault, deleted)).rejects.toMatchObject({ status: 410 });
-  });
-});
-
+// `keyStatus` when the server cannot be reached lives in
+// `keys.offline.test.ts` — named after the behaviour so the property is
+// findable by filename. See that file's header for why that matters.
 describe("establishAccountKeys", () => {
   test("shows the phrase before it publishes anything", async () => {
     let published = false;

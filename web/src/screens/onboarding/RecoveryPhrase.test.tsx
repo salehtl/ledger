@@ -60,6 +60,11 @@ describe("generating a phrase", () => {
     expect(validatePhrase(words.join(" "), webPlatform).ok).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
 
+    // The words are on the glass beside what they can DO. The phrase is a write
+    // capability as well as a read one, and this is the screen where the user
+    // decides where to keep it.
+    expect(document.body.textContent).toContain(RECOVERY_PHRASE_COPY.alsoWrites);
+
     // The tick alone is not the confirmation — it only reveals the check.
     await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.recorded }));
     expect(fetch).not.toHaveBeenCalled();

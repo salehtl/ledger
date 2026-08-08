@@ -172,6 +172,9 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
         </Notice>
         <Notice tone="danger" title="If you lose these words">
           <p>{RECOVERY_PHRASE_COPY.noWayBack}</p>
+          {/* Directly above the advice about where to keep them, because that
+              is the decision it changes — see the copy's own comment. */}
+          <p>{RECOVERY_PHRASE_COPY.alsoWrites}</p>
           <p>{RECOVERY_PHRASE_COPY.advice}</p>
         </Notice>
       </Step>
@@ -363,6 +366,7 @@ function EnterPhrase({
       )}
       <Notice tone="danger" title="There is no other way in">
         <p>{RECOVERY_ENTRY_COPY.noWayBack}</p>
+        <p>{RECOVERY_ENTRY_COPY.alsoWrites}</p>
       </Notice>
     </Step>
   );

@@ -120,6 +120,14 @@ export function RecoverWritePanel({ handle, onRecovered, profile = "ledger", ser
           If you have the twelve words ledger gave you when you set this account up, this device can unlock itself with
           no other device involved. It is the same phrase that decrypts your records.
         </p>
+        {/*
+          Said at the exact moment the phrase is used to authorise a WRITE, not
+          only where it is written down. This screen's button enrols a device
+          that can author into the user's financial log, and "the phrase that
+          decrypts your records" above describes only half of what is about to
+          happen. `RecoverWritePanel.test.tsx` pins its presence.
+        */}
+        <p>{RECOVERY_ENTRY_COPY.alsoWrites}</p>
       </Notice>
       <label className="flex flex-col gap-1">
         <span className="text-sm text-muted">{RECOVERY_ENTRY_COPY.label}</span>

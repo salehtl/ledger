@@ -18,6 +18,20 @@ package api
 // entries and the client derives the code, over the canonical ordering
 // [auth.Writers.KeyHistory] documents. A `comparison_code` field in this
 // response would look like the feature and be worth nothing.
+//
+// # This log has no PASSIVE surface, and Phase 3 made that matter more
+//
+// Nothing fetches this route except the approve-a-device panel, during an
+// enrolment. So a peer device sees an entry it did not expect at the NEXT
+// enrolment and never proactively — which was already true and is a thinner
+// guarantee than "detectable" sounds.
+//
+// Phase 3 raised the stakes: `recovery_registered` (00027) records an
+// enrolment authorised by the account's recovery key rather than by another
+// device, and it is exactly the entry a user would want to be TOLD about,
+// because on their own devices it means somebody used their phrase. It is in
+// the log, it is in the comparison digest, and there is no screen that shows it
+// unprompted. A device-log screen is the fix and it belongs in its own task.
 
 import (
 	"encoding/base64"

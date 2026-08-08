@@ -91,25 +91,34 @@ const PKCS8_X25519_PREFIX = new Uint8Array([
  */
 export async function installAccountKeys(accountId: string, keys: AccountKeys, vault: KeyVault): Promise<StoredKeys> {
   const pkcs8 = new Uint8Array(PKCS8_X25519_PREFIX.length + keys.ingestPriv.length);
-  pkcs8.set(PKCS8_X25519_PREFIX, 0);
-  pkcs8.set(keys.ingestPriv, PKCS8_X25519_PREFIX.length);
+  try {
+    pkcs8.set(PKCS8_X25519_PREFIX, 0);
+    pkcs8.set(keys.ingestPriv, PKCS8_X25519_PREFIX.length);
 
-  // `false` is the whole point of this function. `deriveBits` only: the ingest
-  // key opens sealed mail and signs nothing, so a wider usage list would be a
-  // capability nothing asks for.
-  const ingestPrivate = await subtle().importKey("pkcs8", toBuffer(pkcs8), { name: "X25519" }, false, ["deriveBits"]);
-  const dek = await subtle().importKey("raw", toBuffer(keys.dek), "AES-GCM", false, ["encrypt", "decrypt"]);
-  zero(pkcs8);
+    // `false` is the whole point of this function. `deriveBits` only: the ingest
+    // key opens sealed mail and signs nothing, so a wider usage list would be a
+    // capability nothing asks for.
+    const ingestPrivate = await subtle().importKey("pkcs8", toBuffer(pkcs8), { name: "X25519" }, false, ["deriveBits"]);
+    const dek = await subtle().importKey("raw", toBuffer(keys.dek), "AES-GCM", false, ["encrypt", "decrypt"]);
 
-  const stored: StoredKeys = { accountId, ingestPub: Uint8Array.from(keys.ingestPub), ingestPrivate, dek };
-  await vault.write(stored);
-
-  zero(keys.ingestPriv);
-  zero(keys.dek);
-  // The recovery authorizer is NOT stored — it is derivable from the phrase and
-  // is needed for one enrolment — so this is the end of its life on this device.
-  zero(keys.recoverySeed);
-  return stored;
+    const stored: StoredKeys = { accountId, ingestPub: Uint8Array.from(keys.ingestPub), ingestPrivate, dek };
+    await vault.write(stored);
+    return stored;
+  } finally {
+    // A `finally`, not a trailing pair of calls, because the two awaits above
+    // both fail on ordinary devices rather than exotic ones: `importKey` throws
+    // where WebCrypto has no X25519 (WebKit before 17.4), and `vault.write`
+    // throws where IndexedDB is unavailable or the quota is spent. The caller's
+    // `AccountKeys` is the only other copy of this material, so it is destroyed
+    // on EVERY exit — which is also what lets every caller treat one call as the
+    // end of the raw bytes' life instead of each guarding it again.
+    zero(pkcs8);
+    zero(keys.ingestPriv);
+    zero(keys.dek);
+    // The recovery authorizer is NOT stored — it is derivable from the phrase
+    // and is needed for one enrolment — so this is the end of its life here too.
+    zero(keys.recoverySeed);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +443,12 @@ export async function establishAccountKeys(args: {
     await args.confirmPhrase(phrase);
     const wrapped = await wrapAccountKeys(phrase, keys, webPlatform);
     await publishKeys(args.io, { ingestPub: keys.ingestPub, recoveryPub: keys.recoveryPub, wrapped });
+    // INSIDE the try, and `await`ed rather than returned bare: `installAccountKeys`
+    // throws on a browser whose WebCrypto has no X25519 (WebKit before 17.4),
+    // and a bare `return` of the promise would settle after this frame's catch
+    // had been passed by, leaving three live keys behind on exactly the device
+    // least able to do anything about it.
+    return await installAccountKeys(args.accountId, keys, args.vault);
   } catch (err) {
     // The raw private material is destroyed on EVERY exit, not only the happy
     // one. `installAccountKeys` zeroes it on success; before this, a failed or
@@ -445,7 +460,6 @@ export async function establishAccountKeys(args: {
     zero(keys.recoverySeed);
     throw err;
   }
-  return installAccountKeys(args.accountId, keys, args.vault);
 }
 
 /**
@@ -490,19 +504,40 @@ export async function recoverAccountKeys(args: {
     throw new Error("the recovered keys do not match the public keys this account published");
   }
 
-  if (args.authorize !== undefined) {
-    // A COPY of the seed, so the closure keeps working after `keys.recoverySeed`
-    // is zeroed by `installAccountKeys` below — and so this function owns the
-    // only lifetime that matters.
-    const seed = Uint8Array.from(keys.recoverySeed);
-    try {
-      await args.authorize((msg) => webPlatform.ed25519Sign(seed, msg));
-    } finally {
-      zero(seed);
+  // Everything past the unwrap is guarded, because everything past the unwrap
+  // can fail on an ORDINARY path and both failures leave three live private
+  // keys in this frame otherwise:
+  //
+  //   - `authorize` is a network call. `RecoverWritePanel` already catches its
+  //     rejection and renders it as "those words did not open your account", so
+  //     a dropped connection or a server refusal is the expected case, not the
+  //     exotic one.
+  //   - `installAccountKeys` throws on a browser whose WebCrypto has no X25519
+  //     — WebKit before 17.4, which is a real device this product targets.
+  //
+  // The seed COPY had a `finally` and the three originals did not, which is the
+  // same defect `establishAccountKeys` was fixed for one round earlier, left
+  // standing in its sibling.
+  try {
+    if (args.authorize !== undefined) {
+      // A COPY of the seed, so the closure keeps working after
+      // `keys.recoverySeed` is zeroed by `installAccountKeys` below — and so
+      // this function owns the only lifetime that matters.
+      const seed = Uint8Array.from(keys.recoverySeed);
+      try {
+        await args.authorize((msg) => webPlatform.ed25519Sign(seed, msg));
+      } finally {
+        zero(seed);
+      }
     }
+    return await installAccountKeys(args.accountId, keys, args.vault);
+  } catch (err) {
+    // `installAccountKeys` zeroes these on success; this is the only other exit.
+    zero(keys.ingestPriv);
+    zero(keys.dek);
+    zero(keys.recoverySeed);
+    throw err;
   }
-
-  return installAccountKeys(args.accountId, keys, args.vault);
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {

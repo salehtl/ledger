@@ -127,6 +127,28 @@ async function opCount(page) {
   });
 }
 
+/**
+ * Drains until the server actually holds `atLeast` rows, or gives up.
+ *
+ * ONE `run()` is not enough and assuming it was made this file flaky: the
+ * coordinator serialises, so a call that lands while the gate's own launch sync
+ * is still in flight returns without draining anything, and the very next
+ * assertion read a log that was one row short. Polling asserts the PROPERTY —
+ * the op reaches the server — rather than the mechanism that happened to
+ * deliver it on the first attempt.
+ */
+async function waitForOps(page, atLeast, what) {
+  let count = 0;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await drainOutbox(page);
+    count = await opCount(page);
+    if (count >= atLeast) return count;
+    await page.waitForTimeout(1000);
+  }
+  fail(what, `the hot stream holds ${count} row(s), want at least ${atLeast}`);
+  return count;
+}
+
 /** What is actually in the key vault, and whether the browser will let it out. */
 async function inspectVault(page) {
   return page.evaluate(async () => {
@@ -242,9 +264,7 @@ try {
 
   // The op has to actually REACH the server, or the second context has nothing
   // to read back and this would prove only that a local database survived.
-  await drainOutbox(one.page);
-  const authored = await opCount(one.page);
-  if (authored < 2) fail("the declared bank reaches the server", `the hot stream holds ${authored} row(s)`);
+  const authored = await waitForOps(one.page, 2, "the declared bank reaches the server");
   ok("a bank is declared and the op reaches the server", `${authored} rows in the hot stream`);
 
   // The credential itself, lifted out of the authenticator so the second
@@ -344,14 +364,9 @@ try {
     const handle = await openV2();
     handle.client.emitMany([{ type: "bank_declared", payload: { bank: "enbd", active: true } }]);
   });
-  await drainOutbox(two.page);
-
   // The op has to reach the SERVER, not merely the outbox: an op that only ever
   // existed locally would prove nothing about the enrolment being accepted.
-  const afterWrite = await opCount(two.page);
-  if (afterWrite <= beforeWrite) {
-    fail("an op authored after recovery reaches the server", `the log stayed at ${beforeWrite} rows`);
-  }
+  const afterWrite = await waitForOps(two.page, beforeWrite + 1, "an op authored after recovery reaches the server");
   ok("an op authored after recovery lands on the server", `${beforeWrite} -> ${afterWrite} rows`);
 
   // And it FOLDS: a row on the server that the replay engine refused would be

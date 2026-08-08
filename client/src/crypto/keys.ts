@@ -153,9 +153,10 @@ export const WRAPPED_HEADER_BYTES = 1 + 1 + 4 + 1 + 1 + SALT_BYTES + AES_NONCE_B
 const BODY_BYTES = 1 + KEY_BYTES + KEY_BYTES + KEY_BYTES;
 
 /**
- * What the server's column admits. Generous against the 117 bytes this build
- * writes, so a later key set fits, and finite so a malformed upload is refused
- * at the edge rather than stored.
+ * What the server's column admits. Generous against the 149 bytes this build
+ * writes — 117 before the recovery authorizer joined the key set — so a later
+ * key set fits, and finite so a malformed upload is refused at the edge rather
+ * than stored.
  */
 export const MAX_WRAPPED_BYTES = 4096;
 

@@ -330,6 +330,30 @@ describe("the encryption copy", () => {
     expect(RECOVERY_PHRASE_COPY.noWayBack.toLowerCase()).toMatch(/the account is gone/);
   });
 
+  /*
+   * The phrase became a WRITE capability when the recovery authorizer landed:
+   * `auth.Writers.Register` accepts a signature from a key derived from these
+   * words, so anyone holding them can enrol a device that authors into the
+   * user's financial log. Every string here was written when the phrase only
+   * decrypted, and "these words unlock your records" reads as read-only.
+   *
+   * Asserted rather than left to prose because it is the sentence a later,
+   * kinder edit would drop as alarming — and it is the one that changes where a
+   * person decides to keep the words.
+   */
+  it("says the phrase can add a device that writes, on both screens", () => {
+    for (const copy of [RECOVERY_PHRASE_COPY, RECOVERY_ENTRY_COPY]) {
+      expect(copy.alsoWrites.toLowerCase()).toMatch(/writes? to your records/);
+      expect(copy.alsoWrites.toLowerCase()).toMatch(/not just read|as well as read/);
+    }
+  });
+
+  // And the enter screen's own opening no longer describes a read-only phrase:
+  // the button on that screen enrols a writer.
+  it("does not describe recovery as making records merely readable", () => {
+    expect(RECOVERY_ENTRY_COPY.intro.toLowerCase()).toMatch(/write/);
+  });
+
   // There is no skip, so there is no copy for one.
   it("offers nothing that sounds like a way to defer this", () => {
     for (const s of everySentence) {

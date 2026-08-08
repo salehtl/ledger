@@ -167,7 +167,7 @@ export function decodeEnrolmentRequest(code: string): EnrolmentRequest {
  * by `id` defensively so two devices that received the same log in a different
  * order still agree. Fields are newline-separated and every one of them —
  * a decimal id, a writer id from a closed charset, standard base64, and one of
- * two fixed event words — is newline-free, so no two logs encode alike. The
+ * three fixed event words — is newline-free, so no two logs encode alike. The
  * entry COUNT is hashed first for the same reason.
  *
  * `at` is deliberately excluded: it is a server timestamp, it is not part of

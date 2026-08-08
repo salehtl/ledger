@@ -800,6 +800,13 @@ export const RECOVERY_PHRASE_COPY = {
   noWayBack:
     "If you clear this browser's data and do not have these words, the account is gone. There is nothing to reset " +
     "and nobody to ask: ledger holds no copy of this key and cannot restore your history.",
+  // Said next to the advice about WHERE to keep the words, because that is the
+  // decision it changes. The phrase was a read capability when this screen was
+  // first written; the recovery authorizer made it a write one, and a person
+  // weighs "a screenshot in my photo library" differently once a finder could
+  // author transactions into their financial log rather than only read it.
+  alsoWrites:
+    "Anyone with these words can also add a device that writes to your records — not just read them.",
   advice:
     "Write them on paper, or put them in a password manager. A screenshot in your photo library is better than " +
     "nothing and worse than either.",
@@ -831,7 +838,11 @@ export const RECOVERY_ENTRY_COPY = {
   intro:
     "This browser holds no key for your account — that is what clearing site data, a reinstall or a new device " +
     "looks like. Your records are safe on the server and encrypted; the twelve words are what makes them readable " +
-    "again.",
+    "again, and what lets this device write to them.",
+  // The button on this screen enrols a writer. Saying only "readable" would be
+  // true of what the phrase decrypts and false about what pressing it does.
+  alsoWrites:
+    "Anyone with these words can also add a device that writes to your records — not just read them.",
   noWayBack:
     "There is no way around this screen. ledger holds no copy of your key, so nobody here can let you in without " +
     "the phrase — not the person running this beta, not with proof of who you are.",
