@@ -307,3 +307,42 @@ destroyed — so it stops at the enrolment wall before the onboarding walk. That
 gate is the writer roster's, not the key material's, and the script says so
 where it steps around it.
 
+### It is Chromium-only, and that shipped a bug
+
+Its authenticator comes from CDP, which Chromium alone speaks. So this file —
+the one that proves key custody — proved it on one engine, and the bug that
+reached the operator was WebKit-only: **WebKit accepts an X25519 `CryptoKey`
+into IndexedDB, completes the transaction, and returns `null` for that record on
+every later read.** Every iPhone published a key set it could never open and was
+sent back to the recovery screen on every launch, while this run was green. Same
+shape as a timezone guard that passes because the box is UTC.
+
+Two files close it, and a change to `v2/keys.ts` should run both.
+
+## `vault.mjs` — the key vault, in Chromium **and** WebKit
+
+```bash
+node harness/vault.mjs        # needs only a vite on the origin
+```
+
+Writes a key set through the app's own `installAccountKeys`, opens a **new**
+connection, reads it back, opens the ingest key and derives with it, and requires
+every export attempt to be refused — in both engines. No passkey, no invite, no
+server. This is the assertion that would have caught the loop, and it fails on
+the old storage shape with `webkit: read null`.
+
+## `operator.mjs` — the whole path, in WebKit
+
+```bash
+node harness/operator.mjs signup <invite>   # phase one
+node harness/operator.mjs recover           # phase two
+```
+
+Sign up, twelve words, confirm, **reload**, and check the next launch does not
+land back on the phrase screen. It uses `webauthn.mjs`, a real ES256 software
+authenticator (go-webauthn verifies its signatures like any other), because
+Playwright cannot give WebKit a virtual one. A **persistent profile** is what
+makes the two phases separable: run `signup` against an old `v2/keys.ts` and
+`recover` against a new one, and phase two is the operator's repair — same
+account, same published blob, same twelve words, no re-keying.
+

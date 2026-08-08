@@ -21,6 +21,7 @@ import {
   installAccountKeys,
   keyStatus,
   memoryKeyVault,
+  openIngestPrivate,
   publishKeys,
   readPublishedKeys,
   recoverAccountKeys,
@@ -39,17 +40,14 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe("installAccountKeys", () => {
-  test("stores handles whose private material cannot be exported", async () => {
+  test("stores a handle whose private material cannot be exported", async () => {
     const vault = memoryKeyVault();
     const stored = await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), vault);
 
-    expect(stored.ingestPrivate.extractable).toBe(false);
     expect(stored.dek.extractable).toBe(false);
 
     // The proof. Not `expect(extractable).toBe(false)` — that is the flag, and
     // this is the behaviour the flag is supposed to produce.
-    await expect(crypto.subtle.exportKey("pkcs8", stored.ingestPrivate)).rejects.toThrow();
-    await expect(crypto.subtle.exportKey("jwk", stored.ingestPrivate)).rejects.toThrow();
     await expect(crypto.subtle.exportKey("raw", stored.dek)).rejects.toThrow();
     await expect(crypto.subtle.exportKey("jwk", stored.dek)).rejects.toThrow();
 
@@ -58,6 +56,41 @@ describe("installAccountKeys", () => {
     const back = await vault.read();
     expect(back).not.toBeNull();
     await expect(crypto.subtle.exportKey("raw", back!.dek)).rejects.toThrow();
+
+    // The ingest key that `openIngestPrivate` hands out is non-extractable too:
+    // the seal moves where the bytes live, it does not relax the rule.
+    const opened = await openIngestPrivate(stored);
+    expect(opened.extractable).toBe(false);
+    await expect(crypto.subtle.exportKey("pkcs8", opened)).rejects.toThrow();
+    await expect(crypto.subtle.exportKey("jwk", opened)).rejects.toThrow();
+  });
+
+  // The reason the shape changed at all. Every field has to survive
+  // `structuredClone`, because that is what IndexedDB does to it — and a
+  // `CryptoKey` that WebKit cannot deserialise is a record that reads back as
+  // `null` forever, with no error anywhere.
+  test("everything it stores is structured-cloneable", async () => {
+    const stored = await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), memoryKeyVault());
+    const clone = structuredClone(stored);
+    expect(clone.accountId).toBe(ACCOUNT);
+    expect(webPlatform.toHex(clone.ingestPub)).toBe(webPlatform.toHex(stored.ingestPub));
+    expect(webPlatform.toHex(clone.ingestPrivSealed)).toBe(webPlatform.toHex(stored.ingestPrivSealed));
+    // And the clone is a WORKING key set, not merely a shape that survived.
+    const derived = await crypto.subtle.deriveBits(
+      { name: "X25519", public: (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]) as CryptoKeyPair).publicKey },
+      await openIngestPrivate(clone),
+      256,
+    );
+    expect(new Uint8Array(derived).length).toBe(32);
+  });
+
+  // The private half at rest is ciphertext, and the DEK is what opens it. A
+  // sealed blob lifted into another account's vault does not open, because the
+  // account id is the associated data.
+  test("the sealed ingest key is bound to its account", async () => {
+    const stored = await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), memoryKeyVault());
+    expect(webPlatform.toHex(stored.ingestPrivSealed)).not.toContain("00".repeat(16));
+    await expect(openIngestPrivate({ ...stored, accountId: "22222222-2222-4222-8222-222222222222" })).rejects.toThrow();
   });
 
   test("destroys the raw bytes it was handed", async () => {
@@ -82,8 +115,30 @@ describe("installAccountKeys", () => {
   test("the stored ingest key can still derive, which is the only thing it is for", async () => {
     const stored = await installAccountKeys(ACCOUNT, generateAccountKeys(webPlatform), memoryKeyVault());
     const peer = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as CryptoKeyPair;
-    const bits = await crypto.subtle.deriveBits({ name: "X25519", public: peer.publicKey }, stored.ingestPrivate, 256);
+    const opened = await openIngestPrivate(stored);
+    const bits = await crypto.subtle.deriveBits({ name: "X25519", public: peer.publicKey }, opened, 256);
     expect(new Uint8Array(bits).length).toBe(32);
+  });
+
+  // The public half the account published and the private half this device
+  // sealed have to be the same key pair, or mail sealed to the published key
+  // opens with nothing. Checked by deriving both ways round.
+  test("the sealed private half matches the published public half", async () => {
+    const keys = generateAccountKeys(webPlatform);
+    const ingestPub = Uint8Array.from(keys.ingestPub);
+    const stored = await installAccountKeys(ACCOUNT, keys, memoryKeyVault());
+    const peer = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as CryptoKeyPair;
+    const ours = new Uint8Array(
+      await crypto.subtle.deriveBits({ name: "X25519", public: peer.publicKey }, await openIngestPrivate(stored), 256),
+    );
+    const theirs = new Uint8Array(
+      await crypto.subtle.deriveBits(
+        { name: "X25519", public: await crypto.subtle.importKey("raw", ingestPub, { name: "X25519" }, true, []) },
+        peer.privateKey,
+        256,
+      ),
+    );
+    expect(webPlatform.toHex(ours)).toBe(webPlatform.toHex(theirs));
   });
 });
 

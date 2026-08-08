@@ -34,16 +34,16 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
       return {
         title: "ledger could not finish setting up this device",
         body:
-          "You are signed in, but registering this device as one that can make changes needs a connection. " +
-          "Nothing was lost. Try again when you are online.",
+          "You're signed in. Letting this device make changes needs a connection. Nothing was lost — try again " +
+          "when you are online.",
         retry: true,
       };
     case "unavailable":
       return {
         title: "ledger could not finish setting up this device",
         body:
-          "You are signed in, but the server could not register this device as one that can make changes. " +
-          "Nothing was lost. Try again in a moment.",
+          "You're signed in. The server could not let this device make changes. Nothing was lost — try again in a " +
+          "moment.",
         retry: true,
       };
     case "misconfigured":
@@ -54,9 +54,8 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
       return {
         title: "ledger could not finish setting up this device",
         body:
-          "You are signed in, but this copy of ledger is not set up correctly and cannot register this device as " +
-          "one that can make changes. Nothing was lost, and nothing you do here will fix it — this is ours to " +
-          "repair.",
+          "You're signed in. This copy of ledger is not set up correctly, so this device cannot make changes. " +
+          "Nothing was lost, and nothing you do here will fix it — this is ours to repair.",
         retry: false,
       };
     case "rate_limited":
@@ -75,25 +74,25 @@ export function enrollmentCopy(kind: EnrollmentKind): EnrollmentCopy {
       return {
         title: "This device needs approval",
         body:
-          "You are signed in, but this device cannot make changes until a device that is already signed in to " +
-          "this account approves it. Nothing was lost. Use the code below on your other device.",
+          "You're signed in. This device cannot make changes until a device already on this account approves it. " +
+          "Nothing was lost. Use the code below on your other device, or your recovery phrase here.",
         retry: false,
       };
     case "revoked":
       return {
         title: "This device's access was withdrawn",
         body:
-          "This device was set up on this account and then removed from it. It can still read what it already has, " +
-          "but it cannot make changes, and signing in again will not restore it.",
+          "This device was on this account and was removed from it. It can still read what it already has, but it " +
+          "cannot make changes, and signing in again will not restore it.",
         retry: false,
       };
     case "key_lost":
       return {
         title: "This device can no longer prove who it is",
         body:
-          "This account already knows this device, but the private key that signed for it is gone from this " +
-          "browser — clearing site data does not carry it. Nothing on the server was lost. This device cannot " +
-          "make changes again until a device that still has its key can add it back, which this beta cannot do yet.",
+          "You're signed in, and this account knows this device — but the key that signed for it is gone from this " +
+          "browser. Clearing site data does not carry it. Nothing on the server was lost. This device cannot make " +
+          "changes until a device that still has its key adds it back, which this beta cannot do yet.",
         retry: false,
       };
   }

@@ -8,10 +8,31 @@
  * JavaScript**. `client/src/crypto/keys.ts` deals in raw bytes because it has to
  * — a wrapped blob is bytes and Argon2id takes bytes — and those bytes live for
  * the few milliseconds between generating (or unwrapping) a key set and
- * {@link installAccountKeys} importing it. What is *stored* is a pair of
- * non-extractable `CryptoKey` handles, put in IndexedDB by structured clone.
- * `crypto.subtle.exportKey` on either of them throws, and
- * `keys.test.ts` proves it rather than asserting it in a comment.
+ * {@link installAccountKeys} importing it.
+ *
+ * What is *stored* is a non-extractable AES-GCM `CryptoKey` (the DEK), put in
+ * IndexedDB by structured clone, plus the X25519 ingest private key **sealed
+ * under that DEK**. `crypto.subtle.exportKey` on the DEK throws; the ingest key
+ * at rest is ciphertext. `keys.test.ts` proves both rather than asserting them
+ * in a comment.
+ *
+ * # Why the ingest key is sealed rather than stored as a handle
+ *
+ * It used to be a second non-extractable handle, and that shape does not survive
+ * WebKit: **WebKit writes an X25519 `CryptoKey` into IndexedDB, reports success,
+ * completes the transaction, and then returns `null` for that record forever**
+ * (`structuredClone` of the same key throws `Unable to deserialize data`). An
+ * AES-GCM handle and an ECDH P-256 handle both persist; only X25519 vanishes. So
+ * every iPhone published a key set it could never read back, `keyStatus`
+ * answered `needs_recovery` on every launch, and typing the phrase re-ran the
+ * same successful write into the same hole — a closed loop through a path where
+ * nothing failed. See `.superpowers/sdd/2026-08-08-phase3-crypto/`.
+ *
+ * The sealed shape keeps the guarantee: the private bytes at rest are ciphertext
+ * under a key JavaScript cannot export, {@link openIngestPrivate} imports them
+ * into a non-extractable handle at point of use, and the plaintext is zeroed
+ * before that function returns. The DEK is the root of custody either way, so
+ * this adds no new trust — it moves one key behind the other.
  *
  * **What that is and is not worth, plainly.** It is weaker than the iOS Keychain
  * the native design assumed: a `CryptoKey` cannot be read, but any script
@@ -27,7 +48,10 @@
  * jsdom has no IndexedDB, so the tests drive a memory vault with the same three
  * methods; the IndexedDB one is exercised in a real browser by
  * `web/harness/recovery.mjs`, which is also where the non-extractability proof
- * runs against Chromium rather than against Node's WebCrypto.
+ * runs against Chromium rather than against Node's WebCrypto — and by
+ * `web/harness/vault.mjs`, which runs the round trip in **WebKit** as well.
+ * Chromium-only was the shape of the miss: the harness was green for months
+ * while every iOS device was broken.
  *
  * # This module changes no data path
  *
@@ -53,16 +77,25 @@ import { sessionAnswerOf } from "./halt";
  * The account's keys as this device holds them.
  *
  * `ingestPub` is bytes because it is not a secret and everything that wants it
- * wants it as bytes. The other two are handles and there is no accessor that
- * turns them back into bytes, by construction.
+ * wants it as bytes. The DEK is a handle and there is no accessor that turns it
+ * back into bytes, by construction. The ingest private key is ciphertext, and
+ * the only thing that opens it is {@link openIngestPrivate}.
+ *
+ * Every field of this is structured-cloneable in every browser this ships to —
+ * which is the property the previous shape lacked, and lacked silently.
  */
 export interface StoredKeys {
   /** The account these belong to. A device that signs into another account must not reuse them. */
   accountId: string;
   /** X25519 public, 32 bytes. Published; the server seals to it. */
   ingestPub: Uint8Array;
-  /** X25519 private, non-extractable, usable only for `deriveBits`. */
-  ingestPrivate: CryptoKey;
+  /**
+   * The X25519 private key in PKCS#8, sealed under {@link dek} with
+   * {@link accountId} as associated data. 64 bytes: 48 of key, 16 of tag.
+   */
+  ingestPrivSealed: Uint8Array;
+  /** The 12-byte nonce {@link ingestPrivSealed} was sealed with. */
+  ingestPrivIv: Uint8Array;
   /** AES-256-GCM, non-extractable, usable only for `encrypt`/`decrypt`. */
   dek: CryptoKey;
 }
@@ -72,6 +105,21 @@ export interface KeyVault {
   read(): Promise<StoredKeys | null>;
   write(keys: StoredKeys): Promise<void>;
   clear(): Promise<void>;
+}
+
+/** AES-GCM nonce length, in bytes. The one every other seal in this codebase uses. */
+const IV_BYTES = 12;
+
+/**
+ * What the sealed ingest key is bound to.
+ *
+ * The account id, so a row lifted out of one account's vault and dropped into
+ * another's does not open — the same rule `keyStatus` enforces on the plaintext
+ * fields, applied where an attacker who can write IndexedDB cannot edit around
+ * it.
+ */
+function aadFor(accountId: string): Uint8Array {
+  return webPlatform.utf8Encode(`ledger-v2-ingest-key\x00${accountId}`);
 }
 
 /** The PKCS#8 prelude for a raw X25519 private key: SEQUENCE, v0, OID 1.3.101.110, OCTET STRING(0x20). */
@@ -95,13 +143,31 @@ export async function installAccountKeys(accountId: string, keys: AccountKeys, v
     pkcs8.set(PKCS8_X25519_PREFIX, 0);
     pkcs8.set(keys.ingestPriv, PKCS8_X25519_PREFIX.length);
 
-    // `false` is the whole point of this function. `deriveBits` only: the ingest
-    // key opens sealed mail and signs nothing, so a wider usage list would be a
-    // capability nothing asks for.
-    const ingestPrivate = await subtle().importKey("pkcs8", toBuffer(pkcs8), { name: "X25519" }, false, ["deriveBits"]);
+    // `false` is the whole point of this function.
     const dek = await subtle().importKey("raw", toBuffer(keys.dek), "AES-GCM", false, ["encrypt", "decrypt"]);
 
-    const stored: StoredKeys = { accountId, ingestPub: Uint8Array.from(keys.ingestPub), ingestPrivate, dek };
+    // Imported and thrown away, purely to fail HERE on a browser whose WebCrypto
+    // has no X25519 (WebKit before 17.4). Without it that browser would store a
+    // sealed blob it can never import, and would discover it at the first
+    // decrypt instead of during the ceremony that can still say so.
+    await subtle().importKey("pkcs8", toBuffer(pkcs8), { name: "X25519" }, false, ["deriveBits"]);
+
+    const ingestPrivIv = Uint8Array.from(webPlatform.randomBytes(IV_BYTES));
+    const ingestPrivSealed = new Uint8Array(
+      await subtle().encrypt(
+        { name: "AES-GCM", iv: toBuffer(ingestPrivIv), additionalData: toBuffer(aadFor(accountId)) },
+        dek,
+        toBuffer(pkcs8),
+      ),
+    );
+
+    const stored: StoredKeys = {
+      accountId,
+      ingestPub: Uint8Array.from(keys.ingestPub),
+      ingestPrivSealed,
+      ingestPrivIv,
+      dek,
+    };
     await vault.write(stored);
     return stored;
   } finally {
@@ -118,6 +184,33 @@ export async function installAccountKeys(accountId: string, keys: AccountKeys, v
     // The recovery authorizer is NOT stored — it is derivable from the phrase
     // and is needed for one enrolment — so this is the end of its life here too.
     zero(keys.recoverySeed);
+  }
+}
+
+/**
+ * Opens the ingest private key, for the moment it is used.
+ *
+ * The returned handle is **non-extractable and `deriveBits`-only** — the ingest
+ * key opens sealed mail and signs nothing, so a wider usage list would be a
+ * capability nothing asks for. The plaintext PKCS#8 exists only inside this
+ * function and is zeroed before it returns, so the raw private bytes are never
+ * reachable from application state, a heap snapshot or a `JSON.stringify`.
+ *
+ * Call it where the key is needed and let the handle go. Holding one for the
+ * life of the tab is not wrong, but it is not better either: the DEK that opens
+ * it is sitting in the same vault.
+ */
+export async function openIngestPrivate(keys: StoredKeys): Promise<CryptoKey> {
+  const opened = await subtle().decrypt(
+    { name: "AES-GCM", iv: toBuffer(keys.ingestPrivIv), additionalData: toBuffer(aadFor(keys.accountId)) },
+    keys.dek,
+    toBuffer(keys.ingestPrivSealed),
+  );
+  const pkcs8 = new Uint8Array(opened);
+  try {
+    return await subtle().importKey("pkcs8", toBuffer(pkcs8), { name: "X25519" }, false, ["deriveBits"]);
+  } finally {
+    zero(pkcs8);
   }
 }
 
@@ -152,14 +245,29 @@ export function indexedDbKeyVault(dbName = KEY_VAULT_DB): KeyVault {
       req.onblocked = () => reject(new Error("the key vault is blocked by another tab"));
     });
 
+  /**
+   * Resolves on `transaction.oncomplete`, never on `request.onsuccess`.
+   *
+   * `onsuccess` means the store accepted the operation; `oncomplete` means the
+   * transaction was committed. Resolving on the former reports a write as
+   * durable while it can still abort — the same class of "reported durable
+   * before it was" that the vault's silent data loss belongs to, even though it
+   * was not the cause of it. For a `get` the two fire in that order anyway, so
+   * one helper serves both modes.
+   */
   const tx = async <T,>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> => {
     const db = await open();
     try {
       return await new Promise<T>((resolve, reject) => {
         const transaction = db.transaction(KEY_VAULT_STORE, mode);
+        let result: T;
         const request = run(transaction.objectStore(KEY_VAULT_STORE));
-        request.onsuccess = () => resolve(request.result);
+        request.onsuccess = () => {
+          result = request.result;
+        };
         request.onerror = () => reject(request.error ?? new Error("key vault request failed"));
+        transaction.oncomplete = () => resolve(result);
+        transaction.onerror = () => reject(transaction.error ?? new Error("key vault transaction failed"));
         transaction.onabort = () => reject(transaction.error ?? new Error("key vault transaction aborted"));
       });
     } finally {
@@ -172,8 +280,35 @@ export function indexedDbKeyVault(dbName = KEY_VAULT_DB): KeyVault {
       const row = await tx<unknown>("readonly", (s) => s.get(KEY_VAULT_ROW) as IDBRequest<unknown>);
       return decodeStored(row);
     },
+    /**
+     * Writes, then **reads the record back and uses it**, and throws if it does
+     * not come back whole.
+     *
+     * This is not belt and braces. WebKit accepted an X25519 `CryptoKey` here,
+     * completed the transaction, and returned `null` for the record on every
+     * later read — so `installAccountKeys` resolved, the account published a key
+     * set, and the device could never open it. A store that can accept a write
+     * and lose it must not be able to look like success: that is what turned a
+     * browser limitation into a loop with no error in it.
+     *
+     * The check is a real use, not a shape test. `openIngestPrivate` decrypts
+     * under the DEK that came back out of storage and imports the result, so a
+     * DEK that survived as a husk, a truncated blob and a row that decodes but
+     * does not work all fail here — where the ceremony can still say so.
+     */
     async write(keys: StoredKeys): Promise<void> {
       await tx("readwrite", (s) => s.put(keys, KEY_VAULT_ROW) as IDBRequest<IDBValidKey>);
+      const back = decodeStored(await tx<unknown>("readonly", (s) => s.get(KEY_VAULT_ROW) as IDBRequest<unknown>));
+      if (back === null || back.accountId !== keys.accountId || !sameBytes(back.ingestPub, keys.ingestPub)) {
+        throw new Error("this browser accepted the key write and lost it: the key vault cannot store keys here");
+      }
+      try {
+        await openIngestPrivate(back);
+      } catch (err) {
+        throw new Error(
+          `this browser stored the keys but cannot read them back: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     },
     async clear(): Promise<void> {
       await tx("readwrite", (s) => s.delete(KEY_VAULT_ROW) as IDBRequest<undefined>);
@@ -216,17 +351,26 @@ export function browserKeyVault(dbName = KEY_VAULT_DB): KeyVault {
  * of that is "this device has no keys" — which routes the user to the recovery
  * screen, where their phrase repairs it. Treating it as a usable key set would
  * produce a `CryptoKey` of `undefined` somewhere much further away.
+ *
+ * A row in the OLD shape — an `ingestPrivate` handle and no sealed blob — is
+ * refused by the same rule, and that is the whole migration. There is no way to
+ * convert one: the old handle is non-extractable by design, so its bytes cannot
+ * be re-sealed. Those devices take the recovery path, which is a screen and
+ * twelve words, and their published key set is untouched — nothing is re-keyed.
  */
 function decodeStored(v: unknown): StoredKeys | null {
   if (typeof v !== "object" || v === null) return null;
   const r = v as Record<string, unknown>;
   if (typeof r["accountId"] !== "string" || r["accountId"] === "") return null;
   if (!(r["ingestPub"] instanceof Uint8Array) || r["ingestPub"].length !== 32) return null;
-  if (!isCryptoKey(r["ingestPrivate"]) || !isCryptoKey(r["dek"])) return null;
+  if (!(r["ingestPrivSealed"] instanceof Uint8Array) || r["ingestPrivSealed"].length === 0) return null;
+  if (!(r["ingestPrivIv"] instanceof Uint8Array) || r["ingestPrivIv"].length !== IV_BYTES) return null;
+  if (!isCryptoKey(r["dek"])) return null;
   return {
     accountId: r["accountId"],
     ingestPub: r["ingestPub"],
-    ingestPrivate: r["ingestPrivate"],
+    ingestPrivSealed: r["ingestPrivSealed"],
+    ingestPrivIv: r["ingestPrivIv"],
     dek: r["dek"],
   };
 }

@@ -787,42 +787,38 @@ export const RECOVERY_WARNING = {
  */
 export const RECOVERY_PHRASE_COPY = {
   title: "Write down your recovery phrase",
-  intro:
-    "These twelve words are the key to everything ledger records for you. They are generated on this device and " +
-    "sent nowhere.",
+  intro: "Twelve words, made on this device and sent nowhere. They are the key to everything ledger records for you.",
   whatItProtects:
-    "Your transactions and the bank emails they came from are encrypted before they are stored, with a key only " +
-    "your devices hold. A stolen disk, a stolen backup or a subpoena of our database yields ciphertext.",
+    "Your transactions and the bank emails behind them are encrypted before they are stored, with a key only your " +
+    "devices hold. A stolen disk, a stolen backup or a subpoena of our database yields ciphertext.",
   whatItDoesNot:
-    "ledger does see each email for the moment it arrives, because your bank sends it to us unencrypted. It is " +
-    "read to pull out the transaction, sealed, and the original discarded. That window is real and this phrase " +
-    "does not close it.",
+    "ledger does see each email as it arrives — your bank sends it unencrypted. We read the transaction out, seal " +
+    "it, and drop the original. This phrase does not close that window.",
   noWayBack:
-    "If you clear this browser's data and do not have these words, the account is gone. There is nothing to reset " +
-    "and nobody to ask: ledger holds no copy of this key and cannot restore your history.",
+    "Clear this browser's data without these words and the account is gone. ledger holds no copy of this key. " +
+    "There is nothing to reset and nobody to ask.",
   // Said next to the advice about WHERE to keep the words, because that is the
   // decision it changes. The phrase was a read capability when this screen was
   // first written; the recovery authorizer made it a write one, and a person
   // weighs "a screenshot in my photo library" differently once a finder could
   // author transactions into their financial log rather than only read it.
-  alsoWrites:
-    "Anyone with these words can also add a device that writes to your records — not just read them.",
+  alsoWrites: "Anyone with these words can also add a device that writes to your records, not just read them.",
   advice:
-    "Write them on paper, or put them in a password manager. A screenshot in your photo library is better than " +
-    "nothing and worse than either.",
+    "Write them on paper, or save them in a password manager. A screenshot is better than nothing and worse than " +
+    "either.",
   recorded: "I have written these down",
   // The confirmation step. A checkbox alone is a claim; this is a check.
   confirmTitle: "Now type three of them back",
   confirmIntro:
-    "This is the only way to tell a phrase that was written down from one that was looked at. If you cannot answer, " +
-    "go back — the words are still on the previous screen, and this is the last moment they will be.",
+    "This is what tells a phrase that was written down from one that was looked at. Go back if you cannot answer — " +
+    "the words are still there, and this is the last time they will be.",
   confirmWrong: "That is not the word at that position. Check what you wrote down.",
   back: "Show me the words again",
   publish: "Finish setting up encryption",
   working: "Setting up encryption…",
   failed:
-    "ledger could not finish setting up encryption just now. Nothing is lost and the phrase has not changed — " +
-    "try again when you have a connection.",
+    "ledger could not finish setting up encryption. Nothing is lost and the phrase has not changed. Try again when " +
+    "you have a connection.",
 } as const;
 
 /**
@@ -834,15 +830,25 @@ export const RECOVERY_PHRASE_COPY = {
  * nothing in it.
  */
 export const RECOVERY_ENTRY_COPY = {
+  /*
+   * The first thing this screen says, and it exists because of a real report.
+   *
+   * The gate replaces the whole tree the instant a passkey sign-in succeeds, so
+   * a user who then needs their phrase saw a bare wall and read it as "sign-in
+   * is broken" — the sign-in had in fact worked perfectly. A screen that
+   * follows a successful action has to say what happened before it says what is
+   * still needed. Nothing here is a claim the code does not honour: the session
+   * is live, and the phrase really is the only thing missing.
+   */
+  signedIn: "You're signed in. This browser needs your recovery phrase before it can show your records.",
   title: "Enter your recovery phrase",
   intro:
-    "This browser holds no key for your account — that is what clearing site data, a reinstall or a new device " +
-    "looks like. Your records are safe on the server and encrypted; the twelve words are what makes them readable " +
-    "again, and what lets this device write to them.",
+    "This browser holds no key for your account. That is what a reinstall, a new device or cleared site data looks " +
+    "like. Your records are safe and encrypted on the server; these twelve words make them readable again, and let " +
+    "this device write to them.",
   // The button on this screen enrols a writer. Saying only "readable" would be
   // true of what the phrase decrypts and false about what pressing it does.
-  alsoWrites:
-    "Anyone with these words can also add a device that writes to your records — not just read them.",
+  alsoWrites: "Anyone with these words can also add a device that writes to your records, not just read them.",
   noWayBack:
     "There is no way around this screen. ledger holds no copy of your key, so nobody here can let you in without " +
     "the phrase — not the person running this beta, not with proof of who you are.",
@@ -851,8 +857,8 @@ export const RECOVERY_ENTRY_COPY = {
   action: "Unlock my account",
   working: "Checking…",
   failed:
-    "Those words did not open your account. Every word is checked against the list ledger uses, so a wrong one is " +
-    "usually a typo or two words swapped round.",
+    "Those words did not open your account. Every word is checked against ledger's list, so a wrong one is usually " +
+    "a typo or two words swapped.",
 } as const;
 
 export const ADD_PASSKEY_COPY = {

@@ -328,8 +328,21 @@ function EnterPhrase({
   return (
     <Step
       title={RECOVERY_ENTRY_COPY.title}
-      intro={RECOVERY_ENTRY_COPY.intro}
       testId="onboarding-recovery-entry"
+      /*
+        Above the title, because it is the answer to the question the person is
+        actually holding: "did my sign-in work?" This screen is what the gate
+        puts up the moment a passkey sign-in succeeds, and until this line
+        existed it never said so — which read as sign-in being broken.
+      */
+      intro={
+        <>
+          <strong className="text-fg font-semibold" data-testid="signed-in-note">
+            {RECOVERY_ENTRY_COPY.signedIn}
+          </strong>{" "}
+          {RECOVERY_ENTRY_COPY.intro}
+        </>
+      }
       footer={
         <Button variant="primary" disabled={busy || draft.trim() === ""} onClick={() => void submit()}>
           {busy ? RECOVERY_ENTRY_COPY.working : RECOVERY_ENTRY_COPY.action}

@@ -36,6 +36,15 @@
  *
  * `localhost` and not `127.0.0.1`: WebAuthn requires a secure context, and
  * `localhost` is one over plain HTTP while a bare IP is not.
+ *
+ * # This file runs Chromium only, and that was a bug for months
+ *
+ * WebAuthn cannot be automated in WebKit, so the ceremony cannot be driven
+ * there. That is a real limit — but it meant the ONE part of the ceremony that
+ * differs by engine, the key vault, was never checked on the engine every iOS
+ * device runs. `harness/vault.mjs` is the answer: it does the vault round trip
+ * in Chromium AND WebKit, needs no passkey, and is the run that would have
+ * caught the loop this file was green through. Run both.
  */
 
 import { chromium } from "playwright";
@@ -149,30 +158,29 @@ async function waitForOps(page, atLeast, what) {
   return count;
 }
 
-/** What is actually in the key vault, and whether the browser will let it out. */
+/**
+ * What is actually in the key vault, and whether the browser will let it out.
+ *
+ * Read through the app's own module rather than through a hand-rolled
+ * `indexedDB.get`, because the decode rule is part of what is being checked: a
+ * row that is present but does not decode is exactly the state that used to
+ * strand every iOS device, and a raw `get` would have called it "present".
+ */
 async function inspectVault(page) {
   return page.evaluate(async () => {
-    const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open("ledger-v2-keys", 1);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains("keys")) req.result.createObjectStore("keys");
-      };
-    });
-    const row = await new Promise((resolve, reject) => {
-      const tx = db.transaction("keys", "readonly");
-      const get = tx.objectStore("keys").get("account");
-      get.onsuccess = () => resolve(get.result);
-      get.onerror = () => reject(get.error);
-    });
-    db.close();
+    const keys = await import("/src/v2/keys.ts");
+    const row = await keys.browserKeyVault().read();
     if (!row) return { present: false };
+
+    // The ingest key is not stored as a handle any more — it is sealed under
+    // the DEK, because WebKit cannot read an X25519 `CryptoKey` back out of
+    // IndexedDB. So the private half is opened the way the product opens it.
+    const ingest = await keys.openIngestPrivate(row);
 
     const exportAttempts = [];
     for (const [name, key, format] of [
-      ["ingestPrivate/pkcs8", row.ingestPrivate, "pkcs8"],
-      ["ingestPrivate/jwk", row.ingestPrivate, "jwk"],
+      ["ingestPrivate/pkcs8", ingest, "pkcs8"],
+      ["ingestPrivate/jwk", ingest, "jwk"],
       ["dek/raw", row.dek, "raw"],
       ["dek/jwk", row.dek, "jwk"],
     ]) {
@@ -191,14 +199,14 @@ async function inspectVault(page) {
     const opened = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, row.dek, sealed));
     const peer = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
     const derived = new Uint8Array(
-      await crypto.subtle.deriveBits({ name: "X25519", public: peer.publicKey }, row.ingestPrivate, 256),
+      await crypto.subtle.deriveBits({ name: "X25519", public: peer.publicKey }, ingest, 256),
     ).length;
 
     return {
       present: true,
       accountId: row.accountId,
       ingestPub: [...row.ingestPub].map((b) => b.toString(16).padStart(2, "0")).join(""),
-      extractable: { ingestPrivate: row.ingestPrivate.extractable, dek: row.dek.extractable },
+      extractable: { ingestPrivate: ingest.extractable, dek: row.dek.extractable },
       exportAttempts,
       dekRoundTrip: opened,
       derivedBytes: derived,
