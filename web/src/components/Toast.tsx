@@ -3,6 +3,7 @@ import { AnimatePresence, m, useDragControls, useMotionValue } from "motion/reac
 import { toastExitX } from "../lib/toastSwipe";
 import { FADE, SPRING_SNAP } from "../lib/motion";
 import { Pressable } from "./ui/Pressable";
+import { X } from "./ui/PixelIcon";
 
 export interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
@@ -11,8 +12,8 @@ export interface Toast {
   tone?: "info" | "success" | "error";
   action?: ToastAction;
   /** When true, the toast does not auto-dismiss after 5s — it stays until the
-   *  user taps its action, ×, or swipes it away. For prompts that must not be
-   *  missed (e.g. "a new version is available"). */
+   *  user taps its action, taps dismiss, or swipes it away. For prompts that
+   *  must not be missed (e.g. "a new version is available"). */
   sticky?: boolean;
 }
 
@@ -140,10 +141,22 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       transition={FADE}
       className={`pointer-events-auto flex touch-pan-y items-center gap-3 max-w-[92vw] ${fg} px-3 py-2.5 rounded-[var(--radius)] shadow-lg ${tone}`}
     >
-      <span className="flex-1 text-sm">{toast.message}</span>
+      <span className="min-w-0 flex-1 text-sm">{toast.message}</span>
+      {/*
+        Both controls carry the 44px target the conventions require, and neither
+        did. They were bare text: the action was one line of `text-sm`, about
+        20px tall, and the dismiss was a `×` character of the same height, 12px
+        away from it. That is the app's least forgiving pair of targets on its
+        most time-limited surface — the action is usually **Undo**, it is the
+        only way back from a swipe that has already committed, and it is gone in
+        five seconds. Missing it hits the dismiss, which spends the toast.
+
+        The type is unchanged; only the box around it grew. `-my-1` keeps the
+        taller target from adding height the toast does not need.
+      */}
       {toast.action && (
         <Pressable
-          className={`text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline`}
+          className={`-my-1 inline-flex min-h-11 shrink-0 items-center px-1 text-sm font-semibold ${isError ? "text-accent-fg/90" : "text-bg/90"} underline`}
           onClick={() => { try { toast.action!.onAction(); } finally { beginDismiss(); } }}
         >
           {toast.action.label}
@@ -151,10 +164,13 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       )}
       <Pressable
         aria-label="Dismiss"
-        className={isError ? "text-accent-fg/70" : "text-bg/70"}
+        // `X` from the pixel set, not the `×` character. The catalog's rule is
+        // that a typographic glyph is never a standalone icon, and this was the
+        // one place still doing it.
+        className={`-my-1 -mr-1 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center ${isError ? "text-accent-fg/70" : "text-bg/70"}`}
         onClick={() => beginDismiss()}
       >
-        ×
+        <X size={12} aria-hidden />
       </Pressable>
     </m.div>
   );

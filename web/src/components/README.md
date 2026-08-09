@@ -397,6 +397,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   a sheet must read as above the page; everywhere else uses a
   `border-border` hairline instead.
 - **Use when:** anything overlays the current screen but keeps context.
+- **A field with `autoFocus` keeps the caret.** The sheet only focuses its own
+  panel when focus is not already inside it. Do **not** "restore" the older
+  `querySelector("[autofocus]")` test: React renders no `autofocus` attribute —
+  it focuses the node during commit and leaves nothing behind — so that query
+  matched on no sheet in the app and every one of them took the caret straight
+  back out of the field, which is the two-tap search bug.
 - **Action footer:** wrap bottom actions in `DialogFooter`. It stays `sticky`
   at the sheet bottom with an opaque surface, safe-area padding, and `z-20`, so
   long content scrolls underneath without hiding the primary action.
@@ -439,6 +445,18 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   decides whether to open it before it opens.
 - **44px target, 12px glyph.** `h-11 w-11` with `-m-3` so the oversized target
   does not push the label beside it around.
+- **The panel is placed against the VIEWPORT, not against its trigger.** It
+  measures itself on open (in a layout effect, or it paints in the wrong place
+  and then jumps) and shifts along x by whatever keeps it inside the viewport
+  with a 16px gutter, flipping above the trigger when there is no room below.
+  `align` is the *preferred* side and collision handling overrides it. A width
+  cap is **not** a position cap: with only `w-[min(18rem,…)]` and `left-0`, a
+  trigger 272px in opened a 288px panel 170px off the side of a 390px screen,
+  and `align="end"` just moved the overflow to the other edge. The correction is
+  a `margin`, never a transform — the entrance animates `y` and a second
+  transform would make every tip slide in sideways. `harness/v2shoot.mjs` opens
+  every tip on every screen and measures the panel; that is the only check that
+  can see this, because jsdom has no layout.
 - **Dismisses on:** tap outside, Escape, scroll (registered in the capture
   phase, because the app scrolls an inner `<main>` whose scroll does not
   bubble), and a second tap on the trigger.
@@ -459,6 +477,18 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   shell for AppShell-level overlays: Settings itself (TopBar gear), Accounts,
   Recurring and Reports all mount inside one, stacked in DOM order like
   ProjectsFlow so backing out reveals the real parent.
+- **The edge-back gesture is armed from the panel, not from an overlay.** The
+  `edge-back-strip` div is `pointer-events-none` and exists only so the harness
+  has something to grab. It used to be a real 24px `touch-none` column down the
+  whole left side, and it cost two things: it sat on the left half of the back
+  arrow (`-ml-2` starts it at x=8), so a tap there began a drag that never moved
+  and the click landed on an `aria-hidden` div; and `touch-none` forbade a
+  vertical pan from that column, while the strip was a *sibling* of the
+  scrolling body rather than inside it, so nothing scrolled there at all. The
+  header carries `relative z-20` so nothing is over it. `harness/v2edge.mjs`
+  presses the arrow at x=12 and walks the `touch-action` chain; `audit.mjs`
+  cannot see either problem, because `control-obscured` tests a control's centre
+  point and the centre was always clear.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
 
 ### Walls (`v2/BootGate.tsx`)
@@ -738,6 +768,17 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 ### Toast (`ToastProvider` / `useToast`)
 - **Purpose:** transient outcome feedback (saved/failed), swipe-dismissable.
   Not for persistent states (→ `IngestHealthBanner` pattern).
+- **Both controls are 44px targets**, and the type inside them is unchanged —
+  `min-h-11` with a negative margin so the taller box adds no height. They were
+  bare text (a `text-sm` line and a `×` character, ~20px tall, 12px apart) on
+  the app's most time-limited surface: the action is usually **Undo**, it is the
+  only way back from a swipe that has already committed, and it is gone in five
+  seconds. Missing it hit the dismiss, which spends the toast.
+- **The dismiss is the `X` pixel icon, not the `×` character** — this was the
+  last place in the app breaking the "never a typographic glyph as a standalone
+  icon" rule above.
+- **Known, not fixed:** the toast lane is centred at the bottom and can land on
+  the Add-transaction `Fab`, blocking it for the toast's lifetime.
 
 ### PullToRefreshIndicator / IngestHealthBanner
 - **Purpose:** app-shell plumbing: PTR spinner; app-wide warning strip.
