@@ -60,7 +60,7 @@
 import { CURRENT_VERSION, normalize } from "@ledger/client/norm/norm";
 import { webPlatform } from "@ledger/client/platform.web";
 
-import { UNVERIFIED_PREFIX } from "./onboardingIO";
+import { UNVERIFIED_PREFIX, type QuarantineItem } from "./onboardingIO";
 
 // ---------------------------------------------------------------------------
 // The bounds
@@ -385,6 +385,57 @@ export function heldBody(blobBase64: string, receivedAt: string): HeldBody {
   } catch {
     return { text: new TextDecoder("utf-8", { fatal: false }).decode(raw), source: "raw" };
   }
+}
+
+// ---------------------------------------------------------------------------
+// The pieces, composed: the one-tap task
+// ---------------------------------------------------------------------------
+
+/** What a screen needs to offer the confirmation as one tap. */
+export interface ConfirmationTask {
+  /** The verified signing domain, folded. Shown verbatim, as evidence. */
+  domain: string;
+  /** A link pinned to {@link domain}, or null when none could be read. */
+  url: string | null;
+  /** A bounded digit run, or null. */
+  code: string | null;
+  /** Which held row this is, so a screen can open exactly it. */
+  itemId: string;
+}
+
+/**
+ * The held lane, reduced to one task: "open your provider's confirmation".
+ *
+ * Every piece already existed — {@link couldBeConfirmation} says which held
+ * messages might be it, {@link verifiedOuterDomain} says which host a link may
+ * point at, {@link scanForCode} reads the link out — and no surface composed
+ * them, so the user was left to find the message themselves. This picks the
+ * NEWEST candidate (a re-sent confirmation supersedes the one before it) and
+ * scans its blob with the link pinned to the item's own verified domain.
+ *
+ * A candidate with no blob, or one whose blob yields nothing, still returns a
+ * task with `url: null`: the screen falls back to opening held mail, because a
+ * message that exists must never be a dead end. `null` from here means only
+ * that nothing held could be a confirmation at all.
+ *
+ * The blob is scanned, never rendered, and the scan is the module's bounded
+ * one — this adds no new pattern and no new surface.
+ */
+export function confirmationTask(items: readonly QuarantineItem[]): ConfirmationTask | null {
+  let newest: QuarantineItem | null = null;
+  for (const item of items) {
+    if (!couldBeConfirmation(item)) continue;
+    if (newest === null || item.receivedAt.localeCompare(newest.receivedAt) > 0) newest = item;
+  }
+  if (newest === null) return null;
+  const domain = verifiedOuterDomain(newest);
+  // couldBeConfirmation already required a verified domain; this is the type's
+  // narrowing, not a second decision.
+  if (domain === null) return null;
+  const blob = newest.blob ?? "";
+  if (blob === "") return { domain, url: null, code: null, itemId: newest.id };
+  const scan = scanForCode(heldBody(blob, newest.receivedAt).text, { linkHost: domain });
+  return { domain, url: scan.link, code: scan.code, itemId: newest.id };
 }
 
 // ---------------------------------------------------------------------------

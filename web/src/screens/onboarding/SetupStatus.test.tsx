@@ -16,6 +16,7 @@ import { memSecretStore } from "@ledger/client/store/store";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { emptyFacts, type OnboardingFacts, type SkippableStep } from "../../v2/onboarding";
+import type { ConfirmationTask } from "../../v2/verificationCode";
 
 import { SETUP_DISMISSED_KEY, SetupStatus } from "./SetupStatus";
 
@@ -97,6 +98,63 @@ describe("the mail status", () => {
     // pipe that was never laid.
     mount(fresh());
     expect(screen.getByTestId("setup-status-mail").textContent ?? "").toMatch(/no mail can arrive yet/i);
+  });
+});
+
+describe("the provider's confirmation, as one tap", () => {
+  const task: ConfirmationTask = {
+    domain: "google.com",
+    url: "https://mail-settings.google.com/mail/vf-abc",
+    code: null,
+    itemId: "q1",
+  };
+
+  function mountTask(over: Partial<ConfirmationTask> | null, seams: { openUrl?: (u: string) => void; onOpenHeldMail?: () => void } = {}) {
+    return render(
+      <MotionProvider>
+        <SetupStatus
+          facts={fresh({ inboundAddress: ADDRESS })}
+          secrets={memSecretStore()}
+          confirmation={over === null ? null : { ...task, ...over }}
+          {...seams}
+        />
+      </MotionProvider>,
+    );
+  }
+
+  it("is the first row: task copy, then the verified domain, verbatim", () => {
+    mountTask({});
+    const row = screen.getByTestId("setup-confirmation");
+    // Above the waiting line: the one tap is the one thing to do, and "nothing
+    // to do" below it stays true once it is done.
+    expect(row.parentElement?.firstElementChild).toBe(row);
+    expect(row.textContent).toContain("One tap to start forwarding");
+    expect(row.textContent).toContain("Your mail provider sent a confirmation. Open it to switch forwarding on.");
+    expect(screen.getByTestId("setup-confirmation-domain").textContent).toBe("google.com");
+  });
+
+  it("opens the extracted link through the seam", async () => {
+    const user = userEvent.setup();
+    const openUrl = vi.fn();
+    mountTask({}, { openUrl, onOpenHeldMail: vi.fn() });
+    await user.click(screen.getByRole("button", { name: "Open the confirmation" }));
+    expect(openUrl).toHaveBeenCalledWith(task.url);
+  });
+
+  it("falls back to held mail when no link could be read — never a dead end", async () => {
+    const user = userEvent.setup();
+    const openUrl = vi.fn();
+    const onOpenHeldMail = vi.fn();
+    mountTask({ url: null }, { openUrl, onOpenHeldMail });
+    await user.click(screen.getByRole("button", { name: "Open the confirmation" }));
+    expect(onOpenHeldMail).toHaveBeenCalledTimes(1);
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("renders no row when nothing held could be a confirmation", () => {
+    mountTask(null);
+    expect(screen.queryByTestId("setup-confirmation")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open the confirmation" })).toBeNull();
   });
 });
 

@@ -45,6 +45,18 @@ import {
   type OnboardingFacts,
   type SkippableStep,
 } from "../../v2/onboarding";
+import type { ConfirmationTask } from "../../v2/verificationCode";
+
+/**
+ * The one-tap row's words. A status, never an error: the provider sending a
+ * confirmation is forwarding working as designed, and no part of this may read
+ * as something gone wrong.
+ */
+export const OPEN_CONFIRMATION_COPY = {
+  title: "One tap to start forwarding",
+  body: "Your mail provider sent a confirmation. Open it to switch forwarding on.",
+  action: "Open the confirmation",
+} as const;
 
 /**
  * Where the dismissal lives.
@@ -73,6 +85,17 @@ export interface SetupStatusProps {
   onOpenTask?: (step: SkippableStep) => void;
   /** Opens held mail, where a provider's confirmation is read. */
   onOpenHeldMail?: () => void;
+  /**
+   * The provider's held confirmation, composed by the shell
+   * (`confirmationTask` over the held lane). This component never fetches;
+   * absent or null renders no row.
+   */
+  confirmation?: ConfirmationTask | null;
+  /**
+   * Test seam: how the confirmation link opens. Defaults to a new tab with no
+   * opener, so the held page cannot reach back into this one.
+   */
+  openUrl?: (url: string) => void;
 }
 
 /**
@@ -83,7 +106,7 @@ export interface SetupStatusProps {
  * the account has not been set up at all, which is the boot gate's business
  * rather than this component's.
  */
-export function SetupStatus({ facts, secrets, onOpenTask, onOpenHeldMail }: SetupStatusProps) {
+export function SetupStatus({ facts, secrets, onOpenTask, onOpenHeldMail, confirmation, openUrl }: SetupStatusProps) {
   const [dismissed, setDismissed] = useState(() => isSetupStatusDismissed(secrets));
   const dismiss = useCallback(() => {
     dismissSetupStatus(secrets);
@@ -95,6 +118,7 @@ export function SetupStatus({ facts, secrets, onOpenTask, onOpenHeldMail }: Setu
   if (dismissed) return null;
   if (tasks.length === 0 && mail.kind === "arrived") return null;
 
+  const open = openUrl ?? ((url: string) => void window.open(url, "_blank", "noopener"));
   const status = MAIL_STATUS_COPY[mail.kind];
   return (
     <section data-testid="setup-status" className="space-y-2">
@@ -103,7 +127,34 @@ export function SetupStatus({ facts, secrets, onOpenTask, onOpenHeldMail }: Setu
       </SectionLabel>
       <Card className="!p-0 divide-y divide-border overflow-hidden">
         {/*
-          The mail line first, because it is the one thing on here the user
+          The confirmation first, above the waiting line: it is the one tap
+          that lets everything below it resolve, and "nothing to do" under it
+          stays true once it is done. The verified domain is shown verbatim,
+          as evidence — never prettified. No extracted link is not a dead end:
+          the tap opens held mail instead, where the message can be read.
+        */}
+        {confirmation != null && (
+          <div data-testid="setup-confirmation" className="px-4 py-3.5 space-y-1">
+            <p className="text-sm font-medium">{OPEN_CONFIRMATION_COPY.title}</p>
+            <p className="text-xs leading-relaxed text-muted">{OPEN_CONFIRMATION_COPY.body}</p>
+            {(confirmation.url !== null || onOpenHeldMail !== undefined) && (
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (confirmation.url !== null) open(confirmation.url);
+                  else onOpenHeldMail?.();
+                }}
+              >
+                {OPEN_CONFIRMATION_COPY.action}
+              </Button>
+            )}
+            <p data-testid="setup-confirmation-domain" className="text-xs text-muted">
+              {confirmation.domain}
+            </p>
+          </div>
+        )}
+        {/*
+          The mail line next, because it is the one thing on here the user
           cannot do anything about — and saying so is the point. It is a status,
           not a row: there is nothing to tap.
         */}

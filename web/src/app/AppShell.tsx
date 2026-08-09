@@ -41,15 +41,18 @@
  * state, you get a stack trace naming the cause.
  */
 
-import { useCallback, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { PROFILE, useV2OrThrow } from "../v2/BootGate";
 import { webSecretStore } from "../v2/session";
 import { SetupStatus } from "../screens/onboarding/SetupStatus";
-import { invalidateAfterSync, useReviewFeed, useReviewSource } from "../v2/queries";
+import { mailStatus } from "../v2/onboarding";
+import { readQuarantine } from "../v2/onboardingIO";
+import { confirmationTask } from "../v2/verificationCode";
+import { invalidateAfterSync, useReviewFeed, useReviewSource, v2Keys } from "../v2/queries";
 import { DECK_LANES } from "../v2/sources/review";
 import { BottomNav } from "../components/ui/BottomNav";
 import { TopBar } from "../components/ui/TopBar";
@@ -135,6 +138,24 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
   const counts = reviewFeed.data?.counts;
   const reviewCount = (counts?.needs_review ?? 0) + (counts?.uncategorized ?? 0);
 
+  // The provider's held confirmation, composed for the setup list's one-tap
+  // row. Gated on mail not having arrived: once bank mail flows the forward
+  // provably works, and this read would be a fetch spent answering a question
+  // nobody is asking. Blobs are fetched because the link is read out of one —
+  // scanned by `confirmationTask`, never rendered here.
+  const mailArrived = mailStatus(v2.facts).kind === "arrived";
+  const held = useQuery({
+    queryKey: [...v2Keys.quarantine(), "confirmation"] as const,
+    queryFn: () => readQuarantine(v2.handle.client, { includeBlob: true }),
+    enabled: !mailArrived,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const confirmation = useMemo(
+    () => (held.data === undefined ? null : confirmationTask(held.data.items)),
+    [held.data],
+  );
+
   // Drill-ins are opaque full-screen panels laid over the tabs, so everything
   // underneath is covered but still in the tab order and the screen-reader
   // cursor — Tab from the Settings back-arrow used to land on the Home rings
@@ -191,6 +212,7 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
                   secrets={secrets}
                   onOpenTask={() => pushOverlay({ kind: "settings" })}
                   onOpenHeldMail={() => pushOverlay({ kind: "quarantine" })}
+                  confirmation={confirmation}
                 />
                 <Home />
               </div>

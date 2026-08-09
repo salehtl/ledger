@@ -24,6 +24,7 @@ import { MotionProvider } from "./MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { fakeRuntime, WithV2 } from "../test/v2Runtime";
+import type { OnboardingFacts } from "../v2/onboarding";
 import { AppShell, type AppShellProps } from "./AppShell";
 
 let db: SqlDriver;
@@ -39,8 +40,8 @@ beforeEach(async () => {
   db = await projectionWith();
 });
 
-function wrap(shellProps: AppShellProps = {}) {
-  const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
+function wrap(shellProps: AppShellProps = {}, facts: Partial<OnboardingFacts> = {}) {
+  const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae", ...facts } });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MotionProvider>
@@ -178,9 +179,61 @@ describe("AppShell", () => {
   });
 
   it("opens Settings from a setup task — where every skipped step is finishable", async () => {
+    // The forwarding task: the fixture facts leave it undone. (There is no
+    // bank task any more — the bank question left the walk.)
     wrap({ secrets: memorySecrets() });
-    fireEvent.click(await screen.findByTestId("setup-task-banks_declared"));
+    fireEvent.click(await screen.findByTestId("setup-task-forwarding_configured"));
     expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+  });
+
+  it("surfaces the provider's held confirmation as one tap on home", async () => {
+    // The held lane, as `quarantine.go` sends it: the live Gmail row's shape,
+    // blob included because the shell asks with `include_blob=1`.
+    const blob = Buffer.from(
+      "Confirmation code: 123456789\nhttps://mail-settings.google.com/mail/vf-abc",
+      "utf8",
+    ).toString("base64");
+    fetchMock.mockImplementation(async (url: unknown) =>
+      String(url).includes("/api/v1/quarantine")
+        ? new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: "q1",
+                  ingest_id: "i1",
+                  received_at: "2026-08-09T15:15:34Z",
+                  expires_at: "2026-09-08T15:15:34Z",
+                  outer_domain: "google.com",
+                  inner_domain: "",
+                  attested: false,
+                  attested_by: "",
+                  dkim: "pass",
+                  arc: "pass",
+                  size_bucket: 1,
+                  blob,
+                },
+              ],
+              action_needed: 1,
+              expiring_soon: 0,
+            }),
+          )
+        : new Response(JSON.stringify({ address: "u-abc@in.sirdab.ae" })),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    wrap({ secrets: memorySecrets() });
+    expect(await screen.findByText("One tap to start forwarding")).toBeInTheDocument();
+    expect(screen.getByTestId("setup-confirmation-domain")).toHaveTextContent("google.com");
+    fireEvent.click(screen.getByRole("button", { name: "Open the confirmation" }));
+    // The default seam: a new tab, no opener, and only the domain-pinned link.
+    expect(open).toHaveBeenCalledWith("https://mail-settings.google.com/mail/vf-abc", "_blank", "noopener");
+    open.mockRestore();
+  });
+
+  it("spends nothing on held mail once bank mail has arrived", async () => {
+    wrap({ secrets: memorySecrets() }, { firstMailConfirmedAt: "2026-08-01T00:00:00Z" });
+    await screen.findByText("174.99");
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.filter((u) => u.includes("/api/v1/quarantine"))).toEqual([]);
   });
 
   it("dismisses the setup list for good — closing Settings does not bring it back", async () => {
