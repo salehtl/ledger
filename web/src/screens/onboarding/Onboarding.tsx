@@ -1,14 +1,14 @@
 /**
- * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the five
+ * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the
  * screens on the other, and nothing else.
  *
  * # There is exactly one routing mechanism, and it is not here
  *
  * `screenFor(stepFor(facts))` decides what is on the glass. This component
  * holds no step number, no `next()` and no ordering of its own — every screen
- * reports a FACT (`banks_declared`, `address_issued`, …) and the position falls out
- * of the milestone table. That is what makes a force-quit free: nothing here is
- * a resume cursor that could disagree with what the log and the server say.
+ * reports a FACT (`address_issued`, `forwarding_configured`, …) and the position
+ * falls out of the milestone table. That is what makes a force-quit free: nothing
+ * here is a resume cursor that could disagree with what the log and the server say.
  *
  * The boot gate owns the layer above: it decides signed-out vs onboarding vs
  * ready, and re-derives the facts from scratch every time `done` is called. So
@@ -50,13 +50,11 @@ import {
   type SkippableStep,
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
-import { bankDeclaredOps } from "../../v2/sources/banks";
 import { sqlBudgetSource, type BudgetSource } from "../../v2/sources/budget";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { browserKeyVault, keyStatus, type KeyStatus, type KeyVault } from "../../v2/keys";
 import { Address } from "./Address";
 import { RecoveryPhrase } from "./RecoveryPhrase";
-import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
@@ -159,22 +157,6 @@ export function Onboarding({
           server={server}
           {...(doFetch === undefined ? {} : { fetch: doFetch })}
           onSecured={() => dispatch({ type: "keys_secured" })}
-        />
-      );
-
-    case "bank":
-      return (
-        <Bank
-          client={handle.client}
-          onDeclared={(banks) => {
-            // The ops FIRST, then the fact. The log is what a second device
-            // reads — a fact dispatched without them would advance this walk and
-            // leave the next phone at the bank step.
-            commit(banks.flatMap((bank) => bankDeclaredOps(bank, true)));
-            dispatch({ type: "banks_declared", banks });
-          }}
-          onSkip={() => skip("banks_declared")}
-          {...io}
         />
       );
 

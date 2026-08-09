@@ -49,8 +49,8 @@ describe("what is left of setup", () => {
   it("lists every step that was skipped, in the order the walk asked for them", () => {
     mount(fresh());
     const rows = screen.getAllByTestId(/^setup-task-/).map((el) => el.getAttribute("data-testid"));
+    // No bank task: the bank question left the walk, and mail proves the bank.
     expect(rows).toEqual([
-      "setup-task-banks_declared",
       "setup-task-address_issued",
       "setup-task-forwarding_configured",
       "setup-task-home_currency_set",
@@ -58,10 +58,10 @@ describe("what is left of setup", () => {
   });
 
   it("drops a task the moment it is actually done, wherever it was done", () => {
-    // Read from the facts and not from what was skipped: a bank added later in
-    // Settings has to leave this list without anything telling it to.
-    mount(fresh({ banks: ["dib"], skipped: ["banks_declared"] }));
-    expect(screen.queryByTestId("setup-task-banks_declared")).toBeNull();
+    // Read from the facts and not from what was skipped: an address minted
+    // later by a boot read has to leave this list without anything telling it to.
+    mount(fresh({ inboundAddress: ADDRESS, skipped: ["address_issued"] }));
+    expect(screen.queryByTestId("setup-task-address_issued")).toBeNull();
     expect(screen.getByTestId("setup-task-home_currency_set")).toBeInTheDocument();
   });
 
@@ -69,8 +69,8 @@ describe("what is left of setup", () => {
     const user = userEvent.setup();
     const open = vi.fn();
     mount(fresh(), memSecretStore(), open);
-    await user.click(screen.getByTestId("setup-task-banks_declared"));
-    expect(open).toHaveBeenCalledWith("banks_declared");
+    await user.click(screen.getByTestId("setup-task-address_issued"));
+    expect(open).toHaveBeenCalledWith("address_issued");
   });
 });
 

@@ -73,10 +73,10 @@ describe("stepFor", () => {
 
   it("stops at a GAP rather than at the highest true milestone", () => {
     // A reinstall: the log's facts survive, the device-local ones do not. The
-    // walk must stop at the bank, not skip to the currency — otherwise the
-    // device lands in the product with no forwarding rule set up.
-    const reinstalled = complete({ banks: [], forwardingDeclared: false, setupSeen: false });
-    expect(stepFor(reinstalled)).toBe("keys_secured");
+    // walk must stop at the forwarding step, not skip to the currency —
+    // otherwise the device lands in the product with no forwarding rule set up.
+    const reinstalled = complete({ forwardingDeclared: false, setupSeen: false });
+    expect(stepFor(reinstalled)).toBe("address_issued");
   });
 
   it("walks the declared step order", () => {
@@ -84,7 +84,6 @@ describe("stepFor", () => {
       "signed_in",
       "invited",
       "keys_secured",
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -114,7 +113,7 @@ describe("skipping", () => {
 
   it("walks past a skipped step instead of stopping at it", () => {
     expect(stepFor(fresh())).toBe("keys_secured");
-    expect(stepFor(fresh({ skipped: ["banks_declared"] }))).toBe("banks_declared");
+    expect(stepFor(fresh({ skipped: ["address_issued"] }))).toBe("address_issued");
   });
 
   it("reaches the product with every optional step skipped, and nothing else true", () => {
@@ -133,7 +132,6 @@ describe("skipping", () => {
     // type system; this is the runtime half, and it is what a `skipped` array
     // decoded from an older or hand-edited record would hit.
     expect([...SKIPPABLE_STEPS]).toEqual([
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -145,14 +143,14 @@ describe("skipping", () => {
   });
 
   it("records a skip once, and never un-records one", () => {
-    const once = onboardingReducer(fresh(), { type: "step_skipped", step: "banks_declared" });
-    expect(once.skipped).toEqual(["banks_declared"]);
-    expect(onboardingReducer(once, { type: "step_skipped", step: "banks_declared" })).toBe(once);
+    const once = onboardingReducer(fresh(), { type: "step_skipped", step: "address_issued" });
+    expect(once.skipped).toEqual(["address_issued"]);
+    expect(onboardingReducer(once, { type: "step_skipped", step: "address_issued" })).toBe(once);
   });
 
   it("survives a reload, because nothing else can remember a decision not to act", () => {
     const secrets = memSecretStore();
-    saveLocalRecord(secrets, fresh({ skipped: ["banks_declared", "home_currency_set"] }));
+    saveLocalRecord(secrets, fresh({ skipped: ["home_currency_set"] }));
     const resumed = resumeFacts(
       fromTheLog({
         banks: [],
@@ -162,26 +160,47 @@ describe("skipping", () => {
         local: loadLocalRecord(secrets),
       }),
     );
-    expect(resumed.skipped).toEqual(["banks_declared", "home_currency_set"]);
+    expect(resumed.skipped).toEqual(["home_currency_set"]);
     // Address issued, forwarding not declared and not skipped: the walk stops
     // there, which is the gap rule still doing its job around the skips.
     expect(stepFor(resumed)).toBe("address_issued");
   });
 
   it("refuses a skip an older record could not have written", () => {
+    // `keys_secured` was never skippable, 7 is not a step, and `banks_declared`
+    // stopped being one when the bank question left the walk.
     expect(decodeLocal({ inboundAddress: null, skipped: ["keys_secured", 7, "banks_declared"] })).toEqual({
       inboundAddress: null,
-      skipped: ["banks_declared"],
+      skipped: [],
       forwardingDeclared: false,
       finishedAt: null,
     });
   });
 });
 
+/**
+ * The bank question left the walk. The declared list never reaches parsing —
+ * templates key on the message's verified domain — so the walk stops asking
+ * what mail will prove. Banks stay manageable in Settings.
+ */
+describe("the bank question left the walk", () => {
+  it("never asks which bank", () => {
+    expect(ONBOARDING_STEPS).not.toContain("banks_declared");
+    // A fresh account with keys and nothing else goes straight to the address.
+    const f = { ...emptyFacts(), hasSession: true, accountId: "a", keysReady: true };
+    expect(stepFor(f)).toBe("keys_secured"); // next screen: address, not bank
+  });
+
+  it("an old record that skipped the bank step still decodes and is ignored", () => {
+    const r = decodeLocal({ inboundAddress: null, skipped: ["banks_declared", "home_currency_set"] });
+    expect(r).not.toBeNull();
+    expect(r!.skipped).toEqual(["home_currency_set"]); // unknown steps filtered, not refused
+  });
+});
+
 describe("what is still outstanding", () => {
   it("lists every unmet step in the walk's order, skipped or simply not reached", () => {
     expect(remainingSetup(emptyFacts()).map((t) => t.id)).toEqual([
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -189,8 +208,10 @@ describe("what is still outstanding", () => {
   });
 
   it("drops a step that was done, whatever was skipped", () => {
-    const f = { ...emptyFacts(), banks: ["dib"], homeCurrency: "AED", skipped: ["banks_declared" as const] };
-    expect(remainingSetup(f).map((t) => t.id)).toEqual(["address_issued", "forwarding_configured"]);
+    // Skipped AND later done (an address minted by a boot read): the list
+    // reads the fact, not the button press, so it drops off on its own.
+    const f = { ...emptyFacts(), inboundAddress: "u-abc@in.sirdab.ae", homeCurrency: "AED", skipped: ["address_issued" as const] };
+    expect(remainingSetup(f).map((t) => t.id)).toEqual(["forwarding_configured"]);
   });
 
   it("reports mail as a status, and separates 'nothing yet' from 'nowhere to arrive'", () => {

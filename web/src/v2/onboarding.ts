@@ -97,20 +97,23 @@ import type { SecretStore } from "@ledger/client/store/store";
 // ---------------------------------------------------------------------------
 
 /**
- * Each name is a **milestone that is done**, so the position `banks_declared`
- * means "at least one bank has been declared and the next thing to do is the
- * address".
+ * Each name is a **milestone that is done**, so the position `address_issued`
+ * means "an address exists and the next thing to do is forwarding".
+ *
+ * There is no bank step. The declared list never reaches parsing — templates
+ * are selected by the message's verified domain — so which bank a user has is
+ * something mail proves, not something the walk asks. Banks stay manageable in
+ * Settings, and {@link OnboardingFacts.banks} is still read from the log.
  */
 export const ONBOARDING_STEPS = [
   "signed_in",
   "invited",
   // Phase 3. It sits HERE, before anything else the account records, because
-  // every fact the walk collects after it — the declared banks, the home
-  // currency, the budget — becomes op-log content, and content authored before
-  // an account has keys is content that would have to be re-sealed later. An
-  // account acquires its keys before it acquires anything to protect.
+  // every fact the walk collects after it — the home currency, the budget —
+  // becomes op-log content, and content authored before an account has keys is
+  // content that would have to be re-sealed later. An account acquires its
+  // keys before it acquires anything to protect.
   "keys_secured",
-  "banks_declared",
   "address_issued",
   "forwarding_configured",
   "home_currency_set",
@@ -138,18 +141,17 @@ export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
  * reads it is Settings, at any time, rather than a screen the walk had to pass
  * through once.
  *
- * # Why the other four ARE skippable, and account creation is not
+ * # Why the other three ARE skippable, and account creation is not
  *
  * Without keys there is no account to hold data, and the recovery phrase is
  * unrecoverable, so `invited` and `keys_secured` stay hard. Everything after
- * them is a task the user may do now, later or never: an account with no bank,
- * no address and no home currency is still a working budgeting app, because
+ * them is a task the user may do now, later or never: an account with no
+ * address and no home currency is still a working budgeting app, because
  * transactions can be added by hand.
  *
  * Skipping is *not doing a thing*. Nothing here does a thing with less proof.
  */
 export const SKIPPABLE_STEPS = [
-  "banks_declared",
   "address_issued",
   "forwarding_configured",
   "home_currency_set",
@@ -172,7 +174,6 @@ export type OnboardingScreen =
   | "sign_in"
   | "confirming"
   | "recovery"
-  | "bank"
   | "address"
   | "forwarding"
   | "home_currency"
@@ -186,8 +187,8 @@ const SCREEN_FOR: Record<OnboardingPosition, OnboardingScreen> = {
   // surfaces on a device that was signed in yesterday.
   signed_in: "confirming",
   invited: "recovery",
-  keys_secured: "bank",
-  banks_declared: "address",
+  // Straight to the address: there is no bank question. See ONBOARDING_STEPS.
+  keys_secured: "address",
   address_issued: "forwarding",
   // The forwarding rule is the last thing about mail the walk asks for. What
   // used to follow it was a screen waiting for a bank email to arrive; see
@@ -322,7 +323,6 @@ const MILESTONES: readonly (readonly [OnboardingStep, (f: OnboardingFacts) => bo
   ["signed_in", (f) => f.hasSession],
   ["invited", (f) => f.accountId !== null],
   ["keys_secured", (f) => f.keysReady],
-  ["banks_declared", (f) => f.banks.length > 0],
   ["address_issued", (f) => f.inboundAddress !== null],
   ["forwarding_configured", (f) => f.forwardingDeclared],
   ["home_currency_set", (f) => f.homeCurrency !== null],
@@ -824,10 +824,6 @@ export interface SetupTask {
  * step is fine; each says what will not work, and where to finish it.
  */
 export const SKIP_COPY: Record<SkippableStep, { action: string; consequence: string }> = {
-  banks_declared: {
-    action: "Set this up later",
-    consequence: "ledger still files any bank mail it can read. Add your banks in Settings whenever you like.",
-  },
   address_issued: {
     action: "Set this up later",
     consequence: "No mail will be filed until you do this. You can add transactions by hand in the meantime.",
@@ -843,7 +839,6 @@ export const SKIP_COPY: Record<SkippableStep, { action: string; consequence: str
 };
 
 const TASK_COPY: Record<SkippableStep, { title: string; detail: string }> = {
-  banks_declared: { title: "Add your banks", detail: "So ledger knows how your alerts are written." },
   address_issued: { title: "Get your inbound address", detail: "The address your bank mail is sent to." },
   forwarding_configured: { title: "Send your bank mail here", detail: "Set it with your bank, or forward it." },
   home_currency_set: { title: "Set your home currency", detail: "Totals are kept in this one. It is set once." },
@@ -860,7 +855,6 @@ const TASK_COPY: Record<SkippableStep, { title: string; detail: string }> = {
  */
 export function remainingSetup(f: OnboardingFacts): SetupTask[] {
   const met: Record<SkippableStep, boolean> = {
-    banks_declared: f.banks.length > 0,
     address_issued: f.inboundAddress !== null,
     forwarding_configured: f.forwardingDeclared,
     home_currency_set: f.homeCurrency !== null,

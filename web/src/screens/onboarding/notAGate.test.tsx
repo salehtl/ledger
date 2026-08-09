@@ -1,10 +1,11 @@
 /**
  * **The test that encodes the whole design: onboarding cannot lock anybody out.**
  *
- * A brand-new account skips every optional step — banks, address, forwarding,
- * home currency — reaches the product, and adds a transaction by hand. If this
+ * A brand-new account skips every optional step — address, forwarding, home
+ * currency — reaches the product, and adds a transaction by hand. If this
  * passes, there is no configuration a user can fail to complete that keeps them
- * out of their own app.
+ * out of their own app. (There is no bank step to skip: the bank question left
+ * the walk, and mail proves the bank.)
  *
  * It is driven through the REAL boot gate and the REAL walk, because the failure
  * it guards against is a join and not a screen. Both lockouts on the day this
@@ -221,8 +222,8 @@ describe("onboarding is not a gate", () => {
 
     await user.click(screen.getByRole("button", { name: /i have written these down/i }));
 
-    // Straight on to the optional steps, all of which are skippable.
-    await user.click(await skipButton("banks_declared"));
+    // Straight on to the optional steps, all of which are skippable. The first
+    // is the address: there is no bank question.
     await user.click(await skipButton("address_issued"));
     await user.click(await skipButton("home_currency_set"));
     await user.click(await screen.findByRole("button", { name: /open ledger/i }));
@@ -238,23 +239,20 @@ describe("onboarding is not a gate", () => {
     const writer = recorder();
     mountApp(account, writer);
 
-    // 1. Banks. Nothing is ticked and nothing is typed.
-    await user.click(await skipButton("banks_declared"));
-
-    // 2. The address, whose read just failed. The skip is on screen anyway —
-    //    that is the point of it.
+    // 1. The address, whose read just failed. The skip is on screen anyway —
+    //    that is the point of it. (No bank question: the walk starts here.)
     await screen.findByTestId("address-failed");
     await user.click(await skipButton("address_issued"));
 
-    // 3. The forwarding step went with it: they are one subject, and a page of
+    // 2. The forwarding step went with it: they are one subject, and a page of
     //    forwarding instructions with no address on it points at nothing.
     expect(screen.queryByTestId("forwarding")).toBeNull();
 
-    // 4. The home currency — the one irreversible choice, and therefore exactly
+    // 3. The home currency — the one irreversible choice, and therefore exactly
     //    the one a person is allowed to sleep on.
     await user.click(await skipButton("home_currency_set"));
 
-    // 5. Out.
+    // 4. Out.
     await user.click(await screen.findByRole("button", { name: /open ledger/i }));
 
     // THE PRODUCT. Not a wall, not a "finish setting up first".
@@ -281,7 +279,6 @@ describe("onboarding is not a gate", () => {
     const account = freshAccount();
     const first = mountApp(account, recorder());
 
-    await user.click(await skipButton("banks_declared"));
     await user.click(await skipButton("address_issued"));
     await user.click(await skipButton("home_currency_set"));
     await user.click(await screen.findByRole("button", { name: /open ledger/i }));
@@ -289,7 +286,7 @@ describe("onboarding is not a gate", () => {
 
     // The device-local record is the only place a declined step can be
     // recorded — nothing in the log or on the server says "not now".
-    expect(localStorage.getItem(`ledger-v2:ledger:${ONBOARDING_LOCAL_KEY}`) ?? "").toMatch(/banks_declared/);
+    expect(localStorage.getItem(`ledger-v2:ledger:${ONBOARDING_LOCAL_KEY}`) ?? "").toMatch(/address_issued/);
 
     first.unmount();
     mountApp(freshAccount(), recorder());
