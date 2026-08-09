@@ -19,6 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { MotionProvider } from "../../app/MotionProvider";
 import { PROVIDERS } from "../../v2/providers";
 import { Address } from "./Address";
+import { OPEN_CONFIRMATION_COPY } from "./SetupStatus";
 
 const ADDRESS = "u-7f3a@in.ledger.example";
 
@@ -286,5 +287,96 @@ describe("the forwarding instructions", () => {
     await intoForwarding(user);
     await user.click(screen.getByRole("button", { name: /i have set up forwarding/i }));
     expect(onForwardingDeclared).toHaveBeenCalledWith(true);
+  });
+});
+
+/**
+ * The provider's held confirmation, surfaced where the user is.
+ *
+ * `SetupStatus` shows the same one-tap task on the home screen, but the person
+ * who just made the rule is standing HERE, and the confirmation arrives while
+ * this screen is up. Same words (imported from `SetupStatus`, not forked), same
+ * pinned link, same fallback to held mail.
+ */
+describe("the held confirmation, as one tap on the forwarding screen", () => {
+  /** The live Gmail confirmation's shape — the same body `verificationCode.test.ts` scans. */
+  const CONFIRM_BODY = [
+    "Return-Path: <forwarding-noreply@google.com>",
+    "From: Gmail Team <forwarding-noreply@google.com>",
+    "Subject: (#123456789) Gmail Forwarding Confirmation - Receive Mail from you@example.com",
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    "you@example.com has requested to automatically forward mail to your email address.",
+    "",
+    "Confirmation code: 123456789",
+    "",
+    "To allow it, click the link below:",
+    "https://mail-settings.google.com/mail/vf-%5BANGjdJ8abcDEF123%5D-XyZ0",
+    "",
+  ].join("\r\n");
+  const CONFIRM_URL = "https://mail-settings.google.com/mail/vf-%5BANGjdJ8abcDEF123%5D-XyZ0";
+
+  /** A quarantine page as the wire sends it, holding one verified candidate. */
+  const HELD_PAGE = {
+    items: [
+      {
+        id: "held-1",
+        ingest_id: "ing-1",
+        received_at: "2026-08-09T15:15:34Z",
+        expires_at: "2026-09-08T15:15:34Z",
+        outer_domain: "google.com",
+        inner_domain: "",
+        attested: false,
+        attested_by: "",
+        dkim: "pass",
+        arc: "pass",
+        size_bucket: 1,
+        blob: Buffer.from(CONFIRM_BODY, "utf8").toString("base64"),
+      },
+    ],
+    action_needed: 1,
+    expiring_soon: 0,
+  };
+
+  it("renders the notice for a held candidate, and its action opens the pinned url", async () => {
+    const user = userEvent.setup();
+    const openUrl = vi.fn();
+    const quarantineCalls: string[] = [];
+    const doFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/quarantine")) {
+        quarantineCalls.push(url);
+        return new Response(JSON.stringify(HELD_PAGE), { status: 200 });
+      }
+      return new Response("no route", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <MotionProvider>
+        <Address
+          client={{ sessionToken: "tok" }}
+          phase="forwarding"
+          known={ADDRESS}
+          onIssued={vi.fn()}
+          onForwardingDeclared={vi.fn()}
+          copy={async () => {}}
+          fetch={doFetch}
+          openUrl={openUrl}
+          onOpenHeldMail={vi.fn()}
+        />
+      </MotionProvider>,
+    );
+
+    // The same notice SetupStatus shows: same title, same body, the verified
+    // domain verbatim as evidence — the copy imported, not forked.
+    const notice = await screen.findByTestId("forwarding-confirmation");
+    expect(notice.textContent).toContain(OPEN_CONFIRMATION_COPY.title);
+    expect(notice.textContent).toContain(OPEN_CONFIRMATION_COPY.body);
+    expect(screen.getByTestId("forwarding-confirmation-domain").textContent).toBe("google.com");
+    // The blob was actually asked for — the link is read out of it.
+    expect(quarantineCalls[0]).toContain("include_blob=1");
+
+    await user.click(screen.getByRole("button", { name: OPEN_CONFIRMATION_COPY.action }));
+    expect(openUrl).toHaveBeenCalledWith(CONFIRM_URL);
   });
 });

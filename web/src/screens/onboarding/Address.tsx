@@ -88,8 +88,10 @@ import { ChevronDown, ChevronRight } from "../../components/ui/PixelIcon";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
 import { readAddress } from "../../v2/address";
-import type { TokenSource } from "../../v2/onboardingIO";
+import { readQuarantine, type TokenSource } from "../../v2/onboardingIO";
 import { GENERIC, PROVIDERS } from "../../v2/providers";
+import { confirmationTask, type ConfirmationTask } from "../../v2/verificationCode";
+import { OPEN_CONFIRMATION_COPY } from "./SetupStatus";
 import { Notice, SkipStep, Step } from "./Shell";
 
 /**
@@ -149,6 +151,17 @@ export interface AddressProps {
   embedded?: boolean;
   /** Overrides {@link DIRECT_BANK_ROUTE}. Tests only — see that flag. */
   directRoute?: boolean;
+  /**
+   * Opens the held-mail surface. The fallback when the provider's confirmation
+   * is held but no link could be read out of it — a message that exists must
+   * never be a dead end. Same seam `SetupStatus` takes.
+   */
+  onOpenHeldMail?: () => void;
+  /**
+   * Test seam: how the confirmation link opens. Defaults to a new tab with no
+   * opener, so the held page cannot reach back into this one.
+   */
+  openUrl?: (url: string) => void;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -170,6 +183,8 @@ export function Address({
   copy = writeClipboard,
   embedded = false,
   directRoute = DIRECT_BANK_ROUTE,
+  onOpenHeldMail,
+  openUrl,
 }: AddressProps) {
   const [address, setAddress] = useState<string | null>(known);
   const [failed, setFailed] = useState(false);
@@ -188,6 +203,37 @@ export function Address({
    * what measures whether that is true.
    */
   const [route, setRoute] = useState<"direct" | "forward" | null>(directRoute ? null : "forward");
+  /**
+   * The provider's held confirmation, when one is already in the lane — the
+   * same one-tap task `SetupStatus` shows, surfaced here because this screen is
+   * where the user is when the confirmation arrives. Best-effort: a lane that
+   * cannot be read just means no notice, never a broken screen.
+   */
+  const [confirmation, setConfirmation] = useState<ConfirmationTask | null>(null);
+
+  useEffect(() => {
+    if (phase !== "forwarding") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await readQuarantine(
+          client,
+          { includeBlob: true },
+          {
+            ...(server === undefined ? {} : { server }),
+            ...(doFetch === undefined ? {} : { fetch: doFetch }),
+          },
+        );
+        if (!cancelled) setConfirmation(confirmationTask(page.items));
+      } catch {
+        // The instructions stand on their own; a notice that cannot be built
+        // is simply not shown.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, client, server, doFetch]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -326,6 +372,36 @@ export function Address({
         }
       >
         <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
+
+        {/*
+          The one-tap task, above the instructions: a held confirmation means
+          the rule is already made, and the tap is all that is left. Same words
+          as the setup list — imported, not forked. A status, never an error.
+          The verified domain is shown verbatim, as evidence. No extracted link
+          is not a dead end: the tap opens held mail instead.
+        */}
+        {confirmation !== null && (
+          <Notice title={OPEN_CONFIRMATION_COPY.title} testId="forwarding-confirmation">
+            <p>{OPEN_CONFIRMATION_COPY.body}</p>
+            {(confirmation.url !== null || onOpenHeldMail !== undefined) && (
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (confirmation.url !== null) {
+                    (openUrl ?? ((url: string) => void window.open(url, "_blank", "noopener")))(confirmation.url);
+                  } else {
+                    onOpenHeldMail?.();
+                  }
+                }}
+              >
+                {OPEN_CONFIRMATION_COPY.action}
+              </Button>
+            )}
+            <p data-testid="forwarding-confirmation-domain" className="text-xs text-muted">
+              {confirmation.domain}
+            </p>
+          </Notice>
+        )}
 
         {/*
           The generic instruction set, first and for everyone. It used to sit
