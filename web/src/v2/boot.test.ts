@@ -317,14 +317,23 @@ describe("boot", () => {
   });
 
   it("routes a second device to onboarding only where the LOG is genuinely short of a fact", async () => {
-    // Not a device-local question: the account has no bank declared anywhere, so
-    // the bank step is the honest answer even on a device that has synced.
-    const state = await boot(
+    // The bank list is no longer such a fact: the walk never asks it, so an
+    // account with no bank declared anywhere is still a set-up account. Mail
+    // proves the bank; the empty list must not reopen the walk.
+    const bankless = await boot(
       deps({ secrets: memSecretStore(), state: () => foldedState({ banks: new Map() }) }),
+    );
+    expect(bankless.step).toBe("ready");
+
+    // The home currency IS such a fact: the log holds none, and this device
+    // has skipped nothing, so the walk is the honest answer even here.
+    const state = await boot(
+      deps({ secrets: memSecretStore(), state: () => foldedState({ banks: new Map(), homeCurrency: null }) }),
     );
     expect(state.step).toBe("onboarding");
     if (state.step !== "onboarding") throw new Error("unreachable");
     expect(state.facts.banks).toEqual([]);
+    expect(state.facts.homeCurrency).toBeNull();
   });
 
   // -- an empty key vault ---------------------------------------------------
