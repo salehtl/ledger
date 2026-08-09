@@ -159,7 +159,11 @@ export function SetupStatus({ facts, secrets, onOpenTask, onOpenHeldMail, confir
           not a row: there is nothing to tap.
         */}
         <div data-testid="setup-status-mail" className="px-4 py-3.5 space-y-1">
-          <p className="text-sm font-medium">{status.title}</p>
+          {/* Muted, unlike every actionable row above and below: this line is
+              the one thing here the user cannot act on, and it must read as
+              calm status, not as a task competing for the same attention. When
+              mail arrives the title simply becomes "arriving" in place. */}
+          <p className="text-sm font-medium text-muted">{status.title}</p>
           <p className="text-xs leading-relaxed text-muted">{status.body}</p>
           {/* "See what is waiting" and not "held mail": that is the name of the
               Settings row this sits above, and two controls with one name is
