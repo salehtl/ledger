@@ -135,16 +135,29 @@ var panelPaths = map[string]bool{
 	"/admin/dictionary":                          true,
 	"/admin/dictionary/moderate":                 true,
 	"/admin/dictionary/approve-seed":             true,
-	"/admin/waitlist":                            true,
-	"/validate":                                  true,
-	"/publish":                                   true,
-	"/reprocess":                                 true,
+	// The beta gate. Added deliberately, and it is the one entry here whose
+	// RESPONSE carries a live credential rather than operational data —
+	// POST /admin/invites returns a code exactly once, because it is the only
+	// moment it exists. The listing route beside it returns hashes and has no
+	// field that could carry a code; see invites.go, where Invites is an
+	// interface with no method that could produce one.
+	"/admin/invites":  true,
+	"/admin/invites/": true,
+	"/admin/waitlist": true,
+	"/validate":       true,
+	"/publish":        true,
+	"/reprocess":      true,
 	// The separator between a template id and its version.
 	"/": true,
 }
 
-func TestThePanelTalksOnlyToTheAdminConsole(t *testing.T) {
-	// The header comment names paths in prose; strip comments before scanning.
+// panelCode is console.js with its comments removed.
+//
+// Every test that asks "does the panel DO x" has to scan this rather than the
+// raw file: the comments explain what the code deliberately does not do, in the
+// same words, and a scanner reading them finds the thing it was checking for in
+// the sentence saying it is absent.
+func panelCode() string {
 	var body strings.Builder
 	for _, line := range strings.Split(string(uiConsoleJS), "\n") {
 		if i := strings.Index(line, "//"); i >= 0 {
@@ -152,7 +165,11 @@ func TestThePanelTalksOnlyToTheAdminConsole(t *testing.T) {
 		}
 		body.WriteString(line + "\n")
 	}
-	for _, m := range pathLiteral.FindAllStringSubmatch(body.String(), -1) {
+	return body.String()
+}
+
+func TestThePanelTalksOnlyToTheAdminConsole(t *testing.T) {
+	for _, m := range pathLiteral.FindAllStringSubmatch(panelCode(), -1) {
 		if !panelPaths[m[1]] {
 			t.Errorf("console.js names the path %q, which is not in panelPaths. If it is a new "+
 				"data source, add it here deliberately and check what that route can return: "+
@@ -173,7 +190,7 @@ func TestEveryRouteThePanelCallsIsMountedAndGuarded(t *testing.T) {
 	for _, p := range []string{
 		"/admin/accounts", "/admin/accounting", "/admin/status", "/admin/diagnostics",
 		"/admin/quarantine", "/admin/templates", "/admin/samples",
-		"/admin/dictionary", "/admin/waitlist",
+		"/admin/dictionary", "/admin/invites", "/admin/waitlist",
 	} {
 		// Quarantine, Samples and Dict are nil in this fixture, so they are
 		// genuinely not mounted here and fall to the GUARDED catch-all — which

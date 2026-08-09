@@ -186,7 +186,38 @@ type ServerConfig struct {
 
 	// AdminToken authenticates the Tailscale-bound admin API (Task 32,
 	// LEDGER_ADMIN_TOKEN). Env-only, never TOML.
+	//
+	// It is required for the console to mount AT ALL, including when
+	// AdminTokenOnly is false: the token is the fallback for `curl`, for a
+	// script and for a box with no `tailscale serve` mount, and a console
+	// reachable by exactly one mechanism is one that becomes unreachable the
+	// day that mechanism is not there.
 	AdminToken string `toml:"-"`
+
+	// AdminTokenOnly turns OFF the second way to authenticate to the console:
+	// the caller identity `tailscale serve` injects
+	// (`Tailscale-User-Login`), which lets the operator open the panel on
+	// their own tailnet without fetching a token off the box first. See
+	// internal/v2/admin/identity.go for what is trusted and why.
+	//
+	// It is INVERTED — the zero value trusts the identity — because that is
+	// the posture the deployment wants and a `false` in a config file should
+	// not be load-bearing. Set it when the box has no serve mount and the
+	// listener is plain loopback, since then any local process could send the
+	// header itself. That is documented rather than defended against: a local
+	// process can already read LEDGER_ADMIN_TOKEN out of the unit's
+	// environment, so the header gives it nothing new.
+	//
+	// It does NOT loosen the binding. CheckAdminBind is unchanged and still
+	// refuses anything but loopback or 100.64.0.0/10.
+	AdminTokenOnly bool `toml:"admin_token_only"`
+
+	// AdminTailscaleLogins optionally narrows which Tailscale logins count as
+	// the operator, e.g. ["salehtl@github"]. Empty — the default — accepts any
+	// identity the tailnet vouches for, because the tailnet is the boundary
+	// and a one-operator tailnet has one member. Inert when AdminTokenOnly is
+	// set. Not a secret.
+	AdminTailscaleLogins []string `toml:"admin_tailscale_logins"`
 
 	// DNSFixtures is the path to a recorded dns.json (arc.FixtureLookup),
 	// served as the DKIM/ARC TXT resolver so mail verification is
@@ -521,6 +552,17 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("LEDGER_ADMIN_TOKEN"); v != "" {
 		cfg.Server.AdminToken = v
 	}
+	// Both of the console's identity knobs get an environment override for the
+	// same reason HeadroomConfig's do: the moment an operator most wants to
+	// turn one off is while they are trying to work out whether it is the
+	// reason they cannot get in, and `systemctl set-environment` plus a
+	// restart beats editing a file under time pressure. Neither is a secret.
+	if v := os.Getenv("LEDGER_ADMIN_TOKEN_ONLY"); v != "" {
+		cfg.Server.AdminTokenOnly = truthy(v)
+	}
+	if v := os.Getenv("LEDGER_ADMIN_TAILSCALE_LOGINS"); v != "" {
+		cfg.Server.AdminTailscaleLogins = splitCSV(v)
+	}
 	if v := os.Getenv("LEDGER_DICT_HMAC_KEY"); v != "" {
 		cfg.DictHMACKey = v
 	}
@@ -610,6 +652,23 @@ func isLoopbackListen(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// truthy reads a boolean environment override.
+//
+// It accepts only the affirmative spellings and treats EVERYTHING else as
+// false, including "yes", "on" and a typo. That asymmetry is deliberate for the
+// one setting that uses it: LEDGER_ADMIN_TOKEN_ONLY makes the console stricter,
+// and a misspelled value that silently left it off would be a security setting
+// the operator believed they had set. False is also the default, so a typo
+// changes nothing rather than changing something unexpected — and `serve` logs
+// which posture the console came up in either way.
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 // splitCSV splits a comma-separated env value into trimmed, non-empty parts.

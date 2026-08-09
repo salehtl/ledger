@@ -214,6 +214,19 @@ td.mono { font-family: var(--font-mono); font-size: 13px; }
 .bar { height: 6px; background: var(--color-surface-2); border-radius: var(--radius); overflow: hidden; min-width: 60px; }
 .bar > span { display: block; height: 100%; background: var(--color-fg); }
 
+/* The one-time invite code. Big, monospaced and selectable, because it is
+   read aloud or retyped as often as it is copied, and it is the only string
+   this console shows that cannot be fetched again. user-select is stated
+   rather than assumed so a copy by hand always works even when the clipboard
+   API is refused. */
+.code-once {
+  padding: 8px 12px;
+  border: 1px solid var(--color-fg); border-radius: var(--radius);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono); font-size: 18px; letter-spacing: 0.08em;
+  word-break: break-all; user-select: all; -webkit-user-select: all;
+}
+
 pre.out {
   margin: 0; padding: 12px; overflow-x: auto;
   border: 1px solid var(--color-border); border-radius: var(--radius);

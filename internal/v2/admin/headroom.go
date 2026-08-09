@@ -100,13 +100,29 @@ type headroomStatus struct {
 }
 
 // status is the console's box-level state. Read-only, and today that is the
-// fuse.
+// fuse plus who the caller is.
 //
 // It is its own route rather than a field on the roster because the panel shows
 // it on EVERY tab: a fuse that is only visible under "Accounts" is one an
 // operator reading the mail tab at 3am does not see.
+//
+// It doubles as the panel's authentication probe, which is why the identity goes
+// here rather than on a route of its own. The page loads with no credential,
+// asks this one guarded route, and either gets a 200 — the tailnet vouched for
+// the caller, so no token is needed and none is asked for — or a 401, which is
+// when the token field appears. A dedicated /admin/whoami would have been a
+// second route saying the same thing, and every route on this console is one
+// more surface to audit for what it may return.
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"headroom": h.headroomStatus()})
+	body := map[string]any{"headroom": h.headroomStatus()}
+	// Absent for a token-authenticated caller, and that absence is the truth:
+	// the token says somebody holds the operator credential, not who they are.
+	// The panel reads it as "you are signed in with a token" and keeps its
+	// sign-out control; inventing a name would put a fiction on the page.
+	if id, ok := IdentityOf(r.Context()); ok {
+		body["identity"] = id
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h *Handler) headroomStatus() headroomStatus {

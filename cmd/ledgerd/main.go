@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -978,6 +979,21 @@ func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor
 	if err != nil {
 		return nil, err
 	}
+	// Which credentials the console will accept, said once at start. An
+	// operator debugging "why does it still ask me for a token" should be able
+	// to answer it from the log rather than from the source.
+	switch {
+	case cfg.Server.AdminTokenOnly:
+		log.Println("ledgerd serve: admin console: bearer token only " +
+			"(server.admin_token_only is set; the Tailscale identity header is ignored)")
+	case len(cfg.Server.AdminTailscaleLogins) > 0:
+		log.Printf("ledgerd serve: admin console: bearer token, or the Tailscale identity "+
+			"`tailscale serve` injects for %s", strings.Join(cfg.Server.AdminTailscaleLogins, ", "))
+	default:
+		log.Println("ledgerd serve: admin console: bearer token, or any Tailscale identity " +
+			"`tailscale serve` injects. Set server.admin_tailscale_logins to narrow it, or " +
+			"server.admin_token_only to ignore the header entirely.")
+	}
 	return &http.Server{
 		Handler: h,
 		// Same reasoning as the public listener's. The tailnet is not a trusted
@@ -1018,7 +1034,21 @@ func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocesso
 		},
 		Samples:     sampleAdapter{&samples.Samples{Pool: pool, Retention: samples.DefaultRetention}},
 		Reprocessor: reproc,
-		Token:       cfg.Server.AdminToken,
+		// The beta gate, so minting a code is a button instead of an SSH
+		// session. Same generator as `ledgerd mint-invite` — the adapter calls
+		// auth.MintInvite — so the console cannot drift into a second, weaker
+		// way of making a code.
+		Invites: inviteAdapter{pool},
+		Token:   cfg.Server.AdminToken,
+		// The second credential: the identity `tailscale serve` injects. On by
+		// default (the config key is inverted), which is what lets the operator
+		// open the panel on the tailnet without fetching a token off the box.
+		// admin/identity.go carries the whole argument, including what it does
+		// NOT defend against.
+		Identity: admin.IdentityPolicy{
+			Trust:  !cfg.Server.AdminTokenOnly,
+			Logins: cfg.Server.AdminTailscaleLogins,
+		},
 	}
 	// The disk fuse, read-only, so a tripped box says so on the page rather
 	// than only in the log.
@@ -1978,6 +2008,136 @@ func toAdminSample(s samples.Sample) admin.Sample {
 		Raw:          s.Raw,
 		ReceivedAt:   s.ReceivedAt,
 	}
+}
+
+// inviteAdapter is the console's half of the beta gate: admin.Invites over the
+// same auth functions `ledgerd mint-invite` uses.
+//
+// It is an adapter here rather than code in internal/v2/admin for the reason
+// admin.go's header states — that package must not import internal/v2/auth, so
+// that "a user session cannot become an admin credential" is a property of the
+// import graph and not a rule somebody has to keep checking. Minting therefore
+// goes through auth.MintInvite, which means the console's codes are the same 24
+// characters of RFC 4648 base32 and the same 120 bits from crypto/rand that
+// auth.TestMintedInviteCodesAreUnguessable measures. There is deliberately no
+// second generator here.
+type inviteAdapter struct{ pool *pgxpool.Pool }
+
+func (a inviteAdapter) Mint(ctx context.Context, note string, now time.Time) (admin.Minted, error) {
+	code, err := auth.MintInvite(ctx, a.pool, note, now)
+	if err != nil {
+		return admin.Minted{}, err
+	}
+	// The prefix the listing will show this row under, derived from the digest
+	// auth actually stores rather than from a second hash written here. It is
+	// the same six bytes auth.InviteSummary.Hash carries, so the row the panel
+	// highlights is the row the panel lists.
+	return admin.Minted{
+		Code:      code,
+		Hash:      inviteHashPrefix(auth.InviteCodeHash(code)),
+		CreatedAt: now,
+	}, nil
+}
+
+func (a inviteAdapter) List(ctx context.Context) ([]admin.Invite, error) {
+	rows, err := auth.ListInvites(ctx, a.pool)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]admin.Invite, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, admin.Invite{
+			Hash:       r.Hash,
+			Note:       r.Note,
+			CreatedAt:  r.CreatedAt,
+			RedeemedAt: r.RedeemedAt,
+			RedeemedBy: r.RedeemedBy,
+		})
+	}
+	return out, nil
+}
+
+// Revoke destroys one UNREDEEMED code.
+//
+// # Why this is a DELETE and not a new column
+//
+// invite_codes has no revocation concept and this deliberately did not add one.
+// A code's only trace is its digest, and the digest is exactly what redemption
+// matches (`UPDATE … WHERE code_hash = $1 AND redeemed_at IS NULL`), so removing
+// the row makes the code unspendable in precisely the way the row made it
+// spendable. No migration, and nothing about the schema to keep in step.
+//
+// # Why a redeemed row is refused rather than deleted
+//
+// That row is why an account exists. Deleting it would erase the audit trail
+// while leaving the account untouched — the worst of both. The refusal is
+// enforced by the predicate on the DELETE, not by the SELECT above it, so two
+// operators racing a revoke against a redemption cannot both win.
+func (a inviteAdapter) Revoke(ctx context.Context, hashPrefix string) error {
+	prefix, err := hex.DecodeString(hashPrefix)
+	if err != nil {
+		return admin.ErrInviteNotFound
+	}
+	rows, err := a.pool.Query(ctx,
+		`SELECT code_hash, redeemed_at IS NOT NULL FROM invite_codes
+		  WHERE substring(code_hash from 1 for $1) = $2`,
+		len(prefix), prefix)
+	if err != nil {
+		return fmt.Errorf("ledgerd: revoke invite: %w", err)
+	}
+	var (
+		hashes   [][]byte
+		redeemed []bool
+	)
+	for rows.Next() {
+		var (
+			h []byte
+			r bool
+		)
+		if err := rows.Scan(&h, &r); err != nil {
+			rows.Close()
+			return fmt.Errorf("ledgerd: revoke invite: %w", err)
+		}
+		hashes = append(hashes, h)
+		redeemed = append(redeemed, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("ledgerd: revoke invite: %w", err)
+	}
+	switch {
+	case len(hashes) == 0:
+		return admin.ErrInviteNotFound
+	case len(hashes) > 1:
+		// 48 bits of digest, so this is not a case anybody will meet by
+		// accident. It is refused rather than resolved because guessing which of
+		// two codes an operator meant to destroy is not a guess worth making.
+		return admin.ErrInviteAmbiguous
+	case redeemed[0]:
+		return admin.ErrInviteRedeemed
+	}
+	tag, err := a.pool.Exec(ctx,
+		`DELETE FROM invite_codes WHERE code_hash = $1 AND redeemed_at IS NULL`, hashes[0])
+	if err != nil {
+		return fmt.Errorf("ledgerd: revoke invite: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		// It was redeemed between the read and the delete. The predicate held
+		// the line; report what actually happened.
+		return admin.ErrInviteRedeemed
+	}
+	return nil
+}
+
+// inviteHashPrefix is the short hex form of a code's digest, and the ONE
+// definition of it in this binary: auth.ListInvites prints `hash[:6]` for
+// `--show`, so the console's freshly minted row and the console's listing agree
+// by construction rather than by coincidence.
+func inviteHashPrefix(digest []byte) string {
+	if len(digest) > 6 {
+		digest = digest[:6]
+	}
+	return hex.EncodeToString(digest)
 }
 
 // runMintInvite creates one single-use invite code and prints it, or lists what

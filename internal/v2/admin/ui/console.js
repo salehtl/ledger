@@ -2,10 +2,17 @@
 //
 // Plain DOM, no framework, no build step. See ui.go's header for why.
 //
-// Authority is the operator token in sessionStorage, sent as a bearer header on
-// every request. It is never put in a cookie and never in a URL: a cookie would
-// be attached to cross-origin requests and would need a CSRF defence, and a URL
-// would put the credential in history and in any log that records a path.
+// There are two ways to be authorized here and the page tries the free one
+// first: it asks GET /admin/status with whatever it has. If the request is
+// already authorized — because `tailscale serve` put the operator's identity on
+// it — the token field is never shown at all. A 401 is what makes it appear.
+//
+// When a token IS needed it lives in localStorage, not sessionStorage: it is
+// then entered once per device instead of once per tab, which is most of the
+// friction this page ever caused. It is sent as a bearer header, never in a
+// cookie and never in a URL — a cookie would ride along on cross-origin
+// requests, and a URL would put the credential in history and in any log that
+// records a path.
 //
 // WHAT THIS FILE MUST NOT GROW: a view of transactions, amounts, merchants,
 // balances or category detail. Every route it calls returns operational data
@@ -65,17 +72,28 @@ const fmtBytes = (n) => {
 
 // ── transport ─────────────────────────────────────────────────────────────
 
-let token = sessionStorage.getItem(TOKEN_KEY) || "";
+let token = localStorage.getItem(TOKEN_KEY) || "";
+let identity = null;
 
 async function req(method, path, body) {
-  const init = { method, headers: { Authorization: "Bearer " + token } };
+  const init = { method, headers: {} };
+  // Omitted entirely when there is no token, rather than sent empty: an empty
+  // bearer header is a credential that fails, and the server would log a token
+  // mismatch for a page that never claimed to have one.
+  if (token) init.headers.Authorization = "Bearer " + token;
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
   const res = await fetch(path, init);
   if (res.status === 401) {
-    forgetToken("That token was refused.");
+    // A refused token is dropped here and nowhere else. No reason shown when
+    // there was no token: on first load a 401 only means the tailnet did not
+    // vouch for this browser, which is not a failure to report.
+    const had = token;
+    token = "";
+    localStorage.removeItem(TOKEN_KEY);
+    showGate(had ? "That token was refused." : "");
     throw new Error("unauthorized");
   }
   const text = await res.text();
@@ -108,9 +126,11 @@ function toast(message, isError) {
 
 // ── the gate ──────────────────────────────────────────────────────────────
 
-function forgetToken(reason) {
-  token = "";
-  sessionStorage.removeItem(TOKEN_KEY);
+// showGate does NOT drop a stored token. A refused one is cleared by the caller
+// that saw the 401; a network error must not cost the operator their token on
+// the way past, because the next thing they will do is reload.
+function showGate(reason) {
+  identity = null;
   $("#shell").hidden = true;
   $("#gate").hidden = false;
   const err = $("#gate-error");
@@ -125,10 +145,33 @@ function openShell() {
   render();
 }
 
+// Who the console thinks you are, drawn from the status route on every render.
+//
+// A token-authenticated caller has no identity — the token says somebody holds
+// the operator credential, not who — so the chip says that rather than inventing
+// a name. "Forget token" is hidden when there is no token to forget: a button
+// that does nothing is worse than no button.
+function applyIdentity(id) {
+  identity = id || null;
+  $("#whoami").textContent = identity
+    ? identity.name
+      ? identity.name + " · " + identity.login
+      : identity.login
+    : token
+      ? "signed in with the operator token"
+      : "";
+  $("#signout").hidden = !token;
+}
+
 // ── views ─────────────────────────────────────────────────────────────────
 
 const VIEWS = {};
 let current = "accounts";
+
+// The last minted invite code, held here and nowhere else because it exists
+// nowhere else: the server stored only its hash. It survives a re-render of the
+// Invites tab and is dropped the moment the operator leaves it or reloads.
+let lastMinted = null;
 
 function table(headers, rows, emptyText) {
   if (!rows.length) return el("div", { class: "empty", text: emptyText });
@@ -626,6 +669,160 @@ VIEWS.dictionary = async (view) => {
   );
 };
 
+// Invites — the closed beta's gate. Mint one, see what is outstanding, revoke
+// one that has not been spent.
+//
+// The minted code is shown ONCE, here, and there is no route that could show it
+// again: only its SHA-256 is stored. So the panel puts it in a box of its own
+// with a copy button and says plainly that it will not be shown again, and the
+// box stays on screen until the operator navigates away rather than fading like
+// a toast.
+VIEWS.invites = async (view) => {
+  const data = await req("GET", "/admin/invites");
+
+  const rows = (data.invites || []).map((iv) => {
+    const outstanding = !iv.redeemed_at;
+    let state;
+    if (outstanding) {
+      state = el("span", { class: "pill pill-live", text: "outstanding" });
+    } else if (!iv.redeemed_by) {
+      // Redeemed, then the account was deleted: ON DELETE SET NULL leaves the
+      // row saying a code was spent by nobody in particular. The note is
+      // cleared by the same deletion, so this row is genuinely anonymous.
+      state = el("span", { class: "pill", text: "redeemed, account deleted" });
+    } else {
+      state = el("span", { class: "pill", text: "redeemed" });
+    }
+
+    // Offered only where it can work. A redeemed code's row is the only record
+    // of where an account came from, and the server refuses to delete it —
+    // showing a button that is always refused would be a lie about what the
+    // console can do.
+    let action = el("span", { class: "muted", text: "—" });
+    if (outstanding) {
+      const b = el("button", {
+        class: "btn btn-sm",
+        type: "button",
+        text: "Revoke",
+        title: "Delete this unredeemed code. It can never be spent. Not reversible: mint a new one.",
+      });
+      b.addEventListener("click", async () => {
+        if (
+          !confirm(
+            "Revoke " +
+              iv.hash +
+              "?\n\n" +
+              (iv.note ? "Note: " + iv.note + "\n\n" : "") +
+              "The code is deleted and can never create an account. Whoever is holding it will " +
+              "need a new one. This cannot be undone.",
+          )
+        ) {
+          return;
+        }
+        b.disabled = true;
+        try {
+          await req("DELETE", "/admin/invites/" + encodeURIComponent(iv.hash));
+          toast("Revoked " + iv.hash + ".");
+          render();
+        } catch (e) {
+          b.disabled = false;
+          toast(e.message, true);
+        }
+      });
+      action = b;
+    }
+
+    return el("tr", {}, [
+      el("td", { class: "mono", text: iv.hash }),
+      el("td", { class: "num", text: fmtTime(iv.created_at) }),
+      el("td", {}, [state]),
+      el("td", { class: "num", text: iv.redeemed_at ? fmtTime(iv.redeemed_at) : "—" }),
+      el("td", { class: "mono", title: iv.redeemed_by || "", text: short(iv.redeemed_by) || "—" }),
+      el("td", { text: iv.note || "—" }),
+      el("td", {}, [action]),
+    ]);
+  });
+
+  const note = el("input", {
+    class: "input",
+    placeholder: "who this is for",
+    spellcheck: "false",
+    maxlength: "500",
+  });
+  const mint = el("button", { class: "btn btn-primary", type: "button", text: "Mint a code" });
+  mint.addEventListener("click", async () => {
+    mint.disabled = true;
+    try {
+      const res = await req("POST", "/admin/invites", { note: note.value.trim() });
+      note.value = "";
+      // Held outside this closure, because render() rebuilds the whole view and
+      // would otherwise throw the code away a few milliseconds after showing it.
+      lastMinted = res;
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      mint.disabled = false;
+    }
+  });
+
+  // The one-time code box, redrawn on every render of this tab so a refresh or
+  // a revoke elsewhere in the table does not destroy the only copy in existence.
+  // It is cleared when the operator leaves the tab (see the tab handler).
+  if (lastMinted) {
+    const code = el("code", { class: "mono code-once", text: lastMinted.code });
+    const copy = el("button", { class: "btn btn-sm", type: "button", text: "Copy" });
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(lastMinted.code);
+        copy.textContent = "Copied";
+      } catch {
+        // Clipboard access can be refused. The code is on screen and
+        // selectable either way, so say that rather than failing silently.
+        toast("Could not copy. Select the code and copy it by hand.", true);
+      }
+    });
+    const done = el("button", { class: "btn btn-sm", type: "button", text: "I have it" });
+    done.addEventListener("click", () => {
+      lastMinted = null;
+      render();
+    });
+    view.append(
+      section(
+        "Copy this code now — it will not be shown again",
+        "Only its hash is stored, so nothing here and no backup can show it a second time. " +
+          "If you lose it, revoke the row below and mint another.",
+        el("div", { class: "row" }, [code, copy, done]),
+        el("p", {
+          class: "muted",
+          text:
+            "Listed below as " +
+            lastMinted.hash +
+            ". Single use, and it creates an account and nothing else.",
+        }),
+      ),
+    );
+  }
+
+  view.append(
+    section(
+      "Mint an invite",
+      "The note is your own words about who it is for. It is cleared if that account is ever deleted.",
+      el("div", { class: "row" }, [el("div", { class: "field" }, [note]), mint]),
+    ),
+    section(
+      "Invite codes",
+      "Hashes, never codes — the code itself is not stored. Revoking deletes an unredeemed row; " +
+        "a redeemed one is kept, because it is the only record of where that account came from.",
+      table(
+        ["Hash", "Minted", "State", "Redeemed", "Account", "Note", ""],
+        rows,
+        "No invite codes have been minted.",
+      ),
+    ),
+  );
+};
+
 // Waitlist — which banks people asked for.
 VIEWS.waitlist = async (view) => {
   const data = await req("GET", "/admin/waitlist");
@@ -677,7 +874,11 @@ async function renderHeadroom() {
   const box = $("#headroom");
   let h;
   try {
-    h = (await req("GET", "/admin/status")).headroom;
+    const status = await req("GET", "/admin/status");
+    // The same response carries who the console thinks you are. One route, one
+    // round trip, and the chip cannot drift out of step with the fuse.
+    applyIdentity(status.identity);
+    h = status.headroom;
   } catch (e) {
     if (e.message === "unauthorized") return;
     // Never silent. A strip that vanishes on error looks exactly like a healthy
@@ -779,17 +980,47 @@ $("#gate-form").addEventListener("submit", (ev) => {
   const v = $("#token").value.trim();
   if (!v) return;
   token = v;
-  sessionStorage.setItem(TOKEN_KEY, v);
+  // localStorage, not sessionStorage: once per device beats once per tab, and
+  // this is a page one person opens on their own machines on their own tailnet.
+  localStorage.setItem(TOKEN_KEY, v);
   openShell();
 });
 $("#tabs").addEventListener("click", (ev) => {
   const tab = ev.target.closest(".tab");
   if (!tab) return;
+  // Leaving the Invites tab drops the one-time code. Carrying it to another tab
+  // and back would be a live credential sitting in a page nobody is looking at.
+  if (current === "invites" && tab.dataset.view !== "invites") lastMinted = null;
   current = tab.dataset.view;
   render();
 });
 $("#refresh").addEventListener("click", render);
-$("#signout").addEventListener("click", () => forgetToken(""));
+$("#signout").addEventListener("click", () => {
+  // Drops the stored token and asks again. If `tailscale serve` is vouching for
+  // this browser the shell simply stays open with no token at all, which is the
+  // whole point of the identity path — signing out of a credential you were not
+  // using must not lock you out.
+  token = "";
+  localStorage.removeItem(TOKEN_KEY);
+  boot();
+});
 
-if (token) openShell();
-else forgetToken("");
+// Boot: ask one guarded route with whatever credential we have. A 200 opens the
+// shell — either the token worked or the tailnet vouched for us — and req()
+// turns a 401 into the token gate on its own.
+//
+// It costs one extra /admin/status call, because openShell renders and the
+// render asks again. That is a statfs and a map lookup on a tailnet-only
+// listener, and it buys a boot path with no branch that guesses.
+async function boot() {
+  try {
+    await req("GET", "/admin/status");
+    openShell();
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      showGate("Could not reach the console: " + e.message);
+    }
+  }
+}
+
+boot();

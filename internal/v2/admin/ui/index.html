@@ -11,12 +11,18 @@
 <body>
 
 <!-- The token gate. It is not a login: there is one shared operator token and
-     no accounts here. The token is kept in sessionStorage, so it is gone when
-     the tab closes and it is never sent to another origin. -->
+     no accounts here.
+
+     It is only shown when the page could NOT authenticate on its own. Reached
+     through `tailscale serve`, the request already carries the operator's
+     tailnet identity and this panel never appears. When it does appear the
+     token is kept in localStorage — once per device, not once per tab — and it
+     is sent as a bearer header, never a cookie. -->
 <div id="gate" class="gate" hidden>
   <form id="gate-form" class="gate-panel" autocomplete="off">
     <h1 class="gate-title">Ledger operator console</h1>
-    <p class="gate-note">This console runs on the tailnet only. Paste the operator token to read it.</p>
+    <p class="gate-note">The tailnet did not identify this browser, so this console needs the
+       operator token. Open it through the Tailscale name and you will not be asked again.</p>
     <label class="label" for="token">Operator token</label>
     <input id="token" class="input" type="password" name="token" autocomplete="off" spellcheck="false">
     <p id="gate-error" class="gate-error" hidden></p>
@@ -27,9 +33,12 @@
 <div id="shell" class="shell" hidden>
   <header class="topbar">
     <span class="brand">Ledger operator</span>
+    <!-- Who the console thinks you are: the Tailscale login, or a note that a
+         token got you in. Filled from GET /admin/status on every render. -->
+    <span id="whoami" class="muted"></span>
     <span class="spacer"></span>
     <button id="refresh" class="btn" type="button">Refresh</button>
-    <button id="signout" class="btn" type="button">Forget token</button>
+    <button id="signout" class="btn" type="button" hidden>Forget token</button>
   </header>
 
   <nav class="tabs" id="tabs" aria-label="Console sections">
@@ -38,6 +47,7 @@
     <button class="tab" type="button" data-view="templates">Templates</button>
     <button class="tab" type="button" data-view="samples">Donated formats</button>
     <button class="tab" type="button" data-view="dictionary">Dictionary</button>
+    <button class="tab" type="button" data-view="invites">Invites</button>
     <button class="tab" type="button" data-view="waitlist">Waitlist</button>
   </nav>
 
