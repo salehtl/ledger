@@ -31,7 +31,7 @@ import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Switch } from "../../components/ui/Switch";
-import { isEnrollmentError } from "../../v2/session";
+import { isEnrollmentError, type EnrollmentKind } from "../../v2/session";
 import {
   comparisonCode,
   decodeEnrolmentRequest,
@@ -69,8 +69,28 @@ import {
  * the action it offers matches the second — re-enrol THIS device — because that
  * is the one a person can act on.
  */
+/**
+ * The kinds this panel can actually be handed.
+ *
+ * `revoked` is raised in exactly one place — `ensureDeviceWriter`, when the
+ * roster says this device's own writer has a `revoked_at` — and
+ * `V2Handle.approveDevice` never calls it. What approving can raise is
+ * `key_lost` (local, before any request) or whatever `classifyEnrollment`
+ * returns, and that maps every 403 to `rejected`. So the arm that used to
+ * answer `revoked` here was copy no user could ever be shown. Excluding it from
+ * the type is what keeps the switch exhaustive: a kind added later still has to
+ * be answered, and it is the compiler that says so.
+ *
+ * `enrollment.ts`'s own `revoked` arm is a different matter — that one IS
+ * reachable, from the sign-in path that does call `ensureDeviceWriter`.
+ */
+type ApprovalKind = Exclude<EnrollmentKind, "revoked">;
+
 function refusalCopy(error: unknown): string {
-  const kind = isEnrollmentError(error) ? error.enrollmentKind : "unavailable";
+  // The impossible kind reads as the generic one rather than as a claim about
+  // this device's standing, which is what it would be if it fell to `rejected`.
+  const kind: ApprovalKind =
+    isEnrollmentError(error) && error.enrollmentKind !== "revoked" ? error.enrollmentKind : "unavailable";
   switch (kind) {
     case "offline":
       return "That device was not added: ledger could not reach the server. Nothing was changed. Try again when you are online.";
@@ -82,10 +102,6 @@ function refusalCopy(error: unknown): string {
         "device's key is no longer accepted for changes. Check the other device first. If it still cannot make " +
         "changes, this device has to be set up on the account again before it can approve one."
       );
-    case "revoked":
-      // A 403 for a signing key the server no longer accepts: the fault is on
-      // THIS side of the pair, and no code from the other device changes it.
-      return "That device was not added, because this device can no longer sign for changes on this account. Approve from a device that still can.";
     case "key_lost":
       // The LOCAL refusal `V2Handle.approveDevice` raises before any request:
       // this device holds no enrolled writer, so it has nothing to sign with.

@@ -1,5 +1,9 @@
 /**
- * Settings → Device → Notifications.
+ * Settings → Device → Notifications: one row inside the Device group's card.
+ *
+ * It draws no heading and no `Card` of its own — the group it sits in owns
+ * both. Everything it renders is a row: a label and a switch, or a label and
+ * the sentence explaining why there is no switch.
  *
  * # The one thing the copy may promise
  *
@@ -28,8 +32,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Card } from "../../components/ui/Card";
-import { SectionLabel } from "../../components/ui/SectionLabel";
 import { Switch } from "../../components/ui/Switch";
 import { useToast } from "../../components/Toast";
 import {
@@ -173,42 +175,44 @@ export function PushNotificationsPanel({
   );
 
   return (
-    <section className="space-y-2" data-testid="push-notifications">
-      <SectionLabel as="h2" className="px-1">
-        Notifications
-      </SectionLabel>
-      <Card className="space-y-3">
-        {status.kind === "loading" ? (
-          <p className="text-sm text-muted">Checking…</p>
-        ) : status.kind === "unsupported" ? (
-          <p className="text-sm leading-relaxed text-muted">{UNSUPPORTED_COPY[status.reason]}</p>
-        ) : status.kind === "unavailable" ? (
-          <p className="text-sm leading-relaxed text-muted">Notifications are not set up on this server.</p>
-        ) : status.kind === "blocked" ? (
-          <>
-            <p className="text-sm leading-relaxed">Notifications are blocked for ledger in this browser.</p>
-            <p className="text-sm leading-relaxed text-muted">
-              Only you can undo that, in your browser's settings for this site. ledger cannot ask again.
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center justify-between gap-3 min-h-11">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Notify me on this device</p>
-                <p className="text-xs text-muted">Says that something arrived. Never what or how much.</p>
-              </div>
-              <Switch
-                aria-label="Notifications on this device"
-                checked={status.on}
-                disabled={busy}
-                onChange={(e) => void toggle(e.target.checked)}
-              />
-            </div>
-            <p className="text-sm leading-relaxed text-muted">Open ledger to see what it was.</p>
-          </>
-        )}
-      </Card>
-    </section>
+    <div className="w-full px-4 py-3.5 space-y-1" data-testid="push-notifications">
+      {status.kind === "loading" ? (
+        <div className="flex items-center justify-between gap-3 min-h-11">
+          <span className="text-sm font-medium">Notifications</span>
+          <span className="text-xs text-muted">Checking…</span>
+        </div>
+      ) : status.kind === "unsupported" || status.kind === "unavailable" || status.kind === "blocked" ? (
+        <>
+          <p className="text-sm font-medium">Notifications</p>
+          {status.kind === "unsupported" ? (
+            <p className="text-xs leading-relaxed text-muted">{UNSUPPORTED_COPY[status.reason]}</p>
+          ) : status.kind === "unavailable" ? (
+            <p className="text-xs leading-relaxed text-muted">Notifications are not set up on this server.</p>
+          ) : (
+            <>
+              <p className="text-xs leading-relaxed">Notifications are blocked for ledger in this browser.</p>
+              <p className="text-xs leading-relaxed text-muted">
+                Only you can undo that, in your browser's settings for this site. ledger cannot ask again.
+              </p>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-3 min-h-11">
+            <span className="text-sm font-medium">Notifications</span>
+            <Switch
+              aria-label="Notifications on this device"
+              checked={status.on}
+              disabled={busy}
+              onChange={(e) => void toggle(e.target.checked)}
+            />
+          </div>
+          <p className="text-xs leading-relaxed text-muted">
+            Says that something arrived. Never what or how much. Open ledger to see what it was.
+          </p>
+        </>
+      )}
+    </div>
   );
 }

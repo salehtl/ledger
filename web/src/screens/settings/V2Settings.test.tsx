@@ -14,6 +14,12 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 import type { Op, OpType } from "@ledger/client/wire/op";
 
 import { MotionProvider } from "../../app/MotionProvider";
+import {
+  isHapticsEnabled,
+  isSoundEnabled,
+  loadHapticsEnabled,
+  loadSoundEnabled,
+} from "../../lib/feedback";
 import { ToastProvider } from "../../components/Toast";
 import { projectionWith } from "../../test/projectionFixture";
 import { fakeRuntime, WithV2, type FakeRuntimeOptions } from "../../test/v2Runtime";
@@ -126,7 +132,104 @@ describe("V2Settings", () => {
   it("carries the notifications control, next to the rest of this device's settings", async () => {
     wrap();
     expect(await screen.findByTestId("push-notifications")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Notifications" })).toBeInTheDocument();
+    // Not merely mounted: mounted in the Device group, with the text size and
+    // the haptics, because it is a property of this browser and not of the
+    // account. Task 7 could only reach "on the screen at all".
+    const device = screen.getByTestId("settings-group-device");
+    expect(within(device).getByTestId("push-notifications")).toBeInTheDocument();
+  });
+
+  /**
+   * The information architecture, asserted as a whole.
+   *
+   * Four eyebrow labels in v1's order, and no fifth. There is deliberately no
+   * Danger zone: v2 has nothing destructive to put under one, and a heading
+   * with nothing under it is worse than no heading.
+   */
+  it("groups the settings the way v1 does, and invents no Danger zone", async () => {
+    wrap();
+    await screen.findByTestId("settings-inbound-address");
+    const groups = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(groups).toEqual(["Plan", "Automation", "Device", "Library"]);
+  });
+
+  it("shows sync above the groups, because it is a state and not a setting", async () => {
+    wrap();
+    const line = await screen.findByTestId("settings-sync");
+    // Not inside any group, and ahead of the first one in reading order.
+    expect(line.closest("section")).toBeNull();
+    const plan = screen.getAllByRole("heading", { level: 2 })[0]!;
+    expect(line.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("puts sign out last in the Device group, after everything it could be mistaken for", async () => {
+    wrap();
+    await screen.findByTestId("settings-inbound-address");
+    const device = screen.getByTestId("settings-group-device");
+    const controls = within(device).getAllByRole("button");
+    expect(controls[controls.length - 1]).toHaveTextContent(/^sign out$/i);
+  });
+
+  /**
+   * Text size, haptics and sound are DEVICE-LOCAL. They are localStorage, read
+   * before first paint by `main.tsx`, and they must never reach the op log: an
+   * op carrying one would push this handset's screen size and this handset's
+   * permission to buzz onto every other device on the account.
+   */
+  it("changes the text size on this device, and authors nothing", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = {
+      pending: [],
+      enqueueMany: (s: readonly unknown[]) => void specs.push(...s),
+      flush: async () => {},
+    };
+    localStorage.removeItem("ledger-font-scale");
+    document.documentElement.style.removeProperty("font-size");
+    wrap({ writer });
+
+    await user.click(await screen.findByRole("button", { name: /text size/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "90%" }));
+
+    expect(document.documentElement.style.fontSize).toBe("90%");
+    expect(localStorage.getItem("ledger-font-scale")).toBe("90");
+    // The row shows what it now is, without waiting for a reload.
+    expect(screen.getByRole("button", { name: /text size/i })).toHaveTextContent("90%");
+    expect(specs).toEqual([]);
+
+    document.documentElement.style.removeProperty("font-size");
+    localStorage.removeItem("ledger-font-scale");
+  });
+
+  it("switches haptics and sound for this browser only, and authors nothing", async () => {
+    const user = userEvent.setup();
+    const specs: unknown[] = [];
+    const writer = {
+      pending: [],
+      enqueueMany: (s: readonly unknown[]) => void specs.push(...s),
+      flush: async () => {},
+    };
+    localStorage.removeItem("ledger-haptics");
+    localStorage.removeItem("ledger-sound");
+    loadHapticsEnabled();
+    loadSoundEnabled();
+    wrap({ writer });
+
+    await user.click(await screen.findByLabelText("Haptics"));
+    await user.click(screen.getByLabelText("Sound"));
+
+    // Haptics default on and sound defaults off, so one click each moves both.
+    expect(isHapticsEnabled()).toBe(false);
+    expect(isSoundEnabled()).toBe(true);
+    expect(localStorage.getItem("ledger-haptics")).toBe("false");
+    expect(localStorage.getItem("ledger-sound")).toBe("true");
+    expect(specs).toEqual([]);
+
+    localStorage.removeItem("ledger-haptics");
+    localStorage.removeItem("ledger-sound");
+    loadHapticsEnabled();
+    loadSoundEnabled();
   });
 
   it("opens held mail — the surface onboarding hands an unfiled remainder to", async () => {

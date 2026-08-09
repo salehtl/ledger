@@ -22,13 +22,28 @@
  * nothing called it, while Task 7's onboarding already told people they could
  * "add a passkey later from Settings". This is that promise being made true.
  *
- * # Why the sync row exists at all
+ * # Four groups, and sync is not one of them
  *
- * The projection is the data. It only moves when a sync writes it, and every
- * screen in the app reads it silently — so without this row there is no way at
- * all to tell "nothing has happened" from "nothing is working". It carries the
- * halt reason for the same reason `BootGate` gives a halt the whole screen: an
- * engine that has stopped standing behind its records must never render as idle.
+ * The screen is v1's information architecture: eyebrow-labelled groups —
+ * **Plan**, **Automation**, **Device**, **Library** — over `Card`s, so a person
+ * looking for one control scans four words rather than eleven headings. There
+ * is no Danger zone: v2 has nothing destructive to put in one, and a group
+ * invented to complete the shape would be a heading with nothing under it.
+ *
+ * Sync sits ABOVE the groups because it is not a setting — there is nothing to
+ * choose. It is the state of the thing the whole screen is about. The projection
+ * is the data, it only moves when a sync writes it, and every screen reads it
+ * silently, so without this line there is no way to tell "nothing has happened"
+ * from "nothing is working". It carries the halt reason for the same reason
+ * `BootGate` gives a halt the whole screen: an engine that has stopped standing
+ * behind its records must never render as idle.
+ *
+ * # Text size, haptics and sound are device-local, and stay out of the log
+ *
+ * They are `localStorage`, read by `main.tsx` before first paint. They are a
+ * property of this browser on this handset — how big the type is on a small
+ * screen, whether this device may buzz — not of the account, and an op log
+ * carrying them would push one device's screen size onto every other one.
  *
  * # The home currency is shown and NOT offered
  *
@@ -46,8 +61,26 @@ import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
 import { SectionLabel } from "../../components/ui/SectionLabel";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { Switch } from "../../components/ui/Switch";
 import { ChevronRight } from "../../components/ui/PixelIcon";
 import { sinceLabel } from "../../lib/sinceLabel";
+import {
+  DEFAULT_FONT_SCALE,
+  FONT_SCALE_OPTIONS,
+  applyFontScale,
+  loadFontScale,
+  saveFontScale,
+  type FontScale,
+} from "../../lib/fontScale";
+import {
+  fire,
+  isHapticsEnabled,
+  isSoundEnabled,
+  setHapticsEnabled,
+  setSoundEnabled,
+} from "../../lib/feedback";
+import { fontScaleLabel } from "../../lib/settingsSummary";
 import { readAddress } from "../../v2/address";
 import { useV2OrThrow } from "../../v2/BootGate";
 import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
@@ -184,6 +217,26 @@ export function V2Settings({
   const [signingOut, setSigningOut] = useState(false);
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  /**
+   * The three device-local preferences, held in React only so the rows redraw.
+   *
+   * The truth is `localStorage` and the module-level flags `main.tsx` hydrates
+   * before first paint; these are read once at mount and written through on
+   * every change. Nothing here is authored — see the note at the top of the
+   * file for why a screen size must never travel to another device.
+   */
+  const [textSizeOpen, setTextSizeOpen] = useState(false);
+  const [fontScale, setFontScale] = useState<FontScale>(loadFontScale);
+  const [haptics, setHaptics] = useState(isHapticsEnabled);
+  const [sound, setSound] = useState(isSoundEnabled);
+  const setScale = useCallback((next: FontScale): void => {
+    // Applied before it is saved: the scale a user picks has to land on the
+    // glass under their finger, and a write that throws in private mode must
+    // not be what decides whether they see it.
+    applyFontScale(next);
+    saveFontScale(next);
+    setFontScale(next);
+  }, []);
   // The definitions, not the categories the user has USED: this screen manages
   // the set on offer, and a retired one has to stay visible here so it can be
   // brought back.
@@ -468,70 +521,102 @@ export function V2Settings({
 
   return (
     <div className="space-y-6">
-      {/* ---- Sync ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Your ledger</SectionLabel>
-        <Card className="!p-0 divide-y divide-border overflow-hidden">
-          <div data-testid="settings-sync" className="px-4 py-3.5 space-y-1">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm font-medium">Sync</span>
-              {busy ? (
-                <span className="flex items-center gap-2 text-xs text-muted" role="status">
-                  <PixelSpinner size={12} />
-                  {PHASE_LABEL[phase] ?? "Working…"}
-                </span>
-              ) : halted !== null ? (
-                <span className="text-xs font-medium text-bad">Stopped</span>
-              ) : stopped ? (
-                <span className="text-xs font-medium text-warn">Didn&rsquo;t finish</span>
-              ) : (
-                <span className="text-xs text-muted">{PHASE_LABEL.idle}</span>
-              )}
-            </div>
-            {halted !== null ? (
-              /*
-                The reason verbatim, and no "sync now" beside it. `SyncEngine`
-                refuses every later sync once it is halted, so a button here
-                would be a control that cannot work offered at the exact moment
-                trust matters most. `BootGate`'s wall is what explains a halt;
-                this row's job is only to say it is in force.
-              */
-              <p className="text-xs text-bad font-mono break-words">{halted}</p>
-            ) : stopped ? (
-              /*
-                No reason, so no claim about anybody's records — which is the
-                honest thing to say and also the likeliest truth: the common
-                cause is the connection. It says what is still true (nothing was
-                lost) rather than what it cannot know.
-              */
-              <p className="text-xs text-warn">
-                The last sync did not finish. Nothing was lost — ledger usually just could not reach the server.{" "}
-                {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
-              </p>
-            ) : (
-              <p className="text-xs text-muted">
-                {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
-              </p>
-            )}
-            {halted === null && (
-              <div className="pt-1">
-                <Button variant="ghost" disabled={busy} onClick={() => void syncNow()}>
-                  Sync now
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {onOpenQuarantine !== undefined && (
-            <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
+      {/* ---- Sync: the state of the ledger, above the settings, not among them ---- */}
+      <div data-testid="settings-sync" className="px-1 space-y-1">
+        <div className="flex items-center justify-between gap-3">
+          {busy ? (
+            <span className="flex items-center gap-2 text-sm text-muted" role="status">
+              <PixelSpinner size={12} />
+              {PHASE_LABEL[phase] ?? "Working…"}
+            </span>
+          ) : halted !== null ? (
+            <span className="text-sm font-medium text-bad">Sync stopped</span>
+          ) : stopped ? (
+            <span className="text-sm font-medium text-warn">Sync didn&rsquo;t finish</span>
+          ) : (
+            <span className="text-sm font-medium">{PHASE_LABEL.idle}</span>
           )}
-        </Card>
-      </section>
+          {halted === null && (
+            /*
+              No "Sync now" beside a halt. `SyncEngine` refuses every later sync
+              once it is halted, so a button here would be a control that cannot
+              work offered at the exact moment trust matters most. `BootGate`'s
+              wall is what explains a halt; this line's job is only to say it is
+              in force.
+            */
+            <Button variant="ghost" disabled={busy} onClick={() => void syncNow()}>
+              Sync now
+            </Button>
+          )}
+        </div>
+        {halted !== null ? (
+          <p className="text-xs text-bad font-mono break-words">{halted}</p>
+        ) : stopped ? (
+          /*
+            No reason, so no claim about anybody's records — which is the honest
+            thing to say and also the likeliest truth: the common cause is the
+            connection. It says what is still true (nothing was lost) rather
+            than what it cannot know.
+          */
+          <p className="text-xs text-warn">
+            The last sync did not finish. Nothing was lost — ledger usually just could not reach the server.{" "}
+            {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
+          </p>
+        ) : (
+          <p className="text-xs text-muted">
+            {lastSynced === null ? "No sync has finished since you opened ledger." : `Last synced ${lastSynced}.`}
+          </p>
+        )}
+      </div>
 
-      {/* ---- The banks ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Your banks</SectionLabel>
-        <Card className="space-y-3">
+      <Group label="Plan">
+        {/* The counterpart of the onboarding step: the same control, the same
+            rule that the three percentages must add up to 100, and the same
+            refusal to normalise them. Unlike the home currency, this IS
+            changeable — a plan is a label over money that has already been
+            bucketed, so changing it re-labels and never re-values. */}
+        <Panel title="Your plan">
+          <p className="text-sm leading-relaxed text-muted">
+            How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean to
+            spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
+          </p>
+          {/* Locked until the stored plan has been read, because until then
+              these fields hold a placeholder the seeding is about to replace —
+              and a control that discards what you typed is worse than one that
+              would not let you type. The line says which of the two it is. */}
+          <BudgetSplitPicker
+            value={splitDraft}
+            onChange={setSplitDraft}
+            idPrefix="settings-split"
+            disabled={!seededSplit}
+          />
+          <MonthlyTotalField
+            value={totalText}
+            onChange={setTotalText}
+            currency={currency}
+            idPrefix="settings-total"
+            disabled={!seededSplit}
+          />
+          {!seededSplit && (
+            <p data-testid="settings-plan-warming" role="status" className="text-sm text-muted">
+              Reading your plan from this device. It will be ready in a moment — nothing is wrong.
+            </p>
+          )}
+          <Button
+            variant="primary"
+            disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}
+            onClick={() => void saveSplit()}
+          >
+            {splitSaving ? "Saving…" : "Save plan"}
+          </Button>
+          {splitNote !== null && (
+            <p data-testid="settings-split-note" role="status" className="text-sm text-muted">
+              {splitNote}
+            </p>
+          )}
+        </Panel>
+
+        <Panel title="Your banks">
           {supported.isPending ? (
             <div className="flex items-center gap-3 text-muted" role="status">
               <PixelSpinner size={12} />
@@ -573,13 +658,11 @@ export function V2Settings({
             it leaves everything else as it is: mail sent to your address is still filed, senders you have already
             trusted are still trusted, and transactions already recorded are still there.
           </p>
-        </Card>
-      </section>
+        </Panel>
+      </Group>
 
-      {/* ---- The address ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Your inbound address</SectionLabel>
-        <Card className="space-y-3">
+      <Group label="Automation">
+        <Panel title="Your inbound address">
           <p className="text-sm leading-relaxed text-muted">
             Bank mail forwarded here becomes transactions in ledger. Nothing else about your mailbox is read.
           </p>
@@ -612,98 +695,45 @@ export function V2Settings({
               on the server and it is still there.
             </p>
           )}
-        </Card>
-      </section>
+        </Panel>
 
-      {/* ---- The plan ----
-          The counterpart of the onboarding step: the same control, the same
-          rule that the three percentages must add up to 100, and the same
-          refusal to normalise them. Unlike the home currency below, this IS
-          changeable — a plan is a label over money that has already been
-          bucketed, so changing it re-labels and never re-values. */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Your plan</SectionLabel>
-        <Card className="space-y-3">
-          <p className="text-sm leading-relaxed text-muted">
-            How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean to
-            spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
-          </p>
-          {/* Locked until the stored plan has been read, because until then
-              these fields hold a placeholder the seeding is about to replace —
-              and a control that discards what you typed is worse than one that
-              would not let you type. The line says which of the two it is. */}
-          <BudgetSplitPicker
-            value={splitDraft}
-            onChange={setSplitDraft}
-            idPrefix="settings-split"
-            disabled={!seededSplit}
+        {onOpenQuarantine !== undefined && (
+          <RowCard>
+            <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
+          </RowCard>
+        )}
+      </Group>
+
+      <Group label="Device" testID="settings-group-device">
+        <RowCard>
+          {/* About THIS browser, not the account — which is why it sits with
+              the text size and the haptics and not with the plan. */}
+          <PushNotificationsPanel client={handle.client} profile={PROFILE} server={SERVER} />
+          <HubRow label="Text size" value={fontScaleLabel(fontScale)} onClick={() => setTextSizeOpen(true)} />
+          <ToggleRow
+            label="Haptics"
+            checked={haptics}
+            onChange={(v) => {
+              setHapticsEnabled(v);
+              setHaptics(v);
+              if (v) fire("selection"); // confirm with a tick when switching on
+            }}
           />
-          <MonthlyTotalField
-            value={totalText}
-            onChange={setTotalText}
-            currency={currency}
-            idPrefix="settings-total"
-            disabled={!seededSplit}
+          <ToggleRow
+            label="Sound"
+            checked={sound}
+            onChange={(v) => {
+              setSoundEnabled(v);
+              setSound(v);
+              if (v) fire("selection"); // let the user hear it immediately
+            }}
           />
-          {!seededSplit && (
-            <p data-testid="settings-plan-warming" role="status" className="text-sm text-muted">
-              Reading your plan from this device. It will be ready in a moment — nothing is wrong.
-            </p>
-          )}
-          <Button
-            variant="primary"
-            disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}
-            onClick={() => void saveSplit()}
-          >
-            {splitSaving ? "Saving…" : "Save plan"}
-          </Button>
-          {splitNote !== null && (
-            <p data-testid="settings-split-note" role="status" className="text-sm text-muted">
-              {splitNote}
-            </p>
-          )}
-        </Card>
-      </section>
+        </RowCard>
 
-      {/* ---- Categories ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Categories</SectionLabel>
-        <Card className="!p-0 divide-y divide-border overflow-hidden">
-          <HubRow
-            label="Your categories"
-            value={
-              categoryDefs.length === 0
-                ? "The built-in set"
-                : `${categoryDefs.filter((c) => c.active).length} of your own`
-            }
-            onClick={() => setCategoriesOpen(true)}
-          />
-        </Card>
-      </section>
-
-      {/* ---- Home currency: stated, never offered ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Home currency</SectionLabel>
-        <Card className="space-y-1">
-          <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
-            {homeCurrency ?? "—"}
-          </p>
-          <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
-            ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
-            currency cannot be changed. The only way to a different one is a new account.
-          </p>
-        </Card>
-      </section>
-
-      {/* ---- Notifications: about THIS browser, not the account ---- */}
-      <PushNotificationsPanel client={handle.client} profile={PROFILE} server={SERVER} />
-
-      {/* ---- Passkeys: the only backup this product can offer ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Passkeys</SectionLabel>
-        <Card className="space-y-3">
+        {/* Passkeys: the only backup this product can offer. */}
+        <Panel title="Passkeys">
           <div data-testid="settings-recovery-warning" className="space-y-2">
-            <h3 className="text-sm font-semibold text-bad">{RECOVERY_WARNING.title}</h3>
+            <h4 className="text-sm font-semibold text-bad">{RECOVERY_WARNING.title}</h4>
             <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.body}</p>
             <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
           </div>
@@ -719,13 +749,9 @@ export function V2Settings({
               {passkeyNote}
             </p>
           )}
-        </Card>
-      </section>
+        </Panel>
 
-      {/* ---- Adding a second device ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">Your devices</SectionLabel>
-        <Card className="space-y-3">
+        <Panel title="Your devices">
           <p className="text-sm leading-relaxed text-muted">
             A device that signs in for the first time can read this account, but it cannot make changes until a
             device that is already signed in approves it. Approving is done here, with a code that device shows
@@ -734,23 +760,70 @@ export function V2Settings({
           <Button variant="secondary" onClick={() => setAddDeviceOpen(true)}>
             Add a device
           </Button>
-        </Card>
-      </section>
+        </Panel>
 
-      {/* ---- Signing out ---- */}
-      <section className="space-y-2">
-        <SectionLabel as="h2" className="px-1">This device</SectionLabel>
-        <Card className="!p-0 divide-y divide-border overflow-hidden">
+        {/* Last in the group, after everything a person came here to change:
+            the one control on this screen they must not hit while reaching for
+            another. Library follows it, because a category list is not
+            something anybody scrolls past Sign out to reach by accident. */}
+        <RowCard>
           <Pressable
             onClick={() => setSignOutOpen(true)}
             className="w-full min-h-11 px-4 py-3.5 text-left text-sm font-medium text-bad hover:bg-surface-2/50"
           >
             Sign out
           </Pressable>
-        </Card>
-      </section>
+        </RowCard>
+      </Group>
+
+      <Group label="Library">
+        <RowCard>
+          <HubRow
+            label="Your categories"
+            value={
+              categoryDefs.length === 0
+                ? "The built-in set"
+                : `${categoryDefs.filter((c) => c.active).length} of your own`
+            }
+            onClick={() => setCategoriesOpen(true)}
+          />
+        </RowCard>
+
+        {/* Home currency: stated, never offered. */}
+        <Panel title="Home currency">
+          <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
+            {homeCurrency ?? "—"}
+          </p>
+          <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
+            ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
+            currency cannot be changed. The only way to a different one is a new account.
+          </p>
+        </Panel>
+      </Group>
 
       <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+
+      {textSizeOpen && (
+        <Dialog title="Text size" onClose={() => setTextSizeOpen(false)}>
+          <p className="text-sm leading-relaxed text-muted mb-3">
+            Scales all text in ledger on this device. It applies straight away.
+          </p>
+          {/* fullWidth, not a horizontal scroller: at 320px the scroller clipped
+              the control at the viewport edge, and the clipped segment was the
+              selected one. */}
+          <SegmentedControl
+            fullWidth
+            value={String(fontScale)}
+            onChange={(v) => setScale(Number(v) as FontScale)}
+            options={FONT_SCALE_OPTIONS.map((n) => ({ value: String(n), label: `${n}%` }))}
+          />
+          {fontScale !== DEFAULT_FONT_SCALE && (
+            <Button variant="ghost" className="mt-3 text-sm" onClick={() => setScale(DEFAULT_FONT_SCALE)}>
+              Reset to default
+            </Button>
+          )}
+        </Dialog>
+      )}
 
       {categoriesOpen && (
         <Dialog title="Your categories" onClose={() => setCategoriesOpen(false)}>
@@ -791,6 +864,42 @@ export function V2Settings({
   );
 }
 
+/**
+ * One eyebrow-labelled group of settings — v1's `SettingsHub` shape, kept so the
+ * two apps read alike.
+ *
+ * The children are `Card`s rather than rows, because v2's settings are not all
+ * rows: a bank picker and a budget split are panels with prose, and forcing
+ * them into a list of chevrons would have meant four more drill-ins to build.
+ * A group is therefore a heading over one or more cards, each named by
+ * {@link Panel} unless it is a plain list of rows ({@link RowCard}).
+ */
+function Group({ label, testID, children }: { label: string; testID?: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2" {...(testID === undefined ? {} : { "data-testid": testID })}>
+      <SectionLabel as="h2" className="px-1">
+        {label}
+      </SectionLabel>
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+/** A card of tappable rows: `!p-0` because each row carries its own padding. */
+function RowCard({ children }: { children: React.ReactNode }) {
+  return <Card className="!p-0 divide-y divide-border overflow-hidden">{children}</Card>;
+}
+
+/** A named card inside a {@link Group}, for the controls that are not one row. */
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card className="space-y-3">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {children}
+    </Card>
+  );
+}
+
 /** The hub-row shape v1's Settings established, kept so the two look alike. */
 function HubRow({ label, value, onClick }: { label: string; value?: string; onClick: () => void }) {
   return (
@@ -804,5 +913,23 @@ function HubRow({ label, value, onClick }: { label: string; value?: string; onCl
         <ChevronRight size={16} aria-hidden className="shrink-0" />
       </span>
     </Pressable>
+  );
+}
+
+/** An inline switch row, for a preference with nothing to drill into. */
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="w-full min-h-11 flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium cursor-pointer select-none">
+      <span>{label}</span>
+      <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </label>
   );
 }

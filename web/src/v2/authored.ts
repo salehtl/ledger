@@ -159,9 +159,25 @@ function editedCopy(t: Txn, payload: unknown): Txn {
  * not move until a sync round-trips (`writer.ts:28-30`), and `bank_declared` is
  * one keyed op per bank rather than a whole-set replace (spec §3.3), so a
  * screen reading the projection alone never sees the second toggle in one
- * sitting. `pending` rather than `authoredBy` because there is no push/fold
- * window to bridge here — Settings mounts fresh each visit, so the ops it needs
- * are always still in the outbox.
+ * sitting.
+ *
+ * # `pending` and not `authoredBy`, with the gap this leaves stated exactly
+ *
+ * The push/fold window at the top of this file is NOT closed for banks. Between
+ * the ack that empties `pending` and the fold that moves the projection, a
+ * render landing in that gap draws the pre-toggle list, and Settings is a screen
+ * that re-renders on its own (the sync phase, and a 30 s clock on the sync
+ * line). So a bank toggled and immediately synced can visibly flip back for as
+ * long as the fold takes.
+ *
+ * It is left open rather than half-closed. {@link Authored.answers} expires on
+ * the version its op produces and {@link Authored.created} expires on the row
+ * existing; a declaration has NEITHER — `readBanks` returns `bank -> active`
+ * with no version — so a bank memory would have no evidence it could outgrow,
+ * and one that never expires would keep overriding a *peer's* later declaration
+ * for the life of the tab. Flicker is the smaller wrong. Closing it properly
+ * means folding this device's own ops locally on emit, which is the engine
+ * change the note above declines to make here.
  */
 export function pendingBanks(pending: readonly Op[]): Map<string, boolean> {
   const out = new Map<string, boolean>();
