@@ -41,7 +41,10 @@
  */
 
 import { normalize, CURRENT_VERSION, type NormalizeResult } from "@ledger/client/norm/norm";
-import { platform } from "@ledger/client/platform";
+// The WEB platform, not the registry entry point: `@ledger/client/platform`
+// pulls in node:zlib and node:crypto, which vitest resolves happily and a
+// browser build refuses outright. Every other file in web/ imports this one.
+import { webPlatform } from "@ledger/client/platform.web";
 import { compileDefinition, produced, validateExtraction, type Definition, type Extraction } from "@ledger/client/tmpl/exec";
 
 import type { QuarantineItem } from "../onboardingIO";
@@ -73,7 +76,7 @@ export interface Prefill {
 
 /** The blob, decoded. Throws on anything that is not base64 or is too big. */
 export function decodeBlob(base64: string): Uint8Array {
-  const bytes = platform().fromBase64(base64);
+  const bytes = webPlatform.fromBase64(base64);
   if (bytes.length > MAX_BLOB_BYTES) throw new Error("that message is larger than ledger stores");
   return bytes;
 }
