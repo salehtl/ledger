@@ -216,6 +216,41 @@ var seeders = map[string]seeder{
 		exec(t, pool, `INSERT INTO user_key_wraps (user_id, credential_id, wrapped, wrap_version, created_at)
 		               VALUES ($1, $2, $3, 1, now())`, u, credential, randBytes(t, 159))
 	},
+	// The per-account isolation tables (00031, 00032). All four are plain
+	// user-scoped tables with ON DELETE CASCADE, so discovery finds them and the
+	// cascade empties them — but the completeness proof only bites for a table
+	// this map populates, so each is seeded with a row that would be wrong to
+	// leave behind:
+	//
+	//   account_usage       — how many bytes a forgotten person stored.
+	//   account_limits      — the ceiling an operator set for one named account.
+	//                         The DEFAULT row (user_id NULL) is not seeded and
+	//                         must survive: it is policy, not anyone's data.
+	//   account_refusals    — which days that account was hitting walls.
+	//   smtp_user_counters  — how much mail they were receiving.
+	"public.account_usage": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO account_usage (user_id, resource, amount) VALUES
+		                 ($1, 'oplog_hot_bytes', 2048),
+		                 ($1, 'oplog_cold_bytes', 0),
+		                 ($1, 'quarantine_bytes', 4),
+		                 ($1, 'quarantine_count', 1)
+		               ON CONFLICT (user_id, resource) DO UPDATE SET amount = EXCLUDED.amount`, u)
+	},
+	"public.account_limits": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO account_limits
+		                 (user_id, oplog_bytes, quarantine_bytes, quarantine_count)
+		               VALUES ($1, 1024, 512, 8)`, u)
+	},
+	"public.account_refusals": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO account_refusals (user_id, day, resource, count)
+		               VALUES ($1, current_date, 'oplog_hot_bytes', 3)`, u)
+	},
+	"public.smtp_user_counters": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO smtp_user_counters
+		                 (user_id, kind, reason, window_seconds, window_start, cur, prev)
+		               VALUES ($1, 'messages', '', 86400, now(), 5, 1),
+		                      ($1, 'notice', 'over_quota', 86400, now(), 1, 0)`, u)
+	},
 	"public.user_consent": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO user_consent (user_id, document, signed_at, retention_until)
 		               VALUES ($1, 'alpha-plaintext-v1', now(), now() + interval '90 days')
@@ -450,6 +485,48 @@ func TestPurgeLeavesTheAggregateRejectionCountsAlone(t *testing.T) {
 	}
 	if n := countRows(t, pool, `SELECT count FROM smtp_rejections WHERE reason = 'unknown_rcpt'`); n != 7 {
 		t.Fatalf("smtp_rejections count is %d, want 7 — it is an aggregate with no user to purge", n)
+	}
+}
+
+// The isolation tables (00031, 00032) go with the account, and the DEFAULT
+// limit policy does not.
+//
+// Both halves matter and they fail in opposite directions. A surviving
+// account_usage row is a record of how much a forgotten person stored, and it
+// would also be counted against the next account to be issued that uuid. A
+// DELETED default policy row is worse: it is the only ceiling every account
+// without an override has, so losing it to somebody else's deletion breaks
+// admission for the whole box. account_limits.user_id is nullable precisely so
+// one table can hold both, which makes "the cascade took the right rows" a
+// thing worth asserting rather than assuming.
+func TestPurgeTakesTheIsolationLedgerAndLeavesTheDefaultPolicy(t *testing.T) {
+	pool := pgtest.New(t)
+	d := testDict(t, pool)
+	u := seedAFullyPopulatedUser(t, pool, "purge-me")
+	bystander := seedAFullyPopulatedUser(t, pool, "leave-me")
+
+	for _, table := range []string{"account_usage", "account_limits", "account_refusals", "smtp_user_counters"} {
+		if n := rowsFor(t, pool, rel(table), u); n == 0 {
+			t.Fatalf("%s was not seeded for the account being purged", table)
+		}
+	}
+
+	if _, err := Purge(bg, pool, d, u); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	for _, table := range []string{"account_usage", "account_limits", "account_refusals", "smtp_user_counters"} {
+		if n := rowsFor(t, pool, rel(table), u); n != 0 {
+			t.Errorf("%s still holds %d rows for the purged account", table, n)
+		}
+		if n := rowsFor(t, pool, rel(table), bystander); n == 0 {
+			t.Errorf("%s lost the OTHER account's rows", table)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM account_limits WHERE user_id IS NULL`); n != 1 {
+		t.Fatalf("the default limit policy row count is %d, want 1 — every account without "+
+			"an override depends on it and it belongs to nobody", n)
 	}
 }
 
