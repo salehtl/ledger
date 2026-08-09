@@ -154,7 +154,23 @@ export function Home({ budgetSource, txnSource }: HomeProps) {
                     </span>
                     <span className="tnum text-muted">{formatMinor(s.buckets[bucket])}</span>
                   </div>
-                  <ProgressBar pct={share(s.buckets[bucket])} label={`${BUCKET_LABEL[bucket]} share of spending`} />
+                  {/*
+                    `status="under"` — the neutral ink — because this bar is a
+                    SHARE and not a budget. `pct` here is one bucket's share of
+                    spending, so a
+                    month where everything went into Needs is `pct === 1.0` —
+                    and with no status `derivePaceStatus` reads that
+                    geometrically, returns "overbudget", and paints the bar in
+                    the over-budget red. Nothing was over anything: this account
+                    has no budget for the bar to exceed, and the plan percentage
+                    is stated underneath it as its own line. Red here is the app
+                    telling a user they overspent a limit they never set.
+                  */}
+                  <ProgressBar
+                    pct={share(s.buckets[bucket])}
+                    status="under"
+                    label={`${BUCKET_LABEL[bucket]} share of spending`}
+                  />
                   <div className="flex items-center justify-between mt-1.5 text-xs">
                     <span className="text-muted">{s.split[bucket]}% of the plan</span>
                     <span className="tnum text-muted">{Math.round(share(s.buckets[bucket]) * 100)}% of spending</span>

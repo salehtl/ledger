@@ -35,7 +35,7 @@
  */
 
 import { useMemo } from "react";
-import { useQuery, type QueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, type QueryClient, type UseQueryResult } from "@tanstack/react-query";
 import type { CategoryDef, Rule } from "@ledger/client/replay/state";
 
 import { useV2 } from "./BootGate";
@@ -430,9 +430,28 @@ export function useCategoryChoices(source: ReviewSource | null): UseQueryResult<
   });
 }
 
+/**
+ * The transaction list, and the one query in here that keeps its last answer.
+ *
+ * The filters and the limit are both in the query key, so every segment tap,
+ * every keystroke in the search field and every "Show older" produces a key
+ * react-query has never seen — and with no placeholder that means `data` goes
+ * `undefined`, the screen falls to its skeleton, and the scroll position goes
+ * with it. Typing a merchant name tore the list down once per character.
+ *
+ * `keepPreviousData` holds the previous rows on the glass, marked stale, while
+ * the new read runs. This is a local SQLite projection, so that read is
+ * milliseconds: the flicker it removes was never covering a real wait.
+ *
+ * Deliberately here and not in `PROJECTION_QUERY`: the other projection queries
+ * are keyed on things that do not change while the user is looking at them, and
+ * a placeholder on a query whose key changes because the ACCOUNT changed would
+ * show one account's data under another's heading.
+ */
 export function useTxnList(source: TxnSource | null, filters: TxnFilters, limit: number): UseQueryResult<TxnPage> {
   return useQuery({
     ...PROJECTION_QUERY,
+    placeholderData: keepPreviousData,
     queryKey: v2Keys.transactions({
       from: filters.from,
       to: filters.to,
