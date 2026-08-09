@@ -180,6 +180,46 @@ export async function audit(page) {
       }
     }
 
+    /*
+     * ---- 3b. content cut off sideways by a container that cannot scroll ----
+     *
+     * Check 3 above only looks at LEAF text nodes whose own box clips, so it
+     * misses the commoner shape: a container with `overflow-hidden` whose
+     * CHILDREN run past its edge. At 320px that hid three real defects on
+     * screens the rest of this file called clean — the "Buckets / Categories /
+     * Merchants" control losing "Merchants", the Insights card losing the
+     * "Saved" figure off its right edge, and a category row rendering "Housing"
+     * as "Ho…" because a seven-figure amount took the rest of the line.
+     *
+     * `hidden` and `clip` only. An `auto`/`scroll` container whose content is
+     * wider is not cut off — the user can reach it — which is the whole
+     * distinction, and reporting those would bury the real ones.
+     */
+    for (const el of all) {
+      if (!visible(el) || srOnly(el) || intentionalClip(el)) continue;
+      const s = getComputedStyle(el);
+      if (!["hidden", "clip"].includes(s.overflowX)) continue;
+      const cut = el.scrollWidth - el.clientWidth;
+      if (cut <= 1) continue;
+      // A leaf that ellipsises is check 3's business and is handled deliberately.
+      if (el.children.length === 0 && s.textOverflow === "ellipsis") continue;
+      // Name what is actually being lost, so the finding is actionable rather
+      // than "some box is too wide".
+      const lost = [...el.children]
+        .filter(visible)
+        .map((c) => ({ c, over: Math.round(c.getBoundingClientRect().right - el.getBoundingClientRect().right) }))
+        .filter((x) => x.over > 1)
+        .sort((a, b) => b.over - a.over)[0];
+      issues.push({
+        kind: "content-clipped-horizontally",
+        severity: cut > 8 ? "high" : "medium",
+        el: describe(el),
+        detail:
+          `content is ${el.scrollWidth}px in a ${el.clientWidth}px box — ${cut}px is cut off and cannot be scrolled to` +
+          (lost === undefined ? "" : `; worst child ${describe(lost.c)} ends ${lost.over}px past the edge`),
+      });
+    }
+
     // ---- 4. interactive elements -----------------------------------------
     const INTERACTIVE =
       'button, a[href], input, select, textarea, [role="button"], [role="switch"], [role="tab"], [tabindex]:not([tabindex="-1"])';

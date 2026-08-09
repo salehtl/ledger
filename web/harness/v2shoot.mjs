@@ -239,6 +239,17 @@ try {
       await gotoTab(page, "Home");
       await openSettings(page);
       for (const { id: dialogId, match, optional = false } of SETTINGS_DIALOGS) {
+        // Re-assert Settings before every opener. Closing a sheet can take the
+        // panel underneath with it — Escape reaches more than one listener, and
+        // the tip inside a sheet has its own — and the symptom is six rows in a
+        // row "not on Settings" when what is not there is Settings. `openSettings`
+        // is idempotent, so this is a no-op in the normal case and a repair in
+        // the other, and it says which.
+        if ((await page.getByRole("heading", { name: "Settings", level: 1 }).count()) === 0) {
+          console.log(`  !!  ${pass.id}/dialog:${dialogId} — Settings was no longer open; reopening`);
+          await gotoTab(page, "Home");
+          await openSettings(page);
+        }
         const opener = page.getByRole("button", { name: match }).first();
         if ((await opener.count()) === 0) {
           // Not a skip to shrug at unless the entry says so: every other row in

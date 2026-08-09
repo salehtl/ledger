@@ -136,10 +136,17 @@ export function PasskeysPanel({ list, remove, reloadKey = 0 }: PasskeysPanelProp
         {entries.map((p) => (
           <li key={p.credentialId} data-testid="passkey-row" className="py-2.5 flex items-center justify-between gap-3">
             <div className="min-w-0 space-y-0.5">
-              <p className="text-sm font-medium truncate">
-                {passkeyName(p)}
+              {/* The NAME truncates; the badge does not.
+                  `truncate` on the shared parent set `overflow: hidden` over
+                  both, and `text-overflow: ellipsis` only ever applies to the
+                  text — so at 320px the ellipsis landed correctly and the
+                  "This device" pill beside it was sliced 3px short instead.
+                  Splitting them lets the name give way and keeps the marker
+                  that says which passkey you are holding whole. */}
+              <p className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                <span className="truncate">{passkeyName(p)}</span>
                 {p.current && (
-                  <span className="ml-2 align-middle">
+                  <span className="shrink-0">
                     <Pill tone="muted">This device</Pill>
                   </span>
                 )}
