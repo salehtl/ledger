@@ -142,6 +142,95 @@ provider confirming — must offer a way forward that does not require the event
 For verification that means: skip, come back later, and a visible explanation of
 what is still missing.
 
+## 3b. Ask nothing that can be inferred
+
+The operator's words:
+
+> "I need the user to have ledger up and running quick without unnecessary decision
+> making. I don't need them to specify which bank they use if we can parse their
+> email and select the correct template later or log that we need to create one. I
+> don't want them to specify which mail service provider if this is not 100%
+> needed and we can figure it out later. Any steps we can infer later, let's set up
+> reliable systems to do so."
+
+**The rule: onboarding asks only what cannot be inferred and cannot be deferred.**
+Every other question is a decision the app is making the user carry.
+
+### Which bank — remove it entirely
+
+**Verified in the code: the declared bank list never reaches parsing.** Templates
+are selected by the message's own **verified domain**
+(`internal/v2/ingest/pipeline.go:618`, `templatesFor(ctx, domain)`); nothing in
+`internal/v2/tmpl` or the pipeline reads what the user declared. The question is
+UI habit, not a functional requirement.
+
+So the bank list is **inferred from the mail**, and the declaration becomes a
+consequence rather than a prerequisite:
+
+- The first message from a verified domain establishes the bank. The projection
+  gains it without anyone being asked.
+- Settings still shows the list, now as *what ledger has seen*, editable — the
+  user can correct or remove an entry.
+- **When no published template matches**, the heuristic tier runs, the transaction
+  lands in review as it does today, and the system **records that a template is
+  needed** for that domain. That signal already has somewhere to go: the operator
+  console surfaces template health and the donated-format queue, and
+  `parse_diagnostics` already carries sender domains. Wire it, do not invent it.
+
+The failure mode this removes is real: today a user who picks the wrong bank, or
+whose bank is not on the list, has told the app something false, and the app
+learns nothing from the mail that would correct it.
+
+### Which mail provider — do not ask
+
+The provider is asked only to tailor the forwarding instructions. That does not
+justify a decision screen, because a wrong answer costs the user the correct
+instructions and the app cannot tell.
+
+Instead: **one generic instruction set**, true for every provider — "make a rule
+in your mailbox that forwards mail from your bank to this address" — with
+provider-specific help available as an **optional expander**, not a fork in the
+walk. Choosing Gmail becomes a hint the user may take, never a state the account
+records.
+
+The one provider-specific fact that matters is the confirmation email, and it can
+be stated generically and truthfully: *if your provider sends a confirmation, it
+will appear in Held mail.*
+
+The provider is then **inferred after the fact** from the outer domain and the ARC
+seal of the first arriving message — evidence, not a claim — and used to tailor
+any later help.
+
+### Home currency, budget split, monthly total — default, then ask when it means something
+
+- **Home currency**: default from the device locale, and correct it from the
+  currency the transactions actually arrive in.
+- **Budget split**: default 50/30/20. That is the app's whole premise; it needs no
+  ceremony to adopt.
+- **Monthly total**: the one number with no honest default. **Do not ask for it in
+  onboarding.** Ask once there is data — a user who has seen a week of their own
+  spending can answer it, and a user on their first screen is guessing.
+
+### What is left
+
+Invite. Passkey. Recovery phrase. The address and the forwarding rule. Nothing
+else is a question.
+
+### The inference systems this depends on
+
+These are the "reliable systems" the operator asked for, listed so the plan builds
+them rather than assuming them:
+
+| Inferred | From | State |
+|---|---|---|
+| the bank | the verified signing domain of arriving mail | **exists** — templates already key on it |
+| a missing template | no published template matched a verified domain | partly exists; needs the signal wired to the console |
+| the mail provider | outer domain and ARC seal of the first message | new, small |
+| home currency | device locale, then observed transaction currency | new, small |
+
+Each must **degrade quietly**: an inference that cannot be made leaves the setting
+unset and the app working, never a modal asking the user to resolve it.
+
 ## 4. What does not change
 
 - **Account creation stays a gate.** Invite, passkey, keys. There is no account
