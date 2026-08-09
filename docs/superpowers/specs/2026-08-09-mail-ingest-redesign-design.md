@@ -253,6 +253,43 @@ live alerts would regress to "caught up when you open the app".
 It remains available later as an **additive** fast path for Gmail users. It would
 author the same client-side ops lanes 2 and 3 author. Nothing here forecloses it.
 
+### The operator's variant, recorded for the future (2026-08-09)
+
+> "In the future I want the app to have a path to access users' Gmails directly
+> with their consent. We could guide them to create a txn mailbox which the app is
+> hard scoped to only. This is a future addition. For now let's keep at the same
+> approach."
+
+**This is a materially better version of the idea than the one rejected above**,
+and the reason is worth writing down while it is fresh.
+
+The objection to reading a user's mailbox is not really technical. It is that
+`gmail.readonly` grants the whole mailbox — every personal message — to obtain the
+handful that are bank alerts. The scope is enormously wider than the purpose, and
+no amount of good behaviour on our side changes what the grant permits.
+
+Guiding the user to a **dedicated transaction mailbox** collapses that gap. The
+account the app can read contains only what the user forwarded into it, so the
+grant's breadth stops mattering: the mailbox *is* the scope. It also removes the
+awkwardness of the app seeing personal mail it has no business seeing, which is
+the objection a careful user would raise first.
+
+It keeps the advantages that made the idea attractive: no forwarding-confirmation
+step, no inbound address, no SMTP quota, no per-message trust problem — because
+mail fetched from the provider's API arrives with the provider's own
+`Authentication-Results` intact, written at original delivery, rather than
+surviving a forward. And "import my last 12 months" becomes a date-range query
+instead of a bulk-forwarding exercise.
+
+What it still costs, unchanged and still real: a browser cannot speak IMAP, so it
+is Gmail and Microsoft Graph or nothing; `gmail.readonly` needs Google
+verification plus an annual security assessment; and a PWA only fetches while it
+is open, so live alerts degrade to "caught up when you open the app".
+
+**Not now.** It is recorded here so that the current design is not built in a way
+that blocks it. It does not: lanes 2 and 3 already author ops client-side, which
+is the shape this variant needs.
+
 ---
 
 ## 5. Migration
