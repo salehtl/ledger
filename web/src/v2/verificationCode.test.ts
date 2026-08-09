@@ -69,10 +69,11 @@ const gmailScan = () => scanForCode(GMAIL, { linkHost: GOOGLE });
 // ---------------------------------------------------------------------------
 
 describe("couldBeConfirmation", () => {
-  const item = (outerDomain: string, innerDomain = "", attested = true) => ({
+  const item = (outerDomain: string, innerDomain = "", dkim = "pass", arc = "pass") => ({
     outerDomain,
     innerDomain,
-    attested,
+    dkim,
+    arc,
   });
 
   it("qualifies a Google-sealed message with no inner origin", () => {
@@ -100,9 +101,33 @@ describe("couldBeConfirmation", () => {
     expect(couldBeConfirmation(item("   "))).toBe(false);
   });
 
-  /** Decoded as `=== true`, so a field this build failed to read never qualifies. */
-  it("refuses a message nothing attested", () => {
-    expect(couldBeConfirmation(item("google.com", "", false))).toBe(false);
+  /** Compared as `=== "pass"`, so a verdict this build failed to read never qualifies. */
+  it("refuses a message no signature verified", () => {
+    expect(couldBeConfirmation(item("google.com", "", "fail", "none"))).toBe(false);
+    expect(couldBeConfirmation(item("google.com", "", "none", "none"))).toBe(false);
+    expect(couldBeConfirmation(item("google.com", "", "", ""))).toBe(false);
+  });
+
+  /** Either signature alone is enough — they are alternatives, not a pair. */
+  it("qualifies on DKIM alone, and on ARC alone", () => {
+    expect(couldBeConfirmation(item("google.com", "", "pass", "none"))).toBe(true);
+    expect(couldBeConfirmation(item("google.com", "", "none", "pass"))).toBe(true);
+  });
+
+  /**
+   * THE live bug, 2026-08-09, which blocked the operator out of his own app.
+   *
+   * Gmail's forwarding confirmation is sent DIRECT from google.com: dkim=pass,
+   * arc=pass, and `attested=false`, because attestation means "a bank is visible
+   * BEHIND a relay" and a direct message has no relay. The old predicate began
+   * `if (!item.attested) return null`, so the one message onboarding cannot
+   * proceed without was the one message it refused to offer. Shape taken from the
+   * real held row.
+   */
+  it("qualifies Gmail's own confirmation, which is direct and therefore unattested", () => {
+    const realShape = { outerDomain: "google.com", innerDomain: "", dkim: "pass", arc: "pass" };
+    expect(couldBeConfirmation(realShape)).toBe(true);
+    expect(verifiedOuterDomain(realShape)).toBe("google.com");
   });
 
   /**
@@ -118,16 +143,17 @@ describe("couldBeConfirmation", () => {
 
 describe("verifiedOuterDomain", () => {
   it("is the folded outer domain when, and only when, it is verified", () => {
-    expect(verifiedOuterDomain({ outerDomain: "Mail.Google.COM.", attested: true })).toBe("mail.google.com");
-    expect(verifiedOuterDomain({ outerDomain: "unverified:dib.ae", attested: true })).toBeNull();
-    expect(verifiedOuterDomain({ outerDomain: "dib.ae", attested: false })).toBeNull();
-    expect(verifiedOuterDomain({ outerDomain: "", attested: true })).toBeNull();
+    const pass = { dkim: "pass", arc: "pass" };
+    expect(verifiedOuterDomain({ outerDomain: "Mail.Google.COM.", ...pass })).toBe("mail.google.com");
+    expect(verifiedOuterDomain({ outerDomain: "unverified:dib.ae", ...pass })).toBeNull();
+    expect(verifiedOuterDomain({ outerDomain: "dib.ae", dkim: "fail", arc: "none" })).toBeNull();
+    expect(verifiedOuterDomain({ outerDomain: "", ...pass })).toBeNull();
   });
 
   /** Not a hostname, so nothing built from it could be one either. */
   it("refuses anything that is not a bare hostname", () => {
     for (const d of ["dib.ae/evil", "dib.ae:8080", "a@dib.ae", "dib ae", "dib.ae?x", `${"a".repeat(254)}.ae`]) {
-      expect({ d, got: verifiedOuterDomain({ outerDomain: d, attested: true }) }).toEqual({ d, got: null });
+      expect({ d, got: verifiedOuterDomain({ outerDomain: d, dkim: "pass", arc: "pass" }) }).toEqual({ d, got: null });
     }
   });
 });
