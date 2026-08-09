@@ -49,7 +49,7 @@
  * its own button, which outlives the row that produced it.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiError } from "@ledger/client/net/client";
 
@@ -66,12 +66,19 @@ import {
   confirmSender,
   deletionNotice,
   readQuarantine,
+  readTemplateDefinitions,
   trustBasis,
   trustRequest,
   type QuarantineItem,
+  type TemplateDefinition,
   type TokenSource,
   type TrustScope,
 } from "../v2/onboardingIO";
+import { deckCategories } from "../v2/reviewDeck";
+import { useCategoryChoices, useHomeCurrency, useReviewSource, useTxnFacets, useTxnSource } from "../v2/queries";
+import { decodeBlob, prefillFromHeld, type Prefill } from "../v2/sources/heldMessage";
+import { useWriter } from "../v2/writer";
+import { HeldMessageSheet } from "./HeldMessageSheet";
 
 export interface QuarantineProps {
   /** The bearer-token source. Defaults to the gate's client. */
@@ -98,6 +105,24 @@ export function Quarantine({ client: injected, sync, server, fetch: doFetch, now
   const [message, setMessage] = useState("");
   const [open, setOpen] = useState<QuarantineItem | null>(null);
   const [partial, setPartial] = useState<Partial | null>(null);
+  /** Lane 2: the message being read by hand, and what could be read out of it. */
+  const [reviewing, setReviewing] = useState<QuarantineItem | null>(null);
+  const [prefill, setPrefill] = useState<Prefill | null>(null);
+
+  const writer = useWriter();
+  const txnSource = useTxnSource();
+  const reviewSource = useReviewSource();
+  const homeCurrency = useHomeCurrency(txnSource);
+  const facets = useTxnFacets(txnSource);
+  const choices = useCategoryChoices(reviewSource);
+  const categoryNames = useMemo(
+    () => deckCategories(choices.data?.categories ?? [], choices.data?.categoryDefs ?? []).map((c) => c.Name),
+    [choices.data],
+  );
+  const currencyOptions = useMemo(
+    () => [...new Set([homeCurrency ?? "AED", ...(facets.data?.currencies ?? [])])],
+    [homeCurrency, facets.data],
+  );
 
   const io = { ...(server === undefined ? {} : { server }), ...(doFetch === undefined ? {} : { fetch: doFetch }) };
 
@@ -120,6 +145,61 @@ export function Quarantine({ client: injected, sync, server, fetch: doFetch, now
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Lane 2: fetch this one message's raw bytes and read them HERE.
+   *
+   * `?include_blob=1` is a page-level flag, so the page is re-fetched with it
+   * and the one item picked out — the alternative is a per-item route the server
+   * does not have. The templates come down with it and are executed on this
+   * device; nothing about the message is sent anywhere, and no verdict is asked
+   * for or accepted.
+   *
+   * A failure is a `reason` on an empty form rather than an error screen: the
+   * fallback for this lane is plain manual entry, and a panel that refused to
+   * open would take that away too.
+   */
+  const review = useCallback(
+    async (item: QuarantineItem): Promise<void> => {
+      if (client === null) return;
+      setReviewing(item);
+      setPrefill(null);
+      setOpen(null);
+      let templates: readonly TemplateDefinition[] = [];
+      try {
+        const [page, published] = await Promise.all([
+          readQuarantine(client, { includeBlob: true }, io),
+          readTemplateDefinitions(client, io).catch(() => [] as TemplateDefinition[]),
+        ]);
+        templates = published;
+        const held = page.items.find((i) => i.id === item.id);
+        const blob = held?.blob ?? "";
+        if (blob === "") {
+          setPrefill({
+            body: "",
+            subject: "",
+            claimedFrom: "",
+            draft: null,
+            templateId: null,
+            reason: "ledger no longer has this message's text. You can still add the transaction yourself.",
+          });
+          return;
+        }
+        setPrefill(prefillFromHeld({ item, raw: decodeBlob(blob), templates }));
+      } catch {
+        setPrefill({
+          body: "",
+          subject: "",
+          claimedFrom: "",
+          draft: null,
+          templateId: null,
+          reason: "ledger could not fetch this message. You can still add the transaction yourself.",
+        });
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client, server, doFetch],
+  );
 
   const confirm = useCallback(
     async (domain: string, scope: TrustScope): Promise<void> => {
@@ -243,7 +323,37 @@ export function Quarantine({ client: injected, sync, server, fetch: doFetch, now
         </div>
       )}
 
-      {open !== null && <TrustSheet item={open} busy={busy} onClose={() => setOpen(null)} onConfirm={confirm} />}
+      {open !== null && (
+        <TrustSheet
+          item={open}
+          busy={busy}
+          onClose={() => setOpen(null)}
+          onConfirm={confirm}
+          onReview={() => void review(open)}
+        />
+      )}
+
+      {/* Lane 2. It writes no allowlist row and promotes nothing: the message is
+          still held after this panel closes, whatever the user does in it. */}
+      {reviewing !== null && (
+        <HeldMessageSheet
+          item={reviewing}
+          prefill={prefill}
+          homeCurrency={homeCurrency ?? "AED"}
+          categories={categoryNames}
+          currencies={currencyOptions}
+          writer={writer}
+          onClose={() => {
+            setReviewing(null);
+            setPrefill(null);
+          }}
+          onAdded={() => {
+            setReviewing(null);
+            setPrefill(null);
+            setMessage("Added to your ledger. This message is still held — nothing was trusted.");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -261,11 +371,14 @@ function TrustSheet({
   busy,
   onClose,
   onConfirm,
+  onReview,
 }: {
   item: QuarantineItem;
   busy: boolean;
   onClose: () => void;
   onConfirm: (domain: string, scope: TrustScope) => Promise<void>;
+  /** Lane 2: read this message by hand. Trusts nothing and promotes nothing. */
+  onReview: () => void;
 }) {
   const basis = trustBasis(item);
   const request = trustRequest(item);
@@ -325,6 +438,20 @@ function TrustSheet({
         >
           {request === null ? "Cannot trust unauthenticated mail" : "Trust this sender"}
         </Button>
+
+        {/*
+          The second action, and the only one an unverifiable message has. It is
+          BELOW the trust decision and worded as work the user does — "yourself"
+          — because it grants no trust: the message stays held, no sender is
+          allowlisted, and the row it produces carries exactly the authority a
+          hand-typed one carries.
+        */}
+        <Button variant="secondary" data-testid="held-review-open" disabled={busy} onClick={onReview}>
+          Add its transactions yourself
+        </Button>
+        <p className="-mt-2 text-xs leading-relaxed text-muted">
+          Opens the message so you can read it and type what it says. Nothing is trusted and the message stays here.
+        </p>
       </div>
     </Dialog>
   );

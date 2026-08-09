@@ -15,6 +15,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+import { setPlatform } from "@ledger/client/platform.registry";
+import { webPlatform } from "@ledger/client/platform.web";
+
 import { MotionProvider } from "../app/MotionProvider";
 import { Quarantine } from "./Quarantine";
 
@@ -66,19 +71,29 @@ function stub(handlers: { list?: unknown; confirm?: () => Response }) {
 }
 
 function mount(doFetch: ReturnType<typeof stub>, sync?: () => Promise<void>) {
+  // The screen reads the local projection for the category and currency lists
+  // its lane-2 form offers, so it needs a query client — there is no v2 runtime
+  // in these tests, so every one of those reads is disabled and answers null.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MotionProvider>
+      <QueryClientProvider client={qc}>
       <Quarantine
         client={CLIENT}
         fetch={doFetch as unknown as typeof fetch}
         now={() => NOW}
         {...(sync === undefined ? {} : { sync })}
       />
+      </QueryClientProvider>
     </MotionProvider>,
   );
 }
 
 beforeEach(() => {
+  // `main.tsx` registers this before first paint. Lane 2 decodes a base64 blob
+  // through the platform seam, so a test without it exercises the failure path
+  // rather than the screen.
+  setPlatform(webPlatform);
   vi.stubGlobal("fetch", () => {
     throw new Error("the screen must use the injected fetch");
   });
@@ -198,5 +213,52 @@ describe("Quarantine", () => {
     await user.click(await screen.findByTestId("quarantine-row-q1"));
     await user.click(await screen.findByRole("button", { name: "Trust this sender" }));
     expect(await screen.findByTestId("quarantine-message")).toHaveTextContent(/mail provider, not your bank/i);
+  });
+});
+
+/**
+ * Lane 2. A held message the trust model cannot verify gains one action: the
+ * user reads it and types the transaction. Nothing here promotes anything.
+ */
+describe("adding a transaction from a held message", () => {
+  const RAW =
+    "From: alerts@mailer.example\r\n" +
+    "Subject: Transaction alert\r\n" +
+    "Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+    "You spent AED 125.00 at CARREFOUR MALL.\r\n";
+
+  /** The quarantine page, the blob page and the template set, on one stub. */
+  function lane2Fetch(calls: string[]) {
+    return vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      calls.push(href);
+      if (href.includes("/api/v1/templates")) return new Response(JSON.stringify({ templates: [] }));
+      const item = href.includes("include_blob=1") ? { ...UNVERIFIED, blob: btoa(RAW) } : UNVERIFIED;
+      return new Response(JSON.stringify({ items: [item], action_needed: 1, expiring_soon: 0 }));
+    });
+  }
+
+  it("opens the message, asks for the blob, and never touches the confirm route", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    mount(lane2Fetch(calls) as unknown as ReturnType<typeof stub>);
+
+    await user.click(await screen.findByTestId("quarantine-row-q2"));
+    await user.click(await screen.findByTestId("held-review-open"));
+
+    // The body reaches the glass, as text.
+    expect(await screen.findByTestId("held-body")).toHaveTextContent("CARREFOUR MALL");
+    // Fetched with the opt-in flag, and with no confirmation anywhere: this
+    // lane never writes an allowlist row.
+    expect(calls.some((c) => c.includes("include_blob=1"))).toBe(true);
+    expect(calls.some((c) => c.includes("/quarantine/confirm"))).toBe(false);
+  });
+
+  it("says nothing was filled in when the server publishes no template for the sender", async () => {
+    const user = userEvent.setup();
+    mount(lane2Fetch([]) as unknown as ReturnType<typeof stub>);
+    await user.click(await screen.findByTestId("quarantine-row-q2"));
+    await user.click(await screen.findByTestId("held-review-open"));
+    expect(await screen.findByTestId("held-reason")).toHaveTextContent("nothing was filled in");
   });
 });

@@ -879,6 +879,16 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `unsupported_edit_field`.
   Reach for it only on projection-backed screens; v1's `AddTransactionSheet`
   stays with the v1 REST screens.
+- `ManualTxnFields` (`transactions/ManualTxnSheet.tsx`) — the same six fields
+  **without** the `Dialog` around them, for a panel that has to show something
+  else beside the form. `screens/HeldMessageSheet.tsx` is the one caller: it puts
+  a held message's text and this form in ONE Dialog, and the catalog's
+  Dialog-only rule meant nesting a second Dialog to reuse `ManualTxnSheet` was
+  not an option. Controlled — it takes `draft` and `onChange` and holds no state.
+  Pass `idPrefix` when a second form could ever be in the same document: the
+  labels are wired by `htmlFor`, and two forms sharing ids point every label at
+  the first one. Use it when you need the fields inside your own panel; use
+  `ManualTxnSheet` when you just want the sheet.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
   left = trailing. Full-swipe past the commit threshold fires it (haptic +
   spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is
