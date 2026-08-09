@@ -246,7 +246,9 @@ const HOSTILE_ROWS = [
   // productive fixture in v1's seed.
   ["2026-08-01", "EMIRATES NBD DIRECT DEBIT COLLECTION SERVICES MIDDLE EAST FZ LLC DUBAI AE", "-1250.75", "Bills"],
   // The widest string the formatter emits: 9,999,999.99 is 12 glyphs plus AED.
-  ["2026-08-02", "PROPERTY PURCHASE SETTLEMENT", "-9999999.99", "Housing"],
+  // Deliberately UNCATEGORISED, so it also reaches the review deck — that card
+  // sizes one hero number and is the surface most likely to clip it.
+  ["2026-08-02", "PROPERTY PURCHASE SETTLEMENT", "-9999999.99", ""],
   // Income, so the row renders the credit register and the sign flips.
   ["2026-08-02", "SALARY AUGUST", "28500.00", "Income"],
   // A category label long enough to wrap a chip and a filter pill.
