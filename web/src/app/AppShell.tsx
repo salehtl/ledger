@@ -41,7 +41,7 @@
  * state, you get a stack trace naming the cause.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import type { SecretStore } from "@ledger/client/store/store";
@@ -104,6 +104,42 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
 
   const qc = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);
+
+  /**
+   * Each tab starts at its own top, and the tab you are on scrolls back to it.
+   *
+   * All four tabs share ONE `<main>` scroller and their children swap without a
+   * key, so the scroll offset was shared between screens rather than belonging
+   * to any of them: scroll a third of the way down Transactions, tap Home, and
+   * Home opens a third of the way down — usually past its hero, occasionally
+   * on blank space when the new screen is shorter. Nothing anywhere zeroed it.
+   *
+   * The second half is the convention every iOS app has: **tapping the tab you
+   * are already on returns you to the top.** Without it the only way back up a
+   * long transaction list is to drag it there, and the gesture people reach for
+   * first does nothing at all.
+   *
+   * Smooth for the deliberate tap, instant for the switch — a switch is a
+   * different screen, and animating the scroll of content that is being
+   * replaced is motion with nothing behind it. Reduced motion is asked directly
+   * because this is a native scroll, not a Framer animation: `MotionConfig`
+   * does not reach it.
+   */
+  const navigate = useCallback(
+    (next: TabId) => {
+      if (next !== tab) {
+        setTab(next);
+        return;
+      }
+      const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+      mainRef.current?.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+    },
+    [tab],
+  );
+
+  useEffect(() => {
+    if (mainRef.current !== null) mainRef.current.scrollTop = 0;
+  }, [tab]);
 
   /**
    * A pull is a SYNC, not a refetch.
@@ -200,7 +236,7 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
             {tab === "review" && <Review onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />}
           </div>
         </main>
-        <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
+        <BottomNav active={tab} reviewCount={reviewCount} onNavigate={navigate} />
       </div>
       {overlays.map((o, i) => {
         // Panels stack — held mail opened from Settings leaves Settings mounted

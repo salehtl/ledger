@@ -97,6 +97,46 @@ describe("AppShell", () => {
     expect(await screen.findByRole("heading", { name: /^transactions$/i })).toBeInTheDocument();
   });
 
+  /**
+   * The four tabs share ONE `<main>` scroller and their children swap without a
+   * key, so the offset belonged to the shell rather than to any screen: scroll
+   * down Transactions, tap Home, and Home opened part-way down. jsdom has no
+   * layout, so the scroller is driven directly — what is under test is whether
+   * anything resets it, not how tall the content is.
+   */
+  it("opens each tab at its own top instead of inheriting the last screen's scroll", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    await screen.findByRole("heading", { name: /^transactions$/i });
+
+    const main = document.querySelector("main");
+    if (main === null) throw new Error("no main scroller");
+    main.scrollTop = 420;
+
+    fireEvent.click(screen.getByRole("button", { name: /^home$/i }));
+    await screen.findByRole("heading", { name: /^home$/i });
+    expect(main.scrollTop).toBe(0);
+  });
+
+  it("scrolls back to the top when the tab you are already on is tapped", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    await screen.findByRole("heading", { name: /^transactions$/i });
+
+    const main = document.querySelector("main");
+    if (main === null) throw new Error("no main scroller");
+    // jsdom does not implement scrollTo; record the call the same way a browser
+    // would act on it, so the assertion is about the shell asking, not about
+    // jsdom scrolling.
+    const asked: unknown[] = [];
+    main.scrollTo = ((opts: unknown) => asked.push(opts)) as typeof main.scrollTo;
+
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    expect(asked).toEqual([{ top: 0, behavior: expect.stringMatching(/^(smooth|auto)$/) }]);
+    // And it stays where it was — the tap is a scroll, not a remount.
+    expect(await screen.findByRole("heading", { name: /^transactions$/i })).toBeInTheDocument();
+  });
+
   it("offers the period stepper only where a period means something", async () => {
     wrap();
     // Home sums the whole log and Review is a state rather than a period —
