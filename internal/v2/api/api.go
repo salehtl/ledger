@@ -794,6 +794,14 @@ func (s *Server) Handler() http.Handler {
 			s.passkeyLimitedSession(s.handlePasskeyAddBegin))
 		mux.HandleFunc("POST /api/v1/auth/passkey/add/finish",
 			s.passkeyLimitedSession(s.handlePasskeyAddFinish))
+		// Seeing and removing what has been enrolled. On the same limiter budget
+		// as the ceremonies — they are session-authenticated, and the limiter
+		// runs before the session is resolved, which is the ordering argument
+		// passkeyLimitedSession documents. See passkeymanage.go.
+		mux.HandleFunc("GET /api/v1/auth/passkeys",
+			s.passkeyLimitedSession(s.handleListPasskeys))
+		mux.HandleFunc("DELETE /api/v1/auth/passkeys/{credential_id}",
+			s.passkeyLimitedSession(s.handleDeletePasskey))
 	}
 	mux.HandleFunc("POST /api/v1/writers/challenge", s.requireSession(s.handleChallenge))
 	mux.HandleFunc("POST /api/v1/writers/register", s.requireSession(s.handleRegister))
