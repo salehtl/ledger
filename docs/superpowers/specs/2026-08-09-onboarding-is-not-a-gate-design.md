@@ -82,6 +82,57 @@ when the list is empty or the user dismisses it.
 **It must be dismissible for good.** A checklist that returns is a nag, and the
 operator's standing instruction is that the app is already too intimidating.
 
+### Onboarding must never wait for a bank transaction
+
+The operator's words:
+
+> "Waiting for a txn to happen is not a good UX. We need the user to be onboarded
+> in an easier manner that does not depend on them making a txn."
+
+Today's verification step waits for a real bank alert to arrive. **A bank alert
+requires the user to spend money.** So completing setup depends on an event the
+user cannot cause on demand, may not cause for days, and should never be nudged
+into causing. That is the worst kind of blocking step: it is not slow, it is
+outside the user's control entirely.
+
+**The first-mail check becomes a status, not a step.** Setup finishes when the
+user has done their part — the rule is set — and not when the world responds.
+
+Four affordances replace the wait, in this order:
+
+1. **Proceed immediately.** After the forwarding rule is set, the user reaches the
+   product. The home screen carries a quiet line: "Waiting for your first bank
+   email." It resolves itself whenever mail arrives, hours or days later, with no
+   screen to return to.
+
+2. **Prove the pipe without a bank.** Offer "send anything to this address" as a
+   diagnostic. Any email the user sends themselves proves delivery end to end —
+   DNS, MX, the receiver, the account. It proves nothing about *trust*, and the
+   copy must say so plainly. It answers the real question a stuck user has, which
+   is "is this thing even on?"
+
+3. **Forward one old email, and get real data.** The user almost certainly has
+   months of bank alerts already sitting in their mailbox. Forwarding one lands it
+   in **lane 2** of the mail redesign, where it becomes a prefilled transaction
+   they confirm. This turns the wait into a first success: they see the app work,
+   with their own numbers, in under a minute, and they keep the transaction.
+
+4. **Import a file, and skip mail entirely.** **Lane 3 is the strongest answer to
+   this problem** and should be presented during onboarding, not buried in
+   Settings. A statement export populates months of history at once, so a new
+   account is a useful budgeting app before a single email has ever arrived.
+
+Together these mean a user can finish onboarding, see their own data, and
+understand whether mail is working — **without a transaction ever occurring.**
+
+### The provider's confirmation is a task, not a gate
+
+Where a provider emails a confirmation, that message is a **task with a link**,
+surfaced wherever the user is. It must not sit between them and the app. If it
+never arrives — refused by a quota, delayed, lost — the user still has the
+product, and the task stays outstanding with an honest explanation and a way to
+ask the provider to send it again.
+
 ### No step may become unreachable because of a bug in another step
 
 This is the direct lesson of today. Mail verification depended on a held message
