@@ -525,8 +525,13 @@ describe("the bank and address walk", () => {
   });
 
   /**
-   * The direct route, end to end through the real machine — and the step that
-   * used to sit at the end of it.
+   * The forwarding route, end to end through the real machine — and the step
+   * that used to sit at the end of it.
+   *
+   * This walked the DIRECT route until that route was retired
+   * (`Address.DIRECT_BANK_ROUTE`). It is the same walk either way: both routes
+   * always ended at the one `forwarding_declared` fact, which is what this test
+   * is actually about.
    *
    * Declaring the forward once walked the user onto a screen that waited for a
    * real bank alert, i.e. for them to spend money. Nothing about the product
@@ -541,8 +546,7 @@ describe("the bank and address walk", () => {
     const { doFetch } = scriptedFetch();
     mount({ ...invited(), banks: ["dib"], inboundAddress: ADDRESS }, rig, doFetch);
 
-    await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
-    await user.click(screen.getByRole("button", { name: /i have set this address with my bank/i }));
+    await user.click(await screen.findByRole("button", { name: /i have set up forwarding/i }));
 
     // No waiting screen, on a log with no transaction in it.
     expect(screen.queryByTestId("verification")).toBeNull();

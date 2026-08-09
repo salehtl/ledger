@@ -5,14 +5,31 @@
  * on one component, because they are one subject: here is your address, now send
  * mail to it. The `phase` prop picks which half is on screen.
  *
- * # There are two routes, and forwarding is the weaker one
+ * # There were two routes. One is retired, and it is retired, not deleted
  *
- * Most UAE banks let a customer set the address their alerts go to. That route
- * has no forwarder, no confirmation code, and no rule a provider can silently
- * switch off — which removes the largest availability risk in the product, a
- * forwarding rule that turns itself off after an outage with nobody noticing. So
- * it is offered first and named as the better one, and forwarding is the answer
- * for a bank that will not let the address be changed.
+ * Most UAE banks let a customer set the address their alerts go to, and that
+ * route has no forwarder, no confirmation code, and no rule a provider can
+ * silently switch off. On the availability argument alone it was the better one,
+ * and it was offered first and named as such.
+ *
+ * The argument was incomplete. A bank's alert address is also where that bank
+ * sends security alerts and one-time codes, and most banks keep exactly one. So
+ * the route asked the user to hand ledger their bank's only channel to them —
+ * "very dumb as it prevents them from managing their bank account", in the
+ * operator's words. The `Notice` under it half-admitted this and left the user
+ * to weigh it.
+ *
+ * So it is **sunset behind {@link DIRECT_BANK_ROUTE}, not deleted**, per the
+ * standing rule in this project: the operator decides how and whether a feature
+ * returns, and a route with a live user behind it is not a thing to delete. Its
+ * code, its tests and its copy — including that `Notice`, which is now the
+ * record of why it was retired — all stay.
+ *
+ * **Nobody is migrated and nobody is interrupted.** This screen only ever asked
+ * where mail would come from; it never wrote a rule anywhere. A user whose bank
+ * already writes to this address directly keeps working exactly as before —
+ * that mail verifies on the OUTER scope, on the verification screen, and this
+ * flag cannot reach it.
  *
  * Both routes end at the same `forwarding_declared` fact. The name is now wider
  * than the thing it describes, and that is preferred to renaming a milestone the
@@ -63,6 +80,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
+import { InfoTip } from "../../components/ui/InfoTip";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
 import { SectionLabel } from "../../components/ui/SectionLabel";
@@ -71,6 +89,21 @@ import { CONFIRMATION_TASK_COPY } from "../../v2/onboarding";
 import type { TokenSource } from "../../v2/onboardingIO";
 import { GENERIC, PROVIDERS, providerFor, type Provider } from "../../v2/providers";
 import { Notice, SkipStep, Step } from "./Shell";
+
+/**
+ * Whether "set this address with your bank directly" is offered at all.
+ *
+ * **Off.** See the header for why the route was retired and why it is still
+ * here. Flipping this back to `true` restores the route picker, the direct
+ * instructions, its caveat `Notice` and both ways to swap between the routes —
+ * nothing else in the product has to change, because both routes always ended
+ * at the same `forwarding_declared` fact.
+ *
+ * `AddressProps.directRoute` overrides it, which is how `Address.test.tsx` keeps
+ * testing a retired route: the copy and behaviour must not rot while it is off,
+ * or turning it back on ships something nobody has run.
+ */
+export const DIRECT_BANK_ROUTE = false;
 
 export interface AddressProps {
   client: TokenSource;
@@ -110,6 +143,8 @@ export interface AddressProps {
    * needs are the same instructions, not a second copy of them.
    */
   embedded?: boolean;
+  /** Overrides {@link DIRECT_BANK_ROUTE}. Tests only — see that flag. */
+  directRoute?: boolean;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -130,6 +165,7 @@ export function Address({
   fetch: doFetch,
   copy = writeClipboard,
   embedded = false,
+  directRoute = DIRECT_BANK_ROUTE,
 }: AddressProps) {
   const [address, setAddress] = useState<string | null>(known);
   const [failed, setFailed] = useState(false);
@@ -142,15 +178,18 @@ export function Address({
    */
   const [providerId, setProviderId] = useState<string | null>(null);
   /**
-   * How mail is going to reach ledger. `null` until the user says.
+   * How mail is going to reach ledger.
    *
-   * Deliberately not defaulted to forwarding: the direct route is the one with
-   * no rule to break, and defaulting would bury it under instructions for the
-   * fragile path. Both routes end at the same `forwarding_declared` fact,
-   * because the fact means "the user says mail will now arrive here" — the
-   * screen after it is what measures whether that is true.
+   * With {@link DIRECT_BANK_ROUTE} off there is one route, so this starts at
+   * `"forward"` and the picker is never drawn — an onboarding question with one
+   * answer is a tap the user gains nothing by making. With the flag on it starts
+   * `null`, which is the picker, deliberately not pre-answered.
+   *
+   * Both routes end at the same `forwarding_declared` fact, because the fact
+   * means "the user says mail will now arrive here" — the screen after it is
+   * what measures whether that is true.
    */
-  const [route, setRoute] = useState<"direct" | "forward" | null>(null);
+  const [route, setRoute] = useState<"direct" | "forward" | null>(directRoute ? null : "forward");
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -186,6 +225,9 @@ export function Address({
     }
   };
 
+  // The picker, and below it the direct route. Both are unreachable while
+  // `DIRECT_BANK_ROUTE` is off — `route` starts at `"forward"` and nothing on
+  // screen sets it back. Kept whole, running, and under test; see the header.
   if (phase === "forwarding" && route === null) {
     return (
       <Step
@@ -264,15 +306,25 @@ export function Address({
         testId="forwarding"
         embedded={embedded}
         title="Send your bank mail here"
+        /*
+          Not "the other way", and not "works with a bank that will not change
+          the address" — that was this route being described as the fallback for
+          a route that is gone, and copy that apologises for the only path is
+          copy that makes a user look for a better one. What stays is what a
+          privacy-conscious person weighs before doing it, which is the second
+          sentence and is not a candidate for a tip.
+        */
         intro="One forwarding rule in the mailbox your bank already writes to. ledger never sees the rest of that mailbox and never holds a password to it."
         footer={
           <>
             <Button variant="primary" onClick={() => onForwardingDeclared(provider.needsConfirmation)}>
               I have set up forwarding
             </Button>
-            <Button variant="ghost" onClick={() => setRoute("direct")}>
-              Set this address with my bank directly instead
-            </Button>
+            {directRoute && (
+              <Button variant="ghost" onClick={() => setRoute("direct")}>
+                Set this address with my bank directly instead
+              </Button>
+            )}
           </>
         }
       >
@@ -400,7 +452,25 @@ function ProviderPicker({ selected, onSelect }: { selected: string | null; onSel
   const rows = [...PROVIDERS, GENERIC];
   return (
     <div className="flex flex-col gap-2">
-      <SectionLabel as="h2">Where does your bank mail arrive?</SectionLabel>
+      <div className="flex items-center gap-1">
+        <SectionLabel as="h2">Where does your bank mail arrive?</SectionLabel>
+        {/*
+          What the list is and is not, moved off the glass.
+
+          It was a paragraph under the picker, and it changes nothing the user
+          does: every row leads to instructions either way, and "Another
+          provider" is right there for anyone not listed. It is a note about the
+          shape of the control, which is exactly what a tip is for.
+
+          It still stops at what is true. "ledger never learns which provider
+          you use" was the sentence this nearly became, and it is false: this
+          choice is never sent anywhere, but the server can see the domain that
+          signed a forwarded message, which is usually the provider.
+        */}
+        <InfoTip about="this list" testId="tip-provider-list">
+          Any provider that can forward mail works. This choice only picks which instructions you see.
+        </InfoTip>
+      </div>
       <div
         data-testid="provider-picker"
         className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border"
@@ -418,18 +488,6 @@ function ProviderPicker({ selected, onSelect }: { selected: string | null; onSel
           </Pressable>
         ))}
       </div>
-      {/*
-        Said plainly because the list is short on purpose: it is a shortcut to a
-        set of instructions, never a statement about which providers work.
-
-        And it stops at what is true. "ledger never learns which provider you
-        use" was the sentence this nearly became, and it is false: this choice
-        is never sent anywhere, but the server can see the domain that signed a
-        forwarded message, which is usually the provider.
-      */}
-      <p className="text-xs text-muted">
-        Any provider that can forward mail works. This choice only picks which instructions you see.
-      </p>
     </div>
   );
 }

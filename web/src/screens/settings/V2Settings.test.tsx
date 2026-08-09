@@ -706,7 +706,11 @@ describe("V2Settings", () => {
       await screen.findByTestId("settings-inbound-address");
       await user.click(screen.getByRole("button", { name: /forwarding instructions/i }));
       const dialog = await screen.findByRole("dialog");
-      expect(within(dialog).getByTestId("route-picker")).toBeInTheDocument();
+      // The forwarding instructions themselves, not a route picker: the
+      // bank-side route is retired (`Address.DIRECT_BANK_ROUTE`), so there is
+      // one path and nothing to choose between.
+      expect(within(dialog).getByTestId("provider-picker")).toBeInTheDocument();
+      expect(within(dialog).queryByTestId("route-picker")).toBeNull();
       expect(within(dialog).getByTestId("inbound-address").textContent).toBe("u-abc@in.sirdab.ae");
     });
 
