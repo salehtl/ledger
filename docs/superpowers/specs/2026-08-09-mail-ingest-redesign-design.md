@@ -56,12 +56,23 @@ email. That protects nothing. It converts evidence into friction.
 
 The server **will** trust a signature-verified outer domain: `Decide`'s outer path
 needs only `DKIM==pass || ARC==pass` plus a non-forwarder domain
-(`trust.go:140-167`), and `trust.go:288-294` calls this "the load-bearing path".
-But the client cannot create that allowlist row, because `trustBasis` demands
-`attested`, which is only ever set when a relay is visible
+(`trust.go:140-167`). But the client cannot create that allowlist row, because
+`trustBasis` demands `attested`, which is only ever set when a relay is visible
 (`internal/v2/origin/inner.go:318-320`).
 
-**The load-bearing trust path has no door in the user interface.**
+**The outer trust path has no door in the user interface.**
+
+> **Do not confuse this with the inner path, which works today.** Measured on the
+> live box: one iCloud rule auto-forward went arrival → attested → user-confirmed
+> at **inner** scope → reprocess → appended, on 2026-08-07. `sender_allowlist`
+> holds exactly one row, `dib.ae | inner`, and `quarantine_removals` records the
+> promotion. The inner door exists and has been used.
+>
+> The outer repair therefore serves a **different population**: users whose
+> forwarder we do not trust as a sealer — Proton, Yahoo, a corporate server — where
+> `relayDomain` is empty, nothing attests, and `Outer` becomes the **bank itself**.
+> Both are worth having. They are not the same thing, and the rest of this document
+> keeps them apart.
 
 ---
 
@@ -72,6 +83,7 @@ The third lane is not new trust. It is the trust the app already grants to typin
 | Lane | Path | Who verifies | Auto-append |
 |---|---|---|---|
 | 1. Verified | mailbox rule auto-forwards; bank DKIM survives | cryptography | yes |
+| 1b. Verified (outer) | a forwarder we do not seal-trust; the bank is the outer domain | cryptography | yes |
 | 2. Reviewed | any held message the model cannot verify | the human | no |
 | 3. Bulk | a file the user exports from their bank | the human | no |
 
@@ -92,8 +104,7 @@ check:** `Confirm`'s outer-scope predicate today is spelling-based — the match
 (`internal/v2/quarantine/quarantine.go:822-829`), and the `unverified:` prefix is
 the only shield. That is exactly the "verified as a property of how the value was
 spelled" failure `Decide` refuses for itself (`trust.go:77-86`). The work is to add
-the signature-verdict columns to that predicate, mirroring `Decide`. This is the same class of error `Decide` itself guards against: reading a
-value that was *derived* from a signature instead of the signature result.
+the signature-verdict columns to that predicate, mirroring `Decide`.
 
 The recommended setup becomes **a rule in the user's own mailbox**, never a change
 at the bank. The user keeps their own alerts and one-time codes. All copy
@@ -345,12 +356,29 @@ and `v2stack.sh` must pass `--dns-fixtures` or every message a harness posts is
 
 ## 8. Open questions
 
-- **This is task 1 of the build, not an open question left at the end.** That
-  mailbox-rule auto-forwarding preserves bank DKIM for DIB and ENBD specifically is
-  the premise of lane 1's entire value. The corpus supports it; it was not
-  re-verified against a fresh auto-forwarded sample. **Verify it with one real
-  sample before any lane-1 work begins.** If it turns out false, lane 1 is worth
-  nothing and lane 2 becomes the primary path.
+- **CLOSED, against evidence rather than a new sample (2026-08-09).** The premise
+  that a mailbox rule auto-forward preserves the bank's DKIM is **proven for
+  iCloud**: 174 of 174 `X-Apple-Action: FORWARD` messages in the v1 corpus arrived
+  with the bank's DKIM passing and aligned, iCloud's own ARC seal is trusted, and
+  one such message completed the whole lane on the live box on 2026-08-07. The
+  `v2-arc-spike` independently verified 140 of these chains against live DNS with a
+  body-flip negative control that fails all 140.
+
+- **STILL OPEN, and scoped to Gmail.** There has never been a Gmail auto-forward
+  sample here — zero messages in the corpus carry `X-Forwarded-To`. Gmail seals
+  (1,024 corpus messages carry a `google.com` ARC seal, all verifying), and both
+  attestation paths should be available to it, but **nobody has run a Gmail rule
+  forward through this code.** The alpha onboards through exactly that path.
+  **Run the two-step experiment before the Gmail onboarding step of the build:**
+  add a Gmail filter `from:dib.ae` forwarding to the ledger address, read the
+  confirmation code out of the held message, then check the newest quarantine row
+  for `attested=t, inner_domain=dib.ae`.
+
+- **A real fragility, either provider.** `relayDomain` needs instance-1's AAR to
+  report a passing bank DKIM. ENBD mail via its Microsoft gateway seals
+  `microsoft.com` with `dkim=none`, so an auto-forward of that path proves no relay
+  and attests nothing. It is not lost: `Outer` becomes `emiratesnbd.com`, the bank,
+  confirmable at the **outer** scope — which is lane 1b above.
 - Whether the client can decrypt and render a quarantine blob end-to-end is
   unproven. The endpoint exists and blobs are plaintext-sealed today, but no screen
   consumes `include_blob=1`.
