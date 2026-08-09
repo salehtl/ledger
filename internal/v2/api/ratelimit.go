@@ -76,9 +76,33 @@ func NewLimiter(rate, burst float64, maxKeys int, now func() time.Time) *Limiter
 // Allow consumes one token for key and reports whether there was one to
 // consume. A nil Limiter allows everything, so an unconfigured field is an
 // absent limit rather than a panic.
-func (l *Limiter) Allow(key string) bool {
+func (l *Limiter) Allow(key string) bool { return l.AllowN(key, 1) }
+
+// AllowN consumes n tokens for key, all or nothing, and reports whether there
+// were n to consume.
+//
+// # Why a weighted variant exists at all
+//
+// One limiter in this package is not counting REQUESTS, it is counting UPLOAD
+// BYTES (see syncByteRate). The arithmetic is the reason, and it is worth
+// keeping next to the mechanism: one upload durably stores up to 8 MiB
+// (maxUploadBlobs blobs of oplog's 1 MB each), so a request-counted limit
+// generous enough for a bulk import — hundreds of requests in minutes, because
+// one sub-kilobyte op is one blob — is also generous enough to store hundreds of
+// gigabytes a day. The two shapes differ by BLOB SIZE, not by request count, so
+// no request rate separates them and a weighted bucket is the only limiter that
+// can.
+//
+// n below 1 is raised to 1: a call that charged nothing would be a way to
+// consult the limiter without paying it. A single charge LARGER than the burst
+// can never be admitted, which is a property the caller owns — the byte
+// limiter's burst is deliberately several times the largest possible upload.
+func (l *Limiter) AllowN(key string, n float64) bool {
 	if l == nil {
 		return true
+	}
+	if n < 1 {
+		n = 1
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -92,15 +116,15 @@ func (l *Limiter) Allow(key string) bool {
 		if len(l.buckets) >= l.maxKeys {
 			// Shared bucket: the limit still applies, it is simply coarser for
 			// the duration of the pressure. See the type doc.
-			return take(&l.fallback, l.rate, l.burst, now)
+			return take(&l.fallback, l.rate, l.burst, now, n)
 		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
-	return take(b, l.rate, l.burst, now)
+	return take(b, l.rate, l.burst, now, n)
 }
 
-func take(b *bucket, rate, burst float64, now time.Time) bool {
+func take(b *bucket, rate, burst float64, now time.Time, n float64) bool {
 	if b.last.IsZero() {
 		b.tokens, b.last = burst, now
 	}
@@ -111,10 +135,10 @@ func take(b *bucket, rate, burst float64, now time.Time) bool {
 		}
 		b.last = now
 	}
-	if b.tokens < 1 {
+	if b.tokens < n {
 		return false
 	}
-	b.tokens--
+	b.tokens -= n
 	return true
 }
 
