@@ -237,6 +237,22 @@ unset and the app working, never a modal asking the user to resolve it.
   without them.
 - **The recovery phrase stays mandatory and unconditional.** Losing it is
   unrecoverable, so it is not a "later" task. It is part of creating the account.
+
+  **But verifying it is not.** The operator, 2026-08-09: *"I hate having to write 3
+  of the 12 words. Completely kill that step. User should be trusted to store the
+  words the way they wish, we don't need to double check."*
+
+  So the type-back quiz is **removed**, not made skippable. The phrase is still
+  generated, shown once in full, easy to copy, and still carries its no-way-back
+  warning — all of which is load-bearing and stays.
+
+  The reasoning, recorded because this is the one irreversible thing in the
+  product: a typed quiz proves the phrase was in short-term memory thirty seconds
+  ago. It does not prove it was written down, photographed, or put in a password
+  manager. So it buys very little real assurance and costs every user friction in
+  their first minute. **The accepted consequence is stated plainly rather than
+  hidden:** a user who ignores the warning and saves nothing loses the account, and
+  nobody can help them. That is the trade the operator has chosen, knowingly.
 - **No security step is softened.** Skipping means *not doing* a thing, never
   doing it with less proof.
 - Copy stays plain and short.
