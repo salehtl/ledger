@@ -969,6 +969,148 @@ func TestCountRejectionRefusesReasonsOutsideTheClosedEnum(t *testing.T) {
 	}
 }
 
+// An operator who suspends an account and then reads diagnostics must see that
+// they suspended it. Before 00033 this row said 'over_quota' — the account had
+// been paused BY THE OPERATOR and the record blamed the user's spending.
+func TestASuspensionIsFiledAsSuspendedAndNotAsAQuotaBreach(t *testing.T) {
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	user := insertUser(t, pool)
+
+	r := validRecord(user, *now)
+	r.Outcome = OutcomeOverQuota
+	r.RejectReason = RejectSuspended
+	if err := d.Record(bg, r); err != nil {
+		t.Fatalf("a suspension refusal was refused: %v", err)
+	}
+	var got string
+	if err := pool.QueryRow(bg, `SELECT reject_reason FROM parse_diagnostics`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != RejectSuspended {
+		t.Errorf("reject_reason = %q, want %q", got, RejectSuspended)
+	}
+}
+
+// reject_reason's CHECK spells its members out as literals because a CHECK
+// cannot call into Go, which makes it a second copy of rejectReasons — and a
+// second copy is a thing that drifts. Same argument as the bucket ladder above.
+func TestTheSQLRejectReasonEnumMatchesTheGoSet(t *testing.T) {
+	pool := pgtest.New(t)
+	user := insertUser(t, pool)
+	ins := `INSERT INTO parse_diagnostics
+	  (user_id,event,ingest_id,received_at,sender_domain,dkim_result,arc_result,
+	   normalizer_version,matched,tier,body_size_bucket,structure_sig,outcome,reject_reason)
+	  VALUES ($1,'arrival',$2,now(),'gmail.com','pass','none',1,false,'none',0,'','over_quota',$3)`
+	for i, reason := range rejectReasons {
+		if _, err := pool.Exec(bg, ins, user, ingestID(byte(i)), reason); err != nil {
+			t.Errorf("the SQL enum rejects rejectReasons member %s: %v", reason, err)
+		}
+	}
+	// And it is still CLOSED. A widened enum that stopped refusing anything
+	// would be a note field with extra steps.
+	if _, err := pool.Exec(bg, ins, user, ingestID(0x7f), "suspended_by_operator"); err == nil {
+		t.Error("the SQL enum accepted a value outside the closed set")
+	}
+}
+
+// smtp_rejections aggregates refusals with NO recipient. A suspension always
+// has one — you cannot know an account is suspended without resolving it — so
+// that table keeps the narrow enum, and the Go guard must keep step with it or
+// callers get a database error where the package promises ErrInvalidRecord.
+func TestTheAggregateCounterStaysNarrowerThanTheDiagnosticsEnum(t *testing.T) {
+	pool := pgtest.New(t)
+	d, _ := newDiag(t, pool)
+
+	err := d.CountRejection(bg, RejectSuspended)
+	if err == nil {
+		t.Fatal("CountRejection aggregated a suspension, which has a user to scope a row to")
+	}
+	if !errors.Is(err, ErrInvalidRecord) {
+		t.Errorf("CountRejection(suspended) = %v, want ErrInvalidRecord; a database error here "+
+			"would tell the caller to retry a call that can never succeed", err)
+	}
+	// The Go guard is the thing that bit, so prove the constraint would have
+	// bitten too — otherwise the guard is the only defence and removing it goes
+	// unnoticed.
+	if _, err := pool.Exec(bg,
+		`INSERT INTO smtp_rejections (day, reason, count) VALUES (now()::date,'suspended',1)`,
+	); err == nil {
+		t.Error("smtp_rejections accepted 'suspended'")
+	}
+	// Everything it IS allowed to aggregate still works.
+	for _, reason := range aggregatedReasons {
+		if err := d.CountRejection(bg, reason); err != nil {
+			t.Errorf("CountRejection(%s): %v", reason, err)
+		}
+	}
+}
+
+// 00033's Down has to survive rows that already carry the value it is removing,
+// and re-adding the narrow CHECK over them fails outright. The migration folds
+// them back to 'over_quota' — the exact value the pre-00033 code wrote for these
+// refusals — so nothing is deleted and the rollback restores the old behaviour
+// rather than a hole where those rows used to be.
+//
+// The SQL is read from the migration itself so the test follows the file it is
+// asserting about, instead of asserting about a copy that can drift from it.
+func TestTheSuspendedRollbackFoldsRowsBackInsteadOfFailingOrDeleting(t *testing.T) {
+	pool := pgtest.New(t)
+	d, now := newDiag(t, pool)
+	user := insertUser(t, pool)
+
+	r := validRecord(user, *now)
+	r.Outcome = OutcomeOverQuota
+	r.RejectReason = RejectSuspended
+	if err := d.Record(bg, r); err != nil {
+		t.Fatal(err)
+	}
+
+	up, down := migrationHalves(t, "00033_reject_reason_suspended.sql")
+	if _, err := pool.Exec(bg, down); err != nil {
+		t.Fatalf("Down failed with a row carrying the value it removes: %v", err)
+	}
+
+	if n := countRows(t, pool); n != 1 {
+		t.Fatalf("Down left %d rows, want 1: a rollback must not delete diagnostics", n)
+	}
+	var reason string
+	if err := pool.QueryRow(bg,
+		`SELECT reject_reason FROM parse_diagnostics`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != RejectOverQuota {
+		t.Errorf("after Down reject_reason = %q, want %q", reason, RejectOverQuota)
+	}
+	// The narrow enum is genuinely back, not merely dropped.
+	if _, err := pool.Exec(bg, `UPDATE parse_diagnostics SET reject_reason='suspended'`); err == nil {
+		t.Error("Down left the widened constraint in place")
+	}
+	// And Up is re-appliable over the folded rows, which is what a rollback
+	// followed by a re-deploy actually does.
+	if _, err := pool.Exec(bg, up); err != nil {
+		t.Fatalf("re-Up after Down: %v", err)
+	}
+	if _, err := pool.Exec(bg, `UPDATE parse_diagnostics SET reject_reason='suspended'`); err != nil {
+		t.Errorf("re-Up did not restore the widened constraint: %v", err)
+	}
+}
+
+// migrationHalves returns the Up and Down bodies of a migration file.
+func migrationHalves(t *testing.T, name string) (up, down string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "pg", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.SplitN(string(b), "-- +goose Down", 2)
+	if len(parts) != 2 {
+		t.Fatalf("%s has no Down block", name)
+	}
+	up = strings.TrimPrefix(strings.TrimSpace(parts[0]), "-- +goose Up")
+	return up, parts[1]
+}
+
 // The counter is the only defence against a flood from the open :25, so a lost
 // increment under concurrency is a lost drop record.
 func TestCountRejectionIsAtomicUnderConcurrency(t *testing.T) {
