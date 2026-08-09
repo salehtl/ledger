@@ -70,15 +70,43 @@ export function SettingsPage({
             const width = panelRef.current?.offsetWidth || window.innerWidth; // jsdom: offsetWidth is 0
             if (shouldGoBack(info.offset.x, info.velocity.x, width)) requestClose();
           }}
+          // The edge zone arms the drag from here rather than from an overlay,
+          // so nothing sits on top of the header or the scroller. See the strip
+          // below for what that overlay was costing.
+          onPointerDown={(e) => { if (inEdgeZone(e.clientX)) dragControls.start(e); }}
           className="fixed inset-0 z-40 bg-bg flex flex-col"
         >
-          {/* Invisible activation strip: touch-none here (and only here) lets
-              horizontal pointermoves reach us instead of scrolling the page. */}
+          {/*
+            The edge-back gesture is armed from the PANEL, and the strip is a
+            marker the harness can grab rather than a thing in the way.
+
+            It used to be a real 24px column with `touch-none` on it, sitting
+            over the whole left side. Two measured costs, both from
+            `harness/v2edge.mjs`:
+
+             - **Nothing scrolled from that column.** `touch-none` tells the
+               browser not to pan, and the strip is a SIBLING of the scrolling
+               body rather than inside it, so even `pan-y` would have had no
+               scrollable ancestor to pan. A thumb landing near the left edge
+               and dragging up moved nothing: scrollTop 0 -> 0 with 3247px of
+               room.
+             - **It covered the left half of the back arrow**, which starts at
+               x=8 because of its `-ml-2`. A press there began a drag that never
+               moved and the click that followed landed on an `aria-hidden` div
+               with no handler.
+
+            So the strip is `pointer-events-none` and the arming moved to the
+            panel's own `onPointerDown`, gated by the same `inEdgeZone`.
+            `pointerdown` bubbles, so a press anywhere still reaches it, and
+            `dragListener={false}` means only this call can start a drag.
+            Framer puts `touch-action: pan-y` on the draggable panel itself,
+            which is exactly the contract we want everywhere rather than in one
+            column: vertical belongs to the browser, horizontal to the gesture.
+          */}
           <div
             aria-hidden
             data-testid="edge-back-strip"
-            className="absolute left-0 inset-y-0 w-6 z-10 touch-none"
-            onPointerDown={(e) => { if (inEdgeZone(e.clientX)) dragControls.start(e); }}
+            className="pointer-events-none absolute left-0 inset-y-0 w-6 z-10"
           />
           {/* `covered` marks only the header inert, never the body: a nested panel
               renders inside the body, so making that inert would disable the very
@@ -87,8 +115,16 @@ export function SettingsPage({
               inherits none of their safe-area padding. Without these insets the
               back arrow sits under the notch and the last row under the home
               indicator on every drill-in screen. */}
+          {/* `relative z-20` puts the header ABOVE the activation strip.
+              Without it the strip's 24px column covered the left half of the
+              back arrow — which starts at x=8 because of its `-ml-2` — so a
+              press there began a drag that never moved and the click that
+              followed landed on an `aria-hidden` div with no handler. The
+              most-tapped control on every drill-in had a dead left edge, and
+              `audit.mjs` could not see it: `control-obscured` tests a control's
+              CENTRE point, and the centre was always clear. */}
           <header
-            className="flex items-center gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 border-b border-border"
+            className="relative z-20 flex items-center gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 border-b border-border"
             inert={covered}
           >
             <IconButton label={`Back from ${title}`} className="-ml-2" onClick={requestClose}>

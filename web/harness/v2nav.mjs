@@ -71,9 +71,20 @@ export async function settle(page, ms = 400) {
   await page.waitForTimeout(ms);
 }
 
-/** A context with the authenticator already installed. Chromium only — CDP. */
-export async function newSignedOutContext(browser, { viewport = "phone", colorScheme = "light" } = {}) {
-  const context = await browser.newContext({ ...VIEWPORTS[viewport], colorScheme });
+/**
+ * A context with the authenticator already installed. Chromium only — CDP.
+ *
+ * `hasTouch` is off by default and opt-in per runner. It is not cosmetic: with
+ * it off the context accepts no touch input at all, so a synthesised touch
+ * gesture silently does nothing — which made a scroll check report the left
+ * edge of a drill-in unscrollable when the middle of it was equally
+ * unscrollable, i.e. when the runner could not scroll anything. It is left off
+ * for the capture runs because Tailwind gates `hover:` on `(hover: hover)`, and
+ * flipping that mid-review would change every screenshot for a reason unrelated
+ * to any change under test.
+ */
+export async function newSignedOutContext(browser, { viewport = "phone", colorScheme = "light", hasTouch = false } = {}) {
+  const context = await browser.newContext({ ...VIEWPORTS[viewport], colorScheme, hasTouch });
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send("WebAuthn.enable");
