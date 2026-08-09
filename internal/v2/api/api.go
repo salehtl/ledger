@@ -32,6 +32,11 @@
 //	GET  /api/v1/push/tokens                                       -> {tokens:[...], max}
 //	DELETE /api/v1/push/tokens                                     -> 204
 //	DELETE /api/v1/push/tokens/{handle}                            -> 204
+//	GET  /api/v1/push/vapid                                        -> {public_key}
+//	POST /api/v1/push/subscriptions {endpoint, p256dh, auth, writer_id} -> 204
+//	GET  /api/v1/push/subscriptions                                -> {subscriptions:[...], max}
+//	DELETE /api/v1/push/subscriptions                              -> 204
+//	DELETE /api/v1/push/subscriptions/{handle}                     -> 204
 //	POST /api/v1/account/challenge {}                              -> {nonce}
 //	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
 //	GET  /api/v1/relay/addresses                                   -> {addresses:[...], as_of}
@@ -357,6 +362,22 @@ type Server struct {
 	// find. See relay.go.
 	RelayToken string
 
+	// VAPIDPublicKey is the Web Push application server key, base64url, served
+	// to the PWA so it can call PushManager.subscribe.
+	//
+	// It is NOT a secret — every browser that subscribes hands it to its push
+	// service — but it is the switch for the whole feature: empty means Web
+	// Push is unconfigured, GET /api/v1/push/vapid answers 404 and a subscribe
+	// is refused rather than stored. Storing subscriptions with no key to send
+	// under would give a user a switch that turns on and delivers nothing, with
+	// nothing in the product able to tell the difference. See webpush.go.
+	//
+	// The routes are still MOUNTED when it is empty, unlike Addresses and
+	// Quarantine: their answer is a specific, actionable 404 that a client
+	// renders as "not set up on this server", which the mux's own 404 could not
+	// be distinguished from.
+	VAPIDPublicKey string
+
 	// Mail is where a relayed message is delivered: the SAME ingest pipeline
 	// the SMTP receiver hands directly-received mail to, so relayed mail is
 	// deduplicated by ingest id and is indistinguishable downstream.
@@ -592,6 +613,16 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
 			"endpoints are NOT being served, and a backup relay pointed here would have " +
 			"every forward refused")
 	}
+	// The Web Push application server key, served to the PWA so it can
+	// subscribe. Attached only when push.web_enabled is set: the key alone is
+	// what the subscribe routes gate on, so a deployment holding a key pair in
+	// its environment with the feature switched off stores no subscriptions and
+	// offers no switch. config.validateWebPush has already refused the
+	// half-configured shapes (a lone key, a missing subject), so anything that
+	// reaches here is a complete configuration.
+	if cfg.Push.WebEnabled {
+		s.VAPIDPublicKey = cfg.Push.VAPIDPublic
+	}
 	s.MaxMessageBytes = cfg.Mail.MaxMessageBytes
 	if cfg.DevAuth {
 		// TEST ONLY, and it REPLACES both verifiers rather than joining them.
@@ -747,6 +778,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/push/tokens", s.requireSession(s.handleListPushTokens))
 	mux.HandleFunc("DELETE /api/v1/push/tokens", s.requireSession(s.handleDeleteAllPushTokens))
 	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
+	// Web Push (VAPID) for the PWA — a separate audience and a separate table
+	// from the Expo tokens above, not a replacement for them. The key route
+	// takes no session because the key is public and a client needs it to
+	// decide whether to offer the control at all. See webpush.go.
+	mux.HandleFunc("GET /api/v1/push/vapid", s.handleVAPIDPublicKey)
+	mux.HandleFunc("POST /api/v1/push/subscriptions", s.requireSession(s.handleSubscribePush))
+	mux.HandleFunc("GET /api/v1/push/subscriptions", s.requireSession(s.handleListPushSubscriptions))
+	mux.HandleFunc("DELETE /api/v1/push/subscriptions", s.requireSession(s.handleUnsubscribeAllPush))
+	mux.HandleFunc("DELETE /api/v1/push/subscriptions/{handle}", s.requireSession(s.handleUnsubscribePush))
 	mux.HandleFunc("POST /api/v1/waitlist", s.requireSession(s.handleWaitlist))
 	if s.Dict != nil {
 		mux.HandleFunc("GET /api/v1/dictionary", s.requireSession(s.handleDictionary))

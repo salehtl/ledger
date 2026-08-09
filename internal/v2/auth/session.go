@@ -101,9 +101,18 @@ func SessionHash(token string) []byte { return tokenHash(token) }
 // window where the key is retired and the notifications are not, and — worse —
 // a process that died in that window would leave it open permanently, with
 // nothing in the system that would ever notice.
+// It sweeps BOTH notification tables. push_subscriptions (00029) is the PWA's
+// Web Push half, and it carries the identical user_id / writer_id / session_hash
+// columns for exactly this reason: every `where` clause the three call sites
+// pass is valid against both, so there is no shape in which one table is swept
+// and the other is not. Adding a notification channel that this function does
+// not know about would silently re-open the hole 00019 was written to close.
 func forgetPushTokens(ctx context.Context, tx pgx.Tx, where string, args ...any) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM push_tokens WHERE `+where, args...); err != nil {
 		return fmt.Errorf("auth: forget push tokens: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE `+where, args...); err != nil {
+		return fmt.Errorf("auth: forget push subscriptions: %w", err)
 	}
 	return nil
 }

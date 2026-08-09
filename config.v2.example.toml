@@ -96,6 +96,23 @@ expo_url = ""                     # Expo push endpoint; "" means https://exp.hos
 # expo_url is railed too — https only, and an Expo host. It is the only outbound
 # request this server makes, and it carries the access token plus the exact
 # timing of every user's transactions.
+#
+# Web Push (VAPID) for the PWA. A SEPARATE switch from `enabled` above, with a
+# separate audience, a separate table and separate credentials — the Expo half
+# is the abandoned native client's.
+web_enabled   = false             # serve the VAPID key and send browser notifications
+vapid_subject = ""                # REQUIRED when web_enabled: "mailto:you@example.com" or an https URL
+# Secrets, never stored here: LEDGER_VAPID_PUBLIC and LEDGER_VAPID_PRIVATE.
+# BOTH are required when web_enabled = true and the config load refuses
+# otherwise. Mint the pair ONCE with `ledger vapid-keys` and never regenerate
+# it: the public half is what every browser already subscribed under, so a new
+# pair silently kills every existing subscription with nothing telling the user.
+#
+# The notification is content-free — the title is "New activity" and there is no
+# body. That is not a placeholder: composing "AED 240 at Spinneys" server-side
+# means decrypting user data here to build a string, which re-establishes the
+# plaintext path the at-rest encryption exists to remove. See
+# internal/v2/pushv2/webpush.go.
 
 [auth]
 apple_client_ids  = []            # Sign in with Apple client identifiers (not secret; LEDGER_APPLE_CLIENT_IDS, comma-separated)

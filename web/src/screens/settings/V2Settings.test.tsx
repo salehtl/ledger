@@ -115,6 +115,20 @@ describe("V2Settings", () => {
     expect(warning.textContent ?? "").toMatch(/no password to reset/i);
   });
 
+  // The notifications control has to be REACHED to exist. Its own behaviour is
+  // covered in PushNotificationsPanel.test.tsx; what this asserts is the thing
+  // that test cannot — that the panel is mounted on the one screen a person can
+  // get to. A component nobody renders is a feature that shipped switched off.
+  //
+  // jsdom has no service worker, so the panel lands in its "unsupported"
+  // branch. That is fine for this assertion and it is why the copy is not
+  // asserted here.
+  it("carries the notifications control, next to the rest of this device's settings", async () => {
+    wrap();
+    expect(await screen.findByTestId("push-notifications")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Notifications" })).toBeInTheDocument();
+  });
+
   it("opens held mail — the surface onboarding hands an unfiled remainder to", async () => {
     const user = userEvent.setup();
     const onOpenQuarantine = vi.fn();

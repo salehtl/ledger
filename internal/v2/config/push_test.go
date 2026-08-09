@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // validPushBase is a config that passes every OTHER rail, so a failure in
@@ -101,5 +103,89 @@ func TestTheExpoURLIsCheckedEvenWhilePushIsDisabled(t *testing.T) {
 	c.Push.ExpoURL = "http://collector.example/x"
 	if err := c.validate(); err == nil {
 		t.Fatal("a cleartext expo_url was accepted because push happened to be disabled")
+	}
+}
+
+// TestWebPushIsRefusedWhenItIsOnlyHalfConfigured.
+//
+// Every shape below fails SILENTLY at runtime, which is the whole reason the
+// rail exists. Nothing about a missing key produces an error a user sees: the
+// browser subscribes against whatever public key it was served, the row lands
+// in push_subscriptions, and every send is then rejected by the push service in
+// a code path that logs and swallows (correctly — a push is a courtesy). "On"
+// and "working" would differ with nothing in the product able to tell them
+// apart.
+func TestWebPushIsRefusedWhenItIsOnlyHalfConfigured(t *testing.T) {
+	const pub, priv = "BPublicKey", "PrivateKey"
+
+	for _, c := range []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{"no keys at all", func(*Config) {}, "LEDGER_VAPID_PUBLIC"},
+		{"only the public half", func(c *Config) { c.Push.VAPIDPublic = pub }, "LEDGER_VAPID_PRIVATE"},
+		{"only the private half", func(c *Config) { c.Push.VAPIDPrivate = priv }, "LEDGER_VAPID_PUBLIC"},
+		{"no subject", func(c *Config) {
+			c.Push.VAPIDPublic, c.Push.VAPIDPrivate = pub, priv
+			c.Push.VAPIDSubject = ""
+		}, "vapid_subject"},
+		{"a subject that is neither mailto: nor https:", func(c *Config) {
+			c.Push.VAPIDPublic, c.Push.VAPIDPrivate = pub, priv
+			c.Push.VAPIDSubject = "ops@example.test"
+		}, "mailto:"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := validPushBase()
+			cfg.Push.WebEnabled = true
+			cfg.Push.VAPIDSubject = "mailto:ops@example.test"
+			c.mut(&cfg)
+			err := cfg.validate()
+			if err == nil {
+				t.Fatal("validate() accepted a half-configured web push")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("the refusal must name %q, got: %v", c.want, err)
+			}
+		})
+	}
+
+	// The complete shape starts, and so does the OFF shape with keys sitting in
+	// the environment — a deployment that keeps one env file across two
+	// services must not be refused over a variable it is not using.
+	full := validPushBase()
+	full.Push.WebEnabled = true
+	full.Push.VAPIDPublic, full.Push.VAPIDPrivate = pub, priv
+	full.Push.VAPIDSubject = "mailto:ops@example.test"
+	if err := full.validate(); err != nil {
+		t.Fatalf("validate() with a complete web push config: %v", err)
+	}
+	off := validPushBase()
+	off.Push.VAPIDPublic = pub
+	if err := off.validate(); err != nil {
+		t.Fatalf("validate() with keys present and web push off: %v", err)
+	}
+}
+
+// TestTheVAPIDKeysAreEnvOnly. Both halves are a PAIR, and a deployment that
+// keeps one in a file and the other in the environment is one where the two can
+// drift — which does not fail loudly, it just means every send is rejected by
+// the push service with the operator believing notifications are on.
+func TestTheVAPIDKeysAreEnvOnly(t *testing.T) {
+	var c Config
+	if _, err := toml.Decode(`
+[push]
+web_enabled = true
+vapid_subject = "mailto:ops@example.test"
+vapid_public = "FROM-TOML"
+vapid_private = "FROM-TOML"
+`, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Push.VAPIDPublic != "" || c.Push.VAPIDPrivate != "" {
+		t.Fatalf("TOML set the VAPID keys: public=%q private=%q", c.Push.VAPIDPublic, c.Push.VAPIDPrivate)
+	}
+	if c.Push.VAPIDSubject != "mailto:ops@example.test" {
+		t.Fatalf("vapid_subject is not readable from TOML: %q", c.Push.VAPIDSubject)
 	}
 }

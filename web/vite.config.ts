@@ -89,6 +89,20 @@ export default defineConfig({
     tailwindcss(),
     preloadMotionFeatures(),
     VitePWA({
+      // `injectManifest`, not `generateSW`. `generateSW` writes the entire
+      // worker from this config and there is no hook for a hand-written line —
+      // so a `push` / `notificationclick` handler cannot exist under it. The
+      // worker source is `src/sw.ts`; the plugin's only job now is to
+      // substitute `self.__WB_MANIFEST` and bundle it.
+      //
+      // Everything `generateSW` used to do implicitly is written out in
+      // `src/sw.ts`: precaching, the `/index.html` navigation fallback,
+      // `cleanupOutdatedCaches`, and the `SKIP_WAITING` message handler that
+      // `registerType: "prompt"` depends on. Deleting any of them breaks
+      // offline start or the update toast, silently.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       // "prompt": a new service worker waits instead of silently taking over,
       // so PwaUpdatePrompt can offer a "New version — tap to refresh" toast.
       registerType: "prompt",
@@ -108,8 +122,12 @@ export default defineConfig({
           { src: "/manifest-icon-512.jpg", sizes: "512x512", type: "image/jpeg", purpose: "maskable" },
         ],
       },
-      workbox: {
-        navigateFallback: "/index.html",
+      // `injectManifest`, not `workbox`: under this strategy the plugin only
+      // BUILDS the manifest, so the runtime options that used to live here
+      // (navigateFallback) moved into `src/sw.ts` as real code. Leaving them in
+      // a `workbox` block would be silently ignored — the shape of mistake that
+      // reads as configured and does nothing.
+      injectManifest: {
         // Precache only what a cold offline start needs: app code + latin
         // fonts + the sql.js wasm. Marketing/link-preview images and
         // non-latin font subsets (never fetched at runtime thanks to

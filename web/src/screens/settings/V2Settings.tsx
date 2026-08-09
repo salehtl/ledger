@@ -79,6 +79,11 @@ import { useWriter, type Writer } from "../../v2/writer";
 import { isPasskeyError, type V2Handle } from "../../v2/session";
 import type { EnrolmentRequest, KeyHistoryEntry } from "../../v2/deviceEnrolment";
 import { ApproveDevicePanel } from "./ApproveDevicePanel";
+import { PushNotificationsPanel } from "./PushNotificationsPanel";
+// The profile and the server address the rest of the app runs under. Passed
+// rather than defaulted so this screen's subscription is written under the same
+// writer id and against the same origin as everything else the tab does.
+import { PROFILE, SERVER } from "../../v2/BootGate";
 
 export interface V2SettingsProps {
   /** Opens the held-mail drill-in. Absent hides the row. */
@@ -689,6 +694,9 @@ export function V2Settings({
           </p>
         </Card>
       </section>
+
+      {/* ---- Notifications: about THIS browser, not the account ---- */}
+      <PushNotificationsPanel client={handle.client} profile={PROFILE} server={SERVER} />
 
       {/* ---- Passkeys: the only backup this product can offer ---- */}
       <section className="space-y-2">

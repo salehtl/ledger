@@ -228,6 +228,44 @@ type PushConfig struct {
 	// AccessToken is Expo's optional enhanced-security push token (Task 29,
 	// LEDGER_EXPO_ACCESS_TOKEN). Env-only, never TOML.
 	AccessToken string `toml:"-"`
+
+	// WebEnabled turns on Web Push (VAPID) for the PWA. It is a SEPARATE switch
+	// from Enabled and not a mode of it: the two have different audiences (a
+	// browser subscription vs an Expo install), different tables, different
+	// credentials, and the Expo rail below — which refuses `enabled = true`
+	// without an access token — says nothing about this path. Folding them into
+	// one boolean would mean an operator who wants browser notifications has to
+	// satisfy Expo's precondition to get them.
+	WebEnabled bool `toml:"web_enabled"`
+
+	// VAPIDSubject is the `sub` claim of the VAPID JWT: a mailto: or https: URL
+	// through which a push service operator can reach whoever runs this
+	// deployment. RFC 8292 requires it, and push services do reject sends
+	// without a usable one.
+	//
+	// It is TOML rather than env because it is not a secret — it is a contact
+	// address, published to Apple, Google and Mozilla on every single send.
+	VAPIDSubject string `toml:"vapid_subject"`
+
+	// VAPIDPublic and VAPIDPrivate are the application server key pair
+	// (LEDGER_VAPID_PUBLIC / LEDGER_VAPID_PRIVATE). Env-only, never TOML —
+	// the private half signs the JWT that authorizes every send.
+	//
+	// The PUBLIC half is env-only too, and that is deliberate rather than
+	// over-caution: it is not a secret, but it is half of a PAIR, and a
+	// deployment that keeps one half in a file and the other in the environment
+	// is a deployment where the two can drift. A mismatched pair does not fail
+	// loudly — the browser subscribes under the public key it was served and
+	// every send is then rejected by the push service — so the two values must
+	// come from one place.
+	//
+	// The v1 binary's `ledger vapid-keys` mints a pair in exactly this format
+	// (both binaries encode through the same webpush-go). ledgerd deliberately
+	// has no such mode: a key-minting subcommand next to a running server is an
+	// invitation to run it twice, and the second run silently invalidates every
+	// subscription on the deployment with nothing telling the users.
+	VAPIDPublic  string `toml:"-"`
+	VAPIDPrivate string `toml:"-"`
 }
 
 // AuthConfig controls IdP token verification and session lifetime (Task 6).
@@ -415,6 +453,12 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("LEDGER_EXPO_ACCESS_TOKEN"); v != "" {
 		cfg.Push.AccessToken = v
+	}
+	if v := os.Getenv("LEDGER_VAPID_PUBLIC"); v != "" {
+		cfg.Push.VAPIDPublic = v
+	}
+	if v := os.Getenv("LEDGER_VAPID_PRIVATE"); v != "" {
+		cfg.Push.VAPIDPrivate = v
 	}
 	if v := os.Getenv("LEDGER_ADMIN_TOKEN"); v != "" {
 		cfg.Server.AdminToken = v
@@ -752,6 +796,9 @@ var pushHosts = []string{"exp.host", "expo.dev"}
 //     enabled: a wrong value that sits inert in a file until somebody flips a
 //     boolean is the failure mode this whole function exists to refuse.
 func (c Config) validatePush() error {
+	if err := c.validateWebPush(); err != nil {
+		return err
+	}
 	if c.Push.Enabled && c.Push.AccessToken == "" {
 		return fmt.Errorf(
 			"push.enabled is true but LEDGER_EXPO_ACCESS_TOKEN is unset: Expo's push endpoint " +
@@ -784,4 +831,54 @@ func (c Config) validatePush() error {
 			"this at another host sends the deployment's Bearer credential and every user's "+
 			"transaction timing there",
 		c.Push.ExpoURL, host, strings.Join(pushHosts, " / "))
+}
+
+// validateWebPush refuses a half-configured Web Push deployment.
+//
+// Every refusal here has the same shape: the failure it prevents is SILENT.
+// Nothing about a missing VAPID key produces an error a user or an operator
+// sees — the browser subscribes happily against whatever public key it was
+// served, the row lands in push_subscriptions, and each send is then rejected
+// by the push service in a goroutine whose error is logged and swallowed
+// (pushv2.Web.Notify treats a delivery failure as a courtesy that did not
+// arrive, correctly). "Notifications are on" and "notifications work" would
+// differ with nothing in the product able to tell them apart.
+//
+//   - Both keys, or neither. They are a PAIR. Serving a public key with no
+//     private half means every subscription is dead on arrival; holding a
+//     private half with no public one means the client is never told what to
+//     subscribe under, so nothing subscribes at all.
+//
+//   - A subject that is mailto: or https:. RFC 8292 §2.1 admits those two, and
+//     push services reject a JWT whose `sub` they cannot act on. It is required
+//     rather than defaulted because a default would be a contact address the
+//     operator never chose, published to Apple and Google on every send.
+func (c Config) validateWebPush() error {
+	if !c.Push.WebEnabled {
+		// The keys are checked only when the feature is on. Unlike expo_url —
+		// which is validated whenever SET, because a bad value there LEAKS —
+		// an unused VAPID key sitting in the environment sends nothing
+		// anywhere, and refusing to boot over it would break every deployment
+		// that keeps one env file across two services.
+		return nil
+	}
+	if c.Push.VAPIDPublic == "" || c.Push.VAPIDPrivate == "" {
+		return fmt.Errorf(
+			"push.web_enabled is true but the VAPID key pair is incomplete: set BOTH " +
+				"LEDGER_VAPID_PUBLIC and LEDGER_VAPID_PRIVATE (mint them ONCE with " +
+				"`ledger vapid-keys`, and never regenerate them — the public half is what " +
+				"every browser already subscribed under). Or set push.web_enabled = false")
+	}
+	sub := c.Push.VAPIDSubject
+	if sub == "" {
+		return fmt.Errorf(
+			"push.web_enabled is true but push.vapid_subject is unset: RFC 8292 requires a " +
+				"mailto: or https: contact for the people who run this deployment, and push " +
+				"services reject sends without one")
+	}
+	if !strings.HasPrefix(sub, "mailto:") && !strings.HasPrefix(sub, "https://") {
+		return fmt.Errorf(
+			"push.vapid_subject %q must be a mailto: or an https: URL (RFC 8292 §2.1)", sub)
+	}
+	return nil
 }

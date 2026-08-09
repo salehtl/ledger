@@ -159,6 +159,26 @@ var seeders = map[string]seeder{
 		                 FROM sessions WHERE user_id = $1 LIMIT 1`,
 			u, "ExponentPushToken["+u.String()+"]")
 	},
+	// The PWA's Web Push subscriptions (00029). A sibling of push_tokens, not a
+	// replacement, and it carries the same writer and session links for the same
+	// reason — so both are seeded here too. What a surviving row would be is
+	// worse than a stale token: the endpoint plus p256dh/auth is everything
+	// needed to keep writing to a lock screen belonging to somebody who asked to
+	// be forgotten.
+	"public.push_subscriptions": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
+		exec(t, pool, `INSERT INTO writers (user_id, writer_id, kind, pubkey, registered_at)
+		               VALUES ($1, 'push-device', 'device', $2, now())
+		               ON CONFLICT DO NOTHING`, u, randBytes(t, 32))
+		exec(t, pool, `INSERT INTO sessions (token_hash, user_id, expires_at)
+		               VALUES ($2, $1, now() + interval '1 day')
+		               ON CONFLICT DO NOTHING`, u, randBytes(t, 32))
+		exec(t, pool, `INSERT INTO push_subscriptions
+		                 (user_id, endpoint, p256dh, auth, writer_id, session_hash)
+		               SELECT $1, $2, $3, $4, 'push-device', token_hash
+		                 FROM sessions WHERE user_id = $1 LIMIT 1`,
+			u, "https://push.example.test/"+u.String(),
+			strings.Repeat("A", 87), strings.Repeat("B", 22))
+	},
 	"public.webauthn_credentials": func(t *testing.T, pool *pgxpool.Pool, u uuid.UUID) {
 		exec(t, pool, `INSERT INTO webauthn_credentials
 		  (credential_id, user_id, user_handle, public_key, sign_count, backup_eligible, backup_state, created_at)

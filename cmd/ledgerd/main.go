@@ -355,10 +355,31 @@ func runServe(cfg config.Config) error {
 	// pusher is Disabled unless the operator turned push on. The Expo client and
 	// its content-free contract exist either way (pushv2), and the ONE call site
 	// is inside the pipeline, on a hot-stream append.
+	//
+	// The two channels are independent audiences — Expo installs and PWA
+	// browser subscriptions — with separate switches, separate tables and
+	// separate credentials, so they are composed rather than chosen between: a
+	// deployment can have both, one, or neither. pushv2.Multi over an empty
+	// slice would be a valid no-op, but Disabled is kept as the zero case so
+	// that "push is off" reads the same in the log and in a stack trace as it
+	// always has.
 	var pusher ingest.Pusher = pushv2.Disabled{}
+	var senders pushv2.Multi
 	if cfg.Push.Enabled {
-		pusher = &pushv2.Expo{Pool: pool, AccessToken: cfg.Push.AccessToken, Endpoint: cfg.Push.ExpoURL}
-		log.Println("ledgerd serve: content-free push is ENABLED")
+		senders = append(senders, &pushv2.Expo{Pool: pool, AccessToken: cfg.Push.AccessToken, Endpoint: cfg.Push.ExpoURL})
+		log.Println("ledgerd serve: content-free Expo push is ENABLED")
+	}
+	if cfg.Push.WebEnabled {
+		senders = append(senders, &pushv2.Web{
+			Pool:         pool,
+			VAPIDPublic:  cfg.Push.VAPIDPublic,
+			VAPIDPrivate: cfg.Push.VAPIDPrivate,
+			Subscriber:   cfg.Push.VAPIDSubject,
+		})
+		log.Println("ledgerd serve: content-free web push is ENABLED")
+	}
+	if len(senders) > 0 {
+		pusher = senders
 	}
 	pipeline := &ingest.Pipeline{
 		Pool:       pool,

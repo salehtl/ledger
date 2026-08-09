@@ -1,0 +1,33 @@
+{
+  // The service worker's own typecheck.
+  //
+  // It cannot share tsconfig.json's program: a service worker needs the
+  // `WebWorker` lib, and `WebWorker` + `DOM` in one program is a wall of
+  // duplicate-identifier errors (both declare `self`, `fetch`, `Event`,
+  // `caches` and dozens more, incompatibly). So `src/sw.ts` is excluded there
+  // and checked here, and `bun run build` runs both compilers before Vite.
+  //
+  // `src/lib/pushNotification.ts` is in BOTH programs on purpose. It is the
+  // notification text, imported by the worker and unit-tested from the DOM
+  // side, and it is framework-free precisely so it can be — if a change to it
+  // ever needs `window` or `self`, it belongs in one of the two callers
+  // instead.
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // Empty, not omitted: an omitted "types" pulls in every @types package in
+    // node_modules, and @types/node brings DOM-adjacent globals back into a
+    // program whose whole purpose is not having them.
+    "types": []
+  },
+  "include": ["src/sw.ts", "src/lib/pushNotification.ts"]
+}

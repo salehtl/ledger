@@ -488,6 +488,9 @@ than accepts:
 | a DSN containing `/var/lib/ledger` | refused — that is v1's data directory |
 | `push.enabled = true` with no `LEDGER_EXPO_ACCESS_TOKEN` | refused. Expo's endpoint accepts unauthenticated POSTs until a project opts into enhanced security, so without the token anyone holding a user's push token can write to that lock screen |
 | `push.expo_url` | must be `https` and an Expo host, checked **whenever set**, not only when push is enabled. It is the only outbound request this server makes and it carries the access token plus the timing of every user's transactions |
+| `push.web_enabled = true` with half a VAPID pair | refused. Both `LEDGER_VAPID_PUBLIC` and `LEDGER_VAPID_PRIVATE` or neither: a public key with no private half means every subscription is dead on arrival, and every failure on that path is silent — the browser subscribes, the row is stored, and each send is rejected by the push service in a goroutine that logs and swallows |
+| `push.web_enabled = true` with no `push.vapid_subject` | refused, and it must be a `mailto:` or `https:` URL (RFC 8292 §2.1). Push services reject a JWT whose `sub` they cannot act on. Not defaulted, because a default would be a contact address the operator never chose, published to Apple and Google on every send |
+| `push.web_enabled` vs `push.enabled` | **separate switches, not modes of one.** Different audiences (a browser subscription vs an Expo install), different tables, different credentials. The VAPID keys are checked only when `web_enabled` is on — unlike `expo_url`, an unused key in the environment sends nothing anywhere |
 
 Two more behaviours of `Load` worth knowing at 2am:
 
@@ -552,12 +555,31 @@ v2 list, confirmed from `internal/v2/config`:
 | `LEDGER_DICT_HMAC_KEY` | merchant-dictionary submitter HMAC. See the rotation warning below |
 | `LEDGER_RELAY_TOKEN` | relay → primary delivery auth (both hosts) |
 | `LEDGER_EXPO_ACCESS_TOKEN` | Expo push; required when `push.enabled = true` |
+| `LEDGER_VAPID_PUBLIC` | Web Push application server key, public half. Not a secret in itself; env-only so it cannot drift from the private half. Required when `push.web_enabled = true` |
+| `LEDGER_VAPID_PRIVATE` | Web Push application server key, private half — it signs the JWT that authorizes every send. Required when `push.web_enabled = true` |
 | `LEDGER_PG_DSN` | not tagged as a secret in the code, but it carries the database password — treat it as one |
 
-> **v1's secrets are not v2's.** `LEDGER_IMAP_APP_PASSWORD`, `LEDGER_AI_API_KEY`
-> and the `LEDGER_VAPID_*` keys appear **nowhere** in `internal/v2` or
-> `cmd/ledgerd` — v2 has no IMAP client, no AI path, and uses Expo rather than
-> Web Push. Do not copy them into `/etc/ledger-v2/ledgerd.env`.
+**Minting the VAPID pair.** `ledgerd` has no key-minting subcommand on purpose —
+one sitting next to a running server is an invitation to run it twice, and the
+second run silently invalidates every browser subscription with nothing telling
+the users. Use the v1 binary, which encodes through the same library:
+
+```
+./ledger vapid-keys      # prints LEDGER_VAPID_PUBLIC / LEDGER_VAPID_PRIVATE
+```
+
+Run it **once** per deployment and keep the output. The public half is what every
+browser already subscribed under, so a new pair kills every existing
+subscription.
+
+> **v1's secrets are not v2's.** `LEDGER_IMAP_APP_PASSWORD` and
+> `LEDGER_AI_API_KEY` appear **nowhere** in `internal/v2` or `cmd/ledgerd` — v2
+> has no IMAP client and no AI path. Do not copy them into
+> `/etc/ledger-v2/ledgerd.env`. The `LEDGER_VAPID_*` pair is the exception: v2
+> does serve Web Push to the PWA, and it is read by `internal/v2/config`. Mint
+> v2 its **own** pair rather than copying v1's: nothing breaks if the two share
+> one, but then neither server's key can be reasoned about — or replaced —
+> without thinking about the other's subscribers.
 
 Non-secret environment overrides: `LEDGER_MAIL_DOMAIN`, `LEDGER_HTTP_LISTEN`,
 `LEDGER_ADMIN_LISTEN`, `LEDGER_SMTP_LISTEN`, `LEDGER_RELAY_PRIMARY_URL`,
