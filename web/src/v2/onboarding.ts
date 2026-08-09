@@ -940,12 +940,41 @@ function fixed2(minor: bigint): string {
  */
 export const QUARANTINE_HELD = {
   title: "Held mail is held on purpose",
+  /**
+   * What the user must know to act: mail is held, that is the rule working, and
+   * held mail is listed below.
+   */
   body:
-    "ledger files mail only when it can prove it came from a bank. A forwarding confirmation is signed by your " +
-    "mail provider, not your bank, so it is held instead of filed. That is normal, not a fault. Everything held " +
-    "is listed below with the domain that signed it. You can open and read any message ledger could " +
-    "authenticate; reading one does not file it.",
+    "ledger files mail only when it can prove it came from a bank. Everything held is listed below with the " +
+    "domain that signed it. That is normal, not a fault.",
+  /**
+   * The mechanism, behind an `InfoTip`.
+   *
+   * Why a confirmation is held is an explanation, not a decision — a user who
+   * never opens this tip still knows their mail is held, still sees it listed
+   * and still gets the trust warning above the button. The one thing that moved
+   * with it is "reading one does not file it", which is a reassurance about a
+   * control the screen already labels ("Look for a confirmation code" versus
+   * "This is my bank — file its mail").
+   *
+   * Names no provider, for the same reason {@link TRUST_ONLY_YOUR_BANK} does
+   * not — `onboarding.test.ts` holds both to it.
+   */
+  why:
+    "A forwarding confirmation is signed by your mail provider, not your bank, so it is held instead of filed. " +
+    "You can open and read any message ledger could authenticate; reading one does not file it.",
 } as const;
+
+/**
+ * What "the domain that signed it" means, behind an `InfoTip` beside the list.
+ *
+ * A definition, by the spec's own example. The screen still says every held
+ * message is filed under the domain that signed it, and still refuses to trust
+ * an unauthenticated one — this only explains the words.
+ */
+export const SIGNING_DOMAIN_TIP =
+  "The domain that cryptographically signed the message, checked by ledger rather than read off the email. " +
+  "It is the only thing about a held message ledger can prove by itself.";
 
 /**
  * What "This is my bank — file its mail" actually asks for, said above the

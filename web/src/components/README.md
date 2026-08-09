@@ -415,6 +415,42 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   to its DOM ancestor — `<main>`'s `overscroll-contain` never sees the gesture.
   Don't build an overlay outside Dialog; it will let the page slide behind it.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
+  Or the content is one or two sentences of explanation with nothing to decide
+  and nothing to press (→ `InfoTip`).
+
+### InfoTip
+- **Purpose:** a tap-to-open explanation anchored to the label it explains. The
+  one exception to "Dialog-only overlays", and deliberately not modal — no
+  scrim, no focus trap, no scroll lock.
+- **Use when:** a definition ("what a signing domain is"), a mechanism ("why
+  held mail is held"), or a reassurance would otherwise turn a screen into a
+  wall of text.
+- **The rule that decides it:** *the screen carries what a user must know to
+  act; a tip carries what a user may want to know to understand.* **Nothing
+  that changes a decision may move into a tip.** A warning is not extra
+  information — if a sentence would change whether a person taps the button, it
+  stays on the screen. `screens/onboarding/qualifications.test.tsx` guards the
+  twelve sentences this applies to hardest, and asserts they are not inside a
+  tip panel.
+- **Tap, never hover.** This is a phone app; a hover tooltip is invisible to
+  the only user it has.
+- **`about` is a noun phrase**, and the trigger's accessible name is
+  `About {about}` — "About held mail", never "info". A screen-reader user
+  decides whether to open it before it opens.
+- **44px target, 12px glyph.** `h-11 w-11` with `-m-3` so the oversized target
+  does not push the label beside it around.
+- **Dismisses on:** tap outside, Escape, scroll (registered in the capture
+  phase, because the app scrolls an inner `<main>` whose scroll does not
+  bubble), and a second tap on the trigger.
+- **It never contains a control.** Text only — no buttons, no navigating links,
+  no fields. A tip is a dead end by design so nothing important can hide in
+  one; `InfoTip.test.tsx` asserts the rendered panel has no interactive
+  descendant, so an edit that puts a link in a tip fails there.
+- **Don't use when:** there is a decision, a control, or more than two
+  sentences (→ `Dialog`), or the content is a consequence, a warning or
+  anything irreversible (→ stays on the screen, usually in a `Notice`).
+- **Motion:** `DUR.fast` from `lib/motion`, transform-only entrance — no
+  `opacity: 0` in `initial`, per the rule below.
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
 - **Purpose:** full-screen drill-in shell — back arrow, title, optional

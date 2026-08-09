@@ -66,6 +66,10 @@ const ICONS = {
   "chevron-down": ["ChevronDown"],
   "eye-off": ["EyeOff"],
   "warning-diamond": ["AlertTriangle", "TriangleAlert"],
+  // The InfoTip trigger's glyph. `info-box` (a boxed "i") rather than
+  // `info-box-sharp`: at the 12px the trigger draws it, the sharp variant's
+  // corner pixels read as noise.
+  "info-box": ["Info"],
   "loader": ["Loader2"],
   // Not in the brief's table (lucide names beyond the 32 originally audited),
   // found while migrating the swipe deck's category glyphs.

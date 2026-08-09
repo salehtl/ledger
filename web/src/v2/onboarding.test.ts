@@ -432,7 +432,7 @@ describe("the held-mail trust warning", () => {
    * had, and the reason it was deleted instead of widened.
    */
   it("names no provider, in either half of the copy", () => {
-    for (const s of [TRUST_ONLY_YOUR_BANK.title, TRUST_ONLY_YOUR_BANK.body, QUARANTINE_HELD.body]) {
+    for (const s of [TRUST_ONLY_YOUR_BANK.title, TRUST_ONLY_YOUR_BANK.body, QUARANTINE_HELD.body, QUARANTINE_HELD.why]) {
       expect(s.toLowerCase()).not.toMatch(/google|gmail|icloud|outlook|yahoo|proton/);
     }
   });

@@ -118,12 +118,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@ledger/client/net/client";
 
 import { Button } from "../../components/ui/Button";
+import { InfoTip } from "../../components/ui/InfoTip";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import {
   CONFIRMATION_TASK_COPY,
   MAIL_STATUS_COPY,
   QUARANTINE_HELD,
+  SIGNING_DOMAIN_TIP,
   TRUST_ONLY_YOUR_BANK,
   WAITING_FOR_FIRST_MAIL,
 } from "../../v2/onboarding";
@@ -566,7 +568,27 @@ export function Verification({
       testId="verification"
       embedded={embedded}
       title={arrivedAt === null ? opening.title : MAIL_STATUS_COPY.arrived.title}
-      intro={arrivedAt === null ? opening.body : MAIL_STATUS_COPY.arrived.body}
+      /*
+        The opening says mail is held, that held mail is listed below, and that
+        this is the rule working. WHY a provider's confirmation is the thing
+        being held is mechanism, so it sits in a tip — see `QUARANTINE_HELD.why`.
+        Nothing that changes what the user presses moved: the trust warning is
+        still on the glass, above the buttons it is about.
+      */
+      intro={
+        arrivedAt !== null ? (
+          MAIL_STATUS_COPY.arrived.body
+        ) : opening === QUARANTINE_HELD ? (
+          <>
+            {opening.body}
+            <InfoTip about="held mail" testId="tip-held-mail">
+              {QUARANTINE_HELD.why}
+            </InfoTip>
+          </>
+        ) : (
+          opening.body
+        )
+      }
       footer={
         <Button variant="ghost" disabled={busy} onClick={() => void watch()}>
           {busy ? "Checking…" : "Check now"}
@@ -639,7 +661,17 @@ export function Verification({
         known about it — the domain that SIGNED it — and the two actions are
         offered side by side. The user knows which message they are waiting for.
       */}
-      <SectionLabel as="h2">Mail held for you</SectionLabel>
+      {/*
+        "the domain that signed it" is the phrase every row and the trust
+        warning are written in, and it is a term of art. The definition is a
+        definition — it goes in a tip, beside the list it describes.
+      */}
+      <div className="flex items-center gap-1">
+        <SectionLabel as="h2">Mail held for you</SectionLabel>
+        <InfoTip about="the signing domain" testId="tip-signing-domain">
+          {SIGNING_DOMAIN_TIP}
+        </InfoTip>
+      </div>
 
       {/*
         The one thing a user can get wrong here, above the control that does it.

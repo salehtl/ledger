@@ -239,6 +239,62 @@ describe("the qualifications that may never be dropped", () => {
   });
 });
 
+/**
+ * The tooltip rule, on the one screen where a tip now sits beside a warning.
+ *
+ * `InfoTip` moved mechanism and definitions off these screens, and the failure
+ * mode it introduces is precise: a load-bearing sentence "moved into a tip" is
+ * still in the DOM, still findable by `document.body.textContent`, and every
+ * assertion above would keep passing while the user could no longer see it
+ * without tapping. So this asserts the shape rather than the string — no
+ * qualification may be inside a tip panel, and a tip must not be the only place
+ * a warning lives.
+ */
+describe("no load-bearing sentence hides behind a tooltip", () => {
+  it("keeps the four trust clauses out of every tip on the verification screen", async () => {
+    const user = userEvent.setup();
+    mount(
+      <Verification client={{ sessionToken: "tok" }} firstMailAt={() => null} pollMs={0} server="" />,
+    );
+    const warning = await screen.findByTestId("verification-trust-warning");
+
+    // The warning is not in a tip: it is a Notice on the glass, and the tip
+    // beside the list is a different element entirely.
+    for (const tip of screen.getAllByRole("button", { name: /^About / })) {
+      expect(tip.parentElement?.contains(warning)).toBe(false);
+    }
+
+    // And opening every tip on the screen reveals nothing that was supposed to
+    // stay on it. `TRUST_ONLY_YOUR_BANK` is the whole of qualifications 9–12.
+    for (const tip of screen.getAllByRole("button", { name: /^About / })) {
+      await user.click(tip);
+    }
+    for (const panel of screen.getAllByRole("note")) {
+      const said = panel.textContent ?? "";
+      expect(said).not.toContain(TRUST_ONLY_YOUR_BANK.body);
+      expect(said).not.toMatch(/only your bank/i);
+      expect(said).not.toMatch(/does see each email/i);
+    }
+  });
+
+  /**
+   * The trigger names its subject, so a screen-reader user knows what a tip
+   * explains before opening it — and so "info" cannot become the accessible
+   * name of six different things on one screen.
+   */
+  it("names what each tip explains", async () => {
+    mount(
+      <Verification client={{ sessionToken: "tok" }} firstMailAt={() => null} pollMs={0} server="" />,
+    );
+    await screen.findByTestId("verification-trust-warning");
+    const tips = screen.getAllByRole("button", { name: /^About / });
+    expect(tips.length).toBeGreaterThan(0);
+    for (const tip of tips) {
+      expect(tip.getAttribute("aria-label") ?? "").not.toMatch(/^About (this|it|more)$/i);
+    }
+  });
+});
+
 describe("skipping a step never skips a warning", () => {
   /**
    * The steps that HAVE no skip, asserted as the absence of any control that

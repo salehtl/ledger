@@ -59,6 +59,7 @@ import type { SecretStore } from "@ledger/client/store/store";
 
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { InfoTip } from "../../components/ui/InfoTip";
 import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
@@ -672,11 +673,23 @@ export function V2Settings({
             refusal to normalise them. Unlike the home currency, this IS
             changeable — a plan is a label over money that has already been
             bucketed, so changing it re-labels and never re-values. */}
-        <Panel title="Your plan">
-          <p className="text-sm leading-relaxed text-muted">
-            How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean to
-            spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
-          </p>
+        {/*
+          The paragraph that was here is a definition of what a plan IS, plus
+          the reassurance that ledger only ever watches. Neither changes what
+          the user does — the controls under it are labelled, the plan is
+          changeable, and nothing here is irreversible — so both moved into the
+          tip. The group label and the field labels are what the screen carries.
+        */}
+        <Panel
+          title="Your plan"
+          info={
+            <InfoTip about="your plan" testId="tip-plan">
+              How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you
+              mean to spend in a month. ledger shows your spending against it — it never moves money or blocks a
+              purchase.
+            </InfoTip>
+          }
+        >
           {/* Locked until the stored plan has been read, because until then
               these fields hold a placeholder the seeding is about to replace —
               and a control that discards what you typed is worse than one that
@@ -1098,11 +1111,20 @@ function RowCard({ children }: { children: React.ReactNode }) {
   return <Card className="!p-0 divide-y divide-border overflow-hidden">{children}</Card>;
 }
 
-/** A named card inside a {@link Group}, for the controls that are not one row. */
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * A named card inside a {@link Group}, for the controls that are not one row.
+ *
+ * `info` is an `InfoTip` beside the title — for the "why" behind a group, which
+ * is what Settings has most of and what makes these screens read as walls. It is
+ * never where a consequence goes; see `InfoTip`'s header.
+ */
+function Panel({ title, info, children }: { title: string; info?: React.ReactNode; children: React.ReactNode }) {
   return (
     <Card className="space-y-3">
-      <h3 className="text-sm font-semibold">{title}</h3>
+      <div className="flex items-center gap-1">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {info}
+      </div>
       {children}
     </Card>
   );
