@@ -727,6 +727,62 @@ describe("V2Settings", () => {
       expect(within(dialog).getByTestId("inbound-address").textContent).toBe("u-abc@in.sirdab.ae");
     });
 
+    it("held confirmation with no readable link: the dialog's tap falls back to held mail", async () => {
+      // The one-tap notice inside the forwarding dialog, on a confirmation
+      // whose body carries no link ledger can pin to the signing domain. The
+      // body copy says "open it" — so the tap must go somewhere: held mail,
+      // through the same seam the Held mail row uses. Never a dead end.
+      const user = userEvent.setup();
+      const body = [
+        "Return-Path: <forwarding-noreply@google.com>",
+        "From: Gmail Team <forwarding-noreply@google.com>",
+        "Subject: Gmail Forwarding Confirmation",
+        "Content-Type: text/plain; charset=UTF-8",
+        "",
+        "you@example.com has requested to automatically forward mail.",
+        "",
+        "Confirmation code: 123456789",
+        "",
+      ].join("\r\n");
+      const page = {
+        items: [
+          {
+            id: "held-1",
+            ingest_id: "ing-1",
+            received_at: "2026-08-09T15:15:34Z",
+            expires_at: "2026-09-08T15:15:34Z",
+            outer_domain: "google.com",
+            inner_domain: "",
+            attested: false,
+            attested_by: "",
+            dkim: "pass",
+            arc: "pass",
+            size_bucket: 1,
+            blob: btoa(body),
+          },
+        ],
+        action_needed: 1,
+        expiring_soon: 0,
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes("/api/v1/quarantine")
+            ? new Response(JSON.stringify(page))
+            : new Response("[]"),
+        ),
+      );
+      const onOpenQuarantine = vi.fn();
+      wrap({ onOpenQuarantine });
+      await screen.findByTestId("settings-inbound-address");
+      await user.click(screen.getByRole("button", { name: /forwarding instructions/i }));
+
+      const dialog = await screen.findByRole("dialog");
+      await within(dialog).findByTestId("forwarding-confirmation");
+      await user.click(within(dialog).getByRole("button", { name: "Open the confirmation" }));
+      expect(onOpenQuarantine).toHaveBeenCalledTimes(1);
+    });
+
     /**
      * The check that used to be a step, with no onboarding anywhere near it.
      *

@@ -1075,6 +1075,11 @@ export function V2Settings({
             // Nothing to declare to: the fact is the walk's, and the walk is
             // over. Saying "I have set this up" here simply closes the drawer.
             onForwardingDeclared={() => setForwardingOpen(false)}
+            // The held-confirmation notice's fallback, when its message has no
+            // link ledger could pin: the tap opens held mail — the same seam
+            // the Held mail row uses — rather than commanding an action the
+            // dialog cannot perform.
+            {...(onOpenQuarantine === undefined ? {} : { onOpenHeldMail: onOpenQuarantine })}
           />
         </Dialog>
       )}
