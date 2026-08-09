@@ -14,7 +14,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -29,6 +29,7 @@ import { MotionProvider } from "../app/MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { openBrowserDriver } from "../v2/db/driver";
 import { sqlReviewSource, type ReviewSource } from "../v2/sources/review";
+import { v2Keys } from "../v2/queries";
 import type { Writer } from "../v2/writer";
 import { Review } from "./Review";
 
@@ -206,17 +207,25 @@ function recorder(pending: Op[] = []): Recorder {
   };
 }
 
+/**
+ * Returns the `QueryClient` as well as the render result, so a test can make the
+ * feed re-read on its own terms — which is the only way to reproduce a sync that
+ * lands while the user is looking at a card rather than after they answered it.
+ */
 function mount(source: ReviewSource, writer: Writer) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MotionProvider>
-        <ToastProvider>
-          <Review source={source} writer={writer} />
-        </ToastProvider>
-      </MotionProvider>
-    </QueryClientProvider>,
-  );
+  return {
+    qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <MotionProvider>
+          <ToastProvider>
+            <Review source={source} writer={writer} />
+          </ToastProvider>
+        </MotionProvider>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -409,6 +418,69 @@ describe("Review", () => {
       type: "txn_categorized",
       entity: { kind: "txn", id: "t1" },
       payload: { category: "Dining", needs_review: false },
+    });
+    expect(screen.queryByText(/Couldn't save/)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("answers the transaction ON THE CARD when the sync landed BEFORE the answer", async () => {
+    // The half of the window the other two cannot reach, and the reason they
+    // cannot: the undo toast holds the `onUndo` it was handed at commit time, so
+    // a `byCard` that goes wrong AFTER the commit is never consulted, and a test
+    // that folds the page mid-toast is answered out of a closure that is still
+    // correct. Both fixes could be reverted and such a test would stay green.
+    //
+    // A sync does not wait for the user to answer. It can just as easily land
+    // while the card is under their thumb — and then the page has renumbered
+    // BEFORE the commit, so the lookup the commit itself makes is the wrong one.
+    // With positional ids the deck's frozen card 1 (SPINNEYS/t2) resolves to
+    // whatever is first in the NEW page (CARREFOUR/t1), and both the confirm and
+    // the undo are authored against a transaction the user never saw.
+    const user = userEvent.setup();
+    const writer = recorder();
+    const base = await projection();
+    let folded = false;
+    const folding: ReviewSource = {
+      ...base,
+      page: async (lane, opts) => {
+        const rows = await base.page(lane, opts);
+        if (lane !== "needs_review" || !folded) return rows;
+        return rows.filter((r) => r.txn.id !== "t2");
+      },
+      // Not decoration. The counts line is rendered from the SAME query pass as
+      // the page, so it is the one thing in the DOM that can prove the screen
+      // re-rendered on the folded page — without it this test would pass by
+      // asserting against a re-read nobody had awaited, which is exactly the
+      // "check that cannot fail" this test exists to replace.
+      counts: async () => ({ ...(await base.counts()), unparsed: folded ? 1 : 0 }),
+    };
+    const { qc } = mount(folding, writer);
+    await screen.findByText("SPINNEYS");
+
+    folded = true;
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: v2Keys.all });
+    });
+    await screen.findByText(/couldn't be read/);
+    // The deck did not re-freeze: the card the user is looking at is still t2,
+    // which is the whole reason the lookup has to survive the renumbering.
+    expect(screen.getByText("SPINNEYS")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+    expect(writer.queued[0]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "t2" },
+      payload: { category: "Groceries" },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(writer.queued.length).toBe(3));
+    expect(writer.queued[2]).toMatchObject({
+      type: "txn_categorized",
+      entity: { kind: "txn", id: "t2" },
+      payload: { category: null, needs_review: true },
     });
     expect(screen.queryByText(/Couldn't save/)).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
