@@ -71,19 +71,28 @@ import {
   WAITLIST_BANK,
 } from "../../v2/bank";
 import { joinWaitlist, readSupportedBanks, type SupportedBank, type TokenSource } from "../../v2/onboardingIO";
-import { Notice, Step } from "./Shell";
+import { Notice, SkipStep, Step } from "./Shell";
 
 export interface BankProps {
   client: TokenSource;
   /** Every bank the user declared, in one call. The caller authors the ops. */
   onDeclared: (banks: readonly string[]) => void;
+  /**
+   * "Set this up later". Declares nothing and asks for nothing.
+   *
+   * Distinct from "Continue without adding it", which declares
+   * {@link WAITLIST_BANK} — that is a user who HAS answered the question and
+   * whose bank the grammar cannot hold. This one is a user who has not answered
+   * at all, and the walk must not treat silence as an answer.
+   */
+  onSkip?: () => void;
   server?: string;
   fetch?: typeof fetch;
 }
 
 type Listing = { kind: "loading" } | { kind: "ready"; banks: SupportedBank[] } | { kind: "failed" };
 
-export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) {
+export function Bank({ client, onDeclared, onSkip, server, fetch: doFetch }: BankProps) {
   const [listing, setListing] = useState<Listing>({ kind: "loading" });
   const [picked, setPicked] = useState<string[]>([]);
   const [other, setOther] = useState("");
@@ -266,6 +275,10 @@ export function Bank({ client, onDeclared, server, fetch: doFetch }: BankProps) 
       <Button variant="ghost" disabled={busy} onClick={() => onDeclared(withBank(picked, WAITLIST_BANK))}>
         Continue without adding it
       </Button>
+
+      {/* Last, and not disabled by `busy`: a request in flight is a reason to
+          wait for the counter, never a reason to be unable to leave. */}
+      {onSkip !== undefined && <SkipStep step="banks_declared" onSkip={onSkip} />}
     </Step>
   );
 }

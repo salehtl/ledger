@@ -53,7 +53,20 @@
  *     the plan control then authored over the account's plan. See
  *     {@link accountSetupComplete}.
  *
- * What remains device-local is the address hint below, and nothing else.
+ * What remains device-local is the address hint below and, since onboarding
+ * stopped being a gate, the set of steps the user answered with "later"
+ * ({@link LocalOnboardingRecord.skipped}) — the one fact with no home in the
+ * account, because a log records what was done and nothing records what was
+ * declined.
+ *
+ * # Onboarding proposes; it does not block
+ *
+ * Account creation is the only gate: an invite, a passkey, the key ceremony.
+ * Every later step carries a real, always-enabled way past it
+ * ({@link SKIPPABLE_STEPS}), and the check that mail actually arrives left the
+ * table altogether — it waited on the user's bank sending an email, which waits
+ * on the user spending money. It is a status now ({@link mailStatus}), and what
+ * is still outstanding is a list ({@link remainingSetup}) rather than a wall.
  *
  * # One deliberate divergence from the native port: the address is cached
  *
@@ -98,12 +111,53 @@ export const ONBOARDING_STEPS = [
   "banks_declared",
   "address_issued",
   "forwarding_configured",
-  "first_mail_confirmed",
   "home_currency_set",
   "done",
 ] as const;
 
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+
+/**
+ * The steps a user may answer with "later", and the reason `first_mail_confirmed`
+ * is not among them: **it is not a step any more.**
+ *
+ * # Why the first-mail check left the table
+ *
+ * It waited for a real bank alert, and a bank alert requires the user to spend
+ * money. So the last thing between a new account and the product was an event
+ * the user cannot cause on demand, may not cause for days, and should never be
+ * nudged into causing. Two unrelated bugs turned that wait into a locked door on
+ * the same day — a mail quota ate the provider's confirmation, and one predicate
+ * refused the only message the step could proceed on.
+ *
+ * The FACT survives ({@link OnboardingFacts.firstMailConfirmedAt}, still read
+ * from the log by {@link firstMailAt}); only its power to block is gone. It is
+ * now a status the app reports — see {@link mailStatus} — and the surface that
+ * reads it is Settings, at any time, rather than a screen the walk had to pass
+ * through once.
+ *
+ * # Why the other four ARE skippable, and account creation is not
+ *
+ * Without keys there is no account to hold data, and the recovery phrase is
+ * unrecoverable, so `invited` and `keys_secured` stay hard. Everything after
+ * them is a task the user may do now, later or never: an account with no bank,
+ * no address and no home currency is still a working budgeting app, because
+ * transactions can be added by hand.
+ *
+ * Skipping is *not doing a thing*. Nothing here does a thing with less proof.
+ */
+export const SKIPPABLE_STEPS = [
+  "banks_declared",
+  "address_issued",
+  "forwarding_configured",
+  "home_currency_set",
+] as const;
+
+export type SkippableStep = (typeof SKIPPABLE_STEPS)[number];
+
+export function isSkippable(step: OnboardingStep): step is SkippableStep {
+  return (SKIPPABLE_STEPS as readonly string[]).includes(step);
+}
 
 /**
  * `"signed_out"` is **not** a step: it is the absence of the machine. Sign-in
@@ -119,7 +173,6 @@ export type OnboardingScreen =
   | "bank"
   | "address"
   | "forwarding"
-  | "verification"
   | "home_currency"
   | "finish"
   | "product";
@@ -134,8 +187,10 @@ const SCREEN_FOR: Record<OnboardingPosition, OnboardingScreen> = {
   keys_secured: "bank",
   banks_declared: "address",
   address_issued: "forwarding",
-  forwarding_configured: "verification",
-  first_mail_confirmed: "home_currency",
+  // The forwarding rule is the last thing about mail the walk asks for. What
+  // used to follow it was a screen waiting for a bank email to arrive; see
+  // {@link SKIPPABLE_STEPS} for why that wait is a status now.
+  forwarding_configured: "home_currency",
   home_currency_set: "finish",
   done: "product",
 };
@@ -189,8 +244,31 @@ export interface OnboardingFacts {
    * having actually arrived.
    */
   forwardingDeclared: boolean;
-  /** A genuine bank message has been confirmed (spec §3.2 makes this a step). */
+  /**
+   * A genuine bank message has become a transaction.
+   *
+   * **No longer a milestone**, and that is the point: it is the only fact in
+   * here the user cannot cause — it needs their bank to send an email, which
+   * needs them to spend money. It is reported as a status ({@link mailStatus})
+   * and it still demonstrates that a forward works, which is why
+   * {@link resumeFacts} reads `forwardingDeclared` off it.
+   */
   firstMailConfirmedAt: string | null;
+  /**
+   * The steps the user answered with "later".
+   *
+   * DEVICE-LOCAL, and the one fact in here that has to be. Every other fact is
+   * evidence the account carries — an op in the log, an address on the server —
+   * whereas a decision *not* to do something leaves no evidence anywhere. The
+   * alternative to storing it is walking the user through the same skipped step
+   * at every launch, which is the lockout this whole design removes.
+   *
+   * It never makes anything true. A skipped step's milestone is still unmet, so
+   * `banks` is still empty and `homeCurrency` is still null — the skip only
+   * stops {@link stepFor} treating the gap as a wall, and
+   * {@link remainingSetup} still lists it as outstanding.
+   */
+  skipped: readonly SkippableStep[];
   /** **From the log.** Never from a device setting, never cached locally. */
   homeCurrency: string | null;
   /**
@@ -220,6 +298,7 @@ export function emptyFacts(): OnboardingFacts {
     forwardingDeclared: false,
     firstMailConfirmedAt: null,
     homeCurrency: null,
+    skipped: [],
     setupSeen: false,
   };
 }
@@ -232,23 +311,30 @@ const MILESTONES: readonly (readonly [OnboardingStep, (f: OnboardingFacts) => bo
   ["banks_declared", (f) => f.banks.length > 0],
   ["address_issued", (f) => f.inboundAddress !== null],
   ["forwarding_configured", (f) => f.forwardingDeclared],
-  ["first_mail_confirmed", (f) => f.firstMailConfirmedAt !== null],
   ["home_currency_set", (f) => f.homeCurrency !== null],
   ["done", (f) => f.setupSeen],
 ];
 
+/** Whether the user has said "later" to this step. */
+export function isSkipped(f: OnboardingFacts, step: OnboardingStep): boolean {
+  return isSkippable(step) && f.skipped.includes(step);
+}
+
 /**
- * The longest unbroken prefix of completed milestones.
+ * The longest unbroken prefix of milestones that are met **or skipped**.
  *
- * **A gap stops the walk.** Taking the highest true milestone instead would
- * drop a reinstalled user into the product with no forwarding rule and no
- * bank — every fact behind the gap is still true, so the state would look
- * complete while the thing onboarding exists to arrange had never happened.
+ * **A gap still stops the walk, and a skip is not a gap.** Taking the highest
+ * true milestone instead would drop a reinstalled user into the product with no
+ * forwarding rule and no bank — every fact behind the gap is still true, so the
+ * state would look complete while the thing onboarding exists to arrange had
+ * never happened. A skip is different in kind: it is the user having been asked
+ * and having answered. The step is still outstanding ({@link remainingSetup}
+ * lists it, Settings can still do it); it simply no longer stands in the way.
  */
 export function stepFor(f: OnboardingFacts): OnboardingPosition {
   let at: OnboardingPosition = "signed_out";
   for (const [step, done] of MILESTONES) {
-    if (!done(f)) return at;
+    if (!done(f) && !isSkipped(f, step)) return at;
     at = step;
   }
   return at;
@@ -304,6 +390,8 @@ export type OnboardingEvent =
   | { type: "forwarding_declared" }
   | { type: "first_mail_confirmed"; at: string }
   | { type: "home_currency_set"; currency: string }
+  /** "Set this up later". One step per event; the screen says which. */
+  | { type: "step_skipped"; step: SkippableStep }
   | { type: "finished" }
   | { type: "signed_out" }
   | { type: "account_deleted" };
@@ -366,6 +454,11 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
       return ccy === null ? f : { ...f, homeCurrency: ccy };
     }
 
+    case "step_skipped":
+      // Same object when it is already skipped, and it never un-skips: the way
+      // back to a skipped step is doing it, in Settings, not a second event.
+      return f.skipped.includes(e.step) ? f : { ...f, skipped: [...f.skipped, e.step] };
+
     case "finished":
       return f.setupSeen ? f : { ...f, setupSeen: true };
 
@@ -399,12 +492,27 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
 export interface LocalOnboardingRecord {
   /** A resume hint, not a display value. See the header. */
   inboundAddress: string | null;
+  /**
+   * The steps this person said "later" to.
+   *
+   * The SECOND field, added deliberately against this module's one-field rule,
+   * because it is the one fact with no home in the account: an op log records
+   * what was done, and nothing anywhere records what was declined. Stored, a
+   * skipped step stays skipped across a reload; unstored, every launch walks the
+   * user back into the step they already answered, which is the door this
+   * design exists to unlock.
+   *
+   * A second device does not inherit it, and that is correct rather than merely
+   * tolerable — the second device is asked the question once, and can answer
+   * "later" again in one tap.
+   */
+  skipped: readonly SkippableStep[];
 }
 
-export const LOCAL_RECORD_KEYS = ["inboundAddress"] as const;
+export const LOCAL_RECORD_KEYS = ["inboundAddress", "skipped"] as const;
 
 export function encodeLocal(f: OnboardingFacts): LocalOnboardingRecord {
-  return { inboundAddress: f.inboundAddress };
+  return { inboundAddress: f.inboundAddress, skipped: f.skipped };
 }
 
 /** Refuses a partially-readable record rather than half-applying it. */
@@ -415,7 +523,13 @@ export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
   // field existed is complete in every way that decides a step.
   const addr = r["inboundAddress"] ?? null;
   if (addr !== null && typeof addr !== "string") return null;
-  return { inboundAddress: addr };
+  // Unreadable skips read as NONE rather than as a refusal of the whole record.
+  // The cost of dropping them is one more walk through steps that are all
+  // skippable; the cost of refusing the record is the cached address, which is
+  // what keeps an offline set-up device out of onboarding entirely.
+  const raw = r["skipped"];
+  const skipped = Array.isArray(raw) ? raw.filter((s): s is SkippableStep => typeof s === "string" && isSkippable(s as OnboardingStep)) : [];
+  return { inboundAddress: addr, skipped };
 }
 
 /**
@@ -453,6 +567,9 @@ export function resumeFacts(args: {
     forwardingDeclared: args.firstMailConfirmedAt !== null,
     firstMailConfirmedAt: args.firstMailConfirmedAt,
     homeCurrency: args.homeCurrency,
+    // The only device-local fact left, and the only one with nowhere else to
+    // live. See {@link LocalOnboardingRecord.skipped}.
+    skipped: local?.skipped ?? [],
     setupSeen: false,
   };
   // "Finished" is the ACCOUNT's prerequisites being met. Asked through
@@ -624,6 +741,125 @@ export function homeCurrencyOps(currency: string): OpSpec[] {
 }
 
 // ---------------------------------------------------------------------------
+// What is still outstanding
+// ---------------------------------------------------------------------------
+
+/** One thing setup asked for that has not been done. */
+export interface SetupTask {
+  id: SkippableStep;
+  /** What it is, in two or three words. */
+  title: string;
+  /** What does not work until it is done. Honest, not scolding. */
+  detail: string;
+}
+
+/**
+ * The words on a skip control and the price of pressing it.
+ *
+ * Each `consequence` is a sentence the code honours. None of them says a skipped
+ * step is fine; each says what will not work, and where to finish it.
+ */
+export const SKIP_COPY: Record<SkippableStep, { action: string; consequence: string }> = {
+  banks_declared: {
+    action: "Set this up later",
+    consequence: "ledger still files any bank mail it can read. Add your banks in Settings whenever you like.",
+  },
+  address_issued: {
+    action: "Set this up later",
+    consequence: "No mail will be filed until you do this. You can add transactions by hand in the meantime.",
+  },
+  forwarding_configured: {
+    action: "Set this up later",
+    consequence: "Nothing arrives until mail is sent to your address. Your address is in Settings when you want it.",
+  },
+  home_currency_set: {
+    action: "Set this up later",
+    consequence: "Totals stay in the currency each purchase was made in. Settings can set it once, later.",
+  },
+};
+
+const TASK_COPY: Record<SkippableStep, { title: string; detail: string }> = {
+  banks_declared: { title: "Add your banks", detail: "So ledger knows how your alerts are written." },
+  address_issued: { title: "Get your inbound address", detail: "The address your bank mail is sent to." },
+  forwarding_configured: { title: "Send your bank mail here", detail: "Set it with your bank, or forward it." },
+  home_currency_set: { title: "Set your home currency", detail: "Totals are kept in this one. It is set once." },
+};
+
+/**
+ * Everything setup asked for that is still not done — **whether or not it was
+ * skipped**, in the walk's own order.
+ *
+ * Deliberately derived from the milestone facts and not from `skipped`: a step
+ * finished somewhere else (a bank declared in Settings, an address minted by a
+ * boot read) drops off this list on its own, and a list that tracked the button
+ * press instead would nag about work already done.
+ */
+export function remainingSetup(f: OnboardingFacts): SetupTask[] {
+  const met: Record<SkippableStep, boolean> = {
+    banks_declared: f.banks.length > 0,
+    address_issued: f.inboundAddress !== null,
+    forwarding_configured: f.forwardingDeclared,
+    home_currency_set: f.homeCurrency !== null,
+  };
+  return SKIPPABLE_STEPS.filter((s) => !met[s]).map((s) => ({ id: s, ...TASK_COPY[s] }));
+}
+
+/**
+ * Whether mail is actually reaching ledger — the thing that used to be a step.
+ *
+ * Three states, because "nothing has arrived" means two different things. With
+ * no address there is nowhere for mail to arrive, and telling that user to wait
+ * would be pointing at a pipe that was never laid.
+ */
+export type MailStatus = { kind: "arrived"; at: string } | { kind: "waiting" } | { kind: "no_route" };
+
+export function mailStatus(f: Pick<OnboardingFacts, "inboundAddress" | "firstMailConfirmedAt">): MailStatus {
+  if (f.firstMailConfirmedAt !== null) return { kind: "arrived", at: f.firstMailConfirmedAt };
+  
+  if (f.inboundAddress === null) return { kind: "no_route" };
+  return { kind: "waiting" };
+}
+
+/**
+ * The status line, in the words that replaced a waiting screen.
+ *
+ * `waiting` says what a user stuck there actually needs to know: that nothing is
+ * expected of them, that the wait is on their bank, and that they do not have to
+ * spend money to make setup finish — the app is already theirs.
+ */
+export const MAIL_STATUS_COPY = {
+  waiting: {
+    title: "Waiting for your first bank email",
+    body:
+      "Nothing to do. The next transaction email your bank sends becomes a transaction here. Add anything by " +
+      "hand until then.",
+  },
+  arrived: { title: "Your bank mail is arriving", body: "Mail sent to your address is being filed." },
+  no_route: {
+    title: "No mail can arrive yet",
+    body: "Your bank mail has nowhere to go until you set up an address. Until then, add transactions by hand.",
+  },
+} as const;
+
+/**
+ * The provider's confirmation, as a task rather than a gate.
+ *
+ * Gmail emails a code before it will forward anything. That message is signed by
+ * the provider, so §3.2 makes it held rather than filed — which is why it is read
+ * in place, from Held mail, and why the honest sentence about it not arriving
+ * names the two real causes rather than blaming the user's mailbox.
+ */
+export const CONFIRMATION_TASK_COPY = {
+  title: "Your provider may email you a code",
+  body:
+    "Some providers send a code before they will forward mail. It is held, not filed, because your provider " +
+    "signed it — open it under Held mail and enter the code with your provider.",
+  missing:
+    "If no code has arrived, your provider may not send one, or the message may have been refused before it " +
+    "reached ledger. Ask your provider to send it again. Nothing else in ledger is waiting on it.",
+} as const;
+
+// ---------------------------------------------------------------------------
 // Copy
 // ---------------------------------------------------------------------------
 
@@ -761,9 +997,8 @@ export const TRUST_ONLY_YOUR_BANK = {
 export const WAITING_FOR_FIRST_MAIL = {
   title: "Waiting for your first bank email",
   body:
-    "There is no code to enter. This step finishes on its own when your bank's first transaction email arrives, " +
-    "so leave this open or come back later. Mail ledger cannot prove came from a bank is held, not filed. " +
-    "Anything held is listed below.",
+    "There is no code to enter and nothing to wait here for. Mail ledger cannot prove came from a bank is held, " +
+    "not filed. Anything held is listed below.",
 } as const;
 
 /**
@@ -816,7 +1051,13 @@ export const RECOVERY_WARNING = {
  *     sends it unencrypted;
  *   - and losing the phrase and the devices loses the history, permanently.
  *
- * # There is no skip, and the copy says why
+ * # There is no skip, and there is no quiz either
+ *
+ * The step cannot be deferred — see below. It also no longer asks the user to
+ * type three of the words back: they are trusted to store the phrase the way
+ * they wish, and a typed answer proved only that the words were on the previous
+ * screen, never that they were saved anywhere durable. The warning is what
+ * carries the weight, and it is untouched.
  *
  * The native design treated a phrase as a backstop because iCloud Keychain
  * syncs a device wrap key. A browser has no Keychain. If this browser's site
@@ -845,14 +1086,13 @@ export const RECOVERY_PHRASE_COPY = {
   advice:
     "Write them on paper, or save them in a password manager. A screenshot is better than nothing and worse than " +
     "either.",
+  // The one press on this screen, and the last of the ceremony. The four
+  // strings that used to follow it — a "now type three of them back" title, its
+  // intro, its wrong-word complaint and a "show me the words again" button —
+  // are gone with the quiz they belonged to. The user is trusted to store the
+  // words the way they wish; typing three back proved only that they were still
+  // on the previous screen.
   recorded: "I have written these down",
-  // The confirmation step. A checkbox alone is a claim; this is a check.
-  confirmTitle: "Now type three of them back",
-  confirmIntro:
-    "Go back if you cannot answer. The words are still there, and this is the last time they will be.",
-  confirmWrong: "That is not the word at that position. Check what you wrote down.",
-  back: "Show me the words again",
-  publish: "Finish setting up encryption",
   working: "Setting up encryption…",
   failed:
     "ledger could not finish setting up encryption. Nothing is lost and your phrase has not changed. Try again " +

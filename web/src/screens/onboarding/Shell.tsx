@@ -16,12 +16,16 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 
+import { Button } from "../../components/ui/Button";
+import { SKIP_COPY, type SkippableStep } from "../../v2/onboarding";
+
 export function Step({
   title,
   intro,
   children,
   footer,
   testId,
+  embedded = false,
 }: {
   title: string;
   intro?: ReactNode;
@@ -29,6 +33,22 @@ export function Step({
   /** The step's actions. Rendered last, after everything it acts on. */
   footer?: ReactNode;
   testId?: string;
+  /**
+   * Render the step's CONTENT with no page around it.
+   *
+   * A step is normally the whole glass. Since setup stopped being a corridor,
+   * two of these screens are also reachable from Settings — the home-currency
+   * ceremony a user skipped, and the mail check, which must be re-runnable long
+   * after setup — and they open in a `Dialog`, which owns the page shape and the
+   * title. Reusing the component rather than writing a second version of it is
+   * the point: the home-currency ceremony's three-places-before-the-tap warning
+   * is exactly the copy that must not exist twice and drift.
+   *
+   * So this drops the `100svh` frame, the outer heading and its focus move (the
+   * dialog labels and focuses itself), and keeps the rhythm: intro, content,
+   * actions last.
+   */
+  embedded?: boolean;
 }) {
   /**
    * Focus moves to the heading whenever the step changes.
@@ -47,8 +67,24 @@ export function Step({
    */
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
+    if (embedded) return;
     heading.current?.focus();
-  }, [title]);
+  }, [title, embedded]);
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col gap-4" {...(testId === undefined ? {} : { "data-testid": testId })}>
+        {/* Still rendered, as a heading one level down. The dialog's own title
+            names the drawer; this names the step inside it, and for the
+            home-currency ceremony the two differ at the moment it matters — the
+            confirm phase's title is the code being weighed. */}
+        <h2 className="text-base font-semibold tracking-[-0.015em]">{title}</h2>
+        {intro !== undefined && <p className="text-sm leading-relaxed text-muted">{intro}</p>}
+        {children}
+        {footer !== undefined && <div className="pt-1 flex flex-col gap-3">{footer}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-[100svh] bg-bg text-fg overflow-y-auto" {...(testId === undefined ? {} : { "data-testid": testId })}>
@@ -113,6 +149,38 @@ export function Notice({
         <p className={`text-sm font-semibold ${danger ? "text-bad" : "text-fg"}`}>{title}</p>
       )}
       <div className="text-sm leading-relaxed text-fg flex flex-col gap-2">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * The way past a step, on every step after account creation.
+ *
+ * # It is a control, not a hidden link, and it is never disabled
+ *
+ * Onboarding was a chain, and any broken link in a chain is a locked door — the
+ * operator was locked out of his own app twice in one day by two unrelated bugs
+ * in two different links. A skip that greys out while something loads, or that
+ * hides behind a "having trouble?" disclosure, is the same door with a politer
+ * handle. So this is a plain button that is always pressable, and the copy above
+ * it says what will not work until the step is done rather than pretending the
+ * step does not matter.
+ *
+ * The consequence comes FIRST, because it is what the press is weighed against;
+ * the action is last, which is the rhythm every {@link Step} keeps.
+ *
+ * Nothing here softens a security step. There is no skip on the invite, the
+ * passkey or the recovery phrase, and `SKIPPABLE_STEPS` is what enforces that —
+ * this component cannot be pointed at a step that is not in it.
+ */
+export function SkipStep({ step, onSkip, testId }: { step: SkippableStep; onSkip: () => void; testId?: string }) {
+  const copy = SKIP_COPY[step];
+  return (
+    <div data-testid={testId ?? `skip-${step}`} className="flex flex-col gap-2 pt-4 mt-2 border-t border-border">
+      <p className="text-xs leading-relaxed text-muted">{copy.consequence}</p>
+      <Button variant="ghost" onClick={onSkip}>
+        {copy.action}
+      </Button>
     </div>
   );
 }

@@ -40,13 +40,13 @@ import type { SecretStore } from "@ledger/client/store/store";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
 import {
-  firstMailAt,
   onboardingReducer,
   saveLocalRecord,
   screenFor,
   stepFor,
   type OnboardingFacts,
   type OpSpec,
+  type SkippableStep,
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
 import { bankDeclaredOps } from "../../v2/sources/banks";
@@ -59,7 +59,6 @@ import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
-import { Verification } from "./Verification";
 
 export interface OnboardingProps {
   handle: V2Handle;
@@ -68,15 +67,19 @@ export interface OnboardingProps {
   /** The boot gate's `again`. Called once the machine reaches `done`. */
   done: () => void;
   /**
-   * The gate's coordinator, as a pull. Only the verification step uses it, and
-   * that step cannot finish without it — see `Verification.tsx`'s header.
+   * The gate's coordinator, as a pull.
+   *
+   * **Accepted and no longer used.** The only step that needed it was the
+   * verification wait, which is gone: nothing in the walk now depends on a
+   * server-side event, so nothing in the walk needs to pull. It stays on the
+   * interface because `main.tsx` passes it and that file is not this task's to
+   * edit; the day it is, both sides can drop it together.
    */
   sync?: () => Promise<void>;
   /** Injected by tests. */
   fetch?: typeof fetch;
   secrets?: SecretStore;
   server?: string;
-  pollMs?: number;
   /** Injected by tests. Defaults to the browser's IndexedDB key vault. */
   vault?: KeyVault;
   /**
@@ -91,35 +94,41 @@ export function Onboarding({
   handle,
   facts: initial,
   done,
-  sync,
   fetch: doFetch,
   secrets,
   server = SERVER,
-  pollMs,
   vault,
   budgetSource,
 }: OnboardingProps) {
   const [facts, dispatch] = useReducer(onboardingReducer, initial);
   const step = stepFor(facts);
   /**
-   * Whether the verification step should offer a confirmation-code reader.
+   * The forwarding claim, and the flag this walk no longer keeps.
    *
-   * Component state, and deliberately NOT a fact: it decides copy and one
-   * control, so it has no business in the milestone table, in the op log or in
-   * `LocalOnboardingRecord` — a durable field would make a UI preference look
-   * like something the machine reasons about, which is how a "which provider"
-   * value ends up read by something that matters.
-   *
-   * The cost is that a reload during setup forgets it and the step opens in its
-   * default, confirmation-expecting form. That is the safe direction: the code
-   * reader is offered to someone who does not need it, rather than withheld from
-   * someone who does, and either way the gate is the same transaction in the log.
+   * `Address` still reports whether the chosen provider is expected to email a
+   * confirmation code, because that decides what its own screen says. Nothing
+   * downstream reads it any more: the step that used to — a wait for the code
+   * and then for a bank alert — is gone, and the provider's confirmation is now
+   * a task the user does from Held mail whenever it turns up. A value with no
+   * reader is dropped here rather than carried as state that looks meaningful.
    */
-  const [expectConfirmation, setExpectConfirmation] = useState(true);
-
-  const declareForwarding = useCallback((expect: boolean) => {
-    setExpectConfirmation(expect);
+  const declareForwarding = useCallback((_expectConfirmation: boolean) => {
     dispatch({ type: "forwarding_declared" });
+  }, []);
+
+  /**
+   * "Set this up later", from whichever step asked.
+   *
+   * The one piece of policy: **skipping the address skips the forwarding step
+   * too.** They are one subject — here is your address, now send mail to it —
+   * and the forwarding screen with no address on it is a page of instructions
+   * pointing at nothing. Keeping the rule here rather than in `Address` means
+   * the two steps' relationship is stated once, next to the table it is derived
+   * from.
+   */
+  const skip = useCallback((step: SkippableStep) => {
+    dispatch({ type: "step_skipped", step });
+    if (step === "address_issued") dispatch({ type: "step_skipped", step: "forwarding_configured" });
   }, []);
 
   useEffect(() => {
@@ -169,6 +178,7 @@ export function Onboarding({
             commit(banks.flatMap((bank) => bankDeclaredOps(bank, true)));
             dispatch({ type: "banks_declared", banks });
           }}
+          onSkip={() => skip("banks_declared")}
           {...io}
         />
       );
@@ -181,6 +191,7 @@ export function Onboarding({
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
           onForwardingDeclared={declareForwarding}
+          onSkip={skip}
           {...io}
         />
       );
@@ -193,19 +204,7 @@ export function Onboarding({
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
           onForwardingDeclared={declareForwarding}
-          {...io}
-        />
-      );
-
-    case "verification":
-      return (
-        <Verification
-          client={handle.client}
-          firstMailAt={() => firstMailAt(handle.client.state())}
-          onConfirmed={(at) => dispatch({ type: "first_mail_confirmed", at })}
-          expectConfirmation={expectConfirmation}
-          {...(sync === undefined ? {} : { sync })}
-          {...(pollMs === undefined ? {} : { pollMs })}
+          onSkip={skip}
           {...io}
         />
       );
@@ -216,6 +215,7 @@ export function Onboarding({
           commit={commit}
           onSet={(currency) => dispatch({ type: "home_currency_set", currency })}
           existing={facts.homeCurrency}
+          onSkip={() => skip("home_currency_set")}
         />
       );
 

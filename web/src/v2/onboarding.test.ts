@@ -4,8 +4,11 @@ import { memSecretStore } from "@ledger/client/store/store";
 import type { State, Txn } from "@ledger/client/replay/state";
 
 import {
+  MAIL_STATUS_COPY,
   ONBOARDING_STEPS,
   QUARANTINE_HELD,
+  SKIPPABLE_STEPS,
+  SKIP_COPY,
   RECOVERY_ENTRY_COPY,
   RECOVERY_PHRASE_COPY,
   TRUST_ONLY_YOUR_BANK,
@@ -13,8 +16,11 @@ import {
   emptyFacts,
   encodeLocal,
   firstMailAt,
+  isSkipped,
   loadLocalRecord,
+  mailStatus,
   onboardingReducer,
+  remainingSetup,
   resumeFacts,
   saveLocalRecord,
   screenFor,
@@ -32,6 +38,7 @@ function complete(over: Partial<OnboardingFacts> = {}): OnboardingFacts {
     forwardingDeclared: true,
     firstMailConfirmedAt: "2026-08-01T00:00:00Z",
     homeCurrency: "AED",
+    skipped: [],
     setupSeen: true,
     ...over,
   };
@@ -78,7 +85,6 @@ describe("stepFor", () => {
       "banks_declared",
       "address_issued",
       "forwarding_configured",
-      "first_mail_confirmed",
       "home_currency_set",
       "done",
     ]);
@@ -88,6 +94,122 @@ describe("stepFor", () => {
     expect(screenFor("signed_out")).toBe("sign_in");
     expect(screenFor("done")).toBe("product");
     for (const step of ONBOARDING_STEPS) expect(typeof screenFor(step)).toBe("string");
+  });
+});
+
+/**
+ * "Later" is an answer, and the machine has to treat it as one — without ever
+ * treating it as the thing having been done.
+ */
+describe("skipping", () => {
+  const fresh = (over: Partial<OnboardingFacts> = {}): OnboardingFacts => ({
+    ...emptyFacts(),
+    hasSession: true,
+    accountId: "u_1",
+    keysReady: true,
+    ...over,
+  });
+
+  it("walks past a skipped step instead of stopping at it", () => {
+    expect(stepFor(fresh())).toBe("keys_secured");
+    expect(stepFor(fresh({ skipped: ["banks_declared"] }))).toBe("banks_declared");
+  });
+
+  it("reaches the product with every optional step skipped, and nothing else true", () => {
+    const skipped = fresh({ skipped: [...SKIPPABLE_STEPS], setupSeen: true });
+    expect(stepFor(skipped)).toBe("done");
+    expect(screenFor(stepFor(skipped))).toBe("product");
+    // The skip made nothing true. This is the whole safety property: a skipped
+    // step is an unmet milestone that no longer blocks, never a met one.
+    expect(skipped.banks).toEqual([]);
+    expect(skipped.inboundAddress).toBeNull();
+    expect(skipped.homeCurrency).toBeNull();
+  });
+
+  it("cannot be pointed at a step that creates the account", () => {
+    // The gate the design keeps. `SkippableStep` is what enforces it in the
+    // type system; this is the runtime half, and it is what a `skipped` array
+    // decoded from an older or hand-edited record would hit.
+    expect([...SKIPPABLE_STEPS]).toEqual([
+      "banks_declared",
+      "address_issued",
+      "forwarding_configured",
+      "home_currency_set",
+    ]);
+    for (const step of ["signed_in", "invited", "keys_secured", "done"] as const) {
+      expect(isSkipped({ ...fresh(), skipped: [step as never] }, step)).toBe(false);
+    }
+    expect(stepFor({ ...fresh({ keysReady: false }), skipped: ["keys_secured" as never] })).toBe("invited");
+  });
+
+  it("records a skip once, and never un-records one", () => {
+    const once = onboardingReducer(fresh(), { type: "step_skipped", step: "banks_declared" });
+    expect(once.skipped).toEqual(["banks_declared"]);
+    expect(onboardingReducer(once, { type: "step_skipped", step: "banks_declared" })).toBe(once);
+  });
+
+  it("survives a reload, because nothing else can remember a decision not to act", () => {
+    const secrets = memSecretStore();
+    saveLocalRecord(secrets, fresh({ skipped: ["banks_declared", "home_currency_set"] }));
+    const resumed = resumeFacts(
+      fromTheLog({
+        banks: [],
+        inboundAddress: "u-abc@in.sirdab.ae",
+        firstMailConfirmedAt: null,
+        homeCurrency: null,
+        local: loadLocalRecord(secrets),
+      }),
+    );
+    expect(resumed.skipped).toEqual(["banks_declared", "home_currency_set"]);
+    // Address issued, forwarding not declared and not skipped: the walk stops
+    // there, which is the gap rule still doing its job around the skips.
+    expect(stepFor(resumed)).toBe("address_issued");
+  });
+
+  it("refuses a skip an older record could not have written", () => {
+    expect(decodeLocal({ inboundAddress: null, skipped: ["keys_secured", 7, "banks_declared"] })).toEqual({
+      inboundAddress: null,
+      skipped: ["banks_declared"],
+    });
+  });
+});
+
+describe("what is still outstanding", () => {
+  it("lists every unmet step in the walk's order, skipped or simply not reached", () => {
+    expect(remainingSetup(emptyFacts()).map((t) => t.id)).toEqual([
+      "banks_declared",
+      "address_issued",
+      "forwarding_configured",
+      "home_currency_set",
+    ]);
+  });
+
+  it("drops a step that was done, whatever was skipped", () => {
+    const f = { ...emptyFacts(), banks: ["dib"], homeCurrency: "AED", skipped: ["banks_declared" as const] };
+    expect(remainingSetup(f).map((t) => t.id)).toEqual(["address_issued", "forwarding_configured"]);
+  });
+
+  it("reports mail as a status, and separates 'nothing yet' from 'nowhere to arrive'", () => {
+    expect(mailStatus({ inboundAddress: null, firstMailConfirmedAt: null }).kind).toBe("no_route");
+    expect(mailStatus({ inboundAddress: "u-a@x", firstMailConfirmedAt: null }).kind).toBe("waiting");
+    expect(mailStatus({ inboundAddress: "u-a@x", firstMailConfirmedAt: "2026-08-01T00:00:00Z" })).toEqual({
+      kind: "arrived",
+      at: "2026-08-01T00:00:00Z",
+    });
+  });
+
+  it("never asks the user to spend money", () => {
+    // The step this replaced could only finish when a bank sent an email, which
+    // only happens when the user pays for something. No copy on the way out may
+    // reintroduce that as an instruction.
+    for (const s of [...Object.values(MAIL_STATUS_COPY), ...Object.values(SKIP_COPY)]) {
+      const said = `${(s as { title?: string; action?: string }).title ?? (s as { action?: string }).action ?? ""} ${
+        (s as { body?: string; consequence?: string }).body ??
+        (s as { consequence?: string }).consequence ??
+        ""
+      }`.toLowerCase();
+      expect(said).not.toMatch(/make a (purchase|payment|transaction)|spend (some )?money|buy something/);
+    }
   });
 });
 
@@ -164,7 +286,7 @@ describe("resumeFacts", () => {
   it("does not call setup finished while a milestone behind it is missing", () => {
     const f = resumeFacts(fromTheLog({ homeCurrency: null }));
     expect(f.setupSeen).toBe(false);
-    expect(stepFor(f)).toBe("first_mail_confirmed");
+    expect(stepFor(f)).toBe("forwarding_configured");
   });
 
   /**
@@ -247,7 +369,7 @@ describe("the device-local record", () => {
     // the only thing in there this build still uses.
     expect(
       decodeLocal({ bank: "dib", forwardingDeclared: true, finishedAt: "2026-08-02T00:00:00Z", inboundAddress: "u-abc@in.sirdab.ae" }),
-    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae" });
+    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae", skipped: [] });
   });
 
   it("survives unreadable JSON by re-deriving rather than throwing", () => {
@@ -256,11 +378,14 @@ describe("the device-local record", () => {
     expect(loadLocalRecord(secrets)).toBeNull();
   });
 
-  it("holds the address hint and NOTHING else — every other fact is the account's", () => {
-    // The device-local half is now one field wide. A bank, a forwarding claim
-    // or a "finished" flag stored here is a fact a second device cannot see,
-    // which is precisely what made a new device re-run setup.
-    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["inboundAddress"]);
+  it("holds the address hint and the skipped steps, and NOTHING else", () => {
+    // The device-local half is two fields wide, and the second one earned its
+    // place: a bank, a forwarding claim or a "finished" flag stored here is a
+    // fact a second device cannot see, which is precisely what made a new
+    // device re-run setup — whereas "I said later" is a fact NO device can see,
+    // because nothing anywhere records a decision not to do something. Without
+    // it, every launch walks the user back into the step they already answered.
+    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["inboundAddress", "skipped"]);
   });
 });
 

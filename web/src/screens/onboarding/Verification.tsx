@@ -2,6 +2,20 @@
  * The provider's held confirmation, if there is one, and then the first real
  * bank email.
  *
+ * # It is NOT a step of the walk any more
+ *
+ * It was, and it was the last thing between a new account and the product — a
+ * wait for a real bank alert, which is a wait for the user to spend money. Two
+ * unrelated bugs turned that wait into a locked door on the same day. So the
+ * walk goes past it, and this screen is now reached from **Settings**, at any
+ * time: a forwarding rule can break long after setup, and a check that only
+ * exists during onboarding is a check nobody can re-run.
+ *
+ * Two props carry that change and nothing else does. `onConfirmed` is optional
+ * (with no walk to advance, the screen reports the answer instead) and
+ * `embedded` renders it inside a `Dialog`. The measurement, the trust rules and
+ * every word of the copy are unchanged.
+ *
  * One screen for two things because the machine has one slot for them, and
  * because in practice they are one wait: the user sets the forward, the
  * provider's confirmation lands within seconds, and the bank's first alert lands
@@ -106,7 +120,13 @@ import { ApiError } from "@ledger/client/net/client";
 import { Button } from "../../components/ui/Button";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { SectionLabel } from "../../components/ui/SectionLabel";
-import { QUARANTINE_HELD, TRUST_ONLY_YOUR_BANK, WAITING_FOR_FIRST_MAIL } from "../../v2/onboarding";
+import {
+  CONFIRMATION_TASK_COPY,
+  MAIL_STATUS_COPY,
+  QUARANTINE_HELD,
+  TRUST_ONLY_YOUR_BANK,
+  WAITING_FOR_FIRST_MAIL,
+} from "../../v2/onboarding";
 import {
   CONFIRM_CONFLICT_COPY,
   confirmSender,
@@ -155,7 +175,17 @@ export interface VerificationProps {
   client: TokenSource;
   /** Folds the log. The ONLY thing that may say the first mail is confirmed. */
   firstMailAt: () => string | null;
-  onConfirmed: (at: string) => void;
+  /**
+   * Advance the walk. **Optional, because this is no longer a step.**
+   *
+   * Two callers now. Onboarding does not use this screen at all — waiting for a
+   * bank email put an event the user cannot cause between them and the product.
+   * Settings does, at any time, because a forwarding rule can break months after
+   * setup, and a check that only exists during a walk is a check nobody can
+   * re-run. With no `onConfirmed` the screen simply reports that mail arrived
+   * instead of advancing something.
+   */
+  onConfirmed?: (at: string) => void;
   /**
    * Pulls the log, so `firstMailAt` has something new to say.
    *
@@ -184,6 +214,8 @@ export interface VerificationProps {
    * holding, and the control below covers even that.
    */
   expectConfirmation?: boolean;
+  /** Rendered inside a `Dialog` rather than as a whole step. See `Shell`. */
+  embedded?: boolean;
 }
 
 export function Verification({
@@ -196,8 +228,17 @@ export function Verification({
   pollMs = VERIFICATION_POLL_MS,
   copy,
   expectConfirmation = true,
+  embedded = false,
 }: VerificationProps) {
   const [items, setItems] = useState<QuarantineItem[]>([]);
+  /**
+   * When the first bank mail turned up, on a screen with nothing to advance.
+   *
+   * The onboarding walk had somewhere to go, so it went; a re-run from Settings
+   * has to SAY the answer instead. Same measurement either way — a transaction
+   * in the log, through `firstMailAt`.
+   */
+  const [arrivedAt, setArrivedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
   const [copied, setCopied] = useState(false);
@@ -301,7 +342,9 @@ export function Verification({
       const at = io.current.firstMailAt();
       if (at === null) return;
       advanced.current = true;
-      io.current.onConfirmed(at);
+      const advance = io.current.onConfirmed;
+      if (advance === undefined) setArrivedAt(at);
+      else advance(at);
     } finally {
       inFlight.current = false;
       if (live.current) setBusy(false);
@@ -521,14 +564,27 @@ export function Verification({
   return (
     <Step
       testId="verification"
-      title={opening.title}
-      intro={opening.body}
+      embedded={embedded}
+      title={arrivedAt === null ? opening.title : MAIL_STATUS_COPY.arrived.title}
+      intro={arrivedAt === null ? opening.body : MAIL_STATUS_COPY.arrived.body}
       footer={
         <Button variant="ghost" disabled={busy} onClick={() => void watch()}>
           {busy ? "Checking…" : "Check now"}
         </Button>
       }
     >
+      {/*
+        The answer, when there is one and nothing to advance. It says WHEN,
+        because "mail is arriving" about a message from three months ago is a
+        different fact from one about this morning — and a forwarding rule that
+        broke in between shows up as exactly that gap.
+      */}
+      {arrivedAt !== null && Number.isFinite(Date.parse(arrivedAt)) && (
+        <p data-testid="verification-arrived" role="status" className="text-sm text-muted">
+          First filed {sinceLabel(Date.parse(arrivedAt), Date.now())}.
+        </p>
+      )}
+
       {message !== "" && (
         <p role="alert" data-testid="verification-message" className="text-sm leading-relaxed text-bad">
           {message}
@@ -610,9 +666,16 @@ export function Verification({
           */}
           <p>
             {readingCode
-              ? "Nothing yet. A confirmation code, if your provider sends one, appears here — and so does your first bank email. This step finishes on its own, so leave the app open or come back later."
+              ? "Nothing yet. A confirmation code, if your provider sends one, appears here — and so does your first bank email."
               : "Nothing has arrived yet."}
           </p>
+          {/*
+            The honest half, and the one a stuck user actually needs. A quota
+            refused the operator's own confirmation on the live deployment, and
+            the screen said nothing about it — so the only reading left was "this
+            product is broken". Nothing here is blocked on that message.
+          */}
+          {readingCode && <p data-testid="verification-no-confirmation">{CONFIRMATION_TASK_COPY.missing}</p>}
         </Notice>
       ) : (
         items.map((item) => {

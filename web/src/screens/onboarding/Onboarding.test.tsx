@@ -160,7 +160,7 @@ function mount(facts: OnboardingFacts, rig: HandleRig, doFetch: typeof fetch, do
   render(
     <MotionProvider>
       <QueryClientProvider client={qc}>
-        <Onboarding handle={rig.handle} facts={facts} done={done} fetch={doFetch} secrets={secrets} pollMs={0} />
+        <Onboarding handle={rig.handle} facts={facts} done={done} fetch={doFetch} secrets={secrets} />
       </QueryClientProvider>
     </MotionProvider>,
   );
@@ -525,14 +525,17 @@ describe("the bank and address walk", () => {
   });
 
   /**
-   * The direct route, end to end through the real machine: no forwarder, no
-   * confirmation, and the same waiting-for-first-mail step at the end of it.
+   * The direct route, end to end through the real machine — and the step that
+   * used to sit at the end of it.
    *
-   * Worth driving here rather than in `Address.test.tsx` alone, because the
-   * thing being checked is that a route chosen on one screen reaches the copy on
-   * the NEXT one — which is exactly the join a component test cannot see.
+   * Declaring the forward once walked the user onto a screen that waited for a
+   * real bank alert, i.e. for them to spend money. Nothing about the product
+   * needed that, and two unrelated bugs in that one screen locked the operator
+   * out of his own app in a day. The walk now carries on, and whether mail is
+   * actually arriving is reported as a status the user can read whenever they
+   * like.
    */
-  it("walks the direct-with-the-bank route to the same waiting step, with no code to enter", async () => {
+  it("carries on past the forwarding step instead of waiting for a bank email", async () => {
     const user = userEvent.setup();
     const rig = handleRig();
     const { doFetch } = scriptedFetch();
@@ -541,11 +544,11 @@ describe("the bank and address walk", () => {
     await user.click(await screen.findByRole("button", { name: /with your bank directly/i }));
     await user.click(screen.getByRole("button", { name: /i have set this address with my bank/i }));
 
+    // No waiting screen, on a log with no transaction in it.
+    expect(screen.queryByTestId("verification")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/waiting for your first bank email/i);
     const heading = await screen.findByRole("heading", { level: 1 });
-    expect(heading.textContent).toMatch(/waiting for your first bank email/i);
-    expect(screen.getByTestId("verification").textContent).not.toMatch(/confirmation code is held|forwarding rule/i);
-    // The gate has not moved: nothing is in the log, so nothing advances.
-    expect(screen.queryByTestId("onboarding-finish")).toBeNull();
+    expect(heading.textContent).toMatch(/which currency do you think in/i);
   });
 });
 

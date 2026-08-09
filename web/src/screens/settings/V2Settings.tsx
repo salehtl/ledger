@@ -55,6 +55,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import type { SecretStore } from "@ledger/client/store/store";
+
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Dialog, DialogFooter } from "../../components/ui/Dialog";
@@ -83,7 +85,18 @@ import {
 import { fontScaleLabel } from "../../lib/settingsSummary";
 import { readAddress } from "../../v2/address";
 import { useV2OrThrow } from "../../v2/BootGate";
-import { ADD_PASSKEY_COPY, RECOVERY_WARNING } from "../../v2/onboarding";
+import {
+  ADD_PASSKEY_COPY,
+  CONFIRMATION_TASK_COPY,
+  firstMailAt,
+  RECOVERY_WARNING,
+  type OnboardingFacts,
+} from "../../v2/onboarding";
+import { webSecretStore } from "../../v2/session";
+import { Address } from "../onboarding/Address";
+import { HomeCurrency } from "../onboarding/HomeCurrency";
+import { SetupStatus } from "../onboarding/SetupStatus";
+import { Verification } from "../onboarding/Verification";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
 import { pendingBanks } from "../../v2/authored";
@@ -139,6 +152,8 @@ export interface V2SettingsProps {
   writer?: Writer;
   /** Test seam. */
   now?: () => number;
+  /** Test seam: where the setup list's dismissal is kept. */
+  secrets?: Pick<SecretStore, "get" | "set">;
 }
 
 /**
@@ -184,6 +199,7 @@ export function V2Settings({
   approve = (h, request) => h.approveDevice(request),
   writer: injectedWriter,
   now = Date.now,
+  secrets = webSecretStore(PROFILE),
 }: V2SettingsProps) {
   const { handle, sync, coordinator, facts } = useV2OrThrow();
   const qc = useQueryClient();
@@ -214,6 +230,19 @@ export function V2Settings({
   const [adding, setAdding] = useState(false);
   const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
   const [signOutOpen, setSignOutOpen] = useState(false);
+  /**
+   * The three drill-ins that finish a step somebody skipped during setup.
+   *
+   * Onboarding proposes and never blocks, so a user can reach the product with
+   * any of these undone — which only works if every one of them is completable
+   * here afterwards, in the same words. They open the ONBOARDING screens rather
+   * than second copies of them: the home-currency ceremony in particular states
+   * its permanence in three places before the tap, and a paraphrase of that in
+   * Settings is a paraphrase that drifts.
+   */
+  const [mailCheckOpen, setMailCheckOpen] = useState(false);
+  const [forwardingOpen, setForwardingOpen] = useState(false);
+  const [currencyOpen, setCurrencyOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
@@ -512,6 +541,44 @@ export function V2Settings({
       clearInterval(timer);
     };
   }, [sync.lastCompletedAt]);
+  /**
+   * The setup facts as they are NOW, not as boot found them.
+   *
+   * `facts` is a snapshot taken before this screen existed, and everything on
+   * this screen can change three of them. A list of what is still outstanding
+   * that kept saying "add your banks" after a bank was added would be exactly
+   * the nag the operator has already objected to, so it reads the same live
+   * values the rows above it draw from.
+   */
+  const liveFacts: OnboardingFacts = {
+    ...facts,
+    banks: declaredActive,
+    inboundAddress: shownAddress ?? facts.inboundAddress,
+    homeCurrency: homeCurrency ?? null,
+    // Mail that has arrived is proof a route exists, whatever this device
+    // remembers about a button press.
+    forwardingDeclared: facts.forwardingDeclared || facts.firstMailConfirmedAt !== null,
+  };
+
+  /**
+   * The home-currency ops, authored the way every other op on this screen is.
+   *
+   * The ceremony that produces them is the onboarding screen, unchanged — this
+   * is only the `commit` it was always given. Offered at all only while the log
+   * carries no home currency; `HomeCurrency` refuses a second one on its own
+   * (`existing`), because a second `home_currency_set` is a permanent anomaly no
+   * later op can repair.
+   */
+  const commitCurrency = useCallback(
+    (ops: readonly { type: string; payload: unknown }[]): void => {
+      if (writer === null) return;
+      writer.enqueueMany(ops);
+      void invalidateAfterSync(qc);
+      writer.flush().catch(() => {});
+    },
+    [writer, qc],
+  );
+
   const lastSynced = useMemo(
     () => (sync.lastCompletedAt === null ? null : sinceLabel(sync.lastCompletedAt, now())),
     // `tick` is the whole point of the memo: it is what makes the label re-read
@@ -568,6 +635,12 @@ export function V2Settings({
           </p>
         )}
       </div>
+
+      {/* What setup asked for and did not get, and whether mail is arriving.
+          Above the groups because it is not a setting — it is the state of a
+          setup that is allowed to be unfinished. It disappears for good when
+          dismissed, and when there is nothing left to say. */}
+      <SetupStatus facts={liveFacts} secrets={secrets} {...(onOpenQuarantine === undefined ? {} : { onOpenHeldMail: onOpenQuarantine })} />
 
       <Group label="Plan">
         {/* The counterpart of the onboarding step: the same control, the same
@@ -697,11 +770,40 @@ export function V2Settings({
           )}
         </Panel>
 
-        {onOpenQuarantine !== undefined && (
-          <RowCard>
+        {/*
+          The check that used to be a step, and the reason it is here instead.
+          It waited for a real bank alert — an event the user cannot cause
+          without spending money — so it sat between them and the product for as
+          long as their bank felt like it. It is a status now, and it has to be
+          re-runnable at ANY time: a forwarding rule can break, or be re-made,
+          months after setup, and a check that only existed during onboarding is
+          a check nobody can run when that happens.
+        */}
+        <Panel title="Is your mail arriving?">
+          <p className="text-sm leading-relaxed text-muted">
+            ledger checks by looking for mail that actually became a transaction. Run it whenever you like — a
+            forwarding rule can stop working long after you set it up.
+          </p>
+          <Button variant="secondary" onClick={() => setMailCheckOpen(true)}>
+            Check my mail setup
+          </Button>
+          <p data-testid="settings-confirmation-task" className="text-xs leading-relaxed text-muted">
+            {CONFIRMATION_TASK_COPY.body}
+          </p>
+        </Panel>
+
+        <RowCard>
+          {/* The forwarding step, whether it was skipped during setup or is
+              being re-done. Same screen, same instructions. */}
+          <HubRow
+            label="Forwarding instructions"
+            value="How to send bank mail here"
+            onClick={() => setForwardingOpen(true)}
+          />
+          {onOpenQuarantine !== undefined && (
             <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
-          </RowCard>
-        )}
+          )}
+        </RowCard>
       </Group>
 
       <Group label="Device" testID="settings-group-device">
@@ -789,15 +891,32 @@ export function V2Settings({
           />
         </RowCard>
 
-        {/* Home currency: stated, never offered. */}
+        {/* Home currency: stated, never CHANGED — and offered exactly once, to
+            an account that skipped it during setup. Those are different things,
+            and conflating them is what would make this row a lie. Setting a
+            currency that has never been set is not a change; the ceremony is
+            the onboarding one, with the same permanence warning in the same
+            three places, and it is unreachable the moment one exists. */}
         <Panel title="Home currency">
           <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
             {homeCurrency ?? "—"}
           </p>
-          <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
-            ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
-            currency cannot be changed. The only way to a different one is a new account.
-          </p>
+          {homeCurrency === null ? (
+            <>
+              <p data-testid="settings-home-currency-unset" className="text-sm leading-relaxed text-muted">
+                You have not set one. Totals stay in the currency each purchase was made in until you do. It is set
+                once and cannot be changed afterwards.
+              </p>
+              <Button variant="secondary" disabled={writer === null} onClick={() => setCurrencyOpen(true)}>
+                Set my home currency
+              </Button>
+            </>
+          ) : (
+            <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
+              ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
+              currency cannot be changed. The only way to a different one is a new account.
+            </p>
+          )}
         </Panel>
       </Group>
 
@@ -831,6 +950,50 @@ export function V2Settings({
             defs={categoryDefs}
             writer={writer}
             onAuthored={() => void invalidateAfterSync(qc)}
+          />
+        </Dialog>
+      )}
+
+      {mailCheckOpen && (
+        <Dialog title="Is your mail arriving?" onClose={() => setMailCheckOpen(false)}>
+          {/*
+            No `onConfirmed`: there is no walk to advance. The screen reports
+            what it measured — a transaction in the log — which is the same
+            measurement it made when it was a step.
+          */}
+          <Verification
+            embedded
+            client={handle.client}
+            firstMailAt={() => firstMailAt(handle.client.state())}
+            sync={syncNow}
+            server={SERVER}
+          />
+        </Dialog>
+      )}
+
+      {forwardingOpen && (
+        <Dialog title="Forwarding instructions" onClose={() => setForwardingOpen(false)}>
+          <Address
+            embedded
+            client={handle.client}
+            phase="forwarding"
+            known={shownAddress}
+            server={SERVER}
+            onIssued={() => {}}
+            // Nothing to declare to: the fact is the walk's, and the walk is
+            // over. Saying "I have set this up" here simply closes the drawer.
+            onForwardingDeclared={() => setForwardingOpen(false)}
+          />
+        </Dialog>
+      )}
+
+      {currencyOpen && (
+        <Dialog title="Home currency" onClose={() => setCurrencyOpen(false)}>
+          <HomeCurrency
+            embedded
+            commit={commitCurrency}
+            existing={homeCurrency}
+            onSet={() => setCurrencyOpen(false)}
           />
         </Dialog>
       )}

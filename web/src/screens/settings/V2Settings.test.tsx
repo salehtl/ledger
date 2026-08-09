@@ -145,12 +145,17 @@ describe("V2Settings", () => {
    * Four eyebrow labels in v1's order, and no fifth. There is deliberately no
    * Danger zone: v2 has nothing destructive to put under one, and a heading
    * with nothing under it is worse than no heading.
+   *
+   * "Finish setting up" rides above them and is not a group: it is what is left
+   * of a setup the user was allowed to leave unfinished, it disappears when
+   * there is nothing left to say, and it disappears for good when dismissed.
+   * The fixture has mail that has never arrived, so it is showing here.
    */
   it("groups the settings the way v1 does, and invents no Danger zone", async () => {
     wrap();
     await screen.findByTestId("settings-inbound-address");
     const groups = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(groups).toEqual(["Plan", "Automation", "Device", "Library"]);
+    expect(groups).toEqual(["Finish setting up", "Plan", "Automation", "Device", "Library"]);
   });
 
   it("shows sync above the groups, because it is a state and not a setting", async () => {
@@ -601,6 +606,105 @@ describe("V2Settings", () => {
     expect(specs[0]).toMatchObject({
       type: "category_defined",
       payload: { name: "Gym", kind: "spending", bucket: "need", active: true },
+    });
+  });
+
+  /**
+   * The other half of "onboarding never blocks".
+   *
+   * A step a user is allowed to skip is a step that has to be finishable
+   * afterwards, in the same words — otherwise "later" is just a nicer way of
+   * losing the feature. Each of these opens the ONBOARDING screen rather than a
+   * second copy of it, which is why the copy assertions below are the same ones
+   * the walk's tests make.
+   */
+  describe("finishing a step that was skipped during setup", () => {
+    /** A projection with no home currency: the state a skipped step leaves. */
+    async function noCurrency(): Promise<SqlDriver> {
+      const fresh = await projectionWith();
+      fresh.prepare("UPDATE projection_meta SET home_currency = NULL WHERE id = 1").run();
+      return fresh;
+    }
+
+    it("sets a home currency that was never set, with the permanence said before the tap", async () => {
+      const user = userEvent.setup();
+      const specs: { type: string; payload: unknown }[] = [];
+      const writer = {
+        pending: [],
+        enqueueMany: (s: readonly { type: string; payload: unknown }[]) => void specs.push(...s),
+        flush: async () => {},
+      };
+      wrap({ writer }, { driver: await noCurrency(), facts: { homeCurrency: null } });
+
+      expect((await screen.findByTestId("settings-home-currency-unset")).textContent ?? "").toMatch(
+        /cannot be changed/i,
+      );
+      await user.click(screen.getByRole("button", { name: /set my home currency/i }));
+      const dialog = await screen.findByRole("dialog");
+
+      // The same warning the walk shows, at first paint, before a currency is
+      // even selected. A settings screen that dropped it would be offering the
+      // one irreversible control in the product with no notice on it.
+      expect(within(dialog).getByTestId("home-currency-permanence").textContent ?? "").toMatch(
+        /no way to change|delete your account/i,
+      );
+
+      await user.click(within(dialog).getByRole("button", { name: /AED — UAE dirham/i }));
+      const confirm = within(dialog).getByRole("button", { name: /set aed as my home currency/i });
+      expect(confirm).toHaveProperty("disabled", true);
+      expect(specs).toHaveLength(0);
+
+      await user.click(within(dialog).getByRole("checkbox", { name: /AED is permanent/i }));
+      await user.click(confirm);
+
+      await waitFor(() => {
+        expect(specs.map((s) => s.type)).toEqual(["home_currency_set", "rate_set"]);
+      });
+      expect(specs[0]?.payload).toEqual({ currency: "AED" });
+    });
+
+    it("offers nothing at all once a home currency exists", async () => {
+      wrap();
+      await screen.findByTestId("settings-home-currency-note");
+      expect(screen.queryByRole("button", { name: /set my home currency/i })).toBeNull();
+      expect(screen.queryByTestId("settings-home-currency-unset")).toBeNull();
+    });
+
+    it("re-opens the forwarding instructions, with the address to send mail to", async () => {
+      const user = userEvent.setup();
+      wrap();
+      await screen.findByTestId("settings-inbound-address");
+      await user.click(screen.getByRole("button", { name: /forwarding instructions/i }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByTestId("route-picker")).toBeInTheDocument();
+      expect(within(dialog).getByTestId("inbound-address").textContent).toBe("u-abc@in.sirdab.ae");
+    });
+
+    /**
+     * The check that used to be a step, with no onboarding anywhere near it.
+     *
+     * It waited for a real bank alert — an event the user cannot cause without
+     * spending money — and it existed only during the walk, so a forwarding rule
+     * that broke a month later had nothing to be checked with.
+     */
+    it("re-runs the mail check at any time, and pulls before it answers", async () => {
+      const user = userEvent.setup();
+      const { runs } = wrap();
+      await screen.findByTestId("settings-inbound-address");
+      await user.click(screen.getByRole("button", { name: /check my mail setup/i }));
+
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByTestId("verification")).toBeInTheDocument();
+      // Nothing can be learned without a pull: the log is what says whether mail
+      // became a transaction.
+      await waitFor(() => {
+        expect(runs).toContain("refresh");
+      });
+      // And it is honest about a confirmation that never turned up, rather than
+      // leaving "this product is broken" as the only reading.
+      expect(within(dialog).getByTestId("verification-no-confirmation").textContent ?? "").toMatch(
+        /may not send one|refused/i,
+      );
     });
   });
 

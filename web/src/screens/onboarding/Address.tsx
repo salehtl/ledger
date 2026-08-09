@@ -67,9 +67,10 @@ import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
 import { SectionLabel } from "../../components/ui/SectionLabel";
 import { readAddress } from "../../v2/address";
+import { CONFIRMATION_TASK_COPY } from "../../v2/onboarding";
 import type { TokenSource } from "../../v2/onboardingIO";
 import { GENERIC, PROVIDERS, providerFor, type Provider } from "../../v2/providers";
-import { Notice, Step } from "./Shell";
+import { Notice, SkipStep, Step } from "./Shell";
 
 export interface AddressProps {
   client: TokenSource;
@@ -85,12 +86,30 @@ export interface AddressProps {
    * may be decided by it.
    */
   onForwardingDeclared: (expectConfirmation: boolean) => void;
+  /**
+   * "Set this up later", for whichever half is on screen.
+   *
+   * The address half is the one this matters most on. `GET /api/v1/address` is a
+   * network call, and until this existed a failure left the screen with exactly
+   * one control — "Try again" — so a user whose address could not be minted had
+   * no way into the app at all. That is the shape of every lockout this design
+   * removes: one call, no second door.
+   */
+  onSkip?: (step: "address_issued" | "forwarding_configured") => void;
   /** The address already known, so the forwarding half need not re-read. */
   known: string | null;
   server?: string;
   fetch?: typeof fetch;
   /** Injected by tests; defaults to the Clipboard API. */
   copy?: (text: string) => Promise<void>;
+  /**
+   * Rendered inside a `Dialog` rather than as a whole step. See `Shell`.
+   *
+   * Settings opens the forwarding half this way, because a step that was skipped
+   * during setup has to be finishable afterwards — and the instructions a user
+   * needs are the same instructions, not a second copy of them.
+   */
+  embedded?: boolean;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -105,10 +124,12 @@ export function Address({
   phase,
   onIssued,
   onForwardingDeclared,
+  onSkip,
   known,
   server,
   fetch: doFetch,
   copy = writeClipboard,
+  embedded = false,
 }: AddressProps) {
   const [address, setAddress] = useState<string | null>(known);
   const [failed, setFailed] = useState(false);
@@ -169,6 +190,7 @@ export function Address({
     return (
       <Step
         testId="forwarding"
+        embedded={embedded}
         title="How should your bank mail reach ledger?"
         intro="Two ways, and the first one is steadier. ledger never holds a password to any mailbox either way."
       >
@@ -188,6 +210,7 @@ export function Address({
             onClick={() => setRoute("forward")}
           />
         </div>
+        {onSkip !== undefined && <SkipStep step="forwarding_configured" onSkip={() => onSkip("forwarding_configured")} />}
       </Step>
     );
   }
@@ -196,6 +219,7 @@ export function Address({
     return (
       <Step
         testId="forwarding"
+        embedded={embedded}
         title="Give this address to your bank"
         intro="Your bank writes to ledger, with nothing in between."
         footer={
@@ -228,6 +252,7 @@ export function Address({
             do now. If it cannot be changed, or you would rather keep it, use the forwarding button below instead.
           </p>
         </Notice>
+        {onSkip !== undefined && <SkipStep step="forwarding_configured" onSkip={() => onSkip("forwarding_configured")} />}
       </Step>
     );
   }
@@ -237,6 +262,7 @@ export function Address({
     return (
       <Step
         testId="forwarding"
+        embedded={embedded}
         title="Send your bank mail here"
         intro="One forwarding rule in the mailbox your bank already writes to. ledger never sees the rest of that mailbox and never holds a password to it."
         footer={
@@ -279,10 +305,23 @@ export function Address({
           "forward with a rule, not everything", which every provider's own
           steps already say in their own words — a paragraph of instructions
           repeated under the instructions. Its second half ("anything else that
-          reaches this address is held rather than read") is the next screen's
-          opening line, `WAITING_FOR_FIRST_MAIL`, so nothing is lost from the
-          flow either.
+          reaches this address is held rather than read") is now said by the mail
+          status the app carries, so nothing is lost from the flow either.
         */}
+
+        {/*
+          The provider's code, said here rather than on a screen of its own —
+          because the screen of its own was a wait for an email the user cannot
+          cause. It is a task with a place to do it, not a gate: the user reaches
+          the app either way, and Held mail is where the message is read.
+        */}
+        {provider.needsConfirmation && (
+          <Notice title={CONFIRMATION_TASK_COPY.title} testId="confirmation-task">
+            <p>{CONFIRMATION_TASK_COPY.body}</p>
+          </Notice>
+        )}
+
+        {onSkip !== undefined && <SkipStep step="forwarding_configured" onSkip={() => onSkip("forwarding_configured")} />}
       </Step>
     );
   }
@@ -290,6 +329,7 @@ export function Address({
   return (
     <Step
       testId="address"
+      embedded={embedded}
       title="Your inbound address"
       intro="This address is yours alone. Bank mail sent here becomes transactions. Nothing else about your mailbox is read, and ledger never holds a password to it."
       footer={
@@ -319,6 +359,9 @@ export function Address({
       )}
 
       {address !== null && <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address)} />}
+
+      {/* Present whether or not the read succeeded — see `onSkip`. */}
+      {onSkip !== undefined && <SkipStep step="address_issued" onSkip={() => onSkip("address_issued")} />}
     </Step>
   );
 }

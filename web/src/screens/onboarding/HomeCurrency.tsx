@@ -49,7 +49,7 @@ import {
   type CurrencyChoice,
   type OpSpec,
 } from "../../v2/onboarding";
-import { Notice, Step } from "./Shell";
+import { Notice, SkipStep, Step } from "./Shell";
 
 export interface HomeCurrencyProps {
   /** Authors the ops. Throwing leaves the screen on its confirm step. */
@@ -62,6 +62,18 @@ export interface HomeCurrencyProps {
    * unable to offer one even if the machine routed here by mistake.
    */
   existing?: string | null;
+  /**
+   * "Set this up later".
+   *
+   * A one-shot, irreversible choice is exactly the one a person should be
+   * allowed to defer: nothing about the product needs it on day one — totals
+   * simply stay in the currency each purchase was made in — and deferring is the
+   * opposite of softening it. The ceremony is unchanged when they do choose,
+   * including from Settings.
+   */
+  onSkip?: () => void;
+  /** Rendered inside a `Dialog` rather than as a whole step. See `Shell`. */
+  embedded?: boolean;
 }
 
 type Phase =
@@ -70,7 +82,7 @@ type Phase =
   | { kind: "committing"; code: string }
   | { kind: "failed"; code: string; message: string };
 
-export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyProps) {
+export function HomeCurrency({ commit, onSet, existing = null, onSkip, embedded = false }: HomeCurrencyProps) {
   /** A string draft, never coerced on keystroke. See `components/README.md`. */
   const [query, setQuery] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "choose" });
@@ -98,6 +110,7 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
     return (
       <Step
         testId="home-currency-set"
+        embedded={embedded}
         title={`Your home currency is ${existing}`}
         intro={`ledger has no way to change it. Everything you have recorded is kept in ${existing}.`}
         footer={
@@ -117,6 +130,7 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
     return (
       <Step
         testId="home-currency-confirm"
+        embedded={embedded}
         title={copy.title}
         intro={copy.meaning}
         footer={
@@ -174,6 +188,7 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
   return (
     <Step
       testId="home-currency"
+      embedded={embedded}
       title="Which currency do you think in?"
       intro="Your totals, your budget and every converted purchase are kept in this one."
     >
@@ -216,6 +231,10 @@ export function HomeCurrency({ commit, onSet, existing = null }: HomeCurrencyPro
           No currency matches that. Any three-letter code works — try typing it in full.
         </p>
       )}
+
+      {/* A choice this permanent is one a person is allowed to sleep on. It is
+          the same ceremony whenever they come back to it. */}
+      {onSkip !== undefined && <SkipStep step="home_currency_set" onSkip={onSkip} />}
     </Step>
   );
 }
