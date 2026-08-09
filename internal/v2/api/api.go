@@ -12,6 +12,9 @@
 //	GET  /api/v1/writers                                           -> {writers:[...]}
 //	GET  /api/v1/keys                                              -> {ingest_pubkey, recovery_pubkey, wrapped_keys, key_version, created_at} | 404 no_keys
 //	PUT  /api/v1/keys {ingest_pubkey, recovery_pubkey, wrapped_keys, key_version} -> 204 | 409 keys_already_published
+//	GET  /api/v1/keys/wraps                                        -> {wraps:[{credential_id, wrapped, wrap_version, created_at}]}
+//	POST /api/v1/keys/wraps {credential_id, wrapped, wrap_version} -> 204 | 404 unknown_credential
+//	DELETE /api/v1/keys/wraps {credential_id}                      -> 204
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
 //	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
@@ -707,6 +710,12 @@ func (s *Server) Handler() http.Handler {
 	// from the writer roster above, which is about who may AUTHOR. See keys.go.
 	mux.HandleFunc("GET /api/v1/keys", s.requireSession(s.handleGetKeys))
 	mux.HandleFunc("PUT /api/v1/keys", s.requireSession(s.handlePublishKeys))
+	// The PRF wraps: a second sealing of the SAME key material, opened by a
+	// passkey instead of by the recovery phrase. Additive to the write-once
+	// publication above, and separately deletable — see keywraps.go.
+	mux.HandleFunc("GET /api/v1/keys/wraps", s.requireSession(s.handleGetKeyWraps))
+	mux.HandleFunc("POST /api/v1/keys/wraps", s.requireSession(s.handlePutKeyWrap))
+	mux.HandleFunc("DELETE /api/v1/keys/wraps", s.requireSession(s.handleDeleteKeyWrap))
 	mux.HandleFunc("GET /api/v1/sync", s.requireSession(s.handlePull))
 	mux.HandleFunc("GET /api/v1/sync/hashes", s.requireSession(s.handleHashes))
 	mux.HandleFunc("POST /api/v1/sync", s.requireSession(s.handleUpload))
