@@ -58,6 +58,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { Button } from "../../components/ui/Button";
+import { ImportFile } from "../ImportFile";
 import { Card } from "../../components/ui/Card";
 import { InfoTip } from "../../components/ui/InfoTip";
 import { Dialog, DialogFooter } from "../../components/ui/Dialog";
@@ -267,6 +268,7 @@ export function V2Settings({
   const [signingOut, setSigningOut] = useState(false);
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   /**
    * The three device-local preferences, held in React only so the rows redraw.
    *
@@ -920,6 +922,22 @@ export function V2Settings({
         </RowCard>
       </Group>
 
+      {/*
+        Your data: the directions it can move under the user's own hand. Import
+        is here as well as in setup because a statement is exported once a
+        month, not once in a lifetime, and a control reachable only during
+        onboarding is a control nobody uses twice.
+      */}
+      <Group label="Your data" testID="settings-group-data">
+        <RowCard>
+          <HubRow
+            label="Import a statement"
+            value="Add transactions from a CSV file"
+            onClick={() => setImportOpen(true)}
+          />
+        </RowCard>
+      </Group>
+
       <Group label="Library">
         <RowCard>
           <HubRow
@@ -993,6 +1011,12 @@ export function V2Settings({
               Reset to default
             </Button>
           )}
+        </Dialog>
+      )}
+
+      {importOpen && (
+        <Dialog title="Import a statement" onClose={() => setImportOpen(false)}>
+          <ImportFile />
         </Dialog>
       )}
 

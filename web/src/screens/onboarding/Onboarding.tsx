@@ -59,6 +59,10 @@ import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
+import { Card } from "../../components/ui/Card";
+import { Dialog } from "../../components/ui/Dialog";
+import { ImportFile } from "../ImportFile";
+import type { Writer } from "../../v2/writer";
 
 export interface OnboardingProps {
   handle: V2Handle;
@@ -392,6 +396,56 @@ function Finish({
           MET — see `BudgetSplitStep`'s header. "Open ledger" above is a complete
           answer to it, and an account that ignores it keeps 50/30/20. */}
       <BudgetSplitStep commit={commit} currency={facts.homeCurrency ?? null} source={source} />
+
+      {/* Same argument, for the same reason: a new account's ledger is empty
+          until its bank sends its first alert, and the user has a statement they
+          could import right now. It is an offer on the last screen, never a
+          milestone — nothing here has to be met to leave. */}
+      <ImportOffer commit={commit} />
     </Step>
+  );
+}
+
+/**
+ * "You can bring your history with you", on the last screen of the walk.
+ *
+ * # Why the walk and not only Settings
+ *
+ * A new account's ledger is empty, and stays empty until the user's bank sends
+ * its first alert — which may be days. The one thing that fills it today is a
+ * statement the user can already download. Burying that in Settings means the
+ * app's first impression is a screen with nothing on it.
+ *
+ * # It authors through the SAME outbox as everything else here
+ *
+ * `commit` is `Client.emitMany`, which is what the bank step and the currency
+ * step append with; it commits before it returns, so the ops are durable the
+ * moment they are queued and the sync coordinator drains them. The adapter
+ * below is the `Writer` shape {@link ImportFile} expects — `pending` is empty
+ * because nothing on this screen reads it, and `flush` is a no-op because there
+ * is no outbox to drain yet: the coordinator picks the ops up on boot.
+ */
+function ImportOffer({ commit }: { commit: (ops: readonly OpSpec[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const writer = useMemo<Writer>(
+    () => ({ pending: [], enqueueMany: (specs) => commit(specs), flush: async () => undefined }),
+    [commit],
+  );
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-fg">Bring your history with you</h2>
+      <p className="mt-1 text-sm leading-relaxed text-muted">
+        If your bank lets you export a CSV, you can add those transactions now. The file is read on this device and
+        never uploaded. You can also do this later, in Settings.
+      </p>
+      <Button variant="secondary" className="mt-3" onClick={() => setOpen(true)}>
+        Import a statement
+      </Button>
+      {open && (
+        <Dialog title="Import a statement" onClose={() => setOpen(false)}>
+          <ImportFile writer={writer} />
+        </Dialog>
+      )}
+    </Card>
   );
 }

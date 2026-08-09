@@ -175,7 +175,19 @@ describe("V2Settings", () => {
     wrap();
     await screen.findByTestId("settings-inbound-address");
     const groups = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(groups).toEqual(["Finish setting up", "Plan", "Automation", "Device", "Library", "Danger zone"]);
+    // "Your data" joined the list on 2026-08-09 with the statement importer:
+    // it is where the user's own ledger moves in and out under their own hand,
+    // and it sits above Library for the same reason Plan sits above Device —
+    // it is about the ledger, not about this browser.
+    expect(groups).toEqual([
+      "Finish setting up",
+      "Plan",
+      "Automation",
+      "Device",
+      "Your data",
+      "Library",
+      "Danger zone",
+    ]);
     const danger = screen.getByTestId("settings-danger");
     const rows = within(danger).getAllByRole("button");
     expect(rows.map((r) => r.textContent)).toEqual(["Delete account"]);
