@@ -31,7 +31,11 @@ describe("readCategoryDefs", () => {
     // ops existed, and every consumer's default stands in for the absence.
     const db = await blank();
     expect(readCategoryDefs(db)).toEqual([]);
-    expect(budgetMappingFor(db)).toEqual(DEFAULT_BUDGET_MAPPING);
+    // `toBe`, not `toEqual`: `layeredMapping` documents that it returns
+    // DEFAULT_BUDGET_MAPPING **by identity** when there is nothing to layer, so
+    // "this account has defined nothing" stays checkable with `===`. A copy
+    // would pass `toEqual` and quietly break every such check.
+    expect(budgetMappingFor(db)).toBe(DEFAULT_BUDGET_MAPPING);
   });
 
   it("reads definitions in fold order, retired ones included", async () => {
@@ -42,6 +46,26 @@ describe("readCategoryDefs", () => {
     expect(readCategoryDefs(db).map((c) => c.name)).toEqual(["Gym", "Therapy", "Transfer"]);
     // Retired is a row, not an absence — history depends on it.
     expect(readCategoryDefs(db)[1]?.active).toBe(false);
+  });
+
+  it("reads NOTHING out of a half-written projection, like every sibling source", async () => {
+    // A rebuild in flight: the rows are there but `complete` is 0. Reading them
+    // would offer a category the fold has not finished writing, and a second
+    // definition of a name moves money between buckets. The next fold corrects
+    // an empty list; it does not correct a bucket someone already spent from.
+    const db = await blank();
+    define(db, 0, GYM);
+    db.prepare("UPDATE projection_meta SET complete = 0 WHERE id = 1").run();
+    expect(readCategoryDefs(db)).toEqual([]);
+    // And the mapping falls back to the built-in table rather than a partial one.
+    expect(budgetMappingFor(db)).toBe(DEFAULT_BUDGET_MAPPING);
+  });
+
+  it("reads NOTHING out of a projection an older build wrote", async () => {
+    const db = await blank();
+    define(db, 0, GYM);
+    db.prepare(`UPDATE projection_meta SET version = ${PROJECTION_VERSION - 1} WHERE id = 1`).run();
+    expect(readCategoryDefs(db)).toEqual([]);
   });
 });
 

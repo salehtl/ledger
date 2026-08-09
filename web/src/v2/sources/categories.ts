@@ -32,7 +32,7 @@
  * the built-in mapping has exactly one home.
  */
 
-import { readCategories } from "@ledger/client/replay/projection";
+import { projectionIsUsable, readCategories } from "@ledger/client/replay/projection";
 import type { BudgetBucket, CategoryDef } from "@ledger/client/replay/state";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
@@ -44,8 +44,19 @@ export interface CategoryOpSpec {
   payload: unknown;
 }
 
-/** Every definition the log holds, in fold order, RETIRED ONES INCLUDED. */
+/**
+ * Every definition the log holds, in fold order, RETIRED ONES INCLUDED.
+ *
+ * Gated on {@link projectionIsUsable} for the same reason `banks.ts` and
+ * `budget.ts` are: a projection written by an older build, or one a rebuild has
+ * only half-written, is not fact. Empty is the safe answer here — the picker
+ * offers nothing and {@link categoryMapping} falls back to the built-in table,
+ * both of which the next fold corrects. Reading a half-written table instead
+ * would offer the user a category twice, and a second definition of a name is
+ * how money moves bucket without anyone asking for it.
+ */
 export function readCategoryDefs(db: SqlDriver): CategoryDef[] {
+  if (!projectionIsUsable(db)) return [];
   return [...readCategories(db).values()];
 }
 
