@@ -720,8 +720,9 @@ describe("V2Settings", () => {
       const dialog = await screen.findByRole("dialog");
       // The forwarding instructions themselves, not a route picker: the
       // bank-side route is retired (`Address.DIRECT_BANK_ROUTE`), so there is
-      // one path and nothing to choose between.
-      expect(within(dialog).getByTestId("provider-picker")).toBeInTheDocument();
+      // one path and nothing to choose between. The generic set leads, with
+      // per-provider help collapsed beneath it — nothing here is asked either.
+      expect(within(dialog).getByTestId("forwarding-generic")).toBeInTheDocument();
       expect(within(dialog).queryByTestId("route-picker")).toBeNull();
       expect(within(dialog).getByTestId("inbound-address").textContent).toBe("u-abc@in.sirdab.ae");
     });
