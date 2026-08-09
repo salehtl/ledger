@@ -39,6 +39,31 @@
 //     accounted for by one. The client reads those rows on the same channel, so
 //     "what happened to the mail I never got to?" is always answerable.
 //
+// # It is one of the two budget seams
+//
+// docs/superpowers/specs/2026-08-09-account-isolation-design.md names exactly
+// two places attacker-scale durable bytes can accumulate: the op log append and
+// [Store.Hold]. Both charge internal/v2/budget INSIDE the same transaction as
+// the write, which is what makes the accounting impossible to bypass — there is
+// no second way to hold a message, so there is no way to hold one for free.
+//
+// That is also why Hold is a transaction at all. It was a bare Exec until the
+// ledger existed, and "same transaction as the write" is not a property a bare
+// Exec can have.
+//
+// The releases are the half that keeps an honest user out of a slow lockout, and
+// they all run through [Store.removeLocked] — for a reason the database
+// enforces rather than a convention this package follows. The quarantine table
+// carries a BEFORE DELETE trigger refusing any removal that no
+// quarantine_removals record accounts for, and removeLocked is the only code
+// that writes those records, so every application path that can delete a held
+// message must come through it: the expiry sweep ([Store.ExpireDue]) and
+// confirm-and-reingest ([Store.Promote], reached from the API's
+// handleConfirmSender via ingest's reprocess). The one delete that does NOT go
+// through it is a whole-account purge, which reaches the rows through
+// `users ON DELETE CASCADE` — and account_usage cascades from the same row, so
+// the ledger and the bytes disappear together with nothing left to reconcile.
+//
 // # One predicate, not two
 //
 // Every boundary here is decided by exactly one function. [Store.DeletableAt]
@@ -50,10 +75,12 @@
 package quarantine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,6 +89,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/budget"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/origin"
 )
@@ -288,6 +316,23 @@ type Store struct {
 	// clock and never against Postgres's now(), so one clock decides both when
 	// a window opens and when it closes.
 	Now func() time.Time
+	// Budget is the per-account admission gate. nil does NOT mean "no budget":
+	// it means a gate over Pool, built on demand by [Store.budget], for the
+	// same reason oplog.Appender.Budget does. If an unset field disabled
+	// accounting then every Store literal in the tree — the server's and every
+	// test's — would be silently unbudgeted, and the one that mattered would be
+	// discovered in production. The field exists so a caller can inject a gate
+	// with a different pool, never to turn the gate off.
+	Budget *budget.Gate
+}
+
+// budget returns the admission gate, defaulting to one over this store's own
+// pool. See the Budget field.
+func (s *Store) budget() *budget.Gate {
+	if s.Budget != nil {
+		return s.Budget
+	}
+	return budget.New(s.Pool)
 }
 
 func (s *Store) now() time.Time {
@@ -396,6 +441,34 @@ const holdSQL = `INSERT INTO quarantine
 //
 // It appends nothing to the op log, notifies nothing, and returns nothing to
 // wake the user with.
+//
+// # It can be REFUSED, and a refusal is not a hold
+//
+// The message is charged to the account's quarantine budget in the same
+// transaction that stores it, so an account at its ceiling — 100 MB of held
+// bytes or 500 held messages, whichever comes first — is refused and NOTHING is
+// stored. The error wraps budget.ErrRefused, so a caller distinguishes "refused"
+// from "stored" with errors.Is and answers accordingly: the SMTP path's answer
+// is 452, temporary and content-free, so the sender retries into a lane the user
+// may have emptied by then. Every refusal is also counted in account_refusals by
+// the gate itself, on its own connection, so the receipt survives this
+// transaction's rollback and the user's own app can say how many writes were
+// declined today. A refused message is mail that did not land, and both halves
+// of that — the error and the count — exist so it is never silently dropped.
+//
+// # Why the INSERT comes first
+//
+// Hold is idempotent per (user, ingest id), so a redelivery must cost nothing:
+// charging before the INSERT would bill an account for every SMTP retry of one
+// message and lock an honest user out of their own quarantine lane in a few
+// days. Inserting first and charging only what the ON CONFLICT actually stored
+// makes "was this a new message?" the database's answer rather than a check this
+// code races against — two concurrent deliveries of the same message serialize
+// on the unique index, and exactly one of them sees a row affected.
+//
+// The two resources are charged in sorted name order (bytes, then count),
+// because the design's rule for any transaction touching more than one usage row
+// is a fixed resource-name order.
 func (s *Store) Hold(ctx context.Context, it Item) error {
 	if err := s.check(); err != nil {
 		return err
@@ -404,12 +477,37 @@ func (s *Store) Hold(ctx context.Context, it Item) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.Pool.Exec(ctx, holdSQL,
+
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.rollback(ctx, tx)
+
+	ct, err := tx.Exec(ctx, holdSQL,
 		it.ID, it.UserID, it.IngestID, it.ReceivedAt, it.ExpiresAt,
 		it.EnvelopeFrom, it.OuterDomain, nullText(it.InnerDomain),
 		it.Attested, it.AttestedBy, it.DKIM, it.ARC, it.SizeBucket, it.Blob)
 	if err != nil {
 		return fmt.Errorf("quarantine: hold: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		// A redelivery of a message already held. Nothing was stored, so
+		// nothing is charged, and the rollback disposes of a transaction that
+		// wrote nothing.
+		return nil
+	}
+
+	g := s.budget()
+	if err := g.Admit(ctx, tx, it.UserID, budget.ResourceQuarantineBytes, int64(len(it.Blob))); err != nil {
+		return fmt.Errorf("quarantine: hold: %w", err)
+	}
+	if err := g.Admit(ctx, tx, it.UserID, budget.ResourceQuarantineCount, 1); err != nil {
+		return fmt.Errorf("quarantine: hold: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("quarantine: hold: commit: %w", err)
 	}
 	return nil
 }
@@ -1095,17 +1193,113 @@ func (s *Store) Promote(ctx context.Context, userID uuid.UUID, ingestIDs [][]byt
 	return n, nil
 }
 
-// removeLocked writes the records and deletes the rows, in that order, inside
-// one transaction. Both halves or neither.
+// removeLocked writes the records, deletes the rows and releases their bytes
+// back to the accounts that were charged for them, inside one transaction. All
+// three or none.
+//
+// It is the ONE release seam, and the database is what makes that true rather
+// than this package's discipline: the BEFORE DELETE trigger refuses any removal
+// no quarantine_removals record accounts for, and this is the only code that
+// writes one. So both application paths that remove a hold — the expiry sweep
+// and confirm-and-reingest — release here whether or not their authors thought
+// about the ledger. Confirm-and-reingest is the interesting one: it moves bytes
+// OUT of quarantine and into the op log, so it releases here while the append
+// charges there, and the account is never billed twice for one message.
+//
+// # The release is measured from the DELETE itself
+//
+// RETURNING, rather than a SELECT before the delete, so the amount released is
+// by construction the amount removed. A separate SELECT would be a second
+// answer to the same question, and the two can differ — a concurrent sweep with
+// SKIP LOCKED, a row promoted between the read and the write — which would show
+// up much later as ledger drift with no way to tell which of the two was wrong.
+//
+// octet_length() on a bytea is answered from the stored value's length header,
+// so this never detoasts a megabyte-sized body to count it. It is also the exact
+// expression Hold charged (len(it.Blob)) and the one internal/v2/verify
+// recomputes, which is what lets a held-then-released message reconcile to zero
+// instead of to the padding.
+//
+// # A missing charge is loud, not clamped
+//
+// A release larger than the ledger holds returns budget.ErrLedgerUnderflow and
+// changes nothing, which fails the sweep for that batch rather than deleting
+// mail into an accounting hole. That is the intended noise: it means the ledger
+// and the stored rows have already drifted, and the answer is
+// `ledgerd verify --repair-usage`, not a silent clamp that turns the drift into
+// free quota.
 func (s *Store) removeLocked(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, at time.Time, reason string) (int, error) {
 	if _, err := tx.Exec(ctx, recordRemovalSQL, ids, at, reason); err != nil {
 		return 0, fmt.Errorf("quarantine: record %s removal: %w", reason, err)
 	}
-	ct, err := tx.Exec(ctx, `DELETE FROM quarantine WHERE id = ANY($1)`, ids)
+	rows, err := tx.Query(ctx,
+		`DELETE FROM quarantine WHERE id = ANY($1) RETURNING user_id, octet_length(blob)`, ids)
 	if err != nil {
 		return 0, fmt.Errorf("quarantine: remove (%s): %w", reason, err)
 	}
-	return int(ct.RowsAffected()), nil
+	var (
+		freed   = map[uuid.UUID]released{}
+		deleted int
+	)
+	for rows.Next() {
+		var (
+			user  uuid.UUID
+			bytes int64
+		)
+		if err := rows.Scan(&user, &bytes); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("quarantine: remove (%s): %w", reason, err)
+		}
+		r := freed[user]
+		r.bytes += bytes
+		r.count++
+		freed[user] = r
+		deleted++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("quarantine: remove (%s): %w", reason, err)
+	}
+	if err := s.release(ctx, tx, freed); err != nil {
+		return 0, fmt.Errorf("quarantine: remove (%s): %w", reason, err)
+	}
+	return deleted, nil
+}
+
+// released is what one account got back from a batch of removals.
+type released struct {
+	bytes int64
+	count int64
+}
+
+// release hands the removed bytes and holds back to their accounts.
+//
+// Accounts are visited in sorted id order and each account's two resources in
+// sorted name order. The sweep is the only caller that can touch more than one
+// account in a transaction — it scans by expiry, not by user — so it is the only
+// place two concurrent transactions could take the same pair of usage rows in
+// opposite orders. Sorting removes that question rather than answering it.
+func (s *Store) release(ctx context.Context, tx pgx.Tx, freed map[uuid.UUID]released) error {
+	if len(freed) == 0 {
+		return nil
+	}
+	users := make([]uuid.UUID, 0, len(freed))
+	for u := range freed {
+		users = append(users, u)
+	}
+	slices.SortFunc(users, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+
+	g := s.budget()
+	for _, u := range users {
+		r := freed[u]
+		if err := g.Admit(ctx, tx, u, budget.ResourceQuarantineBytes, -r.bytes); err != nil {
+			return err
+		}
+		if err := g.Admit(ctx, tx, u, budget.ResourceQuarantineCount, -r.count); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
