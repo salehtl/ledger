@@ -252,6 +252,28 @@ var (
 		EnhancedCode: smtp.EnhancedCode{5, 3, 4},
 		Message:      "message too large",
 	}
+	// errOverBudget answers a message the storage layer refused because the
+	// ACCOUNT is at its cumulative durable-byte ceiling (see internal/v2/budget
+	// and [ErrOverBudget]).
+	//
+	// 452 and not 451, and the difference is the whole point of this reply
+	// existing. 451 is "something of OURS broke, we have no idea, retry" — the
+	// answer this path used to give, which told an operator the server was
+	// failing when in fact it was working exactly as designed. 452 4.3.1 is
+	// "insufficient system storage": temporary, so a legitimate sender retries
+	// across the window in which the user deletes data or the operator raises
+	// the ceiling, and accurate, so the reply in a sender's log says what
+	// actually happened.
+	//
+	// It is distinguishable on the wire from errOverQuota (4.2.2, the daily
+	// message allowance) because they are different conditions with different
+	// remedies, and both require a recipient that already resolved — so neither
+	// adds anything to the enumeration oracle rule 1 closes.
+	errOverBudget = &smtp.SMTPError{
+		Code:         452,
+		EnhancedCode: smtp.EnhancedCode{4, 3, 1},
+		Message:      "insufficient storage for this mailbox, try again later",
+	}
 	// errTemporary covers every failure that is OURS rather than the sender's:
 	// the database is unreachable, the ingest path is down, the transfer broke.
 	// Answering 5xx to any of those would bounce mail the user was entitled to.
@@ -321,6 +343,24 @@ type Delivery struct {
 type Handler interface {
 	Deliver(ctx context.Context, d Delivery) error
 }
+
+// ErrOverBudget is the ONE thing a [Handler] can say about a failure that
+// changes the reply. Wrapped into the error returned from Deliver — with
+// fmt.Errorf's %w, so the cause travels with it — it means: nothing was stored,
+// and the reason is that the RECIPIENT'S ACCOUNT is at its durable-byte
+// ceiling. [session.Data] answers it with errOverBudget's 452 and charges it on
+// the same metered refusal path every other refusal takes.
+//
+// It is a sentinel owned by this package rather than a check against
+// internal/v2/budget's error, because this package must keep working on the
+// backup relay, which has no Postgres, no op log and no budget gate. The
+// handler is the layer that knows which storage refused it; the receiver only
+// needs to know that the answer is "your mailbox is full", not "we broke".
+//
+// A Handler that returns any other error still gets 451: an unrecognised
+// failure is ours until proven otherwise, and guessing "full" on a database
+// outage would tell every sender to give up on a mailbox that is fine.
+var ErrOverBudget = errors.New("smtpd: the recipient's account is over its storage budget")
 
 // Diagnostics is where this package's refusal accounting goes. *diag.Diag is
 // the implementation on the primary, and the only one that satisfies spec §3.5
@@ -1153,12 +1193,27 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		// recipient. Routing it anywhere else is how the one unmetered refusal
 		// branch gets built a second time.
 		//
-		// The diagnostics row carries over_quota, which is the closest value in
-		// a CHECK-constrained closed enum; parse_diagnostics.reject_reason has
-		// no 'suspended' and adding one is a migration. The ACCURATE record is
-		// the account_refusals row this path writes with resource 'suspended'.
-		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota,
-			RefusalSuspended, errSuspended, nil)
+		// The record says what actually happened: reject_reason 'suspended'
+		// (migration 00033 widened the enum for exactly this), and outcome
+		// 'rejected' rather than 'over_quota'.
+		//
+		// The outcome is a judgement and this is the reasoning. Neither value
+		// names a suspension, so both are approximations — but 'rejected' is a
+		// true one (the message was refused) where 'over_quota' is a false one
+		// (nothing about this account exceeded a quota; an operator paused it).
+		// The cost is that these rows move between verify.Accounting's
+		// buckets, from Arrival['over_quota'] to Arrival['rejected']; both are
+		// named buckets, so nothing becomes unaccounted, and the precise word
+		// is in reject_reason beside it.
+		//
+		// The AGGREGATE stays over_quota: smtp_rejections is the unscoped
+		// table and its enum deliberately has no 'suspended'. See [refusal].
+		return s.refuse(userID, refusal{
+			outcome:   diag.OutcomeRejected,
+			reason:    diag.RejectSuspended,
+			aggregate: diag.RejectOverQuota,
+			resource:  RefusalSuspended,
+		}, errSuspended, nil)
 	}
 
 	if !s.srv.limiter.AllowMessage(userID) {
@@ -1167,8 +1222,12 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		// no tarpit, no disconnect debt and a database write per attempt, and
 		// was measured at 5,396 refusals per second down one socket with the
 		// connection still open at the end.
-		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota,
-			RefusalSMTPDaily, errOverQuota, nil)
+		return s.refuse(userID, refusal{
+			outcome:   diag.OutcomeOverQuota,
+			reason:    diag.RejectOverQuota,
+			aggregate: diag.RejectOverQuota,
+			resource:  RefusalSMTPDaily,
+		}, errOverQuota, nil)
 	}
 
 	s.rcpt, s.userID, s.isGrace, s.haveRcpt = to, userID, isGrace, true
@@ -1190,16 +1249,36 @@ func (s *session) suspended(userID uuid.UUID) (bool, error) {
 	return s.srv.suspensions.Suspended(ctx, userID)
 }
 
+// refusal names one refusal in the three vocabularies that record it. They are
+// three fields and not one because the three record sets are not the same
+// width, and collapsing them is how a value ends up in a table whose CHECK
+// constraint refuses it.
+type refusal struct {
+	// outcome and reason are parse_diagnostics.outcome and .reject_reason: the
+	// USER-SCOPED notice, and the most accurate name available.
+	outcome, reason string
+	// aggregate is smtp_rejections.reason. That table holds refusals with no
+	// recipient to scope a row to, so its enum is deliberately NARROWER
+	// (diag.aggregatedReasons): 'suspended' is excluded from it by design,
+	// because knowing an account is suspended requires having resolved the
+	// recipient first. A refusal whose accurate reason is not aggregatable is
+	// counted under the closest one that is — the aggregate answers "did
+	// everything that arrived get accounted for", and dropping it there would
+	// make a suspended account's mail vanish from that total.
+	aggregate string
+	// resource is the account_refusals resource this is charged to, or "" for a
+	// refusal with no resource: an oversized message is the sender's doing and
+	// is not one of the account's budgets, and a budget refusal was already
+	// counted by the gate that made it.
+	resource string
+}
+
 // refuse meters, accounts for and answers a refusal that HAS a resolved
-// recipient. It is the shared path for over-quota, suspension and over-size, so
-// none of them can drift into being the unmetered one.
-//
-// resource is the account_refusals resource this refusal is charged to, or ""
-// for a refusal with no resource — an oversized message is the sender's doing
-// and is not one of the account's budgets.
-func (s *session) refuse(userID uuid.UUID, outcome, reason, resource string, resp *smtp.SMTPError, ingestID []byte) error {
+// recipient. It is the shared path for over-quota, suspension, over-size and
+// over-budget, so none of them can drift into being the unmetered one.
+func (s *session) refuse(userID uuid.UUID, r refusal, resp *smtp.SMTPError, ingestID []byte) error {
 	delay, disconnect := s.srv.limiter.InvalidRcpt(s.ip)
-	accounted := s.srv.accountRefusal(userID, s.fromDomain, outcome, reason, resource, ingestID)
+	accounted := s.srv.accountRefusal(userID, s.fromDomain, r, ingestID)
 	if disconnect {
 		return s.drop()
 	}
@@ -1273,7 +1352,11 @@ func (s *session) Data(r io.Reader) error {
 		// — charging the recipient's mailbox for a stranger's oversized upload
 		// would let anyone empty a user's daily allowance from outside.
 		id := sha256.Sum256(raw)
-		return s.refuse(s.userID, diag.OutcomeRejected, diag.RejectTooLarge, "", errTooLarge, id[:])
+		return s.refuse(s.userID, refusal{
+			outcome:   diag.OutcomeRejected,
+			reason:    diag.RejectTooLarge,
+			aggregate: diag.RejectTooLarge,
+		}, errTooLarge, id[:])
 	}
 
 	ctx, cancel := opCtx(deliverTimeout)
@@ -1287,6 +1370,31 @@ func (s *session) Data(r io.Reader) error {
 		ReceivedAt:   s.srv.now(),
 		IsGrace:      s.isGrace,
 	}); err != nil {
+		if errors.Is(err, ErrOverBudget) {
+			// Not our failure: the account is full, and the handler said so.
+			// This goes down the SAME metered path as every other refusal with
+			// a resolved recipient — tarpit, aggregate count, bounded
+			// user-visible notice — because a refusal branch that skips the
+			// tarpit is a free, unbounded way to make the server work.
+			//
+			// resource is "" — no SECOND account_refusals row. The refusal was
+			// already counted, by the gate that made it, against the ledger
+			// resource that actually ran out (oplog_cold_bytes for a raw body,
+			// quarantine_bytes for a held message), on its own connection
+			// outside the transaction that was rolled back. Counting it again
+			// here would make one refused email read as two declined writes in
+			// the user's own "N writes were declined today", and there is no
+			// honest SMTP resource to charge it to anyway: 'smtp_daily' is the
+			// daily message allowance, which is not what refused this, and the
+			// resource set is a CHECK constraint, not a free-text column.
+			log.Printf("smtpd: refusing a message for %v: the account is over its storage budget: %v",
+				s.userID, err)
+			return s.refuse(s.userID, refusal{
+				outcome:   diag.OutcomeOverQuota,
+				reason:    diag.RejectOverQuota,
+				aggregate: diag.RejectOverQuota,
+			}, errOverBudget, nil)
+		}
 		log.Printf("smtpd: delivering a message for %v: %v", s.userID, err)
 		// The reservation stays held and is released by the post-DATA reset, so
 		// the retry this 4xx asks for does not cost the user a second unit. That
@@ -1330,16 +1438,16 @@ func (s *session) Data(r io.Reader) error {
 //     chance. The permit is handed back on this path, or a database outage
 //     would burn all eight on rows that do not exist and the case above would
 //     then claim a user was told something they were never told.
-func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason, resource string, ingestID []byte) bool {
-	s.countRejection(reason)
+func (s *Server) accountRefusal(userID uuid.UUID, senderDomain string, r refusal, ingestID []byte) bool {
+	s.countRejection(r.aggregate)
 	// The per-account count, on the same line as the aggregate one so a new
 	// refusal cannot be added to one record and forgotten in the other. It does
 	// NOT decide the return value: this is a buffered counter that always
 	// "succeeds" at the moment it is asked, exactly like the aggregate, and §2's
 	// drop policy turns on the synchronous notice below.
-	s.countAccountRefusal(userID, resource)
+	s.countAccountRefusal(userID, r.resource)
 
-	if !s.limiter.Notice(userID, reason) {
+	if !s.limiter.Notice(userID, r.reason) {
 		return true
 	}
 	if ingestID == nil {
@@ -1366,14 +1474,14 @@ func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason,
 		// track the merchant name's length and the amount's digit count, which
 		// is the content this table promises not to hold.
 		BodySizeBucket: 0,
-		Outcome:        outcome,
-		RejectReason:   reason,
+		Outcome:        r.outcome,
+		RejectReason:   r.reason,
 	}
 	ctx, cancel := opCtx(diagTimeout)
 	defer cancel()
 	if err := s.diag.Record(ctx, rec); err != nil {
-		log.Printf("smtpd: recording a %s refusal notice: %v", reason, err)
-		s.limiter.ReleaseNotice(userID, reason)
+		log.Printf("smtpd: recording a %s refusal notice: %v", r.reason, err)
+		s.limiter.ReleaseNotice(userID, r.reason)
 		return false
 	}
 	return true

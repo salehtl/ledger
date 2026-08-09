@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"ledger/internal/v2/budget"
 )
 
 // PGStore is the primary's implementation of [Suspensions], [Refusals] and
@@ -60,25 +61,18 @@ const StatusSuspended = "suspended"
 
 // CountRefusals adds n to (userID, today UTC, resource).
 //
-// The day is computed by the DATABASE, from now() at UTC, so that this counter
-// and smtp_rejections — which diag stamps the same way — agree about where a
-// day ends. Two clocks disagreeing by an hour would put one refusal on two
-// different days depending on which table you asked.
+// It delegates to [budget.CountRefusals], which is the ONE writer of
+// account_refusals. This used to be a second, near-identical statement, and the
+// two drifted in both of the ways a duplicated writer drifts: this one computed
+// the day in the database while the budget gate computed it in Go, so a refusal
+// an hour either side of midnight could land on two different days depending on
+// which path refused it; and only this one carried the guard that skips an
+// account that has since been purged. One writer cannot drift from itself.
 func (p *PGStore) CountRefusals(ctx context.Context, userID uuid.UUID, resource string, n int64) error {
 	if p == nil || p.Pool == nil {
 		return errNoPool
 	}
-	if n <= 0 {
-		return nil
-	}
-	_, err := p.Pool.Exec(ctx,
-		`INSERT INTO account_refusals (user_id, day, resource, count)
-		 SELECT $1, (now() AT TIME ZONE 'UTC')::date, $2, $3
-		  WHERE EXISTS (SELECT 1 FROM users WHERE id = $1)
-		 ON CONFLICT (user_id, day, resource)
-		 DO UPDATE SET count = account_refusals.count + EXCLUDED.count`,
-		userID, resource, n)
-	if err != nil {
+	if err := budget.CountRefusals(ctx, p.Pool, userID, resource, n); err != nil {
 		return fmt.Errorf("smtpd: count refusal %s: %w", resource, err)
 	}
 	return nil

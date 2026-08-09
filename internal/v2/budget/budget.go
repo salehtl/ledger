@@ -75,6 +75,48 @@ const (
 	ResourceQuarantineCount = "quarantine_count"
 )
 
+// The refusal-only resources: things that decline a write without the ledger
+// ever being touched, so they name no account_usage row and no ceiling.
+//
+// They exist here — rather than in the packages that produce them — because
+// [CountRefusals] is the one writer of account_refusals, and a writer that
+// cannot name every legal resource forces a second writer to be built beside
+// it. That is exactly how this table ended up with two writers and two day
+// clocks once already.
+const (
+	// ResourceUploadBytes is the byte-weighted limiter on POST /api/v1/sync,
+	// charged BEFORE the append. It is the flow shaper, not the ceiling: a
+	// refusal here says "too soon", where a ceiling refusal says "too much".
+	ResourceUploadBytes = "upload_bytes"
+	// ResourceSMTPDaily is the per-account daily inbound message allowance.
+	ResourceSMTPDaily = "smtp_daily"
+	// ResourceHeadroom is the box-level free-space fuse, which refuses every
+	// account's durable writes rather than one account's.
+	ResourceHeadroom = "headroom"
+	// ResourceSuspended is a refusal because the account is suspended.
+	ResourceSuspended = "suspended"
+)
+
+// refusalResources is the closed set account_refusals.resource accepts.
+//
+// It is DELIBERATELY wider than the four ledger resources above, and the width
+// is the point: the design's promise is that no refusal is silently dropped, so
+// every source of a refusal must have somewhere to be counted — the four
+// cumulative ceilings, the upload-byte limiter, the SMTP daily allowance, the
+// headroom fuse, and suspension. Migration 00031 states the same set as a CHECK
+// constraint and is the authority; this slice exists so a wrong name is a Go
+// error naming the resource rather than a constraint violation inside a
+// buffered retry loop that then retries forever.
+//
+// Adding a member here without adding it to the CHECK constraint moves the
+// failure back into the database, so the two change together or not at all.
+var refusalResources = []string{
+	ResourceOplogHotBytes, ResourceOplogColdBytes,
+	ResourceQuarantineBytes, ResourceQuarantineCount,
+	ResourceUploadBytes, ResourceSMTPDaily,
+	ResourceHeadroom, ResourceSuspended,
+}
+
 // family is the set of ledger resources one ceiling bounds together, plus the
 // account_limits column holding that ceiling.
 //
@@ -152,7 +194,9 @@ func (e *RefusedError) Is(target error) bool { return target == ErrRefused }
 // (see [Gate.recordRefusal]). Every other statement runs on the caller's tx.
 type Gate struct {
 	Pool *pgxpool.Pool
-	// now is the clock for the refusal day bucket. nil means time.Now.
+	// now overrides the refusal day bucket in THIS PACKAGE'S TESTS only. It is
+	// unexported and New never sets it, so the one production day clock is the
+	// database's — see [CountRefusals].
 	now func() time.Time
 }
 
@@ -353,20 +397,79 @@ func (g *Gate) lockFamily(ctx context.Context, tx pgx.Tx, userID uuid.UUID, fam 
 // locks on account_usage and (for an append) oplog_seq, and touches
 // account_refusals not at all.
 func (g *Gate) recordRefusal(ctx context.Context, userID uuid.UUID, resource string) error {
-	if !slices.Contains([]string{
-		ResourceOplogHotBytes, ResourceOplogColdBytes,
-		ResourceQuarantineBytes, ResourceQuarantineCount,
-	}, resource) {
-		return fmt.Errorf("budget: refusal: unknown resource %q", resource)
-	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_, err := g.Pool.Exec(ctx,
+	return countRefusals(ctx, g.Pool, userID, resource, 1, g.overrideDay())
+}
+
+// overrideDay is the TEST-ONLY day override. It is nil in every process that
+// was not built by a test in this package, because g.now is unexported and New
+// never sets it — so the production day is always the database's. See
+// [CountRefusals].
+func (g *Gate) overrideDay() *string {
+	if g.now == nil {
+		return nil
+	}
+	day := g.clock().UTC().Format("2006-01-02")
+	return &day
+}
+
+// CountRefusals adds n to (userID, today in UTC, resource) in account_refusals.
+//
+// It is the ONE writer of that table. Both refusal paths — this package's
+// ceilings and internal/v2/smtpd's per-account refusals — go through it, and
+// that is not tidiness. The two used to be separate statements with two
+// different day clocks (one computed in Go, one in the database) and only one
+// of them carried the purged-account guard, so the same table could record two
+// different "todays" an hour apart and could also write a row for an account
+// that no longer exists.
+//
+// # One day clock, and it is the database's
+//
+// The day is `(now() AT TIME ZONE 'UTC')::date`, computed by Postgres, for two
+// reasons. It is the same stamp smtp_rejections and the diagnostics rows carry,
+// so "what happened on the 2nd" means one thing across every table an operator
+// joins; and a count buffered in memory (smtpd batches its refusals for up to
+// two seconds) is stamped when it LANDS rather than when the process that
+// buffered it thought the day was, which is the only stamp both writers can
+// agree on. day is a test-only override, nil in production.
+//
+// # It must not run in the caller's transaction
+//
+// The parameter is a *pgxpool.Pool and not a pgx.Tx on purpose. A refusal's
+// caller has no correct response except to roll back, so a receipt written
+// inside that transaction is erased with it and account_refusals — the table
+// whose entire purpose is that nothing is silently dropped — reads zero forever
+// while writes are being declined all day. Taking a pool makes that a
+// compile-time property rather than a comment somebody has to obey.
+//
+// A row naming a purged account is SKIPPED rather than reported: smtpd retries
+// these writes out of an in-memory buffer, so an error that can never succeed
+// is an error that is retried forever.
+func CountRefusals(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, resource string, n int64) error {
+	return countRefusals(ctx, pool, userID, resource, n, nil)
+}
+
+func countRefusals(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, resource string, n int64, day *string) error {
+	if pool == nil {
+		return errors.New("budget: refusal: no pool")
+	}
+	if userID == uuid.Nil {
+		return errors.New("budget: refusal: user_id is zero")
+	}
+	if !slices.Contains(refusalResources, resource) {
+		return fmt.Errorf("budget: refusal: unknown resource %q", resource)
+	}
+	if n <= 0 {
+		return nil
+	}
+	_, err := pool.Exec(ctx,
 		`INSERT INTO account_refusals (user_id, day, resource, count)
-		 VALUES ($1, $2::date, $3, 1)
+		 SELECT $1, coalesce($4::date, (now() AT TIME ZONE 'UTC')::date), $2, $3
+		  WHERE EXISTS (SELECT 1 FROM users WHERE id = $1)
 		 ON CONFLICT (user_id, day, resource)
-		 DO UPDATE SET count = account_refusals.count + 1`,
-		userID, g.clock().UTC().Format("2006-01-02"), resource)
+		 DO UPDATE SET count = account_refusals.count + EXCLUDED.count`,
+		userID, resource, n, day)
 	if err != nil {
 		return fmt.Errorf("budget: refusal: count %s for %s: %w", resource, userID, err)
 	}

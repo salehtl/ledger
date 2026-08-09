@@ -55,6 +55,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/blob"
+	// budget is imported for ONE thing: recognising a refusal so Deliver can
+	// translate it into smtpd.ErrOverBudget. It is a leaf policy package that
+	// this package already depends on transitively through oplog's appender, so
+	// naming it here adds no coupling — and the alternative, making smtpd
+	// itself match budget's error, would tie the SMTP receiver to a Postgres
+	// package it must be able to run without on the backup relay.
+	"ledger/internal/v2/budget"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/heuristic"
 	"ledger/internal/v2/norm"
@@ -228,6 +235,27 @@ func (p *Pipeline) check() error {
 // transaction until the client's replay noticed, and every retry is another
 // chance at it.
 func (p *Pipeline) Deliver(ctx context.Context, d smtpd.Delivery) error {
+	err := p.deliver(ctx, d)
+	if errors.Is(err, budget.ErrRefused) {
+		// The one failure this pipeline can name for the receiver. Everything
+		// else it returns is "something broke, retry", which the receiver
+		// answers with a generic 451 — and a full account answered that way
+		// tells the sender's postmaster the server is faulty when it is
+		// enforcing exactly the ceiling it was built to enforce.
+		//
+		// The translation happens HERE, at the one exit, rather than at each of
+		// the append and hold call sites: the storage seams that can refuse are
+		// the two the budget gate guards today, and a third one added tomorrow
+		// would otherwise be a silent regression back to 451. Both errors are
+		// wrapped, so smtpd matches its own sentinel and an operator still
+		// reads which resource ran out.
+		return fmt.Errorf("%w: %w", smtpd.ErrOverBudget, err)
+	}
+	return err
+}
+
+// deliver is Deliver's body. See Deliver for the contract.
+func (p *Pipeline) deliver(ctx context.Context, d smtpd.Delivery) error {
 	if err := p.check(); err != nil {
 		return err
 	}

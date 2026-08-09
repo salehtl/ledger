@@ -17,7 +17,7 @@
 //	DELETE /api/v1/keys/wraps {credential_id}                      -> 204
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
-//	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
+//	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]} | 413 account_full {budget:{resource, have, delta, limit}}
 //	GET  /api/v1/address                                           -> {address, created_at, rotates_from, grace_until}
 //	POST /api/v1/address/challenge {}                              -> {nonce}
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
@@ -38,7 +38,7 @@
 //	DELETE /api/v1/push/subscriptions                              -> 204
 //	DELETE /api/v1/push/subscriptions/{handle}                     -> 204
 //	POST /api/v1/account/challenge {}                              -> {nonce}
-//	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
+//	DELETE /api/v1/account {assertion, nonce, sig}                 -> 204
 //	GET  /api/v1/relay/addresses                                   -> {addresses:[...], as_of}
 //	POST /api/v1/relay/deliver     {local_part, ..., raw}          -> {ingest_id}
 //
@@ -1017,6 +1017,27 @@ func bearerToken(r *http.Request) (string, bool) {
 type errorBody struct {
 	Error  string `json:"error"`
 	Detail string `json:"detail,omitempty"`
+	// Budget is present on exactly one answer — 413 account_full — and absent
+	// everywhere else. See [BudgetInfo].
+	Budget *BudgetInfo `json:"budget,omitempty"`
+}
+
+// BudgetInfo is the machine-readable half of a 413 account_full: the numbers
+// behind a refusal, so a client can render "you are using 255 MB of 256 MB"
+// rather than a generic failure.
+//
+// It discloses nothing: every field describes the CALLER'S OWN account, which
+// they can already read, and the same rule that governs errorBody.Detail
+// applies — it is present only where it describes the caller's own submission.
+type BudgetInfo struct {
+	// Resource is the budget.Resource* name that ran out.
+	Resource string `json:"resource"`
+	// Have is what the account already holds, Delta is what this request asked
+	// to add, and Limit is the ceiling. All in bytes, all as JSON numbers
+	// because all are far below 2^53.
+	Have  int64 `json:"have"`
+	Delta int64 `json:"delta"`
+	Limit int64 `json:"limit"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

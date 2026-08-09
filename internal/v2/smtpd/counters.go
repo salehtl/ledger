@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"ledger/internal/v2/budget"
 )
 
 // The two kinds of USER-SCOPED counter the limiter holds, mirroring
@@ -110,13 +111,19 @@ type Suspensions interface {
 	Suspended(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
-// The account_refusals resources this package produces. The column's CHECK
-// constraint is the authority; these are the subset an SMTP refusal can be.
+// The account_refusals resources this package produces: the subset of that
+// column's closed set an SMTP refusal can be.
+//
+// They are ALIASES of the budget package's names rather than their own string
+// literals, because budget is the one writer of account_refusals and validates
+// the resource against the closed set before writing. A literal here that
+// budget did not know about would be rejected at write time, inside a buffered
+// retry loop, forever — so the two lists cannot be allowed to disagree.
 const (
 	// RefusalSMTPDaily is the per-user daily message allowance.
-	RefusalSMTPDaily = "smtp_daily"
+	RefusalSMTPDaily = budget.ResourceSMTPDaily
 	// RefusalSuspended is a refusal because the account is suspended.
-	RefusalSuspended = "suspended"
+	RefusalSuspended = budget.ResourceSuspended
 )
 
 // Snapshot flattens every user-scoped counter to rows for a [CounterStore].
