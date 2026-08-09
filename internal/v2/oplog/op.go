@@ -93,6 +93,33 @@
 // 3. Adding an op TYPE would have been the other thing, and would have cost a
 // bump. See client/src/replay/replay.ts's applyBudgetSplitSet for the fold.
 //
+// # KNOWN GAP: nothing on the server validates an op at all, and a bad one is forever
+//
+// The paragraph above is about THIS package declining to interpret payloads. The
+// gap is wider and worth stating plainly, because the two are easy to conflate.
+// After the crypto phase a device pushes a SEALED blob: api/sync.go checks the
+// envelope's framing, its claimed position and the hash chain, and it cannot
+// look inside — the server holds no key, by design. So no op reaching the log
+// has been validated by anything except the client that wrote it, not even for
+// the structural rules [Op.Validate] enforces. The Go path here runs only where
+// the server itself authors ops from inbound mail.
+//
+// The log is append-only, so a malformed op is PERMANENT. Every device that
+// folds it raises the same invalid_payload anomaly, on every rebuild, forever;
+// there is no delete, and no compaction to drop it (spec §3.3). One bug in one
+// client release is therefore a defect the whole account carries.
+//
+// This is accepted, not overlooked. Server-side validation would require either
+// giving the server the key — which is the property the crypto phase exists to
+// remove — or a second payload validator in Go that the TypeScript executor
+// would have to agree with op-for-op, which is the disagreement the paragraph
+// above refuses. What would actually close it is client-side: authoring guards
+// at each op's single author (see web/src/v2/sources/*.ts, which throw before
+// enqueueing rather than after), and the conformance manifest pinning the
+// vocabulary both ends share. A future compaction pass could also drop ops the
+// fold has permanently rejected, which is the only mechanism that could ever
+// un-say one.
+//
 // The trust path never reads any of this. Declared banks route the waitlist and
 // drive the UI; nothing in internal/v2/origin may consult them.
 //
