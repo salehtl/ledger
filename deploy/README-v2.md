@@ -10,21 +10,33 @@ Where the code and a plan disagree, the code wins and this file says so.
 
 ---
 
-## 0. Status: v2 is NOT deployed
+## 0. Status: v2 IS deployed and serving the public internet
 
-As of 2026-08-01, on this box:
+Verified on the box 2026-08-09. **This section said the opposite until then; it
+was written 2026-08-01 and nobody re-checked it after the deploy.** Read the
+running system, not this table, when the two disagree.
 
 | Thing | State |
 |---|---|
-| `/etc/ledger-v2`, `/var/lib/ledger-v2` | **do not exist** |
-| `ledgerd.service` | **does not exist** (`deploy/` has only v1's `ledger.service`) |
-| Running services | `ledger.service` (v1) only |
-| PostgreSQL 16 | installed, cluster `16/main` **down** |
-| `tailscale serve` | `/` → v1 on `127.0.0.1:8080`; `:8443` → `/srv/ledger-storybook` |
+| `/etc/ledger-v2`, `/var/lib/ledger-v2` | exist |
+| `ledgerd.service` | **active and enabled**, running since 2026-08-08 18:56 |
+| Public listener | `198.51.100.1:443`, `tls_domains = ["app.sirdab.ae","api.sirdab.ae"]` |
+| SMTP receiver | `*:25` — accepting forwarded mail from the internet |
+| Admin console | `127.0.0.1:8079`, fronted by `tailscale serve` on `:8445` (§5.2) |
+| PostgreSQL 16 | cluster `16/main` **up** |
+| Running services | `ledger.service` (v1) **and** `ledgerd.service` (v2) |
+| `tailscale serve` | `/` → v1 `:8080`; `:8443` Storybook; `:8444` v1 harness; `:8445` v2 admin |
 
-So nothing below is "check the running system" — it is "here is how the binary
-behaves when you run it". Everything in §1–§7 is **ready to run** today against
-a Postgres you point it at. What is **not** done is the D-series (§8).
+Two consequences worth stating plainly, because they change how you treat
+everything below:
+
+- **v2 takes real mail from strangers on port 25.** It is no longer a binary you
+  run to see what it does; §1–§7 describe a live service.
+- **The running binary is whatever was built on 2026-08-08 18:56.** Work merged
+  after that — including the admin console — is *not* in the live process until
+  you rebuild and restart. A 401 from the console URL is exactly this.
+
+The D-series (§8) is still the open work.
 
 ### The live edge you are carrying right now
 
@@ -698,59 +710,50 @@ a panel written as though it could would break on sealing.
 puts a raw message on screen. Reading the Gmail verification link is still the
 `curl` above.
 
-### 5.2 `admin.sirdab.ae` — the operator applies this, it is not in the repo
+### 5.2 Reaching the console — SETTLED AND APPLIED 2026-08-09
 
-The hostname resolves to the **Tailscale IP**, so the panel is reachable by name
-and not from the public internet. Do **not** add it to `tls_domains`, and do not
-put it behind the public listener; `config.CheckAdminBind` and
-`TestTheAdminConsoleIsNotMountedOnThePublicListener` both exist to stop that.
+**The panel is served over the tailnet name, behind `tailscale serve`. There is
+no `admin.sirdab.ae` record and none is needed.** This supersedes the earlier
+plan of an A record plus plain HTTP; that route was authored before anyone
+checked which ports `tailscale serve` already had, and it traded a real
+certificate away for nothing.
 
-1. Read the box's Tailscale address:
+The mount is **already applied** on this box:
 
-   ```bash
-   tailscale ip -4        # e.g. 100.x.y.z
-   ```
+```bash
+sudo tailscale serve --bg --https=8445 http://127.0.0.1:8079
+# → https://dinosaur.marmoset-paradise.ts.net:8445/admin/ui/
+# to remove: sudo tailscale serve --https=8445 off
+```
 
-2. In the `sirdab.ae` DNS zone, add one **A record**: `admin` → that
-   `100.x.y.z`. No AAAA unless you also want the `100::/64` address; no CNAME to
-   the public host. RFC 6598 space is unroutable on the internet, so a stranger
-   who resolves the name reaches nothing. Publishing it does disclose the
-   tailnet address — accepted, because that address is useless without an
-   enrolled device.
+Port 8445 because `:8443` (Storybook) and `:8444` (the v1 harness API) are
+taken; `tailscale serve status` is the list. Tailscale issues the certificate
+for its own zone, so this is real HTTPS with a padlock, no DNS record, no
+DNS-01 challenge, and no config change to `ledgerd`.
 
-3. **Certificate. Decided 2026-08-09: plain HTTP, no certificate.** The operator
-   accepted the browser's "not secure" label because the panel is reachable only
-   from his own tailnet. Do not reopen this or add TLS to `admin_listen`.
+**`admin_listen` stays `127.0.0.1:8079`.** `serve` proxies to loopback, so the
+listener needs no tailnet binding — and loopback is the tightest of the two
+bindings `CheckAdminBind` permits. Do **not** add the hostname to `tls_domains`
+and do not put the console behind the public listener; `config.CheckAdminBind`
+and `TestTheAdminConsoleIsNotMountedOnThePublicListener` both exist to stop
+that.
 
-   `admin_listen` speaks plain HTTP and must stay that way (the
-   bind check permits loopback and `100.64.0.0/10`, and terminating TLS in the
-   process would not change what is reachable). The option taken, and the one
-   rejected:
+Why `admin.sirdab.ae` over HTTPS was dropped: it would need a certificate for a
+name whose only A record is a private address — a DNS-01 challenge and a
+certificate on disk for a host that is not public. Not worth it for a
+one-operator console. Tailscale will not issue for that name at all; it only
+issues inside its own zone.
 
-   - **Plain HTTP, no certificate — CHOSEN.** `http://admin.sirdab.ae:8079/`. The
-     link is already encrypted by WireGuard between the two devices. The browser
-     will call it "not secure"; that label describes the absence of a
-     certificate, not an unencrypted link.
-   - **Tailscale-issued TLS**, if you want a padlock and a name with no port.
-     Requires MagicDNS and HTTPS certificates enabled in the tailnet, and it
-     serves under the tailnet name (`dinosaur.<tailnet>.ts.net`), **not** under
-     `admin.sirdab.ae` — Tailscale only issues for names in its own zone:
+Check it, from an enrolled device:
 
-     ```bash
-     sudo tailscale serve --bg --https=8443 http://127.0.0.1:8079
-     ```
+```bash
+curl -sI https://dinosaur.marmoset-paradise.ts.net:8445/admin/ui/  # 200
+curl -sI https://<public host>/admin/ui/                           # 404 — must stay a 404
+```
 
-     `admin.sirdab.ae` over HTTPS would need a certificate for a name whose only
-     A record is a private address. That means a DNS-01 challenge and a
-     certificate on disk for a host that is not public. Not worth it for a
-     one-operator console; use the tailnet name if you want TLS.
-
-4. Check it, from an enrolled device:
-
-   ```bash
-   curl -sI http://admin.sirdab.ae:8079/admin/ui/     # 200
-   curl -sI https://<public host>/admin/ui/           # 404 — must stay a 404
-   ```
+A **401** on the first URL means the mount and TLS are fine and the request
+reached the admin listener, but the running binary predates the console — the
+guarded mux answers before any `/admin/ui/` route exists. Rebuild and restart.
 
 **Why it stays off the internet.** The binding is the control; the bearer token
 stops an accident inside the tailnet, not an attacker outside it. What a caller
