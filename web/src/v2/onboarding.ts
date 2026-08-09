@@ -27,37 +27,39 @@
  * The prefix rule is deliberately strict: a gap is never skipped, however much
  * sits behind it.
  *
- * # There is almost nothing device-local left, and that is the point
+ * # What is device-local: the USER'S answers, never the ACCOUNT'S facts
  *
  * This module used to keep the chosen bank, a "the forward is set up" boolean
  * and a "finished" timestamp in {@link LocalOnboardingRecord}. A second device
  * has none of those, so a fully set-up account opened on a new phone re-ran the
  * bank step and then the ADDRESS step — which, to the person holding it, is
- * indistinguishable from their account having been lost.
+ * indistinguishable from their account having been lost. The fix over-rotated:
+ * it derived everything, including two facts that are the user's answers to
+ * questions, and a question answered from evidence un-answers itself the moment
+ * the evidence is missing. The line that holds is:
  *
- * All three are now derived from facts the account owns:
- *
- *   - **Banks** are `bank_declared` ops, folded into `State.banks` and read
- *     through {@link declaredBanksOf}. The log syncs; a browser profile does not.
- *   - **Forwarding** is DEMONSTRATED by {@link OnboardingFacts.firstMailConfirmedAt},
- *     which is a transaction in the log. The app cannot see a Gmail filter, and
- *     the only evidence a forward works is mail arriving — so a stored claim
- *     that one exists was never evidence of anything, only a device's memory of
- *     a button press.
- *   - **Finished** is the prerequisites being met. {@link resumeFacts} sets
- *     {@link OnboardingFacts.setupSeen} when every ACCOUNT milestone behind it
- *     is already true, so a cold launch on a set-up account opens the app.
+ *   - **The account's facts are derived.** Banks are `bank_declared` ops, folded
+ *     into `State.banks` and read through {@link declaredBanksOf}; the home
+ *     currency is log state; mail having arrived is a transaction in the log.
+ *     The log syncs; a browser profile does not.
+ *   - **The user's answers are recorded**, in {@link LocalOnboardingRecord},
+ *     exactly as `skipped` always was: the forwarding declaration
+ *     ({@link LocalOnboardingRecord.forwardingDeclared}) and when this device
+ *     finished the walk ({@link LocalOnboardingRecord.finishedAt}). Deriving
+ *     the declaration from mail arrival made the walk bounce every finished
+ *     user back to "Send your bank mail here" until the world happened to
+ *     respond (2026-08-09, the resume loop). Arrival stays a separate STATUS
+ *     ({@link mailStatus}); it is evidence the forward works, never the only
+ *     way the declaration can be true.
+ *   - **Finished is also derivable**, and both doors open the app:
+ *     {@link resumeFacts} sets {@link OnboardingFacts.setupSeen} when every
+ *     ACCOUNT milestone behind it is already true, so a cold launch on a
+ *     set-up account opens the app on a device with no record at all.
  *     Deliberately not every milestone: {@link OnboardingFacts.keysReady} is
  *     this device's access to the account, not evidence about its history, and
  *     conflating the two walked a locked device onto the finish screen — where
  *     the plan control then authored over the account's plan. See
  *     {@link accountSetupComplete}.
- *
- * What remains device-local is the address hint below and, since onboarding
- * stopped being a gate, the set of steps the user answered with "later"
- * ({@link LocalOnboardingRecord.skipped}) — the one fact with no home in the
- * account, because a log records what was done and nothing records what was
- * declined.
  *
  * # Onboarding proposes; it does not block
  *
@@ -237,11 +239,12 @@ export interface OnboardingFacts {
   /**
    * The user said the forward is set up.
    *
-   * IN-MEMORY ONLY. It advances the walk within one session, because the step
-   * after it is "wait for mail" and there has to be something to advance ON. It
-   * is deliberately not persisted: a stored claim is a device's memory of a
-   * button press, not evidence, and {@link resumeFacts} re-derives it from mail
-   * having actually arrived.
+   * A DECLARATION, and remembered as one — persisted in
+   * {@link LocalOnboardingRecord.forwardingDeclared}, exactly as `skipped` is.
+   * It is not evidence the forward works; {@link mailStatus} still reports
+   * arrival separately, and {@link resumeFacts} still reads mail having
+   * arrived as this being true on a device with no record. See the record
+   * field for the resume loop that deriving it alone caused.
    */
   forwardingDeclared: boolean;
   /**
@@ -286,6 +289,16 @@ export interface OnboardingFacts {
    * is by then set up.
    */
   setupSeen: boolean;
+  /**
+   * When "Open ledger" was tapped on this device, or null.
+   *
+   * Persisted in {@link LocalOnboardingRecord.finishedAt} — see that field for
+   * why a finished device never re-enters the walk. OPTIONAL only so that a
+   * facts object built before this field existed (two test fixtures encode
+   * one) still type-checks as "never finished"; everything in this module sets
+   * it explicitly.
+   */
+  finishedAt?: string | null;
 }
 
 export function emptyFacts(): OnboardingFacts {
@@ -300,6 +313,7 @@ export function emptyFacts(): OnboardingFacts {
     homeCurrency: null,
     skipped: [],
     setupSeen: false,
+    finishedAt: null,
   };
 }
 
@@ -330,11 +344,20 @@ export function isSkipped(f: OnboardingFacts, step: OnboardingStep): boolean {
  * never happened. A skip is different in kind: it is the user having been asked
  * and having answered. The step is still outstanding ({@link remainingSetup}
  * lists it, Settings can still do it); it simply no longer stands in the way.
+ *
+ * **A device that finished the walk has answered every optional question.**
+ * {@link OnboardingFacts.finishedAt} passes the SKIPPABLE steps only, so a
+ * fact that regresses after "Open ledger" (an address fetch failing offline, a
+ * milestone redefined) cannot drag a finished user back into onboarding — but
+ * the hard gates (a session, an invite, the keys) still gate, which is what
+ * keeps a wiped browser on the recovery step rather than in a product it
+ * cannot decrypt.
  */
 export function stepFor(f: OnboardingFacts): OnboardingPosition {
+  const finished = f.finishedAt != null;
   let at: OnboardingPosition = "signed_out";
   for (const [step, done] of MILESTONES) {
-    if (!done(f) && !isSkipped(f, step)) return at;
+    if (!done(f) && !isSkipped(f, step) && !(finished && isSkippable(step))) return at;
     at = step;
   }
   return at;
@@ -392,7 +415,8 @@ export type OnboardingEvent =
   | { type: "home_currency_set"; currency: string }
   /** "Set this up later". One step per event; the screen says which. */
   | { type: "step_skipped"; step: SkippableStep }
-  | { type: "finished" }
+  /** "Open ledger" was tapped. `at` is persisted; see the record's field. */
+  | { type: "finished"; at: string }
   | { type: "signed_out" }
   | { type: "account_deleted" };
 
@@ -460,7 +484,8 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
       return f.skipped.includes(e.step) ? f : { ...f, skipped: [...f.skipped, e.step] };
 
     case "finished":
-      return f.setupSeen ? f : { ...f, setupSeen: true };
+      // The first press is the finish time; a second press moves nothing.
+      return f.finishedAt != null ? f : { ...f, setupSeen: true, finishedAt: e.at };
 
     case "signed_out":
       // The log is not touched. Signing out drops a bearer token; it does not
@@ -480,14 +505,15 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
 // ---------------------------------------------------------------------------
 
 /**
- * The device-local half, persisted as JSON — **one field wide**.
+ * The device-local half, persisted as JSON: the address hint and the USER'S
+ * ANSWERS — the facts with no home in the account, because a log records what
+ * was done and nothing anywhere records what was declined or declared.
  *
- * `bank`, `forwardingDeclared` and `finishedAt` were here and are gone; see this
- * module's header for why each is now derived from the account rather than from
- * the browser profile. A record written by that earlier build still decodes:
- * the extra keys are ignored rather than refused, because the address hint in it
- * is the one thing this build still wants and losing it would cost a set-up
- * device its offline resume.
+ * `bank` was here once and stays gone: it is the account's fact, in the log,
+ * and a browser profile that remembered one overruled what a second device
+ * could see. A record written by any earlier build still decodes — extra keys
+ * are ignored, absent ones read as their zero — because the address hint in it
+ * is what keeps an offline set-up device out of onboarding.
  */
 export interface LocalOnboardingRecord {
   /** A resume hint, not a display value. See the header. */
@@ -495,24 +521,51 @@ export interface LocalOnboardingRecord {
   /**
    * The steps this person said "later" to.
    *
-   * The SECOND field, added deliberately against this module's one-field rule,
-   * because it is the one fact with no home in the account: an op log records
-   * what was done, and nothing anywhere records what was declined. Stored, a
-   * skipped step stays skipped across a reload; unstored, every launch walks the
-   * user back into the step they already answered, which is the door this
-   * design exists to unlock.
+   * The one fact with no home in the account: an op log records what was done,
+   * and nothing anywhere records what was declined. Stored, a skipped step
+   * stays skipped across a reload; unstored, every launch walks the user back
+   * into the step they already answered, which is the door this design exists
+   * to unlock.
    *
    * A second device does not inherit it, and that is correct rather than merely
    * tolerable — the second device is asked the question once, and can answer
    * "later" again in one tap.
    */
   skipped: readonly SkippableStep[];
+  /**
+   * The user said "I have set this up" on the forwarding screen.
+   *
+   * A DECLARATION, not a demonstration — mail arriving is still the only
+   * evidence the rule works, and {@link mailStatus} still reports that
+   * separately. But the declaration is the user's answer to a question, and a
+   * question answered must stay answered: deriving this from mail arrival made
+   * the walk bounce every finished user back to "Send your bank mail here"
+   * until the world happened to respond (2026-08-09, the resume loop).
+   */
+  forwardingDeclared: boolean;
+  /**
+   * When "Open ledger" was tapped on this device, or null.
+   *
+   * Once set, this device NEVER re-enters the walk. The walk is a corridor for
+   * account creation and first setup; everything after it is a task in
+   * SetupStatus/Settings. Without this, any future fact that regresses (an
+   * address fetch failing offline, a milestone redefined) silently drags a
+   * finished user back into onboarding — the exact class of bug this field
+   * retires. A second device does not inherit it and walks once; that is
+   * correct, and mail already flowing means it walks straight through.
+   */
+  finishedAt: string | null;
 }
 
-export const LOCAL_RECORD_KEYS = ["inboundAddress", "skipped"] as const;
+export const LOCAL_RECORD_KEYS = ["inboundAddress", "skipped", "forwardingDeclared", "finishedAt"] as const;
 
 export function encodeLocal(f: OnboardingFacts): LocalOnboardingRecord {
-  return { inboundAddress: f.inboundAddress, skipped: f.skipped };
+  return {
+    inboundAddress: f.inboundAddress,
+    skipped: f.skipped,
+    forwardingDeclared: f.forwardingDeclared,
+    finishedAt: f.finishedAt ?? null,
+  };
 }
 
 /** Refuses a partially-readable record rather than half-applying it. */
@@ -529,7 +582,14 @@ export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
   // what keeps an offline set-up device out of onboarding entirely.
   const raw = r["skipped"];
   const skipped = Array.isArray(raw) ? raw.filter((s): s is SkippableStep => typeof s === "string" && isSkippable(s as OnboardingStep)) : [];
-  return { inboundAddress: addr, skipped };
+  // Absent or unreadable reads as the zero, for the same reason as the skips:
+  // a record from the previous build is complete in every way that decides a
+  // step. The native-port build kept these two under the same names and the
+  // same meanings, so its record's answers are honoured rather than dropped.
+  const forwardingDeclared = r["forwardingDeclared"] === true;
+  const finishedRaw = r["finishedAt"];
+  const finishedAt = typeof finishedRaw === "string" ? finishedRaw : null;
+  return { inboundAddress: addr, skipped, forwardingDeclared, finishedAt };
 }
 
 /**
@@ -562,23 +622,27 @@ export function resumeFacts(args: {
     keysReady: args.keysReady,
     banks: args.banks,
     inboundAddress: args.inboundAddress ?? local?.inboundAddress ?? null,
-    // DEMONSTRATED, not remembered. Mail in the log is the only evidence a
-    // forward works, and it is evidence a second device has too.
-    forwardingDeclared: args.firstMailConfirmedAt !== null,
+    // REMEMBERED first — the declaration is the user's answer, and it must
+    // survive a reload (the 2026-08-09 resume loop). Mail in the log still
+    // answers on a device with no record: it is evidence a forward works, and
+    // evidence a second device has too.
+    forwardingDeclared: local?.forwardingDeclared === true || args.firstMailConfirmedAt !== null,
     firstMailConfirmedAt: args.firstMailConfirmedAt,
     homeCurrency: args.homeCurrency,
-    // The only device-local fact left, and the only one with nowhere else to
-    // live. See {@link LocalOnboardingRecord.skipped}.
+    // Device-local facts with nowhere else to live. See
+    // {@link LocalOnboardingRecord.skipped} and its `finishedAt`.
     skipped: local?.skipped ?? [],
     setupSeen: false,
+    finishedAt: local?.finishedAt ?? null,
   };
-  // "Finished" is the ACCOUNT's prerequisites being met. Asked through
-  // {@link accountSetupComplete} rather than by re-listing the milestones, so
-  // this can never drift from the table — and through that rather than through
-  // `stepFor` directly, because this device's key access says nothing about
-  // whether the account was ever set up. See that function for the data loss
-  // the difference caused.
-  return accountSetupComplete(base) ? { ...base, setupSeen: true } : base;
+  // "Finished" is the ACCOUNT's prerequisites being met — OR this device
+  // having actually finished the walk, whatever has regressed since. The
+  // first is asked through {@link accountSetupComplete} rather than by
+  // re-listing the milestones, so this can never drift from the table — and
+  // through that rather than through `stepFor` directly, because this device's
+  // key access says nothing about whether the account was ever set up. See
+  // that function for the data loss the difference caused.
+  return accountSetupComplete(base) || base.finishedAt != null ? { ...base, setupSeen: true } : base;
 }
 
 /**

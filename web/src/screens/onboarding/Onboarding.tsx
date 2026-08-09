@@ -15,13 +15,14 @@
  * `done` is the only exit, and it is called once — when the machine reaches
  * `done`, which needs `setupSeen`, which the finish screen sets.
  *
- * # The device-local half is one field wide, and it is written on every change
+ * # The device-local record is written on every change
  *
  * `saveLocalRecord` runs from an effect on the facts, so a tab closed between
- * two steps keeps the address it was given. Everything else a resumed walk needs
- * — the banks, the currency, whether mail has arrived — is in the log and on the
- * server, which is what makes a SECOND device resume at the same place rather
- * than at the beginning (`v2/onboarding.ts`'s header).
+ * two steps keeps the address it was given and every answer already given —
+ * the skips, the forwarding declaration, the finish time. Everything else a
+ * resumed walk needs — the banks, the currency, whether mail has arrived — is
+ * in the log and on the server, which is what makes a SECOND device resume at
+ * the same place rather than at the beginning (`v2/onboarding.ts`'s header).
  *
  * # Ops go through `emitMany`, and the outbox is the receipt
  *
@@ -220,7 +221,11 @@ export function Onboarding({
           commit={commit}
           driver={handle.driver}
           {...(budgetSource === undefined ? {} : { budgetSource })}
-          onFinish={() => dispatch({ type: "finished" })}
+          // The dispatch flows through the same effect that persists every
+          // other answer (`saveLocalRecord` above), and that effect runs
+          // before the `done` hand-off — so the finish time is on disk before
+          // the walk unmounts.
+          onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })}
         />
       );
 
