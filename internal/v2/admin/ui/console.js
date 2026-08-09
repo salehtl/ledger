@@ -139,7 +139,8 @@ function bar(n, d) {
   ]);
 }
 
-// Accounts — the roster. Structural facts plus forwarding health.
+// Accounts — the roster. Structural facts plus forwarding health, and the one
+// lever that is not a deletion: pause and resume.
 VIEWS.accounts = async (view) => {
   const data = await req("GET", "/admin/accounts");
   const rows = data.accounts.map((a) => {
@@ -148,9 +149,56 @@ VIEWS.accounts = async (view) => {
       : !a.last_mail_at
         ? el("span", { class: "pill pill-bad", text: "no mail yet" })
         : el("span", { class: "muted", text: ago(a.last_mail_at) });
+
+    // Pause and resume. The button offered is the one that changes the state
+    // the row is in, so there is never a pair to choose between and never a
+    // no-op click.
+    //
+    // Suspending asks first. It is reversible, but it stops a real person's
+    // writes and holds their bank mail at the door, and it sits in a table the
+    // operator is scrolling — a mis-click must not be the whole gesture. Resume
+    // does not ask: it only ever gives access back.
+    const suspended = a.status === "suspended";
+    const action = el("button", {
+      class: suspended ? "btn btn-sm btn-primary" : "btn btn-sm",
+      type: "button",
+      text: suspended ? "Resume" : "Pause",
+      title: suspended
+        ? "Accept writes and inbound mail from this account again."
+        : "Refuse writes and hold inbound mail. Their devices keep reading their own data.",
+    });
+    action.addEventListener("click", async () => {
+      if (
+        !suspended &&
+        !confirm(
+          "Pause " +
+            short(a.user_id) +
+            "?\n\nTheir devices keep READING their own data, uploads are refused, and " +
+            "their bank mail is told to retry rather than bounce. Reversible from this table.",
+        )
+      ) {
+        return;
+      }
+      action.disabled = true;
+      try {
+        const base = "/admin/accounts/" + encodeURIComponent(a.user_id);
+        await req("POST", base + (suspended ? "/resume" : "/suspend"));
+        toast(suspended ? "Resumed " + short(a.user_id) + "." : "Paused " + short(a.user_id) + ".");
+        render();
+      } catch (e) {
+        action.disabled = false;
+        toast(e.message, true);
+      }
+    });
+
     return el("tr", {}, [
       el("td", { class: "mono", title: a.user_id, text: short(a.user_id) }),
       el("td", { class: "num", text: fmtTime(a.created_at) }),
+      el("td", {}, [
+        suspended
+          ? el("span", { class: "pill pill-bad", text: "paused" })
+          : el("span", { class: "pill pill-live", text: "active" }),
+      ]),
       el("td", { class: "mono", text: a.local_part || "—" }),
       el("td", {}, [health]),
       el("td", { class: "num" }, [bar(a.parsed, a.arrivals)]),
@@ -162,15 +210,29 @@ VIEWS.accounts = async (view) => {
           ? el("span", { class: "pill pill-live", text: "v" + (a.key_version || 1) })
           : el("span", { class: "pill pill-warn", text: "none" }),
       ]),
+      el("td", {}, [action]),
     ]);
   });
   view.append(
     section(
       "Accounts",
       "One row per account. Parsed and arrivals cover the last 7 days; everything else is current state. " +
-        "Nothing here reads the op log, so it keeps working after the transaction data is sealed.",
+        "Nothing here reads the op log, so it keeps working after the transaction data is sealed. " +
+        "Pausing an account refuses its writes and holds its mail; it keeps reading, and nothing is deleted.",
       table(
-        ["Account", "Joined", "Inbound address", "Last mail", "Parsed", "Arrivals", "Held", "Devices", "Keys"],
+        [
+          "Account",
+          "Joined",
+          "State",
+          "Inbound address",
+          "Last mail",
+          "Parsed",
+          "Arrivals",
+          "Held",
+          "Devices",
+          "Keys",
+          "",
+        ],
         rows,
         "No accounts yet.",
       ),

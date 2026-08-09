@@ -36,6 +36,13 @@ type accountRow struct {
 	UserID    uuid.UUID `json:"user_id"`
 	CreatedAt time.Time `json:"created_at"`
 
+	// Status is `active` or `suspended` (00030_account_status.sql). It is on the
+	// roster rather than on a separate lookup because the console's two new
+	// buttons need it to know which one to offer, and an operator scanning the
+	// table needs to see a pause they applied last week without clicking
+	// anything.
+	Status string `json:"status"`
+
 	// LocalPart is the ACTIVE inbound address, or "" for an account that has
 	// not been issued one yet. A rotated-away address inside its grace window is
 	// deliberately not shown: the question this row answers is "where should
@@ -92,6 +99,7 @@ func (h *Handler) accounts(w http.ResponseWriter, r *http.Request) {
 	const q = `
 SELECT u.id,
        u.created_at,
+       u.status,
        COALESCE(a.local_part, ''),
        (k.user_id IS NOT NULL),
        COALESCE(k.key_version, 0),
@@ -122,7 +130,7 @@ SELECT u.id,
 	out := []accountRow{}
 	for rows.Next() {
 		var a accountRow
-		if err := rows.Scan(&a.UserID, &a.CreatedAt, &a.LocalPart,
+		if err := rows.Scan(&a.UserID, &a.CreatedAt, &a.Status, &a.LocalPart,
 			&a.KeysPublished, &a.KeyVersion, &a.Devices, &a.Held,
 			&a.LastMailAt, &a.Arrivals, &a.Parsed); err != nil {
 			h.logf("admin: roster scan: %v", err)

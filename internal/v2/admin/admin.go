@@ -237,6 +237,11 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	mux.HandleFunc("GET /admin/diagnostics", guard(h.diagnostics))
 	mux.HandleFunc("GET /admin/accounting", guard(h.accounting))
 	mux.HandleFunc("GET /admin/accounts", guard(h.accounts))
+	// The one operator lever between "this account is fine" and "purge it".
+	// Unconditional, like the roster it sits beside: there is no deployment of
+	// this console in which an abusing account cannot be paused. See suspend.go.
+	mux.HandleFunc("POST /admin/accounts/{id}/suspend", guard(h.suspendAccount))
+	mux.HandleFunc("POST /admin/accounts/{id}/resume", guard(h.resumeAccount))
 	mux.HandleFunc("GET /admin/waitlist", guard(h.listWaitlist))
 	mux.HandleFunc("POST /admin/waitlist", guard(h.recordWaitlist))
 	if h.Quarantine != nil {

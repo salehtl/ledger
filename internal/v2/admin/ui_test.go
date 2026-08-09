@@ -113,8 +113,14 @@ var pathLiteral = regexp.MustCompile(`"(/[^"\s]*)"`)
 // nothing out of the op log — so a panel that talks only to them inherits that
 // audit. A fetch anywhere else steps outside it.
 var panelPaths = map[string]bool{
-	"/admin/accounts":                            true,
-	"/admin/accounting":                          true,
+	"/admin/accounts":  true,
+	"/admin/accounts/": true,
+	// The two halves of the suspend lever, concatenated onto the account base
+	// path above. They are the only WRITES the panel makes to an account, and
+	// they carry no body: the URL is the whole instruction.
+	"/suspend":          true,
+	"/resume":           true,
+	"/admin/accounting": true,
 	"/admin/diagnostics?event=arrival&limit=500": true,
 	"/admin/quarantine?user=":                    true,
 	"/admin/templates":                           true,
