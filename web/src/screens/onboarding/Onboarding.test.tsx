@@ -379,6 +379,76 @@ describe("Welcome", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The recovery step, when the one call it needs does not land
+// ---------------------------------------------------------------------------
+
+/**
+ * This step is NOT skippable — `SKIPPABLE_STEPS` deliberately leaves it out,
+ * because an account with no keys has nowhere to put data. That makes it the one
+ * screen in the walk where a refusal with no next action is a locked door rather
+ * than an inconvenience: the only way off it was force-quitting the app, which
+ * is what its own copy asked the user to do.
+ */
+describe("the recovery step when the server cannot be reached", () => {
+  /** No stored handles, so `keyStatus` has nothing to fall back on and rethrows. */
+  const emptyVault = () => ({ read: async () => null, write: async () => {}, clear: async () => {} });
+
+  function mountOffline(over: { keys?: () => Response } = {}) {
+    const rig = handleRig();
+    let keyReads = 0;
+    const doFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/v1/keys")) {
+        keyReads += 1;
+        if (over.keys !== undefined) return over.keys();
+        throw new TypeError("Failed to fetch");
+      }
+      return new Response("no route", { status: 404 });
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MotionProvider>
+        <QueryClientProvider client={qc}>
+          <Onboarding
+            handle={rig.handle}
+            facts={{ ...emptyFacts(), hasSession: true, accountId: "u_1", keysReady: false }}
+            done={vi.fn()}
+            fetch={doFetch as unknown as typeof fetch}
+            secrets={memorySecrets()}
+            vault={emptyVault()}
+          />
+        </QueryClientProvider>
+      </MotionProvider>,
+    );
+    return { reads: () => keyReads };
+  }
+
+  it("offers a way forward on the same screen instead of asking the user to quit the app", async () => {
+    mountOffline();
+    await screen.findByTestId("onboarding-recovery-unavailable");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("actually retries the read when that button is pressed", async () => {
+    const user = userEvent.setup();
+    const { reads } = mountOffline();
+    await screen.findByTestId("onboarding-recovery-unavailable");
+    const before = reads();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
+  it("does not tell the user to reopen the app as their only option", async () => {
+    mountOffline();
+    const wall = await screen.findByTestId("onboarding-recovery-unavailable");
+    // The sentence may still OFFER a relaunch; what it may not do is be the only
+    // thing on the screen. Guarded by the button assertion above, this one keeps
+    // the copy honest about there being something to press.
+    expect(within(wall).getByText(/try again when you have a connection/i)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bank → Address
 // ---------------------------------------------------------------------------
 

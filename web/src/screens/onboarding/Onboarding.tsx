@@ -268,6 +268,16 @@ function RecoveryStep({
 }) {
   const [status, setStatus] = useState<KeyStatus | null>(null);
   const [failed, setFailed] = useState(false);
+  /**
+   * Bumped by "Try again", and a dependency of the read below.
+   *
+   * Explicit, rather than resting on the effect happening to re-run: `vault`
+   * defaults to `browserKeyVault()` called inline in the JSX, so it is a new
+   * object on every render and the read already re-fires more often than it
+   * looks like it does. Depending on that accident to drive a retry would be a
+   * retry that stops working the day someone memoises the prop.
+   */
+  const [attempt, setAttempt] = useState(0);
   const io = useMemo(
     () => ({
       sessionToken: handle.client.sessionToken,
@@ -282,6 +292,11 @@ function RecoveryStep({
     void keyStatus(handle.client.userId, vault, io).then(
       (s) => {
         if (!live) return;
+        // A read that lands clears the wall. Without this the screen was
+        // one-way: `failed` was only ever set to true, so a device that came
+        // back online — and whose next read succeeded — kept the "could not
+        // reach the server" notice on the glass with nothing behind it.
+        setFailed(false);
         if (s.kind === "ready") onSecured();
         else setStatus(s);
       },
@@ -292,15 +307,40 @@ function RecoveryStep({
     return () => {
       live = false;
     };
-  }, [handle, vault, io, onSecured]);
+  }, [handle, vault, io, onSecured, attempt]);
 
   if (failed) {
     return (
-      <Step title="Setting up encryption" testId="onboarding-recovery-unavailable">
+      /*
+       * A refusal with a way out of it, on the same screen.
+       *
+       * This branch used to render a title and a `Notice` and nothing else — no
+       * footer, no skip (the recovery step is deliberately not skippable), no
+       * sign-out. The only escape was force-quitting the app, which is what the
+       * copy asked for. The product principles name this exact shape: "Never let
+       * a security rule become a dead end. Every refusal needs a next action on
+       * the same screen." The sibling ceremony in `RecoveryPhrase` already gives
+       * the identical failure a "Try again"; this is the same button.
+       */
+      <Step
+        title="Setting up encryption"
+        testId="onboarding-recovery-unavailable"
+        footer={
+          <Button
+            variant="primary"
+            onClick={() => {
+              setFailed(false);
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </Button>
+        }
+      >
         <Notice tone="danger" announce title="ledger could not reach the server">
           <p>
             Setting up encryption needs one call to the server, and this device could not make it. Nothing is lost —
-            reopen ledger when you have a connection and this step will pick up where it left off.
+            try again when you have a connection, or reopen ledger later and this step will pick up where it left off.
           </p>
         </Notice>
       </Step>
