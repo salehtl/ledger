@@ -50,6 +50,18 @@
 //     failure, so the sender retries and we get another chance, rather than
 //     being permanently refused with no trace.
 //
+//     AND IT IS COUNTED AGAINST THE ACCOUNT. A refusal with a resolved
+//     recipient also increments account_refusals — counts only, no sender and
+//     no content — so the user's own app can say "N messages were turned away
+//     today" and the operator console can see who is hitting walls. It is
+//     buffered exactly like the aggregate, for the same measured reason.
+//
+//     A SUSPENDED ACCOUNT IS REFUSED AT RCPT WITH 452. Temporary, so mail
+//     retries across a short suspension instead of bouncing: a 550 would
+//     destroy mail the user is entitled to once they are resumed. It goes
+//     through the same metered path as every other refusal, and it is checked
+//     BEFORE the allowance so a pause does not also spend the day's mail.
+//
 //  5. WHAT ONE PEER CAN MAKE US HOLD IS BOUNDED. Connections are capped in
 //     total and per source, each connection has a per-transaction byte budget,
 //     and each has a line ceiling. Without these the process is a remote OOM:
@@ -185,6 +197,18 @@ const (
 	// rejectionFlushInterval is how often the in-memory rejection counts are
 	// written out. See [Server.countRejection].
 	rejectionFlushInterval = 2 * time.Second
+
+	// counterFlushInterval is how often the per-user limiter state is written
+	// to the [CounterStore].
+	//
+	// It is far longer than rejectionFlushInterval because the two lose
+	// different things. A lost rejection count is a missing number in a
+	// nuisance metric; a lost counter flush is at most a minute of a user's
+	// allowance handed back, which only ever makes the limiter MORE PERMISSIVE
+	// and therefore cannot lock an honest user out of their own mail. Paying a
+	// transaction every two seconds to shorten a window that only errs in the
+	// safe direction is the wrong trade.
+	counterFlushInterval = 60 * time.Second
 )
 
 // The wire responses. Each is a package-level value rather than a literal at
@@ -205,6 +229,23 @@ var (
 		Code:         452,
 		EnhancedCode: smtp.EnhancedCode{4, 2, 2},
 		Message:      "mailbox full",
+	}
+	// errSuspended answers a resolved recipient whose account is suspended. It
+	// is TEMPORARY for the reason 00030_account_status.sql states: mail RETRIES
+	// across a short suspension instead of bouncing, and a 550 here would
+	// destroy mail the user is entitled to once they are resumed. 4.2.1 is the
+	// standard "mailbox disabled, not accepting messages", which is exactly
+	// true and says nothing about why.
+	//
+	// It is distinguishable on the wire from errOverQuota, and that is
+	// accepted: both replies require a recipient that already resolved, so
+	// neither adds anything to the enumeration oracle rule 1 closes. What must
+	// not vary is the reply to an address that does NOT exist, and that is
+	// still the one 550.
+	errSuspended = &smtp.SMTPError{
+		Code:         452,
+		EnhancedCode: smtp.EnhancedCode{4, 2, 1},
+		Message:      "mailbox unavailable, try again later",
 	}
 	errTooLarge = &smtp.SMTPError{
 		Code:         552,
@@ -327,6 +368,17 @@ type Server struct {
 	now     func() time.Time
 	inner   *smtp.Server
 
+	// The three optional database seams, each nil on the backup relay. They are
+	// set by the Set* methods BEFORE Serve and never mutated afterwards, for
+	// the same reason diag and limiter are fields: mutating a serving Server is
+	// a race against its connection goroutines.
+	suspensions Suspensions
+	refusals    Refusals
+	counters    CounterStore
+	// counterFlushEvery is counterFlushInterval, as a field so an in-package
+	// test can shorten it before Serve starts.
+	counterFlushEvery time.Duration
+
 	// done is closed by Shutdown so an in-flight tarpit delay wakes rather than
 	// holding shutdown for its full 30 seconds.
 	done     chan struct{}
@@ -357,6 +409,78 @@ type Server struct {
 		mu      sync.Mutex
 		pending map[string]int64
 	}
+
+	// accountRefusals are the PER-ACCOUNT refusal counts waiting to be written,
+	// buffered for exactly the reason the aggregate ones are: one unmetered
+	// refusal branch was measured at 5,396 refusals per second down a single
+	// socket, and a synchronous upsert per refusal makes that account's row the
+	// hottest object in the database under precisely the traffic it exists to
+	// measure.
+	//
+	// The map is bounded by the number of RESOLVED recipients seen between two
+	// flushes — a refusal without a user has no account to charge and never
+	// reaches here — so unlike a per-source map it is not something a stranger
+	// can grow.
+	accountRefusals struct {
+		mu      sync.Mutex
+		pending map[refusalKey]int64
+	}
+}
+
+// refusalKey is one (account, resource) pair of account_refusals. The day is
+// supplied by the database at write time, not held here: a buffer that carried
+// its own date would have to decide what happens to counts still pending at
+// midnight.
+type refusalKey struct {
+	user     uuid.UUID
+	resource string
+}
+
+// SetSuspensions, SetRefusals and SetCounterStore wire the optional database
+// seams. They must be called BEFORE Serve.
+//
+// They are setters rather than New parameters because New's signature is shared
+// with the backup relay, which supplies none of them, and because
+// cmd/ledgerd's wiring is the one place that knows whether this process has a
+// pool. Passing three more nils at every other call site would make "this
+// deployment has no database" indistinguishable from "somebody forgot".
+func (s *Server) SetSuspensions(x Suspensions) { s.suspensions = x }
+
+// SetRefusals wires the per-account refusal counter.
+func (s *Server) SetRefusals(x Refusals) { s.refusals = x }
+
+// SetCounterStore wires counter persistence. The caller is expected to call
+// [Server.LoadCounters] once after this and before Serve; the periodic flush
+// and the shutdown flush are this package's own.
+func (s *Server) SetCounterStore(x CounterStore) { s.counters = x }
+
+// LoadCounters restores the persisted per-user limiter state and reports how
+// many counters were applied. It is a no-op without a [CounterStore].
+//
+// Call it once, before Serve. [Limiter.Restore] refuses to overwrite a counter
+// that already holds state, so a late call cannot erase counts that have
+// already been spent — it simply does nothing.
+func (s *Server) LoadCounters(ctx context.Context) (int, error) {
+	if s.counters == nil {
+		return 0, nil
+	}
+	rows, err := s.counters.LoadUserCounters(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return s.limiter.Restore(rows), nil
+}
+
+// FlushCounters writes the current per-user limiter state out. It is a no-op
+// without a [CounterStore].
+//
+// It is exported so a caller can flush at a moment of its own choosing; this
+// package already flushes on a timer and once more during Shutdown.
+func (s *Server) FlushCounters(ctx context.Context) error {
+	if s.counters == nil {
+		return nil
+	}
+	return s.counters.SaveUserCounters(ctx, s.limiter.Snapshot())
 }
 
 // New builds a receiver. cfg supplies the DATA cap, the daily allowance and the
@@ -387,6 +511,8 @@ func New(cfg config.MailConfig, res Resolver, h Handler, d Diagnostics, now func
 		}),
 	}
 	s.rejections.pending = map[string]int64{}
+	s.accountRefusals.pending = map[refusalKey]int64{}
+	s.counterFlushEvery = counterFlushInterval
 	inner := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	inner.Domain = "in." + cfg.Domain
 	inner.MaxRecipients = MaxRecipients
@@ -713,6 +839,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.flushRejections(fctx); err != nil {
 		log.Printf("smtpd: final rejection flush: %v", err)
 	}
+	if err := s.flushAccountRefusals(fctx); err != nil {
+		log.Printf("smtpd: final account refusal flush: %v", err)
+	}
+	// The counters follow the same rule and for a stronger reason: a shutdown
+	// that skipped this hands every account its allowance back, so a restart
+	// loop would be a quota reset an attacker could provoke.
+	if err := s.FlushCounters(fctx); err != nil {
+		log.Printf("smtpd: final counter flush: %v", err)
+	}
 	fcancel()
 	return forced
 }
@@ -761,9 +896,56 @@ func (s *Server) flushRejections(ctx context.Context) error {
 	return firstErr
 }
 
+// countAccountRefusal records one per-account refusal IN MEMORY, to be written
+// by flushAccountRefusals. See the accountRefusals field for why it is
+// buffered. Without a [Refusals] sink nothing is buffered at all — a relay must
+// not grow a map it will never drain.
+func (s *Server) countAccountRefusal(userID uuid.UUID, resource string) {
+	if s.refusals == nil || resource == "" || userID == uuid.Nil {
+		return
+	}
+	s.accountRefusals.mu.Lock()
+	defer s.accountRefusals.mu.Unlock()
+	s.accountRefusals.pending[refusalKey{user: userID, resource: resource}]++
+}
+
+// flushAccountRefusals writes the buffered per-account counts. Counts that fail
+// to write are put BACK, exactly as flushRejections does, so a transient
+// database failure defers them rather than dropping them. The write itself
+// skips a purged account rather than failing on it (see [PGStore]), so a count
+// that can never land does not retry forever.
+func (s *Server) flushAccountRefusals(ctx context.Context) error {
+	if s.refusals == nil {
+		return nil
+	}
+	s.accountRefusals.mu.Lock()
+	pending := s.accountRefusals.pending
+	s.accountRefusals.pending = map[refusalKey]int64{}
+	s.accountRefusals.mu.Unlock()
+
+	var firstErr error
+	for k, n := range pending {
+		if err := s.refusals.CountRefusals(ctx, k.user, k.resource, n); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			s.accountRefusals.mu.Lock()
+			s.accountRefusals.pending[k] += n
+			s.accountRefusals.mu.Unlock()
+		}
+	}
+	return firstErr
+}
+
 func (s *Server) flushLoop() {
 	t := time.NewTicker(rejectionFlushInterval)
 	defer t.Stop()
+	every := s.counterFlushEvery
+	if every <= 0 {
+		every = counterFlushInterval
+	}
+	ct := time.NewTicker(every)
+	defer ct.Stop()
 	for {
 		select {
 		case <-s.done:
@@ -772,6 +954,15 @@ func (s *Server) flushLoop() {
 			ctx, cancel := context.WithTimeout(context.Background(), diagTimeout)
 			if err := s.flushRejections(ctx); err != nil {
 				log.Printf("smtpd: flushing rejection counts: %v", err)
+			}
+			if err := s.flushAccountRefusals(ctx); err != nil {
+				log.Printf("smtpd: flushing account refusal counts: %v", err)
+			}
+			cancel()
+		case <-ct.C:
+			ctx, cancel := context.WithTimeout(context.Background(), diagTimeout)
+			if err := s.FlushCounters(ctx); err != nil {
+				log.Printf("smtpd: flushing per-user counters: %v", err)
 			}
 			cancel()
 		}
@@ -946,13 +1137,38 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		return errTemporary
 	}
 
+	// Suspension, BEFORE the allowance. A suspended account's mail is refused
+	// whatever its allowance says, and spending a unit of a quota the message
+	// can never use would mean a suspension quietly consumed the user's day of
+	// mail while they were paused.
+	if suspended, err := s.suspended(userID); err != nil {
+		// Not the sender's fault and not a rejection, so it does not feed the
+		// tarpit — the same treatment a resolver outage gets. Answering "not
+		// suspended" instead would make a database outage the way to deliver to
+		// a suspended account.
+		log.Printf("smtpd: read account status for %v: %v", userID, err)
+		return errTemporary
+	} else if suspended {
+		// The SAME metered path as every other refusal with a resolved
+		// recipient. Routing it anywhere else is how the one unmetered refusal
+		// branch gets built a second time.
+		//
+		// The diagnostics row carries over_quota, which is the closest value in
+		// a CHECK-constrained closed enum; parse_diagnostics.reject_reason has
+		// no 'suspended' and adding one is a migration. The ACCURATE record is
+		// the account_refusals row this path writes with resource 'suspended'.
+		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota,
+			RefusalSuspended, errSuspended, nil)
+	}
+
 	if !s.srv.limiter.AllowMessage(userID) {
 		// METERED, exactly like an unknown recipient. An over-quota refusal is
 		// cheap to provoke and used to cost the prober nothing: the branch had
 		// no tarpit, no disconnect debt and a database write per attempt, and
 		// was measured at 5,396 refusals per second down one socket with the
 		// connection still open at the end.
-		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota, errOverQuota, nil)
+		return s.refuse(userID, diag.OutcomeOverQuota, diag.RejectOverQuota,
+			RefusalSMTPDaily, errOverQuota, nil)
 	}
 
 	s.rcpt, s.userID, s.isGrace, s.haveRcpt = to, userID, isGrace, true
@@ -963,12 +1179,27 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	return nil
 }
 
+// suspended asks the optional [Suspensions] seam. Without one — the backup
+// relay, which holds no user rows — no account is suspended.
+func (s *session) suspended(userID uuid.UUID) (bool, error) {
+	if s.srv.suspensions == nil {
+		return false, nil
+	}
+	ctx, cancel := opCtx(resolveTimeout)
+	defer cancel()
+	return s.srv.suspensions.Suspended(ctx, userID)
+}
+
 // refuse meters, accounts for and answers a refusal that HAS a resolved
-// recipient. It is the shared path for over-quota and over-size, so neither can
-// drift into being the unmetered one.
-func (s *session) refuse(userID uuid.UUID, outcome, reason string, resp *smtp.SMTPError, ingestID []byte) error {
+// recipient. It is the shared path for over-quota, suspension and over-size, so
+// none of them can drift into being the unmetered one.
+//
+// resource is the account_refusals resource this refusal is charged to, or ""
+// for a refusal with no resource — an oversized message is the sender's doing
+// and is not one of the account's budgets.
+func (s *session) refuse(userID uuid.UUID, outcome, reason, resource string, resp *smtp.SMTPError, ingestID []byte) error {
 	delay, disconnect := s.srv.limiter.InvalidRcpt(s.ip)
-	accounted := s.srv.accountRefusal(userID, s.fromDomain, outcome, reason, ingestID)
+	accounted := s.srv.accountRefusal(userID, s.fromDomain, outcome, reason, resource, ingestID)
 	if disconnect {
 		return s.drop()
 	}
@@ -1042,7 +1273,7 @@ func (s *session) Data(r io.Reader) error {
 		// — charging the recipient's mailbox for a stranger's oversized upload
 		// would let anyone empty a user's daily allowance from outside.
 		id := sha256.Sum256(raw)
-		return s.refuse(s.userID, diag.OutcomeRejected, diag.RejectTooLarge, errTooLarge, id[:])
+		return s.refuse(s.userID, diag.OutcomeRejected, diag.RejectTooLarge, "", errTooLarge, id[:])
 	}
 
 	ctx, cancel := opCtx(deliverTimeout)
@@ -1099,8 +1330,14 @@ func (s *session) Data(r io.Reader) error {
 //     chance. The permit is handed back on this path, or a database outage
 //     would burn all eight on rows that do not exist and the case above would
 //     then claim a user was told something they were never told.
-func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason string, ingestID []byte) bool {
+func (s *Server) accountRefusal(userID uuid.UUID, senderDomain, outcome, reason, resource string, ingestID []byte) bool {
 	s.countRejection(reason)
+	// The per-account count, on the same line as the aggregate one so a new
+	// refusal cannot be added to one record and forgotten in the other. It does
+	// NOT decide the return value: this is a buffered counter that always
+	// "succeeds" at the moment it is asked, exactly like the aggregate, and §2's
+	// drop policy turns on the synchronous notice below.
+	s.countAccountRefusal(userID, resource)
 
 	if !s.limiter.Notice(userID, reason) {
 		return true

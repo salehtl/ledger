@@ -1271,6 +1271,257 @@ func TestOverQuotaRefusalsAreMeteredAndEventuallyDropTheConnection(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
+// Suspension
+// ---------------------------------------------------------------------------
+
+// suspendable is newFixture with the real PGStore wired to the two seams a
+// suspension needs: the status read and the per-account refusal counter. The
+// store is the production one rather than a double, because the SQL — the
+// status column, and an upsert that must skip a purged account instead of
+// failing — is half of what is being tested.
+func suspendable(t *testing.T, cfg config.MailConfig, tweaks ...func(*Server)) *fixture {
+	t.Helper()
+	pool := pgtest.New(t)
+	uid := insertUser(t, pool)
+	res := resolverWith()
+	res.users[knownLocal] = uid
+	h := &recorder{}
+	d := &diag.Diag{Pool: pool}
+	st := &PGStore{Pool: pool}
+	pre := []func(*Server){
+		withConnCaps(512, 512),
+		func(s *Server) { s.SetSuspensions(st); s.SetRefusals(st) },
+	}
+	srv, addr := start(t, cfg, res, h, d, append(pre, tweaks...)...)
+	return &fixture{srv: srv, addr: addr, res: res, h: h, pool: pool, d: d, user: uid}
+}
+
+func setStatus(t *testing.T, f *fixture, status string) {
+	t.Helper()
+	if _, err := f.pool.Exec(bg, `UPDATE users SET status = $2 WHERE id = $1`, f.user, status); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// flushedRefusals forces the buffered per-account refusal counts out. They are
+// batched for the same reason the aggregate ones are (see
+// Server.countAccountRefusal), so reading the table without this asks a
+// question about timing.
+func flushedRefusals(t *testing.T, srv *Server) {
+	t.Helper()
+	if err := srv.flushAccountRefusals(bg); err != nil {
+		t.Fatalf("flushing account refusal counts: %v", err)
+	}
+}
+
+func refusalCount(t *testing.T, pool *pgxpool.Pool, user uuid.UUID, resource string) int64 {
+	t.Helper()
+	var n int64
+	err := pool.QueryRow(bg,
+		`SELECT coalesce(sum(count),0) FROM account_refusals WHERE user_id = $1 AND resource = $2`,
+		user, resource).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A suspended account's mail is refused at recipient resolution with a
+// TEMPORARY failure, so it retries across a short suspension instead of
+// bouncing — 00030_account_status.sql's whole argument for 452 over 550.
+func TestSuspendedMailIsRefusedTemporarilyAndActiveMailIsNot(t *testing.T) {
+	f := suspendable(t, testMailConfig())
+	body := mailOf(256)
+
+	if code, msg := dial(t, f.addr).send("bank@dib.ae", knownRcpt, body); code != 250 {
+		t.Fatalf("an ACTIVE account -> %d %q, want 250", code, msg)
+	}
+
+	setStatus(t, f, "suspended")
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	code, msg := c.cmd("RCPT TO:<%s>", knownRcpt)
+	if code != 452 {
+		t.Fatalf("a SUSPENDED account -> %d %q, want 452: a 550 would destroy mail the user "+
+			"is entitled to once they are resumed", code, msg)
+	}
+	if msg != "4.2.1 mailbox unavailable, try again later" {
+		t.Fatalf("suspension reply text = %q", msg)
+	}
+
+	setStatus(t, f, "active")
+	if code, msg := dial(t, f.addr).send("bank@dib.ae", knownRcpt, body); code != 250 {
+		t.Fatalf("a RESUMED account -> %d %q, want 250", code, msg)
+	}
+	if f.h.count() != 2 {
+		t.Fatalf("%d deliveries, want 2: the suspended one must not have been handed on", f.h.count())
+	}
+}
+
+// The suspension refusal goes through the SHARED metered path, so it cannot
+// become the one unmetered refusal branch. Three records, all of them the ones
+// every other resolved-recipient refusal produces, plus the per-account count
+// that is the accurate name for this one.
+func TestASuspensionRefusalIsMeteredLikeEveryOtherRefusal(t *testing.T) {
+	f := suspendable(t, testMailConfig(), withLimiter(LimiterConfig{
+		Burst: 1, Base: time.Millisecond, Max: 2 * time.Millisecond,
+		Window: time.Hour, Disconnect: 4, Daily: 50,
+	}))
+	setStatus(t, f, "suspended")
+
+	c := dial(t, f.addr)
+	c.hello()
+	for i := 0; i < 3; i++ {
+		c.mustCmd(250, "MAIL FROM:<bank@dib.ae>")
+		c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+	}
+	// The per-source counter: a fourth refusal is past the disconnect
+	// threshold. This is the assertion that fails if the suspension refusal
+	// ever stops going through session.refuse.
+	c.mustCmd(250, "MAIL FROM:<bank@dib.ae>")
+	if code, _ := c.cmd("RCPT TO:<%s>", knownRcpt); code != 421 {
+		t.Fatalf("a fourth suspension refusal -> %d, want 421: the branch is unmetered", code)
+	}
+
+	flushed(t, f.srv)
+	flushedRefusals(t, f.srv)
+	// The aggregate counter, which answers "did everything that arrived get
+	// accounted for". reject_reason has no 'suspended' value — the column's
+	// CHECK is closed and widening it is a migration — so it is counted under
+	// the closest one, and account_refusals carries the accurate name.
+	if n := rejectionCount(t, f.pool, diag.RejectOverQuota); n != 4 {
+		t.Fatalf("smtp_rejections = %d, want 4: every refusal is accounted for", n)
+	}
+	// The user-scoped notice, so the refusal left a trace the user's own client
+	// can surface.
+	rows := diagRows(t, f.pool)
+	if len(rows) == 0 || !rows[0].userID.Valid || rows[0].userID.UUID != f.user {
+		t.Fatalf("a suspension refusal must leave a user-scoped notice: %+v", rows)
+	}
+	// And the per-account refusal ledger, under the resource that names it.
+	if n := refusalCount(t, f.pool, f.user, RefusalSuspended); n != 4 {
+		t.Fatalf("account_refusals[suspended] = %d, want 4", n)
+	}
+	if n := refusalCount(t, f.pool, f.user, RefusalSMTPDaily); n != 0 {
+		t.Fatalf("account_refusals[smtp_daily] = %d: a suspension is not a quota refusal", n)
+	}
+}
+
+// An over-quota refusal lands on its own resource, so the two walls a user can
+// hit are distinguishable in the record the app reads.
+func TestAnOverQuotaRefusalIsCountedAgainstTheDailyResource(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 1
+	f := suspendable(t, cfg, withHighRefusalThreshold())
+	if code, _ := dial(t, f.addr).send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatal("the first message is inside the allowance")
+	}
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+
+	flushedRefusals(t, f.srv)
+	if n := refusalCount(t, f.pool, f.user, RefusalSMTPDaily); n != 1 {
+		t.Fatalf("account_refusals[smtp_daily] = %d, want 1", n)
+	}
+	if n := refusalCount(t, f.pool, f.user, RefusalSuspended); n != 0 {
+		t.Fatalf("account_refusals[suspended] = %d, want 0", n)
+	}
+}
+
+// Suspension is checked BEFORE the allowance, so a paused account does not
+// spend the mail it never received. Otherwise a suspension would quietly empty
+// the user's day and their first message after being resumed would bounce off a
+// 452 for a completely different reason.
+func TestSuspensionDoesNotBurnTheUsersAllowance(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 1
+	f := suspendable(t, cfg, withHighRefusalThreshold())
+	setStatus(t, f, "suspended")
+	for i := 0; i < 3; i++ {
+		c := dial(t, f.addr)
+		c.envelope("bank@dib.ae")
+		c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+	}
+	setStatus(t, f, "active")
+	if code, msg := dial(t, f.addr).send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatalf("the resumed account -> %d %q: the suspension spent its allowance", code, msg)
+	}
+}
+
+// A status read that fails is not a rejection and not an acceptance: it is our
+// outage, answered 451 so the sender retries. Answering "not suspended" would
+// make a database outage the way to deliver to a suspended account.
+func TestAFailedStatusReadIsATemporaryFailure(t *testing.T) {
+	f := suspendable(t, testMailConfig(), func(s *Server) {
+		s.SetSuspensions(brokenSuspensions{})
+	})
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	if code, _ := c.cmd("RCPT TO:<%s>", knownRcpt); code != 451 {
+		t.Fatalf("a status-read outage -> %d, want 451", code)
+	}
+	if f.h.count() != 0 {
+		t.Fatal("a message was delivered while the account status was unknown")
+	}
+}
+
+type brokenSuspensions struct{}
+
+func (brokenSuspensions) Suspended(context.Context, uuid.UUID) (bool, error) {
+	return false, errors.New("status read failed")
+}
+
+// Shutdown writes the buffered per-account counts out. They belong to refusals
+// that already happened, and a shutdown that dropped them would make a deploy
+// the way to erase the record of an account hitting a wall.
+func TestShutdownFlushesTheAccountRefusalCounts(t *testing.T) {
+	f := suspendable(t, testMailConfig(), withHighRefusalThreshold())
+	setStatus(t, f, "suspended")
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+
+	if n := refusalCount(t, f.pool, f.user, RefusalSuspended); n != 0 {
+		t.Fatalf("account_refusals = %d before any flush; the count is supposed to be buffered", n)
+	}
+	// Closed first, so this exercises a CLEAN shutdown: an idle peer would hold
+	// the graceful window open and the flush would then be testing the forced
+	// path instead.
+	c.nc.Close()
+	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	defer cancel()
+	if err := f.srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := refusalCount(t, f.pool, f.user, RefusalSuspended); n != 1 {
+		t.Fatalf("account_refusals[suspended] = %d after shutdown, want 1", n)
+	}
+}
+
+// Without a Refusals sink — the backup relay, which has no database at all —
+// nothing is buffered. A map that is never drained is a leak, and this one
+// would be fed by anyone who knows a valid address.
+func TestWithoutARefusalSinkNothingIsBuffered(t *testing.T) {
+	cfg := testMailConfig()
+	cfg.PerAddressDaily = 1
+	f := newFixture(t, cfg, withHighRefusalThreshold()) // no SetRefusals
+	if code, _ := dial(t, f.addr).send("bank@dib.ae", knownRcpt, mailOf(256)); code != 250 {
+		t.Fatal("the first message is inside the allowance")
+	}
+	c := dial(t, f.addr)
+	c.envelope("bank@dib.ae")
+	c.mustCmd(452, "RCPT TO:<%s>", knownRcpt)
+
+	f.srv.accountRefusals.mu.Lock()
+	n := len(f.srv.accountRefusals.pending)
+	f.srv.accountRefusals.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d buffered counts with nothing to drain them", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Attack 5: holding resources open
 // ---------------------------------------------------------------------------
 

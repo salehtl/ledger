@@ -787,9 +787,12 @@ func scanItem(rows pgx.Rows, withBlob bool, extra ...any) (Item, error) {
 //     mailbox, which is the entire trusted-lane design defeated by one tap. The
 //     user's route to their bank behind that forwarder is the inner scope.
 //   - a domain no held message carries a VERIFIED signature from (§3.2:54).
-//     The stored outer domain of unsigned mail carries UnverifiedPrefix, which
-//     no plain hostname equals, so this falls out of the match rather than
-//     needing a separate check.
+//     The outer-scope match names the SIGNATURE VERDICT COLUMNS — dkim='pass'
+//     or arc='pass' — so the server confirms against the same evidence
+//     origin.Decide reads, and a client cannot assert a verdict the signatures
+//     do not support. The stored outer domain of unsigned mail additionally
+//     carries UnverifiedPrefix, which no plain hostname equals, so an envelope
+//     claim cannot match either.
 //   - an inner origin no held message ATTESTS. The unwrapped From line of a
 //     forwarded body names a bank; it is not evidence, and a confirmation sheet
 //     that accepted it would be trusting attacker-rendered content.
@@ -825,7 +828,29 @@ func (s *Store) Confirm(ctx context.Context, userID uuid.UUID, domain, scope str
 		if origin.IsForwarderDomain(domain) {
 			return nil, fmt.Errorf("%w: %s", ErrForwarderDomain, domain)
 		}
-		match = `outer_domain = $2`
+		// THE SIGNATURE VERDICTS ARE IN THE PREDICATE, and they are the point of
+		// it. The match used to be `outer_domain = $2` alone, with the
+		// UnverifiedPrefix on the stored column as the only shield — which made
+		// "verified" a property of how the value happened to be SPELLED, the
+		// exact failure origin.Decide refuses for itself (trust.go's rule 4).
+		// A row written with dkim='fail', arc='fail' and a bare hostname in
+		// outer_domain — a rewritten domain, a hand-repaired row, a future
+		// resolver that spells an unverified domain some other way — matched,
+		// and the client's request was the only thing deciding it.
+		//
+		// So this asks the evidence instead, mirroring trust.go's outer path
+		// exactly: dkim=pass or arc=pass, not a forwarder (above), and an outer
+		// domain without the prefix. The client cannot assert a verdict the
+		// signatures do not support, because the client's spelling of the
+		// domain is now only ONE of three conditions and the other two are
+		// columns it never wrote.
+		//
+		// The prefix is not a fourth clause: $2 is validated against reHostname
+		// above, "unverified:" is not part of that grammar, so a prefixed
+		// outer_domain cannot equal $2 — structurally, in one place, rather than
+		// as a second copy of the same comparison written in SQL. It is pinned
+		// by TestConfirmRefusesAnUnverifiedOuterDomain.
+		match = `outer_domain = $2 AND (dkim = '` + ResultPass + `' OR arc = '` + ResultPass + `')`
 		missing = ErrNoVerifiedOrigin
 	case ScopeInner:
 		match = `inner_domain = $2 AND attested`

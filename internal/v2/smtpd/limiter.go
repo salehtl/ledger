@@ -123,11 +123,22 @@ func (c LimiterConfig) withDefaults() LimiterConfig {
 //
 // # What it is and is not
 //
-// It is IN-MEMORY and bounded, and a restart resets it. That is acceptable
-// because it is a nuisance control, not a security boundary: the actual
-// boundary is that an unknown recipient is never accepted, and that the address
-// token carries 128 bits of entropy. Nothing here is load bearing for
-// confidentiality.
+// It is bounded, and it is not a security boundary: the actual boundary is that
+// an unknown recipient is never accepted, and that the address token carries
+// 128 bits of entropy. Nothing here is load bearing for confidentiality.
+//
+// The USER-SCOPED counters SURVIVE A RESTART when the server is given a
+// [CounterStore] — see [Limiter.Snapshot] and [Limiter.Restore]. They had to,
+// once the allowance became one of the walls holding a per-account budget up: a
+// restart is a deploy, a crash or an OOM, and an in-memory allowance hands
+// every account a fresh day's worth of mail each time one happens, which an
+// attacker who can provoke restarts can spend deliberately.
+//
+// The PER-SOURCE counters are never persisted, deliberately: that map is keyed
+// by an address the attacker chooses on a port anybody can reach, so a table
+// behind it would be an unbounded remotely-writable store attached to the
+// control that exists to stop one. They remain in memory and reset on restart,
+// which is acceptable for the reason above — they are the nuisance half.
 //
 // # What the tarpit actually buys, measured
 //
@@ -520,3 +531,14 @@ func (l *lru[K, V]) getOrAdd(k K, mk func() V) V {
 }
 
 func (l *lru[K, V]) len() int { return l.ll.Len() }
+
+// each visits every entry. It does NOT touch recency: a snapshot walk that
+// promoted what it read would reorder the eviction queue by "was persisted"
+// rather than by "was used", which is not the order the bound is meant to
+// enforce.
+func (l *lru[K, V]) each(f func(K, V)) {
+	for e := l.ll.Front(); e != nil; e = e.Next() {
+		ent := e.Value.(*lruEntry[K, V])
+		f(ent.key, ent.val)
+	}
+}
