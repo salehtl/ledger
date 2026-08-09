@@ -58,6 +58,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SecretStore } from "@ledger/client/store/store";
 
 import { Button } from "../../components/ui/Button";
+import { ExportData } from "../ExportData";
 import { ImportFile } from "../ImportFile";
 import { Card } from "../../components/ui/Card";
 import { InfoTip } from "../../components/ui/InfoTip";
@@ -269,6 +270,7 @@ export function V2Settings({
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   /**
    * The three device-local preferences, held in React only so the rows redraw.
    *
@@ -935,6 +937,14 @@ export function V2Settings({
             value="Add transactions from a CSV file"
             onClick={() => setImportOpen(true)}
           />
+          {/* The export half of the alpha consent promise — "access, export and
+              delete… all of which are available in the app". It is a row and not
+              a buried link because the sentence it satisfies is countersigned. */}
+          <HubRow
+            label="Download my data"
+            value="Your transactions as a CSV file"
+            onClick={() => setExportOpen(true)}
+          />
         </RowCard>
       </Group>
 
@@ -1011,6 +1021,12 @@ export function V2Settings({
               Reset to default
             </Button>
           )}
+        </Dialog>
+      )}
+
+      {exportOpen && (
+        <Dialog title="Download my data" onClose={() => setExportOpen(false)}>
+          <ExportData />
         </Dialog>
       )}
 
