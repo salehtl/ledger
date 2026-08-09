@@ -44,7 +44,11 @@
 import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { useV2OrThrow } from "../v2/BootGate";
+import type { SecretStore } from "@ledger/client/store/store";
+
+import { PROFILE, useV2OrThrow } from "../v2/BootGate";
+import { webSecretStore } from "../v2/session";
+import { SetupStatus } from "../screens/onboarding/SetupStatus";
 import { invalidateAfterSync, useReviewFeed, useReviewSource } from "../v2/queries";
 import { DECK_LANES } from "../v2/sources/review";
 import { BottomNav } from "../components/ui/BottomNav";
@@ -81,7 +85,12 @@ const TITLES: Record<TabId, string> = {
  */
 type Overlay = { kind: "settings" } | { kind: "quarantine" };
 
-export function AppShell() {
+export interface AppShellProps {
+  /** Test seam: where the setup list's dismissal is kept. */
+  secrets?: Pick<SecretStore, "get" | "set">;
+}
+
+export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = {}) {
   const v2 = useV2OrThrow();
   const [tab, setTab] = useState<TabId>("home");
   const [overlays, setOverlays] = useState<Overlay[]>([]);
@@ -160,7 +169,32 @@ export function AppShell() {
               rather than stranding it below the card). pb-8 gives scrollable
               screens a terminus above the nav instead of ending flush. */}
           <div className="max-w-screen-sm w-full mx-auto px-4 pt-4 pb-8 min-h-full flex flex-col">
-            {tab === "home" && <Home />}
+            {tab === "home" && (
+              <div className="space-y-4">
+                {/*
+                  The spec's "finish setting up" list and the quiet mail line,
+                  on the home screen where a person actually is — Settings keeps
+                  its own copy for whoever goes looking. Dismissal is shared
+                  (same key, same durable store) and permanent; the `key` makes
+                  this copy re-read it after the Settings overlay closes, so a
+                  dismissal made there does not linger here until a remount.
+
+                  `facts` is boot's snapshot, deliberately: everything on it that
+                  can change mid-session changes through screens that re-run
+                  boot or through Settings, whose own copy reads live values.
+                  A task finished in Settings drops off here on the next boot,
+                  and a stale extra row is the cheapest of the failure modes.
+                */}
+                <SetupStatus
+                  key={`setup-${overlays.length}`}
+                  facts={v2.facts}
+                  secrets={secrets}
+                  onOpenTask={() => pushOverlay({ kind: "settings" })}
+                  onOpenHeldMail={() => pushOverlay({ kind: "quarantine" })}
+                />
+                <Home />
+              </div>
+            )}
             {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
             {tab === "insights" && <Insights scope={scope} />}
             {tab === "review" && <Review onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />}

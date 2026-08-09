@@ -24,19 +24,22 @@ import { MotionProvider } from "./MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { fakeRuntime, WithV2 } from "../test/v2Runtime";
-import { AppShell } from "./AppShell";
+import { AppShell, type AppShellProps } from "./AppShell";
 
 let db: SqlDriver;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   sessionStorage.clear();
+  // The shell's default setup-list dismissal store is localStorage; a
+  // dismissal leaked from one test would blank the list in the next.
+  localStorage.clear();
   fetchMock = vi.fn(async () => new Response(JSON.stringify({ address: "u-abc@in.sirdab.ae" })));
   vi.stubGlobal("fetch", fetchMock);
   db = await projectionWith();
 });
 
-function wrap() {
+function wrap(shellProps: AppShellProps = {}) {
   const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -44,13 +47,25 @@ function wrap() {
       <QueryClientProvider client={qc}>
         <ToastProvider>
           <WithV2 runtime={runtime}>
-            <AppShell />
+            <AppShell {...shellProps} />
           </WithV2>
         </ToastProvider>
       </QueryClientProvider>
     </MotionProvider>,
   );
   return { ...view, runs };
+}
+
+/** A durable-enough store for one test: the same shape the shell defaults to. */
+function memorySecrets() {
+  const held = new Map<string, string>();
+  return {
+    get: (k: string) => held.get(k) ?? null,
+    set: (k: string, v: string | null) => {
+      if (v === null) held.delete(k);
+      else held.set(k, v);
+    },
+  };
 }
 
 describe("AppShell", () => {
@@ -150,6 +165,39 @@ describe("AppShell", () => {
     await screen.findByText("174.99");
     const urls = fetchMock.mock.calls.map(([u]) => String(u));
     expect(urls.filter((u) => !u.startsWith("/api/v1/"))).toEqual([]);
+  });
+
+  it("carries the setup list on the home screen, and its mail line opens held mail", async () => {
+    wrap({ secrets: memorySecrets() });
+    // The fixture facts leave banks and forwarding undone and mail unarrived,
+    // so the list and the quiet waiting line are both on home.
+    expect(await screen.findByText(/finish setting up/i)).toBeInTheDocument();
+    expect(screen.getByText(/waiting for your first bank email/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /see what is waiting/i }));
+    expect(await screen.findByRole("heading", { name: /held mail/i })).toBeInTheDocument();
+  });
+
+  it("opens Settings from a setup task — where every skipped step is finishable", async () => {
+    wrap({ secrets: memorySecrets() });
+    fireEvent.click(await screen.findByTestId("setup-task-banks_declared"));
+    expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+  });
+
+  it("dismisses the setup list for good — closing Settings does not bring it back", async () => {
+    wrap({ secrets: memorySecrets() });
+    await screen.findByText(/finish setting up/i);
+    fireEvent.click(screen.getByRole("button", { name: /hide this/i }));
+    expect(screen.queryByText(/finish setting up/i)).toBeNull();
+    // The shell remounts the list when an overlay closes (so a dismissal made
+    // in Settings lands here too) — a dismissal must survive that remount, or
+    // it was never a dismissal.
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    await screen.findByRole("heading", { name: /^settings$/i });
+    fireEvent.click(screen.getByRole("button", { name: /back from settings/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: /^settings$/i })).toBeNull();
+    });
+    expect(screen.queryByText(/finish setting up/i)).toBeNull();
   });
 
   it("refuses to render outside the gate rather than degrading to v1", () => {

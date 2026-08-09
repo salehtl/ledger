@@ -25,6 +25,7 @@ import { projectionWith } from "../../test/projectionFixture";
 import { fakeRuntime, WithV2, type FakeRuntimeOptions } from "../../test/v2Runtime";
 import { IDLE_PROGRESS } from "../../v2/engine";
 import { PasskeyError } from "../../v2/session";
+import type { PasskeySummary } from "../../v2/passkeys";
 import { V2Settings, type V2SettingsProps } from "./V2Settings";
 
 let db: SqlDriver;
@@ -94,11 +95,26 @@ describe("V2Settings", () => {
     const note = (await screen.findByTestId("settings-passkey-note")).textContent ?? "";
     expect(note).toMatch(/added/i);
     // NOT onboarding's "Second passkey added." — this row can be used a third
-    // and fourth time, and there is no route to list enrolled credentials, so
-    // the note must not count what it cannot count. It points at the one place
-    // that does know: the authenticator.
+    // and fourth time, so the note must not count. The list is the count now.
     expect(note).not.toMatch(/second/i);
-    expect(note).toMatch(/authenticator|password manager/i);
+  });
+
+  it("reloads the passkey list after a passkey is added", async () => {
+    const user = userEvent.setup();
+    const list = vi.fn(async (): Promise<PasskeySummary[]> => []);
+    wrap({ addAnotherPasskey: async () => "cred-2", listPasskeys: list });
+
+    await screen.findByRole("button", { name: /add another passkey/i });
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(1);
+    });
+    await user.click(screen.getByRole("button", { name: /add another passkey/i }));
+    await screen.findByTestId("settings-passkey-note");
+    // The second call is the reload the add triggers — without it a passkey
+    // added a second ago is missing from the list right under the button.
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("says a dismissed passkey prompt was not an error, and leaves the button usable", async () => {

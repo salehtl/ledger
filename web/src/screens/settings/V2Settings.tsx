@@ -99,6 +99,12 @@ import { SetupStatus } from "../onboarding/SetupStatus";
 import { Verification } from "../onboarding/Verification";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
+import {
+  listPasskeys as listPasskeysApi,
+  removePasskey as removePasskeyApi,
+  type PasskeySummary,
+} from "../../v2/passkeys";
+import { PasskeysPanel } from "./PasskeysPanel";
 import { pendingBanks } from "../../v2/authored";
 import { BankPicker } from "../../components/BankPicker";
 import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../components/BudgetSplitPicker";
@@ -137,6 +143,14 @@ export interface V2SettingsProps {
   onOpenQuarantine?: () => void;
   /** Test seam. Defaults to the real add-passkey ceremony. */
   addAnotherPasskey?: (handle: V2Handle) => Promise<string>;
+  /**
+   * Test seam. Defaults to `GET /api/v1/auth/passkeys` — a route the Go side
+   * has not built yet, so in production the list shows its error state until
+   * it lands. See `v2/passkeys.ts`.
+   */
+  listPasskeys?: (handle: V2Handle) => Promise<PasskeySummary[]>;
+  /** Test seam. Defaults to `DELETE /api/v1/auth/passkeys/{id}` — same caveat. */
+  removePasskey?: (handle: V2Handle, credentialId: string) => Promise<void>;
   /** Test seam. Defaults to `GET /api/v1/address`. */
   address?: (handle: V2Handle) => Promise<string | null>;
   /** Test seam. Defaults to `GET /api/v1/templates`, collapsed per bank. */
@@ -192,6 +206,8 @@ const PHASE_LABEL: Record<string, string> = {
 export function V2Settings({
   onOpenQuarantine,
   addAnotherPasskey = (h) => addPasskey({ client: h.client }),
+  listPasskeys = (h) => listPasskeysApi({ client: h.client }),
+  removePasskey = (h, credentialId) => removePasskeyApi({ client: h.client }, credentialId),
   address = (h) => readAddress(h.client),
   templates = (h) => readSupportedBanks(h.client),
   signOut = signOutAndReload,
@@ -230,6 +246,8 @@ export function V2Settings({
   const [copied, setCopied] = useState<boolean | null>(null);
   const [adding, setAdding] = useState(false);
   const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
+  /** Bumped after a successful add so the list below re-reads the server. */
+  const [passkeysReload, setPasskeysReload] = useState(0);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   /**
@@ -277,6 +295,13 @@ export function V2Settings({
   // depends on the identity of its loader, runs once per opening instead of on
   // every render of this screen.
   const loadKeyHistory = useCallback(() => keyHistory(handle), [keyHistory, handle]);
+  // Same shape as `loadKeyHistory`: bound once so the panel's fetch effect runs
+  // per reload, not per render of this screen.
+  const loadPasskeys = useCallback(() => listPasskeys(handle), [listPasskeys, handle]);
+  const removeOnePasskey = useCallback(
+    (credentialId: string) => removePasskey(handle, credentialId),
+    [removePasskey, handle],
+  );
   const approveDevice = useCallback(
     (request: EnrolmentRequest) => approve(handle, request),
     [approve, handle],
@@ -308,14 +333,11 @@ export function V2Settings({
       await addAnotherPasskey(handle);
       // NOT `ADD_PASSKEY_COPY.done` ("Second passkey added."). That constant is
       // true on the onboarding screen, where it can only ever be the second;
-      // here the row can be used a third and fourth time. And there is no route
-      // to list enrolled credentials — `passkey.go` exposes `add/{begin,finish}`
-      // and nothing that enumerates — so this must not imply a count it cannot
-      // check. It names the one place that does know instead.
-      setPasskeyNote(
-        "A new passkey was added. ledger cannot list your passkeys — check your authenticator or password " +
-          "manager to see them all.",
-      );
+      // here the row can be used a third and fourth time, so the note must not
+      // imply a count. The list below is the count — reloaded here so the new
+      // credential appears the moment the ceremony lands.
+      setPasskeyNote("A new passkey was added.");
+      setPasskeysReload((n) => n + 1);
     } catch (error) {
       const kind = isPasskeyError(error) ? error.passkeyKind : "unavailable";
       const copyFor = passkeyFailureCopy(kind);
@@ -841,9 +863,14 @@ export function V2Settings({
             <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.body}</p>
             <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
           </div>
+          {/* What the account can sign in with, and the way to end one. The
+              last-passkey guard is the SERVER's; the panel also disables the
+              control, with the reason shown. */}
+          <PasskeysPanel list={loadPasskeys} remove={removeOnePasskey} reloadKey={passkeysReload} />
           <p className="text-sm leading-relaxed text-muted">{ADD_PASSKEY_COPY.body}</p>
           <p className="text-sm leading-relaxed text-muted">
-            A passkey you already have keeps its old name until you remove and re-add it.
+            A passkey you already have keeps its old name until you remove and re-add it. Passkeys cannot be
+            renamed.
           </p>
           <Button variant="primary" disabled={adding} onClick={() => void addPasskeyNow()}>
             {adding ? "Waiting for your authenticator…" : ADD_PASSKEY_COPY.action}

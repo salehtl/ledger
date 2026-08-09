@@ -66,16 +66,6 @@ export interface OnboardingProps {
   facts: OnboardingFacts;
   /** The boot gate's `again`. Called once the machine reaches `done`. */
   done: () => void;
-  /**
-   * The gate's coordinator, as a pull.
-   *
-   * **Accepted and no longer used.** The only step that needed it was the
-   * verification wait, which is gone: nothing in the walk now depends on a
-   * server-side event, so nothing in the walk needs to pull. It stays on the
-   * interface because `main.tsx` passes it and that file is not this task's to
-   * edit; the day it is, both sides can drop it together.
-   */
-  sync?: () => Promise<void>;
   /** Injected by tests. */
   fetch?: typeof fetch;
   secrets?: SecretStore;
