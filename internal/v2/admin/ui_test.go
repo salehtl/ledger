@@ -121,6 +121,11 @@ var panelPaths = map[string]bool{
 	"/suspend":          true,
 	"/resume":           true,
 	"/admin/accounting": true,
+	// The box's own state: the disk fuse's floor, free space and flag. Added
+	// deliberately, and it is the cheapest entry here to audit — headroomStatus
+	// has four numbers and a boolean on it and no field that could ever carry
+	// content. See headroom.go.
+	"/admin/status": true,
 	"/admin/diagnostics?event=arrival&limit=500": true,
 	"/admin/quarantine?user=":                    true,
 	"/admin/templates":                           true,
@@ -166,7 +171,7 @@ func TestThePanelTalksOnlyToTheAdminConsole(t *testing.T) {
 func TestEveryRouteThePanelCallsIsMountedAndGuarded(t *testing.T) {
 	h := uiOnly(t)
 	for _, p := range []string{
-		"/admin/accounts", "/admin/accounting", "/admin/diagnostics",
+		"/admin/accounts", "/admin/accounting", "/admin/status", "/admin/diagnostics",
 		"/admin/quarantine", "/admin/templates", "/admin/samples",
 		"/admin/dictionary", "/admin/waitlist",
 	} {

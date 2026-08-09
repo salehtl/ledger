@@ -48,6 +48,21 @@ const ago = (v) => {
 const short = (id) => (typeof id === "string" ? id.slice(0, 8) : "");
 const pct = (n, d) => (d > 0 ? Math.round((n / d) * 100) : null);
 
+// Binary units, because the floor is one: 8 GiB is the number in the design and
+// in the config, and printing it as "8.6 GB" would make the page and the
+// operator's `df` disagree about the same byte count.
+const fmtBytes = (n) => {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = Math.abs(n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return (n < 0 ? "-" : "") + (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+};
+
 // ── transport ─────────────────────────────────────────────────────────────
 
 let token = sessionStorage.getItem(TOKEN_KEY) || "";
@@ -648,6 +663,92 @@ VIEWS.waitlist = async (view) => {
   );
 };
 
+// ── the disk fuse ─────────────────────────────────────────────────────────
+
+// The box-level headroom fuse, drawn above every tab.
+//
+// It is the most consequential state this server has and the only one with no
+// user-visible explanation: below the floor every durable write is refused —
+// including sign-in — while reads keep serving, so to a user the app works and
+// nothing saves. It is drawn on every render, in every section, and it names the
+// SHORTFALL rather than only the state, because "tripped" alone does not tell an
+// operator whether to delete a log file or move the database.
+async function renderHeadroom() {
+  const box = $("#headroom");
+  let h;
+  try {
+    h = (await req("GET", "/admin/status")).headroom;
+  } catch (e) {
+    if (e.message === "unauthorized") return;
+    // Never silent. A strip that vanishes on error looks exactly like a healthy
+    // box, which is the one thing this element must never look like when it
+    // does not know.
+    box.className = "headroom";
+    box.hidden = false;
+    box.replaceChildren(
+      el("span", { class: "label", text: "disk" }),
+      el("span", { class: "muted", text: "Headroom could not be read: " + e.message }),
+    );
+    return;
+  }
+
+  box.hidden = false;
+  if (!h || !h.configured) {
+    box.className = "headroom warn";
+    box.replaceChildren(
+      el("span", { class: "pill pill-warn", text: "no fuse" }),
+      el("span", {
+        text:
+          "This process is not watching free disk space, so nothing stops a full filesystem " +
+          "from stopping writes for every account at once.",
+      }),
+    );
+    return;
+  }
+
+  const floor = fmtBytes(h.floor_bytes);
+  const known = typeof h.free_bytes === "number";
+  const free = known ? fmtBytes(h.free_bytes) : "an unknown amount";
+  const margin = known ? h.free_bytes - h.floor_bytes : 0;
+
+  if (h.tripped) {
+    box.className = "headroom tripped";
+    box.replaceChildren(
+      el("span", { class: "pill pill-bad", text: "writes paused" }),
+      el("span", {
+        class: "tnum",
+        text:
+          h.deficit_bytes > 0
+            ? free + " free on " + h.path + ", " + fmtBytes(h.deficit_bytes) + " BELOW the " + floor + " floor"
+            : free + " free on " + h.path + ", against a " + floor + " floor",
+      }),
+      el("span", {
+        class: "muted",
+        text:
+          "Every durable write is refused, including new sign-ins. Reads keep serving. " +
+          (h.deficit_bytes > 0
+            ? "Free at least that much and writes resume at the fuse's next sample."
+            : "Free space is back above the floor; writes resume at the fuse's next sample."),
+      }),
+      h.sample_error ? el("span", { class: "bad", text: "statfs: " + h.sample_error }) : null,
+    );
+    return;
+  }
+
+  box.className = "headroom";
+  box.replaceChildren(
+    el("span", { class: "label", text: "disk" }),
+    el("span", {
+      class: "tnum muted",
+      text:
+        known
+          ? free + " free on " + h.path + ", " + fmtBytes(margin) + " above the " + floor + " floor"
+          : "free space on " + h.path + " could not be measured; the " + floor + " floor is not tripped",
+    }),
+    h.sample_error ? el("span", { class: "bad", text: "statfs: " + h.sample_error }) : null,
+  );
+}
+
 // ── render ────────────────────────────────────────────────────────────────
 
 async function render() {
@@ -656,6 +757,10 @@ async function render() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.setAttribute("aria-current", String(tab.dataset.view === current));
   }
+  // Awaited before the section, and never allowed to fail the render: the fuse
+  // strip is the one thing on this page that must be right even when the
+  // section below it cannot load.
+  await renderHeadroom();
   try {
     const fresh = el("div", { class: "view" });
     fresh.style.padding = "0";

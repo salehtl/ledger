@@ -195,6 +195,12 @@ type Handler struct {
 	// Reprocessor is Task 30. Nil means /reprocess answers 503.
 	Reprocessor Reprocessor
 
+	// Headroom is the box-level disk fuse (headroom.go). Nil is reported as
+	// "not configured" rather than hidden, and the route is mounted either way:
+	// a panel whose fuse strip disappears when the fuse is missing shows the
+	// same nothing as a panel whose fuse is fine.
+	Headroom Headroom
+
 	// Token is the shared operator credential (LEDGER_ADMIN_TOKEN). Routes
 	// refuses to mount without it.
 	Token string
@@ -242,6 +248,12 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	// this console in which an abusing account cannot be paused. See suspend.go.
 	mux.HandleFunc("POST /admin/accounts/{id}/suspend", guard(h.suspendAccount))
 	mux.HandleFunc("POST /admin/accounts/{id}/resume", guard(h.resumeAccount))
+	// The box's own state, which today is the disk fuse. Mounted
+	// UNCONDITIONALLY, unlike the optional stores below: a missing fuse is a
+	// fact the console must be able to state, and a route that vanished with it
+	// would render as "could not load" — the same thing a network error renders
+	// as. See headroom.go.
+	mux.HandleFunc("GET /admin/status", guard(h.status))
 	mux.HandleFunc("GET /admin/waitlist", guard(h.listWaitlist))
 	mux.HandleFunc("POST /admin/waitlist", guard(h.recordWaitlist))
 	if h.Quarantine != nil {

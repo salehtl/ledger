@@ -165,6 +165,7 @@ func parseArgs(argv []string) (args, error) {
 		"parse-rate: PHASE 1 ONLY — read unparsed cold bodies and record a verdict for each")
 	fs.BoolVar(&out.verify.JSON, "json", false,
 		"verify|parse-rate: emit JSON instead of the operator's text report")
+	// LEDGER_FLAG_PLACEHOLDER
 	if err := fs.Parse(rest); err != nil {
 		return args{}, err
 	}
@@ -484,7 +485,10 @@ func runServe(cfg config.Config) error {
 	// nil handler when LEDGER_ADMIN_TOKEN is unset, and the console is then not
 	// served AT ALL — see there for why that is the right failure rather than
 	// either an open console or a refusal to boot.
-	adminSrv, err := adminServer(cfg, pool, reprocessAdapter{pipeline})
+	// The SAME fuse the API enforces is handed to the console, so the page an
+	// operator reads and the gate that refuses their users' writes are one
+	// object. Two fuses would be two answers to "are writes paused".
+	adminSrv, err := adminServer(cfg, pool, reprocessAdapter{pipeline}, fuse)
 	if err != nil {
 		return err
 	}
@@ -956,14 +960,15 @@ func securityHeaders(next http.Handler, tlsEnabled bool) http.Handler {
 // on the public listener — the public mux does not contain those patterns at
 // all. cmd/ledgerd's TestTheAdminConsoleIsNotMountedOnThePublicListener reads
 // both handlers and asserts it in both directions.
-func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor) (*http.Server, error) {
+func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor,
+	fuse *headroom.Fuse) (*http.Server, error) {
 	if cfg.Server.AdminToken == "" {
 		log.Println("ledgerd serve: *** LEDGER_ADMIN_TOKEN is not set: the admin console " +
 			"(template authoring and publishing, the donated-sample queue, diagnostics, the " +
 			"waitlist and dictionary moderation) is NOT being served. Set it to enable them. ***")
 		return nil, nil
 	}
-	h, err := adminHandler(cfg, pool, reproc)
+	h, err := adminHandler(cfg, pool, reproc, fuse)
 	if err != nil {
 		return nil, err
 	}
@@ -996,7 +1001,8 @@ func adminServer(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor
 // gate against real donated mail rather than answering 503 — and it must never
 // be left nil quietly: publishTemplate refuses outright without it, because
 // reporting an unrun gate as a clean one is how a gate stops being one.
-func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor) (http.Handler, error) {
+func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocessor,
+	fuse *headroom.Fuse) (http.Handler, error) {
 	h := &admin.Handler{
 		Templates: &tmpl.Store{Pool: pool},
 		Diag:      &diag.Diag{Pool: pool},
@@ -1007,6 +1013,16 @@ func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocesso
 		Samples:     sampleAdapter{&samples.Samples{Pool: pool, Retention: samples.DefaultRetention}},
 		Reprocessor: reproc,
 		Token:       cfg.Server.AdminToken,
+	}
+	// The disk fuse, read-only, so a tripped box says so on the page rather
+	// than only in the log.
+	//
+	// Assigned only when there IS one: admin.Headroom is an interface, and a
+	// typed nil *headroom.Fuse stored in it is non-nil to the console, which
+	// would report a fuse that does not exist as a healthy one. That is the
+	// exact inversion the "configured" field exists to prevent.
+	if fuse != nil {
+		h.Headroom = consoleFuse{fuse}
 	}
 	// The dictionary console needs no HMAC key — moderation reads and approves,
 	// it never writes a submitter pseudonym — so it is mounted whether or not
@@ -1025,6 +1041,31 @@ func adminHandler(cfg config.Config, pool *pgxpool.Pool, reproc admin.Reprocesso
 		return nil, err
 	}
 	return mux, nil
+}
+
+// consoleFuse adapts the running disk fuse to the console's read-only view.
+//
+// headroom.Fuse keeps a flag and no number, deliberately: Tripped() is on the
+// request path of every mutating route, so it is one atomic load and nothing
+// else. The console needs the SIZE of the shortfall — an operator cannot tell a
+// missing megabyte from a missing 30 GB from a boolean — so Free takes a fresh
+// sample through the fuse's OWN sampler. That is what makes the page and the
+// gate measure the same filesystem by the same means, including in a test that
+// injects a sampler, and it costs one statfs per console render on a
+// tailnet-only listener.
+type consoleFuse struct{ *headroom.Fuse }
+
+func (f consoleFuse) Free() (uint64, error) {
+	if f.Fuse == nil {
+		return 0, errors.New("headroom: no fuse")
+	}
+	sample := f.Sample
+	if sample == nil {
+		// New always sets one. A fuse built by hand with none would otherwise
+		// panic here, on the operator's console, during an incident.
+		return 0, errors.New("headroom: the fuse has no sampler")
+	}
+	return sample(f.Path())
 }
 
 // quarantineSweepInterval is how often held mail is checked for a due warning

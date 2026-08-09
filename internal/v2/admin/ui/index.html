@@ -41,6 +41,12 @@
     <button class="tab" type="button" data-view="waitlist">Waitlist</button>
   </nav>
 
+  <!-- The disk fuse. It sits above every tab, not inside one, because a box
+       that has stopped accepting writes is not a fact about the section you
+       happen to be reading. role="status" so a screen reader announces it when
+       it changes; it is loud rather than dismissible when tripped. -->
+  <div id="headroom" class="headroom" role="status" hidden></div>
+
   <main id="view" class="view" aria-live="polite"></main>
 
   <footer class="footer">

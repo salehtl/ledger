@@ -756,7 +756,7 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 	if err != nil {
 		t.Fatalf("api.NewServer: %v", err)
 	}
-	adminH, err = adminHandler(cfg, pool, nil)
+	adminH, err = adminHandler(cfg, pool, nil, nil)
 	if err != nil {
 		t.Fatalf("adminHandler: %v", err)
 	}
@@ -770,7 +770,7 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 func TestNoAdminTokenMeansNoConsoleRatherThanAnOpenOne(t *testing.T) {
 	srv, err := adminServer(config.Config{
 		Server: config.ServerConfig{AdminListen: "127.0.0.1:8079"},
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("adminServer: %v", err)
 	}
