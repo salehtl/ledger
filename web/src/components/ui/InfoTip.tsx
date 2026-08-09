@@ -48,14 +48,42 @@
  * its features in an effect, and until that chunk lands an `m.*` renders straight
  * from `initial`. A tip is not first-paint content today, but the failure mode is
  * invisible content and the cost of avoiding it is one property.
+ *
+ * # The panel is placed against the VIEWPORT, not against its trigger
+ *
+ * The first version pinned the panel with `left-0` / `right-0` and capped its
+ * width at `min(18rem, 100vw - 2rem)`. **A width cap is not a position cap.** A
+ * trigger 272px from the left opened an 288px panel from x=272 and ran 170px off
+ * a 390px screen — measured, on the forwarding step, by `harness/v2shoot.mjs`.
+ * `align="end"` did not fix it either; it moved the same overflow to the other
+ * edge, because both are anchored to the trigger and the trigger is the thing
+ * that is near an edge.
+ *
+ * So the panel now measures itself once, on open, and shifts along x by whatever
+ * it takes to sit inside the viewport with a {@link GUTTER} margin — and flips
+ * above the trigger when there is no room below. `align` survives as the
+ * *preferred* side; collision handling overrides it when preference does not fit.
+ *
+ * Two implementation notes that are not arbitrary:
+ *
+ *  - **`useLayoutEffect`, not `useEffect`.** The measurement has to land before
+ *    the browser paints, or the panel is visibly drawn in the wrong place and
+ *    then jumps.
+ *  - **The shift is a `margin`, not a `transform`.** The entrance animates `y`
+ *    through Framer, and a second transform on the same element would fight it —
+ *    the panel would slide in from the side on every open. A margin composes with
+ *    the animated transform and does not animate.
  */
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, m } from "motion/react";
 
 import { DUR, EASE_OUT } from "../../lib/motion";
 import { Info } from "./PixelIcon";
 import { Pressable } from "./Pressable";
+
+/** The margin the panel keeps from the viewport edge. Matches the app's `px-4`. */
+const GUTTER = 16;
 
 export interface InfoTipProps {
   /**
@@ -80,6 +108,49 @@ export function InfoTip({ about, children, align = "start", testId }: InfoTipPro
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const root = useRef<HTMLSpanElement>(null);
+  const panel = useRef<HTMLSpanElement>(null);
+  /** The correction, in px, that puts the panel inside the viewport. */
+  const [shift, setShift] = useState(0);
+  const [above, setAbove] = useState(false);
+
+  /**
+   * Measure once per open, before paint.
+   *
+   * `shift` is reset to 0 on close so the next open measures from the CSS
+   * position rather than from the last correction — a stale shift is how a tip
+   * that opened correctly once starts opening 170px to the left.
+   */
+  const place = useCallback(() => {
+    const el = panel.current;
+    const trigger = root.current;
+    if (el === null || trigger === null) return;
+
+    // Measure with no correction applied, so `left` is the position the CSS
+    // alone produces and the shift is absolute rather than incremental.
+    el.style.marginLeft = "0px";
+    const box = el.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const wanted = Math.min(Math.max(box.left, GUTTER), Math.max(GUTTER, vw - box.width - GUTTER));
+    setShift(Math.round(wanted - box.left));
+
+    // Flip above the trigger when the panel would run off the bottom. Measured
+    // against the viewport, not against the bottom nav: inside a Dialog the
+    // panel paints above the nav, so the nav is not what would hide it.
+    const vh = document.documentElement.clientHeight;
+    const triggerBox = trigger.getBoundingClientRect();
+    const roomBelow = vh - triggerBox.bottom - GUTTER;
+    const roomAbove = triggerBox.top - GUTTER;
+    setAbove(box.height > roomBelow && roomAbove > roomBelow);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setShift(0);
+      setAbove(false);
+      return;
+    }
+    place();
+  }, [open, place]);
 
   useEffect(() => {
     if (!open) return;
@@ -123,19 +194,25 @@ export function InfoTip({ about, children, align = "start", testId }: InfoTipPro
       <AnimatePresence>
         {open && (
           <m.span
+            ref={panel}
             id={panelId}
             role="note"
             {...(testId === undefined ? {} : { "data-testid": `${testId}-panel` })}
-            initial={{ y: -4 }}
+            // Entering from the side the panel sits on, so it reads as coming
+            // out of the trigger rather than drifting onto it.
+            initial={{ y: above ? 4 : -4 }}
             animate={{ y: 0 }}
-            exit={{ y: -4 }}
+            exit={{ y: above ? 4 : -4 }}
             transition={{ duration: DUR.fast, ease: EASE_OUT }}
+            // The collision correction. A margin rather than a transform: the
+            // entrance animates `y` and a second transform here would fight it.
+            style={{ marginLeft: shift }}
             // No shadow: the catalog's separation rule is a `border-border`
             // hairline everywhere but the Dialog sheet, and a tip is not the
             // fifth exception to that.
-            className={`absolute top-full z-40 mt-1 block w-[min(18rem,calc(100vw-2rem))] rounded-[var(--radius)] border border-border bg-surface p-3 text-xs leading-relaxed text-fg ${
-              align === "end" ? "right-0" : "left-0"
-            }`}
+            className={`absolute z-40 block w-[min(18rem,calc(100vw-2rem))] rounded-[var(--radius)] border border-border bg-surface p-3 text-xs leading-relaxed text-fg ${
+              above ? "bottom-full mb-1" : "top-full mt-1"
+            } ${align === "end" ? "right-0" : "left-0"}`}
           >
             {children}
           </m.span>
