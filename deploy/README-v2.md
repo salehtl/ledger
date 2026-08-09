@@ -696,13 +696,19 @@ put it behind the public listener; `config.CheckAdminBind` and
    tailnet address — accepted, because that address is useless without an
    enrolled device.
 
-3. **Certificate.** `admin_listen` speaks plain HTTP and must stay that way (the
-   bind check permits loopback and `100.64.0.0/10`, and terminating TLS in the
-   process would not change what is reachable). Two workable options:
+3. **Certificate. Decided 2026-08-09: plain HTTP, no certificate.** The operator
+   accepted the browser's "not secure" label because the panel is reachable only
+   from his own tailnet. Do not reopen this or add TLS to `admin_listen`.
 
-   - **Plain HTTP, no certificate.** `http://admin.sirdab.ae:8079/`. The link is
-     already encrypted by WireGuard between the two devices. This is the least
-     moving parts and the recommendation.
+   `admin_listen` speaks plain HTTP and must stay that way (the
+   bind check permits loopback and `100.64.0.0/10`, and terminating TLS in the
+   process would not change what is reachable). The option taken, and the one
+   rejected:
+
+   - **Plain HTTP, no certificate — CHOSEN.** `http://admin.sirdab.ae:8079/`. The
+     link is already encrypted by WireGuard between the two devices. The browser
+     will call it "not secure"; that label describes the absence of a
+     certificate, not an unencrypted link.
    - **Tailscale-issued TLS**, if you want a padlock and a name with no port.
      Requires MagicDNS and HTTPS certificates enabled in the tailnet, and it
      serves under the tailnet name (`dinosaur.<tailnet>.ts.net`), **not** under
