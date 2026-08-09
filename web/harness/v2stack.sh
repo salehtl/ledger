@@ -64,8 +64,15 @@ up() {
 	TOML
 
 	echo "==> starting ledgerd on 127.0.0.1:$API_PORT"
+	# `--dns-fixtures` serves the recorded TXT map as the DKIM/ARC resolver, so
+	# the corpus's signed bank mail verifies offline. Without it every message a
+	# harness sends is `unauthenticated`, the verification step never clears, and
+	# NO SCRIPT CAN REACH THE PRODUCT AT ALL — which is why `v2settings.mjs` could
+	# not exist before this line did. It is refused off loopback by `ledgerd`
+	# itself, and this stack is loopback only.
 	LEDGER_PG_DSN="$(api_dsn)" LEDGER_DATA_DIR="$RUN/data" \
-		nohup "$RUN/ledgerd" serve -config "$RUN/config.toml" > "$RUN/ledgerd.log" 2>&1 &
+		nohup "$RUN/ledgerd" serve -config "$RUN/config.toml" \
+			--dns-fixtures "$REPO/internal/v2/origin/testdata/dns.json" > "$RUN/ledgerd.log" 2>&1 &
 	echo $! > "$RUN/ledgerd.pid"
 	wait_for "http://127.0.0.1:$API_PORT/api/v1/healthz" "ledgerd"
 

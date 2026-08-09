@@ -279,6 +279,44 @@ await field.fill("");
 console.log("after clearing:", await field.inputValue()); // should be "", not "0"
 ```
 
+## `v2settings.mjs` — the only runner that actually loads `web/src`
+
+**Read this before trusting any green run in this directory.** Everything above
+— `stack.sh`, `shoot.mjs`, `probe.mjs`, `nav.mjs` — was forked from `frontend/`
+with the tree and still drives **v1**: `stack.sh` runs vite in `$REPO/frontend`
+and `nav.mjs` taps v1's Settings hub rows. Point them at a v2 change and they
+will report a clean screen they never loaded.
+
+`v2settings.mjs` runs against the v2 stack and the v2 tree. It walks the whole
+ceremony, because `BootGate` is in front of every screen and there is no way
+past it but a real account, then screenshots and audits Settings — the longest
+screen in the app, and so the one where a control ends up under the bottom nav.
+
+```bash
+harness/v2stack.sh up                        # prints an invite
+node harness/v2settings.mjs <invite-code>
+harness/v2stack.sh down
+```
+
+Two things make the walk completable at all:
+
+- `v2stack.sh` starts `ledgerd` with `--dns-fixtures`, so the corpus's signed
+  bank mail verifies DKIM offline. Without it every message reads as
+  `unauthenticated`, the verification step never clears, and **no script can
+  reach the product**.
+- `sendmail.py` posts one corpus message byte-for-byte. Rebuild a header and the
+  signature stops verifying.
+
+It sends a **forwarded** message on purpose. A direct one passes DKIM and is
+still held with `attested = false` — `origin/inner.go` attests an *inner*
+origin, and a message nothing relayed has none — and the client offers trust
+only for attested mail. Whether a direct bank email should be trustable from
+the verification step is an open question for the mail path.
+
+The capture asserts its own honesty: if the scroll produces two identical
+segments it fails, because the first version of this file picked an inner 816px
+scroller and reported a clean 2983px screen it had never scrolled.
+
 ## `recovery.mjs` — the at-rest keys, and a browser with nothing in it
 
 The rest of this directory is about layout and gesture. `recovery.mjs` is about
