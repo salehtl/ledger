@@ -165,7 +165,13 @@ func parseArgs(argv []string) (args, error) {
 		"parse-rate: PHASE 1 ONLY — read unparsed cold bodies and record a verdict for each")
 	fs.BoolVar(&out.verify.JSON, "json", false,
 		"verify|parse-rate: emit JSON instead of the operator's text report")
-	// LEDGER_FLAG_PLACEHOLDER
+	// Bound to a package variable in verify.go rather than to config.VerifyArgs,
+	// like load-corpus's flags: this is a switch on what one subcommand DOES,
+	// and a repair must never arrive from a TOML file or the environment. See
+	// verifyRepairUsage.
+	fs.BoolVar(&verifyRepairUsage, "repair-usage", false,
+		"verify: rewrite each drifting account_usage row to its recomputed total (the deploy-window "+
+			"repair of the account isolation design's §7; without it verify only reports)")
 	if err := fs.Parse(rest); err != nil {
 		return args{}, err
 	}

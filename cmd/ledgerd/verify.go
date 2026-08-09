@@ -79,14 +79,22 @@ func runVerify(cfg config.Config) error {
 	}
 	findings = append(findings, acc.Findings()...)
 
+	usage, repairs, err := usageLedgerHalf(ctx, pool, users, verifyRepairUsage)
+	if err != nil {
+		return fmt.Errorf("ledgerd verify: %w", err)
+	}
+	findings = append(findings, usage...)
+
 	if cfg.Verify.JSON {
 		if err := writeJSON(map[string]any{
-			"findings": findings, "accounting": acc, "ok": len(findings) == 0,
+			"findings": findings, "accounting": acc,
+			"usage_repairs": repairs, "ok": len(findings) == 0,
 		}); err != nil {
 			return err
 		}
 	} else {
 		printAccounting(acc)
+		printCorrections(repairs)
 		printFindings(findings)
 	}
 	if len(findings) > 0 {
@@ -95,6 +103,64 @@ func runVerify(cfg config.Config) error {
 		return fmt.Errorf("ledgerd verify: %d finding(s)", len(findings))
 	}
 	return nil
+}
+
+// verifyRepairUsage backs `ledgerd verify --repair-usage`: rewrite each
+// drifting account_usage row to its recomputed total.
+//
+// It is a package variable here rather than a field on config.VerifyArgs for
+// the same reason loadCorpusFlags is one — it is a switch on one subcommand's
+// behaviour, not a piece of the server's configuration, and it must never
+// arrive from a TOML file or an environment variable. A repair is something an
+// operator types.
+//
+// # Why the repair is opt-in and the report is not
+//
+// The report is what a cron runs. It writes nothing, so an unattended run can
+// never erase the evidence of the bug it exists to find, and a ledger that
+// silently healed itself every night would be indistinguishable from a correct
+// one. The repair is the deploy-window step of the design's §7: migrations are
+// applied out of band BEFORE the new binary starts, so the old binary — which
+// does not maintain the ledger — keeps writing between 00031's backfill and the
+// restart. That drift is expected, and closing it is a decision with a date on
+// it, not a nightly habit.
+var verifyRepairUsage bool
+
+// usageLedgerHalf reconciles the per-account usage ledger, repairing FIRST when
+// the operator asked for it and reporting either way.
+//
+// The order is the point: the report runs after the repair, so what it prints is
+// what is left. A repair that did not close the drift — because something is
+// still writing wrong numbers — still fails the command, which is what makes
+// `--repair-usage` safe to put in a runbook.
+func usageLedgerHalf(ctx context.Context, pool *pgxpool.Pool, users []uuid.UUID, repair bool) (
+	[]verify.Finding, []verify.Correction, error) {
+	var repairs []verify.Correction
+	if repair {
+		var err error
+		if repairs, err = verify.RepairUsageLedger(ctx, pool, users); err != nil {
+			return nil, repairs, err
+		}
+	}
+	findings, err := verify.UsageLedgerFor(ctx, pool, users)
+	if err != nil {
+		return nil, repairs, err
+	}
+	return findings, repairs, nil
+}
+
+// printCorrections says what the repair rewrote, one line per row, with both
+// numbers. A repair that printed only a count would leave an operator unable to
+// tell "the deploy window cost this account 4 MB of unrecorded writes" from "the
+// ledger was off by a factor of a thousand".
+func printCorrections(c []verify.Correction) {
+	if len(c) == 0 {
+		return
+	}
+	fmt.Printf("usage ledger: REPAIRED %d row(s)\n", len(c))
+	for _, x := range c {
+		fmt.Printf("  user %s  %-18s %d -> %d\n", x.UserID, x.Resource, x.From, x.To)
+	}
 }
 
 // verifyDefaultWindow matches the alpha's own cadence: spec §5's exit criteria
