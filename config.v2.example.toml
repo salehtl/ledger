@@ -77,6 +77,31 @@ dsn          = ""                 # Postgres DSN (LEDGER_PG_DSN) — required; n
 # console is not served at all (ledgerd logs a warning and starts everything
 # else); it is never served unauthenticated.
 
+[headroom]
+# The box-level disk fuse (P4 of the per-account isolation design). One
+# goroutine calls statfs on `path` every `interval`; below `floor_bytes` of free
+# space EVERY durable write is refused with a temporary error — 503 on the API,
+# 452 on SMTP — while reads keep serving. Per-account ceilings multiplied by the
+# number of accounts can still exceed the disk and Postgres has no per-role
+# storage quota, so this is the backstop that keeps the last few gigabytes.
+#
+# READ THIS BEFORE FILING A BUG: "every durable write" INCLUDES SIGNING IN,
+# because a sign-in writes a session row. While the fuse is tripped nobody can
+# sign in. That is deliberate — the box is protecting its ability to recover,
+# and a carve-out would grow one endpoint at a time until the fuse protected
+# nothing. Devices that already hold a session keep reading their own data.
+#
+# The state is logged loudly on every transition (and only on transitions).
+path        = "/var/lib/ledger-v2"   # any path on the filesystem Postgres writes to (LEDGER_HEADROOM_PATH). Never
+                                     # written to and never created — statfs only. A path that does not exist is not
+                                     # a startup error, but it IS a fuse that never trips, so the sampling failure is
+                                     # logged every interval until it is fixed.
+floor_bytes = 8589934592             # 8 GB (LEDGER_HEADROOM_FLOOR_BYTES). Sized so Postgres, its WAL, a backup and
+                                     # the operator's shell all still work while they free space. Zero is REFUSED at
+                                     # load rather than defaulted: a zero floor is a fuse that can never trip.
+interval    = "30s"                  # how often free space is sampled (LEDGER_HEADROOM_INTERVAL). The lag this
+                                     # admits is one interval, which is affordable because the floor is gigabytes.
+
 [relay]
 enabled     = false               # whether this primary mounts the relay-facing API
 primary_url = ""                  # in relay mode: the primary's base URL to forward to

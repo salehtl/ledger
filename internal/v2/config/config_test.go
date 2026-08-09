@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/headroom"
 )
 
 // clearV2Env blanks every LEDGER_* env var this package reads, via
@@ -23,6 +24,7 @@ func clearV2Env(t *testing.T) {
 		"LEDGER_RELAY_PRIMARY_URL", "LEDGER_APPLE_CLIENT_IDS",
 		"LEDGER_GOOGLE_CLIENT_IDS", "LEDGER_EXPO_ACCESS_TOKEN",
 		"LEDGER_ADMIN_TOKEN", "LEDGER_DICT_HMAC_KEY",
+		"LEDGER_HEADROOM_PATH", "LEDGER_HEADROOM_FLOOR_BYTES", "LEDGER_HEADROOM_INTERVAL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -703,5 +705,137 @@ func TestDevAuthIsOffByDefault(t *testing.T) {
 	}
 	if cfg.DevAuth || cfg.Server.DNSFixtures != "" {
 		t.Fatalf("Load() enabled a test-only flag: %+v", cfg.Server)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The headroom fuse (P4 of the per-account isolation design)
+// ---------------------------------------------------------------------------
+
+// The defaults must BE the design's numbers, and they must come from the
+// package that implements the fuse rather than being retyped here. A default
+// floor that drifted below headroom.DefaultFloor would be a fuse that trips too
+// late to leave an operator room to recover, with nothing anywhere saying so.
+func TestHeadroomDefaultsAreTheDesignsNumbers(t *testing.T) {
+	c := defaults()
+	if c.Headroom.Path == "" {
+		t.Fatal("defaults() left headroom.path empty; the fuse would sample nothing")
+	}
+	if c.Headroom.FloorBytes != int64(headroom.DefaultFloor) {
+		t.Fatalf("default floor = %d, want headroom.DefaultFloor (%d)",
+			c.Headroom.FloorBytes, headroom.DefaultFloor)
+	}
+	if c.Headroom.Interval != headroom.DefaultInterval {
+		t.Fatalf("default interval = %v, want headroom.DefaultInterval (%v)",
+			c.Headroom.Interval, headroom.DefaultInterval)
+	}
+}
+
+// A zero floor, a zero interval and an empty path are each a fuse that cannot
+// do its job, and each is invisible at runtime: the goroutine still runs and
+// the flag simply never trips. So validate refuses all three at load.
+func TestValidateRejectsAFuseThatCannotTrip(t *testing.T) {
+	base := func() Config {
+		c := defaults()
+		c.Mail.Domain = "example.test"
+		c.Server.DSN = "postgres:///x"
+		return c
+	}
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		wantErr string
+	}{
+		{"empty path", func(c *Config) { c.Headroom.Path = "" }, "headroom.path"},
+		{"zero floor", func(c *Config) { c.Headroom.FloorBytes = 0 }, "headroom.floor_bytes"},
+		{"negative floor", func(c *Config) { c.Headroom.FloorBytes = -1 }, "headroom.floor_bytes"},
+		{"zero interval", func(c *Config) { c.Headroom.Interval = 0 }, "headroom.interval"},
+		{"negative interval", func(c *Config) { c.Headroom.Interval = -time.Second }, "headroom.interval"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base()
+			tt.mutate(&c)
+			err := c.validate()
+			if err == nil {
+				t.Fatalf("validate() accepted %s", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to name %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// The three overrides exist because the moment an operator most wants to move
+// the floor is during the incident that tripped it. A malformed value must be a
+// startup error rather than a silent fallback: an operator who typed "8GB" and
+// was quietly given the default would believe they had lowered a floor they had
+// not touched.
+func TestHeadroomEnvOverridesAndTheirRefusals(t *testing.T) {
+	clearV2Env(t)
+	t.Setenv("LEDGER_MAIL_DOMAIN", "example.test")
+	t.Setenv("LEDGER_PG_DSN", "postgres:///x")
+	t.Setenv("LEDGER_HEADROOM_PATH", "/srv/data")
+	t.Setenv("LEDGER_HEADROOM_FLOOR_BYTES", "12345678")
+	t.Setenv("LEDGER_HEADROOM_INTERVAL", "5s")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Headroom.Path != "/srv/data" || cfg.Headroom.FloorBytes != 12345678 ||
+		cfg.Headroom.Interval != 5*time.Second {
+		t.Fatalf("env overrides did not apply: %+v", cfg.Headroom)
+	}
+
+	// The refusal must quote the VALUE, not merely mention the variable. An
+	// implementation that silently substituted zero for an unparseable number
+	// would still be refused downstream — by the floor rail — with a message
+	// about a floor of 0 that the operator never typed, sending them looking for
+	// a config file that says 8 GB.
+	t.Setenv("LEDGER_HEADROOM_FLOOR_BYTES", "8GB")
+	err = errOf(Load(""))
+	if err == nil || !strings.Contains(err.Error(), "LEDGER_HEADROOM_FLOOR_BYTES") ||
+		!strings.Contains(err.Error(), "8GB") {
+		t.Fatalf("Load accepted a non-numeric floor, or refused it without quoting it: %v", err)
+	}
+	t.Setenv("LEDGER_HEADROOM_FLOOR_BYTES", "12345678")
+	t.Setenv("LEDGER_HEADROOM_INTERVAL", "half an hour")
+	err = errOf(Load(""))
+	if err == nil || !strings.Contains(err.Error(), "LEDGER_HEADROOM_INTERVAL") ||
+		!strings.Contains(err.Error(), "half an hour") {
+		t.Fatalf("Load accepted a non-duration interval, or refused it without quoting it: %v", err)
+	}
+}
+
+// errOf drops Load's Config so its error can be compared inline.
+func errOf(_ Config, err error) error { return err }
+
+// The example config is the deploy runbook's starting point, so the fuse's
+// three keys must be IN it and must decode — a fuse configured only by defaults
+// is one no operator can see, and the sign-in consequence in that file's
+// comment is the thing they most need to have read before it trips.
+func TestTheExampleConfigConfiguresTheFuse(t *testing.T) {
+	clearV2Env(t)
+	t.Setenv("LEDGER_MAIL_DOMAIN", "example.test")
+	t.Setenv("LEDGER_PG_DSN", "postgres:///ledger_v2")
+	cfg, err := Load("../../../config.v2.example.toml")
+	if err != nil {
+		t.Fatalf("the shipped example config does not load: %v", err)
+	}
+	if cfg.Headroom.FloorBytes != int64(headroom.DefaultFloor) {
+		t.Fatalf("example floor_bytes = %d, want the design's %d",
+			cfg.Headroom.FloorBytes, headroom.DefaultFloor)
+	}
+	if cfg.Headroom.Interval != headroom.DefaultInterval {
+		t.Fatalf("example interval = %v, want %v", cfg.Headroom.Interval, headroom.DefaultInterval)
+	}
+	raw, err := os.ReadFile("../../../config.v2.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The one sentence an operator must not discover during the incident.
+	if !strings.Contains(string(raw), "INCLUDES SIGNING IN") {
+		t.Fatal("the example config does not warn that a tripped fuse blocks sign-in")
 	}
 }

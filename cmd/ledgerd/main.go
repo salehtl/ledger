@@ -31,6 +31,7 @@ import (
 	"ledger/internal/v2/corpus"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/dict"
+	"ledger/internal/v2/headroom"
 	"ledger/internal/v2/ingest"
 	"ledger/internal/v2/oplog"
 	"ledger/internal/v2/origin"
@@ -320,6 +321,18 @@ func runServe(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("build api: %w", err)
 	}
+
+	// The box-level disk fuse (P4). It is started HERE, immediately after the
+	// API exists and long before either listener does, because the state it
+	// carries must be true by the time the first request arrives: a process
+	// that boots onto a full filesystem has to be refusing writes already, not
+	// one sampling interval later. headroom.Start takes its first sample
+	// synchronously for exactly that reason.
+	//
+	// Stopped on the way out, so the goroutine does not outlive the function
+	// that owns it — including on every early return below.
+	fuse := startHeadroom(cfg, syncAPI)
+	defer fuse.Stop()
 	srv := &http.Server{
 		Addr: cfg.Server.HTTPListen,
 		// Handler is assigned BELOW, after the ingest pipeline exists — see
@@ -386,7 +399,7 @@ func runServe(cfg config.Config) error {
 		Templates:  &tmpl.Store{Pool: pool},
 		Origin:     ingest.NewResolver(lookupTXT),
 		Trust:      syncAPI.Quarantine,
-		Appender:   &oplog.Appender{Pool: pool},
+		Appender:   ingestAppender(pool),
 		Diag:       &diag.Diag{Pool: pool},
 		Quarantine: syncAPI.Quarantine,
 		Push:       pusher,
@@ -429,6 +442,32 @@ func runServe(cfg config.Config) error {
 		&diag.Diag{Pool: pool},
 		time.Now,
 	)
+	// The receiver's three optional database seams — suspension lookup,
+	// per-account refusal counting, and counter persistence — are wired
+	// together, from ONE store, because they are one deployment decision: this
+	// process has a pool, so it answers all three. The backup relay has none and
+	// answers none (runRelay's smtpd.New below is deliberately left bare).
+	//
+	// Wiring them apart is the failure worth naming: a receiver that persists
+	// counters but never notices a suspension is a process an operator has
+	// paused an account on, watching mail keep arriving.
+	mailStore := &smtpd.PGStore{Pool: pool}
+	restored, err := wireMailStores(ctx, mail, mailStore)
+	if err != nil {
+		// Not fatal. A failed restore costs each account at most one window of
+		// leniency (Limiter.Restore never overwrites live state, so the error
+		// can only ever be more permissive), and refusing to boot over it would
+		// convert a transient database hiccup into an outage on the one path
+		// that is a public port 25.
+		log.Printf("ledgerd serve: WARNING: the persisted SMTP counters could not be restored, "+
+			"so this run starts every account's daily allowance from zero: %v", err)
+	} else if restored > 0 {
+		log.Printf("ledgerd serve: restored %d persisted SMTP counter(s)", restored)
+	}
+	// The counters are flushed by smtpd itself — every 60 seconds and once more
+	// during Shutdown — so nothing here has to. What it does NOT do is remove
+	// rows for accounts that have gone quiet, and that sweep is started with
+	// the other five below.
 
 	// Bound HERE, not inside the goroutine below. Two reasons, both real: a
 	// port-25 bind failure (permission, or something already holding it) is a
@@ -514,6 +553,18 @@ func runServe(cfg config.Config) error {
 	// finish path instead would have put the write back where an anonymous
 	// caller can trigger it.
 	ceremonySweepDone := startCeremonySweep(ctx, syncAPI.Passkeys)
+	// And the sixth: the persisted SMTP counters. smtpd.PGStore.SweepUserCounters
+	// existed with no caller on any timer at all, which is the same shape
+	// dict.ExpireStaleSubmissions had — a promise kept only in prose.
+	//
+	// It joins the hourly loops rather than getting its own cadence because it
+	// is the mildest of the six: a stale counter row is not wrong, it is merely
+	// dead weight (counter.roll ages it to zero on read, so restoring it is a
+	// no-op), and the table is bounded by the number of accounts that have ever
+	// received mail. Hourly is far more often than the two-window staleness
+	// threshold needs, and the cost of one DELETE per hour over a table that
+	// size is nothing.
+	counterSweepDone := startCounterSweep(ctx, mailStore)
 
 	// The cleartext rail, re-checked immediately before the listener starts —
 	// the same treatment CheckAdminBind gets above, and for the same reason: a
@@ -611,7 +662,99 @@ func runServe(cfg config.Config) error {
 	<-dictSweepDone
 	<-tombstoneSweepDone
 	<-ceremonySweepDone
+	<-counterSweepDone
 	return serveErr
+}
+
+// startHeadroom builds the disk fuse from config, STARTS it, and hands it to
+// the API — the three steps that make P4 real, in one function so a test can
+// assert all three happened rather than that a *headroom.Fuse was constructed.
+//
+// The order matters in one direction only: Start samples synchronously, so by
+// the time the fuse reaches syncAPI.Headroom the flag is already the truth
+// about this box rather than the optimistic default headroom.New returns.
+//
+// Nothing here refuses to boot when the path cannot be sampled. That is
+// headroom's decision and it is the right one — a statfs failure leaves the flag
+// where it was, logs every interval, and never turns a broken sampler into a
+// process that refuses every write — but it means the log line is the ONLY
+// notice, which is why the config's floor and interval are validated at load
+// instead.
+func startHeadroom(cfg config.Config, syncAPI *api.Server) *headroom.Fuse {
+	fuse := headroom.New(cfg.Headroom.Path, uint64(cfg.Headroom.FloorBytes), cfg.Headroom.Interval)
+	fuse.Start()
+	syncAPI.Headroom = fuse
+	log.Printf("ledgerd serve: headroom fuse watching %s every %v; below %d bytes free ALL durable "+
+		"writes are refused, INCLUDING SIGN-IN, while reads keep serving",
+		fuse.Path(), cfg.Headroom.Interval, fuse.Floor())
+	return fuse
+}
+
+// ingestAppender is the writer trusted mail is appended through.
+//
+// It is a function rather than a literal for one reason: Budget must be LEFT
+// UNSET. A nil oplog.Appender.Budget does not mean "no budget" — it means a gate
+// built over Pool on demand, which is what makes the per-account ceiling
+// enforceable at all. Assigning anything here, including an explicitly nil
+// *budget.Gate stored in a typed variable, is the one edit that would silently
+// unbudget the ingest path — the path that never passes through handleUpload
+// and so is covered by nothing else. See the Budget field's own comment, and
+// TestTheIngestAppenderLeavesTheBudgetGateOnItsDefault.
+func ingestAppender(pool *pgxpool.Pool) *oplog.Appender {
+	return &oplog.Appender{Pool: pool}
+}
+
+// mailSeams is the part of *smtpd.Server that wireMailStores touches.
+//
+// It is an interface purely so the wiring can be tested: smtpd.Server keeps the
+// three seams in unexported fields, so from outside that package there is no
+// way to observe an assignment — and a wiring test that cannot observe the
+// wiring is the kind of test this codebase has been burned by. With this, a fake
+// records what it was handed and a deleted setter fails a test rather than
+// shipping.
+type mailSeams interface {
+	SetSuspensions(smtpd.Suspensions)
+	SetRefusals(smtpd.Refusals)
+	SetCounterStore(smtpd.CounterStore)
+	LoadCounters(context.Context) (int, error)
+}
+
+// wireMailStores gives the receiver its three database seams and restores the
+// persisted per-user counters, reporting how many were applied.
+//
+// ONE store for all three, by value as well as by type. That is the whole point
+// of the function existing: the three are separately settable, so the mistake
+// available here is a partial wiring, and there is no runtime symptom that
+// distinguishes "this deployment has no database" from "somebody forgot a line".
+//
+// The load must happen after the setters and before Serve. Limiter.Restore
+// refuses to overwrite a counter that already holds state, so a late call cannot
+// erase spent counts — it would simply do nothing, which is the failure that
+// hands an abuser a fresh allowance on every restart.
+func wireMailStores(ctx context.Context, mail mailSeams, store *smtpd.PGStore) (int, error) {
+	mail.SetSuspensions(store)
+	mail.SetRefusals(store)
+	mail.SetCounterStore(store)
+	return mail.LoadCounters(ctx)
+}
+
+// startCounterSweep removes persisted SMTP counter rows that have been silent
+// for more than two windows.
+//
+// See the call site for why it joins the hourly loops. Its failure is the
+// mildest of the six: an unswept row restores to zero anyway, so a sweep broken
+// for a week costs storage and nothing else.
+func startCounterSweep(ctx context.Context, s *smtpd.PGStore) <-chan struct{} {
+	if s == nil || s.Pool == nil {
+		return closedChan()
+	}
+	return startSweep(ctx, "smtp counter sweep", func(ctx context.Context) (string, error) {
+		n, err := s.SweepUserCounters(ctx, smtpd.DefaultQuotaWindow)
+		if err != nil || n == 0 {
+			return "", err
+		}
+		return fmt.Sprintf("removed %d stale per-user counter row(s)", n), nil
+	})
 }
 
 // configureTLS puts autocert on the public listener, and reports whether the
