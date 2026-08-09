@@ -35,39 +35,45 @@ package auth
 // rather than trusted, since it is the schema and not this code that enforces
 // it.
 //
-// # Sessions: what this does, and what it cannot do
+// # Sessions: exactly the removed credential's, and what "exactly" cannot cover
 //
 // Removing a passkey must end the access that passkey bought. Otherwise
 // "remove my lost phone" leaves the lost phone signed in, which is the exact
-// thing the user was trying to stop.
+// thing the user was trying to stop. It must NOT end anything else: signing a
+// user's laptop out because they retired a phone is a superset of the right
+// answer, and it was the shipped behaviour until 00034 added
+// sessions.credential_id.
 //
-// `sessions` DOES NOT RECORD WHICH CREDENTIAL AUTHENTICATED IT. The table is
-// (token_hash, user_id, created_at, expires_at, revoked_at) — 00001, unchanged
-// since — and Sessions.Issue is handed a user id and nothing else. So there is
-// no way to end exactly the removed credential's sessions, and there is no
-// honest way to answer "which credential is this session?" either.
+// With the column, this revokes three populations and leaves one alone:
 //
-// What this does instead is the closest correct behaviour available without a
-// schema change: it revokes EVERY session of the account except the one making
-// the request. That is a superset of the right answer.
-//
-//   - It achieves the security goal completely. Whatever sessions the removed
-//     credential created are among the revoked ones, so the lost phone is signed
-//     out, and its push tokens are deleted with it (forgetPushTokens, the same
+//   - REVOKED: sessions attributed to the credential being removed. This is the
+//     feature. Their push registrations go with them (forgetPushTokens, the same
 //     sweep Revoke and RevokeAllForUser run — a device that stops being able to
 //     write but keeps receiving lock-screen notifications has not been removed).
-//   - It over-reaches. The user's OTHER devices, signed in with credentials
-//     nobody asked to remove, are signed out too and have to re-authenticate
-//     with a passkey they still hold. Annoying; not a lockout, because removing
-//     the last credential is refused.
-//   - The caller's own session survives, so the screen that issued the DELETE
-//     keeps working. It is identified by its token hash, which the API layer
-//     already computes for push registration (SessionHash).
+//   - REVOKED: sessions attributed to NO credential, other than the caller's
+//     own. NULL means this server cannot say which credential minted the
+//     session — it predates 00034, or it came from the ID-token exchange — and
+//     "might be the phone we are removing" is the one case where erring towards
+//     signing a device out is the safe direction. It is a shrinking population:
+//     every passkey session minted from now on is attributed, and every session
+//     expires.
+//   - REVOKED, if it is the removed credential's: the caller's own session. A
+//     user who removes the credential they are standing on has removed the thing
+//     that let them in, and the honest consequence is that they sign in again
+//     with one of the passkeys they still hold — guaranteed to exist, because
+//     removing the last one is refused. The listing marks this row "current"
+//     precisely so it is a decision and not an accident.
+//   - UNTOUCHED: sessions attributed to the account's OTHER credentials, and the
+//     caller's own session when it is not the removed credential's. That is the
+//     narrowing 00034 bought.
 //
-// The fix is a migration adding a nullable sessions.credential_id referencing
-// webauthn_credentials ON DELETE CASCADE, written at Issue time from the
-// ceremony that minted the session. That would make this precise AND make the
-// "this device" marker in the list real. It is deliberately NOT done here.
+// Ordering matters and is not incidental: the revocation runs BEFORE the
+// credential row is deleted. sessions.credential_id is ON DELETE SET NULL
+// (00034 says why it is not CASCADE), so the DELETE erases the attribution —
+// a sweep issued afterwards would match nothing at all.
+//
+// It all runs in ONE transaction, so the credential's removal and the loss of
+// the access it granted commit together.
 
 import (
 	"bytes"
@@ -145,12 +151,16 @@ func (p *Passkeys) ListCredentials(ctx context.Context, userID uuid.UUID) ([]Cre
 	return out, nil
 }
 
-// DeleteCredential removes one of userID's credentials and ends the account's
-// other sessions. It reports how many sessions it revoked.
+// DeleteCredential removes one of userID's credentials and ends the sessions
+// that credential created. It reports how many sessions it revoked.
 //
-// keepSessionHash is the SessionHash of the caller's own bearer token, which is
-// spared. Pass nil to spare nothing — that is the honest degenerate case (no
-// caller session means no session to keep), not a silent no-op.
+// keepSessionHash is the SessionHash of the caller's own bearer token. It
+// spares that session from the UNATTRIBUTED sweep only — a session this server
+// cannot attribute is revoked on suspicion, and the one it is answering right
+// now is the one session it has no reason to suspect. It does NOT spare a
+// caller whose session was minted by the credential being removed; see the file
+// header. Pass nil to spare nothing, which is the honest degenerate case (no
+// caller session means no session to keep) rather than a silent no-op.
 //
 // Two rejections, and they are different kinds of fact:
 //
@@ -221,6 +231,20 @@ func (p *Passkeys) DeleteCredential(ctx context.Context, userID uuid.UUID, crede
 		return 0, ErrLastPasskey
 	}
 
+	// BEFORE the DELETE, not after, and the two orders are NOT equivalent.
+	// sessions.credential_id is ON DELETE SET NULL, so the DELETE erases every
+	// session's record of having been minted by this credential; run afterwards,
+	// the first half of the predicate would match nothing and those sessions
+	// would fall into the unattributed half — where the CALLER'S OWN is spared.
+	// A user removing the credential their own session was minted with would
+	// keep a session no passkey backs any more. Proved by mutation:
+	// TestRemovingTheCredentialYourOwnSessionUsesSignsYouOut fails on this
+	// swap.
+	revoked, err := revokeCredentialSessionsTx(ctx, tx, userID, credentialID, keepSessionHash, p.now())
+	if err != nil {
+		return 0, err
+	}
+
 	// user_id is in the WHERE clause as well as the id, so this statement is
 	// correct on its own terms and not only because of the check above.
 	tag, err := tx.Exec(ctx,
@@ -232,22 +256,29 @@ func (p *Passkeys) DeleteCredential(ctx context.Context, userID uuid.UUID, crede
 	if tag.RowsAffected() != 1 {
 		// Unreachable behind the lock, and checked anyway: a delete that removed
 		// nothing must not be reported as a removal, because the user is about to
-		// be told a lost device can no longer sign in.
+		// be told a lost device can no longer sign in. The revocation above rolls
+		// back with it.
 		return 0, fmt.Errorf("auth: passkey: delete credential: removed %d rows, want 1", tag.RowsAffected())
 	}
 
-	revoked, err := revokeOtherSessionsTx(ctx, tx, userID, keepSessionHash, p.now())
-	if err != nil {
-		return 0, err
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("auth: passkey: delete credential: commit: %w", err)
 	}
 	return revoked, nil
 }
 
-// revokeOtherSessionsTx marks every session of userID revoked except the one
-// named by keepHash, and deletes the push registrations of the ones it revoked.
+// revokeCredentialSessionsTx marks revoked every session of userID that the
+// credential credID minted, plus every session this server cannot attribute
+// except the one named by keepHash, and deletes those sessions' push
+// registrations.
+//
+// The predicate is written once, here, and both statements take it, because the
+// failure mode of two nearly-identical WHERE clauses is a session that is
+// revoked while its notifications keep arriving — the hole 00019 was written to
+// close.
+//
+//	credential_id = $2                                  the feature
+//	OR (credential_id IS NULL AND <not the caller>)      the unattributable
 //
 // It runs in the CALLER'S transaction, so the credential's removal and the loss
 // of the access it granted commit together. A sweep issued afterwards would
@@ -256,18 +287,39 @@ func (p *Passkeys) DeleteCredential(ctx context.Context, userID uuid.UUID, crede
 // argument forgetPushTokens' own doc makes about push tokens and revocation.
 //
 // `IS DISTINCT FROM` rather than `<>` so that a nil keepHash (no session to
-// spare) revokes everything rather than nothing, which is what `<> NULL` would
-// have quietly done.
-func revokeOtherSessionsTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, keepHash []byte, now time.Time) (int64, error) {
+// spare) sweeps the unattributed rows rather than none of them, which is what
+// `<> NULL` would have quietly done.
+//
+// Note keepHash does NOT protect the caller from the first clause. A caller
+// removing the credential their own session was minted with is signed out; see
+// the file header for why that is the honest answer rather than an oversight.
+func revokeCredentialSessionsTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID,
+	credID, keepHash []byte, now time.Time) (int64, error) {
+	// The one predicate, in the one place. $1 user, $2 credential, $3 the
+	// caller's own token hash.
+	const doomed = `user_id = $1
+	                  AND (credential_id = $2::bytea
+	                       OR (credential_id IS NULL AND token_hash IS DISTINCT FROM $3::bytea))`
+
 	tag, err := tx.Exec(ctx,
-		`UPDATE sessions SET revoked_at = $3
-		  WHERE user_id = $1 AND revoked_at IS NULL AND token_hash IS DISTINCT FROM $2::bytea`,
-		userID, keepHash, now)
+		`UPDATE sessions SET revoked_at = $4 WHERE revoked_at IS NULL AND `+doomed,
+		userID, credID, keepHash, now)
 	if err != nil {
-		return 0, fmt.Errorf("auth: revoke other sessions for %s: %w", userID, err)
+		return 0, fmt.Errorf("auth: revoke sessions of credential for %s: %w", userID, err)
 	}
+	// push_tokens and push_subscriptions carry session_hash (NOT NULL, foreign
+	// key into sessions.token_hash — 00019, 00029) and no credential of their
+	// own. So the same population is named by selecting it back out of
+	// `sessions` rather than by writing a second, nearly-identical guess: a
+	// registration is doomed exactly when the session that made it is.
+	//
+	// Not restricted to `revoked_at IS NULL`: an already-revoked session's
+	// registration must still go, for the reason Revoke's doc gives — the
+	// failure being closed is a device that keeps receiving after the user
+	// believes they stopped it.
 	if err := forgetPushTokens(ctx, tx,
-		`user_id = $1 AND session_hash IS DISTINCT FROM $2::bytea`, userID, keepHash); err != nil {
+		`user_id = $1 AND session_hash IN (SELECT token_hash FROM sessions WHERE `+doomed+`)`,
+		userID, credID, keepHash); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil

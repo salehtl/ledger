@@ -72,6 +72,99 @@ func countWraps(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) int {
 }
 
 // ---------------------------------------------------------------------------
+// Attribution: which credential minted a session (00034)
+// ---------------------------------------------------------------------------
+
+// TestIssueRecordsTheCredentialThatAuthenticated pins the write half of 00034,
+// including that plain Issue records NOTHING rather than a placeholder — the
+// ID-token exchange authenticates no credential and must not appear to have.
+func TestIssueRecordsTheCredentialThatAuthenticated(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	sessions := &Sessions{Pool: pool, TTL: time.Hour}
+	userID, cred := enroll(t, p, mustMint(t, pool, "attribution"))
+
+	attributed, err := sessions.IssueForCredential(bgctx, userID, cred.CredID)
+	if err != nil {
+		t.Fatalf("IssueForCredential: %v", err)
+	}
+	var got []byte
+	if err := pool.QueryRow(bgctx, `SELECT credential_id FROM sessions WHERE token_hash = $1`,
+		SessionHash(attributed)).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, cred.CredID) {
+		t.Fatalf("sessions.credential_id is %x, want %x", got, cred.CredID)
+	}
+
+	plain, err := sessions.Issue(bgctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(bgctx, `SELECT credential_id FROM sessions WHERE token_hash = $1`,
+		SessionHash(plain)).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("Issue recorded credential %x; a session no credential authenticated must record NULL", got)
+	}
+
+	// An EMPTY credential id is "unknown", not a credential named by zero bytes.
+	// Stored as a zero-length bytea it would satisfy no foreign key and would
+	// read as attributed, so it is normalized to NULL.
+	empty, err := sessions.IssueForCredential(bgctx, userID, []byte{})
+	if err != nil {
+		t.Fatalf("IssueForCredential with an empty id: %v", err)
+	}
+	if err := pool.QueryRow(bgctx, `SELECT credential_id FROM sessions WHERE token_hash = $1`,
+		SessionHash(empty)).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("an empty credential id was stored as %#v, want NULL", got)
+	}
+
+	// The foreign key is real: a credential this deployment never enrolled
+	// cannot be recorded as having authenticated anything.
+	if _, err := sessions.IssueForCredential(bgctx, userID, []byte("no such credential")); err == nil {
+		t.Fatal("issued a session attributed to a credential that does not exist")
+	}
+}
+
+// TestCredentialForSessionAnswersOnlyWhatItKnows is the read half — the source
+// of the listing's "this device" marker. Three states, one answer each, and the
+// two ignorant ones must be indistinguishable from each other.
+func TestCredentialForSessionAnswersOnlyWhatItKnows(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	sessions := &Sessions{Pool: pool, TTL: time.Hour}
+	userID, cred := enroll(t, p, mustMint(t, pool, "marker"))
+
+	attributed, err := sessions.IssueForCredential(bgctx, userID, cred.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sessions.CredentialForSession(bgctx, attributed)
+	if err != nil {
+		t.Fatalf("CredentialForSession: %v", err)
+	}
+	if !bytes.Equal(got, cred.CredID) {
+		t.Fatalf("credential for the session is %x, want %x", got, cred.CredID)
+	}
+
+	legacy, err := sessions.Issue(bgctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := sessions.CredentialForSession(bgctx, legacy); err != nil || got != nil {
+		t.Fatalf("an unattributed session answered (%x, %v), want (nil, nil) — the marker must be absent, not wrong", got, err)
+	}
+	if got, err := sessions.CredentialForSession(bgctx, "not a session token"); err != nil || got != nil {
+		t.Fatalf("an unknown token answered (%x, %v), want (nil, nil)", got, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Listing
 // ---------------------------------------------------------------------------
 
@@ -297,27 +390,36 @@ func TestDeletingACredentialTakesItsKeyWrapWithIt(t *testing.T) {
 	}
 }
 
-// TestDeletingACredentialEndsTheAccountsOtherSessions is the point of the
-// feature: "remove my lost phone" has to end the lost phone's access.
+// TestDeletingACredentialEndsOnlyThatCredentialsSessions is the point of the
+// feature AND the narrowing 00034 bought: "remove my lost phone" has to end the
+// lost phone's access and must NOT end the laptop's.
 //
-// It also pins what this CANNOT do. Sessions do not record which credential
-// authenticated them, so the revocation is every session but the caller's,
-// including sessions the removed credential never created. The test asserts
-// that over-reach deliberately — if a migration ever adds the link, this test
-// is where the narrowing should show up.
-func TestDeletingACredentialEndsTheAccountsOtherSessions(t *testing.T) {
+// Four sessions, one of each population the file header enumerates.
+func TestDeletingACredentialEndsOnlyThatCredentialsSessions(t *testing.T) {
 	pool := pgtest.New(t)
 	p := newPasskeys(t, pool)
 	sessions := &Sessions{Pool: pool, TTL: time.Hour}
-	userID, first := enroll(t, p, mustMint(t, pool, "lost phone"))
-	second := addPasskey(t, p, userID)
-	_ = second
+	userID, lost := enroll(t, p, mustMint(t, pool, "lost phone"))
+	laptop := addPasskey(t, p, userID)
 
-	caller, err := sessions.Issue(bgctx, userID)
+	// The caller is standing on the laptop's credential and is removing the
+	// phone's, which is the ordinary shape of this operation.
+	caller, err := sessions.IssueForCredential(bgctx, userID, laptop.CredID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lostPhone, err := sessions.Issue(bgctx, userID)
+	lostPhone, err := sessions.IssueForCredential(bgctx, userID, lost.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second laptop session, same surviving credential: it must live.
+	otherLaptop, err := sessions.IssueForCredential(bgctx, userID, laptop.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A session this server cannot attribute — pre-00034, or the ID-token
+	// exchange. It goes, because it might be the phone.
+	legacy, err := sessions.Issue(bgctx, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,21 +429,104 @@ func TestDeletingACredentialEndsTheAccountsOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	revoked, err := p.DeleteCredential(bgctx, userID, first.CredID, SessionHash(caller))
+	revoked, err := p.DeleteCredential(bgctx, userID, lost.CredID, SessionHash(caller))
 	if err != nil {
 		t.Fatalf("DeleteCredential: %v", err)
 	}
-	if revoked != 1 {
-		t.Fatalf("revoked %d sessions, want 1 (the account's other session, not the caller's)", revoked)
+	if revoked != 2 {
+		t.Fatalf("revoked %d sessions, want 2 (the removed credential's, and the unattributed one)", revoked)
 	}
 
 	if _, err := sessions.Resolve(bgctx, lostPhone); !errors.Is(err, ErrSessionRevoked) {
-		t.Fatalf("the other session resolves as %v, want ErrSessionRevoked — the removed device is still signed in", err)
+		t.Fatalf("the removed credential's session resolves as %v, want ErrSessionRevoked — the lost phone is still signed in", err)
+	}
+	if _, err := sessions.Resolve(bgctx, legacy); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("an unattributed session resolves as %v, want ErrSessionRevoked — it might have been the lost phone's", err)
+	}
+	if got, err := sessions.Resolve(bgctx, otherLaptop); err != nil || got != userID {
+		t.Fatalf("a session belonging to a DIFFERENT credential was revoked: %v", err)
 	}
 	if got, err := sessions.Resolve(bgctx, caller); err != nil || got != userID {
 		t.Fatalf("the caller's own session was revoked by its own request: %v", err)
 	}
 	if got, err := sessions.Resolve(bgctx, bystander); err != nil || got != other {
 		t.Fatalf("another account's session was revoked: %v", err)
+	}
+}
+
+// TestRemovingTheCredentialYourOwnSessionUsesSignsYouOut pins the answer to the
+// one case keepSessionHash does NOT cover. The caller is spared from the
+// unattributed sweep, never from the credential's own: they removed the thing
+// that let them in, so they sign in again with a passkey they still hold.
+func TestRemovingTheCredentialYourOwnSessionUsesSignsYouOut(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	sessions := &Sessions{Pool: pool, TTL: time.Hour}
+	userID, thisDevice := enroll(t, p, mustMint(t, pool, "retiring this device"))
+	spare := addPasskey(t, p, userID)
+
+	caller, err := sessions.IssueForCredential(bgctx, userID, thisDevice.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	survivor, err := sessions.IssueForCredential(bgctx, userID, spare.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.DeleteCredential(bgctx, userID, thisDevice.CredID, SessionHash(caller)); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	if _, err := sessions.Resolve(bgctx, caller); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("the caller's session resolves as %v after removing the credential that minted it, "+
+			"want ErrSessionRevoked — its passkey is gone", err)
+	}
+	if got, err := sessions.Resolve(bgctx, survivor); err != nil || got != userID {
+		t.Fatalf("the session on the remaining passkey was revoked too: %v", err)
+	}
+}
+
+// TestRemovingACredentialDoesNotDeleteItsSessionRows is the CASCADE-versus-SET
+// NULL decision, asserted rather than trusted to a schema nobody re-reads.
+//
+// A cascade would remove the session row outright. Resolve would then answer
+// ErrSessionUnknown ("someone typed garbage") instead of ErrSessionRevoked
+// ("someone is using a revoked credential"), and — the reason that matters —
+// 00021's BEFORE DELETE trigger on users would find no row to tombstone, so
+// that device could never be told 410 and would never wipe its local ledger.
+func TestRemovingACredentialDoesNotDeleteItsSessionRows(t *testing.T) {
+	pool := pgtest.New(t)
+	p := newPasskeys(t, pool)
+	sessions := &Sessions{Pool: pool, TTL: time.Hour}
+	userID, first := enroll(t, p, mustMint(t, pool, "cascade or set null"))
+	addPasskey(t, p, userID)
+
+	tok, err := sessions.IssueForCredential(bgctx, userID, first.CredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DeleteCredential(bgctx, userID, first.CredID, nil); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+
+	var (
+		revoked *time.Time
+		cred    []byte
+	)
+	if err := pool.QueryRow(bgctx,
+		`SELECT revoked_at, credential_id FROM sessions WHERE token_hash = $1`,
+		SessionHash(tok)).Scan(&revoked, &cred); err != nil {
+		t.Fatalf("the session row is gone after its credential was removed — the FK cascades "+
+			"where it must SET NULL: %v", err)
+	}
+	if revoked == nil {
+		t.Fatal("the session row survived but was not revoked")
+	}
+	if cred != nil {
+		t.Fatalf("credential_id is %x, want NULL: the FK did not SET NULL", cred)
+	}
+	// And the token still answers the useful 401 rather than the useless one.
+	if _, err := sessions.Resolve(bgctx, tok); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("Resolve says %v, want ErrSessionRevoked", err)
 	}
 }

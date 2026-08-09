@@ -170,14 +170,62 @@ func TestListPasskeysCarriesFiveFieldsAndNoKeyMaterial(t *testing.T) {
 		if p.LastUsedAt != nil {
 			t.Fatalf("row %d reports a last use, but neither credential has asserted", i)
 		}
-		// Both are honest nulls on this deployment: there is no AAGUID name
-		// table, and sessions do not record which credential authenticated them.
+		// An honest null on this deployment: there is no AAGUID name table.
 		// See passkeymanage.go's header.
 		if p.Authenticator != nil {
 			t.Fatalf("row %d named an authenticator this server cannot resolve", i)
 		}
+	}
+	// The session came out of register/finish, so it IS the first credential's.
+	if !out.Passkeys[0].Current {
+		t.Fatal("the credential that registered this session is not marked current")
+	}
+	if out.Passkeys[1].Current {
+		t.Fatal("a credential that authenticated nothing is marked current")
+	}
+}
+
+// TestTheCurrentMarkerFollowsTheCredentialTheSessionWasMintedWith is the
+// design's one open question, resolved: the marker is READ from
+// sessions.credential_id (00034), never inferred from last_used_at.
+//
+// The second half is the property that made the previous agent refuse to guess:
+// a session with no recorded credential marks NOTHING, rather than marking the
+// most recently used credential and being wrong.
+func TestTheCurrentMarkerFollowsTheCredentialTheSessionWasMintedWith(t *testing.T) {
+	h := newHarness(t).passkeys()
+	_, session := h.register(h.invite("two devices"))
+	second := h.addCredential(session.SessionToken)
+
+	// Sign in on the SECOND credential. The marker must move with it, which no
+	// last_used_at inference could get right for both sessions at once.
+	id, opts := h.beginAssert("/api/v1/auth/passkey/login/begin", "")
+	w := h.req("POST", "/api/v1/auth/passkey/login/finish", "", PasskeyFinishRequest{
+		CeremonyID: id, Credential: second.Assert(h.t, opts, second.Counter+1),
+	})
+	wantStatus(t, w, http.StatusOK)
+	onSecond := decodeJSON[ExchangeResponse](t, w).SessionToken
+
+	marked := func(token string) []bool {
+		var out []bool
+		for _, p := range h.listPasskeys(token).Passkeys {
+			out = append(out, p.Current)
+		}
+		return out
+	}
+	if got := marked(session.SessionToken); len(got) != 2 || !got[0] || got[1] {
+		t.Fatalf("the registration session marks %v, want [true false]", got)
+	}
+	if got := marked(onSecond); len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("the session signed in on the second credential marks %v, want [false true]", got)
+	}
+
+	// A session that records no credential — an exchange session, or one minted
+	// before 00034 — marks nothing at all.
+	unattributed := h.session(mustUUID(t, session.UserID))
+	for i, p := range h.listPasskeys(unattributed).Passkeys {
 		if p.Current {
-			t.Fatalf("row %d claims to be the current credential, which nothing here can know", i)
+			t.Fatalf("row %d is marked current for a session that records no credential", i)
 		}
 	}
 }
@@ -227,9 +275,12 @@ func TestDeletingTheLastPasskeyIsRefusedByTheServer(t *testing.T) {
 func TestDeletingAPasskeyRemovesItAndThenRefusesTheRemainingOne(t *testing.T) {
 	h := newHarness(t).passkeys()
 	first, session := h.register(h.invite("two devices"))
+	// The session was minted by `first`, so `first` is the one credential this
+	// caller cannot remove without signing itself out. It removes the OTHER one,
+	// which is what the screen's "current" marker steers a user towards.
 	second := h.addCredential(session.SessionToken)
 
-	w := h.req("DELETE", passkeyPath(first.CredID), session.SessionToken, nil)
+	w := h.req("DELETE", passkeyPath(second.CredID), session.SessionToken, nil)
 	wantStatus(t, w, http.StatusNoContent)
 	if w.Body.Len() != 0 {
 		t.Fatalf("204 carried a body: %s", w.Body.String())
@@ -237,10 +288,10 @@ func TestDeletingAPasskeyRemovesItAndThenRefusesTheRemainingOne(t *testing.T) {
 
 	got := h.listPasskeys(session.SessionToken)
 	if len(got.Passkeys) != 1 ||
-		got.Passkeys[0].CredentialID != base64.StdEncoding.EncodeToString(second.CredID) {
+		got.Passkeys[0].CredentialID != base64.StdEncoding.EncodeToString(first.CredID) {
 		t.Fatalf("after the removal the listing is %+v", got.Passkeys)
 	}
-	wantStatus(t, h.req("DELETE", passkeyPath(second.CredID), session.SessionToken, nil), http.StatusConflict)
+	wantStatus(t, h.req("DELETE", passkeyPath(first.CredID), session.SessionToken, nil), http.StatusConflict)
 }
 
 // TestDeletingAPasskeyTakesItsKeyWrapWithIt goes through the real
@@ -262,38 +313,85 @@ func TestDeletingAPasskeyTakesItsKeyWrapWithIt(t *testing.T) {
 		t.Fatalf("%d wraps before the removal, want 2", n)
 	}
 
-	wantStatus(t, h.req("DELETE", passkeyPath(first.CredID), session.SessionToken, nil), http.StatusNoContent)
+	// The added credential goes: this session was minted by `first`, and removing
+	// that one would sign the caller out before it could read the wraps back.
+	wantStatus(t, h.req("DELETE", passkeyPath(second.CredID), session.SessionToken, nil), http.StatusNoContent)
 
 	if n := h.countWraps(userID); n != 1 {
 		t.Fatalf("%d wraps after the removal, want 1 — the ON DELETE CASCADE did not fire", n)
 	}
 	wraps := decodeJSON[KeyWrapsResponse](t, h.req("GET", "/api/v1/keys/wraps", session.SessionToken, nil))
-	if len(wraps.Wraps) != 1 || wraps.Wraps[0].CredentialID != b64(second.CredID) {
+	if len(wraps.Wraps) != 1 || wraps.Wraps[0].CredentialID != b64(first.CredID) {
 		t.Fatalf("the surviving wrap is %+v", wraps.Wraps)
 	}
 }
 
-// TestDeletingAPasskeyEndsTheAccountsOtherSessions is the point of the feature.
-// It also pins the over-reach the missing sessions↔credential link forces: every
-// session but the caller's goes, not only the removed credential's. See
-// auth/passkey_manage.go's header.
-func TestDeletingAPasskeyEndsTheAccountsOtherSessions(t *testing.T) {
+// TestDeletingAPasskeyEndsOnlyThatPasskeysSessions is the point of the feature
+// over HTTP, and the narrowing 00034 bought: the lost phone is signed out, the
+// user's OTHER device is not.
+//
+// The caller here is signed in on the credential that survives, which is the
+// ordinary shape of "remove my lost phone".
+func TestDeletingAPasskeyEndsOnlyThatPasskeysSessions(t *testing.T) {
 	h := newHarness(t).passkeys()
-	first, session := h.register(h.invite("lost phone"))
-	h.addCredential(session.SessionToken)
-	userID := mustUUID(t, session.UserID)
-	lostPhone := h.session(userID)
+	// Three ceremonies plus five plain requests is past the shipped per-IP burst
+	// of 12. The limit itself has its own test; this one is about revocation.
+	h.srv.PasskeyPerIP = NewLimiter(passkeyPerIPRate, 64, passkeyMaxKeys, h.srv.now)
+	lost, lostSession := h.register(h.invite("lost phone"))
+	second := h.addCredential(lostSession.SessionToken)
+	userID := mustUUID(t, lostSession.UserID)
 
-	// A different account's session, which must be untouched.
+	// The caller: a sign-in on the credential that will survive.
+	id, opts := h.beginAssert("/api/v1/auth/passkey/login/begin", "")
+	w := h.req("POST", "/api/v1/auth/passkey/login/finish", "", PasskeyFinishRequest{
+		CeremonyID: id, Credential: second.Assert(t, opts, second.Counter+1),
+	})
+	wantStatus(t, w, http.StatusOK)
+	caller := decodeJSON[ExchangeResponse](t, w).SessionToken
+
+	// A session this server cannot attribute, and another account's, which must
+	// be untouched.
+	unattributed := h.session(userID)
 	_, bystander := h.register(h.invite("a bystander"))
 
+	wantStatus(t, h.req("DELETE", passkeyPath(lost.CredID), caller, nil), http.StatusNoContent)
+
+	if w := h.req("GET", "/api/v1/auth/passkeys", lostSession.SessionToken, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the removed passkey's session still works (status %d) — the lost phone is still signed in", w.Code)
+	}
+	if w := h.req("GET", "/api/v1/auth/passkeys", unattributed, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a session this server cannot attribute survived (status %d); it might have been the lost phone's", w.Code)
+	}
+	wantStatus(t, h.req("GET", "/api/v1/auth/passkeys", caller, nil), http.StatusOK)
+	wantStatus(t, h.req("GET", "/api/v1/auth/passkeys", bystander.SessionToken, nil), http.StatusOK)
+}
+
+// TestDeletingAPasskeyLeavesTheAccountsOtherDevicesSignedIn is the regression
+// this whole change exists to prevent: before 00034 the DELETE revoked every
+// session but the caller's, so retiring a phone signed the laptop out.
+func TestDeletingAPasskeyLeavesTheAccountsOtherDevicesSignedIn(t *testing.T) {
+	h := newHarness(t).passkeys()
+	first, session := h.register(h.invite("phone and laptop"))
+	laptopCred := h.addCredential(session.SessionToken)
+
+	// The laptop signs in on its own credential.
+	id, opts := h.beginAssert("/api/v1/auth/passkey/login/begin", "")
+	w := h.req("POST", "/api/v1/auth/passkey/login/finish", "", PasskeyFinishRequest{
+		CeremonyID: id, Credential: laptopCred.Assert(t, opts, laptopCred.Counter+1),
+	})
+	wantStatus(t, w, http.StatusOK)
+	laptop := decodeJSON[ExchangeResponse](t, w).SessionToken
+
+	// The phone removes its own passkey. It is standing on that credential, so
+	// it signs ITSELF out — and only itself.
 	wantStatus(t, h.req("DELETE", passkeyPath(first.CredID), session.SessionToken, nil), http.StatusNoContent)
 
-	if w := h.req("GET", "/api/v1/auth/passkeys", lostPhone, nil); w.Code != http.StatusUnauthorized {
-		t.Fatalf("the removed device's session still works (status %d) — it is still signed in", w.Code)
+	if w := h.req("GET", "/api/v1/auth/passkeys", laptop, nil); w.Code != http.StatusOK {
+		t.Fatalf("the laptop was signed out (status %d) by a removal that had nothing to do with it", w.Code)
 	}
-	wantStatus(t, h.req("GET", "/api/v1/auth/passkeys", session.SessionToken, nil), http.StatusOK)
-	wantStatus(t, h.req("GET", "/api/v1/auth/passkeys", bystander.SessionToken, nil), http.StatusOK)
+	if w := h.req("GET", "/api/v1/auth/passkeys", session.SessionToken, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the caller removed the credential its own session was minted with and is still signed in (status %d)", w.Code)
+	}
 }
 
 func TestDeletingAnotherAccountsPasskeyIsRefusedAndLeavesItAlone(t *testing.T) {

@@ -33,7 +33,7 @@ package api
 // this is a property of the type rather than of a SELECT list somebody could
 // widen. A test asserts the response body cannot contain the key.
 //
-// # Two fields that are honest about what this deployment does not know
+// # One field that is honest about what this deployment does not know
 //
 // `authenticator` is always null. Turning an AAGUID into "iCloud Keychain"
 // needs the FIDO Metadata Service blob, which this server does not ship and
@@ -41,27 +41,34 @@ package api
 // client reads it and a name can be filled in later without a wire change; null
 // says "unknown", which is true.
 //
-// `current` is always false, and that is the design's one open question landing
-// on the floor. `sessions` records (token_hash, user_id, created_at,
-// expires_at, revoked_at) and NOT which credential authenticated it, so this
-// server genuinely cannot say which row is the one the caller is standing on.
-// Guessing — say, by matching last_used_at against the session's created_at —
-// would label a row "this device" on an inference that re-authentication and
-// any later sign-in both break, and a wrong "this device" marker is worse than
-// none. It needs a migration; see auth/passkey_manage.go's header for the
-// column and for what the same column would fix about session revocation.
+// # `current` is real, and it is READ rather than inferred
 //
-// # Removing a passkey signs the account's other devices out
+// It comes from the caller's OWN session row: 00034 added
+// sessions.credential_id, written at issue time by the ceremony that minted the
+// session, and the marker is a byte comparison against it. It is never derived
+// from last_used_at or from created_at proximity — that inference is broken by
+// re-authentication and by any later sign-in, and a wrong "this device" marker
+// is worse than none.
 //
-// Because the credential→session link does not exist, DELETE revokes every
-// session of the account EXCEPT the caller's own. That is a superset of the
-// right answer: the removed credential's sessions are certainly among them, so
-// the lost phone is signed out and its push registrations are deleted, while
-// the user's other devices are signed out too and must re-authenticate with a
-// passkey they still hold. Stated plainly rather than smoothed over — it is the
-// cost of the missing column, and it is the right side to err on.
+// A session that records NO credential — one minted before 00034, or by the
+// Apple/Google ID-token exchange, which authenticates no credential — marks
+// NOTHING. Every row comes back current:false, which is the truthful rendering
+// of "this server does not know which of these you are standing on". The
+// screen's marker is then absent rather than wrong.
+//
+// # Removing a passkey signs out exactly what that passkey signed in
+//
+// DELETE revokes the sessions the removed credential minted, and leaves the
+// account's other devices signed in. It also revokes any session it CANNOT
+// attribute (pre-00034 or exchange-minted), except the caller's own, because
+// "might be the lost phone" is the one place to err towards signing out — see
+// auth/passkey_manage.go's header, which enumerates all four populations. A
+// caller who removes the credential their own session was minted with is signed
+// out by their own request; the `current` marker above exists so that is a
+// decision rather than a surprise.
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -85,8 +92,9 @@ type PasskeySummary struct {
 	// Authenticator is the AAGUID-derived model name, and is always null on this
 	// deployment. See the file header.
 	Authenticator *string `json:"authenticator"`
-	// Current marks the credential that authenticated THIS session, and is
-	// always false because sessions do not record one. See the file header.
+	// Current marks the credential that authenticated THIS session. It is false
+	// on every row when the session records no credential, which is the honest
+	// rendering of "unknown". See the file header.
 	Current bool `json:"current"`
 }
 
@@ -106,16 +114,32 @@ func (s *Server) handleListPasskeys(w http.ResponseWriter, r *http.Request, user
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
+	// The credential this very request's session was minted by, or nil when the
+	// session predates 00034 or came from the ID-token exchange. A failure to
+	// read it is NOT a 500: the listing is still completely correct without a
+	// marker, and refusing to show a user their passkeys because a supplementary
+	// lookup failed is a worse answer than the one already available.
+	var mine []byte
+	if tok, ok := bearerToken(r); ok {
+		var err error
+		if mine, err = s.Sessions.CredentialForSession(r.Context(), tok); err != nil {
+			s.logf("api: list passkeys for %s: resolve current credential: %v", userID, err)
+			mine = nil
+		}
+	}
+
 	out := PasskeysResponse{Passkeys: make([]PasskeySummary, 0, len(creds))}
 	for _, c := range creds {
 		out.Passkeys = append(out.Passkeys, PasskeySummary{
 			CredentialID: base64.StdEncoding.EncodeToString(c.ID),
 			CreatedAt:    c.CreatedAt,
 			LastUsedAt:   c.LastUsedAt,
-			// Both deliberately left at their zero values. See the file header;
-			// this server does not know either fact and will not invent it.
+			// Deliberately left at its zero value: there is no AAGUID name table
+			// on this deployment and a name will not be invented. See the header.
 			Authenticator: nil,
-			Current:       false,
+			// bytes.Equal, not a length-guarded compare: mine is nil for an
+			// unattributed session and c.ID is never empty, so nil marks nothing.
+			Current: len(mine) > 0 && bytes.Equal(mine, c.ID),
 		})
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -134,8 +158,9 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	// The session whose access must survive its own request. requireSession has
-	// already resolved this token, so the read cannot fail here; push.go
+	// The caller's own session, spared from the UNATTRIBUTED sweep only — if it
+	// was minted by the credential being removed, it goes with it. requireSession
+	// has already resolved this token, so the read cannot fail here; push.go
 	// re-extracts it the same way rather than widening authedHandler for two
 	// handlers out of twenty.
 	var keep []byte
@@ -168,9 +193,10 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	// Loud in the log, because the user is about to notice it: every other
-	// device on this account has just been signed out. See the file header.
-	s.logf("api: delete passkey for %s: removed, revoked %d other session(s)", userID, revoked)
+	// Loud in the log, because a user who is unexpectedly signed out somewhere
+	// should be explicable from it: this is now exactly the removed credential's
+	// sessions plus any this server could not attribute.
+	s.logf("api: delete passkey for %s: removed, revoked %d session(s) it had authenticated", userID, revoked)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 }
