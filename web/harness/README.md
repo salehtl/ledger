@@ -279,13 +279,93 @@ await field.fill("");
 console.log("after clearing:", await field.inputValue()); // should be "", not "0"
 ```
 
-## `v2settings.mjs` — the only runner that actually loads `web/src`
+## The v2 runners — `v2nav.mjs`, `v2shoot.mjs`, `v2explore.mjs`
 
 **Read this before trusting any green run in this directory.** Everything above
 — `stack.sh`, `shoot.mjs`, `probe.mjs`, `nav.mjs` — was forked from `frontend/`
 with the tree and still drives **v1**: `stack.sh` runs vite in `$REPO/frontend`
 and `nav.mjs` taps v1's Settings hub rows. Point them at a v2 change and they
 will report a clean screen they never loaded.
+
+```bash
+harness/v2stack.sh up                 # cluster + ledgerd + vite, prints an invite
+node harness/v2shoot.mjs <invite>     # every v2 screen, 390 + 320, light + dark
+node harness/v2shoot.mjs <invite> --fast          # one pass, for a quick loop
+node harness/v2shoot.mjs <invite> --screens home,transactions
+harness/v2stack.sh down
+```
+
+`v2nav.mjs` is the module the runners share, and it owns three things:
+
+- **`ceremony(page, invite, {onStep, skip})`** — sign-up through to the product
+  shell. `BootGate` is in front of every screen and there is no way past it but a
+  real account. `onStep` fires on each onboarding screen *before* the press that
+  leaves it, because those screens are unreachable afterwards.
+- **`seed(page)`** — fixture transactions, written by driving the app's own CSV
+  import. There is no HTTP seam: v2's screens read a projection of an append-only
+  op log, so the only honest way to put a row on a screen is to make the app
+  author the op. The fixtures are hostile on purpose — a 74-character merchant
+  with no spaces, `9,999,999.99`, a currency with no configured rate, a category
+  long enough to wrap a chip.
+- **`SCREENS`** and **`SETTINGS_DIALOGS`** — every surface, as the literal taps a
+  user performs. No URL routing to shortcut through, so a screen that becomes
+  unreachable in the UI becomes unreachable here. **That failure is a finding.**
+
+`v2shoot.mjs` screenshots and runs `audit.mjs` over each screen at every scroll
+position, then adds one check of its own: **it opens every `InfoTip` and measures
+the panel against the viewport.** That check found the tip that opened 170px off
+the side of the forwarding step — a defect no unit test could see, because jsdom
+has no layout and every rectangle it reports is zero.
+
+`v2explore.mjs` walks the ceremony and *reports* rather than asserts, printing
+every visible control at each step. Use it when the flow has changed and the step
+table needs rebuilding — that is faster than reading six screens' JSX, and it does
+not go stale the same way. It exists because two steps `v2settings.mjs` waits for
+(the recovery type-back and the whole verification gate) no longer exist, so that
+file can no longer complete its own walk.
+
+### Two things it asserts about itself
+
+Both are here because a check that cannot fail is this repo's most repeated
+defect, and both have already caught themselves:
+
+- **The fixtures must be ON A SCREEN before any screen is measured.** The importer
+  reporting success is not the same as the app showing anything: one run imported
+  20 rows that no screen displayed until a relaunch, and every audit in that run
+  came back "clean" because there was nothing on the glass to be wrong.
+- **Two identical scroll segments is a failure**, inherited from `v2settings.mjs`,
+  whose first version picked an inner scroller and reported a clean 2983px screen
+  it had never scrolled.
+
+### The live layer, and why three helpers filter on `[inert]`
+
+Drill-ins **stack** — Held mail opens over Settings — and `AppShell` covers the
+buried layer with `inert` rather than unmounting it. An inert button is still laid
+out and still passes Playwright's `isVisible()`. Three separate helpers had to
+learn this: the scroller picker (it chose the buried screen's scroller and
+"captured" six identical segments), the back-button finder (it clicked the buried
+panel's back arrow and retried for thirty seconds), and the tip crawler (it clicked
+Settings' tip through the panel on top of it).
+
+For dialogs the filter is different, because **`Dialog` does not mark the page
+beneath it inert** — `audit.mjs` reports `background-layer-not-inert` on every one
+— so the tip crawler scopes to inside the open `[role="dialog"]` instead.
+
+### Ports are overridable, because parallel sessions are normal
+
+`v2stack.sh`'s defaults are fixed values and two agents running it at once meant
+the second one's `--strictPort` vite died on the first one's port. Every collidable
+name is an env var:
+
+```bash
+LEDGER_V2_HARNESS_DIR=/tmp/ledger-v2-mine \
+LEDGER_V2_API_PORT=8133 LEDGER_V2_UI_PORT=5187 \
+LEDGER_V2_SMTP_PORT=2536 LEDGER_V2_DB=ledger_v2_mine harness/v2stack.sh up
+```
+
+`sendmail.py` reads `LEDGER_V2_SMTP_PORT` too.
+
+## `v2settings.mjs` — the first v2 runner, now superseded for capture
 
 `v2settings.mjs` runs against the v2 stack and the v2 tree. It walks the whole
 ceremony, because `BootGate` is in front of every screen and there is no way
