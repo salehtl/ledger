@@ -52,7 +52,7 @@ import { Notice } from "../onboarding/Shell";
 import { deleteAccount } from "../../v2/deleteAccount";
 import { isPasskeyError, webSecretStore, type V2Handle } from "../../v2/session";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
-import { wipeLocalData, PROFILE } from "../../v2/BootGate";
+import { wipeLocalData, PROFILE, SERVER } from "../../v2/BootGate";
 
 /**
  * The word. Fixed, short, and the same one every time — a phrase generated per
@@ -92,7 +92,7 @@ function writerIdOf(handle: V2Handle): string | null {
 export function DeleteAccountPanel({
   handle,
   destroy = (h) =>
-    deleteAccount({ client: h.client, secrets: webSecretStore(PROFILE) }),
+    deleteAccount({ client: h.client, secrets: webSecretStore(PROFILE), server: SERVER }),
   wipe = wipeLocalData,
 }: DeleteAccountPanelProps) {
   const [draft, setDraft] = useState("");
