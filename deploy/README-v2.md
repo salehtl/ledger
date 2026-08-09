@@ -651,6 +651,53 @@ could switch the guard off and rewrite the log peer devices audit for key
 substitution. Consequence for the deploy script: **apply migrations out-of-band
 as `ledger_migrate` before starting the new binary.**
 
+### 4.1 The isolation release — `00030`–`00033`, and one mandatory step after
+
+Added 2026-08-09: `users.status`, `account_usage`, `account_limits`,
+`account_refusals`, `smtp_user_counters`, and a widened
+`parse_diagnostics.reject_reason`.
+
+`00031` **backfills** `account_usage` from the rows already in the database, so
+the ledger is correct from its first read rather than counting only from
+deployment onward.
+
+> ## ⚠ The backfill has a window, and closing it is a deploy step
+>
+> Migrations run out of band **before** the new binary starts. So the **old**
+> binary — which does not maintain the ledger — keeps writing between the backfill
+> `sum()` and the restart. Every one of those writes is invisible to the ledger.
+>
+> Either run the migration **with `ledgerd` stopped**, or treat this as mandatory
+> immediately after the restart:
+>
+> ```bash
+> sudo -u ledgerd ledgerd verify --repair-usage -config /etc/ledger-v2/config.toml
+> ```
+>
+> The repair locks one row at a time and recomputes it, so it is exact with the
+> service running. **Drift here is expected on this release, not a defect.**
+
+**`ledgerd verify` reports usage drift as a finding and exits non-zero.** That is
+the check working. Two causes are legitimate:
+
+1. The backfill window above — cleared by `--repair-usage`.
+2. **Quarantine held mail, until the `quarantine.Hold` ledger seam ships.** `Hold`
+   does not yet maintain `account_usage`, so any box with held mail reports
+   standing quarantine drift. Expected until that seam lands; do not "repair" it
+   in a loop, because it will come straight back.
+
+`verify` is the one subcommand that **does not** apply migrations, deliberately —
+an audit must not modify what it audits.
+
+### 4.2 New configuration
+
+`[headroom]` — `path`, `floor_bytes` (default 8 GB), `interval` (default 30s), with
+`LEDGER_HEADROOM_*` env overrides. A malformed override is refused, never silently
+defaulted. Below the floor **all durable writes are refused**, including creating a
+session, so **nobody can sign in while the fuse is tripped**. That is the emergency
+state working as designed. The console's status strip shows the floor, current free
+space and the shortfall on every tab.
+
 ---
 
 ## 5. The admin console
