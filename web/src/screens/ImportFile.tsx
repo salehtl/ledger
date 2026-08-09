@@ -47,7 +47,8 @@ import {
   type ImportMap,
   type ImportPlan,
 } from "../v2/sources/importFile";
-import { useHomeCurrency, useTxnSource, v2Keys } from "../v2/queries";
+import { invalidateAfterSync, useHomeCurrency, useTxnSource, v2Keys } from "../v2/queries";
+import { useV2 } from "../v2/BootGate";
 import { useWriter, type Writer } from "../v2/writer";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -74,6 +75,10 @@ export function ImportFile({ writer: injectedWriter, readFile = readFileBytes, o
   const source = useTxnSource();
   const homeCurrency = useHomeCurrency(source);
   const qc = useQueryClient();
+  // Nullable, and the tests mount this screen without a runtime: an import must
+  // still complete with no gate above it, so the fold is optional and the
+  // durable write is not.
+  const sync = useV2()?.sync ?? null;
 
   const [fileName, setFileName] = useState("");
   const [text, setText] = useState("");
@@ -160,14 +165,40 @@ export function ImportFile({ writer: injectedWriter, readFile = readFileBytes, o
       setFileName("");
       setInputKey((n) => n + 1);
       await qc.invalidateQueries({ queryKey: v2Keys.all });
-      // Not awaited: the ops are durable the moment they are queued, and a
-      // screen that stalled on the network would be unusable offline.
-      writer.flush().catch(() => undefined);
+      /*
+       * Push, then FOLD, then tell the tree — without making the user wait.
+       *
+       * Invalidating alone re-reads the projection, and the projection does not
+       * move until a sync: `net/engine.ts` projects on launch, on
+       * `visibilitychange` and on pull-to-refresh, and on nothing else. So this
+       * screen said "20 transactions added to your ledger." while Transactions
+       * said "No transactions", Home said 0.00 and Review said "All caught up",
+       * until the user happened to relaunch the app. Measured on 2026-08-09.
+       *
+       * The optimistic store (`v2/authored.ts`) now covers the Transactions list
+       * across screens — that was the other half of the same bug — but it is a
+       * per-list stopgap and Home and Insights read the projection directly. A
+       * fold is the only thing that makes every screen agree.
+       *
+       * Deliberately not awaited, and every failure swallowed: the ops are
+       * durable the moment they are queued, so an import on a plane must finish
+       * exactly as it does online. `sync.run` never rejects — a failure becomes
+       * a fault on the gate's own status, where the user can see it.
+       */
+      void (async () => {
+        try {
+          await writer.flush();
+        } catch {
+          // Queued and durable; the next sync drains it.
+        }
+        await sync?.run("refresh");
+        await invalidateAfterSync(qc);
+      })();
       onDone?.(built.specs.length);
     } finally {
       setBusy(false);
     }
-  }, [plan, writer, digest, qc, onDone]);
+  }, [plan, writer, digest, qc, sync, onDone]);
 
   const setColumn = (key: keyof ColumnMap, value: string) =>
     setMap((m) => (m === null ? m : { ...m, columns: { ...m.columns, [key]: value } }));

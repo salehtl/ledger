@@ -64,15 +64,45 @@ export function outboxFor(handle: V2Handle): Outbox {
   return made;
 }
 
+/**
+ * The writer's IDENTITY is per handle, not per call.
+ *
+ * # A new object per caller split the optimistic store in two
+ *
+ * `authored.ts` keys its `Authored` memory in a `WeakMap<Writer, Authored>` —
+ * the record of what this device has authored but not yet folded, which is the
+ * only thing that puts a just-created row on a list before the next sync. That
+ * keying is only correct if every screen holding "the writer" holds the *same*
+ * object, and this function used to mint a fresh literal on every call. Two
+ * screens therefore got two writers and two stores, and each could only see what
+ * it had authored itself.
+ *
+ * What that shipped: importing a statement said **"20 transactions added to your
+ * ledger."** and then Transactions said **"No transactions"**, Home said 0.00 and
+ * Review said "All caught up" — because `ImportFile` recorded the rows in its own
+ * store and the list read a different, empty one. They appeared only after a
+ * relaunch, since `net/engine.ts` projects on launch, on `visibilitychange` and
+ * on pull-to-refresh, and on nothing else. Measured on 2026-08-09 by
+ * `harness/v2debug.mjs`: empty before a reload, all 20 rows after one.
+ *
+ * `outboxFor` above already had this right, and `authored.ts`'s own header says
+ * it is keyed "exactly as `outboxFor` is keyed on the handle". Now it is.
+ */
+const writers = new WeakMap<V2Handle, Writer>();
+
 export function writerFor(handle: V2Handle): Writer {
+  const held = writers.get(handle);
+  if (held !== undefined) return held;
   const outbox = outboxFor(handle);
-  return {
+  const made: Writer = {
     get pending(): readonly Op[] {
       return outbox.pending;
     },
     enqueueMany: (specs) => void outbox.enqueueMany(specs),
     flush: async () => void (await outbox.flush()),
   };
+  writers.set(handle, made);
+  return made;
 }
 
 /**
