@@ -1,6 +1,9 @@
 package parse
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 const dibCardPurchase = `معاملة بطاقة ائتمان
 عزيزي المتعامل,
@@ -184,5 +187,35 @@ func TestDIBTransferIncomingIsCredit(t *testing.T) {
 	}
 	if got.Direction != DirectionCredit {
 		t.Errorf("direction = %q, want credit (incoming transfer / desc suffix CREDIT)", got.Direction)
+	}
+}
+
+// dibEnglishMoneyTransfer is DIB's English "Money Transfer" confirmation — a
+// duplicate notification for a fund transfer already recorded from its
+// sibling Arabic account-transaction email. Layout from a real message; every
+// identifier below is synthetic.
+const dibEnglishMoneyTransfer = `Money Transfer
+Dear Customer,
+This is to notify you that a Domestic Fund Transfer transaction has been initiated on 02-08-2026 12:58:19 with the following details.
+Amount
+9,780.00
+From
+AE9801234XXXXXX9
+[From Account FRM]
+To
+AE0400012345678XXXXX999
+Beneficiary Bank
+National Bank of Abu Dhabi
+Status
+Credited to beneficiary
+Reference Number
+[Reference Number]
+If you have not initiated this request, kindly change your password and inform the Bank by calling +97146092222.
+This is the new design of automated notification emails that you receive from Dubai Islamic Bank (DIB).`
+
+func TestDIBEnglishMoneyTransferReturnsIgnoreError(t *testing.T) {
+	_, err := DIBParser{}.Parse("DIB Notification", dibEnglishMoneyTransfer)
+	if !errors.Is(err, ErrIgnoreEmail) {
+		t.Fatalf("err = %v, want ErrIgnoreEmail", err)
 	}
 }

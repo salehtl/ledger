@@ -38,6 +38,10 @@ func validMonth(month string) bool {
 	return mm >= 1 && mm <= 12
 }
 
+// ValidMonth reports whether s is a 'YYYY-MM' month string. Exported for
+// handlers that must validate a month before it reaches a store method.
+func ValidMonth(s string) bool { return validMonth(s) }
+
 // rowQuerier is the QueryRow slice of *sql.DB / *sql.Tx, so validation helpers
 // run inside or outside an explicit transaction.
 type rowQuerier interface {
@@ -182,6 +186,126 @@ func (s *Store) MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryI
 		}
 	}
 	return tx.Commit()
+}
+
+// seedHorizonMonths is how far beyond the current calendar month seeding will
+// reach. The month picker has no upper bound and both the Plan screen and the
+// Home strip hit GET /api/envelopes, so without a ceiling a few taps of "next
+// month" write a full plan into each month passed through. That is worse than
+// wasted rows: a seeded month HAS rows, so it counts as "touched" forever and
+// can never re-inherit a later revision of the plan — the stale snapshot is
+// frozen in. A year of look-ahead is far more than the UI is used for.
+const seedHorizonMonths = 12
+
+// SeedEnvelopeAssignmentsFromPreviousMonth copies the most recent planned
+// month's positive assignments into month, so a stable budget does not have to
+// be re-entered every month. Returns how many rows it wrote; 0 when it
+// declines. Idempotent.
+//
+// It declines unless all four hold:
+//
+//   - month has NO rows at all. Zeroing a month through the assign sheet
+//     WRITES rows, so "has rows" is the faithful record of "the user has
+//     touched this month" — a month deliberately emptied stays empty instead
+//     of refilling itself. Do not weaken this to "has no non-zero rows".
+//   - some earlier month has a POSITIVE assignment to a category still
+//     eligible (active, kind='spending' — the same predicate
+//     envelopeCategoryOK/EnvelopeMonthSummary use). The greatest such month
+//     wins, so jumping ahead over empty months inherits the last real plan
+//     rather than an empty one. A month with no positive eligible row — every
+//     row zero, negative, or belonging to a category since deactivated or
+//     re-kinded (e.g. edited to 'income') — is not eligible as a source at
+//     all; otherwise it would be picked and then nothing would be copied,
+//     silently producing a zero-row "seed" that leaves the target month
+//     looking untouched forever.
+//   - month is the current calendar month or later. Browsing back through
+//     history must never rewrite it.
+//   - month is at most seedHorizonMonths beyond the current calendar month
+//     (see that constant).
+//
+// Negative assignments do NOT carry, and this is load-bearing. A negative
+// assigned_fils is legitimate — move-money may over-draw a source envelope —
+// but it records a ONE-OFF correction ("I took money out of this envelope this
+// month to fund another"), not a recurring plan element. envelopeEraFold runs
+// the era balance as b += assigned − activity and charges the RISE in the
+// negative high-water mark to the next month's Ready to Assign; a carried
+// negative therefore drives the balance further negative every month it is
+// copied, and each copy is billed as fresh overspend debt for spending that
+// never happened. Seeding three months ahead of a single −218,510 over-draw
+// used to charge that amount against RTA three separate times and render the
+// envelope overspent in months with zero activity.
+//
+// Rows belonging to a category that is no longer an active spending category
+// are never copied — EnvelopeMonthSummary would never surface them, so copying
+// them would produce assigned fils invisible to every budget view (silently
+// breaking the RTA identity).
+func (s *Store) SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error) {
+	if !validMonth(month) {
+		return 0, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
+	}
+	now := time.Now().UTC()
+	if month < now.Format("2006-01") {
+		return 0, nil
+	}
+	// Build the horizon by normalising year/month arithmetic rather than
+	// time.AddDate, which normalises DAY overflow (Jan 31 + 1 month → Mar 3)
+	// and would shift the boundary by a whole month at the end of long months.
+	horizonY, horizonM := now.Year(), int(now.Month())+seedHorizonMonths
+	horizonY, horizonM = horizonY+(horizonM-1)/12, (horizonM-1)%12+1
+	if month > fmt.Sprintf("%04d-%02d", horizonY, horizonM) {
+		return 0, nil
+	}
+
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Re-check inside the transaction: the caller's mutex serialises the HTTP
+	// handlers, but nothing stops another writer.
+	var existing int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM envelope_assignments WHERE month=?`, month).Scan(&existing); err != nil {
+		return 0, err
+	}
+	if existing > 0 {
+		return 0, nil
+	}
+
+	var source sql.NullString
+	err = tx.QueryRow(
+		`SELECT MAX(ea.month) FROM envelope_assignments ea
+		   JOIN categories c ON c.id = ea.category_id
+		  WHERE ea.month < ? AND ea.assigned_fils > 0
+		    AND c.is_active=1 AND c.kind='spending'`,
+		month).Scan(&source)
+	if err != nil {
+		return 0, err
+	}
+	if !source.Valid {
+		return 0, nil
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO envelope_assignments (month, category_id, assigned_fils, updated_at)
+		 SELECT ?, ea.category_id, ea.assigned_fils, ?
+		   FROM envelope_assignments ea
+		   JOIN categories c ON c.id = ea.category_id
+		  WHERE ea.month = ? AND ea.assigned_fils > 0
+		    AND c.is_active=1 AND c.kind='spending'`,
+		month, isoNow(s), source.String)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // EnvelopeDelta is one category's share of a batch add-delta write (the
@@ -449,7 +573,14 @@ func (s *Store) envelopeActivity(op, month string) (map[int64]map[string]int64, 
 // envelopeEraFold). Categories with no assignments/activity still appear (all
 // zeros) so the Plan screen can list every envelope; ordering is bucket
 // (need, want, saving) then name.
-func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
+//
+// mode selects the budgeting method (see BudgetModeSimple/BudgetModeEnvelope
+// and NormalizeBudgetMode): in BudgetModeSimple the prior-month era-fold is
+// skipped entirely and CarryoverFils/OverspendDebtFils stay at their zero
+// values, so a category's available is just assigned minus this month's
+// activity. Any mode other than BudgetModeEnvelope behaves as simple. The
+// envelope fold itself is untouched — sunset, not removed.
+func (s *Store) EnvelopeMonthSummary(month string, mode string) ([]EnvelopeMonthRow, error) {
 	if !validMonth(month) {
 		return nil, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
 	}
@@ -458,6 +589,13 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 		return nil, fmt.Errorf("%w: month %q (want YYYY-MM)", ErrEnvelopeInvalid, month)
 	}
 	prevMonth := monthStart.AddDate(0, -1, 0).Format("2006-01")
+
+	// Simple mode is monthly budgets: the assignment persists but nothing
+	// carries in either direction, so the whole prior-month era-fold is skipped
+	// — both because its result would be discarded and because it is the
+	// expensive part of this query. The fold itself is untouched and still
+	// reachable via BudgetModeEnvelope; it is sunset, not removed.
+	simple := NormalizeBudgetMode(mode) == BudgetModeSimple
 
 	catRows, err := s.DB.Query(
 		`SELECT id, name, COALESCE(bucket,'')
@@ -482,11 +620,17 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 	}
 
 	// Assignments: this month flat, prior months per month (the fold needs the
-	// calendar position of every prior assignment, not just their sum).
+	// calendar position of every prior assignment, not just their sum). In
+	// simple mode only this month's row is needed, so the query is scoped to
+	// month=? — the prior-month scan never runs.
 	priorAssigned := make(map[int64]map[string]int64)
+	assignmentOp := "<="
+	if simple {
+		assignmentOp = "="
+	}
 	rows, err := s.DB.Query(
 		`SELECT category_id, month, COALESCE(SUM(assigned_fils),0)
-		   FROM envelope_assignments WHERE month <= ? GROUP BY category_id, month`, month)
+		   FROM envelope_assignments WHERE month `+assignmentOp+` ? GROUP BY category_id, month`, month)
 	if err != nil {
 		return nil, err
 	}
@@ -520,9 +664,11 @@ func (s *Store) EnvelopeMonthSummary(month string) ([]EnvelopeMonthRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	prior, err := s.envelopeActivity("<", month)
-	if err != nil {
-		return nil, err
+	var prior map[int64]map[string]int64
+	if !simple {
+		if prior, err = s.envelopeActivity("<", month); err != nil {
+			return nil, err
+		}
 	}
 	for catID, byMonth := range current {
 		if i, ok := index[catID]; ok {

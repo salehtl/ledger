@@ -4,6 +4,15 @@ import type { TransactionEmail, Txn } from "../../api/types";
 import { Dialog } from "../ui/Dialog";
 import { PixelSpinner } from "../ui/PixelSpinner";
 
+/** received_at is RFC3339 from the server, but legacy rows can hold "" or junk. */
+function formatReceivedAt(iso: string): string {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-AE", {
+    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
 export function EmailPreviewSheet({ txn, onClose }: { txn: Txn; onClose: () => void }) {
   const email = useQuery({
     queryKey: ["transaction-email", txn.ID],
@@ -22,8 +31,14 @@ export function EmailPreviewSheet({ txn, onClose }: { txn: Txn; onClose: () => v
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
             <dt className="text-muted">From</dt><dd className="min-w-0 break-words">{email.data.from || "—"}</dd>
             <dt className="text-muted">Subject</dt><dd className="min-w-0 break-words">{email.data.subject || "—"}</dd>
+            <dt className="text-muted">Date</dt><dd className="min-w-0 break-words">{formatReceivedAt(email.data.received_at)}</dd>
           </dl>
-          <pre className="max-h-[55dvh] overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[var(--radius)] bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg">{email.data.body}</pre>
+          {/* The server already reduced the message to plain text, one value
+              per line. Prose type, not monospace: this is for reading, not for
+              inspecting bytes. `whitespace-pre-wrap` keeps those line breaks. */}
+          <div className="max-h-[55dvh] overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[var(--radius)] bg-surface-2 p-3 text-sm leading-relaxed text-fg">
+            {email.data.body.trim() || "This email has no readable text."}
+          </div>
         </div>
       )}
     </Dialog>

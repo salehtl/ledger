@@ -59,3 +59,34 @@ describe("AssignSheet's title dot", () => {
     expect(dot().style.backgroundColor).toBe("var(--color-slate)");
   });
 });
+
+describe("AssignSheet's carried over row", () => {
+  // In budget_mode "simple" (the default) the envelope era-fold never runs,
+  // so carryover_fils is always 0 — showing "carried over AED 0.00" would be
+  // a vestigial line explaining a mechanism that isn't running. Only render
+  // it when there is something to say.
+  it("is hidden when carryover_fils is 0", () => {
+    wrap(undefined);
+    expect(screen.queryByText("carried over")).not.toBeInTheDocument();
+  });
+
+  it("is shown when carryover_fils is non-zero (envelope mode)", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MotionProvider>
+          <AssignSheet
+            envelope={{ ...envelope, carryover_fils: 5000 }}
+            month="2026-07"
+            canMoveIn={false}
+            color={undefined}
+            onClose={() => {}}
+            onMoveMoney={() => {}}
+            onEditTarget={() => {}}
+          />
+        </MotionProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("carried over")).toBeInTheDocument();
+  });
+});

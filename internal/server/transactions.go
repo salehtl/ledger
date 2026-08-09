@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ledger/internal/parse"
 	"ledger/internal/store"
 )
 
@@ -197,7 +198,33 @@ func (s *Server) handleTransactionEmail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(email)
+	json.NewEncoder(w).Encode(readableEmail(email))
+}
+
+// readableEmail turns the retained RFC822 message into something a human can
+// actually read: the preview exists to answer "what is this email about", and
+// the raw source buries one sentence under kilobytes of DKIM headers and MIME
+// boundaries. It runs the same BodyText+Unwrap pipeline the parse cascade
+// feeds its templates, so the review queue shows exactly the text the parser
+// saw — the most useful view when a row landed there unparsed.
+//
+// A message BodyText cannot extract (no text part) keeps its raw body rather
+// than rendering empty: unreadable beats invisible.
+func readableEmail(email store.TransactionEmail) store.TransactionEmail {
+	text, err := parse.BodyText([]byte(email.Body))
+	if err != nil {
+		return email
+	}
+	from, subject, fwdDate, text := parse.Unwrap(email.From, email.Subject, text)
+	email.From, email.Subject, email.Body = from, subject, text
+	// For an inline forward the original Date header is the transaction's real
+	// time; the mailbox arrival time is just when it was forwarded on.
+	if fwdDate != "" {
+		if d, derr := parse.ParseForwardDate(fwdDate); derr == nil {
+			email.ReceivedAt = d.Format(time.RFC3339)
+		}
+	}
+	return email
 }
 
 // handleClearCategorization moves every transaction back to needs_review and

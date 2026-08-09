@@ -25,53 +25,89 @@ Conventions:
 
 ## 1. Category targets
 
-One target max per category. `target_type`: `"set_aside" | "refill" |
-"save_by_date"`. `cadence`: `"weekly" | "monthly" | "yearly"` (default
-`"monthly"` when omitted). `due_date` required iff `save_by_date`.
+Targets are **effective-dated**. A target is a version row keyed
+`(category_id, effective_month)`; it applies from its effective month onward
+until a later version supersedes it. So a target set once carries forward to
+every later month automatically, and **editing at month M never affects any
+month before M** — history stays what it was.
 
-### `GET /api/targets`
+Every endpoint is therefore month-scoped, and the month is always **required**
+rather than defaulting to "now": these endpoints are read and written while the
+user is looking at some other month, so a silent default would edit the wrong
+one. A missing or malformed month is `400 {"error":"month required (YYYY-MM)"}`.
 
-→ `200` array (may be `[]`):
+`target_type`: `"set_aside" | "refill" | "save_by_date"`. `cadence`:
+`"weekly" | "monthly" | "yearly"` (default `"monthly"` when omitted).
+`due_date` required iff `save_by_date`. The internal tombstone type (see
+DELETE) is never returned by any endpoint.
+
+### The target object
 
 ```json
-[
-  {
-    "category_id": 5,
-    "target_type": "set_aside",
-    "amount_fils": 50000,
-    "cadence": "monthly",
-    "created_at": "2026-07-29T10:00:00Z",
-    "updated_at": "2026-07-29T10:00:00Z"
-  }
-]
+{
+  "category_id": 5,
+  "effective_month": "2026-05",
+  "target_type": "set_aside",
+  "amount_fils": 50000,
+  "cadence": "monthly",
+  "created_at": "2026-07-29T10:00:00Z",
+  "updated_at": "2026-07-29T10:00:00Z"
+}
 ```
+
+`effective_month` is the month the returned version was *set* in, and **may be
+earlier than the month requested** — that is inheritance, and it is how a client
+distinguishes "set in this month" from "carried forward from an earlier one".
 
 `due_date` is omitted (not `""`) when unset — i.e. on every target that is not
 `save_by_date`.
 
-### `GET /api/targets/{categoryId}`
+### `GET /api/targets?month=YYYY-MM`
 
-→ `200` single target object (shape above) | `404 {"error":"no target for category"}`.
+→ `200` array (may be `[]`) of the targets **in force during that month**, one
+per category, category order. A category whose target starts in a later month,
+or whose newest version at or before `month` is a removal, is absent.
+
+`400 {"error":"month required (YYYY-MM)"}` when `month` is missing or invalid.
+
+### `GET /api/targets/{categoryId}?month=YYYY-MM`
+
+→ `200` the single target in force for that category in that month (shape
+above) | `404 {"error":"no target for category"}` when none is in force —
+including when the category's target was removed at or before `month`.
+
+`400` on a missing/invalid `month`.
 
 ### `PUT /api/targets/{categoryId}`
 
-Creates or overwrites the category's target.
+Writes the version effective from `month`, overwriting an existing version at
+exactly that month. Earlier months are untouched; later months inherit the new
+value unless they have versions of their own.
 
-Request:
+Request — note `month` travels in the **body**, not the query string:
 
 ```json
-{ "target_type": "save_by_date", "amount_fils": 120000, "cadence": "monthly", "due_date": "2026-12-01" }
+{ "month": "2026-08", "target_type": "save_by_date", "amount_fils": 120000, "cadence": "monthly", "due_date": "2026-12-01" }
 ```
 
-→ `200` the stored target object. `400` on invalid type/amount/cadence,
+→ `200` the stored target object (its `effective_month` is the `month` just
+written). `400` on a missing/invalid `month`, invalid type/amount/cadence,
 `save_by_date` without a `due_date` or with one that is not a valid
 `YYYY-MM-DD` date, or unknown category (`{"error":"unknown category"}`).
 A `due_date` sent on a `set_aside`/`refill` payload is silently dropped —
 never stored or echoed.
 
-### `DELETE /api/targets/{categoryId}`
+### `DELETE /api/targets/{categoryId}?month=YYYY-MM`
 
-→ `200 {"ok":true}` (idempotent — deleting a nonexistent target is ok).
+Stops the target **from that month onward**. This is not a row deletion: it
+writes a tombstone version at `month`, because deleting the row would let the
+previous version resurrect and apply forever — the opposite of removing.
+Months before `month` keep whatever target was in force then.
+
+→ `200 {"ok":true}`. `400` on a missing/invalid `month`, or on an unknown
+category (`{"error":"unknown category"}`) — unlike the old delete, this is a
+write, so a category that does not exist is rejected rather than accepted as a
+no-op. Removing a category that simply has no target in force is fine.
 
 ---
 
@@ -118,7 +154,16 @@ income-category credits).
 }
 ```
 
-Semantics:
+Semantics — **all of the carryover/overspend behaviour below is gated by the
+`budget_mode` setting** (see `GET`/`PUT /api/settings` at the end of this
+section). In `budget_mode: "envelope"` it is exactly as described. In the
+default `budget_mode: "simple"` the prior-month era-fold is skipped
+entirely: `carryover_fils` and `overspend_debt_fils` are always `0` for
+every envelope, `available_fils` reduces to `assigned − activity`, and
+`ready_to_assign_fils = income − assigned` (overspend debt never enters the
+formula because there is none to enter). The envelope-mode math is retained
+code, not deleted — it is reachable any time `budget_mode` is set to
+`"envelope"`, it is just not the default and has no UI toggle today.
 
 - `available_fils = carryover + assigned − activity`. `overspent` ⇔ available < 0.
 - `carryover_fils` is always ≥ 0. Uncovered cash overspend surfaces as
@@ -143,7 +188,8 @@ Semantics:
   back to counting restores the activity (recomputed on read, like the jars).
   Split lines follow their **parent's** project link.
 - `ready_to_assign_fils = income − assigned − overspend_debt`; **may be
-  negative** (over-assignment is allowed — render red).
+  negative** (over-assignment is allowed — render red). In `simple` mode
+  `overspend_debt` is always `0`, so this is just `income − assigned`.
 - `target` is omitted for envelopes with no target. `due_date` /
   `months_left` only on `save_by_date` targets. `needed_fils` is this month's
   full ask; `still_needed_fils = max(0, needed − assigned)`.
@@ -190,6 +236,30 @@ so any non-200 response means neither envelope changed.
 
 One-call distribution of a positive RTA: targets funded first (row order),
 leftover pro-rata by the 50/30/20 bucket weights across untargeted envelopes.
+
+### `budget_mode` on `GET`/`PUT /api/settings`
+
+The existing settings resource gains one field:
+
+```json
+{ "budget_mode": "simple", "…": "(other existing settings fields, unchanged)" }
+```
+
+- Values: `"simple"` | `"envelope"`. Default (and what a fresh or
+  never-set-it DB reports): `"simple"`.
+- On `GET`, `budget_mode` is always populated. On `PUT`, it is a **hidden
+  switch**: the field is optional and `null`/omitted means "leave the stored
+  mode unchanged" — an older client that has never heard of this field can
+  never silently flip a user back to envelope mode. An explicit value other
+  than `"simple"`/`"envelope"` is rejected with `400
+  {"error":"invalid budget_mode"}` rather than silently normalized.
+- There is currently no UI control for this setting — it exists so envelope
+  budgeting (carryover + overspend-debt) can be switched back on later
+  without new code. Both modes are live, tested code paths; `simple` is just
+  the default.
+- Switching modes is instant and non-destructive: assignment rows are never
+  rewritten, only how `GET /api/envelopes` folds them changes on the next
+  read.
 
 Request: `{ "month": "2026-07" }` (`month` optional, defaults current).
 
@@ -723,9 +793,10 @@ UI's Recurring lists refresh live; the settings gate the interrupting push.)
 }
 ```
 
-- `scope`: `"envelope"` (limit = carryover + assigned) or `"bucket"` (limit =
-  income × bucket pct — the jar target; `category_id` omitted, `name` is the
-  bucket name).
+- `scope`: `"envelope"` (limit = carryover + assigned; in `budget_mode:
+  "simple"` carryover is always 0, so the limit is just `assigned`) or
+  `"bucket"` (limit = income × bucket pct — the jar target; `category_id`
+  omitted, `name` is the bucket name).
 - `level`: `80` or `100`. Emitted **once per upward crossing** per month
   (in-memory state; a restart re-primes silently, never re-spams).
   Evaluated after every transaction confirm/categorize, split change,

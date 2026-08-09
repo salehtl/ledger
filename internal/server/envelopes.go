@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -15,13 +16,15 @@ import (
 // transaction — a mid-write failure must never leave assigned money vanished
 // or a half-applied plan.
 type EnvelopeStore interface {
-	EnvelopeMonthSummary(month string) ([]store.EnvelopeMonthRow, error)
-	SelectCategoryTargets() ([]store.CategoryTargetRow, error)
+	EnvelopeMonthSummary(month string, mode string) ([]store.EnvelopeMonthRow, error)
+	SelectCategoryTargetsForMonth(month string) ([]store.CategoryTargetRow, error)
 	SelectBudgetConfig() (store.BudgetConfig, error)
+	SelectAppSettings() (store.AppSettings, error)
 	SelectMonthIncome(period string) (int64, error)
 	UpsertEnvelopeAssignments(month string, byCategory map[int64]int64) error
 	MoveEnvelopeAssignment(month string, fromCategoryID, toCategoryID, amountFils int64) error
 	ApplyEnvelopeDeltas(month string, deltas []store.EnvelopeDelta) error
+	SeedEnvelopeAssignmentsFromPreviousMonth(month string) (int, error)
 }
 
 // SetEnvelopeStore wires the envelope store. Required for /api/envelopes.
@@ -50,17 +53,21 @@ func (s *Server) computeEnvelopeSummary(month string) (budget.EnvelopeSummary, s
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
+	set, err := s.envelopeStore.SelectAppSettings()
+	if err != nil {
+		return budget.EnvelopeSummary{}, cfg, err
+	}
 	income := cfg.MonthlyIncome
 	if cfg.IncomeSource == "categories" {
 		if income, err = s.envelopeStore.SelectMonthIncome(month); err != nil {
 			return budget.EnvelopeSummary{}, cfg, err
 		}
 	}
-	rows, err := s.envelopeStore.EnvelopeMonthSummary(month)
+	rows, err := s.envelopeStore.EnvelopeMonthSummary(month, set.BudgetMode)
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
-	targets, err := s.envelopeStore.SelectCategoryTargets()
+	targets, err := s.envelopeStore.SelectCategoryTargetsForMonth(month)
 	if err != nil {
 		return budget.EnvelopeSummary{}, cfg, err
 	}
@@ -96,6 +103,27 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Opening a month the user has never planned carries the previous month's
+	// assignments into it, so a stable budget survives the month boundary
+	// without being re-typed. This is a write on a GET — a real smell, kept
+	// because the alternative (a month-rollover job) can only ever seed the
+	// CURRENT month, so planning ahead would still land on an empty screen.
+	// The store guards it to fire at most once per month and never on history;
+	// envelopeMu is the same lock the mutation handlers take, so two
+	// simultaneous page loads cannot double-seed.
+	//
+	// A seeding failure must not blank the screen: fall through and serve the
+	// (unseeded) summary rather than 500. It must still be LOGGED, though —
+	// discarding the error entirely means a month that silently stops
+	// inheriting its plan looks exactly like a month the user emptied on
+	// purpose, with no signal anywhere that seeding is broken.
+	s.envelopeMu.Lock()
+	_, seedErr := s.envelopeStore.SeedEnvelopeAssignmentsFromPreviousMonth(month)
+	s.envelopeMu.Unlock()
+	if seedErr != nil {
+		log.Printf("envelopes: seeding %s from the previous month failed: %v", month, seedErr)
+	}
+
 	s.writeEnvelopeSummary(w, month)
 }
 

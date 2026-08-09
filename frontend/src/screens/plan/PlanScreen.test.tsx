@@ -268,7 +268,7 @@ describe("PlanScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => {
       const put = calls.find((c) => c.url === "/api/targets/5" && c.method === "PUT");
-      expect(put?.body).toEqual({ target_type: "save_by_date", amount_fils: 160000, cadence: "monthly", due_date: "2026-12-01" });
+      expect(put?.body).toEqual({ month: "2026-07", target_type: "save_by_date", amount_fils: 160000, cadence: "monthly", due_date: "2026-12-01" });
     });
   });
 
@@ -278,7 +278,7 @@ describe("PlanScreen", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Edit target" }));
     fireEvent.click(await screen.findByRole("button", { name: "Remove target" }));
     await waitFor(() => {
-      const d = calls.find((c) => c.url === "/api/targets/5" && c.method === "DELETE");
+      const d = calls.find((c) => c.url === "/api/targets/5?month=2026-07" && c.method === "DELETE");
       expect(d).toBeTruthy();
     });
     expect(await screen.findByText("Target removed from Groceries")).toBeInTheDocument();

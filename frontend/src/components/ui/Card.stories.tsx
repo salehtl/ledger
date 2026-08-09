@@ -9,7 +9,10 @@ const meta = {
       description: {
         component:
           "The paper content surface — hairline border, 2px radius, p-4. " +
-          "`className=\"!p-0\"` plus an inner divide-y list is the list-card idiom.",
+          "`padding=\"none\"` plus an inner divide-y list whose rows carry their " +
+          "own `px-4` is the list-card idiom: hairlines run edge to edge, content " +
+          "keeps the standard inset. Prefer it over `className=\"!p-0\"`, whose " +
+          "`!important` outranks any padding utility beside it.",
       },
     },
   },
@@ -22,7 +25,7 @@ export const Default: Story = {
 };
 export const ListCard: Story = {
   args: {
-    className: "!p-0",
+    padding: "none",
     children: (
       <ul className="divide-y divide-border">
         {[
