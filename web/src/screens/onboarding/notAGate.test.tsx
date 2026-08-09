@@ -33,13 +33,13 @@ import { MotionProvider } from "../../app/MotionProvider";
 import { ToastProvider } from "../../components/Toast";
 import { CLEAN_SYNC, fakeEngine } from "../../test/engineDouble";
 import { projectionWith } from "../../test/projectionFixture";
-import { BootGate } from "../../v2/BootGate";
+import { BootGate, PROFILE } from "../../v2/BootGate";
 import { memoryKeyVault } from "../../v2/keys";
 import { SyncCoordinator } from "../../v2/engine";
-import { ONBOARDING_LOCAL_KEY } from "../../v2/onboarding";
+import { loadLocalRecord, onboardingComplete, resumeFacts, ONBOARDING_LOCAL_KEY } from "../../v2/onboarding";
 import { sqlReviewSource } from "../../v2/sources/review";
 import { sqlTxnSource } from "../../v2/sources/transactions";
-import type { V2Handle } from "../../v2/session";
+import { webSecretStore, type V2Handle } from "../../v2/session";
 import type { Writer } from "../../v2/writer";
 import { Transactions } from "../Transactions";
 import { Onboarding } from "./Onboarding";
@@ -294,4 +294,135 @@ describe("onboarding is not a gate", () => {
     expect(await screen.findByRole("button", { name: "Add transaction" }, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.queryByTestId("bank")).toBeNull();
   }, 30_000);
+});
+
+/**
+ * The same account, walked the DECLARED way: keys, an address the server
+ * mints, "I have set up forwarding", a currency chosen — every question
+ * answered rather than deferred.
+ *
+ * The scripted `fetch` answers the walk's four routes: the key ceremony
+ * (404 then a PUT that accepts), the address read, an empty held-mail lane,
+ * and templates.
+ */
+function mountDeclaredWalk(writer: Writer) {
+  const account = freshAccount();
+  const vault = memoryKeyVault();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let keysPublished = false;
+  const json = (value: unknown): Response =>
+    new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+  const doFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/v1/keys")) {
+      if (init?.method === "PUT") {
+        keysPublished = true;
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    }
+    if (url.includes("/api/v1/address")) {
+      return json({ address: "u-7f3a91c4@in.sirdab.ae", created_at: "2026-08-07T00:00:00Z" });
+    }
+    if (url.includes("/api/v1/quarantine")) {
+      return json({ items: [], action_needed: 0, expiring_soon: 0 });
+    }
+    return json({ templates: [] });
+  }) as unknown as typeof fetch;
+
+  const view = render(
+    <MotionProvider>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <BootGate
+            open={async () => account.handle}
+            engine={() => account.coordinator}
+            // Boot has no address to hand the walk, so the address STEP is on
+            // the glass and the screen's own read is what mints one.
+            address={async () => null}
+            keysReady={async () => keysPublished}
+            wipe={async () => {}}
+            onboarding={({ handle, facts, done }) => (
+              <Onboarding handle={handle} facts={facts} done={done} fetch={doFetch} vault={vault} server="" />
+            )}
+          >
+            <Transactions source={sqlTxnSource(db)} reviewSource={sqlReviewSource(db)} writer={writer} />
+          </BootGate>
+        </ToastProvider>
+      </QueryClientProvider>
+    </MotionProvider>,
+  );
+  return { account, view };
+}
+
+describe("the declared path is remembered", () => {
+  /**
+   * The complement of the skip walk above, and the E2E replay of the resume
+   * loop (2026-08-09): the user does everything the walk asks — and no bank
+   * mail EVER arrives, because arrival needs them to spend money. Then the
+   * device reloads three times with every account fact regressed at once: the
+   * address read fails, and the log is empty again (so the currency set on
+   * mount 1 is gone too, and `firstMailConfirmedAt` is still null). Only the
+   * device-local record can hold the door open. Before the record remembered
+   * the declaration and the finish, every one of these reloads bounced the
+   * user back to "Send your bank mail here".
+   */
+  it("declares forwarding, finishes, and three regressed reloads later is still in the app — no mail ever arrived", async () => {
+    const user = userEvent.setup();
+    const { account, view } = mountDeclaredWalk(recorder());
+
+    // 1. Keys — the one hard gate.
+    await screen.findByTestId("recovery-phrase-words", {}, { timeout: 10_000 });
+    await user.click(screen.getByRole("button", { name: /i have written these down/i }));
+
+    // 2. The address, freshly minted by the screen's own read.
+    await user.click(await screen.findByRole("button", { name: /i have my address/i }, { timeout: 5000 }));
+
+    // 3. The declaration — the user's answer, not the world's evidence.
+    await user.click(await screen.findByRole("button", { name: /i have set up forwarding/i }));
+
+    // 4. The currency, SET rather than skipped — so on later boots no skip
+    //    record and no account fact can re-derive "finished". The log below is
+    //    empty on every reload; the record alone holds the door shut.
+    await user.click(await screen.findByRole("button", { name: /AED — UAE dirham/i }));
+    await user.click(screen.getByRole("checkbox", { name: /AED is permanent/i }));
+    await user.click(screen.getByRole("button", { name: /set aed as my home currency/i }));
+
+    // 5. Out, through the finish screen.
+    await user.click(await screen.findByRole("button", { name: /open ledger/i }));
+    await screen.findByRole("button", { name: "Add transaction" }, { timeout: 5000 });
+
+    // The currency went through the real outbox path on the way.
+    expect(account.emitted.map((o) => o.type)).toEqual(["home_currency_set", "rate_set"]);
+
+    // The record, resumed exactly the way boot resumes it, with every account
+    // fact regressed and mail never arrived: still declared, still complete.
+    const record = loadLocalRecord(webSecretStore(PROFILE));
+    expect(record?.forwardingDeclared).toBe(true);
+    expect(record?.finishedAt).toBeTruthy();
+    const resumed = resumeFacts({
+      hasSession: true,
+      accountId: "u_1",
+      keysReady: true,
+      banks: [],
+      inboundAddress: null, // the address read failed on this launch
+      firstMailConfirmedAt: null, // no bank mail, still
+      homeCurrency: null, // the log regressed too
+      local: record,
+    });
+    expect(resumed.forwardingDeclared).toBe(true);
+    expect(onboardingComplete(resumed)).toBe(true);
+
+    // 6. Three reloads through the REAL gate, each one fully regressed
+    //    (`mountApp`'s address read throws; `freshAccount`'s log is empty).
+    //    Every one opens the product; none re-enters the walk.
+    view.unmount();
+    for (let reload = 1; reload <= 3; reload++) {
+      const again = mountApp(freshAccount(), recorder());
+      expect(await screen.findByRole("button", { name: "Add transaction" }, { timeout: 5000 })).toBeInTheDocument();
+      expect(screen.queryByTestId("forwarding")).toBeNull();
+      expect(screen.queryByTestId("skip-home_currency_set")).toBeNull();
+      again.unmount();
+    }
+  }, 60_000);
 });
