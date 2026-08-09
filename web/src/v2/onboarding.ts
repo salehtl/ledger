@@ -269,6 +269,33 @@ export interface OnboardingFacts {
    * {@link remainingSetup} still lists it as outstanding.
    */
   skipped: readonly SkippableStep[];
+  /**
+   * The steps this person said they had **done**, where doing it leaves no
+   * evidence until later.
+   *
+   * Sibling of {@link skipped}, and device-local for the same reason: the
+   * account records what happened, and a claim is not yet a happening.
+   *
+   * # The loop this exists to close
+   *
+   * `forwarding_configured` is met by `forwardingDeclared`, and
+   * {@link resumeFacts} derives that from `firstMailConfirmedAt` alone —
+   * DEMONSTRATED, not remembered, which is right and stays. But "I have set up
+   * forwarding" dispatched `forwarding_declared` into memory and nothing wrote it
+   * down, so `done()` re-ran boot, the milestone reverted to unmet, it was not in
+   * `skipped` either, and {@link stepFor} walled on it. Pressing **Open ledger**
+   * on the finish screen put the user back on the step they had just finished,
+   * with no explanation and no way through but to answer "later" to something
+   * they had already done. Measured on 2026-08-09 by `harness/v2shoot.mjs`.
+   *
+   * **It never makes anything true.** Exactly like `skipped`: the milestone is
+   * still unmet, {@link remainingSetup} still lists the step as outstanding, and
+   * Home still shows the task until real mail arrives. All it does is stop the
+   * walk treating an unverifiable claim as a wall — which is the product
+   * principle that a security rule must never become a dead end, applied to the
+   * one step whose evidence can only turn up later.
+   */
+  answered: readonly SkippableStep[];
   /** **From the log.** Never from a device setting, never cached locally. */
   homeCurrency: string | null;
   /**
@@ -299,6 +326,7 @@ export function emptyFacts(): OnboardingFacts {
     firstMailConfirmedAt: null,
     homeCurrency: null,
     skipped: [],
+    answered: [],
     setupSeen: false,
   };
 }
@@ -320,6 +348,11 @@ export function isSkipped(f: OnboardingFacts, step: OnboardingStep): boolean {
   return isSkippable(step) && f.skipped.includes(step);
 }
 
+/** Whether the user has said they already did this step. See {@link OnboardingFacts.answered}. */
+export function isAnswered(f: OnboardingFacts, step: OnboardingStep): boolean {
+  return isSkippable(step) && f.answered.includes(step);
+}
+
 /**
  * The longest unbroken prefix of milestones that are met **or skipped**.
  *
@@ -330,11 +363,15 @@ export function isSkipped(f: OnboardingFacts, step: OnboardingStep): boolean {
  * never happened. A skip is different in kind: it is the user having been asked
  * and having answered. The step is still outstanding ({@link remainingSetup}
  * lists it, Settings can still do it); it simply no longer stands in the way.
+ *
+ * {@link OnboardingFacts.answered} is the same kind of thing from the other
+ * direction — "I already did this", for a step whose evidence can only turn up
+ * later — and stops being a wall for the same reason.
  */
 export function stepFor(f: OnboardingFacts): OnboardingPosition {
   let at: OnboardingPosition = "signed_out";
   for (const [step, done] of MILESTONES) {
-    if (!done(f) && !isSkipped(f, step)) return at;
+    if (!done(f) && !isSkipped(f, step) && !isAnswered(f, step)) return at;
     at = step;
   }
   return at;
@@ -438,7 +475,14 @@ export function onboardingReducer(f: OnboardingFacts, e: OnboardingEvent): Onboa
       return f.inboundAddress === e.address ? f : { ...f, inboundAddress: e.address };
 
     case "forwarding_declared":
-      return f.forwardingDeclared ? f : { ...f, forwardingDeclared: true };
+      // Recorded as an ANSWER as well as an in-session fact, because the fact is
+      // re-derived from the log at every boot and goes back to false until mail
+      // arrives. The answer is what stops the walk sending the user back to a
+      // step they just finished. See {@link OnboardingFacts.answered}.
+      //
+      // Nothing to record once the fact is already demonstrated: mail has
+      // arrived, the milestone is met by evidence, and a claim adds nothing.
+      return f.forwardingDeclared ? f : { ...f, forwardingDeclared: true, answered: [...f.answered, "forwarding_configured"] };
 
     case "first_mail_confirmed":
       return f.firstMailConfirmedAt === null ? { ...f, firstMailConfirmedAt: e.at } : f;
@@ -507,12 +551,21 @@ export interface LocalOnboardingRecord {
    * "later" again in one tap.
    */
   skipped: readonly SkippableStep[];
+  /**
+   * The steps this person said they had already done.
+   *
+   * Same argument as {@link skipped}, and the same storage: a claim whose
+   * evidence arrives later is not in the log either, and unstored it is
+   * forgotten by the very reload that asks the question again. See
+   * {@link OnboardingFacts.answered} for the loop that produced.
+   */
+  answered: readonly SkippableStep[];
 }
 
-export const LOCAL_RECORD_KEYS = ["inboundAddress", "skipped"] as const;
+export const LOCAL_RECORD_KEYS = ["inboundAddress", "skipped", "answered"] as const;
 
 export function encodeLocal(f: OnboardingFacts): LocalOnboardingRecord {
-  return { inboundAddress: f.inboundAddress, skipped: f.skipped };
+  return { inboundAddress: f.inboundAddress, skipped: f.skipped, answered: f.answered };
 }
 
 /** Refuses a partially-readable record rather than half-applying it. */
@@ -527,9 +580,11 @@ export function decodeLocal(v: unknown): LocalOnboardingRecord | null {
   // The cost of dropping them is one more walk through steps that are all
   // skippable; the cost of refusing the record is the cached address, which is
   // what keeps an offline set-up device out of onboarding entirely.
-  const raw = r["skipped"];
-  const skipped = Array.isArray(raw) ? raw.filter((s): s is SkippableStep => typeof s === "string" && isSkippable(s as OnboardingStep)) : [];
-  return { inboundAddress: addr, skipped };
+  const steps = (v: unknown): SkippableStep[] =>
+    Array.isArray(v) ? v.filter((s): s is SkippableStep => typeof s === "string" && isSkippable(s as OnboardingStep)) : [];
+  // Absent reads as none, not as a refusal: a record written before this field
+  // existed is complete in every way that decides a step.
+  return { inboundAddress: addr, skipped: steps(r["skipped"]), answered: steps(r["answered"]) };
 }
 
 /**
@@ -567,9 +622,10 @@ export function resumeFacts(args: {
     forwardingDeclared: args.firstMailConfirmedAt !== null,
     firstMailConfirmedAt: args.firstMailConfirmedAt,
     homeCurrency: args.homeCurrency,
-    // The only device-local fact left, and the only one with nowhere else to
-    // live. See {@link LocalOnboardingRecord.skipped}.
+    // The only device-local facts, and the only ones with nowhere else to live.
+    // See {@link LocalOnboardingRecord.skipped} and `.answered`.
     skipped: local?.skipped ?? [],
+    answered: local?.answered ?? [],
     setupSeen: false,
   };
   // "Finished" is the ACCOUNT's prerequisites being met. Asked through

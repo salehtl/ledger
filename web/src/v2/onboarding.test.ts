@@ -39,6 +39,7 @@ function complete(over: Partial<OnboardingFacts> = {}): OnboardingFacts {
     firstMailConfirmedAt: "2026-08-01T00:00:00Z",
     homeCurrency: "AED",
     skipped: [],
+    answered: [],
     setupSeen: true,
     ...over,
   };
@@ -170,6 +171,15 @@ describe("skipping", () => {
     expect(decodeLocal({ inboundAddress: null, skipped: ["keys_secured", 7, "banks_declared"] })).toEqual({
       inboundAddress: null,
       skipped: ["banks_declared"],
+      answered: [],
+    });
+  });
+
+  it("filters an answered step by the same rule as a skipped one", () => {
+    expect(decodeLocal({ inboundAddress: null, answered: ["keys_secured", 7, "forwarding_configured"] })).toEqual({
+      inboundAddress: null,
+      skipped: [],
+      answered: ["forwarding_configured"],
     });
   });
 });
@@ -369,7 +379,7 @@ describe("the device-local record", () => {
     // the only thing in there this build still uses.
     expect(
       decodeLocal({ bank: "dib", forwardingDeclared: true, finishedAt: "2026-08-02T00:00:00Z", inboundAddress: "u-abc@in.sirdab.ae" }),
-    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae", skipped: [] });
+    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae", skipped: [], answered: [] });
   });
 
   it("survives unreadable JSON by re-deriving rather than throwing", () => {
@@ -378,14 +388,66 @@ describe("the device-local record", () => {
     expect(loadLocalRecord(secrets)).toBeNull();
   });
 
-  it("holds the address hint and the skipped steps, and NOTHING else", () => {
-    // The device-local half is two fields wide, and the second one earned its
-    // place: a bank, a forwarding claim or a "finished" flag stored here is a
-    // fact a second device cannot see, which is precisely what made a new
-    // device re-run setup — whereas "I said later" is a fact NO device can see,
-    // because nothing anywhere records a decision not to do something. Without
-    // it, every launch walks the user back into the step they already answered.
-    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["inboundAddress", "skipped"]);
+  it("holds the address hint, the skipped steps and the answered steps, and NOTHING else", () => {
+    // The device-local half is three fields wide, and each of the last two
+    // earned its place the same way: a bank, a "finished" flag or a home
+    // currency stored here is a fact a second device cannot see, which is
+    // precisely what made a new device re-run setup. The two that belong are
+    // the two facts NO device can see, because nothing anywhere records what a
+    // person SAID — "I'll do it later", and "I have already done it". Without
+    // them, every launch walks the user back into the step they just answered.
+    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["answered", "inboundAddress", "skipped"]);
+  });
+});
+
+/**
+ * The loop the `answered` field exists to close.
+ *
+ * Reproduced by `harness/v2shoot.mjs` on 2026-08-09: a user who declared
+ * forwarding, finished setup and pressed **Open ledger** was handed back the
+ * "Send your bank mail here" step, because `done()` re-runs boot and
+ * `forwardingDeclared` is re-derived from `firstMailConfirmedAt` alone.
+ */
+describe("declaring forwarding before any mail has arrived", () => {
+  const beforeMail = { firstMailConfirmedAt: null, local: null } as const;
+
+  it("walls the walk when nothing recorded the declaration", () => {
+    // The old behaviour, pinned so the regression is visible if `answered` is
+    // ever dropped: no record, no way past the step.
+    expect(stepFor(resumeFacts(fromTheLog(beforeMail)))).toBe("address_issued");
+  });
+
+  it("lets the walk continue once the declaration is recorded", () => {
+    const declared = onboardingReducer(
+      resumeFacts(fromTheLog(beforeMail)),
+      { type: "forwarding_declared" },
+    );
+    expect(declared.answered).toEqual(["forwarding_configured"]);
+
+    // The whole point: it survives the boot that re-derives every fact.
+    const secrets = memSecretStore();
+    saveLocalRecord(secrets, declared);
+    const relaunched = resumeFacts(fromTheLog({ ...beforeMail, local: loadLocalRecord(secrets) }));
+    expect(relaunched.answered).toEqual(["forwarding_configured"]);
+    expect(stepFor(relaunched)).toBe("done");
+  });
+
+  it("does NOT claim the forwarding works — the milestone stays unmet and the task stays outstanding", () => {
+    const declared = onboardingReducer(resumeFacts(fromTheLog(beforeMail)), { type: "forwarding_declared" });
+    const secrets = memSecretStore();
+    saveLocalRecord(secrets, declared);
+    const relaunched = resumeFacts(fromTheLog({ ...beforeMail, local: loadLocalRecord(secrets) }));
+
+    // Derived from evidence, and there is none yet.
+    expect(relaunched.forwardingDeclared).toBe(false);
+    // So Home still lists it, exactly as it lists a skipped step.
+    expect(remainingSetup(relaunched).map((t) => t.id)).toContain("forwarding_configured");
+  });
+
+  it("records nothing when mail has already proved it", () => {
+    const proved = resumeFacts(fromTheLog({ local: null }));
+    expect(proved.forwardingDeclared).toBe(true);
+    expect(onboardingReducer(proved, { type: "forwarding_declared" })).toBe(proved);
   });
 });
 

@@ -49,6 +49,7 @@ function settledSecrets() {
         firstMailConfirmedAt: "2026-08-01T00:00:00Z",
         homeCurrency: "AED",
         skipped: [],
+        answered: [],
         setupSeen: true,
       }),
     ),
