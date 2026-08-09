@@ -190,10 +190,15 @@ func TestAnAccountWithNothingStoredIsSilent(t *testing.T) {
 
 // Held mail is reconciled too, in both of its resources.
 //
-// ⚠ This is also the standing signal that quarantine.Hold does not yet maintain
-// the ledger: until that seam lands (P1), every held message is drift this check
-// reports, which is the check doing exactly its job — the quarantine half of the
-// ledger IS fiction until something maintains it.
+// This test seeds quarantine rows with raw SQL, deliberately bypassing
+// quarantine.Hold, so it measures the RECONCILIATION rather than the charging.
+// That is why it still expects drift.
+//
+// It carried a ⚠ noting that Hold did not yet maintain the ledger and that every
+// held message was therefore standing drift. That seam landed in 92cf546: Hold is
+// transactional and charges both quarantine resources, and removeLocked releases
+// them on the expiry sweep and on confirm-and-reingest alike. A box whose held
+// mail arrived through Hold now reconciles to zero.
 func TestHeldMailIsReconciledByBytesAndByCount(t *testing.T) {
 	pool := pgtest.New(t)
 	u := insertUser(t, pool)
