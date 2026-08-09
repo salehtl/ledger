@@ -314,6 +314,46 @@ describe("the walk remembers what the user did", () => {
     expect(r!.finishedAt).toBeNull();
   });
 
+  it("holds through the operator's whole sequence: declare, reload, finish, then every later boot regressed", () => {
+    // The adversarial replay, through the REAL seams — reducer events, the
+    // encoder, the store, and boot's own re-save — with mail never arriving.
+    // Arrival must never be what keeps the door shut.
+    const secrets = memSecretStore();
+    const args = (over: Partial<Parameters<typeof resumeFacts>[0]> = {}) =>
+      fromTheLog({ firstMailConfirmedAt: null, homeCurrency: null, banks: [], ...over, local: loadLocalRecord(secrets) });
+
+    // Boot 1: the walk reaches the forwarding screen and the user declares.
+    let facts = resumeFacts(args());
+    expect(screenFor(stepFor(facts))).toBe("forwarding");
+    facts = onboardingReducer(facts, { type: "forwarding_declared" });
+    saveLocalRecord(secrets, facts); // the walk's persistence effect
+
+    // Boot 2, the reload the loop lived in: the next question is the currency,
+    // never the forwarding screen again.
+    facts = resumeFacts(args());
+    saveLocalRecord(secrets, facts); // boot re-persists what it resumed
+    expect(facts.forwardingDeclared).toBe(true);
+    expect(screenFor(stepFor(facts))).toBe("home_currency");
+
+    // The user answers it and taps "Open ledger".
+    facts = onboardingReducer(facts, { type: "home_currency_set", currency: "AED" });
+    facts = onboardingReducer(facts, { type: "finished", at: "2026-08-09T18:00:00Z" });
+    saveLocalRecord(secrets, facts);
+
+    // Boot 3: the projection was evicted and the address read failed — every
+    // account fact regressed at once, still no mail. The record alone holds.
+    facts = resumeFacts(args({ inboundAddress: null }));
+    saveLocalRecord(secrets, facts); // boot re-persists again
+    expect(onboardingComplete(facts)).toBe(true);
+
+    // Boot 4: the re-save above must not have narrowed the record. One good
+    // boot erasing the finish is a belt the next regressed boot reaches for
+    // and does not find.
+    expect(loadLocalRecord(secrets)?.finishedAt).toBe("2026-08-09T18:00:00Z");
+    facts = resumeFacts(args({ inboundAddress: null }));
+    expect(onboardingComplete(facts)).toBe(true);
+  });
+
   it("does not let a finished record past a hard gate: no keys still means the recovery step", () => {
     // `finishedAt` passes only the OPTIONAL steps. A wiped browser holds no
     // keys, and a record saying "this device finished once" must not walk it

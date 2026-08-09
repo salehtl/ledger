@@ -21,7 +21,7 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { projectionWith } from "../../test/projectionFixture";
-import { emptyFacts, type OnboardingFacts } from "../../v2/onboarding";
+import { emptyFacts, loadLocalRecord, type OnboardingFacts } from "../../v2/onboarding";
 import { AccountMismatchError, EnrollmentError, PasskeyError, type V2Handle } from "../../v2/session";
 import type { SecretStore } from "@ledger/client/store/store";
 
@@ -526,6 +526,33 @@ describe("the finish screen", () => {
       expect(needs.value).toBe("60");
     });
     expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12000.00");
+  });
+
+  it("puts the finish on disk BEFORE handing back, so no reload can re-enter the walk", async () => {
+    // The hand-off re-runs boot, and boot believes the record. A finish that
+    // reached memory but not disk is a device that "finished" until the next
+    // regressed launch. The spy reads the store AT THE MOMENT `done` fires,
+    // which is what pins the effect order, not just the eventual write.
+    const user = userEvent.setup();
+    let store: SecretStore | undefined;
+    const atHandback: (string | null)[] = [];
+    const done = vi.fn(() => {
+      atHandback.push(store === undefined ? null : (loadLocalRecord(store)?.finishedAt ?? null));
+    });
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    store = mount(atFinish(), rig, doFetch, done).secrets;
+
+    await screen.findByTestId("onboarding-finish");
+    await user.click(screen.getByRole("button", { name: /open ledger/i }));
+
+    await waitFor(() => {
+      expect(done).toHaveBeenCalled();
+    });
+    expect(atHandback[0]).toBeTruthy(); // on disk before the walk unmounted
+    const record = loadLocalRecord(store);
+    expect(record?.finishedAt).toBeTruthy();
+    expect(record?.forwardingDeclared).toBe(true); // the declaration rode along
   });
 
   it("does not clear a monthly total set on another device", async () => {

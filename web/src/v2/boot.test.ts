@@ -290,6 +290,46 @@ describe("boot", () => {
     expect(state.step).toBe("ready");
   });
 
+  it("opens a FINISHED device whose projection was evicted, offline — and keeps the finish it resumed from", async () => {
+    // The belt, at the boot seam. The walk finished on this device (the record
+    // says so, written by the real encoder). Then everything else regressed at
+    // once: IndexedDB evicted (empty log, so no currency and no mail), no
+    // network (the sync and the address read both fail). `config_unavailable`
+    // is for a device that cannot tell whether setup happened; this device CAN
+    // tell — it was there.
+    const secrets = memSecretStore();
+    secrets.set(
+      ONBOARDING_LOCAL_KEY,
+      JSON.stringify(
+        encodeLocal({
+          hasSession: true,
+          accountId: "u_1",
+          keysReady: true,
+          banks: [],
+          inboundAddress: "u-abc@in.sirdab.ae",
+          forwardingDeclared: true,
+          firstMailConfirmedAt: null,
+          homeCurrency: null,
+          skipped: [],
+          setupSeen: true,
+          finishedAt: "2026-08-09T18:00:00Z",
+        }),
+      ),
+    );
+    const state = await boot(
+      deps({
+        secrets,
+        state: () => ({ txns: new Map(), homeCurrency: null, banks: new Map() }) as never,
+        sync: () => Promise.reject(new TypeError("Failed to fetch")),
+        address: () => Promise.reject(new Error("offline")),
+      }),
+    );
+    expect(state.step).toBe("ready");
+    // And boot's own re-save did not narrow the record: the finish is still on
+    // disk for the next regressed boot.
+    expect(loadLocalRecord(secrets)?.finishedAt).toBe("2026-08-09T18:00:00Z");
+  });
+
   // -- a second device ------------------------------------------------------
 
   /**
