@@ -7,7 +7,7 @@
  * the only place a person can find out whether their ledger is moving.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SqlDriver } from "@ledger/client/store/driver";
@@ -151,11 +151,25 @@ describe("V2Settings", () => {
    * there is nothing left to say, and it disappears for good when dismissed.
    * The fixture has mail that has never arrived, so it is showing here.
    */
-  it("groups the settings the way v1 does, and invents no Danger zone", async () => {
+  it("groups the settings the way v1 does, with the Danger zone last", async () => {
+    // This test used to assert NO Danger zone existed, per the settings design's
+    // "do not invent one to fill the shape". Account deletion is now real
+    // (2026-08-09), so the zone is no longer invented — it is earned, it comes
+    // last, and it holds exactly one row.
     wrap();
     await screen.findByTestId("settings-inbound-address");
     const groups = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(groups).toEqual(["Finish setting up", "Plan", "Automation", "Device", "Library"]);
+    expect(groups).toEqual(["Finish setting up", "Plan", "Automation", "Device", "Library", "Danger zone"]);
+    const danger = screen.getByTestId("settings-danger");
+    const rows = within(danger).getAllByRole("button");
+    expect(rows.map((r) => r.textContent)).toEqual(["Delete account"]);
+  });
+
+  it("opens the deletion ceremony from the Danger zone row", async () => {
+    wrap();
+    await screen.findByTestId("settings-inbound-address");
+    fireEvent.click(within(screen.getByTestId("settings-danger")).getByText("Delete account"));
+    expect(await screen.findByRole("heading", { name: "Delete account" })).toBeInTheDocument();
   });
 
   it("shows sync above the groups, because it is a state and not a setting", async () => {

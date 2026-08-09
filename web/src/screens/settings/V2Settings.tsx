@@ -125,6 +125,7 @@ import { useWriter, type Writer } from "../../v2/writer";
 import { isPasskeyError, type V2Handle } from "../../v2/session";
 import type { EnrolmentRequest, KeyHistoryEntry } from "../../v2/deviceEnrolment";
 import { ApproveDevicePanel } from "./ApproveDevicePanel";
+import { DeleteAccountPanel } from "./DeleteAccountPanel";
 import { PushNotificationsPanel } from "./PushNotificationsPanel";
 // The profile and the server address the rest of the app runs under. Passed
 // rather than defaulted so this screen's subscription is written under the same
@@ -230,6 +231,7 @@ export function V2Settings({
   const [adding, setAdding] = useState(false);
   const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
   const [signOutOpen, setSignOutOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   /**
    * The three drill-ins that finish a step somebody skipped during setup.
    *
@@ -920,6 +922,16 @@ export function V2Settings({
         </Panel>
       </Group>
 
+      {/* The first destructive action v2 has. The settings design said not to
+          invent a Danger zone "to fill the shape" — that instruction was written
+          when there was nothing destructive; deletion is now real, so the group
+          is now correct. Exactly one row, last, below everything reversible. */}
+      <Group label="Danger zone" testID="settings-danger">
+        <RowCard>
+          <HubRow label="Delete account" onClick={() => setDeleteAccountOpen(true)} />
+        </RowCard>
+      </Group>
+
       <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
 
       {textSizeOpen && (
@@ -1001,6 +1013,12 @@ export function V2Settings({
       {addDeviceOpen && (
         <Dialog title="Add a device" onClose={() => setAddDeviceOpen(false)}>
           <ApproveDevicePanel loadKeyHistory={loadKeyHistory} approve={approveDevice} />
+        </Dialog>
+      )}
+
+      {deleteAccountOpen && (
+        <Dialog title="Delete account" onClose={() => setDeleteAccountOpen(false)}>
+          <DeleteAccountPanel handle={handle} />
         </Dialog>
       )}
 

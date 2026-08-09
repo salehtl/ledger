@@ -63,6 +63,9 @@ export function fakeRuntime(opts: FakeRuntimeOptions): FakeRuntime {
       get writerId() {
         return "web-1";
       },
+      get pending() {
+        return [] as const;
+      },
       state: () => ({ txns: new Map(), homeCurrency: opts.facts?.homeCurrency ?? "AED" }),
     },
   } as unknown as V2Handle;
