@@ -97,12 +97,41 @@ seams only:
 - `quarantine.Hold`, and the expiry sweep which decrements
 
 Transactional co-location is the property that makes this durable against future
-features: you cannot reach the disk except through those seams, so instrumenting
-them covers every current and future caller — including both new mail lanes, and
-Phase 3's sealed blobs, because sealing changes the bytes and not the seam.
+features: those are the only paths to **attacker-scale** durable bytes, so
+instrumenting them covers every current and future caller — including both new mail
+lanes, and Phase 3's sealed blobs, because sealing changes the bytes and not the
+seam.
+
+**Two implementation facts the plan must not miss.** `oplog`'s append already runs
+in a transaction, but `quarantine.Hold` today is a bare `Exec`
+(`internal/v2/quarantine/quarantine.go:407-410`) — "same transaction as the write"
+therefore *requires converting Hold to a transaction*. And the decrement paths are
+three, not one:
+
+1. the expiry sweep,
+2. **confirm-and-reingest** (`handleConfirmSender` → `Confirm` → `reingest`), which
+   moves bytes out of quarantine and into the op log, so it decrements one resource
+   and increments the other,
+3. purge — the new tables (`account_usage`, `account_limits`, the refusal
+   aggregate, the persisted SMTP counters) **must be added to the table list in
+   `internal/v2/purge/purge.go:126`**, or deleting an account leaks rows.
+
+### The small sinks, named so nobody concludes this is naive
+
+Other tables an account can cause to grow: sessions, passkey credentials and
+challenges, `address_rotation_challenges`, push tokens, key wraps, dictionary
+submissions, `deleted_account_sessions`, diagnostic notices, and the refusal
+aggregate itself. **None is attacker-scale**, and each is bounded twice: every
+non-sync body is capped at 64 KB (`maxSmallBodyBytes`, `api.go:203-205`), and each
+path has its own limiter (`api.go:428-466`). Sample reports carry no content by
+construction, and push tokens are capped with newest-wins eviction. They are not
+ledgered, deliberately.
+
+Write churn on the per-account usage row is bounded by the same limiters, and
+autovacuum handles the bloat. No action at beta scale.
 
 Drift is the known failure mode of application-level accounting. So the ledger
-gets a **reconciliation check in `internal/v2/verify`**, the self-audit the binary
+ships **with** a reconciliation check in `internal/v2/verify`, the self-audit the binary
 already runs on itself: recompute `sum(length(blob))` per account, compare against
 the ledger, and report any difference as a finding. The check is the guard against
 the ledger quietly becoming fiction.
@@ -128,6 +157,28 @@ leaks nothing and is unaffected by sealing. This is what keeps the promise that
 nothing is silently dropped: the user's own app can say "N writes were declined
 today", and the operator console can show who is hitting walls.
 
+### Lock ordering — not optional
+
+The append path pins **READ COMMITTED** deliberately: a `repeatable read` default
+produced 41 serialization failures out of 60 (`internal/v2/oplog/append.go:317-326`).
+It also has a hard ordering rule — `allocSeq` takes the per-account counter lock
+**first**, before anything else reads or writes (`append.go:321-336`).
+
+Therefore:
+
+> **`Admit` runs AFTER `allocSeq`**, as part of `prepare` or immediately after it.
+
+With that placement every same-account append is already serialized on the counter
+row before the usage row is touched, so same-account concurrency contends on one
+lock in one order, and different accounts touch disjoint rows. No deadlock is
+possible between two appends. Under normal two-device sync the worst case is a
+brief row-lock wait, not a user-visible error.
+
+The quarantine-hold transaction touches only `quarantine_*` usage rows and the
+append transaction only `oplog_*` rows, so the two paths are disjoint. **If any
+future transaction ever updates more than one usage row, it must update them in
+fixed resource-name order.**
+
 Beta ceilings, as policy rather than code:
 
 | Resource | Ceiling | Reasoning |
@@ -139,10 +190,14 @@ Beta ceilings, as policy rather than code:
 
 One column, `accounts.status ∈ {active, suspended}`, and two checks:
 
-- `requireSession` denies **writes** for a suspended account. **Pull stays
-  allowed**, deliberately: a suspended user's devices keep reading their own data,
-  so the client can render "account paused" instead of something that looks like
-  data loss.
+- `requireSession` denies **non-GET methods** for a suspended account, with one
+  distinct code — `403 account_suspended` — so the client can render "account
+  paused" rather than something that looks like data loss. **GET stays allowed**:
+  pull, hashes and listings all keep working, deliberately, so a suspended user's
+  devices keep reading their own data.
+- **Sign-in is the one case outside `requireSession`**, and it writes a session
+  row. A suspended account **may still sign in**. Read-only devices are the whole
+  point of allowing pull, and they need a session to do it.
 - SMTP recipient resolution answers `452` for a suspended account, so mail retries
   across a short suspension instead of bouncing.
 
@@ -165,6 +220,11 @@ shown loudly on the admin console.
 The floor is sized so Postgres, its WAL, and the operator's shell all keep
 working. The box never reaches 100%.
 
+**Stated so it is not later reported as a bug:** "all durable writes" includes
+creating a session, so **nobody can sign in while the fuse is tripped**. That is
+correct for an emergency state — the box is protecting its ability to recover —
+but it must be deliberate and it must be in the copy.
+
 > **Ops note, not architecture:** backups currently share the data filesystem
 > (`/var/backups` on the same 75 GB root). They should move off it. That is
 > operations work and is not part of this design.
@@ -177,11 +237,29 @@ At beta scale — dozens of accounts at most — weighted fair queuing is
 over-engineering. What must hold now is narrower: **one account saturating a
 shared resource degrades only itself.** Three cheap mechanisms get there.
 
-**Flow.** A per-account token bucket on `POST /api/v1/sync`. The `Limiter` type
-already exists and is used eight times (`api.go:428-466`); this is the ninth.
-Sized for the import lane: burst 60 requests, sustained 1 per second. That
-imports a year of history in minutes, and caps an abuser at roughly 0.7 GB per
-day of durable writes — long before P2's ceiling ends it outright.
+**Flow. The limiter must be weighted in BYTES, not in requests.** A request-counted
+limit cannot serve both goals at once, and the arithmetic is worth stating because
+an earlier draft of this spec got it wrong by three orders of magnitude:
+
+- One upload durably stores up to 8 MiB (8 blobs × 1 MB,
+  `internal/v2/oplog/chain.go:456`).
+- At a sustained 1 request per second that is 86,400 requests per day ≈ **675 GB
+  per day**, not the 0.7 GB the earlier draft claimed.
+- Meanwhile bulk import genuinely needs hundreds of requests in minutes: one blob
+  is one op, so a 5,000-op year is about 625 requests.
+
+There is **no request rate that both permits an import and stops an abuser**,
+because the two differ by blob size, not by request count.
+
+So: a per-account token bucket **in upload bytes** — about 64 MiB burst and
+256 MiB per day sustained — plus a modest request rate of about 2 per second,
+purely for pool fairness. Import ops are sub-kilobyte, so a full year costs
+roughly 3 MB of budget and finishes in minutes. An abuser sending maximum-size
+blobs exhausts the byte bucket in eight requests.
+
+**State the limiter's job honestly.** It shapes flow and slows an attack. **Only
+the cumulative ceiling stops one.** Do not claim a rate limit turns an hours-long
+disk fill into a weeks-long one; it does not.
 
 This is why no behavioural filtering is needed even though bulk import makes
 bursts legitimate: **the budget is the control, not the shape of the traffic.**
@@ -210,10 +288,22 @@ Each of these is days, not weeks, and each stands alone.
    is purge, which destroys both their data and the evidence.
 2. **The headroom fuse** (P4). It converts "everyone loses writes until an
    operator intervenes at 3am" into "writes pause, with headroom intact".
-3. **A per-account rate limit on `POST /api/v1/sync`** — the ninth `Limiter`. One
-   line of policy that turns an hours-long disk fill into a weeks-long one.
-4. **A crude cumulative ceiling.** Even a `SELECT sum(...)` per upload is
-   acceptable at beta scale, until P1 lands properly. Cheap, honest, replaceable.
+3. **A per-account, byte-weighted rate limit on `POST /api/v1/sync`.** The
+   `Limiter` type already exists and there are **14** limiter fields today
+   (`api.go:428-466`); this is the fifteenth. It shapes flow and slows an attack.
+   It does not stop one — item 4 does.
+4. **A crude cumulative ceiling — placed INSIDE the append path, not at the
+   endpoint.** A `SELECT sum(...)` is acceptable arithmetic at beta scale, but its
+   **placement is not negotiable**: it goes in `appendTx`, so it covers
+   `AppendClient` *and* `AppendIngest`. A ceiling written "per upload" would miss
+   the ingest writer entirely — trusted mail appends one hot op and one cold raw
+   body through the server's own writer, which never passes through
+   `handleUpload`. It would also contradict this document's own principle that an
+   endpoint check is the thing the next feature forgets.
+
+   Ship it behind the same `Admit` name that P1 later replaces, so P1 is a change
+   of implementation at one call site and not a change of shape. It is stateless,
+   so there is no migration hazard in replacing it.
 
 ### P1 — with the mail lanes
 
@@ -222,7 +312,7 @@ per-account quarantine budget. Only then do mail lanes 2 and 3 ship.
 
 ### P2 — later, all additive, none blocking
 
-`verify` reconciliation; the per-account concurrency semaphore and statement
+the per-account concurrency semaphore and statement
 timeouts; backups off the data filesystem; replacing the crude P0 ceiling with the
 ledger everywhere; any move toward weighted scheduling.
 
@@ -231,8 +321,10 @@ ledger everywhere; any move toward weighted scheduling.
 ## 6. Testing
 
 - **Every test must be proven to bite.** Mutate the implementation, watch the test
-  fail, revert. This branch's history has ~9 instances of a check that could not
-  fail; do not add the tenth.
+  fail, revert. A check that cannot fail is this codebase's most repeated defect —
+  `CLAUDE.md` records three separate NUL-byte instances alone, where a `grep`
+  returned nothing and git diffed the file as binary, so sweeps and reviews both
+  skipped it silently.
 - `Admit` denies at the boundary: at the ceiling, one byte over, and far over.
 - The ledger stays correct across a rolled-back transaction — the case that makes
   transactional co-location worth the trouble. Assert the amount is unchanged
@@ -256,6 +348,12 @@ tests and only fails in production.
 The ledger is **backfilled at migration time** from existing rows
 (`sum(length(blob))` per account, and the equivalent for quarantine), so it is
 correct from its first read rather than counting only from deployment onward.
+
+**A window exists and must be closed deliberately.** Migrations run out of band
+*before* the new binary starts, so the **old** binary — which does not maintain the
+ledger — can keep writing between the backfill `sum()` and the restart. Either run
+the backfill with the service stopped, or treat the first `verify` reconciliation
+after deploy as **mandatory**, expected to find drift, and expected to repair it.
 
 ## 8. Open questions
 

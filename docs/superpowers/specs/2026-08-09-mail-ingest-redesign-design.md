@@ -17,8 +17,10 @@ arc=none`. `Decide` refuses it, because a forwarder is never trustable as an out
 origin (`internal/v2/origin/trust.go:153-159`). The client then refuses to let the
 user confirm it, because `trustBasis` requires `attested`
 (`web/src/v2/onboardingIO.ts:410-421`) and `trustRequest` returns `null` without
-it. **52 such messages sit in the operator's quarantine right now.** They can never
-become transactions and expire on the 30-day TTL, around **6 September 2026**.
+it. **52 such messages sit in the operator's quarantine right now** — 50 via
+`gmail.com` and 2 via `icloud.com`, the same dead end through a different
+forwarder. They can never become transactions and expire on the 30-day TTL,
+around **6 September 2026**.
 
 **Direct bank mail cannot clear onboarding verification.** A DKIM-passing email
 straight from a bank has a verified outer domain but `attested=false`, because
@@ -27,7 +29,8 @@ attestation describes an *inner* origin and there is no relay to see behind.
 **The quota is silent, and it blocked onboarding.** `DefaultPerAddressDaily = 50`
 over a rolling, decaying 24-hour window (`internal/v2/smtpd/limiter.go:35-39,
 423-436`), enforced at `RCPT`, refused `452`. The limiter is in memory, so a
-restart clears it. On 2026-08-09: 50 accepted and **156 refused `over_quota`**.
+restart clears it. Measured: about **50 forwards accepted across three days**
+(2026-08-07 to 2026-08-09) and **156 refusals recorded for 2026-08-09 alone**.
 Google's forwarding-confirmation mail never arrived.
 
 > **Stated honestly:** that the confirmation was refused *cannot be proven*.
@@ -81,7 +84,15 @@ exactly what `Decide` already honours.
 
 **The confirm endpoint must apply the same signature-evidence checks the server
 applies** (`trust.go:146-152`). It must never trust the client's spelling of a
-verdict. This is the same class of error `Decide` itself guards against: reading a
+verdict.
+
+**What is actually being changed, so the implementer does not merely add a client
+check:** `Confirm`'s outer-scope predicate today is spelling-based — the match is
+`outer_domain = $2` with **no dkim or arc verdict in the WHERE**
+(`internal/v2/quarantine/quarantine.go:822-829`), and the `unverified:` prefix is
+the only shield. That is exactly the "verified as a property of how the value was
+spelled" failure `Decide` refuses for itself (`trust.go:77-86`). The work is to add
+the signature-verdict columns to that predicate, mirroring `Decide`. This is the same class of error `Decide` itself guards against: reading a
 value that was *derived* from a signature instead of the signature result.
 
 The recommended setup becomes **a rule in the user's own mailbox**, never a change
@@ -89,7 +100,20 @@ at the bank. The user keeps their own alerts and one-time codes. All copy
 suggesting a bank-side address change is removed — the operator has deprecated
 that route.
 
-**Lane 1 has no isolation dependency and ships first.**
+**Lane 1 ships first, and its isolation claim is conditional.** Trusted mail
+appends one hot op and one cold raw body through the server's **ingest** writer,
+which never passes through `handleUpload`. So lane 1 is only unbudgeted-safe once
+the isolation spec's P0 ceiling sits **inside the append path** (`appendTx`),
+covering `AppendIngest` as well as `AppendClient`.
+
+With that in place, lane 1's growth is bounded by the mail quota — at most about
+50 MB of permanent op-log bytes per account per day (quota × the 1 MB blob cap).
+**Caveat to state plainly:** that bound rests on the SMTP limiter, which is in
+memory and resets on restart, until the persisted counters land.
+
+Without the in-append ceiling, lane 1 must be re-gated behind it: an insider can
+DKIM-sign mail from a domain they own, confirm it at the outer scope, and write
+permanent bytes with nothing counting them.
 
 ### Lane 2 — a held message becomes a prefilled entry
 
@@ -147,6 +171,29 @@ is the feature that makes "author many ops quickly" legitimate, so shipping it
 against an unbudgeted append path would hand an insider a sanctioned tool.
 
 ---
+
+### The op shape for lanes 2 and 3 — not negotiable
+
+Both lanes author ops, and **the wrong choice here is permanent on every device
+the user owns.** So it is fixed here rather than left to an implementer.
+
+- **Reuse the existing `txn_ingested` op.** Do not mint `txn_reviewed`,
+  `txn_imported`, or any new type.
+- **`SCHEMA_VERSION` stays 3.**
+- Provenance travels as **optional payload keys**: `entry_method` gains the values
+  `reviewed_forward` and `import`, and lane 3 adds the source file hash and the row
+  index. Optional keys need no version bump.
+- **Replay must never read `entry_method` for authority.** Replay derives
+  provenance from the **writer**, never from the payload
+  (`client/src/replay/replay.ts:1490-1499`). `entry_method` is a label for the
+  user interface and nothing else — an enum nobody validates.
+
+**Why this is a hard rule.** A new op type costs `SCHEMA_VERSION` 4, and a version
+3 device meeting a version 4 op raises `UnknownNewerVersionError`, which halts
+**that device's entire sync** — not one op. The safe pattern is already recorded in
+the codebase, where `entry_method` was introduced for manual entry precisely as an
+added optional key needing no bump
+(`web/src/v2/sources/transactions.ts:630-641`).
 
 ## 3. The quota
 
@@ -209,8 +256,29 @@ author the same client-side ops lanes 2 and 3 author. Nothing here forecloses it
 - **Quota:** persisted counters and the per-account refusal aggregate arrive with
   the isolation spec's tables rather than as separate mechanisms. The existing
   `smtp_rejections` day aggregate stays, for fleet-level monitoring.
-- **Deprecation:** all onboarding copy proposing a bank-side alert-address change
-  is removed.
+### Deprecating the bank-side address, without deleting it
+
+The operator's words: using the ledger address as a bank's official email "is very
+dumb as it prevents them from managing their bank account". It also takes the
+user's security alerts and one-time codes with it.
+
+**Sunset it, do not delete it.** The standing rule in this project is that a
+superseded feature goes behind a disabled flag, not into the bin, and the operator
+decides how and whether it returns.
+
+So:
+
+- The "I have set this address with my bank" route in
+  `web/src/screens/onboarding/Address.tsx` is **disabled by default** behind a
+  flag, not deleted. Its code, tests and copy stay.
+- Onboarding stops offering it. The forwarding rule becomes the only presented
+  path, and it is no longer phrased as the alternative to something better.
+- The `Notice` that admits the route's own failure ("some banks keep only one
+  alert address") is retained with the disabled route, since it is the record of
+  why the route was retired.
+- No existing user is migrated or interrupted. A user whose bank already sends
+  direct keeps working: that mail still verifies on the **outer** scope, which
+  lane 1's repaired door now lets them confirm.
 
 ---
 
@@ -277,10 +345,12 @@ and `v2stack.sh` must pass `--dns-fixtures` or every message a harness posts is
 
 ## 8. Open questions
 
-- That mailbox-rule auto-forwarding preserves bank DKIM for DIB and ENBD
-  specifically is the premise of lane 1's value. The corpus supports it; it was not
-  re-verified against a fresh auto-forwarded sample. **The plan should verify this
-  with one real sample before building on it.**
+- **This is task 1 of the build, not an open question left at the end.** That
+  mailbox-rule auto-forwarding preserves bank DKIM for DIB and ENBD specifically is
+  the premise of lane 1's entire value. The corpus supports it; it was not
+  re-verified against a fresh auto-forwarded sample. **Verify it with one real
+  sample before any lane-1 work begins.** If it turns out false, lane 1 is worth
+  nothing and lane 2 becomes the primary path.
 - Whether the client can decrypt and render a quarantine blob end-to-end is
   unproven. The endpoint exists and blobs are plaintext-sealed today, but no screen
   consumes `include_blob=1`.
