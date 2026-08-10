@@ -60,11 +60,6 @@ export function readCategoryDefs(db: SqlDriver): CategoryDef[] {
   return [...readCategories(db).values()];
 }
 
-/** Only the ones a picker may offer. */
-export function activeCategoryDefs(defs: readonly CategoryDef[]): CategoryDef[] {
-  return defs.filter((c) => c.active);
-}
-
 /**
  * lower-cased name → bucket, for the user's `spending` categories.
  *

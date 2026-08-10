@@ -290,7 +290,7 @@ export const CONFIRM_CONFLICT_COPY: Record<string, string> = {
  * partial ingest, and the user's remaining bank mail sits in the lane until it
  * EXPIRES — announced, per §2, but gone.
  */
-export interface ReingestReport {
+interface ReingestReport {
   examined: number;
   appended: number;
   superseded: number;

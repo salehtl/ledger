@@ -46,7 +46,7 @@ export const PUSH_TITLE = "New activity";
 export const PUSH_TAG = "ledger-activity";
 
 /** Where a tapped notification takes you. Relative, resolved against scope. */
-export const PUSH_TARGET_PATH = "/";
+const PUSH_TARGET_PATH = "/";
 
 export interface PushNotification {
   title: string;

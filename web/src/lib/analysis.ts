@@ -17,7 +17,7 @@ export function effectiveBucket(t: Txn, frozen: boolean): string {
   return frozen && t.BucketSnapshot ? t.BucketSnapshot : t.Bucket;
 }
 
-export interface CategoryBreakdownRow {
+interface CategoryBreakdownRow {
   categoryId: number | null;
   name: string;
   bucket: string;

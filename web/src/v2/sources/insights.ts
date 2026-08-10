@@ -52,7 +52,7 @@ import { readSplits } from "./transactions";
 export type InsightsBucket = BudgetBucket | "unassigned";
 
 /** A month-over-month comparison of one slice of spending. */
-export interface SpendDelta {
+interface SpendDelta {
   /** Stable identity for React and for the drill-in. */
   key: string;
   name: string;
@@ -263,7 +263,7 @@ function unusable(period: string, homeCurrency: string | null): InsightsSnapshot
 }
 
 /** The previous `YYYY-MM`, computed arithmetically — no `Date`, no timezone. */
-export function previousPeriod(period: string): string {
+function previousPeriod(period: string): string {
   const year = Number(period.slice(0, 4));
   const month = Number(period.slice(5, 7));
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return period;

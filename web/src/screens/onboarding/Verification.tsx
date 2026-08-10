@@ -137,7 +137,7 @@ import { Notice, Step } from "./Shell";
  * wait it covers — a Gmail confirmation arrives in seconds, a bank alert in
  * minutes to hours — and the request is a page of held mail, not a sync.
  */
-export const VERIFICATION_POLL_MS = 15_000;
+const VERIFICATION_POLL_MS = 15_000;
 
 /**
  * How many bounded re-ingest batches one tap may chain.
@@ -149,7 +149,7 @@ export const VERIFICATION_POLL_MS = 15_000;
  * remainder past that stays on screen with a control rather than being retried
  * forever.
  */
-export const MAX_CONFIRM_ROUNDS = 4;
+const MAX_CONFIRM_ROUNDS = 4;
 
 export interface VerificationProps {
   client: TokenSource;

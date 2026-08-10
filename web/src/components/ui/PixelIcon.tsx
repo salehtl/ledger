@@ -17,7 +17,7 @@
 import type { ReactElement, SVGProps } from "react";
 import { PIXEL_ICON_PATHS, type PixelIconName } from "./pixelIcons";
 
-export interface PixelIconProps extends Omit<SVGProps<SVGSVGElement>, "children"> {
+interface PixelIconProps extends Omit<SVGProps<SVGSVGElement>, "children"> {
   size?: number;
 }
 

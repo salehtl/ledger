@@ -153,7 +153,7 @@ export interface V2SettingsProps {
  * account adopts them, and signing in with a different one reaches Welcome's
  * `account_mismatch` screen, which is where the decision to erase belongs.
  */
-export async function signOutAndReload(handle: V2Handle): Promise<void> {
+async function signOutAndReload(handle: V2Handle): Promise<void> {
   await handle.signOut();
   if (typeof location !== "undefined" && typeof location.reload === "function") location.reload();
 }

@@ -156,7 +156,7 @@ export function budgetMappingFor(db: SqlDriver): BudgetMapping {
  * Returns {@link DEFAULT_BUDGET_MAPPING} **by identity** when there is nothing
  * to layer, so "this account has defined nothing" is checkable with `===`.
  */
-export function layeredMapping(defs: readonly CategoryDef[]): BudgetMapping {
+function layeredMapping(defs: readonly CategoryDef[]): BudgetMapping {
   const mine = categoryMapping(defs);
   if (Object.keys(mine).length === 0) return DEFAULT_BUDGET_MAPPING;
   return { categories: { ...DEFAULT_BUDGET_MAPPING.categories, ...mine }, fallback: DEFAULT_BUDGET_MAPPING.fallback };

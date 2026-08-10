@@ -9,7 +9,7 @@ export const FONT_SCALE_OPTIONS = [80, 85, 90, 95, 100] as const;
 export type FontScale = (typeof FONT_SCALE_OPTIONS)[number];
 export const DEFAULT_FONT_SCALE: FontScale = 100;
 
-export function isFontScale(n: unknown): n is FontScale {
+function isFontScale(n: unknown): n is FontScale {
   return typeof n === "number" && (FONT_SCALE_OPTIONS as readonly number[]).includes(n);
 }
 

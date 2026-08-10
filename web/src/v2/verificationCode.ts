@@ -319,7 +319,7 @@ export function scanForCode(text: string, opts: ScanOptions): CodeScan {
 // Getting from a quarantine blob to text
 // ---------------------------------------------------------------------------
 
-export type BodySource = "normalized" | "raw";
+type BodySource = "normalized" | "raw";
 
 export interface HeldBody {
   text: string;

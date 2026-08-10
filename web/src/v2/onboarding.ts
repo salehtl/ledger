@@ -106,7 +106,7 @@ export const ONBOARDING_STEPS = [
   "done",
 ] as const;
 
-export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
 /**
  * `"signed_out"` is **not** a step: it is the absence of the machine. Sign-in
@@ -288,7 +288,7 @@ export function onboardingComplete(f: OnboardingFacts): boolean {
  * is still required, and in the prefix order the table sets — an account with
  * nothing in its log still has to walk, keys or no keys.
  */
-export function accountSetupComplete(f: OnboardingFacts): boolean {
+function accountSetupComplete(f: OnboardingFacts): boolean {
   // `setupSeen: false` as well as `keysReady: true`, so the answer is about the
   // milestones BEHIND `done` whatever the caller happens to hold.
   return stepFor({ ...f, keysReady: true, setupSeen: false }) === "home_currency_set";
@@ -317,7 +317,7 @@ export type OnboardingEvent =
  * typing is a `string` all the way to commit (v1's `Number("") === 0`
  * springback, one type over), and this is the single conversion point.
  */
-export function normalizeCurrency(draft: string): string | null {
+function normalizeCurrency(draft: string): string | null {
   const s = draft.trim().toUpperCase();
   return /^[A-Z]{3}$/.test(s) ? s : null;
 }
@@ -404,8 +404,6 @@ export interface LocalOnboardingRecord {
   inboundAddress: string | null;
 }
 
-export const LOCAL_RECORD_KEYS = ["inboundAddress"] as const;
-
 export function encodeLocal(f: OnboardingFacts): LocalOnboardingRecord {
   return { inboundAddress: f.inboundAddress };
 }
@@ -482,11 +480,6 @@ export function declaredBanksOf(s: Pick<State, "banks">): string[] {
   return [...s.banks].filter(([, active]) => active).map(([bank]) => bank);
 }
 
-/** The home currency, read from the folded log. The only sanctioned source. */
-export function homeCurrencyOf(s: Pick<State, "homeCurrency">): string | null {
-  return s.homeCurrency;
-}
-
 /**
  * When the earliest transaction in the log was posted, or null for an empty
  * log. **This is the `first_mail_confirmed` fact**, read from the folded log
@@ -547,7 +540,7 @@ export interface CurrencyChoice {
  * vocabulary: {@link searchCurrencies} offers any well-formed alpha-3 code, so
  * a beta user whose currency is missing is never stuck.
  */
-export const COMMON_CURRENCIES: readonly CurrencyChoice[] = [
+const COMMON_CURRENCIES: readonly CurrencyChoice[] = [
   { code: "AED", name: "UAE dirham" },
   { code: "SAR", name: "Saudi riyal" },
   { code: "USD", name: "US dollar" },
@@ -600,7 +593,7 @@ export interface OpSpec {
  * as a schema default (spec §3.7). 1 USD = 3.6725 AED, in home-units-per-
  * foreign-unit micros.
  */
-export const USD_PEG_MICRO = 3_672_500n;
+const USD_PEG_MICRO = 3_672_500n;
 
 /**
  * The ops one confirmed pick emits, in the order they must be folded.

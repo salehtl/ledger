@@ -17,7 +17,8 @@ import { SettingsPage } from "../settings/SettingsPage";
  * full transactions list down to candidates, already-assigned-to-this-
  * project rows are excluded, and "Assign N" bulk-assigns the visible set.
  * Deliberately a page (not a sheet) with filters shown inline, per house
- * style — see ProjectDetail and FilterChips for the same convention.
+ * style — see ProjectDetail and the Transactions screen's `FilterBar` for the
+ * same convention.
  *
  * Only `from`/`to` go to the server (same as the Transactions screen); the
  * merchant term and category are applied client-side with the existing

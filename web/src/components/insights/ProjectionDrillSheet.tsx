@@ -10,7 +10,7 @@ import type { DrillTarget, InsightsSource } from "../../v2/sources/insights";
 import { useInsightsDrill } from "../../v2/queries";
 
 /** How many rows the sheet lists. Beyond this it says so rather than pretending. */
-export const DRILL_LIMIT = 100;
+const DRILL_LIMIT = 100;
 
 /**
  * The transactions behind one breakdown row, read from the local projection.

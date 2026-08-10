@@ -32,7 +32,7 @@ export interface IncomeExpenseResponse {
 export interface AgeOfMoney { age_days: number; sample_size: number; }
 
 /** Split line as it rides on `GET /api/transactions` items (Go-name keys). */
-export interface TxnSplitLine {
+interface TxnSplitLine {
   ID: number;
   TransactionID: number;
   CategoryID: number;

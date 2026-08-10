@@ -31,7 +31,7 @@ import type { SchedulePayload } from "../lib/recurring";
 import type { AgeOfMoney, IncomeExpenseResponse, NetWorthResponse, ReportTxn } from "../lib/reports";
 import type { AccountBalanceSummary, AccountKind, BalancePoint, CheckinResult } from "../lib/reconcile";
 import type { ManualTxnPayload } from "../lib/transactions";
-import type { SplitLineBody, TxnDepth } from "../lib/txSplit";
+import type { TxnDepth } from "../lib/txSplit";
 import type { DepthRule } from "../components/transactions/merchantRename";
 import { addMonth } from "../lib/scope";
 import { currentPeriod } from "../lib/insights";
@@ -53,7 +53,7 @@ export function useCategories(enabled = true) {
 // the fresh summary, which is written straight into the query cache — the
 // screen's numbers move the moment the server answers, no follow-up fetch.
 
-export const envelopesKey = (month: string) => ["envelopes", month] as const;
+const envelopesKey = (month: string) => ["envelopes", month] as const;
 
 export function useEnvelopes(month: string) {
   return useQuery({
@@ -261,8 +261,8 @@ export function useReportsWindowTxns(months = 24, enabled = true) {
 // (day-granular windows, AED convention), so a refetch is the only honest way
 // to show it.
 
-export const accountBalancesKey = ["accounts-balances"] as const;
-export const balanceHistoryKey = (id: number) => ["account-balance-history", id] as const;
+const accountBalancesKey = ["accounts-balances"] as const;
+const balanceHistoryKey = (id: number) => ["account-balance-history", id] as const;
 
 /** GET /api/accounts/balances — the whole accounts screen in one call. */
 export function useAccountBalances() {
@@ -391,27 +391,8 @@ export function useDeleteAccount() {
   });
 }
 
-// ---- transaction depth: splits, notes, merchant clean-names ----------------
+// ---- transaction depth: notes, merchant clean-names ------------------------
 // Endpoints per docs/v3/api-contract.md §6.
-
-/** Split lines move money between categories, so everything derived from
- *  category activity refetches — same set useTxnActions invalidates, plus
- *  envelopes (split lines feed envelope activity per the contract). */
-function invalidateMoneyViews(qc: QueryClient) {
-  for (const key of ["transactions", "summary", "review", "insights-categories", "insights-trend", "envelopes"]) {
-    qc.invalidateQueries({ queryKey: [key] });
-  }
-}
-
-/** PUT /api/transactions/{id}/splits — replace-set; [] un-splits. */
-export function useSaveSplits() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ txnId, splits }: { txnId: number; splits: SplitLineBody[] }) =>
-      postJSON(`/api/transactions/${txnId}/splits`, { splits }, "PUT"),
-    onSuccess: () => invalidateMoneyViews(qc),
-  });
-}
 
 /** PUT /api/transactions/{id}/note — user memo; "" clears. */
 export function useSaveNote() {
@@ -423,16 +404,6 @@ export function useSaveNote() {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["summary"] });
     },
-  });
-}
-
-/** GET /api/rules — for resolving the rename target. Fetched lazily so the
- *  list screen never pays for it until a rename sheet opens. */
-export function useRules(enabled: boolean) {
-  return useQuery({
-    queryKey: ["rules"],
-    queryFn: () => getJSON<DepthRule[]>("/api/rules"),
-    enabled,
   });
 }
 

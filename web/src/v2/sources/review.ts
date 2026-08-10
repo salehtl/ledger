@@ -71,7 +71,7 @@ export type ReviewReason = "unreadable" | "pattern_guess" | "unsigned_headers" |
  * client-authored op reads as `"none"` and carries real money), and reading the
  * tier first would file every import under "we couldn't read this".
  */
-export function reasonOf(t: Txn, lane: Lane | null = laneOf(t)): ReviewReason {
+function reasonOf(t: Txn, lane: Lane | null = laneOf(t)): ReviewReason {
   if (lane === "uncategorized") return "uncategorized";
   if (t.unparsed) return "unreadable";
   if (t.tier === "heuristic") return "pattern_guess";
@@ -121,16 +121,6 @@ export const REVIEW_REASON_COPY: Record<ReviewReason, ReasonCopy> = {
 // ---------------------------------------------------------------------------
 
 export type Lane = "needs_review" | "unparsed" | "duplicate" | "uncategorized" | "forks";
-
-export const LANES: readonly Lane[] = ["needs_review", "unparsed", "duplicate", "uncategorized", "forks"];
-
-export const LANE_TITLE: Record<Lane, string> = {
-  needs_review: "To confirm",
-  unparsed: "Couldn't read",
-  duplicate: "Possible duplicates",
-  uncategorized: "Needs a category",
-  forks: "Resolved edits",
-};
 
 /**
  * The lanes the confirm deck can actually answer, in the order it deals them.
@@ -205,7 +195,7 @@ export function duplicateKey(t: Txn): string {
  * writer and would renumber on a rebuild, resurrecting every notice the user had
  * dismissed.
  */
-export function forkKey(f: ForkNotice): string {
+function forkKey(f: ForkNotice): string {
   return `fork:${f.winner_op}:${f.loser_op}`;
 }
 
@@ -256,7 +246,7 @@ export interface ReviewMoney {
  * in the total — it shows up as a *count*, which is why the count is reported
  * separately and asserted.
  */
-export function reviewMoney(rows: Iterable<Txn>): ReviewMoney {
+function reviewMoney(rows: Iterable<Txn>): ReviewMoney {
   let counted = 0;
   let excluded = 0;
   let awaitingRate = 0;
@@ -302,7 +292,7 @@ export function mergeMoney(parts: Iterable<ReviewMoney>): ReviewMoney {
  * projection is a pure function of the log, this is not derivable from the log
  * at all, and the two therefore have different lifetimes.
  */
-export const REVIEW_SCHEMA = `
+const REVIEW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_disposition (
   item_key TEXT PRIMARY KEY,
   lane     TEXT NOT NULL,
@@ -311,7 +301,7 @@ CREATE TABLE IF NOT EXISTS review_disposition (
 );
 `;
 
-export function ensureReviewTables(db: SqlDriver): void {
+function ensureReviewTables(db: SqlDriver): void {
   ensureProjection(db);
   db.exec(REVIEW_SCHEMA);
 }
@@ -321,14 +311,14 @@ export function ensureReviewTables(db: SqlDriver): void {
  */
 export type Disposition = "not_transaction" | "not_duplicate" | "duplicate_confirmed" | "acknowledged";
 
-export const DISPOSITION_KINDS: readonly Disposition[] = [
+const DISPOSITION_KINDS: readonly Disposition[] = [
   "not_transaction",
   "not_duplicate",
   "duplicate_confirmed",
   "acknowledged",
 ];
 
-export function isDisposition(s: string): s is Disposition {
+function isDisposition(s: string): s is Disposition {
   return (DISPOSITION_KINDS as readonly string[]).includes(s);
 }
 
@@ -346,7 +336,7 @@ export function isDisposition(s: string): s is Disposition {
  * not made to the other is a red test rather than a badge that counts
  * differently from the list under it.
  */
-export function laneWhere(lane: Lane): string {
+function laneWhere(lane: Lane): string {
   switch (lane) {
     case "unparsed":
       return "t.superseded_by IS NULL AND t.unparsed = 1";
@@ -429,7 +419,7 @@ export interface PageOptions {
 }
 
 /** The default page. Small: this is a deck, not a feed. */
-export const PAGE_SIZE = 20;
+const PAGE_SIZE = 20;
 
 /**
  * One page of a lane.
@@ -556,7 +546,7 @@ export interface MoneyOptions {
 }
 
 /** Rows read per chunk, and per yield. The project's standing number. */
-export const MONEY_CHUNK = 250;
+const MONEY_CHUNK = 250;
 
 /**
  * What the queue's header says: how much money is waiting, and how many items

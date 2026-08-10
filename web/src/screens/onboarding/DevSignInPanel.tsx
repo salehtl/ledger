@@ -40,10 +40,10 @@ import { Button } from "../../components/ui/Button";
 import { Notice } from "./Shell";
 
 /** The string a production-bundle grep looks for. Rendered, so it is checkable. */
-export const DEV_PANEL_MARKER = "ledger-dev-onboarding-panel";
+const DEV_PANEL_MARKER = "ledger-dev-onboarding-panel";
 
 /** The code a local `ledgerd` is usually seeded with. A convenience, not a secret. */
-export const DEV_INVITE_CODE = "DEV-INVITE";
+const DEV_INVITE_CODE = "DEV-INVITE";
 
 export function DevSignInPanel({ disabled, onPrefill }: { disabled: boolean; onPrefill: (code: string) => void }) {
   return (

@@ -539,7 +539,7 @@ export function mintWriterId(): string {
 }
 
 /** Mirrors `writers_writer_id_charset` and `auth.validWriterID`. */
-export function isValidWriterId(id: string): boolean {
+function isValidWriterId(id: string): boolean {
   return /^[A-Za-z0-9._-]{1,64}$/.test(id);
 }
 

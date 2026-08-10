@@ -322,7 +322,7 @@ export function readForkNoticesFor(db: SqlDriver, id: string): ForkNotice[] {
 // Totals
 // ---------------------------------------------------------------------------
 
-export interface CurrencyTotal {
+interface CurrencyTotal {
   debit: bigint;
   credit: bigint;
   count: number;
@@ -427,14 +427,14 @@ export function txnCategoryLabel(t: Txn): string {
 }
 
 /** `Home + Groceries`, then `Home + 3 more`. */
-export function splitLabel(splits: readonly Split[]): string {
+function splitLabel(splits: readonly Split[]): string {
   const names = splits.map((s) => s.category);
   if (names.length === 0) return "No parts";
   if (names.length <= 2) return names.join(" + ");
   return `${names[0]} + ${names.length - 1} more`;
 }
 
-export type MarkerKind =
+type MarkerKind =
   | "ingest"
   | "manual"
   | "unparsed"
@@ -560,7 +560,7 @@ export interface ManualDraft {
 export type ManualCheck = { ok: true; payload: Record<string, unknown> } | { ok: false; reason: string };
 
 /** The `entry_method` a hand-typed op carries. */
-export const MANUAL_ENTRY_METHOD = "manual";
+const MANUAL_ENTRY_METHOD = "manual";
 
 /**
  * A fresh ingest id for a row that has no raw body: sha256 of a random UUID.

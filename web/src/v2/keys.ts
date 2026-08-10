@@ -219,7 +219,7 @@ export async function openIngestPrivate(keys: StoredKeys): Promise<CryptoKey> {
 // ---------------------------------------------------------------------------
 
 /** The IndexedDB database the handles live in. Its own, not the sql.js one — see below. */
-export const KEY_VAULT_DB = "ledger-v2-keys";
+const KEY_VAULT_DB = "ledger-v2-keys";
 const KEY_VAULT_STORE = "keys";
 const KEY_VAULT_ROW = "account";
 
@@ -233,7 +233,7 @@ const KEY_VAULT_ROW = "account";
  * "wipe the local projection" and "destroy the only copy of the keys" are two
  * operations, and only one of them is reachable by accident.
  */
-export function indexedDbKeyVault(dbName = KEY_VAULT_DB): KeyVault {
+function indexedDbKeyVault(dbName = KEY_VAULT_DB): KeyVault {
   const open = (): Promise<IDBDatabase> =>
     new Promise((resolve, reject) => {
       const req = indexedDB.open(dbName, 1);

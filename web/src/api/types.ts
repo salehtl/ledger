@@ -18,15 +18,6 @@ export interface AppSettings {
   /** Read-only: AI auto-disabled because the monthly cap was hit. */
   ai_cap_latched?: boolean;
 }
-export interface AIUsageRow {
-  at: number; path: "extract" | "categorize"; model: string;
-  input_tokens: number; output_tokens: number; cost_musd: number; ok: boolean; detail: string;
-}
-export interface AIUsage {
-  count_30d: number; cost_30d_musd: number;
-  count_all: number; cost_all_musd: number;
-  recent: AIUsageRow[];
-}
 export interface Txn {
   ID: number; PostedAt: string; AmountFils: number; AmountAedFils: number | null; Currency: string;
   Direction: string; MerchantRaw: string; Status: string; Confidence: number; Source: string;
@@ -42,7 +33,7 @@ export interface Txn {
   AccountName?: string;
 }
 export interface TransactionEmail { from: string; subject: string; received_at: string; body: string; }
-export interface FXRateDTO { currency: string; rate: number; updated_at: string; }
+interface FXRateDTO { currency: string; rate: number; updated_at: string; }
 export interface RatesResponse { rates: FXRateDTO[]; missing: string[]; }
 export interface BudgetConfig {
   monthly_income: number; need_pct: number; want_pct: number; saving_pct: number;
@@ -51,15 +42,8 @@ export interface BudgetConfig {
 export interface BucketSummary {
   bucket: string; target: number; spent: number; remaining: number; pct_used: number; projection: number;
 }
-export interface Summary {
-  period: string; income: number; month_progress: number; buckets: BucketSummary[]; recent: Txn[];
-  /** Fils excluded from this summary because they belong to a project opted out of the monthly budget. */
-  project_excluded: number;
-}
 export interface CategorySpend { category_id: number; name: string; bucket: string; spent: number; }
 export interface MonthlyTotal { period: string; spent: number; income: number; }
-export interface CategoryUsage { transactions: number; rules: number; assignments: number; targets: number; }
-export interface CategorizeStatus { status: "idle" | "running"; processed: number; total: number; failed: number; error: string; }
 export interface IngestHealth {
   configured: boolean;
   count: number;
@@ -75,7 +59,7 @@ export interface IngestHealth {
 }
 export interface Health { status: string; db: string; ingest?: IngestHealth; }
 
-export interface ProjectCategorySpend { category: string; net_fils: number; }
+interface ProjectCategorySpend { category: string; net_fils: number; }
 export interface Project {
   id: number; name: string; budget_fils: number | null; color: string;
   starts_on: string; ends_on: string; status: "active" | "completed";
@@ -83,17 +67,6 @@ export interface Project {
   net_spent_fils: number; pending_fils: number; txn_count: number;
 }
 export interface ProjectDetail extends Project { by_category: ProjectCategorySpend[]; }
-
-export interface Account {
-  id: number;
-  name: string;
-  bank: string;
-  last4: string;
-}
-
-export interface SweepResult {
-  marked: number;
-}
 
 // ---- envelopes & targets (v3 plan, api-contract §1–3) ----------------------
 

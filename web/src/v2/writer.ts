@@ -56,7 +56,7 @@ export interface Writer {
 
 const outboxes = new WeakMap<V2Handle, Outbox>();
 
-export function outboxFor(handle: V2Handle): Outbox {
+function outboxFor(handle: V2Handle): Outbox {
   const held = outboxes.get(handle);
   if (held !== undefined) return held;
   const made = new Outbox(handle.client);
@@ -64,7 +64,7 @@ export function outboxFor(handle: V2Handle): Outbox {
   return made;
 }
 
-export function writerFor(handle: V2Handle): Writer {
+function writerFor(handle: V2Handle): Writer {
   const outbox = outboxFor(handle);
   return {
     get pending(): readonly Op[] {

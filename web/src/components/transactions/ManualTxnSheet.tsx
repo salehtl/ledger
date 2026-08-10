@@ -36,7 +36,7 @@ import { Input, Select } from "../ui/Field";
 import { manualAmountAdvice, type Direction, type ManualDraft } from "../../v2/sources/transactions";
 
 /** Today, in the `YYYY-MM-DD` a native date field speaks. */
-export function todayISO(now: Date = new Date()): string {
+function todayISO(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 

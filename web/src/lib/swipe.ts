@@ -48,9 +48,9 @@ export const DEFAULT_SWIPE_CONFIG: SwipeConfig = {
 }
 
 /** Canonical bucket identity for an action, used to theme it consistently. */
-export type BucketKey = 'need' | 'want' | 'saving' | 'transfer'
+type BucketKey = 'need' | 'want' | 'saving' | 'transfer'
 
-export function bucketKey(a: SwipeAction): BucketKey {
+function bucketKey(a: SwipeAction): BucketKey {
   if (a.statusOverride === 'transfer') return 'transfer'
   return (a.bucket as BucketKey) ?? 'transfer'
 }

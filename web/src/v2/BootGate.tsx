@@ -224,7 +224,7 @@ export function useV2OrThrow(): V2Runtime {
 // ---------------------------------------------------------------------------
 
 /** A screen a later task fills in. An unfilled slot says whose it is. */
-export type SlotRenderer = (props: { handle: V2Handle; done: () => void }) => ReactElement;
+type SlotRenderer = (props: { handle: V2Handle; done: () => void }) => ReactElement;
 
 export interface BootGateProps {
   /** The app, rendered only once this device is signed in and set up. */

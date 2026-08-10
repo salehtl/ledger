@@ -38,7 +38,7 @@ export interface BalancePoint {
 }
 
 /** One retained email that produced no transaction — a discrepancy candidate. */
-export interface UnparsedEmail {
+interface UnparsedEmail {
   id: number;
   received_at: string;
   from_addr: string;

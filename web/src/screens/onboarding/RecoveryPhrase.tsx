@@ -58,7 +58,7 @@ import { normalizePhrase, validatePhrase } from "@ledger/client/crypto/phrase";
 import { webPlatform } from "@ledger/client/platform.web";
 
 /** How many words the confirmation asks for. Three of twelve; see the header. */
-export const CONFIRM_WORD_COUNT = 3;
+const CONFIRM_WORD_COUNT = 3;
 
 export interface RecoveryPhraseProps {
   accountId: string;
