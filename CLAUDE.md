@@ -253,14 +253,16 @@ node harness/ios.mjs         # WebKit + iPhone keyboard geometry
 harness/stack.sh reset       # restore fixture data between rounds
 ```
 
-**v2 has only partial harness coverage, and this is a real gap.**
-`web/harness/{stack.sh,shoot.mjs,probe.mjs,nav.mjs}` were forked with the tree and
-**still drive v1** — running them against v2 goes green against code that was
-never loaded. `web/harness/v2settings.mjs` is the one runner that reaches the v2
-product; it walks the real sign-in ceremony (BootGate is the only door) and
-covers Settings. Other v2 screens rest on vitest alone. If you build a v2 runner,
-`v2stack.sh` must pass `--dns-fixtures`, or every message the harness posts is
-`unauthenticated` and no script can reach the product at all.
+**v2 has only partial harness coverage, and this is a real gap.** The nine v1
+forks that used to sit in `web/harness/` are gone — that directory is v2-only
+now. Four runners reach the real product, each walking the real sign-in
+ceremony (BootGate is the only door): `v2settings.mjs` covers Settings,
+`recovery.mjs` covers fresh-device recovery, `vault.mjs` covers the key vault
+round trip in both Chromium and WebKit, and `operator.mjs` covers the
+operator's own WebKit-only path. Screens beyond those four rest on vitest
+alone. If you build a v2 runner, `v2stack.sh` must pass `--dns-fixtures`, or
+every message the harness posts is `unauthenticated` and no script can reach
+the product at all.
 
 Never point a harness at production: scratch ports and a scratch DB, never
 `:8080`, never `:443`, never `/var/lib/ledger`.

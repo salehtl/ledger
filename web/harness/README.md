@@ -1,299 +1,70 @@
-# UI harness
+# UI harness (v2)
+
+**Read this before trusting a green run in this directory.** Until
+2026-08-10, `web/harness/` also held a second harness — `stack.sh`,
+`shoot.mjs`, `probe.mjs`, `nav.mjs`, `seed.mjs`, `gestures.mjs`, `hero.mjs`,
+`ios.mjs`, `sheets.mjs` — forked from `frontend/` with the tree and still
+driving **v1**: `stack.sh` built `./cmd/ledger` and ran vite in
+`$REPO/frontend`, `nav.mjs` tapped v1's Settings hub rows. Pointing any of
+them at a v2 change reported a clean screen it had never loaded. Those nine
+files are gone. Every script left in this directory loads `web/src` and only
+`web/src`. For v1 work, use `frontend/harness/` — full docs at
+`frontend/harness/README.md`.
 
 A way to actually *use* the app — not render a component in jsdom, but drive
-the real PWA in a real browser against the real Go API, then screenshot and
-audit every screen.
-
-Vitest covers component logic and Storybook covers components in isolation.
-Neither catches the defects this harness exists for: an element pushed past a
-390px viewport, a save button sitting under the bottom nav, a number input that
-forces a `0` back in when you clear it. Those only appear in a laid-out,
-interactive browser.
+the real PWA in a real browser against the real Go API (`ledgerd`), then
+screenshot and audit the screens vitest and Storybook cannot reach: a control
+under the bottom nav, a field that refuses to stay empty, a sheet hidden
+behind the keyboard.
 
 ## Quick start
 
 ```bash
-cd frontend
-harness/stack.sh up          # scratch DB + seed data + Go API + vite (HMR)
-node harness/shoot.mjs       # screenshot + audit every screen
+cd web
+harness/v2stack.sh up                 # scratch Postgres + ledgerd + vite, prints an invite
+node harness/v2settings.mjs <invite>  # walks sign-in, screenshots + audits Settings
+harness/v2stack.sh down
 ```
 
-Screens land in `harness/shots/` with a machine-readable
-`harness/shots/report.phone.json`.
+`v2stack.sh up` starts `ledgerd` with **`--dns-fixtures`**, serving the
+recorded DKIM/ARC TXT records offline so the corpus's signed bank mail
+verifies. **Without it every message a harness sends reads as
+`unauthenticated`, the verification step never clears, and no script can
+reach the product at all.** If you write a new v2 runner or a new stack
+script, it needs this flag too.
 
-Nothing here touches production: the stack runs on ports **8099** (API) and
-**5199** (UI) against a scratch database in `/tmp/ledger-ui-harness`. The real
-`/var/lib/ledger/ledger.db` and port 8080 are never opened.
+Nothing here touches production: `v2stack.sh` runs `ledgerd` and vite on
+ports **8123** (API, `127.0.0.1`) and **5177** (UI, `localhost` — WebAuthn
+needs a secure context) against a throwaway Postgres cluster under `/tmp`. It
+opens neither `/var/lib/ledger` nor `/etc/ledger-v2` nor the running
+`ledgerd` service.
 
-## The stack
+## The four runners
 
-| command | what it does |
+`BootGate` sits in front of every v2 screen, so each runner below performs a
+real sign-in or recovery ceremony first — there is no way past it but a real
+account.
+
+| script | proves |
 | --- | --- |
-| `harness/stack.sh up` | builds the binary if missing, seeds an empty DB, starts API + vite |
-| `harness/stack.sh reset` | wipes and re-seeds the DB — use between review rounds |
-| `harness/stack.sh rebuild` | rebuilds the Go binary (after backend changes) |
-| `harness/stack.sh prod` | production `bun run build` + binary serving the embedded bundle |
-| `harness/stack.sh status` / `down` / `logs` | lifecycle |
+| `v2settings.mjs <invite>` | Settings — the longest screen in the app — laid out, screenshotted, geometry-audited |
+| `recovery.mjs <invite>` | a browser with its site data cleared, given twelve words, gets its keys back |
+| `vault.mjs` | the key vault round trip, in Chromium **and** WebKit |
+| `operator.mjs signup\|recover <invite>` | the whole sign-up → phrase → reload path, in WebKit |
 
-`vite.config.ts` proxies `/api` to `$LEDGER_API`, so the dev server has a live
-backend and **frontend edits hot-reload** — a fix is visible in the browser
-without any rebuild. Use `stack.sh prod` for the final check, since only that
-path exercises minification, the service worker, and the embedded `dist`.
+**Screens beyond Settings, recovery, the vault and the operator path rest on
+vitest alone.** That coverage gap is real and tracked in `CLAUDE.md`, not
+closed by anything in this directory yet.
 
-## Fixture data
+## `v2settings.mjs` — Settings, in the real v2 tree
 
-`seed.mjs` writes through the HTTP API, so it stays honest about payload
-shapes. It is deterministic (seeded PRNG) — the same seed produces the same
-screenshots, so a visual diff only ever shows a real UI change.
-
-It deliberately includes the cases that break layouts:
-
-- a merchant name longer than any mobile viewport
-- a seven-figure amount (`AED 9,999,999.99`) — the widest string the formatter emits
-- a foreign-currency row, plus one in a currency with **no configured rate**
-- an over-spent, under-assigned envelope (negative available)
-- a project with no budget set, and a completed project
-- eight rows in the review queue, plus ignored / transfer / split / noted rows
-
-## Capturing screens
+It walks the whole ceremony, because `BootGate` is in front of every screen
+and there is no way past it but a real account, then screenshots and audits
+Settings — the longest screen in the app, and so the one where a control ends
+up under the bottom nav.
 
 ```bash
-node harness/shoot.mjs --list                     # every screen id
-node harness/shoot.mjs --screens plan,settings-budget
-node harness/shoot.mjs --viewport small           # 320x568 stress width
-node harness/shoot.mjs --scheme dark
-node harness/shoot.mjs --json                     # report to stdout
-```
-
-The app scrolls an inner container, so a `fullPage` screenshot would only ever
-show the first viewport. `shoot.mjs` detects the real scroller and captures
-segments: `home.phone.0.png`, `home.phone.1.png`, …
-
-Navigation is defined in `nav.mjs` as the literal taps a user performs — tabs,
-the TopBar gear, drill-in rows. There is no URL routing to shortcut through, so
-if a screen becomes unreachable in the UI, the harness fails to reach it too.
-That failure is a finding, not a harness bug.
-
-## The automated audit
-
-`audit.mjs` runs inside the page and measures laid-out geometry, catching what
-a screenshot hides:
-
-- `page-h-overflow` / `element-past-viewport` — content crossing the viewport edge
-- `control-obscured` — a control whose centre point hits a *different* element,
-  i.e. it cannot be tapped
-- `control-under-bottom-nav` — actions trapped beneath the fixed nav
-- `content-clipped-unscrollable` — `overflow-hidden` over content taller than its box
-- `tap-target-too-small` — below the documented 44px minimum
-- `input-font-too-small` — under 16px, which makes iOS zoom on focus
-- `text-clipped-no-ellipsis`, `control-without-accessible-name`, `img-without-alt`
-- `bad-value-rendered` — a literal `NaN` / `undefined` / `[object Object]` on screen
-
-Findings are geometric facts, not opinions. Judgement calls — hierarchy,
-rhythm, copy, whether a screen looks finished — are for a human or a reviewing
-agent looking at the screenshots.
-
-Precision is the point. A checker that cries wolf gets ignored, so the audit
-knows about four things it would otherwise report forever:
-
-- `.sr-only` text, which is *supposed* to be a clipped 1px box
-- `line-clamp` and the rolling-digit animation, which clip on purpose
-- the overlay stack — screens cover each other, so only the top layer is
-  audited, and the covered one produces a single "not inert" finding rather
-  than one per buried control
-- `data-dense-target`, which `IconButton size="sm"` sets to claim the 36px
-  dense-row allowance `components/README.md` grants it
-
-If you add a deliberate exception to a convention, teach the audit about it in
-the same commit. Otherwise the next person learns to skip the output.
-
-### Inline editors the crawl cannot reach — the category colour picker
-
-`probe.mjs`'s opener crawl only follows controls that open a **Dialog**. An
-inline editor — `CategoryManager`'s row edit state, which swaps a row for a
-name field, three bucket dots and a 24-swatch colour grid — never registers as
-one, so the crawl clicks it, sees no dialog, and moves on. Worse, the input
-battery would be destructive there: the rename field commits on blur, so typing
-`7` into it renames a fixture category and then finds no field left to type the
-original back into.
-
-So the picker gets its own pass at the end of a run, pinned to **320px**
-whatever `--viewport` says, because 320 is the width the grid is sized against:
-24 swatches at a 44px target is 1056px before gaps, and it either wraps to six
-per row or it pushes the editor's other controls off-screen. It reports the
-measured geometry (`24 swatches, rows 6+6+6+6, grid 262x168px at 29..291`), runs
-the full `audit.mjs` over the open editor, and drops
-`harness/shots/category-picker.small.png` for the judgement calls geometry
-cannot make. It found the bucket dots sitting at 36px on its very first run —
-the fourth sub-44px target in this codebase, invisible until something finally
-opened a row's edit state.
-
-Teeth, verified by breaking each subject and watching it fail:
-
-| break | finding |
-| --- | --- |
-| swatch `w-11 h-11` → `w-9 h-9` | 24 × `picker-swatch-too-small` |
-| grid `flex-wrap` → `flex-nowrap` | 18 × `picker-past-viewport` |
-| drop the `data-color-picker` marker | `picker-missing` |
-
-That last one matters most: without it the check would sample nothing and pass,
-which is exactly how three earlier checks here stayed green over broken
-subjects.
-
-## Sheets and the hero number — `sheets.mjs`, `hero.mjs`
-
-Two defects the screen recordings caught that every other tool called clean.
-
-```bash
-node harness/sheets.mjs      # sheet action rail vs. safe-area inset, background scroll lock
-node harness/hero.mjs        # hero card consistency across a stale-cache repaint
-```
-
-`sheets.mjs` exists because **`env(safe-area-inset-bottom)` is 0 everywhere we
-test.** A sticky `DialogFooter` was resolving `bottom: 0` against the panel's
-*content* box, so the panel's own bottom padding rode the rail up over the last
-row of content — by `inset - 16px`, which is exactly 0 in Chromium, WebKit
-headless and every desktop browser, and 18px of a 44px button on an iPhone. It
-simulates the inset by overriding `--sheet-inset-bottom` (the one value the
-panel and the rail share) and asserts the rail stays flush and occludes nothing
-at 0/16/34/48px. It also asserts the page is frozen behind an open sheet: a
-`position: fixed` overlay's touch-scroll chains to the *root* scroller, not to
-its DOM ancestor, so `<main>`'s `overscroll-contain` never sees the gesture.
-
-`hero.mjs` replays a PWA relaunch: it stages a stale persisted react-query cache
-in localStorage, ages it past `staleTime`, delays `/api/summary`, then samples
-the hero card **on every animation frame** and asserts `budget − spent == left`
-at each one. Sampling `style.transform` would be useless — React writes the
-target there instantly, so a wheel looks settled while it is visibly rolling
-somewhere else. Only the computed matrix says what is on screen. Before the fix
-this reported 13 distinct card states including `24,526.25 of 25,000.00 · 3,581.55
-left`; after it, 2.
-
-Both take `BASE=http://127.0.0.1:8099` to run against `stack.sh prod`.
-
-## What Chromium cannot tell you — `ios.mjs`
-
-`shoot.mjs` and `probe.mjs` run headless Chromium with an emulated viewport.
-Three things are simply absent there, and every one of them is load-bearing on
-a real iPhone in standalone PWA mode:
-
-1. **`env(safe-area-inset-*)` is 0.** Notch and home-indicator padding is
-   present in the CSS but its effect is never exercised.
-2. **There is no software keyboard**, so nothing is ever occluded by one.
-3. **`dvh` tracks browser UI, not the keyboard.** On iOS the layout viewport
-   does *not* shrink when the keyboard opens, so a `100dvh` bottom-anchored
-   sheet stays pinned to the bottom of the display — underneath the keyboard.
-
-That third one shipped a genuinely unusable Plan sheet: tapping the amount
-field raised a keyboard over both the field and the Save button, with no
-overflow to scroll them back into reach. The Chromium audit reported the screen
-clean, because in Chromium the keyboard does not exist.
-
-```bash
-node harness/ios.mjs                 # WebKit, iPhone 14 Pro, keyboard geometry
-node harness/ios.mjs --screens plan
-```
-
-It runs **WebKit** (the engine Safari uses), opens each sheet, focuses its first
-input, and asserts that the focused field and the primary action are inside the
-region a 336px keyboard leaves visible.
-
-Two traps worth knowing when you extend this:
-
-- **Do not set `reducedMotion: "reduce"` when testing animation.** The
-  screenshot tools set it for stable captures, and it makes `Dialog` skip its
-  slide entirely — which hides any bug in the slide itself.
-- **Check which tree vite is serving** (`ls -l /proc/<vite-pid>/cwd`).
-  `stack.sh` resolves the repo from its own location, so running it from the
-  main checkout serves the main checkout — it is easy to "verify a fix" against
-  a tree that does not contain it.
-
-## Drag gestures — `gestures.mjs`
-
-```bash
-node harness/gestures.mjs                  # Chromium (default)
-node harness/gestures.mjs --engine webkit  # real-pointer cases on the ship engine
-```
-
-Sheets and drill-in pages dismiss on a drag, and the *rules* — 110px or
-550px/s down, a third of the width or 550px/s right, never the other way — are
-pure functions in `lib/sheetDrag.ts` and `lib/edgeBack.ts` with unit tests. What
-those tests cannot see is whether the rules are still **connected** to anything:
-`drag`, `dragControls`, `dragElastic`, `onDragStart` and both `onDragEnd`
-handlers could be deleted from `Dialog`/`SettingsPage` and every vitest file
-would still pass. jsdom cannot drive a Framer drag — no layout to measure, no
-frame clock behind the pointer stream — so this drives one in a real engine.
-
-It also pins a bug only a real pointer produces: a drag that *starts* on the
-sheet handle and *ends* off the panel makes the browser synthesise a `click` on
-the nearest common ancestor of press and release — the overlay root, which
-closes the sheet. So an upward pull dismissed, which is exactly what
-`dragElastic: { top: 0 }` exists to prevent. `Dialog` disarms one root click per
-drag, and the upward-drag plus both scrim-tap checks here are that guard's only
-automated coverage.
-
-Two input drivers, because neither can do both jobs:
-
-- **Real input** (`page.mouse`) for everything about hit-testing, clicks and
-  click synthesis — a script-dispatched event would never synthesise the click
-  the regression above depends on.
-- **In-page, frame-paced pointer events** for the flick. Playwright's bottleneck
-  is the per-call protocol round-trip, so a `mouse.move({ steps })` burst reaches
-  Framer at 200–900px/s depending on machine load — it cleared the 550px/s bar in
-  about half of runs, and a check that flaky is worse than none. Dispatching one
-  `pointermove` per animation frame puts the frame clock in charge instead.
-  Framer does not check `isTrusted`, so PanSession, velocity, `onDragEnd` and the
-  predicate all run exactly as they do for a finger.
-
-That is also why it defaults to **Chromium**, unlike `ios.mjs`: headless WebKit
-runs a ~50ms frame clock, and 60px over three 50ms frames is 400px/s — a slow
-drag, whatever you dispatch. Under `--engine webkit` the flick reports `skip`
-with the velocity it managed, rather than a green line that proves nothing.
-
-Each check was verified to have teeth by breaking the thing it guards: dropping
-the click disarm fails the upward-drag check, passing `0` for velocity fails the
-flick check, and gutting `SettingsPage`'s `onDragEnd` fails the edge-swipe check.
-
-`Dialog`'s drag region carries `data-sheet-handle` for the same reason
-`DialogFooter` carries `data-dialog-footer`: it is otherwise a div identified
-only by Tailwind classes, and the harness should not grab it by styling.
-
-## Driving it yourself
-
-`nav.mjs` exports the pieces for ad-hoc interaction scripts:
-
-```js
-import { chromium } from "playwright";
-import { VIEWPORTS, screenById, settle } from "./nav.mjs";
-import { audit } from "./audit.mjs";
-
-const browser = await chromium.launch();
-const page = await browser.newPage({ ...VIEWPORTS.phone });
-await page.goto("http://127.0.0.1:5199");
-await settle(page, 800);
-await screenById("settings-budget").goto(page);
-
-// e.g. reproduce the "clearing a number input forces a 0" class of bug
-const field = page.locator('input[inputmode="numeric"]').first();
-await field.fill("");
-console.log("after clearing:", await field.inputValue()); // should be "", not "0"
-```
-
-## `v2settings.mjs` — the only runner that actually loads `web/src`
-
-**Read this before trusting any green run in this directory.** Everything above
-— `stack.sh`, `shoot.mjs`, `probe.mjs`, `nav.mjs` — was forked from `frontend/`
-with the tree and still drives **v1**: `stack.sh` runs vite in `$REPO/frontend`
-and `nav.mjs` taps v1's Settings hub rows. Point them at a v2 change and they
-will report a clean screen they never loaded.
-
-`v2settings.mjs` runs against the v2 stack and the v2 tree. It walks the whole
-ceremony, because `BootGate` is in front of every screen and there is no way
-past it but a real account, then screenshots and audits Settings — the longest
-screen in the app, and so the one where a control ends up under the bottom nav.
-
-```bash
-harness/v2stack.sh up                        # prints an invite
+harness/v2stack.sh up
 node harness/v2settings.mjs <invite-code>
 harness/v2stack.sh down
 ```
@@ -304,8 +75,8 @@ Two things make the walk completable at all:
   bank mail verifies DKIM offline. Without it every message reads as
   `unauthenticated`, the verification step never clears, and **no script can
   reach the product**.
-- `sendmail.py` posts one corpus message byte-for-byte. Rebuild a header and the
-  signature stops verifying.
+- `sendmail.py` posts one corpus message byte-for-byte. Rebuild a header and
+  the signature stops verifying.
 
 It sends a **forwarded** message on purpose. A direct one passes DKIM and is
 still held with `attested = false` — `origin/inner.go` attests an *inner*
@@ -314,46 +85,76 @@ only for attested mail. Whether a direct bank email should be trustable from
 the verification step is an open question for the mail path.
 
 The capture asserts its own honesty: if the scroll produces two identical
-segments it fails, because the first version of this file picked an inner 816px
-scroller and reported a clean 2983px screen it had never scrolled.
+segments it fails, because the first version of this file picked an inner
+816px scroller and reported a clean 2983px screen it had never scrolled.
+
+Screenshots land in `harness/shots/` with a machine-readable
+`harness/shots/report.settings.json`.
+
+### The automated audit — `audit.mjs`
+
+`v2settings.mjs` (and any runner that wants it) imports `audit(page)` from
+`audit.mjs`, which runs inside the page and measures laid-out geometry,
+catching what a screenshot hides:
+
+- `page-h-overflow` / `element-past-viewport` — content crossing the viewport edge
+- `control-obscured` — a control whose centre point hits a *different*
+  element, i.e. it cannot be tapped
+- `control-under-bottom-nav` — actions trapped beneath the fixed nav
+- `content-clipped-unscrollable` — `overflow-hidden` over content taller than its box
+- `tap-target-too-small` — below the documented 44px minimum
+- `input-font-too-small` — under 16px, which makes iOS zoom on focus
+- `text-clipped-no-ellipsis`, `control-without-accessible-name`, `img-without-alt`
+- `bad-value-rendered` — a literal `NaN` / `undefined` / `[object Object]` on screen
+
+Findings are geometric facts, not opinions. Judgement calls — hierarchy,
+rhythm, copy, whether a screen looks finished — are for a human or a
+reviewing agent looking at the screenshots.
+
+Precision is the point. A checker that cries wolf gets ignored, so the audit
+knows about several things it would otherwise report forever, including
+`.sr-only` text, `line-clamp` and the rolling-digit animation clipping on
+purpose, the overlay stack (only the top layer is audited), and
+`data-dense-target`, which `IconButton size="sm"` sets to claim the 36px
+dense-row allowance `components/README.md` grants it. If you add a
+deliberate exception to a convention, teach the audit about it in the same
+commit — otherwise the next person learns to skip the output.
 
 ## `recovery.mjs` — the at-rest keys, and a browser with nothing in it
 
-The rest of this directory is about layout and gesture. `recovery.mjs` is about
-a different kind of claim: **a browser whose site data has been cleared, given
-twelve words, gets its keys back.** Every layer of that is a real browser
-behaviour — IndexedDB actually being gone, a `CryptoKey` actually refusing to
-export, WebAuthn actually finding a discoverable credential — and jsdom
-simulates none of them, so it cannot be a vitest file however well written.
-
-It needs a v2 stack rather than the v1 one `stack.sh` brings up: a Postgres
-cluster, a scratch `ledgerd`, and a vite dev server pointed at it. The script's
-own header carries the four commands. It mints nothing itself — hand it a
-single-use invite code:
+This one is about a different kind of claim than layout: **a browser whose
+site data has been cleared, given twelve words, gets its keys back.** Every
+layer of that is a real browser behaviour — IndexedDB actually being gone, a
+`CryptoKey` actually refusing to export, WebAuthn actually finding a
+discoverable credential — and jsdom simulates none of them, so it cannot be a
+vitest file however well written.
 
 ```bash
+harness/v2stack.sh up
 node harness/recovery.mjs <invite-code>
+harness/v2stack.sh down
 ```
 
-It creates an account, walks the recovery step, **attempts to export the stored
-private key material and requires Chromium to refuse**, declares a bank, then
-throws the browser context away and does the whole thing again from the phrase.
+It creates an account, walks the recovery step, **attempts to export the
+stored private key material and requires Chromium to refuse**, declares a
+bank, then throws the browser context away and does the whole thing again
+from the phrase.
 
 One thing it documents rather than tests: a cleared browser is a new device
 *writer*, because the writer's identity key was in the database that was just
-destroyed — so it stops at the enrolment wall before the onboarding walk. That
-gate is the writer roster's, not the key material's, and the script says so
-where it steps around it.
+destroyed — so it stops at the enrolment wall before the onboarding walk.
+That gate is the writer roster's, not the key material's, and the script says
+so where it steps around it.
 
 ### It is Chromium-only, and that shipped a bug
 
 Its authenticator comes from CDP, which Chromium alone speaks. So this file —
 the one that proves key custody — proved it on one engine, and the bug that
 reached the operator was WebKit-only: **WebKit accepts an X25519 `CryptoKey`
-into IndexedDB, completes the transaction, and returns `null` for that record on
-every later read.** Every iPhone published a key set it could never open and was
-sent back to the recovery screen on every launch, while this run was green. Same
-shape as a timezone guard that passes because the box is UTC.
+into IndexedDB, completes the transaction, and returns `null` for that record
+on every later read.** Every iPhone published a key set it could never open
+and was sent back to the recovery screen on every launch, while this run was
+green. Same shape as a timezone guard that passes because the box is UTC.
 
 Two files close it, and a change to `v2/keys.ts` should run both.
 
@@ -364,10 +165,10 @@ node harness/vault.mjs        # needs only a vite on the origin
 ```
 
 Writes a key set through the app's own `installAccountKeys`, opens a **new**
-connection, reads it back, opens the ingest key and derives with it, and requires
-every export attempt to be refused — in both engines. No passkey, no invite, no
-server. This is the assertion that would have caught the loop, and it fails on
-the old storage shape with `webkit: read null`.
+connection, reads it back, opens the ingest key and derives with it, and
+requires every export attempt to be refused — in both engines. No passkey, no
+invite, no server. This is the assertion that would have caught the WebKit
+loop above, and it fails on the old storage shape with `webkit: read null`.
 
 ## `operator.mjs` — the whole path, in WebKit
 
@@ -376,11 +177,41 @@ node harness/operator.mjs signup <invite>   # phase one
 node harness/operator.mjs recover           # phase two
 ```
 
-Sign up, twelve words, confirm, **reload**, and check the next launch does not
-land back on the phrase screen. It uses `webauthn.mjs`, a real ES256 software
-authenticator (go-webauthn verifies its signatures like any other), because
-Playwright cannot give WebKit a virtual one. A **persistent profile** is what
-makes the two phases separable: run `signup` against an old `v2/keys.ts` and
-`recover` against a new one, and phase two is the operator's repair — same
-account, same published blob, same twelve words, no re-keying.
+Sign up, twelve words, confirm, **reload**, and check the next launch does
+not land back on the phrase screen. It uses `webauthn.mjs`, a real ES256
+software authenticator (go-webauthn verifies its signatures like any other),
+because Playwright cannot give WebKit a virtual one. A **persistent profile**
+is what makes the two phases separable: run `signup` against an old
+`v2/keys.ts` and `recover` against a new one, and phase two is the operator's
+repair — same account, same published blob, same twelve words, no re-keying.
 
+## `addpasskey-repro.mjs` — a targeted repro, not a pass/fail check
+
+```bash
+node harness/addpasskey-repro.mjs <invite-code>
+```
+
+Reproduces adding a SECOND passkey on an authenticator that already holds the
+first one — the same situation as an iCloud Keychain user signed into the
+same Apple ID on a second device. It asserts nothing automatically: it prints
+the raw `addPasskey()` result and the on-screen note, and the reader confirms
+the note names this specific failure rather than a generic one.
+
+## Shared helpers
+
+- `webauthn.mjs` — a real ES256 software WebAuthn authenticator, for the
+  engine (WebKit) Playwright cannot give a virtual one. Used by `operator.mjs`.
+- `sendmail.py` — posts one corpus `.eml` byte-for-byte to the scratch SMTP
+  listener. Used by `v2settings.mjs`; also runnable standalone as
+  `python3 harness/sendmail.py <inbound-address> <path-to.eml>`.
+
+## Two traps worth knowing
+
+- **Do not set `reducedMotion: "reduce"` when testing animation.**
+  `v2settings.mjs` sets it for stable captures, and it makes `Dialog` /
+  `SettingsPage` skip their slide entirely — which hides any bug in the slide
+  itself.
+- **Check which tree vite is serving** (`ls -l /proc/<vite-pid>/cwd`).
+  `v2stack.sh` resolves the repo from its own location, so running it from a
+  stale checkout serves that checkout — it is easy to "verify a fix" against a
+  tree that does not contain it.
