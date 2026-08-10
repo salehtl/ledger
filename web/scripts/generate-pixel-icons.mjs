@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// frontend/scripts/generate-pixel-icons.mjs
+// web/scripts/generate-pixel-icons.mjs
 //
 // Regenerates `src/components/ui/pixelIcons.ts` from the raw SVGs shipped by
-// the `pixelarticons` devDependency (frontend/node_modules/pixelarticons/svg).
+// the `pixelarticons` devDependency (web/node_modules/pixelarticons/svg).
 //
 // Run it after bumping the pixelarticons version, or after adding a new alias
 // to the ICONS map below:
 //
-//   cd frontend && bun run generate:icons
+//   cd web && bun run generate:icons
 //
 // Each key of ICONS is a pixelarticons source icon (its .svg filename, minus
 // the extension); each value is every app-facing export name backed by that
@@ -91,7 +91,7 @@ entries.sort(([a], [b]) => a.localeCompare(b));
 
 const header = `// GENERATED FILE — do not hand-edit.
 // Produced by \`node scripts/generate-pixel-icons.mjs\` from
-// pixelarticons@${PKG.version} (frontend/node_modules/pixelarticons/svg/*.svg).
+// pixelarticons@${PKG.version} (web/node_modules/pixelarticons/svg/*.svg).
 // To add, rename, or re-point an icon: edit the ICONS map in that script, then
 // re-run it — don't add entries here by hand, they'll be clobbered.
 //

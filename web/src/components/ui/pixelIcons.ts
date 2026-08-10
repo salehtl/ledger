@@ -1,6 +1,6 @@
 // GENERATED FILE — do not hand-edit.
 // Produced by `node scripts/generate-pixel-icons.mjs` from
-// pixelarticons@2.2.0 (frontend/node_modules/pixelarticons/svg/*.svg).
+// pixelarticons@2.2.0 (web/node_modules/pixelarticons/svg/*.svg).
 // To add, rename, or re-point an icon: edit the ICONS map in that script, then
 // re-run it — don't add entries here by hand, they'll be clobbered.
 //
