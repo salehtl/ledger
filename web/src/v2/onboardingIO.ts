@@ -30,6 +30,9 @@
  */
 
 import { ApiError, NetworkError } from "@ledger/client/net/client";
+import type { Definition as TemplateDefinition } from "@ledger/client/tmpl/exec";
+
+export type { TemplateDefinition };
 
 /** The half of `Client` these routes need: a bearer token. */
 export interface TokenSource {
@@ -126,6 +129,40 @@ export async function readSupportedBanks(client: TokenSource, opts: IOOptions = 
   return [...counts.entries()]
     .map(([id, templates]) => ({ id, templates }))
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The published template DEFINITIONS, for the client-side executor.
+ *
+ * {@link readSupportedBanks} reads the same response for a different question —
+ * which banks exist — and throws the definitions away. Lane 2 needs them: a held
+ * message the trust model cannot verify is parsed **on the device**, by
+ * `client/src/tmpl`, so a prefilled form can be offered without anything being
+ * believed. Two readers rather than one call that returns both, because the
+ * picker must not depend on a shape the executor cares about.
+ *
+ * `?since=` is not sent, for the same reason: the delta form answers "what
+ * changed" and would come back empty for a device already up to date.
+ *
+ * Nothing is validated here. A definition this build cannot run throws inside
+ * `compileDefinition`, which is where the executor's own rules live, and the
+ * caller skips that template rather than losing the rest of the set.
+ */
+export async function readTemplateDefinitions(client: TokenSource, opts: IOOptions = {}): Promise<TemplateDefinition[]> {
+  const { text } = await call("/api/v1/templates", requireToken(client), { method: "GET" }, opts);
+  const body = json<{ templates?: unknown }>(text, "GET /api/v1/templates");
+  const out: TemplateDefinition[] = [];
+  if (Array.isArray(body.templates)) {
+    for (const raw of body.templates) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const definition = (raw as { definition?: unknown }).definition;
+      if (typeof definition !== "object" || definition === null) continue;
+      const d = definition as TemplateDefinition;
+      if (typeof d.id !== "string" || d.id === "" || typeof d.bank !== "string") continue;
+      out.push(d);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -132,6 +132,32 @@ describe("Dialog", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  /**
+   * The two-tap bug, pinned.
+   *
+   * The guard that was supposed to prevent it queried `[autofocus]`, and React
+   * renders no such attribute — it focuses the node during commit and leaves
+   * nothing behind, so the query matched on no sheet in the app and every one of
+   * them took the caret back out of the field it had just opened onto.
+   */
+  it("leaves the caret in a field that asked for it", async () => {
+    renderInMotion(
+      <Dialog title="Search" onClose={() => {}}>
+        <input autoFocus aria-label="Search merchants" />
+      </Dialog>,
+    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search merchants")));
+  });
+
+  it("focuses the panel itself when nothing inside asked for the caret", async () => {
+    renderInMotion(
+      <Dialog title="Plain" onClose={() => {}}>
+        <p>no fields here</p>
+      </Dialog>,
+    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("dialog")));
+  });
+
   it("renders a title adornment and applies titleStyle to the heading", () => {
     renderInMotion(
       <Dialog

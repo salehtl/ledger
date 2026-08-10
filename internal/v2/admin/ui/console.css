@@ -107,6 +107,29 @@ body {
 }
 .tab[aria-current="true"] { color: var(--color-fg); border-bottom-color: var(--color-accent); }
 
+/* The disk fuse strip, above every section.
+ *
+ * Quiet by default — one hairline row of muted mono, the same register as a
+ * table header — and loud only when the fuse is tripped, where it takes the spot
+ * ink as a FILL behind accent-fg text (the ink is never coloured text; see the
+ * token comments above). That contrast is the whole design of the element: an
+ * operator must be able to ignore it every day and be unable to miss it once. */
+.headroom {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 16px; font-size: 13px;
+  border-bottom: 1px solid var(--color-border);
+}
+.headroom.warn { border-bottom-color: var(--color-amber); }
+.headroom.tripped {
+  background: var(--color-accent); color: var(--color-accent-fg);
+  border-bottom-color: var(--color-accent);
+  padding: 10px 16px; font-size: 14px;
+}
+/* Inside the tripped strip everything sits on the spot ink, so the muted and
+   pill colours — chosen for contrast against paper — would be unreadable. */
+.headroom.tripped .muted, .headroom.tripped .bad { color: var(--color-accent-fg); opacity: 0.85; }
+.headroom.tripped .pill { border-color: var(--color-accent-fg); color: var(--color-accent-fg); }
+
 .view { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 24px; max-width: 1200px; width: 100%; }
 
 .footer {
@@ -190,6 +213,19 @@ td.mono { font-family: var(--font-mono); font-size: 13px; }
 
 .bar { height: 6px; background: var(--color-surface-2); border-radius: var(--radius); overflow: hidden; min-width: 60px; }
 .bar > span { display: block; height: 100%; background: var(--color-fg); }
+
+/* The one-time invite code. Big, monospaced and selectable, because it is
+   read aloud or retyped as often as it is copied, and it is the only string
+   this console shows that cannot be fetched again. user-select is stated
+   rather than assumed so a copy by hand always works even when the clipboard
+   API is refused. */
+.code-once {
+  padding: 8px 12px;
+  border: 1px solid var(--color-fg); border-radius: var(--radius);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono); font-size: 18px; letter-spacing: 0.08em;
+  word-break: break-all; user-select: all; -webkit-user-select: all;
+}
 
 pre.out {
   margin: 0; padding: 12px; overflow-x: auto;

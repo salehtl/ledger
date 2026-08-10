@@ -47,11 +47,18 @@
  * state, you get a stack trace naming the cause.
  */
 
-import { useCallback, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useV2OrThrow } from "../v2/BootGate";
-import { invalidateAfterSync, useReviewFeed, useReviewSource } from "../v2/queries";
+import type { SecretStore } from "@ledger/client/store/store";
+
+import { PROFILE, useV2OrThrow } from "../v2/BootGate";
+import { webSecretStore } from "../v2/session";
+import { SetupStatus } from "../screens/onboarding/SetupStatus";
+import { mailStatus } from "../v2/onboarding";
+import { readQuarantine } from "../v2/onboardingIO";
+import { confirmationTask } from "../v2/verificationCode";
+import { invalidateAfterSync, useReviewFeed, useReviewSource, v2Keys } from "../v2/queries";
 import { DECK_LANES } from "../v2/sources/review";
 import { BottomNav } from "../components/ui/BottomNav";
 import { TopBar } from "../components/ui/TopBar";
@@ -87,10 +94,17 @@ const TITLES: Record<TabId, string> = {
  */
 type Overlay = { kind: "settings" } | { kind: "quarantine" };
 
-export function AppShell() {
+export interface AppShellProps {
+  /** Test seam: where the setup list's dismissal is kept. */
+  secrets?: Pick<SecretStore, "get" | "set">;
+}
+
+export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = {}) {
   const v2 = useV2OrThrow();
   const [tab, setTab] = useState<TabId>("home");
   const [overlays, setOverlays] = useState<Overlay[]>([]);
+  /** Settings has one of its own drill-ins open over it. See its `onDrillChange`. */
+  const [settingsDrill, setSettingsDrill] = useState(false);
   const pushOverlay = (o: Overlay) => setOverlays((s) => [...s, o]);
   const popOverlay = () => setOverlays((s) => s.slice(0, -1));
 
@@ -101,6 +115,42 @@ export function AppShell() {
 
   const qc = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);
+
+  /**
+   * Each tab starts at its own top, and the tab you are on scrolls back to it.
+   *
+   * All four tabs share ONE `<main>` scroller and their children swap without a
+   * key, so the scroll offset was shared between screens rather than belonging
+   * to any of them: scroll a third of the way down Transactions, tap Home, and
+   * Home opens a third of the way down — usually past its hero, occasionally
+   * on blank space when the new screen is shorter. Nothing anywhere zeroed it.
+   *
+   * The second half is the convention every iOS app has: **tapping the tab you
+   * are already on returns you to the top.** Without it the only way back up a
+   * long transaction list is to drag it there, and the gesture people reach for
+   * first does nothing at all.
+   *
+   * Smooth for the deliberate tap, instant for the switch — a switch is a
+   * different screen, and animating the scroll of content that is being
+   * replaced is motion with nothing behind it. Reduced motion is asked directly
+   * because this is a native scroll, not a Framer animation: `MotionConfig`
+   * does not reach it.
+   */
+  const navigate = useCallback(
+    (next: TabId) => {
+      if (next !== tab) {
+        setTab(next);
+        return;
+      }
+      const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+      mainRef.current?.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+    },
+    [tab],
+  );
+
+  useEffect(() => {
+    if (mainRef.current !== null) mainRef.current.scrollTop = 0;
+  }, [tab]);
 
   /**
    * A pull is a SYNC, not a refetch.
@@ -131,6 +181,29 @@ export function AppShell() {
   const reviewFeed = useReviewFeed(useReviewSource(), DECK_LANES);
   const counts = reviewFeed.data?.counts;
   const reviewCount = (counts?.needs_review ?? 0) + (counts?.uncategorized ?? 0);
+
+  // The provider's held confirmation, composed for the setup list's one-tap
+  // row. Gated on mail not having arrived: once bank mail flows the forward
+  // provably works, and this read would be a fetch spent answering a question
+  // nobody is asking. Blobs are fetched because the link is read out of one —
+  // scanned by `confirmationTask`, never rendered here.
+  const mailArrived = mailStatus(v2.facts).kind === "arrived";
+  const held = useQuery({
+    queryKey: [...v2Keys.quarantine(), "confirmation"] as const,
+    queryFn: () => readQuarantine(v2.handle.client, { includeBlob: true }),
+    enabled: !mailArrived,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    // Poll while the forward is still being set up, so the confirmation card
+    // surfaces as the provider's email lands rather than only on the next
+    // refocus. Off the moment mail has arrived — a set-up account has answered
+    // the question this read asks and must not poll forever.
+    refetchInterval: mailArrived ? false : 5000,
+  });
+  const confirmation = useMemo(
+    () => (held.data === undefined ? null : confirmationTask(held.data.items)),
+    [held.data],
+  );
 
   // Drill-ins are opaque full-screen panels laid over the tabs, so everything
   // underneath is covered but still in the tab order and the screen-reader
@@ -166,13 +239,39 @@ export function AppShell() {
               rather than stranding it below the card). pb-8 gives scrollable
               screens a terminus above the nav instead of ending flush. */}
           <div className="max-w-screen-sm w-full mx-auto px-4 pt-4 pb-8 min-h-full flex flex-col">
-            {tab === "home" && <Home />}
+            {tab === "home" && (
+              <div className="space-y-4">
+                {/*
+                  The spec's "finish setting up" list and the quiet mail line,
+                  on the home screen where a person actually is — Settings keeps
+                  its own copy for whoever goes looking. Dismissal is shared
+                  (same key, same durable store) and permanent; the `key` makes
+                  this copy re-read it after the Settings overlay closes, so a
+                  dismissal made there does not linger here until a remount.
+
+                  `facts` is boot's snapshot, deliberately: everything on it that
+                  can change mid-session changes through screens that re-run
+                  boot or through Settings, whose own copy reads live values.
+                  A task finished in Settings drops off here on the next boot,
+                  and a stale extra row is the cheapest of the failure modes.
+                */}
+                <SetupStatus
+                  key={`setup-${overlays.length}`}
+                  facts={v2.facts}
+                  secrets={secrets}
+                  onOpenTask={() => pushOverlay({ kind: "settings" })}
+                  onOpenHeldMail={() => pushOverlay({ kind: "quarantine" })}
+                  confirmation={confirmation}
+                />
+                <Home />
+              </div>
+            )}
             {tab === "transactions" && <Transactions from={bounds.from} to={bounds.to} />}
             {tab === "insights" && <Insights scope={scope} />}
             {tab === "review" && <Review onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />}
           </div>
         </main>
-        <BottomNav active={tab} reviewCount={reviewCount} onNavigate={setTab} />
+        <BottomNav active={tab} reviewCount={reviewCount} onNavigate={navigate} />
       </div>
       {overlays.map((o, i) => {
         // Panels stack — held mail opened from Settings leaves Settings mounted
@@ -181,8 +280,15 @@ export function AppShell() {
         return (
           <div key={`${o.kind}-${i}`} className="contents" inert={buried}>
             {o.kind === "settings" ? (
-              <SettingsPage title="Settings" onClose={popOverlay} covered={buried}>
-                <V2Settings onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />
+              // `covered` is true for a panel buried by the overlay stack AND
+              // for one covered by a drill-in Settings opened itself: the back
+              // arrow up here stayed focusable behind those, and pressing it
+              // closes the screen under the one you are looking at.
+              <SettingsPage title="Settings" onClose={popOverlay} covered={buried || settingsDrill}>
+                <V2Settings
+                  onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })}
+                  onDrillChange={setSettingsDrill}
+                />
               </SettingsPage>
             ) : (
               <SettingsPage title="Held mail" onClose={popOverlay}>

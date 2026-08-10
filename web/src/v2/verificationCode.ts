@@ -61,7 +61,7 @@
 import { CURRENT_VERSION, normalize } from "@ledger/client/norm/norm";
 import { webPlatform } from "@ledger/client/platform.web";
 
-import { UNVERIFIED_PREFIX } from "./onboardingIO";
+import { UNVERIFIED_PREFIX, type QuarantineItem } from "./onboardingIO";
 
 // ---------------------------------------------------------------------------
 // The bounds
@@ -190,12 +190,39 @@ export const SCAN_PATTERNS: readonly RegExp[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * The outer domain when it is genuinely verified, folded — otherwise `null`.
+ * The outer domain when a SIGNATURE verified it, folded — otherwise `null`.
  *
- * Three refusals, and all three are the same refusal from different directions:
+ * # Why this asks about signatures and not about `attested`
  *
- *  1. `attested` is not `true`. Decoded as `=== true` in `onboardingIO`, so a
- *     field this build failed to read can never read as verified.
+ * It used to begin `if (!item.attested) return null`, and that single line blocked
+ * onboarding for every user whose provider emails a confirmation.
+ *
+ * `attested` does not mean "verified". It means "we can see a bank BEHIND a
+ * relay" — `origin.Resolve` only ever sets it when `relayDomain` proves a hop
+ * (`internal/v2/origin/inner.go`). A provider's own confirmation mail is sent
+ * DIRECT: Gmail's arrives from `google.com` with `dkim=pass` and `arc=pass` and
+ * **`attested=false`**, because there is no forwarder to see behind. So the one
+ * message onboarding cannot proceed without was the one message this function
+ * refused to recognise. Measured on the live box, 2026-08-09.
+ *
+ * The right question for *reading* a held message is whether a signature verified
+ * the domain, which is the same evidence `origin.Decide` uses for the outer scope
+ * (`internal/v2/origin/trust.go:140-167`).
+ *
+ * # This grants no trust, and could not
+ *
+ * Widening this cannot promote anything. It feeds exactly two things: which held
+ * messages {@link couldBeConfirmation} offers the user to open, and which host a
+ * link may point at. Confirmation and allow-listing run through `trustBasis` and
+ * `trustRequest` in `onboardingIO`, which are untouched and still demand
+ * `attested`. A held message stays held.
+ *
+ * Three refusals remain, and all three are the same refusal from different
+ * directions:
+ *
+ *  1. Neither DKIM nor ARC passed, so nothing signed this and no name is
+ *     evidence. Compared as `=== "pass"`, so a verdict this build failed to read
+ *     can never read as verified.
  *  2. The domain carries {@link UNVERIFIED_PREFIX} — an envelope-derived name
  *     the SENDER typed and nothing checked. `origin.Resolve` applies that prefix
  *     precisely so it cannot be compared against anything.
@@ -203,10 +230,14 @@ export const SCAN_PATTERNS: readonly RegExp[] = [
  *     value that is not a hostname must not become the pinned host of a link the
  *     user is invited to open.
  *
- * This is a READING of the server's decision, never a decision of its own.
+ * This is still a READING of the server's verdicts, never a decision of its own.
  */
-export function verifiedOuterDomain(item: { outerDomain: string; attested: boolean }): string | null {
-  if (!item.attested) return null;
+export function verifiedOuterDomain(item: {
+  outerDomain: string;
+  dkim: string;
+  arc: string;
+}): string | null {
+  if (item.dkim !== "pass" && item.arc !== "pass") return null;
   const d = item.outerDomain.trim().toLowerCase().replace(/\.$/, "");
   if (d === "" || d.startsWith(UNVERIFIED_PREFIX)) return null;
   return HOSTNAME.test(d) ? d : null;
@@ -235,7 +266,12 @@ export function verifiedOuterDomain(item: { outerDomain: string; attested: boole
  * outer hop merely relayed, i.e. a bank behind a forwarder, and it has its own
  * control.
  */
-export function couldBeConfirmation(item: { outerDomain: string; innerDomain: string; attested: boolean }): boolean {
+export function couldBeConfirmation(item: {
+  outerDomain: string;
+  innerDomain: string;
+  dkim: string;
+  arc: string;
+}): boolean {
   return item.innerDomain.trim() === "" && verifiedOuterDomain(item) !== null;
 }
 
@@ -350,6 +386,57 @@ export function heldBody(blobBase64: string, receivedAt: string): HeldBody {
   } catch {
     return { text: new TextDecoder("utf-8", { fatal: false }).decode(raw), source: "raw" };
   }
+}
+
+// ---------------------------------------------------------------------------
+// The pieces, composed: the one-tap task
+// ---------------------------------------------------------------------------
+
+/** What a screen needs to offer the confirmation as one tap. */
+export interface ConfirmationTask {
+  /** The verified signing domain, folded. Shown verbatim, as evidence. */
+  domain: string;
+  /** A link pinned to {@link domain}, or null when none could be read. */
+  url: string | null;
+  /** A bounded digit run, or null. */
+  code: string | null;
+  /** Which held row this is, so a screen can open exactly it. */
+  itemId: string;
+}
+
+/**
+ * The held lane, reduced to one task: "open your provider's confirmation".
+ *
+ * Every piece already existed — {@link couldBeConfirmation} says which held
+ * messages might be it, {@link verifiedOuterDomain} says which host a link may
+ * point at, {@link scanForCode} reads the link out — and no surface composed
+ * them, so the user was left to find the message themselves. This picks the
+ * NEWEST candidate (a re-sent confirmation supersedes the one before it) and
+ * scans its blob with the link pinned to the item's own verified domain.
+ *
+ * A candidate with no blob, or one whose blob yields nothing, still returns a
+ * task with `url: null`: the screen falls back to opening held mail, because a
+ * message that exists must never be a dead end. `null` from here means only
+ * that nothing held could be a confirmation at all.
+ *
+ * The blob is scanned, never rendered, and the scan is the module's bounded
+ * one — this adds no new pattern and no new surface.
+ */
+export function confirmationTask(items: readonly QuarantineItem[]): ConfirmationTask | null {
+  let newest: QuarantineItem | null = null;
+  for (const item of items) {
+    if (!couldBeConfirmation(item)) continue;
+    if (newest === null || item.receivedAt.localeCompare(newest.receivedAt) > 0) newest = item;
+  }
+  if (newest === null) return null;
+  const domain = verifiedOuterDomain(newest);
+  // couldBeConfirmation already required a verified domain; this is the type's
+  // narrowing, not a second decision.
+  if (domain === null) return null;
+  const blob = newest.blob ?? "";
+  if (blob === "") return { domain, url: null, code: null, itemId: newest.id };
+  const scan = scanForCode(heldBody(blob, newest.receivedAt).text, { linkHost: domain });
+  return { domain, url: scan.link, code: scan.code, itemId: newest.id };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import type { RawRow } from "./csv";
 import { parseAmount, parseImportDate, validateMap, type ImportMap } from "./map";
 
-interface NormalizedImportRow { rowIndex: number; postedAt: string; merchantRaw: string; amountMinor: bigint; currency: string; direction: "debit" | "credit"; category: string | null }
+export interface NormalizedImportRow { rowIndex: number; postedAt: string; merchantRaw: string; amountMinor: bigint; currency: string; direction: "debit" | "credit"; category: string | null }
 export type NormalizeResult = { ok: true; row: NormalizedImportRow } | { ok: false; rowIndex: number; error: string };
 
 function normalizeRow(raw: RawRow, map: ImportMap, rowIndex: number): NormalizeResult {

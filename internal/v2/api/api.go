@@ -17,7 +17,7 @@
 //	DELETE /api/v1/keys/wraps {credential_id}                      -> 204
 //	GET  /api/v1/sync?stream=&after=&limit=                        -> {stream, rows, next, complete}
 //	GET  /api/v1/sync/hashes?stream=&after=&limit=                 -> {stream, hashes, next, complete}
-//	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]}
+//	POST /api/v1/sync {writer_id, stream, blobs:[...]}             -> {seqs:[...]} | 413 account_full {budget:{resource, have, delta, limit}}
 //	GET  /api/v1/address                                           -> {address, created_at, rotates_from, grace_until}
 //	POST /api/v1/address/challenge {}                              -> {nonce}
 //	POST /api/v1/address/rotate    {idp, id_token, nonce, sig}     -> {address, created_at, rotates_from, grace_until}
@@ -34,7 +34,7 @@
 //	DELETE /api/v1/push/subscriptions                              -> 204
 //	DELETE /api/v1/push/subscriptions/{handle}                     -> 204
 //	POST /api/v1/account/challenge {}                              -> {nonce}
-//	DELETE /api/v1/account {idp, id_token, nonce, sig}             -> 204
+//	DELETE /api/v1/account {assertion, nonce, sig}                 -> 204
 //	GET  /api/v1/relay/addresses                                   -> {addresses:[...], as_of}
 //	POST /api/v1/relay/deliver     {local_part, ..., raw}          -> {ingest_id}
 //
@@ -310,6 +310,51 @@ const (
 	quarantineRate    = 1.0 / 60.0 // 1/minute sustained
 	quarantineBurst   = 10
 	quarantineMaxKeys = 4096
+
+	// POST /api/v1/sync was the LAST route in this API with no limiter at all,
+	// and it is the one that stores durable bytes. It gets two budgets, and the
+	// split is the whole point.
+	//
+	// # The request budget is for the POOL, not for the disk
+	//
+	// syncRate bounds how often one account may occupy one of the 16 pool
+	// connections and one append transaction. That is a fairness control and
+	// nothing more. It CANNOT be the storage control: at a sustained 1 request
+	// per second, 8 MiB per request is ~675 GB a day, while a legitimate bulk
+	// import genuinely needs hundreds of requests in minutes (one sub-kilobyte
+	// op is one blob, so a 5,000-op year is about 625 requests). There is no
+	// request rate that permits the import and stops the abuser, because the
+	// two differ by BLOB SIZE.
+	//
+	// # The byte budget is the flow control
+	//
+	// syncByteBurst / syncByteRate are a token bucket denominated in UPLOAD
+	// BYTES: about 64 MiB of burst, refilling at 256 MiB a day. A year of real
+	// ops costs roughly 3 MB of it and finishes in minutes; an abuser sending
+	// maximum-size blobs exhausts the burst in eight requests.
+	//
+	// The burst is 8x the largest possible single upload (maxUploadBlobs x
+	// oplog's 1 MB blob cap), so no conforming request is unconditionally
+	// unpayable — a charge larger than the burst could never be admitted at any
+	// refill, which would be a permanent 429 rather than a rate limit.
+	//
+	// # What this does and does not do, honestly
+	//
+	// It SHAPES FLOW and SLOWS AN ATTACK. It does not stop one, and it must not
+	// be described as though it did: an attacker who stays inside 256 MiB a day
+	// still fills the disk eventually, and the only control that stops that is
+	// the cumulative per-account ceiling (the design's P0 item 4, inside the
+	// append path). Do not write that this turns an hours-long disk fill into a
+	// weeks-long one. The bucket is refilled per account, so N accounts get N
+	// times the rate, which is exactly why the ceiling and the headroom fuse
+	// exist beside it rather than instead of it.
+	syncRate    = 2.0 // requests/second sustained, for pool fairness
+	syncBurst   = 20
+	syncMaxKeys = 4096
+
+	syncByteBurst   = 64 << 20             // 64 MiB of burst
+	syncByteRate    = (256 << 20) / 86400. // 256 MiB/day sustained, in bytes/second
+	syncByteMaxKeys = 4096
 )
 
 // Server holds everything the handlers need. Construct it with NewServer in
@@ -462,6 +507,21 @@ type Server struct {
 	// held mail through the parse cascade inside the request. See the
 	// quarantineRate block above.
 	QuarantinePerUser *Limiter
+	// SyncPerUser and SyncUploadBytes are POST /api/v1/sync's pair: a request
+	// rate for pool fairness and a byte-weighted budget for the bytes that
+	// actually land on the disk. Read the syncRate block for why one limiter
+	// could not have been both.
+	SyncPerUser     *Limiter
+	SyncUploadBytes *Limiter
+
+	// Headroom is the box-level disk fuse (internal/v2/headroom). When it is
+	// tripped every non-read request to this API is refused with a temporary
+	// 503 while reads keep serving — see headroomGate, and headroom's package
+	// doc for why that deliberately includes signing in.
+	//
+	// Nil is no fuse, which is how every test that is not about the fuse runs.
+	// cmd/ledgerd owns starting it; this package only ever asks.
+	Headroom Fuse
 
 	// Reprocessor re-ingests the mail a sender confirmation releases, which is
 	// the only way held mail ever enters the integrity chains (§3.2:58). Nil
@@ -688,6 +748,12 @@ func (s *Server) Handler() http.Handler {
 	if s.QuarantinePerUser == nil {
 		s.QuarantinePerUser = NewLimiter(quarantineRate, quarantineBurst, quarantineMaxKeys, s.now)
 	}
+	if s.SyncPerUser == nil {
+		s.SyncPerUser = NewLimiter(syncRate, syncBurst, syncMaxKeys, s.now)
+	}
+	if s.SyncUploadBytes == nil {
+		s.SyncUploadBytes = NewLimiter(syncByteRate, syncByteBurst, syncByteMaxKeys, s.now)
+	}
 	if s.RelayPerIP == nil {
 		s.RelayPerIP = NewLimiter(relayRate, relayBurst, relayMaxKeys, s.now)
 	}
@@ -726,6 +792,14 @@ func (s *Server) Handler() http.Handler {
 			s.passkeyLimitedSession(s.handlePasskeyAddBegin))
 		mux.HandleFunc("POST /api/v1/auth/passkey/add/finish",
 			s.passkeyLimitedSession(s.handlePasskeyAddFinish))
+		// Seeing and removing what has been enrolled. On the same limiter budget
+		// as the ceremonies — they are session-authenticated, and the limiter
+		// runs before the session is resolved, which is the ordering argument
+		// passkeyLimitedSession documents. See passkeymanage.go.
+		mux.HandleFunc("GET /api/v1/auth/passkeys",
+			s.passkeyLimitedSession(s.handleListPasskeys))
+		mux.HandleFunc("DELETE /api/v1/auth/passkeys/{credential_id}",
+			s.passkeyLimitedSession(s.handleDeletePasskey))
 	}
 	mux.HandleFunc("POST /api/v1/writers/challenge", s.requireSession(s.handleChallenge))
 	mux.HandleFunc("POST /api/v1/writers/register", s.requireSession(s.handleRegister))
@@ -831,7 +905,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})
-	return mux
+	// The box-level fuse wraps EVERYTHING, including the unauthenticated
+	// sign-in routes, because a sign-in is a durable write too. See
+	// headroomGate in guards.go, and headroom's package doc for why that is
+	// deliberate rather than an oversight. With no fuse wired in it is a
+	// method comparison and a nil check per request.
+	return s.headroomGate(mux)
 }
 
 // ---------------------------------------------------------------------------
@@ -890,6 +969,27 @@ func (s *Server) requireSession(h authedHandler) http.HandlerFunc {
 			writeErr(w, http.StatusInternalServerError, "internal", "")
 			return
 		}
+		// Suspension (design P3). Non-read methods only: a suspended account's
+		// devices keep pulling, listing and comparing hashes, deliberately, so
+		// a pause never looks like data loss. Sign-in is outside this
+		// middleware and stays open for the same reason — a read-only device
+		// still needs a session. See guards.go.
+		if !isRead(r.Method) {
+			suspended, err := s.accountSuspended(r.Context(), userID)
+			if err != nil {
+				// Not a 403. "We could not read your status" is infrastructure
+				// trouble, and answering it as a suspension would tell a user
+				// their account was paused by an operator who did nothing.
+				s.logf("api: %s %s: account status for %s: %v", r.Method, r.URL.Path, userID, err)
+				writeErr(w, http.StatusInternalServerError, "internal", "")
+				return
+			}
+			if suspended {
+				s.logf("api: %s %s: refused, account %s is suspended", r.Method, r.URL.Path, userID)
+				writeAccountSuspended(w)
+				return
+			}
+		}
 		h(w, r, userID)
 	}
 }
@@ -922,6 +1022,27 @@ func bearerToken(r *http.Request) (string, bool) {
 type errorBody struct {
 	Error  string `json:"error"`
 	Detail string `json:"detail,omitempty"`
+	// Budget is present on exactly one answer — 413 account_full — and absent
+	// everywhere else. See [BudgetInfo].
+	Budget *BudgetInfo `json:"budget,omitempty"`
+}
+
+// BudgetInfo is the machine-readable half of a 413 account_full: the numbers
+// behind a refusal, so a client can render "you are using 255 MB of 256 MB"
+// rather than a generic failure.
+//
+// It discloses nothing: every field describes the CALLER'S OWN account, which
+// they can already read, and the same rule that governs errorBody.Detail
+// applies — it is present only where it describes the caller's own submission.
+type BudgetInfo struct {
+	// Resource is the budget.Resource* name that ran out.
+	Resource string `json:"resource"`
+	// Have is what the account already holds, Delta is what this request asked
+	// to add, and Limit is the ceiling. All in bytes, all as JSON numbers
+	// because all are far below 2^53.
+	Have  int64 `json:"have"`
+	Delta int64 `json:"delta"`
+	Limit int64 `json:"limit"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

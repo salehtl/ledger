@@ -107,14 +107,32 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   // disarms exactly one click, and the next press re-arms it.
   const draggedRef = useRef(false);
 
-  // A sheet that opens onto a field should land the caret in it. Focusing
-  // the panel unconditionally stole that focus back, so search took two
-  // taps: one to open the sheet, another to actually get into the input.
+  /*
+   * A sheet that opens onto a field should land the caret in it. Focusing the
+   * panel unconditionally stole that focus back, so search took two taps: one to
+   * open the sheet, another to get into the input.
+   *
+   * # The guard that was written for that never fired
+   *
+   * It was `panel.querySelector("[autofocus]")`, and **React does not render an
+   * `autofocus` attribute**. It focuses the node itself during commit and leaves
+   * no attribute behind — `render(<input autoFocus />)` produces exactly
+   * `<input>`, verified rather than assumed. So the query matched nothing on
+   * every sheet in the app, the `else` branch ran every time, and the two-tap
+   * behaviour the comment describes was still shipping. `SearchSheet`,
+   * `CheckinSheet`, `UpdateBalanceSheet`, `CategoryManager` and
+   * `V2CategoriesPanel` all pass `autoFocus` and all lost it.
+   *
+   * Asking where the focus already IS works whatever put it there. React's
+   * autoFocus lands in the commit phase, before this effect runs, so by now the
+   * field holds it — and if nothing did, the panel takes it as before, which is
+   * what makes Escape and the Tab cycle work.
+   */
   useEffect(() => {
     const panel = panelRef.current;
-    const autofocus = panel?.querySelector<HTMLElement>("[autofocus]");
-    if (autofocus) autofocus.focus();
-    else panel?.focus();
+    if (panel === null) return;
+    if (panel.contains(document.activeElement)) return;
+    panel.focus();
   }, []);
 
   useEffect(() => {

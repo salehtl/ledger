@@ -1,6 +1,6 @@
 import type { RawRow } from "./csv";
 
-interface ColumnMap { date: string; description: string; amount?: string; debit?: string; credit?: string; category?: string }
+export interface ColumnMap { date: string; description: string; amount?: string; debit?: string; credit?: string; category?: string }
 export interface ImportMap { columns: ColumnMap; categories?: Record<string, string>; dateFormat: "02/01/2006" | "01/02/2006" | "2006-01-02"; currency: string; directionMode: "sign" | "columns"; skipZeroAmounts?: boolean }
 
 export function validateMap(m: ImportMap): string[] {

@@ -39,7 +39,7 @@ needs a secure context) against a throwaway Postgres cluster under `/tmp`. It
 opens neither `/var/lib/ledger` nor `/etc/ledger-v2` nor the running
 `ledgerd` service.
 
-## The four runners
+## The ceremony runners
 
 Three of the four walk the real sign-in or recovery ceremony — `BootGate` is
 in front of every v2 screen, and there is no way past it but a real account.
@@ -53,9 +53,38 @@ only a page on the origin.
 | `vault.mjs` | the key vault round trip, in Chromium **and** WebKit — no server, invite or passkey needed |
 | `operator.mjs signup <invite> \| recover` | the whole sign-up → phrase → reload path, in WebKit |
 
-**Screens beyond Settings, recovery, the vault and the operator path rest on
-vitest alone.** That coverage gap is real and tracked in `CLAUDE.md`, not
-closed by anything in this directory yet.
+The ceremony runners prove the flows; the screen sweep below (added
+2026-08-10) reaches the rest of the product, so screens no longer rest on
+vitest alone.
+
+## The screen sweep — `v2nav.mjs` and the runners built on it
+
+Added 2026-08-10 alongside the Settings restructure. `v2nav.mjs` holds the
+ceremony, the fixture data and the screen map — the literal taps that reach
+each v2 screen — and the sweep runners drive it:
+
+```bash
+harness/v2stack.sh up                 # prints an invite
+node harness/v2shoot.mjs <invite>     # screenshot + geometry-audit every screen,
+                                      # two widths, both themes
+node harness/v2deck.mjs <invite>      # every card in the review deck, not just
+                                      # the top one
+node harness/v2edge.mjs <invite>      # drill-in left edge: back-arrow tap vs the
+                                      # 24px edge-back strip, scroll under thumb
+node harness/v2subs.mjs <invite>      # the Settings drill-ins behind one-line
+                                      # rows (recovery warning, bank removal copy,
+                                      # home-currency permanence)
+node harness/v2explore.mjs <invite>   # ceremony walker that REPORTS rather than
+                                      # asserts — use it to rebuild the step
+                                      # table when the flow changes
+```
+
+`v2shoot.mjs` takes `--screens a,b` to narrow the walk and `--fast` to drop to
+one pass; each runner documents its own flags in its header — read that first.
+
+`sendmail.py` posts a message to the scratch SMTP listener so ingest-path
+screens have data to show. The sweep runners import `audit.mjs` for the
+in-page geometry checks, same as `v2settings.mjs`.
 
 ## `v2settings.mjs` — Settings, in the real v2 tree
 

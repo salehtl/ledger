@@ -195,9 +195,25 @@ type Handler struct {
 	// Reprocessor is Task 30. Nil means /reprocess answers 503.
 	Reprocessor Reprocessor
 
+	// Headroom is the box-level disk fuse (headroom.go). Nil is reported as
+	// "not configured" rather than hidden, and the route is mounted either way:
+	// a panel whose fuse strip disappears when the fuse is missing shows the
+	// same nothing as a panel whose fuse is fine.
+	Headroom Headroom
+
+	// Invites is the closed beta's gate, as much of it as the console needs
+	// (invites.go). Nil means the three invite routes are not mounted.
+	Invites Invites
+
 	// Token is the shared operator credential (LEDGER_ADMIN_TOKEN). Routes
-	// refuses to mount without it.
+	// refuses to mount without it, even when Identity.Trust is set: the token
+	// is the fallback for a script and for a box with no `tailscale serve`
+	// mount, and a console reachable by exactly one mechanism is one that
+	// becomes unreachable when that mechanism is not there.
 	Token string
+	// Identity is when a Tailscale identity counts as the operator instead.
+	// The zero value trusts nothing; see identity.go.
+	Identity IdentityPolicy
 	// Logf receives the operator-facing reason a request was refused, which the
 	// response deliberately does not carry. Defaults to log.Printf.
 	Logf func(format string, args ...any)
@@ -227,7 +243,7 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	}
 
 	guard := func(next http.HandlerFunc) http.HandlerFunc {
-		return requireToken(h.Token, h.logf, next)
+		return requireOperator(h.Token, h.Identity, h.logf, next)
 	}
 	mux.HandleFunc("GET /admin/templates", guard(h.listTemplates))
 	mux.HandleFunc("POST /admin/templates", guard(h.authorTemplate))
@@ -237,6 +253,17 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 	mux.HandleFunc("GET /admin/diagnostics", guard(h.diagnostics))
 	mux.HandleFunc("GET /admin/accounting", guard(h.accounting))
 	mux.HandleFunc("GET /admin/accounts", guard(h.accounts))
+	// The one operator lever between "this account is fine" and "purge it".
+	// Unconditional, like the roster it sits beside: there is no deployment of
+	// this console in which an abusing account cannot be paused. See suspend.go.
+	mux.HandleFunc("POST /admin/accounts/{id}/suspend", guard(h.suspendAccount))
+	mux.HandleFunc("POST /admin/accounts/{id}/resume", guard(h.resumeAccount))
+	// The box's own state, which today is the disk fuse. Mounted
+	// UNCONDITIONALLY, unlike the optional stores below: a missing fuse is a
+	// fact the console must be able to state, and a route that vanished with it
+	// would render as "could not load" — the same thing a network error renders
+	// as. See headroom.go.
+	mux.HandleFunc("GET /admin/status", guard(h.status))
 	mux.HandleFunc("GET /admin/waitlist", guard(h.listWaitlist))
 	mux.HandleFunc("POST /admin/waitlist", guard(h.recordWaitlist))
 	if h.Quarantine != nil {
@@ -246,8 +273,13 @@ func (h *Handler) Routes(mux *http.ServeMux) error {
 		mux.HandleFunc("GET /admin/samples", guard(h.sampleClusters))
 		mux.HandleFunc("DELETE /admin/samples/{id}", guard(h.retireSample))
 	}
+	if h.Invites != nil {
+		mux.HandleFunc("GET /admin/invites", guard(h.listInvites))
+		mux.HandleFunc("POST /admin/invites", guard(h.mintInvite))
+		mux.HandleFunc("DELETE /admin/invites/{hash}", guard(h.revokeInvite))
+	}
 	if h.Dict != nil {
-		d := &DictHandler{Dict: h.Dict, Token: h.Token, Logf: h.Logf}
+		d := &DictHandler{Dict: h.Dict, Token: h.Token, Identity: h.Identity, Logf: h.Logf}
 		if err := d.Routes(mux); err != nil {
 			return err
 		}
@@ -1241,37 +1273,65 @@ func parseLimit(w http.ResponseWriter, r *http.Request, def, max int) (int, bool
 	return n, true
 }
 
-// requireToken compares the bearer credential in constant time and is the ONE
-// gate on this listener. Both handlers in this package go through it.
+// requireOperator is the ONE gate on this listener. Every handler in this
+// package goes through it, including the dictionary half.
 //
-// Every rejection is the identical 401 — no header, wrong scheme, wrong token,
-// a valid USER SESSION token — because a response that distinguishes them is an
-// oracle. The reason goes to the operator log.
+// It accepts two credentials and no others:
 //
-// Note what is NOT here: there is no fallback to any other credential, and no
-// import of internal/v2/auth. A session token reaching this function is simply
-// a string that does not equal the operator token.
-func requireToken(token string, logf func(string, ...any), next http.HandlerFunc) http.HandlerFunc {
+//	the bearer token   compared in constant time. Unchanged, and still the only
+//	                   way a script, a `curl` or a box with no `tailscale serve`
+//	                   mount reaches this console.
+//	a Tailscale identity  the login `tailscale serve` injects, when the policy
+//	                   trusts it AND the browser vouched the request came from
+//	                   this console's own page. See identity.go, which is where
+//	                   the whole argument lives — in particular why identity
+//	                   alone would have reintroduced the CSRF surface the bearer
+//	                   header accidentally closed.
+//
+// Every rejection is the identical 401 — no header, wrong scheme, wrong token, a
+// valid USER SESSION token, an untrusted identity, a cross-site write — because
+// a response that distinguishes them is an oracle. The reason goes to the
+// operator log.
+//
+// Note what is NOT here: no import of internal/v2/auth, and no path that
+// resolves a session. A session token reaching this function is a string that
+// does not equal the operator token, and a session cookie is not looked at.
+func requireOperator(token string, pol IdentityPolicy, logf func(string, ...any), next http.HandlerFunc) http.HandlerFunc {
 	want := []byte(token)
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		const scheme = "bearer "
-		if len(auth) <= len(scheme) || !strings.EqualFold(auth[:len(scheme)], scheme) {
-			logfOr(logf, "admin: %s %s: no bearer token", r.Method, r.URL.Path)
-			unauthorized(w)
-			return
-		}
-		got := []byte(strings.TrimSpace(auth[len(scheme):]))
-		// ConstantTimeCompare returns 0 for differing lengths without comparing,
-		// so the length check is not itself the timing signal — but it is why the
-		// call cannot be relied on to hide the length. That is acceptable for a
-		// fixed operator token and worth writing down.
-		if subtle.ConstantTimeCompare(got, want) != 1 {
+		if len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
+			got := []byte(strings.TrimSpace(auth[len(scheme):]))
+			// ConstantTimeCompare returns 0 for differing lengths without
+			// comparing, so the length check is not itself the timing signal —
+			// but it is why the call cannot be relied on to hide the length.
+			// That is acceptable for a fixed operator token and worth writing
+			// down.
+			if subtle.ConstantTimeCompare(got, want) == 1 {
+				next(w, r)
+				return
+			}
 			logfOr(logf, "admin: %s %s: token mismatch", r.Method, r.URL.Path)
 			unauthorized(w)
 			return
 		}
-		next(w, r)
+		id, ok := pol.identify(r)
+		if !ok {
+			logfOr(logf, "admin: %s %s: no bearer token and no trusted tailnet identity",
+				r.Method, r.URL.Path)
+			unauthorized(w)
+			return
+		}
+		if !sameOriginEvidence(r) {
+			logfOr(logf, "admin: %s %s: %s is a trusted tailnet identity, but the request "+
+				"carries no same-origin evidence, so it may be a page on another site "+
+				"driving this operator's browser. Use the bearer token for scripted calls.",
+				r.Method, r.URL.Path, id.Login)
+			unauthorized(w)
+			return
+		}
+		next(w, r.WithContext(withIdentity(r.Context(), id)))
 	}
 }
 

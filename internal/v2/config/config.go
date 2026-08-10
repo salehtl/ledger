@@ -15,12 +15,14 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/headroom"
 )
 
 // Config is the full v2 configuration surface. Every later Phase 1 task
@@ -32,11 +34,12 @@ type Config struct {
 	// os.Args[1] after Load succeeds.
 	Mode string `toml:"-"`
 
-	Server ServerConfig `toml:"server"`
-	Mail   MailConfig   `toml:"mail"`
-	Relay  RelayConfig  `toml:"relay"`
-	Push   PushConfig   `toml:"push"`
-	Auth   AuthConfig   `toml:"auth"`
+	Server   ServerConfig   `toml:"server"`
+	Mail     MailConfig     `toml:"mail"`
+	Relay    RelayConfig    `toml:"relay"`
+	Push     PushConfig     `toml:"push"`
+	Auth     AuthConfig     `toml:"auth"`
+	Headroom HeadroomConfig `toml:"headroom"`
 
 	// DictHMACKey keys the merchant-dictionary submitter HMAC (Task 33,
 	// LEDGER_DICT_HMAC_KEY). It is a cryptographic key, not a setting:
@@ -183,13 +186,89 @@ type ServerConfig struct {
 
 	// AdminToken authenticates the Tailscale-bound admin API (Task 32,
 	// LEDGER_ADMIN_TOKEN). Env-only, never TOML.
+	//
+	// It is required for the console to mount AT ALL, including when
+	// AdminTokenOnly is false: the token is the fallback for `curl`, for a
+	// script and for a box with no `tailscale serve` mount, and a console
+	// reachable by exactly one mechanism is one that becomes unreachable the
+	// day that mechanism is not there.
 	AdminToken string `toml:"-"`
+
+	// AdminTokenOnly turns OFF the second way to authenticate to the console:
+	// the caller identity `tailscale serve` injects
+	// (`Tailscale-User-Login`), which lets the operator open the panel on
+	// their own tailnet without fetching a token off the box first. See
+	// internal/v2/admin/identity.go for what is trusted and why.
+	//
+	// It is INVERTED — the zero value trusts the identity — because that is
+	// the posture the deployment wants and a `false` in a config file should
+	// not be load-bearing. Set it when the box has no serve mount and the
+	// listener is plain loopback, since then any local process could send the
+	// header itself. That is documented rather than defended against: a local
+	// process can already read LEDGER_ADMIN_TOKEN out of the unit's
+	// environment, so the header gives it nothing new.
+	//
+	// It does NOT loosen the binding. CheckAdminBind is unchanged and still
+	// refuses anything but loopback or 100.64.0.0/10.
+	AdminTokenOnly bool `toml:"admin_token_only"`
+
+	// AdminTailscaleLogins optionally narrows which Tailscale logins count as
+	// the operator, e.g. ["salehtl@github"]. Empty — the default — accepts any
+	// identity the tailnet vouches for, because the tailnet is the boundary
+	// and a one-operator tailnet has one member. Inert when AdminTokenOnly is
+	// set. Not a secret.
+	AdminTailscaleLogins []string `toml:"admin_tailscale_logins"`
 
 	// DNSFixtures is the path to a recorded dns.json (arc.FixtureLookup),
 	// served as the DKIM/ARC TXT resolver so mail verification is
 	// deterministic and offline. TEST ONLY: set by `ledgerd serve
 	// --dns-fixtures`, never by TOML, and refused off loopback.
 	DNSFixtures string `toml:"-"`
+}
+
+// HeadroomConfig configures the box-level disk fuse (internal/v2/headroom),
+// P4 of docs/superpowers/specs/2026-08-09-account-isolation-design.md: one
+// goroutine samples free space on Path every Interval, and below Floor bytes
+// every durable write — INCLUDING SIGNING IN — is refused with a temporary
+// error while reads keep serving.
+//
+// # Why all three are settings and not constants
+//
+// Path is per deployment by definition: the number that matters is the free
+// space on the filesystem Postgres writes to, and where that is mounted is not
+// this program's decision. Floor and Interval are here because the fuse is the
+// one control an operator may genuinely need to move DURING an incident — a
+// box that has tripped is a box whose operator wants to lower the floor by a
+// gigabyte to get writes back while they free space, and a config key is a
+// restart where a constant is a rebuild.
+//
+// None of the three is a secret: they are a mount point and two numbers.
+type HeadroomConfig struct {
+	// Path is any path on the filesystem to watch. It is the DATA directory
+	// rather than, say, the binary's own location, because the bytes that fill
+	// this box are the database's.
+	//
+	// The fuse never writes to it and never creates it — it calls statfs, so
+	// any existing path on the right filesystem answers the same number. A path
+	// that does not exist is not a startup failure (headroom keeps its previous
+	// state on a sampling error) but it IS a fuse that never trips, which is
+	// why the sampling failure is logged every interval rather than once.
+	Path string `toml:"path"`
+
+	// FloorBytes is the reserved free space below which writes stop. The
+	// design's number is 8 GB (headroom.DefaultFloor): enough that Postgres can
+	// still write its WAL, a backup can still land somewhere, and the
+	// operator's shell still works while they repair it.
+	//
+	// Zero is refused rather than treated as "use the default", because a zero
+	// floor and an absent one look identical in a file and one of them is a
+	// fuse that can never trip.
+	FloorBytes int64 `toml:"floor_bytes"`
+
+	// Interval is how often free space is sampled. 30s by default
+	// (headroom.DefaultInterval). The lag this admits is bounded by one
+	// interval, which is affordable precisely because the floor is gigabytes.
+	Interval time.Duration `toml:"interval"`
 }
 
 // MailConfig controls the SMTP receiver (Task 24) and inbound addressing
@@ -402,6 +481,16 @@ func defaults() Config {
 		Auth: AuthConfig{
 			SessionTTL: 30 * 24 * time.Hour,
 		},
+		Headroom: HeadroomConfig{
+			// The v2 data directory, which is where autocert's cache already
+			// lives — one filesystem, and the one Postgres shares on this box.
+			Path: "/var/lib/ledger-v2",
+			// The design's numbers, taken from the package that implements the
+			// fuse rather than repeated here, so there is one place they can be
+			// revised and no way for the two to disagree.
+			FloorBytes: int64(headroom.DefaultFloor),
+			Interval:   headroom.DefaultInterval,
+		},
 	}
 }
 
@@ -482,8 +571,43 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("LEDGER_ADMIN_TOKEN"); v != "" {
 		cfg.Server.AdminToken = v
 	}
+	// Both of the console's identity knobs get an environment override for the
+	// same reason HeadroomConfig's do: the moment an operator most wants to
+	// turn one off is while they are trying to work out whether it is the
+	// reason they cannot get in, and `systemctl set-environment` plus a
+	// restart beats editing a file under time pressure. Neither is a secret.
+	if v := os.Getenv("LEDGER_ADMIN_TOKEN_ONLY"); v != "" {
+		cfg.Server.AdminTokenOnly = truthy(v)
+	}
+	if v := os.Getenv("LEDGER_ADMIN_TAILSCALE_LOGINS"); v != "" {
+		cfg.Server.AdminTailscaleLogins = splitCSV(v)
+	}
 	if v := os.Getenv("LEDGER_DICT_HMAC_KEY"); v != "" {
 		cfg.DictHMACKey = v
+	}
+	// The fuse's three knobs get environment overrides for the reason stated on
+	// HeadroomConfig: the moment an operator most wants to move the floor is
+	// during the incident it caused, and `systemctl set-environment` plus a
+	// restart is a faster path than editing a file under time pressure.
+	// A malformed value is an ERROR rather than a fallback to the default —
+	// silently ignoring LEDGER_HEADROOM_FLOOR_BYTES=8GB would leave the
+	// operator believing they had lowered a floor they had not touched.
+	if v := os.Getenv("LEDGER_HEADROOM_PATH"); v != "" {
+		cfg.Headroom.Path = v
+	}
+	if v := os.Getenv("LEDGER_HEADROOM_FLOOR_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("LEDGER_HEADROOM_FLOOR_BYTES %q is not a number of bytes: %w", v, err)
+		}
+		cfg.Headroom.FloorBytes = n
+	}
+	if v := os.Getenv("LEDGER_HEADROOM_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("LEDGER_HEADROOM_INTERVAL %q is not a duration: %w", v, err)
+		}
+		cfg.Headroom.Interval = d
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -547,6 +671,23 @@ func isLoopbackListen(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// truthy reads a boolean environment override.
+//
+// It accepts only the affirmative spellings and treats EVERYTHING else as
+// false, including "yes", "on" and a typo. That asymmetry is deliberate for the
+// one setting that uses it: LEDGER_ADMIN_TOKEN_ONLY makes the console stricter,
+// and a misspelled value that silently left it off would be a security setting
+// the operator believed they had set. False is also the default, so a typo
+// changes nothing rather than changing something unexpected — and `serve` logs
+// which posture the console came up in either way.
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 // splitCSV splits a comma-separated env value into trimmed, non-empty parts.
@@ -643,6 +784,43 @@ func (c Config) validate() error {
 	}
 	if err := c.validatePush(); err != nil {
 		return err
+	}
+	if err := c.validateHeadroom(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateHeadroom refuses the two configurations that look like a fuse and are
+// not one.
+//
+// Both failures are silent by nature: nothing about a zero floor or an empty
+// path produces an error at any point afterwards. The process starts, the
+// goroutine runs, the flag never trips, and the first anyone hears of it is a
+// full filesystem — the exact outcome the fuse exists to prevent, arrived at
+// through the fuse being present. So they are refused at load, where the
+// operator is looking.
+//
+// A path that does not exist is NOT refused here: statfs is the only thing that
+// can answer whether it is usable, headroom logs that failure every interval,
+// and a config check would have to stat the filesystem at load time — which is
+// a different question (does it exist now) from the one that matters (can it be
+// sampled for the life of the process).
+func (c Config) validateHeadroom() error {
+	if c.Headroom.Path == "" {
+		return fmt.Errorf("headroom.path must not be empty (LEDGER_HEADROOM_PATH): " +
+			"it is the filesystem the disk fuse samples, and with no path there is nothing " +
+			"between a full disk and every account losing writes at once")
+	}
+	if c.Headroom.FloorBytes <= 0 {
+		return fmt.Errorf("headroom.floor_bytes is %d (LEDGER_HEADROOM_FLOOR_BYTES): it must be "+
+			"positive — a zero floor is a fuse that can never trip, which is indistinguishable "+
+			"from having no fuse at all",
+			c.Headroom.FloorBytes)
+	}
+	if c.Headroom.Interval <= 0 {
+		return fmt.Errorf("headroom.interval is %v (LEDGER_HEADROOM_INTERVAL): it must be positive",
+			c.Headroom.Interval)
 	}
 	return nil
 }

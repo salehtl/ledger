@@ -50,11 +50,29 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
-  it("keeps the edge strip swallowing horizontal gestures", () => {
-    // touch-none on the strip (and only the strip) is what lets a horizontal
-    // pointermove reach the drag controls instead of scrolling the page.
+  /*
+   * The strip must NOT swallow anything any more.
+   *
+   * It used to carry `touch-none` and take pointer events, which is how it came
+   * to sit on top of the left half of the back arrow and to forbid a vertical
+   * pan down the whole left side of every drill-in — both measured by
+   * `harness/v2edge.mjs`. The gesture is armed from the panel now, so the strip
+   * is a marker and nothing else, and this test is the inverse of the one it
+   * replaces.
+   */
+  it("keeps the edge strip out of the way of taps and scrolling", () => {
     renderPage();
-    expect(screen.getByTestId("edge-back-strip")).toHaveClass("touch-none");
+    const strip = screen.getByTestId("edge-back-strip");
+    expect(strip).toHaveClass("pointer-events-none");
+    expect(strip).not.toHaveClass("touch-none");
+  });
+
+  it("keeps the header above the strip, so the back arrow takes a tap on its left edge", () => {
+    renderPage();
+    // jsdom has no layout and cannot hit-test, so the stacking order is asserted
+    // from the classes that produce it; `harness/v2edge.mjs` presses the arrow at
+    // x=12 in a real browser and is the check with teeth.
+    expect(screen.getByRole("banner")).toHaveClass("relative", "z-20");
   });
 
   it("takes the header out of the tab order when a deeper panel covers it", () => {

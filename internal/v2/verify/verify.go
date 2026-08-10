@@ -119,6 +119,13 @@ const (
 	// A3DuplicateOfNothing: a message refused as a 'duplicate' that is in no
 	// store at all — not appended, not held, not promoted. See [Report].
 	A3DuplicateOfNothing = "A3_duplicate_of_nothing"
+
+	// U1UsageDrift: the per-account usage ledger (account_usage) disagrees with
+	// the stored bytes it claims to count. It is a U-series rather than an
+	// S-series finding because it is not an invariant of the op log — the log
+	// can be perfectly consistent while the number admission compares against is
+	// fiction, and that is precisely the failure it exists to see. See usage.go.
+	U1UsageDrift = "U1_usage_drift"
 )
 
 // Paging. A row's blob can be a megabyte, so a row count alone bounds nothing:

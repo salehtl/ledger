@@ -20,8 +20,10 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { QuarantineItem } from "./onboardingIO";
 import {
   CODE_DIGITS,
+  confirmationTask,
   couldBeConfirmation,
   heldBody,
   linkPattern,
@@ -70,10 +72,11 @@ const gmailScan = () => scanForCode(GMAIL, { linkHost: GOOGLE });
 // ---------------------------------------------------------------------------
 
 describe("couldBeConfirmation", () => {
-  const item = (outerDomain: string, innerDomain = "", attested = true) => ({
+  const item = (outerDomain: string, innerDomain = "", dkim = "pass", arc = "pass") => ({
     outerDomain,
     innerDomain,
-    attested,
+    dkim,
+    arc,
   });
 
   it("qualifies a Google-sealed message with no inner origin", () => {
@@ -101,9 +104,33 @@ describe("couldBeConfirmation", () => {
     expect(couldBeConfirmation(item("   "))).toBe(false);
   });
 
-  /** Decoded as `=== true`, so a field this build failed to read never qualifies. */
-  it("refuses a message nothing attested", () => {
-    expect(couldBeConfirmation(item("google.com", "", false))).toBe(false);
+  /** Compared as `=== "pass"`, so a verdict this build failed to read never qualifies. */
+  it("refuses a message no signature verified", () => {
+    expect(couldBeConfirmation(item("google.com", "", "fail", "none"))).toBe(false);
+    expect(couldBeConfirmation(item("google.com", "", "none", "none"))).toBe(false);
+    expect(couldBeConfirmation(item("google.com", "", "", ""))).toBe(false);
+  });
+
+  /** Either signature alone is enough — they are alternatives, not a pair. */
+  it("qualifies on DKIM alone, and on ARC alone", () => {
+    expect(couldBeConfirmation(item("google.com", "", "pass", "none"))).toBe(true);
+    expect(couldBeConfirmation(item("google.com", "", "none", "pass"))).toBe(true);
+  });
+
+  /**
+   * THE live bug, 2026-08-09, which blocked the operator out of his own app.
+   *
+   * Gmail's forwarding confirmation is sent DIRECT from google.com: dkim=pass,
+   * arc=pass, and `attested=false`, because attestation means "a bank is visible
+   * BEHIND a relay" and a direct message has no relay. The old predicate began
+   * `if (!item.attested) return null`, so the one message onboarding cannot
+   * proceed without was the one message it refused to offer. Shape taken from the
+   * real held row.
+   */
+  it("qualifies Gmail's own confirmation, which is direct and therefore unattested", () => {
+    const realShape = { outerDomain: "google.com", innerDomain: "", dkim: "pass", arc: "pass" };
+    expect(couldBeConfirmation(realShape)).toBe(true);
+    expect(verifiedOuterDomain(realShape)).toBe("google.com");
   });
 
   /**
@@ -119,16 +146,17 @@ describe("couldBeConfirmation", () => {
 
 describe("verifiedOuterDomain", () => {
   it("is the folded outer domain when, and only when, it is verified", () => {
-    expect(verifiedOuterDomain({ outerDomain: "Mail.Google.COM.", attested: true })).toBe("mail.google.com");
-    expect(verifiedOuterDomain({ outerDomain: "unverified:dib.ae", attested: true })).toBeNull();
-    expect(verifiedOuterDomain({ outerDomain: "dib.ae", attested: false })).toBeNull();
-    expect(verifiedOuterDomain({ outerDomain: "", attested: true })).toBeNull();
+    const pass = { dkim: "pass", arc: "pass" };
+    expect(verifiedOuterDomain({ outerDomain: "Mail.Google.COM.", ...pass })).toBe("mail.google.com");
+    expect(verifiedOuterDomain({ outerDomain: "unverified:dib.ae", ...pass })).toBeNull();
+    expect(verifiedOuterDomain({ outerDomain: "dib.ae", dkim: "fail", arc: "none" })).toBeNull();
+    expect(verifiedOuterDomain({ outerDomain: "", ...pass })).toBeNull();
   });
 
   /** Not a hostname, so nothing built from it could be one either. */
   it("refuses anything that is not a bare hostname", () => {
     for (const d of ["dib.ae/evil", "dib.ae:8080", "a@dib.ae", "dib ae", "dib.ae?x", `${"a".repeat(254)}.ae`]) {
-      expect({ d, got: verifiedOuterDomain({ outerDomain: d, attested: true }) }).toEqual({ d, got: null });
+      expect({ d, got: verifiedOuterDomain({ outerDomain: d, dkim: "pass", arc: "pass" }) }).toEqual({ d, got: null });
     }
   });
 });
@@ -511,6 +539,79 @@ describe("scanForCode", () => {
       const took = performance.now() - started;
       expect({ name, slow: took > 50 }).toEqual({ name, slow: false });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 — the pieces, composed: which held message, which link, one answer
+// ---------------------------------------------------------------------------
+
+describe("confirmationTask", () => {
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  const GMAIL_CONFIRM_BODY = GMAIL;
+
+  /** A full held row with the live Gmail confirmation's shape as the default. */
+  function heldItem(over: Partial<QuarantineItem>): QuarantineItem {
+    return {
+      id: "held-1",
+      ingestId: "ing-1",
+      receivedAt: "2026-08-09T12:00:00Z",
+      expiresAt: "2026-09-08T12:00:00Z",
+      warnedAt: null,
+      deleteAfter: null,
+      outerDomain: "google.com",
+      innerDomain: "",
+      attested: false,
+      attestedBy: "",
+      dkim: "pass",
+      arc: "pass",
+      sizeBucket: 1,
+      ...over,
+    };
+  }
+
+  it("finds the newest confirmation and its pinned link", () => {
+    const items = [
+      heldItem({ id: "old", receivedAt: "2026-08-09T10:00:00Z", outerDomain: "google.com", dkim: "pass", arc: "pass", blob: b64(GMAIL_CONFIRM_BODY) }),
+      heldItem({ id: "new", receivedAt: "2026-08-09T15:15:34Z", outerDomain: "google.com", dkim: "pass", arc: "pass", blob: b64(GMAIL_CONFIRM_BODY) }),
+      heldItem({ id: "bank", innerDomain: "dib.ae", attested: true }), // never a candidate
+    ];
+    const task = confirmationTask(items);
+    expect(task?.itemId).toBe("new");
+    expect(task?.url).toMatch(/^https:\/\/([a-z0-9-]+\.){0,4}google\.com\//);
+  });
+
+  it("returns null when nothing could be a confirmation", () => {
+    expect(confirmationTask([heldItem({ outerDomain: "gmail.com", dkim: "fail", arc: "none" })])).toBeNull();
+  });
+
+  /**
+   * The scan runs with the item's VERIFIED domain as the pinned host, so an
+   * attacker's link in the same body — even one that comes first — is never the
+   * url. A composition that scanned unpinned would return `evil.example` here.
+   */
+  it("never offers an attacker's link, even when it comes first in the body", () => {
+    const body = [
+      "Confirmation code: 123456",
+      "https://evil.example/mail/steal",
+      "https://mail-settings.google.com/mail/real",
+    ].join("\n");
+    const task = confirmationTask([heldItem({ blob: b64(body) })]);
+    expect(task?.url).toBe("https://mail-settings.google.com/mail/real");
+    expect(task?.code).toBe("123456");
+  });
+
+  /**
+   * A row fetched without its blob still names the task: the screen falls back
+   * to opening held mail, and a null here would be a dead end instead.
+   */
+  it("still names the task when the held row carries no blob", () => {
+    expect(confirmationTask([heldItem({ outerDomain: "Google.COM." })])).toEqual({
+      domain: "google.com",
+      url: null,
+      code: null,
+      itemId: "held-1",
+    });
   });
 });
 

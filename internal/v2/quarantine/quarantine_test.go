@@ -593,6 +593,105 @@ func TestConfirmIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestConfirmOuterAsksTheSignatureVerdictsNotTheSpelling is the test the
+// outer-scope repair exists for.
+//
+// The predicate used to be `outer_domain = $2` and nothing else, with the
+// UnverifiedPrefix on the stored column as its only shield. That made
+// "verified" a property of how the value happened to be SPELLED — precisely
+// what origin.Decide refuses for itself — so a held row carrying a bare
+// hostname and two FAILED verdicts was confirmable, and the client's request
+// was the only thing that decided it.
+//
+// Every combination is walked, and each one is cross-checked against
+// origin.Decide with an allowlist that says yes to everything: whatever Decide
+// would trust at the outer scope is exactly what Confirm may create a row for.
+// One domain per combination, so no combination can be answered by another's
+// held mail.
+func TestConfirmOuterAsksTheSignatureVerdictsNotTheSpelling(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+
+	dkims := []string{ResultPass, ResultFail, ResultNone, ResultTempError}
+	arcs := []string{ResultPass, ResultFail, ResultNone}
+	for i, dkim := range dkims {
+		for j, arcResult := range arcs {
+			domain := fmt.Sprintf("bank%d%d.example", i, j)
+			it := item(u, *now, domain)
+			it.OuterDomain = domain // a bare hostname: the spelling is impeccable
+			it.DKIM, it.ARC = dkim, arcResult
+			hold(t, s, it)
+
+			// What the server's own trust decision would do with the same
+			// evidence, asked of origin rather than restated here.
+			dec, err := origin.Decide(bg, allowEverything{}, u,
+				origin.Origin{Outer: domain, DKIM: origin.SigResult(dkim), ARC: origin.SigResult(arcResult)})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ids, err := s.Confirm(bg, u, domain, ScopeOuter)
+			listed, lerr := s.Allowlisted(bg, u, domain, ScopeOuter)
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			switch {
+			case dec.Trusted && (err != nil || len(ids) != 1 || !listed):
+				t.Fatalf("dkim=%s arc=%s: origin.Decide trusts %s but Confirm refused it: err=%v ids=%d listed=%v",
+					dkim, arcResult, domain, err, len(ids), listed)
+			case !dec.Trusted && !errors.Is(err, ErrNoVerifiedOrigin):
+				t.Fatalf("dkim=%s arc=%s: %s has no passing signature, so confirming it must be %v; got %v",
+					dkim, arcResult, domain, ErrNoVerifiedOrigin, err)
+			case !dec.Trusted && listed:
+				t.Fatalf("dkim=%s arc=%s: the refused confirmation still wrote an allowlist row", dkim, arcResult)
+			}
+		}
+	}
+	// The shape of the answer, asserted rather than assumed: exactly the four
+	// combinations with a passing verdict were confirmable. Without this the
+	// loop above would still pass if Decide and Confirm agreed on "no".
+	if n := countRows(t, pool, "sender_allowlist"); n != 6 {
+		t.Fatalf("%d outer allowlist rows, want 6: dkim=pass with each of the 3 arc verdicts, "+
+			"plus arc=pass with each of the 3 non-passing dkim verdicts", n)
+	}
+}
+
+// allowEverything is an origin.Allowlist that says yes, so origin.Decide's
+// answer above is decided by the EVIDENCE and never by the row.
+type allowEverything struct{}
+
+func (allowEverything) Allowlisted(context.Context, uuid.UUID, string, string) (bool, error) {
+	return true, nil
+}
+
+// TestConfirmOuterRefusesAFailedSignatureEvenWhenTheDomainMatches is the same
+// property in one un-tabled case, because this is the one that must be watched
+// to fail when the new predicate is inverted.
+func TestConfirmOuterRefusesAFailedSignatureEvenWhenTheDomainMatches(t *testing.T) {
+	s, now, pool := newStore(t)
+	u := insertUser(t, pool)
+	it := item(u, *now, "a")
+	it.OuterDomain = "dib.ae" // spelled exactly like the domain being confirmed
+	it.DKIM, it.ARC = ResultFail, ResultFail
+	hold(t, s, it)
+
+	if _, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); !errors.Is(err, ErrNoVerifiedOrigin) {
+		t.Fatalf("a client must not be able to assert a verdict the signatures do not support; err = %v", err)
+	}
+	if ok, _ := s.Allowlisted(bg, u, "dib.ae", ScopeOuter); ok {
+		t.Fatal("the refused confirmation still wrote an allowlist row")
+	}
+
+	// And the same message, once a signature actually verifies, is confirmable
+	// — so the refusal above is about the evidence and not about the domain.
+	if _, err := pool.Exec(bg, `UPDATE quarantine SET arc = 'pass' WHERE user_id = $1`, u); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.Confirm(bg, u, "dib.ae", ScopeOuter); err != nil || len(ids) != 1 {
+		t.Fatalf("arc=pass is evidence origin.Decide honours: ids=%d err=%v", len(ids), err)
+	}
+}
+
 func TestConfirmRejectsAnUnknownScope(t *testing.T) {
 	s, now, pool := newStore(t)
 	u := insertUser(t, pool)
@@ -997,6 +1096,31 @@ func TestAllowlistedMatchesTheWholeDomain(t *testing.T) {
 	}
 	if ok, err := s.Allowlisted(bg, u, "dib.ae", ScopeOuter); err != nil || !ok {
 		t.Fatalf("the confirmed domain itself is not allowlisted (ok=%v err=%v)", ok, err)
+	}
+}
+
+func TestHasConfirmedAnySender(t *testing.T) {
+	s, _, pool := newStore(t) // match the existing constructor in this file
+	u := insertUser(t, pool)  // match the helper used by other tests here
+
+	got, err := s.HasConfirmedAnySender(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("a brand-new account reports a confirmed sender")
+	}
+
+	// Insert one allowlist row the way the store's own Allowlist path would.
+	if _, err := pool.Exec(bg, `INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,'dib.ae','inner',now())`, u); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.HasConfirmedAnySender(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("a user with an allowlist row reports none")
 	}
 }
 

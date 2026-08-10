@@ -129,6 +129,13 @@ const (
 	RejectOverQuota      = "over_quota"
 	RejectNoTextPart     = "no_text_part"
 	RejectNormalizeError = "normalize_error"
+	// RejectSuspended is a refusal because the OPERATOR paused the account, not
+	// because the user did anything. Before this value existed the suspension
+	// path filed its notice under RejectOverQuota — the closest available
+	// value, and a false one: an operator reading diagnostics saw "this user hit
+	// their quota" for an account they had themselves paused. A closed enum with
+	// no word for a thing that happens does not stay closed, it just lies.
+	RejectSuspended = "suspended"
 )
 
 // UnverifiedPrefix marks a sender domain taken from the envelope rather than
@@ -146,7 +153,27 @@ var (
 	dkimResults       = []string{ResultPass, ResultFail, ResultNone, ResultTempError}
 	arcResults        = []string{ResultPass, ResultFail, ResultNone}
 	rejectReasons     = []string{
-		RejectTooLarge, RejectUnknownRcpt, RejectOverQuota, RejectNoTextPart, RejectNormalizeError,
+		RejectTooLarge, RejectUnknownRcpt, RejectOverQuota, RejectNoTextPart,
+		RejectNormalizeError, RejectSuspended,
+	}
+	// aggregatedReasons are the reasons [Diag.CountRejections] may aggregate
+	// into smtp_rejections, and they are a STRICT SUBSET of rejectReasons.
+	//
+	// That table exists for refusals with no recipient to scope a row to. A
+	// suspension is not one and cannot become one: the only way to know an
+	// account is suspended is to have resolved the recipient first, so a
+	// 'suspended' row there would be an unscoped row about a KNOWN user —
+	// exactly the thing parse_diagnostics_unscoped_rows_are_refusals refuses,
+	// and a row that would then survive that user's account deletion.
+	//
+	// So smtp_rejections.reason keeps the narrow CHECK it was created with, and
+	// this list keeps the Go guard in step with it. Without the second list the
+	// guard would pass a value the constraint refuses, and the caller would get
+	// a database error where it should have got ErrInvalidRecord — the exact
+	// distinction the package doc promises callers can rely on.
+	aggregatedReasons = []string{
+		RejectTooLarge, RejectUnknownRcpt, RejectOverQuota, RejectNoTextPart,
+		RejectNormalizeError,
 	}
 	// refusalOutcomes are the outcomes that have a reject_reason. Every other
 	// outcome must not, so reject_reason cannot drift into a note field.
@@ -473,11 +500,11 @@ func (d *Diag) CountRejections(ctx context.Context, reason string, n int64) erro
 	if err := d.check(); err != nil {
 		return err
 	}
-	if !slices.Contains(rejectReasons, reason) {
+	if !slices.Contains(aggregatedReasons, reason) {
 		// Note the absence of %q: the argument is not echoed, because the
 		// caller that got this wrong is exactly the caller that might have
 		// passed an SMTP response line containing a recipient address.
-		return badf("reason is not one of %v", rejectReasons)
+		return badf("reason is not one of %v", aggregatedReasons)
 	}
 	if n <= 0 {
 		return nil

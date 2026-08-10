@@ -149,6 +149,9 @@ ledgerd mint-invite --note "who this is for"   # prints ONE code to stdout
 ledgerd mint-invite --show                     # lists hashes, never codes
 ```
 
+The **Invites tab** on the admin console does the same thing without an SSH
+session, and adds revocation. Same generator, same one-shot rule — see 5.1.1.
+
 > ## ⚠ THE CODE IS PRINTED ONCE AND IS NOT RECOVERABLE
 >
 > Only its **SHA-256** is stored. There is no command, no query and no backup
@@ -680,6 +683,59 @@ could switch the guard off and rewrite the log peer devices audit for key
 substitution. Consequence for the deploy script: **apply migrations out-of-band
 as `ledger_migrate` before starting the new binary.**
 
+### 4.1 The isolation release — `00030`–`00033`, and one mandatory step after
+
+Added 2026-08-09: `users.status`, `account_usage`, `account_limits`,
+`account_refusals`, `smtp_user_counters`, and a widened
+`parse_diagnostics.reject_reason`.
+
+`00031` **backfills** `account_usage` from the rows already in the database, so
+the ledger is correct from its first read rather than counting only from
+deployment onward.
+
+> ## ⚠ The backfill has a window, and closing it is a deploy step
+>
+> Migrations run out of band **before** the new binary starts. So the **old**
+> binary — which does not maintain the ledger — keeps writing between the backfill
+> `sum()` and the restart. Every one of those writes is invisible to the ledger.
+>
+> Either run the migration **with `ledgerd` stopped**, or treat this as mandatory
+> immediately after the restart:
+>
+> ```bash
+> sudo -u ledgerd ledgerd verify --repair-usage -config /etc/ledger-v2/config.toml
+> ```
+>
+> The repair locks one row at a time and recomputes it, so it is exact with the
+> service running. **Drift here is expected on this release, not a defect.**
+
+**`ledgerd verify` reports usage drift as a finding and exits non-zero.** That is
+the check working. Two causes are legitimate:
+
+1. The backfill window above — cleared by `--repair-usage`.
+2. **Quarantine held mail, until the `quarantine.Hold` ledger seam ships.** `Hold`
+   does not yet maintain `account_usage`, so any box with held mail reports
+   standing quarantine drift. Expected until that seam lands; do not "repair" it
+   in a loop, because it will come straight back.
+
+`verify` is the one subcommand that **does not** apply migrations, deliberately —
+an audit must not modify what it audits.
+
+### 4.2 New configuration
+
+`[headroom]` — `path`, `floor_bytes` (default 8 GB), `interval` (default 30s), with
+`LEDGER_HEADROOM_*` env overrides. A malformed override is refused, never silently
+defaulted. Below the floor **all durable writes are refused**, including creating a
+session, so **nobody can sign in while the fuse is tripped**. That is the emergency
+state working as designed. The console's status strip shows the floor, current free
+space and the shortfall on every tab.
+
+`[server]` — `admin_token_only` (default `false`) and `admin_tailscale_logins`
+(default empty), with `LEDGER_ADMIN_TOKEN_ONLY` and
+`LEDGER_ADMIN_TAILSCALE_LOGINS` env overrides. Both control the console's
+tokenless path; **neither loosens the binding**. See 5.3. Nothing has to be set
+for the default posture, which is the one that stops asking you for a token.
+
 ---
 
 ## 5. The admin console
@@ -691,12 +747,12 @@ everything else. That is the deliberate middle answer: mounting it open is out
 of the question, and failing the whole process would mean a forgotten variable
 used for template authoring stops users' mail from being received.
 
-Auth is `Authorization: Bearer <token>`, `subtle.ConstantTimeCompare`. Every
-failure — no header, wrong scheme, wrong token, or a perfectly valid *user
-session* token — is the identical 401. The package does not import
-`internal/v2/auth` at all, so a session can never become an admin credential.
-The console gets its own `ServeMux` on its own listener; the public mux does not
-contain `/admin/` patterns at all.
+There are **two** accepted credentials and every failure is the identical 401 —
+no header, wrong scheme, wrong token, an untrusted identity, or a perfectly
+valid *user session* token. The package does not import `internal/v2/auth` at
+all, so a session can never become an admin credential. The console gets its own
+`ServeMux` on its own listener; the public mux does not contain `/admin/`
+patterns at all. See **5.3** for the credentials themselves.
 
 | Capability | Routes |
 |---|---|
@@ -708,6 +764,7 @@ contain `/admin/` patterns at all.
 | Diagnostics | `GET /admin/diagnostics` |
 | Accounting | `GET /admin/accounting` |
 | Accounts | `GET /admin/accounts` |
+| Invites | `GET/POST /admin/invites`, `DELETE /admin/invites/{hash}` |
 | Panel | `GET /admin/ui/` (plus `console.css`, `console.js`); `GET /` redirects to it |
 
 There is **no `/admin/parse-rate`** — that instrument is CLI-only.
@@ -715,10 +772,10 @@ There is **no `/admin/parse-rate`** — that instrument is CLI-only.
 ### 5.1 The panel
 
 A browser UI over the routes above, served from this listener and nowhere else.
-Open `http://127.0.0.1:8079/` on the box, or the Tailscale name below, and paste
-`LEDGER_ADMIN_TOKEN` when it asks. The token is kept in `sessionStorage`: it is
-gone when the tab closes, and it is sent as a bearer header, never a cookie —
-which is also why the console needs no CSRF defence.
+Open the Tailscale name below and **it will not ask you for anything** — the
+request already carries your tailnet identity. Opened some other way (straight
+at `http://127.0.0.1:8079/` over SSH, say), it asks for `LEDGER_ADMIN_TOKEN` and
+then keeps it in **`localStorage`**: once per device, not once per tab.
 
 It is three embedded files (`internal/v2/admin/ui/`), not a bundle. Nothing to
 build, nothing to remember at deploy time; `go build` carries them.
@@ -730,14 +787,43 @@ asks for a token. Every byte of content still comes from a guarded route.
 
 **It shows operational data only**: accounts, inbound addresses, forwarding
 health, parse rate by sender, arrivals that did not parse, held-mail counts,
-template health, the donated-format queue, the moderation queue, the waitlist.
-No transactions, no amounts, no balances. That is a design constraint rather
+template health, the donated-format queue, the moderation queue, invite-code
+hashes, the waitlist. No transactions, no amounts, no balances. That is a design constraint rather
 than a preference: from Phase 3 the server cannot read those things at all, and
 a panel written as though it could would break on sealing.
 
 **`GET /admin/quarantine` is called without `include_blob`**, so the panel never
 puts a raw message on screen. Reading the Gmail verification link is still the
 `curl` above.
+
+### 5.1.1 Invite codes on the panel
+
+The **Invites** tab does what `ledgerd mint-invite` does, and it is the same
+generator underneath — `auth.MintInvite`, 24 characters of RFC 4648 base32, 120
+bits from `crypto/rand`. There is no second code generator in the binary.
+
+> ## ⚠ THE CODE IS SHOWN ONCE, ON SCREEN, AND NEVER AGAIN
+>
+> Only its SHA-256 is stored, so **no route can show it a second time** — and
+> none exists: the `admin.Invites` interface has no method that returns a code.
+> The panel puts a fresh code in a box of its own with a **Copy** button and an
+> "it will not be shown again" line, and drops it the moment you leave the tab
+> or reload. Lose it and you revoke the row and mint another.
+
+The listing shows **hash prefix, minted-at, note, state** and, for a spent code,
+which account spent it — exactly what `--show` prints, and never a code.
+
+**Revoke** appears only on an *outstanding* row. It **deletes** the unredeemed
+row, which is what makes the code unspendable; there is no `revoked_at` column
+and this needed **no migration**. It is not undoable — mint a new one.
+
+**Revoking a redeemed code is refused with a 409.** That row is why an account
+exists, and deleting it would erase the audit trail while leaving the account
+untouched. Suspend the account instead (5.1, Accounts tab).
+
+A note is your own free text about who a code is for. It is **cleared** if that
+account is ever deleted (`00023_invite_note_dies_with_the_account.sql`); an
+outstanding code keeps its note.
 
 ### 5.2 Reaching the console — SETTLED AND APPLIED 2026-08-09
 
@@ -805,6 +891,99 @@ with the token can do:
   `admin: OPERATOR READ n raw quarantined message(s) for user <id>`.
 
 There is deliberately **no rate limiter** on this listener.
+
+### 5.3 Signing in without fetching a token — added 2026-08-09
+
+**You should not have to SSH to the box to read the console.** Opened through the
+Tailscale name, you are not asked for anything: `tailscale serve` puts your
+identity on the request and the console accepts it.
+
+**Nothing on the box needs changing for this.** The `:8445` mount from 5.2 is
+all it takes. `admin_listen` stays `127.0.0.1:8079`, `CheckAdminBind` is
+unchanged, and nothing was added to `tls_domains`.
+
+#### What Tailscale actually sends
+
+Measured on this box (Tailscale 1.102.2), not assumed — a throwaway
+`tailscale serve --https=8446` at a header-dumping listener, curled over the
+tailnet name:
+
+```
+Tailscale-User-Login:       salehtl@github
+Tailscale-User-Name:        Saleh
+Tailscale-User-Profile-Pic: https://avatars.githubusercontent.com/u/…
+Tailscale-Headers-Info:     https://tailscale.com/s/serve-headers
+X-Forwarded-For:            100.68.143.4
+X-Forwarded-Host:           dinosaur.marmoset-paradise.ts.net:8446
+X-Forwarded-Proto:          https
+```
+
+A client that sends its own `Tailscale-User-Login: attacker@evil` or its own
+`X-Forwarded-For` has both **overwritten**. `serve` sets these; it does not merge
+them. Both were checked with `curl -H`.
+
+#### What is trusted, and what is not
+
+A request is accepted on identity only when **all** of these hold:
+
+1. `server.admin_token_only` is not set.
+2. The TCP peer is **loopback**. `serve` proxies to `127.0.0.1:8079`, so this
+   holds — and it removes a case the binding alone allows: another enrolled
+   tailnet device connecting *straight* to `100.x:8079` and forging a login.
+3. `Tailscale-User-Login` is non-empty, and on
+   `server.admin_tailscale_logins` if you set one (empty = any tailnet
+   identity, the default).
+4. `X-Forwarded-For` parses as a Tailscale address. **Corroboration, not a
+   boundary** — a local process can write it.
+
+> **The gap, stated plainly: a process on this box can forge the header.** It can
+> connect to `127.0.0.1:8079` and claim any login, and nothing in HTTP can tell
+> that apart from a proxied request. That is accepted rather than defended,
+> because a local process can already read `LEDGER_ADMIN_TOKEN` out of
+> `/etc/ledger/ledger.env` or `/proc/<pid>/environ` — the header gives it nothing
+> new. If you want it ignored anyway, set `server.admin_token_only = true` (or
+> `LEDGER_ADMIN_TOKEN_ONLY=1`) and you get the bearer-only console back.
+
+#### Identity is not a CSRF defence on its own
+
+The bearer token had one accidental virtue: a page on evil.com cannot make your
+browser attach an `Authorization` header. Identity **inverts** that — `serve`
+attaches it to every request your browser makes, including one a malicious page
+caused. A `fetch(…/admin/accounts/X/suspend, {method:'POST', mode:'no-cors'})`
+would have been authenticated; CORS would stop that page reading the reply, and
+the suspension would still have happened.
+
+So an identity-authenticated **write** must also carry same-origin evidence the
+browser produced and script cannot forge: `Sec-Fetch-Site: same-origin|none`, or
+an `Origin` matching this console's host. Reads need neither — they change
+nothing, and this listener sends no CORS headers, so a cross-site page cannot
+read a reply either.
+
+**This is why `curl` still uses the token.** A non-browser caller has no such
+signal, and accepting a write without one is exactly the forged POST above.
+
+#### Config
+
+| Key | Env | Default | Meaning |
+|---|---|---|---|
+| `server.admin_token_only` | `LEDGER_ADMIN_TOKEN_ONLY` | `false` | `true` ignores the identity header entirely |
+| `server.admin_tailscale_logins` | `LEDGER_ADMIN_TAILSCALE_LOGINS` (CSV) | empty | Allowlist of logins; empty accepts any tailnet identity |
+
+`LEDGER_ADMIN_TOKEN` is **still required** for the console to mount at all. It is
+the fallback for scripts and for a box with no serve mount; you just stop typing
+it. `serve` logs which posture the console came up in on every start.
+
+Check it from an enrolled device:
+
+```bash
+# no credential at all — 200, because the tailnet vouched for you
+curl -s -o /dev/null -w '%{http_code}\n' https://dinosaur.marmoset-paradise.ts.net:8445/admin/status
+
+# a local process forging the header, on a WRITE — 401. Not because the forgery
+# was detected (it cannot be) but because it carries no same-origin evidence.
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Tailscale-User-Login: x@y' \
+  -H 'X-Forwarded-For: 100.64.0.9' -X POST http://127.0.0.1:8079/admin/waitlist
+```
 
 ---
 

@@ -13,6 +13,7 @@ import (
 
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/budget"
 	"ledger/internal/v2/oplog"
 )
 
@@ -528,6 +529,15 @@ func requireStream(w http.ResponseWriter, r *http.Request) (string, bool) {
 // Nothing is stored unless the whole batch is: oplog.AppendClient rolls back as
 // a unit, so a rejected batch consumes neither a seq nor a counter.
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
+	// The request budget, spent before anything is read. It is the POOL
+	// fairness control — one account cannot occupy the 16-connection pool with
+	// back-to-back append transactions — and it is explicitly NOT the storage
+	// control; see the syncRate block in api.go for the arithmetic that shows
+	// why no request rate could be.
+	if !s.SyncPerUser.Allow(userID.String()) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many uploads; try again shortly")
+		return
+	}
 	var req UploadRequest
 	if !decodeBody(w, r, maxUploadBytes, &req) {
 		return
@@ -604,6 +614,36 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, userID uui
 			"the blobs in this batch do not chain to each other: counters must be consecutive, "+
 				"each prev_hash must be the previous blob_hash, and each blob_hash must be "+
 				"SHA256(prev_hash || blob)")
+		return
+	}
+
+	// The byte budget, spent immediately before the append and charged in the
+	// bytes that are about to become durable — not in requests, and not in the
+	// size of the JSON that carried them. Base64 framing is the client's
+	// transport choice; what this budget exists to shape is what lands on the
+	// disk.
+	//
+	// It is charged AFTER validation, so a batch that is refused as malformed
+	// costs no budget: a client with a bug must not be able to spend a day's
+	// worth of an honest user's own quota. The request limiter above is what
+	// bounds a caller who only ever sends garbage.
+	//
+	// The charge is all-or-nothing per batch, matching the append: either the
+	// whole batch is admitted or none of it is stored, so a partial charge
+	// would account for bytes that were never written.
+	var uploadBytes int
+	for _, row := range rows {
+		uploadBytes += len(row.Blob)
+	}
+	if !s.SyncUploadBytes.AllowN(userID.String(), float64(uploadBytes)) {
+		// 429 rather than 413: the batch is not too large, it is too soon. A
+		// 413 would tell a client to split the batch, which does not help and
+		// makes the traffic worse.
+		s.logf("api: upload for %s: %d bytes over the upload byte budget", userID, uploadBytes)
+		w.Header().Set("Retry-After", "60")
+		writeErr(w, http.StatusTooManyRequests, "upload_bytes",
+			"this account has uploaded more than its share of data recently; "+
+				"the queued changes are safe on this device and will upload shortly")
 		return
 	}
 
@@ -754,6 +794,38 @@ func (s *Server) writeAppendErr(w http.ResponseWriter, userID uuid.UUID, err err
 			"read the chain head and resend only the rows above it")
 	case errors.Is(err, oplog.ErrChainBreak):
 		writeErr(w, http.StatusConflict, "chain_break", err.Error())
+	case errors.Is(err, budget.ErrRefused):
+		// The account is at its cumulative op-log ceiling. This is a POLICY
+		// outcome, not a fault, and it used to fall through to the 500 below —
+		// so an account that had filled its budget was told the server was
+		// broken, which is both untrue and unactionable.
+		//
+		// 413 rather than 429, and the pair has to stay distinguishable: the
+		// 429 upload_bytes above is the byte-weighted LIMITER, charged before
+		// the append, and it means "too soon — the same batch will be accepted
+		// shortly". This means "too much — the same batch will never be
+		// accepted until something is deleted or the ceiling is raised". A
+		// client that retried this on a timer would retry forever.
+		var refused *budget.RefusedError
+		if errors.As(err, &refused) {
+			s.logf("api: upload for %s: over the account ceiling: %v", userID, err)
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{
+				Error: "account_full",
+				Detail: "this account is at its storage ceiling; nothing in this upload was stored, " +
+					"and it stays queued on this device",
+				// The account's own numbers, so the app can say something true
+				// instead of "sync failed": how much it holds, how much this
+				// upload asked for, and what the ceiling is.
+				Budget: &BudgetInfo{Resource: refused.Resource, Have: refused.Have, Delta: refused.Delta, Limit: refused.Limit},
+			})
+			return
+		}
+		// ErrRefused without the concrete error is not reachable from
+		// budget.Admit, but answering a 500 because the DETAIL is missing would
+		// throw away the one thing this case exists to get right.
+		s.logf("api: upload for %s: over the account ceiling, without detail: %v", userID, err)
+		writeErr(w, http.StatusRequestEntityTooLarge, "account_full",
+			"this account is at its storage ceiling; nothing in this upload was stored")
 	case errors.Is(err, oplog.ErrPositionTaken):
 		s.logf("api: upload for %s: %v", userID, err)
 		writeErr(w, http.StatusConflict, "conflict", "that chain position is already held")

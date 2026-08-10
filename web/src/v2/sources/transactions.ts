@@ -640,7 +640,7 @@ function checkAmount(text: string, currency: string): { ok: true; minor: bigint 
  * the row's provenance already comes from the writer, unforgeably, so this is a
  * record for whoever later wants to tell a typed row from an imported one.
  */
-export function manualTxnPayload(d: ManualDraft): ManualCheck {
+export function manualTxnPayload(d: ManualDraft, entryMethod: string = MANUAL_ENTRY_METHOD): ManualCheck {
   const currency = d.currency.trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, reason: "Pick a currency." };
   const amount = checkAmount(d.amount, currency);
@@ -670,7 +670,7 @@ export function manualTxnPayload(d: ManualDraft): ManualCheck {
       needs_review: category === null,
       unparsed: false,
       tier: "none",
-      entry_method: MANUAL_ENTRY_METHOD,
+      entry_method: entryMethod,
     },
   };
 }
@@ -681,13 +681,23 @@ export interface ManualTxnArgs {
   ingestID: string;
   /** A ULID source — `newEntityID`. Injected so a test can pin ids. */
   newID: () => string;
+  /**
+   * The label this op carries, defaulting to `"manual"`.
+   *
+   * The one other value in the app is `"reviewed_forward"`, which a
+   * transaction read off a held message by hand carries
+   * (`sources/heldMessage.ts`). It is a LABEL and only a label: the row's
+   * authority comes from the writer, which no device can claim — see the note
+   * above {@link manualTxnPayload}. Nothing may branch on it.
+   */
+  entryMethod?: string;
 }
 
 export type ManualTxnResult = { ok: true; id: string; specs: OpSpec[] } | { ok: false; reason: string };
 
 /** The single op one hand-typed transaction appends. */
 export function manualTxnOps(args: ManualTxnArgs): ManualTxnResult {
-  const checked = manualTxnPayload(args.draft);
+  const checked = manualTxnPayload(args.draft, args.entryMethod ?? MANUAL_ENTRY_METHOD);
   if (!checked.ok) return checked;
   const id = args.newID();
   return {

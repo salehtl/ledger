@@ -47,6 +47,12 @@ type DictHandler struct {
 	// Token is the shared operator credential (LEDGER_ADMIN_TOKEN). Routes
 	// refuses to mount without it.
 	Token string
+	// Identity is when a Tailscale identity counts as the operator instead
+	// (identity.go). The zero value trusts nothing, so a DictHandler built
+	// without it keeps the bearer-only behaviour it has always had. Handler
+	// copies its own policy in when it mounts this half, so the two cannot
+	// disagree about who may approve a merchant mapping.
+	Identity IdentityPolicy
 	// Logf receives the operator-facing reason a request was refused, which
 	// the response deliberately does not carry. Defaults to log.Printf.
 	Logf func(format string, args ...any)
@@ -72,20 +78,21 @@ func (h *DictHandler) Routes(mux *http.ServeMux) error {
 			"LEDGER_ADMIN_TOKEN: an unauthenticated approval endpoint publishes a merchant " +
 			"mapping to every device in the beta")
 	}
-	mux.HandleFunc("GET /admin/dictionary", h.requireToken(h.list))
-	mux.HandleFunc("POST /admin/dictionary/moderate", h.requireToken(h.moderate))
-	mux.HandleFunc("POST /admin/dictionary/approve-seed", h.requireToken(h.approveSeed))
+	mux.HandleFunc("GET /admin/dictionary", h.guard(h.list))
+	mux.HandleFunc("POST /admin/dictionary/moderate", h.guard(h.moderate))
+	mux.HandleFunc("POST /admin/dictionary/approve-seed", h.guard(h.approveSeed))
 	return nil
 }
 
-// requireToken compares the bearer credential in constant time.
+// guard applies the operator credential check: the bearer token, or a trusted
+// Tailscale identity with same-origin evidence.
 //
-// It delegates to the package-level [requireToken] in admin.go, which is the
+// It delegates to the package-level [requireOperator] in admin.go, which is the
 // ONE implementation of this gate — the dictionary console and the rest of the
 // console must not be able to disagree about what a valid operator credential
 // is, and two copies of a comparison is how they eventually would.
-func (h *DictHandler) requireToken(next http.HandlerFunc) http.HandlerFunc {
-	return requireToken(h.Token, h.Logf, next)
+func (h *DictHandler) guard(next http.HandlerFunc) http.HandlerFunc {
+	return requireOperator(h.Token, h.Identity, h.Logf, next)
 }
 
 // ---------------------------------------------------------------------------

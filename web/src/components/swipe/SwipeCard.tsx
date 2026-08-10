@@ -324,21 +324,51 @@ export const SwipeCard = forwardRef<HTMLDivElement, SwipeCardProps>(function Swi
         </div>
 
         {/* Amount — the hero, in the rounded display face */}
-        <div className="flex flex-col items-center -mt-0.5">
+        {/* `w-full` is load-bearing next to `containerType`: inline-size
+            containment makes the box's own inline size independent of its
+            contents, so a shrink-to-fit block collapses and `100cqw` resolves to
+            nothing — which pinned the hero at its 1.1rem floor. Taking the width
+            from the column above keeps the container real. */}
+        <div className="flex w-full flex-col items-center -mt-0.5" style={{ containerType: 'inline-size' }}>
           {/* Name the currency the figure is actually in. With no FX rate the
               hero fell back to the native amount while the label still said
               AED, so a GBP 45.00 charge read as AED 45.00 at 48px. */}
           <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted mb-1">
             {amount?.label ?? `${credit ? 'Received' : 'Spent'} · ${aedFils(txn) === null ? txn.Currency : 'AED'}`}
           </span>
-          {/* clamp, not a hard 3rem: the card is ~261px wide and clips its
-              overflow, so a five-figure amount lost a digit off each end. */}
-          <span
-            className="tnum font-bold leading-none max-w-full"
-            style={{ fontSize: 'clamp(1.75rem, 9vw, 3rem)', color: credit ? 'var(--color-good)' : 'var(--color-fg)' }}
-          >
-            {amount?.text ?? `${credit ? '+' : '−'}${formatFils(aedFils(txn) ?? txn.AmountFils)}`}
-          </span>
+          {/*
+            The hero shrinks to fit the figure, rather than losing digits off it.
+
+            `clamp(1.75rem, 9vw, 3rem)` had a FLOOR of 1.75rem, and a floor is
+            what clips: at 35px a tabular glyph advances 0.6em, the card's amount
+            box measures 214px, so anything past ten glyphs runs off the end and
+            the card clips its overflow. `harness/v2deck.mjs` measured
+            −9,999,999.99 at 273px in that 214px box — 60px, about three digits,
+            gone. Six figures is where it starts, which is rent, a car or a
+            transfer rather than an exotic case.
+
+            So the third term caps the size at whatever makes THIS string fit:
+            `100cqw` is the amount box's own width, and 0.62 is the measured
+            glyph advance with a little margin. Ordinary amounts are unchanged —
+            seven glyphs would allow 49px and `9vw` still wins at 35px — and the
+            1.1rem floor keeps a pathological string legible rather than
+            infinitesimal.
+          */}
+          {(() => {
+            const text = amount?.text ?? `${credit ? '+' : '−'}${formatFils(aedFils(txn) ?? txn.AmountFils)}`;
+            const fit = `calc(100cqw / ${(0.62 * Math.max(text.length, 1)).toFixed(2)})`;
+            return (
+              <span
+                className="tnum font-bold leading-none max-w-full"
+                style={{
+                  fontSize: `clamp(1.1rem, min(9vw, ${fit}), 3rem)`,
+                  color: credit ? 'var(--color-good)' : 'var(--color-fg)',
+                }}
+              >
+                {text}
+              </span>
+            );
+          })()}
           {amount !== undefined
             ? amount.note != null && amount.note !== '' && (
                 <p className="tnum text-xs text-muted">{amount.note}</p>

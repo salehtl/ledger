@@ -48,6 +48,7 @@ function settledSecrets() {
         forwardingDeclared: true,
         firstMailConfirmedAt: "2026-08-01T00:00:00Z",
         homeCurrency: "AED",
+        skipped: [],
         setupSeen: true,
       }),
     ),
@@ -289,6 +290,46 @@ describe("boot", () => {
     expect(state.step).toBe("ready");
   });
 
+  it("opens a FINISHED device whose projection was evicted, offline — and keeps the finish it resumed from", async () => {
+    // The belt, at the boot seam. The walk finished on this device (the record
+    // says so, written by the real encoder). Then everything else regressed at
+    // once: IndexedDB evicted (empty log, so no currency and no mail), no
+    // network (the sync and the address read both fail). `config_unavailable`
+    // is for a device that cannot tell whether setup happened; this device CAN
+    // tell — it was there.
+    const secrets = memSecretStore();
+    secrets.set(
+      ONBOARDING_LOCAL_KEY,
+      JSON.stringify(
+        encodeLocal({
+          hasSession: true,
+          accountId: "u_1",
+          keysReady: true,
+          banks: [],
+          inboundAddress: "u-abc@in.sirdab.ae",
+          forwardingDeclared: true,
+          firstMailConfirmedAt: null,
+          homeCurrency: null,
+          skipped: [],
+          setupSeen: true,
+          finishedAt: "2026-08-09T18:00:00Z",
+        }),
+      ),
+    );
+    const state = await boot(
+      deps({
+        secrets,
+        state: () => ({ txns: new Map(), homeCurrency: null, banks: new Map() }) as never,
+        sync: () => Promise.reject(new TypeError("Failed to fetch")),
+        address: () => Promise.reject(new Error("offline")),
+      }),
+    );
+    expect(state.step).toBe("ready");
+    // And boot's own re-save did not narrow the record: the finish is still on
+    // disk for the next regressed boot.
+    expect(loadLocalRecord(secrets)?.finishedAt).toBe("2026-08-09T18:00:00Z");
+  });
+
   // -- a second device ------------------------------------------------------
 
   /**
@@ -316,14 +357,23 @@ describe("boot", () => {
   });
 
   it("routes a second device to onboarding only where the LOG is genuinely short of a fact", async () => {
-    // Not a device-local question: the account has no bank declared anywhere, so
-    // the bank step is the honest answer even on a device that has synced.
-    const state = await boot(
+    // The bank list is no longer such a fact: the walk never asks it, so an
+    // account with no bank declared anywhere is still a set-up account. Mail
+    // proves the bank; the empty list must not reopen the walk.
+    const bankless = await boot(
       deps({ secrets: memSecretStore(), state: () => foldedState({ banks: new Map() }) }),
+    );
+    expect(bankless.step).toBe("ready");
+
+    // The home currency IS such a fact: the log holds none, and this device
+    // has skipped nothing, so the walk is the honest answer even here.
+    const state = await boot(
+      deps({ secrets: memSecretStore(), state: () => foldedState({ banks: new Map(), homeCurrency: null }) }),
     );
     expect(state.step).toBe("onboarding");
     if (state.step !== "onboarding") throw new Error("unreachable");
     expect(state.facts.banks).toEqual([]);
+    expect(state.facts.homeCurrency).toBeNull();
   });
 
   // -- an empty key vault ---------------------------------------------------

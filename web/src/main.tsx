@@ -55,8 +55,8 @@ createRoot(document.getElementById("root")!).render(
           */}
           <BootGate
             signIn={({ handle, done }) => <Welcome handle={handle} done={done} />}
-            onboarding={({ handle, facts, done, sync }) => (
-              <Onboarding handle={handle} facts={facts} done={done} sync={sync} />
+            onboarding={({ handle, facts, done }) => (
+              <Onboarding handle={handle} facts={facts} done={done} />
             )}
           >
             <AppShell />

@@ -607,7 +607,7 @@ function byCodeUnit(a: string, b: string): number {
  * Returning false makes that fail closed, and `compileDefinition` refuses to
  * load such a template in the first place.
  */
-function produced(e: Extraction, field: string): boolean {
+export function produced(e: Extraction, field: string): boolean {
   switch (field) {
     case Field.Amount:
       return e.currency !== "";
@@ -633,7 +633,7 @@ function produced(e: Extraction, field: string): boolean {
  * coherent; a state no correct executor produces means something upstream is
  * wrong and the transaction must not be written.
  */
-function validateExtraction(e: Extraction, d: Definition): ExecError {
+export function validateExtraction(e: Extraction, d: Definition): ExecError {
   for (const f of d.required ?? []) {
     if (FIELD_TYPES[f] === undefined) throw new DefinitionError(`required names ${JSON.stringify(f)}, which is not a field`);
     if (f === Field.IsTransfer) throw new DefinitionError("is_transfer cannot be required");

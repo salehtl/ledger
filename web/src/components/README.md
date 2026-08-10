@@ -398,6 +398,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   a sheet must read as above the page; everywhere else uses a
   `border-border` hairline instead.
 - **Use when:** anything overlays the current screen but keeps context.
+- **A field with `autoFocus` keeps the caret.** The sheet only focuses its own
+  panel when focus is not already inside it. Do **not** "restore" the older
+  `querySelector("[autofocus]")` test: React renders no `autofocus` attribute —
+  it focuses the node during commit and leaves nothing behind — so that query
+  matched on no sheet in the app and every one of them took the caret straight
+  back out of the field, which is the two-tap search bug.
 - **Action footer:** wrap bottom actions in `DialogFooter`. It stays `sticky`
   at the sheet bottom with an opaque surface, safe-area padding, and `z-20`, so
   long content scrolls underneath without hiding the primary action.
@@ -416,6 +422,54 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   to its DOM ancestor — `<main>`'s `overscroll-contain` never sees the gesture.
   Don't build an overlay outside Dialog; it will let the page slide behind it.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
+  Or the content is one or two sentences of explanation with nothing to decide
+  and nothing to press (→ `InfoTip`).
+
+### InfoTip
+- **Purpose:** a tap-to-open explanation anchored to the label it explains. The
+  one exception to "Dialog-only overlays", and deliberately not modal — no
+  scrim, no focus trap, no scroll lock.
+- **Use when:** a definition ("what a signing domain is"), a mechanism ("why
+  held mail is held"), or a reassurance would otherwise turn a screen into a
+  wall of text.
+- **The rule that decides it:** *the screen carries what a user must know to
+  act; a tip carries what a user may want to know to understand.* **Nothing
+  that changes a decision may move into a tip.** A warning is not extra
+  information — if a sentence would change whether a person taps the button, it
+  stays on the screen. `screens/onboarding/qualifications.test.tsx` guards the
+  twelve sentences this applies to hardest, and asserts they are not inside a
+  tip panel.
+- **Tap, never hover.** This is a phone app; a hover tooltip is invisible to
+  the only user it has.
+- **`about` is a noun phrase**, and the trigger's accessible name is
+  `About {about}` — "About held mail", never "info". A screen-reader user
+  decides whether to open it before it opens.
+- **44px target, 12px glyph.** `h-11 w-11` with `-m-3` so the oversized target
+  does not push the label beside it around.
+- **The panel is placed against the VIEWPORT, not against its trigger.** It
+  measures itself on open (in a layout effect, or it paints in the wrong place
+  and then jumps) and shifts along x by whatever keeps it inside the viewport
+  with a 16px gutter, flipping above the trigger when there is no room below.
+  `align` is the *preferred* side and collision handling overrides it. A width
+  cap is **not** a position cap: with only `w-[min(18rem,…)]` and `left-0`, a
+  trigger 272px in opened a 288px panel 170px off the side of a 390px screen,
+  and `align="end"` just moved the overflow to the other edge. The correction is
+  a `margin`, never a transform — the entrance animates `y` and a second
+  transform would make every tip slide in sideways. `harness/v2shoot.mjs` opens
+  every tip on every screen and measures the panel; that is the only check that
+  can see this, because jsdom has no layout.
+- **Dismisses on:** tap outside, Escape, scroll (registered in the capture
+  phase, because the app scrolls an inner `<main>` whose scroll does not
+  bubble), and a second tap on the trigger.
+- **It never contains a control.** Text only — no buttons, no navigating links,
+  no fields. A tip is a dead end by design so nothing important can hide in
+  one; `InfoTip.test.tsx` asserts the rendered panel has no interactive
+  descendant, so an edit that puts a link in a tip fails there.
+- **Don't use when:** there is a decision, a control, or more than two
+  sentences (→ `Dialog`), or the content is a consequence, a warning or
+  anything irreversible (→ stays on the screen, usually in a `Notice`).
+- **Motion:** `DUR.fast` from `lib/motion`, transform-only entrance — no
+  `opacity: 0` in `initial`, per the rule below.
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
 - **Purpose:** full-screen drill-in shell — back arrow, title, optional
@@ -425,6 +479,27 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   AppShell-level overlays: Settings itself (TopBar gear), Accounts,
   Recurring and Reports all mount inside one, stacked in DOM order like
   ProjectsFlow so backing out reveals the real parent.
+- **It nests, and a nested panel must set `covered` on its host.** Settings
+  itself is a list of one-line rows whose drill-ins are more `SettingsPage`s
+  rendered from inside it. The host's own back arrow is outside the nested
+  panel, so without `covered` it stays focusable behind it — press it from a
+  covered layer and you close the screen *under* the one you are looking at.
+  `V2Settings` reports this with `onDrillChange`, which `AppShell` ORs into
+  `covered`. The nested panel's own children go inert through a
+  `<div className="contents" inert>` wrapper. Measured before and after by
+  `harness/v2subs.mjs`: 19 focusable controls behind each drill-in, then 0.
+- **The edge-back gesture is armed from the panel, not from an overlay.** The
+  `edge-back-strip` div is `pointer-events-none` and exists only so the harness
+  has something to grab. It used to be a real 24px `touch-none` column down the
+  whole left side, and it cost two things: it sat on the left half of the back
+  arrow (`-ml-2` starts it at x=8), so a tap there began a drag that never moved
+  and the click landed on an `aria-hidden` div; and `touch-none` forbade a
+  vertical pan from that column, while the strip was a *sibling* of the
+  scrolling body rather than inside it, so nothing scrolled there at all. The
+  header carries `relative z-20` so nothing is over it. `harness/v2edge.mjs`
+  presses the arrow at x=12 and walks the `touch-action` chain; `audit.mjs`
+  cannot see either problem, because `control-obscured` tests a control's centre
+  point and the centre was always clear.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
 
 ### Walls (`v2/BootGate.tsx`)
@@ -703,6 +778,17 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 ### Toast (`ToastProvider` / `useToast`)
 - **Purpose:** transient outcome feedback (saved/failed), swipe-dismissable.
   Not for persistent states (→ `IngestHealthBanner` pattern).
+- **Both controls are 44px targets**, and the type inside them is unchanged —
+  `min-h-11` with a negative margin so the taller box adds no height. They were
+  bare text (a `text-sm` line and a `×` character, ~20px tall, 12px apart) on
+  the app's most time-limited surface: the action is usually **Undo**, it is the
+  only way back from a swipe that has already committed, and it is gone in five
+  seconds. Missing it hit the dismiss, which spends the toast.
+- **The dismiss is the `X` pixel icon, not the `×` character** — this was the
+  last place in the app breaking the "never a typographic glyph as a standalone
+  icon" rule above.
+- **Known, not fixed:** the toast lane is centred at the bottom and can land on
+  the Add-transaction `Fab`, blocking it for the toast's lifetime.
 
 ### PullToRefreshIndicator / IngestHealthBanner
 - **Purpose:** app-shell plumbing: PTR spinner; app-wide warning strip.
@@ -850,6 +936,16 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   `unsupported_edit_field`.
   Reach for it only on projection-backed screens; v1's `AddTransactionSheet`
   stays with the v1 REST screens.
+- `ManualTxnFields` (`transactions/ManualTxnSheet.tsx`) — the same six fields
+  **without** the `Dialog` around them, for a panel that has to show something
+  else beside the form. `screens/HeldMessageSheet.tsx` is the one caller: it puts
+  a held message's text and this form in ONE Dialog, and the catalog's
+  Dialog-only rule meant nesting a second Dialog to reuse `ManualTxnSheet` was
+  not an option. Controlled — it takes `draft` and `onChange` and holds no state.
+  Pass `idPrefix` when a second form could ever be in the same document: the
+  labels are wired by `htmlFor`, and two forms sharing ids point every label at
+  the first one. Use it when you need the fields inside your own panel; use
+  `ManualTxnSheet` when you just want the sheet.
 - `SwipeableRow` — wraps a row to add swipe-to-act: right = leading action,
   left = trailing. Full-swipe past the commit threshold fires it (haptic +
   spring-back); short swipes cancel; a swipe never doubles as a tap. Geometry is

@@ -29,6 +29,7 @@ import (
 	"ledger/internal/v2/ingest"
 	"ledger/internal/v2/quarantine"
 	"ledger/internal/v2/samples"
+	"ledger/internal/v2/smtpd"
 )
 
 // TestModeHandlersCoverConfigModesExactly is the real coverage the config
@@ -755,7 +756,7 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 	if err != nil {
 		t.Fatalf("api.NewServer: %v", err)
 	}
-	adminH, err = adminHandler(cfg, pool, nil)
+	adminH, err = adminHandler(cfg, pool, nil, nil)
 	if err != nil {
 		t.Fatalf("adminHandler: %v", err)
 	}
@@ -769,7 +770,7 @@ func publicAndAdminHandlers(t *testing.T) (public, adminH http.Handler) {
 func TestNoAdminTokenMeansNoConsoleRatherThanAnOpenOne(t *testing.T) {
 	srv, err := adminServer(config.Config{
 		Server: config.ServerConfig{AdminListen: "127.0.0.1:8079"},
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("adminServer: %v", err)
 	}
@@ -976,5 +977,288 @@ func TestTombstoneSweepSurvivesAFailureAndStopsOnShutdown(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "deleted-account tombstone sweep") {
 		t.Fatalf("a failed sweep must be loud, not swallowed: %q", logged.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-account isolation: the wiring the three tracks left inert
+// ---------------------------------------------------------------------------
+//
+// Everything below asserts that something is STARTED or ASSIGNED, not that it
+// compiles. Each of these subsystems shipped complete and unreferenced, which
+// is the failure mode this file exists to catch: a fuse nobody starts, a
+// suspension nobody looks up and a counter store nobody loads all behave
+// exactly like the feature not being there.
+
+// The fuse must be constructed from CONFIG, STARTED, and handed to the API.
+//
+// All three in one assertion, deliberately. A floor larger than any real
+// filesystem means a started fuse is a tripped fuse, and headroom.Start takes
+// its first sample synchronously — so Tripped() is true here if and only if
+// Start ran. Deleting `fuse.Start()` makes it false; deleting
+// `syncAPI.Headroom = fuse` makes it nil; hard-coding the defaults instead of
+// reading cfg makes Floor and Path disagree.
+func TestTheHeadroomFuseIsStartedAndHandedToTheAPI(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{Headroom: config.HeadroomConfig{
+		// Larger than any filesystem this could ever run on, so the very first
+		// sample trips it without a disk having to be full.
+		Path: dir, FloorBytes: 1 << 62, Interval: time.Hour,
+	}}
+	syncAPI := &api.Server{}
+	fuse := startHeadroom(cfg, syncAPI)
+	defer fuse.Stop()
+
+	if syncAPI.Headroom == nil {
+		t.Fatal("startHeadroom did not give the API a fuse: every non-read request would " +
+			"be admitted with the disk full")
+	}
+	if !syncAPI.Headroom.Tripped() {
+		t.Fatal("the fuse was constructed but never started: headroom.Start samples " +
+			"synchronously, so a started fuse under a 4 EB floor is already tripped")
+	}
+	if got := fuse.Path(); got != dir {
+		t.Fatalf("fuse path = %q, want the configured %q", got, dir)
+	}
+	if got := fuse.Floor(); got != uint64(1<<62) {
+		t.Fatalf("fuse floor = %d, want the configured %d", got, uint64(1<<62))
+	}
+}
+
+// The mirror case, and the one that says the fuse is a fuse rather than a
+// permanent refusal: above the floor it must NOT be tripped. A wiring that
+// inverted the comparison, or that passed a floor of zero bytes as "unset",
+// would pass the test above and fail this one.
+func TestTheFuseIsOpenWithHeadroomToSpare(t *testing.T) {
+	cfg := config.Config{Headroom: config.HeadroomConfig{
+		Path: t.TempDir(), FloorBytes: 1, Interval: time.Hour,
+	}}
+	syncAPI := &api.Server{}
+	fuse := startHeadroom(cfg, syncAPI)
+	defer fuse.Stop()
+	if syncAPI.Headroom.Tripped() {
+		t.Fatal("the fuse tripped with a one-byte floor: it would refuse every write on a " +
+			"healthy box, which is an outage caused by the thing that prevents one")
+	}
+}
+
+// Stop must actually end the sampling goroutine. runServe defers it, and a fuse
+// that ignored Stop would leave a ticker running past the process's own
+// shutdown — invisible in production, and a leaked goroutine in every test that
+// starts one.
+func TestStoppingTheFuseIsSafeAndIdempotent(t *testing.T) {
+	cfg := config.Config{Headroom: config.HeadroomConfig{
+		Path: t.TempDir(), FloorBytes: 1, Interval: time.Millisecond,
+	}}
+	fuse := startHeadroom(cfg, &api.Server{})
+	fuse.Stop()
+	fuse.Stop()
+}
+
+// runServe must actually REACH both, measured against main.go's syntax tree
+// rather than against a call this test makes itself.
+//
+// This is the same instrument TestEverySweepIsStartedAndAwaitedByRunServe uses,
+// pointed at the two pieces of wiring that are not sweeps — and it exists for
+// the same recorded reason: on this branch, six subsystems have been written,
+// tested green and never called. The tests above prove startHeadroom and
+// wireMailStores do their jobs; only this one proves the server invokes them.
+//
+// The deferred Stop is checked with them. A fuse whose goroutine outlives
+// runServe is a ticker running in a process on its way out, and nothing at
+// runtime would report it.
+func TestRunServeStartsTheFuseAndWiresTheMailSeams(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runServe *ast.FuncDecl
+	for _, d := range file.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if ok && fn.Recv == nil && fn.Name.Name == "runServe" {
+			runServe = fn
+		}
+	}
+	if runServe == nil {
+		t.Fatal("main.go declares no runServe")
+	}
+
+	called := map[string]bool{}
+	fuseVar := ""
+	stopped := map[string]bool{}
+	ast.Inspect(runServe.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok {
+				called[id.Name] = true
+			}
+		case *ast.AssignStmt:
+			if len(x.Rhs) != 1 {
+				return true
+			}
+			call, ok := x.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "startHeadroom" {
+				return true
+			}
+			if lhs, ok := x.Lhs[0].(*ast.Ident); ok {
+				fuseVar = lhs.Name
+			}
+		case *ast.DeferStmt:
+			sel, ok := x.Call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Stop" {
+				return true
+			}
+			if id, ok := sel.X.(*ast.Ident); ok {
+				stopped[id.Name] = true
+			}
+		}
+		return true
+	})
+
+	if !called["startHeadroom"] {
+		t.Error("runServe never calls startHeadroom: the disk fuse is constructed nowhere, " +
+			"so api.Server.Headroom stays nil and every write is admitted with the disk full")
+	}
+	if !called["wireMailStores"] {
+		t.Error("runServe never calls wireMailStores: the receiver has no suspension lookup, " +
+			"no refusal counter and no counter persistence, and nothing at runtime says so")
+	}
+	if fuseVar == "" {
+		t.Fatal("runServe does not keep startHeadroom's fuse, so it cannot stop it")
+	}
+	if !stopped[fuseVar] {
+		t.Errorf("runServe never defers %s.Stop(): the sampling goroutine outlives the "+
+			"function that owns it", fuseVar)
+	}
+}
+
+// recordingMailSeams is a *smtpd.Server stand-in that remembers what it was
+// handed. The real server keeps all three seams unexported, so this is the only
+// way to observe a partial wiring from outside that package.
+type recordingMailSeams struct {
+	suspensions smtpd.Suspensions
+	refusals    smtpd.Refusals
+	counters    smtpd.CounterStore
+	loaded      int
+}
+
+func (r *recordingMailSeams) SetSuspensions(x smtpd.Suspensions)   { r.suspensions = x }
+func (r *recordingMailSeams) SetRefusals(x smtpd.Refusals)         { r.refusals = x }
+func (r *recordingMailSeams) SetCounterStore(x smtpd.CounterStore) { r.counters = x }
+func (r *recordingMailSeams) LoadCounters(context.Context) (int, error) {
+	r.loaded++
+	return 7, nil
+}
+
+// All three seams wired, from ONE store, and the counters loaded exactly once.
+//
+// The single-store assertion is not tidiness. Two stores would mean two answers
+// to "is this account suspended" and two writers of account_refusals, and
+// nothing at runtime would tell them apart. Deleting any one of the four lines
+// in wireMailStores fails this test.
+func TestWireMailStoresWiresAllThreeSeamsFromOneStore(t *testing.T) {
+	rec := &recordingMailSeams{}
+	store := &smtpd.PGStore{}
+	n, err := wireMailStores(context.Background(), rec, store)
+	if err != nil {
+		t.Fatalf("wireMailStores: %v", err)
+	}
+	if n != 7 {
+		t.Fatalf("restored = %d, want the store's own answer (7)", n)
+	}
+	if rec.suspensions == nil {
+		t.Fatal("no Suspensions: a paused account's mail would keep being accepted")
+	}
+	if rec.refusals == nil {
+		t.Fatal("no Refusals: refusals would be applied and counted nowhere, which is " +
+			"the silent drop account_refusals exists to prevent")
+	}
+	if rec.counters == nil {
+		t.Fatal("no CounterStore: every restart would hand every account a fresh daily allowance")
+	}
+	if rec.suspensions != smtpd.Suspensions(store) ||
+		rec.refusals != smtpd.Refusals(store) ||
+		rec.counters != smtpd.CounterStore(store) {
+		t.Fatal("the three seams were not the same store")
+	}
+	if rec.loaded != 1 {
+		t.Fatalf("LoadCounters called %d times, want exactly 1 — the persisted counters "+
+			"must be restored before the listener accepts anything", rec.loaded)
+	}
+}
+
+// A store with no pool fails the load, and that failure must REACH the caller
+// rather than being swallowed inside the wiring: runServe logs it as the warning
+// that says this run started every allowance from zero.
+func TestWireMailStoresReportsAFailedRestore(t *testing.T) {
+	mail := smtpd.New(config.MailConfig{
+		Domain: "example.test", SMTPListen: "127.0.0.1:0", MaxMessageBytes: 1000,
+		PerAddressDaily: 1, InvalidRcptBurst: 1, TarpitBase: time.Second,
+	}, nil, nil, nil, time.Now)
+	if _, err := wireMailStores(context.Background(), mail, &smtpd.PGStore{}); err == nil {
+		t.Fatal("a pool-less store restored counters successfully; the load was never attempted")
+	}
+}
+
+// The counter sweep joins the other five hourly loops. A nil or pool-less store
+// must not start one at all — the relay deployment has no Postgres — and a
+// failing sweep must be loud and must not end the loop, the shape every other
+// sweep here has.
+func TestCounterSweepIsWiredAndSurvivesAFailure(t *testing.T) {
+	select {
+	case <-startCounterSweep(context.Background(), nil):
+	case <-time.After(5 * time.Second):
+		t.Fatal("a nil counter store must not start a sweep")
+	}
+	select {
+	case <-startCounterSweep(context.Background(), &smtpd.PGStore{}):
+	case <-time.After(5 * time.Second):
+		t.Fatal("a pool-less counter store must not start a sweep")
+	}
+
+	var logged strings.Builder
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(restore)
+
+	// A pool pointed at a closed port fails every sweep: an unreachable
+	// database, from here.
+	pool, err := pgxpool.New(context.Background(),
+		"postgres://ledger@127.0.0.1:1/ledger_v2_unreachable?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startCounterSweep(ctx, &smtpd.PGStore{Pool: pool})
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweep did not stop when the context was cancelled")
+	}
+	if !strings.Contains(logged.String(), "smtp counter sweep") {
+		t.Fatalf("a failed sweep must be loud, not swallowed: %q", logged.String())
+	}
+}
+
+// The ingest writer must stay on the DEFAULT budget gate.
+//
+// oplog.Appender.Budget is the one field in this wiring where nil is the SAFE
+// value and a value is the dangerous one: nil means a gate built over Pool,
+// while an assigned gate — including one carrying a different or absent pool —
+// is how the ceiling gets quietly turned off for trusted mail, the path that
+// never passes through handleUpload and is therefore covered by nothing else.
+func TestTheIngestAppenderLeavesTheBudgetGateOnItsDefault(t *testing.T) {
+	if a := ingestAppender(nil); a.Budget != nil {
+		t.Fatal("the ingest appender was given an explicit budget gate: nil is not " +
+			"'no budget', it is a gate over Pool, and assigning one here is the edit " +
+			"that unbudgets every appended bank message")
 	}
 }

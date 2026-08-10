@@ -119,10 +119,27 @@ func forgetPushTokens(ctx context.Context, tx pgx.Tx, where string, args ...any)
 	return nil
 }
 
-// Issue mints a session for userID and returns the bearer token. The token is
-// returned exactly once, to exactly one caller, and is never recoverable from
-// the database afterwards.
+// Issue mints a session for userID, attributed to NO credential, and returns
+// the bearer token. The token is returned exactly once, to exactly one caller,
+// and is never recoverable from the database afterwards.
+//
+// Use it only where no credential authenticated the session and there is
+// therefore nothing honest to record: the Apple/Google ID-token exchange, and
+// tests that want a session without a ceremony. Every passkey path must call
+// IssueForCredential — see 00034_session_credential.sql for what the column
+// decides.
 func (s *Sessions) Issue(ctx context.Context, userID uuid.UUID) (string, error) {
+	return s.IssueForCredential(ctx, userID, nil)
+}
+
+// IssueForCredential is Issue, recording WHICH enrolled credential finished the
+// ceremony that minted the session.
+//
+// credentialID may be nil, and nil is not a shrug — it is the recorded fact
+// "this server does not know", which the listing renders as no "this device"
+// marker and which the removal path treats as possibly-the-removed-credential's.
+// Pass a credential only where a ceremony verified one for THIS account.
+func (s *Sessions) IssueForCredential(ctx context.Context, userID uuid.UUID, credentialID []byte) (string, error) {
 	if s.Pool == nil {
 		return "", errors.New("auth: Sessions.Pool is nil")
 	}
@@ -148,13 +165,53 @@ func (s *Sessions) Issue(ctx context.Context, userID uuid.UUID) (string, error) 
 	// base64 to look a session up.
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	now := s.now()
+	// An empty (rather than nil) slice would be stored as a zero-length bytea,
+	// which is a value and not an absence — it would name no credential while
+	// reading as attributed. Normalized to NULL so there is exactly one
+	// representation of "unknown".
+	var cred any
+	if len(credentialID) > 0 {
+		cred = credentialID
+	}
 	_, err := s.Pool.Exec(ctx,
-		`INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
-		tokenHash(token), userID, now, now.Add(s.TTL))
+		`INSERT INTO sessions (token_hash, user_id, created_at, expires_at, credential_id)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		tokenHash(token), userID, now, now.Add(s.TTL), cred)
 	if err != nil {
 		return "", fmt.Errorf("auth: issue session for user %s: %w", userID, err)
 	}
 	return token, nil
+}
+
+// CredentialForSession returns the credential id that authenticated the session
+// named by token, or nil when the session records none.
+//
+// nil covers three different states on purpose — no such session, a session
+// minted before 00034 added the column, and a session from the ID-token
+// exchange — because every caller wants the same answer for all three: say
+// nothing. The one consumer is the passkey listing's "this device" marker, and
+// a marker is either provably right or absent.
+//
+// It does NOT judge expiry or revocation. Its caller has already resolved the
+// session through Resolve; re-deciding liveness here on a second read would be
+// two answers to one question.
+func (s *Sessions) CredentialForSession(ctx context.Context, token string) ([]byte, error) {
+	if s.Pool == nil {
+		return nil, errors.New("auth: Sessions.Pool is nil")
+	}
+	if token == "" {
+		return nil, nil
+	}
+	var cred []byte
+	err := s.Pool.QueryRow(ctx,
+		`SELECT credential_id FROM sessions WHERE token_hash = $1`, tokenHash(token)).Scan(&cred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: credential for session: %w", err)
+	}
+	return cred, nil
 }
 
 // Resolve returns the user a live session belongs to, or an error wrapping

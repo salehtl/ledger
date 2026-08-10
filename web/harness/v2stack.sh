@@ -18,13 +18,31 @@
 #
 # `localhost` and not `127.0.0.1` for the UI: WebAuthn needs a secure context,
 # and `localhost` is one over plain HTTP while a bare IP is not.
+#
+# # Ports, the run directory and the database are all overridable
+#
+# Parallel sessions on this repo are normal, and the defaults are FIXED values —
+# two agents running this script at once meant the second one's `--strictPort`
+# vite died on the first one's port while its ledgerd wrote into the first one's
+# run directory. Every collidable name is an env var with the old value as its
+# default, so an unqualified `v2stack.sh up` behaves exactly as it did:
+#
+#   LEDGER_V2_HARNESS_DIR=/tmp/ledger-v2-ux \
+#   LEDGER_V2_API_PORT=8133 LEDGER_V2_UI_PORT=5187 \
+#   LEDGER_V2_SMTP_PORT=2536 LEDGER_V2_DB=ledger_v2_ux harness/v2stack.sh up
+#
+# The SMTP port is in the list because it is a listener like the others: the
+# default 2526 is as collidable as 8123, and a second stack that failed to bind
+# it would take the mail path — the only way past the verification step — down
+# with it.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUN="${LEDGER_V2_HARNESS_DIR:-/tmp/ledger-v2-harness}"
-API_PORT=8123
-UI_PORT=5177
-DB=ledger_v2_harness
+API_PORT="${LEDGER_V2_API_PORT:-8123}"
+UI_PORT="${LEDGER_V2_UI_PORT:-5177}"
+SMTP_PORT="${LEDGER_V2_SMTP_PORT:-2526}"
+DB="${LEDGER_V2_DB:-ledger_v2_harness}"
 
 api_dsn() { echo "postgres://postgres@/$DB?host=$(cat "$RUN/socket")&port=$(cat "$RUN/port")&sslmode=disable"; }
 
@@ -52,7 +70,7 @@ up() {
 	cat > "$RUN/config.toml" <<-TOML
 		[mail]
 		domain      = "sirdab.ae"
-		smtp_listen = "127.0.0.1:2526"
+		smtp_listen = "127.0.0.1:$SMTP_PORT"
 
 		[server]
 		http_listen = "127.0.0.1:$API_PORT"

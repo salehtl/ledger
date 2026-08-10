@@ -39,7 +39,7 @@ function shownWords(): string[] {
 }
 
 describe("generating a phrase", () => {
-  it("shows twelve real words and publishes nothing until they are confirmed", async () => {
+  it("shows twelve real words, and publishes only when the user says they have them", async () => {
     const user = userEvent.setup();
     const fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const onSecured = vi.fn();
@@ -58,6 +58,8 @@ describe("generating a phrase", () => {
     const words = shownWords();
     expect(words.length).toBe(12);
     expect(validatePhrase(words.join(" "), webPlatform).ok).toBe(true);
+    // Nothing is published while the words are merely on screen: a tab closed
+    // here leaves an account with no keys, rather than keys nobody wrote down.
     expect(fetch).not.toHaveBeenCalled();
 
     // The words are on the glass beside what they can DO. The phrase is a write
@@ -65,21 +67,7 @@ describe("generating a phrase", () => {
     // decides where to keep it.
     expect(document.body.textContent).toContain(RECOVERY_PHRASE_COPY.alsoWrites);
 
-    // The tick alone is not the confirmation — it only reveals the check.
     await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.recorded }));
-    expect(fetch).not.toHaveBeenCalled();
-    await screen.findByTestId("onboarding-recovery-confirm");
-    // And the words are no longer on the glass, which is what makes the check
-    // one at all.
-    expect(screen.queryByTestId("recovery-phrase-words")).toBeNull();
-
-    const fields = screen.getAllByRole("textbox");
-    expect(fields.length).toBe(3);
-    for (const field of fields) {
-      const position = Number(field.getAttribute("data-testid")!.replace("recovery-confirm-", ""));
-      await user.type(field, words[position - 1]!);
-    }
-    await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.publish }));
 
     await waitFor(() => expect(onSecured).toHaveBeenCalled(), { timeout: 20_000 });
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -87,30 +75,14 @@ describe("generating a phrase", () => {
     expect(init.method).toBe("PUT");
   }, 30_000);
 
-  it("refuses a wrong word, and publishes nothing", async () => {
-    const user = userEvent.setup();
-    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
-
-    mount(
-      <RecoveryPhrase
-        accountId={ACCOUNT}
-        vault={memoryKeyVault()}
-        io={{ sessionToken: "t", fetch: fetch as unknown as typeof globalThis.fetch }}
-        published={null}
-        onSecured={vi.fn()}
-      />,
-    );
-    await screen.findByTestId("recovery-phrase-words");
-    await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.recorded }));
-
-    for (const field of screen.getAllByRole("textbox")) await user.type(field, "zoo");
-    await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.publish }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(RECOVERY_PHRASE_COPY.confirmWrong);
-    expect(fetch).not.toHaveBeenCalled();
-  }, 30_000);
-
-  it("can go back to the words, which is the last chance to read them", async () => {
+  /**
+   * The quiz is gone, on the operator's instruction: the user is trusted to
+   * store the words the way they wish, and the app does not need to double
+   * check. Asserted as an absence, because a well-meaning later edit would put
+   * it back as "just a quick check" — and it buys nothing. Typing three words
+   * back proves they were on the previous screen, never that they were saved.
+   */
+  it("never asks for a word back", async () => {
     const user = userEvent.setup();
     mount(
       <RecoveryPhrase
@@ -122,12 +94,39 @@ describe("generating a phrase", () => {
       />,
     );
     await screen.findByTestId("recovery-phrase-words");
-    const words = shownWords();
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+    expect(document.body.textContent ?? "").not.toMatch(/type three of them|word \d+$/im);
+
     await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.recorded }));
-    await user.click(screen.getByRole("button", { name: RECOVERY_PHRASE_COPY.back }));
-    // The SAME phrase, not a regenerated one: a new phrase here would mean the
-    // words the user just wrote down were silently discarded.
-    expect(shownWords()).toEqual(words);
+    // No second screen appears in its place, and the words are not taken away
+    // to make room for one.
+    expect(screen.queryByTestId("onboarding-recovery-confirm")).toBeNull();
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+  }, 30_000);
+
+  /**
+   * The warning is the safety property; the quiz was a ritual around it. All
+   * three sentences are on the screen that shows the words, and the encryption
+   * pair is back with them now that there is no second screen to hold it.
+   */
+  it("keeps every warning on the screen that shows the words", async () => {
+    mount(
+      <RecoveryPhrase
+        accountId={ACCOUNT}
+        vault={memoryKeyVault()}
+        io={{ sessionToken: "t", fetch: (async () => new Response(null, { status: 204 })) as typeof globalThis.fetch }}
+        published={null}
+        onSecured={vi.fn()}
+      />,
+    );
+    await screen.findByTestId("recovery-phrase-words");
+    const page = document.body.textContent ?? "";
+    expect(page).toContain(RECOVERY_PHRASE_COPY.noWayBack);
+    expect(page).toContain(RECOVERY_PHRASE_COPY.alsoWrites);
+    expect(page).toContain(RECOVERY_PHRASE_COPY.advice);
+    // Adjacent, in this order: the claim that is true, then the window it does
+    // not close.
+    expect(page).toContain(`${RECOVERY_PHRASE_COPY.whatItProtects}${RECOVERY_PHRASE_COPY.whatItDoesNot}`);
   }, 30_000);
 
   // There is no skip. Not "the skip is discouraged" — there is no control that

@@ -70,7 +70,7 @@ export const PROVIDERS: readonly Provider[] = [
     steps: [
       "On a computer, open Gmail's Settings, then See all settings, then Forwarding and POP/IMAP.",
       "Press “Add a forwarding address” and paste the address above.",
-      "Gmail emails a confirmation code to that address. The next screen lists that message so you can read the code.",
+      "Gmail emails a confirmation to that address. It appears in ledger under Held mail — open it there to confirm with Gmail.",
       "Back in Gmail, create a filter for your bank's sender address and tick “Forward it to” your ledger address. Forward the bank, not the whole mailbox.",
     ],
   },
@@ -101,7 +101,7 @@ export const PROVIDERS: readonly Provider[] = [
       "Open Outlook on the web, then Settings, then Mail, then Forwarding.",
       "Enable forwarding, enter the address above and save.",
       "To send only your bank's mail, add a rule under Settings, then Mail, then Rules, matching your bank's sender address with the action “Forward to”.",
-      "If Outlook emails a confirmation code, the next screen lists that message.",
+      "If Outlook emails a confirmation code, it appears in ledger under Held mail.",
     ],
     caveat:
       "A work or school account on Microsoft 365 may refuse to forward outside the organisation. An administrator controls that, and no Outlook setting overrides it — if forwarding is blocked, set the address with your bank directly instead.",
@@ -113,7 +113,7 @@ export const PROVIDERS: readonly Provider[] = [
     steps: [
       "Open Yahoo Mail's Settings, then More Settings, then Mailboxes, and select your account.",
       "Under Forwarding, add the address above.",
-      "Yahoo emails a confirmation to that address. The next screen lists that message.",
+      "Yahoo emails a confirmation to that address. It appears in ledger under Held mail.",
       // Every other provider's steps say this in one form or another, and the
       // forwarding screen's closing notice used to say it once for all of them.
       // The notice is gone (it repeated the steps under the steps), so the one
@@ -129,7 +129,7 @@ export const PROVIDERS: readonly Provider[] = [
     needsConfirmation: true,
     steps: [
       "Open Proton Mail's settings, then Forward emails, and add the address above.",
-      "Proton emails a confirmation to that address. The next screen lists that message.",
+      "Proton emails a confirmation to that address. It appears in ledger under Held mail.",
       "To send only your bank's mail, add a filter matching your bank's sender address instead of forwarding everything.",
     ],
     caveat: "Forwarding to an address outside Proton is a paid-plan feature.",
@@ -137,20 +137,29 @@ export const PROVIDERS: readonly Provider[] = [
 ];
 
 /**
- * Everything else — and the honest default rather than a fallback nobody read.
+ * The lead instruction set — true everywhere, and shown to everyone first.
  *
- * It names the destination rather than a path, because the path is what differs
- * and the destination is what does not: every provider that can forward has a
- * setting called something close to "forwarding".
+ * It used to be the fallback row on a provider picker ("Another provider"),
+ * which made the pickable five look like the supported set and the truth look
+ * like a consolation. It leads now, and the per-provider lists above are
+ * optional help behind a disclosure. It names the destination rather than a
+ * path, because the path is what differs and the destination is what does not:
+ * every provider that can forward has a setting called something close to
+ * "forwarding".
+ *
+ * The last step is the whole confirmation story, generic and truthful: no
+ * promised code, no promised screen — a place, by name, and ledger's part in
+ * pointing at it.
  */
 export const GENERIC: Provider = {
   id: "other",
   label: "Another provider",
   needsConfirmation: true,
   steps: [
-    "Find the forwarding or auto-forward setting in your mail provider's settings, and add the address above.",
-    "If your provider can forward only mail matching a rule, match your bank's sender address — forward the bank, not the whole mailbox.",
-    "If your provider emails a confirmation code, the next screen lists that message so you can read the code.",
+    "In your mail app, make a rule: mail from your bank forwards to this address.",
+    "The setting is usually called forwarding, auto-forward or rules.",
+    "Match your bank's sender address — forward the bank, not the whole mailbox.",
+    "If your provider sends a confirmation, it appears in Held mail — ledger will point you at it.",
   ],
 };
 

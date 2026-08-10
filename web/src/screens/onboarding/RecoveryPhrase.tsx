@@ -23,27 +23,38 @@
  * open — including the operator, who holds nothing that would help. The copy in
  * `RECOVERY_PHRASE_COPY` says that in those words.
  *
- * # The confirmation is a check, not a claim
+ * # There is no quiz, and there will not be one
  *
- * "I have written these down" is a claim about the past that a person makes
- * while looking at the words. So the tick is followed by three words asked for
- * by position, chosen at random once per screen, with the phrase no longer
- * visible. It is the only difference between a phrase that was recorded and one
- * that was read.
+ * This step used to hide the words and ask for three of them back by position.
+ * It is gone, on the operator's instruction and in his words: **the user is
+ * trusted to store the words the way they wish, and the app does not need to
+ * double check.**
  *
- * # Nothing is published before the user has confirmed
+ * The reasoning holds up on its own. Typing three words back proves the phrase
+ * was in short-term memory thirty seconds ago; it proves nothing about whether
+ * it was written on paper, saved to a password manager, or screenshotted — which
+ * is the only thing that matters. So it bought very little, and it cost every
+ * single user real friction in their first minute with the product.
+ *
+ * What it did NOT buy is worth stating too, because "we removed a safety check"
+ * is the wrong reading: the warning is untouched. The words are still shown in
+ * full, once, under a danger notice that says clearing this browser without them
+ * loses the account and that nobody — the operator included — can let you back
+ * in. That sentence is the safety property. The quiz was a ritual around it.
+ *
+ * # Nothing is published before the user has said they have the words
  *
  * `establishAccountKeys` awaits `confirmPhrase` before it wraps or publishes,
- * and this screen resolves that promise from the confirmation step. So a user
- * who closes the tab mid-ceremony leaves an account with no published keys — a
- * state the next boot handles by starting the ceremony again with a NEW phrase,
- * rather than one with keys nobody recorded the phrase for.
+ * and this screen resolves that promise when the user says they have the words.
+ * So a user who closes the tab mid-ceremony leaves an account with no published
+ * keys — a state the next boot handles by starting the ceremony again with a NEW
+ * phrase, rather than one with keys nobody recorded the phrase for. Removing the
+ * quiz moved which press resolves it and nothing else.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
-import { Input } from "../../components/ui/Field";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Notice, Step } from "./Shell";
 import { RECOVERY_ENTRY_COPY, RECOVERY_PHRASE_COPY } from "../../v2/onboarding";
@@ -54,11 +65,8 @@ import {
   type KeysIO,
   type PublishedKeys,
 } from "../../v2/keys";
-import { normalizePhrase, validatePhrase } from "@ledger/client/crypto/phrase";
+import { validatePhrase } from "@ledger/client/crypto/phrase";
 import { webPlatform } from "@ledger/client/platform.web";
-
-/** How many words the confirmation asks for. Three of twelve; see the header. */
-const CONFIRM_WORD_COUNT = 3;
 
 export interface RecoveryPhraseProps {
   accountId: string;
@@ -78,25 +86,15 @@ export function RecoveryPhrase(props: RecoveryPhraseProps) {
 // Generating
 // ---------------------------------------------------------------------------
 
-type GeneratePhase = "working" | "showing" | "confirming" | "publishing" | "failed";
+type GeneratePhase = "working" | "showing" | "publishing" | "failed";
 
 function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps) {
   const [phase, setPhase] = useState<GeneratePhase>("working");
   const [phrase, setPhrase] = useState<string | null>(null);
-  const [answers, setAnswers] = useState<string[]>(() => Array<string>(CONFIRM_WORD_COUNT).fill(""));
-  const [wrong, setWrong] = useState(false);
   // Resolves the `confirmPhrase` promise inside `establishAccountKeys`. A ref
   // rather than state: it is a continuation, not something rendered.
   const confirmed = useRef<(() => void) | null>(null);
   const started = useRef(false);
-
-  /**
-   * Which positions the confirmation asks for: three distinct 1-based indices,
-   * drawn once, from the platform's randomness rather than `Math.random` — a
-   * predictable choice would let a user who screenshotted only the first line
-   * pass.
-   */
-  const positions = useMemo(() => pickPositions(CONFIRM_WORD_COUNT), []);
 
   const begin = useCallback(() => {
     if (started.current) return;
@@ -138,7 +136,7 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
     );
   }
 
-  if (phase === "showing") {
+  if (phase === "showing" || phase === "publishing") {
     return (
       <Step
         title={RECOVERY_PHRASE_COPY.title}
@@ -147,11 +145,16 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
         footer={
           <Button
             variant="primary"
+            disabled={phase === "publishing"}
             onClick={() => {
-              setPhase("confirming");
+              // The one press. It says the words are kept somewhere; the app
+              // takes that at its word and publishes. See the header for why
+              // there is nothing here that checks.
+              setPhase("publishing");
+              confirmed.current?.();
             }}
           >
-            {RECOVERY_PHRASE_COPY.recorded}
+            {phase === "publishing" ? RECOVERY_PHRASE_COPY.working : RECOVERY_PHRASE_COPY.recorded}
           </Button>
         }
       >
@@ -166,22 +169,27 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
             </li>
           ))}
         </ol>
-        {/*
-          "What this protects" is NOT here, deliberately. This step's whole job
-          is copying twelve words down, and it opened with an intro, a
-          two-paragraph explanation of what encryption covers and a
-          three-paragraph danger notice — six paragraphs above the fold, between
-          the user and the one thing to do. The pair moved to the confirmation
-          step, still adjacent and still both on screen in this flow; the danger
-          notice stayed, because THIS is where the user decides where to keep
-          the words and `alsoWrites` is what changes that decision.
-        */}
         <Notice tone="danger" title="If you lose these words">
           <p>{RECOVERY_PHRASE_COPY.noWayBack}</p>
           {/* Directly above the advice about where to keep them, because that
               is the decision it changes — see the copy's own comment. */}
           <p>{RECOVERY_PHRASE_COPY.alsoWrites}</p>
           <p>{RECOVERY_PHRASE_COPY.advice}</p>
+        </Notice>
+        {/*
+          The encryption pair, back on this step because the step it had been
+          moved to no longer exists. It was moved to keep this screen short, and
+          that pressure is real — but the two halves have to be on screen
+          together somewhere in this ceremony, and there is now exactly one
+          screen in it. They stay ADJACENT and in this order: the claim that is
+          true, and immediately the window it does not close. Splitting them is
+          how "encrypted at rest" turns into "we can't see it" in a reader's
+          head. It sits below the words and the danger notice, so the thing to
+          DO is still above it.
+        */}
+        <Notice title="What this protects">
+          <p>{RECOVERY_PHRASE_COPY.whatItProtects}</p>
+          <p>{RECOVERY_PHRASE_COPY.whatItDoesNot}</p>
         </Notice>
       </Step>
     );
@@ -212,100 +220,12 @@ function GeneratePhrase({ accountId, vault, io, onSecured }: RecoveryPhraseProps
     );
   }
 
-  const words = phrase.split(" ");
-  const allAnswered = answers.every((a) => normalizePhrase(a) !== "");
-
-  return (
-    <Step
-      title={RECOVERY_PHRASE_COPY.confirmTitle}
-      intro={RECOVERY_PHRASE_COPY.confirmIntro}
-      testId="onboarding-recovery-confirm"
-      footer={
-        <>
-          <Button
-            variant="primary"
-            disabled={!allAnswered || phase === "publishing"}
-            onClick={() => {
-              const ok = positions.every((p, i) => normalizePhrase(answers[i] ?? "") === words[p - 1]);
-              if (!ok) {
-                setWrong(true);
-                return;
-              }
-              setWrong(false);
-              setPhase("publishing");
-              confirmed.current?.();
-            }}
-          >
-            {phase === "publishing" ? RECOVERY_PHRASE_COPY.working : RECOVERY_PHRASE_COPY.publish}
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={phase === "publishing"}
-            onClick={() => {
-              setWrong(false);
-              setPhase("showing");
-            }}
-          >
-            {RECOVERY_PHRASE_COPY.back}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {positions.map((p, i) => (
-          <label key={p} className="flex flex-col gap-1">
-            <span className="text-sm text-muted">Word {p}</span>
-            <Input
-              value={answers[i] ?? ""}
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              data-testid={`recovery-confirm-${p}`}
-              onChange={(e) => {
-                const next = [...answers];
-                next[i] = e.target.value;
-                setAnswers(next);
-                setWrong(false);
-              }}
-            />
-          </label>
-        ))}
-      </div>
-      {wrong && (
-        <p role="alert" className="text-sm text-bad">
-          {RECOVERY_PHRASE_COPY.confirmWrong}
-        </p>
-      )}
-      {/*
-        The encryption pair, moved off the "write these down" step — see the
-        comment there. The two halves stay ADJACENT and in this order: the claim
-        that is true, and immediately the window it does not close. Splitting
-        them is how "encrypted at rest" turns into "we can't see it" in a
-        reader's head.
-      */}
-      <Notice title="What this protects">
-        <p>{RECOVERY_PHRASE_COPY.whatItProtects}</p>
-        <p>{RECOVERY_PHRASE_COPY.whatItDoesNot}</p>
-      </Notice>
-    </Step>
-  );
-}
-
-/**
- * Three distinct 1-based positions in a twelve-word phrase.
- *
- * Uniform, from `randomBytes`: rejection sampling rather than a modulo, because
- * a modulo over 256 would quietly favour the low positions — which are the ones
- * a partial screenshot catches.
- */
-function pickPositions(count: number): number[] {
-  const chosen = new Set<number>();
-  while (chosen.size < count) {
-    const b = webPlatform.randomBytes(1)[0]!;
-    if (b >= 240) continue; // 240 = 12 * 20, the largest multiple of 12 under 256
-    chosen.add((b % 12) + 1);
-  }
-  return [...chosen].sort((a, b) => a - b);
+  /*
+    Unreachable: `phase` is one of four and the three above are handled. Kept as
+    an explicit nothing rather than a fifth screen, because the state that used
+    to be here — the quiz — was deleted, not hidden.
+  */
+  return null;
 }
 
 // ---------------------------------------------------------------------------

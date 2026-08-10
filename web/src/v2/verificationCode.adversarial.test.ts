@@ -1,0 +1,279 @@
+/**
+ * Adversarial pass over `confirmationTask` and the scan it composes, written to
+ * try to BREAK the four properties the one-tap task rests on rather than to
+ * document that it works:
+ *
+ *  1. A held message can never make the task offer a URL whose *effective*
+ *     authority (what a browser would navigate to) is anything but the
+ *     message's own verified signing domain, or a subdomain of it.
+ *  2. A candidate with no readable link is a task with `url: null`, never a
+ *     `null` task — the helper itself never dead-ends.
+ *  3. A message no signature verified (dkim AND arc both not "pass") is never a
+ *     candidate, not even when it is the newest thing in the lane.
+ *  4. The scan the task runs stays bounded on pathological input — no pattern is
+ *     added beyond the ones `SCAN_PATTERNS` already measures.
+ *
+ * The difference from `verificationCode.test.ts` is the lens: that file asserts
+ * the pieces behave; this one hands them hostile input and checks the invariant
+ * survives. The load-bearing move is {@link authorityOf}: it parses the string
+ * the helper would hand to `window.open` with a real URL parser and asks what
+ * host a browser would actually reach — the only question that matters for a
+ * pinning claim, and the one a substring match cannot answer.
+ */
+
+import { describe, expect, it } from "vitest";
+
+import type { QuarantineItem } from "./onboardingIO";
+import {
+  confirmationTask,
+  linkPattern,
+  scanForCode,
+  SCAN_LIMIT_CHARS,
+} from "./verificationCode";
+
+const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+
+/** A held row with a verified google.com shape; override what a case needs. */
+function heldItem(over: Partial<QuarantineItem>): QuarantineItem {
+  return {
+    id: "held-1",
+    ingestId: "ing-1",
+    receivedAt: "2026-08-09T12:00:00Z",
+    expiresAt: "2026-09-08T12:00:00Z",
+    warnedAt: null,
+    deleteAfter: null,
+    outerDomain: "google.com",
+    innerDomain: "",
+    attested: false,
+    attestedBy: "",
+    dkim: "pass",
+    arc: "pass",
+    sizeBucket: 1,
+    ...over,
+  };
+}
+
+/**
+ * The host a browser would actually reach for `url`, lowercased — or a marker
+ * string that can never equal a real host if the URL will not parse. Using the
+ * platform parser is the whole point: a substring assertion cannot tell
+ * `https://mail.google.com@evil.example/` (authority `evil.example`) from
+ * `https://mail.google.com/@evil.example` (authority `mail.google.com`), and the
+ * gap between those two is exactly the attack.
+ */
+function authorityOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "!unparseable";
+  }
+}
+
+/** True when `host` is the pinned domain itself or a subdomain of it. */
+function isUnderDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+// ---------------------------------------------------------------------------
+// 1. Host pinning, checked against a real URL parser
+// ---------------------------------------------------------------------------
+
+describe("a held message cannot make the task open a URL off the verified domain", () => {
+  const VERIFIED = "google.com";
+
+  /**
+   * Every trick that turns "the string contains google.com" into "the browser
+   * navigates somewhere else": userinfo `@`, a backslash a browser folds to `/`,
+   * a port, a second scheme, control characters, a look-alike label, the host as
+   * a query value. For each, whatever the helper returns must EITHER be null OR
+   * parse to an authority under google.com. No middle.
+   */
+  const hostileBodies: [string, string][] = [
+    ["userinfo smuggle", "https://mail.google.com@evil.example/steal"],
+    ["userinfo with password", "https://google.com:tok@evil.example/steal"],
+    ["backslash fold", "https://google.com\\@evil.example/steal"],
+    ["backslash path", "https://google.com/\\\\evil.example/steal"],
+    ["port then host", "https://google.com:8080.evil.example/steal"],
+    ["look-alike suffix", "https://google.com.evil.example/steal"],
+    ["look-alike prefix", "https://evil-google.com/steal"],
+    ["host in query", "https://evil.example/?u=https://mail.google.com/x"],
+    ["host in path", "https://evil.example/https://google.com/x"],
+    ["tab break", "https://google.com\t.evil.example/steal"],
+    ["newline break", "https://google.com\n.evil.example/steal"],
+    ["cr break", "https://google.com\r@evil.example/steal"],
+    ["double scheme", "https://google.com/https://evil.example/steal"],
+    ["at after slash is safe path", "https://google.com/@evil.example/steal"],
+    ["encoded at", "https://google.com%40evil.example/steal"],
+    ["three real subdomains then evil", "https://a.b.c.google.com.evil.example/x"],
+  ];
+
+  it("returns null or a browser-authority under google.com, for every trick", () => {
+    for (const [name, body] of hostileBodies) {
+      const link = scanForCode(body, { linkHost: VERIFIED }).link;
+      // A returned link is safe iff a real parser puts its authority under the
+      // verified domain. `ok` decides pass/fail; the diagnostics ride along only
+      // on failure, so a green run stays a green run and a break prints the host.
+      const ok = link === null || isUnderDomain(authorityOf(link), VERIFIED);
+      const verdict = ok ? { name, ok } : { name, ok, host: authorityOf(link as string), link };
+      expect(verdict).toEqual({ name, ok: true });
+    }
+  });
+
+  it("holds the same property when the trick arrives through confirmationTask's blob", () => {
+    for (const [name, body] of hostileBodies) {
+      const task = confirmationTask([heldItem({ blob: b64(`Confirmation code: 123456\n${body}`) })]);
+      // The candidate is verified google.com, so a task is always produced; the
+      // question is only what its url resolves to.
+      const url = task?.url ?? null;
+      const ok = url === null || isUnderDomain(authorityOf(url), VERIFIED);
+      const verdict = ok ? { name, ok } : { name, ok, host: authorityOf(url as string), url };
+      expect(verdict).toEqual({ name, ok: true });
+    }
+  });
+
+  /**
+   * The one body that DOES yield a link proves the check above is not vacuously
+   * green because nothing ever matches: a genuine subdomain link survives and
+   * parses back under the verified domain.
+   */
+  it("still returns the genuine subdomain link, so the guard is not vacuous", () => {
+    const link = scanForCode("https://mail-settings.google.com/mail/vf-XyZ", { linkHost: VERIFIED }).link;
+    expect(link).toBe("https://mail-settings.google.com/mail/vf-XyZ");
+    expect(authorityOf(link as string)).toBe("mail-settings.google.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. The link is pinned to the SENDER's domain, never to a domain in the body
+// ---------------------------------------------------------------------------
+
+describe("the pin follows the signature, not the content", () => {
+  /**
+   * A message verified as `evil.example` (an attacker who signs their own
+   * domain — the provider-agnostic design admits any verified sender as a
+   * candidate) carrying a google.com link cannot borrow google's name: the scan
+   * pins to the candidate's OWN verified domain, so the google link is invisible
+   * and only an evil.example link on evil.example's own domain could return.
+   * This is the documented behaviour, asserted here so a future "pin to any host
+   * in the body" regression is caught.
+   */
+  it("a self-signed sender cannot surface a link on someone else's domain", () => {
+    const body = ["Confirmation code: 123456", "https://mail-settings.google.com/mail/real"].join("\n");
+    const task = confirmationTask([
+      heldItem({ outerDomain: "evil.example", dkim: "pass", arc: "none", blob: b64(body) }),
+    ]);
+    expect(task?.domain).toBe("evil.example");
+    // The google link is on a different host than the signature, so it is not
+    // offered. The domain shown to the user is the signer's, verbatim.
+    expect(task?.url).toBeNull();
+  });
+
+  it("and its own-domain link is pinned to it, parsed authority and all", () => {
+    const body = "https://links.evil.example/confirm/abc";
+    const task = confirmationTask([
+      heldItem({ outerDomain: "evil.example", dkim: "pass", arc: "none", blob: b64(body) }),
+    ]);
+    expect(task?.url).toBe("https://links.evil.example/confirm/abc");
+    expect(isUnderDomain(authorityOf(task?.url as string), "evil.example")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. An unverified item is never a candidate, even at the front of the lane
+// ---------------------------------------------------------------------------
+
+describe("verification gates candidacy, ordering does not", () => {
+  it("skips the newest when it is unverified and takes the older verified one", () => {
+    const task = confirmationTask([
+      heldItem({ id: "old-verified", receivedAt: "2026-08-09T10:00:00Z", outerDomain: "google.com", dkim: "pass", arc: "pass" }),
+      heldItem({ id: "new-unverified", receivedAt: "2026-08-09T23:00:00Z", outerDomain: "google.com", dkim: "fail", arc: "none" }),
+    ]);
+    expect(task?.itemId).toBe("old-verified");
+  });
+
+  it("returns null when the only, newest item is unverified", () => {
+    expect(
+      confirmationTask([heldItem({ receivedAt: "2026-08-09T23:59:59Z", dkim: "fail", arc: "none" })]),
+    ).toBeNull();
+  });
+
+  it("refuses a verdict that is not exactly \"pass\" — a build that failed to read it fails closed", () => {
+    for (const [dkim, arc] of [
+      ["Pass", "none"],
+      ["PASS", "NONE"],
+      [" pass", "none"],
+      ["pass ", "none"],
+      ["passed", "none"],
+      ["true", "true"],
+    ]) {
+      expect(confirmationTask([heldItem({ dkim, arc })])).toBeNull();
+    }
+  });
+
+  it("never treats an attested inner origin (a bank behind a relay) as a candidate", () => {
+    expect(
+      confirmationTask([heldItem({ innerDomain: "dib.ae", attested: true, attestedBy: "relay.example" })]),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. No readable link is a task, never a dead end; the scan stays bounded
+// ---------------------------------------------------------------------------
+
+describe("no link is not a dead end, and the scan is not a hazard", () => {
+  it("names the task with url:null when the blob carries no link at all", () => {
+    const task = confirmationTask([heldItem({ blob: b64("Nothing here but words and a number 42.") })]);
+    expect(task).not.toBeNull();
+    expect(task?.url).toBeNull();
+    expect(task?.itemId).toBe("held-1");
+  });
+
+  it("names the task with url:null when the row was fetched without its blob", () => {
+    const { blob: _omit, ...noBlob } = heldItem({});
+    const task = confirmationTask([noBlob]);
+    expect(task).not.toBeNull();
+    expect(task?.url).toBeNull();
+  });
+
+  /**
+   * The blob is attacker-sized and attacker-shaped: a near-link with a
+   * megabyte of tail characters, subdomain soup, and the anchor repeated with no
+   * digits after it — the shapes a backtracking engine pays for. confirmationTask
+   * runs the module's own bounded scan over it and must stay in single-digit ms.
+   */
+  it("stays fast when the candidate's blob is pathological", () => {
+    const bodies = [
+      `https://mail-settings.google.com/mail/${"%".repeat(SCAN_LIMIT_CHARS * 4)}`,
+      `https://${"a.".repeat(20000)}google.com/mail/x`,
+      `Confirmation code ${"a".repeat(SCAN_LIMIT_CHARS * 4)}`,
+      "Confirmation code ".repeat(5000),
+    ];
+    for (const body of bodies) {
+      const started = performance.now();
+      confirmationTask([heldItem({ blob: b64(body) })]);
+      const took = performance.now() - started;
+      expect({ slow: took > 50 }).toEqual({ slow: false });
+    }
+  });
+
+  /**
+   * A last check that the pin cannot be widened by feeding linkPattern a hostile
+   * host directly: anything that is not a bare hostname is refused outright, so
+   * no metacharacter a domain string could carry becomes pattern syntax.
+   */
+  it("refuses to build a pin from anything that is not a bare hostname", () => {
+    for (const host of [
+      "google.com/evil",
+      "google.com:8080",
+      "a@google.com",
+      "google com",
+      "google.com?x",
+      "*.google.com",
+      "(google|evil).com",
+      "google.com\nevil.example",
+    ]) {
+      expect({ host, built: linkPattern(host) }).toEqual({ host, built: null });
+    }
+  });
+});

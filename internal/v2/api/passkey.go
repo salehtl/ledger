@@ -137,12 +137,12 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
-	userID, _, err := s.Passkeys.FinishRegistration(r.Context(), req.CeremonyID, req.Credential)
+	userID, credID, err := s.Passkeys.FinishRegistration(r.Context(), req.CeremonyID, req.Credential)
 	if err != nil {
 		s.writePasskeyError(w, r, "register/finish", err)
 		return
 	}
-	s.writeSession(w, r, userID)
+	s.writeSession(w, r, userID, credID)
 }
 
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -162,12 +162,12 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	if !decodeBody(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
-	userID, _, err := s.Passkeys.FinishLogin(r.Context(), req.CeremonyID, req.Credential)
+	userID, credID, err := s.Passkeys.FinishLogin(r.Context(), req.CeremonyID, req.Credential)
 	if err != nil {
 		s.writePasskeyError(w, r, "login/finish", err)
 		return
 	}
-	s.writeSession(w, r, userID)
+	s.writeSession(w, r, userID, credID)
 }
 
 func (s *Server) handlePasskeyAddBegin(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
@@ -207,11 +207,18 @@ func (s *Server) writeBegin(w http.ResponseWriter, r *http.Request, ceremonyID s
 	writeJSON(w, http.StatusOK, PasskeyBeginResponse{CeremonyID: ceremonyID, Options: raw})
 }
 
-// writeSession issues the session a completed sign-in earns. It is the SAME
-// Sessions.Issue the ID-token exchange calls, deliberately: a passkey changes how
-// an identity is established and changes nothing about what a session is.
-func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
-	token, err := s.Sessions.Issue(r.Context(), userID)
+// writeSession issues the session a completed sign-in earns, ATTRIBUTED to the
+// credential that just finished the ceremony. It is the same session the
+// ID-token exchange mints, deliberately: a passkey changes how an identity is
+// established and changes nothing about what a session is.
+//
+// credID is the one thing it adds, and it is the whole of 00034's point. Both
+// callers — register/finish and login/finish — genuinely know it, because
+// go-webauthn returns the credential it verified and auth returns it upward.
+// The exchange path in sync.go does NOT know one (no credential authenticated
+// it) and calls Sessions.Issue, which records NULL rather than a guess.
+func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID, credID []byte) {
+	token, err := s.Sessions.IssueForCredential(r.Context(), userID, credID)
 	if err != nil {
 		s.logf("api: %s %s: issue session: %v", r.Method, r.URL.Path, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")

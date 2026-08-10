@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/budget"
 	"ledger/internal/v2/pgtx"
 )
 
@@ -141,6 +143,16 @@ type Appender struct {
 	// Phase 3 swaps this one field for a real HPKE sealer and nothing else in
 	// this package moves.
 	Sealer blob.Sealer
+	// Budget is the per-account admission gate. nil does NOT mean "no budget":
+	// it means a gate over Pool, built on demand by [Appender.budget].
+	//
+	// That default is the whole reason the ceiling is enforceable. If an unset
+	// field disabled accounting, then every Appender literal in the tree —
+	// api.New's, and every test's — would be silently unbudgeted, and the one
+	// that mattered would be discovered in production. The field exists only so
+	// a caller can inject a gate with a different clock or pool, never to turn
+	// the gate off.
+	Budget *budget.Gate
 }
 
 // EnsureSeqRow creates a user's counter row. It is called from auth.UpsertUser
@@ -350,6 +362,22 @@ func (a *Appender) appendTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, ro
 			return nil, fmt.Errorf("oplog: append: row %d: %w", i, err)
 		}
 	}
+	// Admission, in the one place there is no way to append around.
+	//
+	// It is here rather than at an endpoint on purpose: a ceiling written "per
+	// upload" would cover AppendClient and miss AppendIngest entirely, and
+	// AppendIngest is how trusted mail stores one hot op plus a raw body that
+	// can be a megabyte — the larger of the two paths, reached without ever
+	// passing through handleUpload.
+	//
+	// It runs after allocSeq (the ORDERING RULE above), and after prepare,
+	// because AppendIngest does not know how many bytes it is storing until
+	// prepare has sealed them. Both placements satisfy the rule: the counter
+	// lock is already held, so same-account appends are serialized before the
+	// usage row is touched and no deadlock between two appends is possible.
+	if err := a.admit(ctx, tx, userID, rows); err != nil {
+		return nil, err
+	}
 	seqs := make([]int64, len(rows))
 	for i := range rows {
 		seqs[i] = start + int64(i)
@@ -358,6 +386,59 @@ func (a *Appender) appendTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, ro
 		return nil, err
 	}
 	return seqs, nil
+}
+
+// budget returns the admission gate, defaulting to one over this appender's
+// own pool. See the Budget field.
+func (a *Appender) budget() *budget.Gate {
+	if a.Budget != nil {
+		return a.Budget
+	}
+	return budget.New(a.Pool)
+}
+
+// admit charges this batch's stored bytes to the account, one call per stream
+// the batch touches.
+//
+// The bytes counted are len(Blob) — the framed, bucket-padded bytes actually
+// written to the column — because that is what fills the disk and what
+// 00031's backfill and internal/v2/verify's reconciliation both compute
+// (sum(octet_length(blob))). Counting plaintext instead would leave the ledger
+// permanently under the truth by the padding, and Phase 3 would widen the gap.
+//
+// The two resources are charged in sorted name order (cold before hot), the
+// order budget.Admit itself locks a family in, so a batch spanning both streams
+// cannot invert the lock order against a batch that touches only one. In
+// practice the counter lock has already serialized these, and the ordering is
+// kept anyway because it costs a sort of two strings and removes the need to
+// reason about it again.
+func (a *Appender) admit(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rows []Row) error {
+	bytesFor := map[string]int64{}
+	for _, r := range rows {
+		bytesFor[resourceForStream(r.Stream)] += int64(len(r.Blob))
+	}
+	resources := make([]string, 0, len(bytesFor))
+	for res := range bytesFor {
+		resources = append(resources, res)
+	}
+	slices.Sort(resources)
+	g := a.budget()
+	for _, res := range resources {
+		if err := g.Admit(ctx, tx, userID, res, bytesFor[res]); err != nil {
+			return fmt.Errorf("oplog: append: %w", err)
+		}
+	}
+	return nil
+}
+
+// resourceForStream names the ledger resource a stream's bytes are counted to.
+// Row.validate has already rejected any stream that is neither hot nor cold, so
+// this cannot manufacture a resource the account_usage CHECK would refuse.
+func resourceForStream(stream string) string {
+	if stream == blob.StreamCold {
+		return budget.ResourceOplogColdBytes
+	}
+	return budget.ResourceOplogHotBytes
 }
 
 const insertRowSQL = `INSERT INTO op_log

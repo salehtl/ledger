@@ -18,34 +18,42 @@ package api
 // mail flow; this ends everything, permanently, with no undo:
 //
 //  1. a live session — which account is being talked about, and NOTHING else;
-//  2. a fresh ID token from the account's IdP, verified here, required to
-//     resolve to the SAME user the session names, and required to have been
-//     minted within reauthMaxAge;
-//  3. an Ed25519 signature by an enrolled, non-revoked device key over a
-//     single-use nonce from POST /api/v1/account/challenge.
+//  2. a fresh WebAuthn assertion by an enrolled credential of THAT account,
+//     over the single-use nonce from POST /api/v1/account/challenge;
+//  3. an Ed25519 signature by an enrolled, non-revoked device key over the
+//     same nonce.
 //
-// A stolen session has neither of the other two. A stolen ID token (which the
-// exchange endpoint's doc admits is a replayable bearer credential in Phase 1)
-// has no device key. Malware on an unlocked device that can sign cannot produce
-// an IdP assertion.
+// A stolen session has neither of the other two. Malware on an unlocked device
+// that can sign cannot produce an assertion; an authenticator that can produce
+// an assertion is not an enrolled writer.
 //
-// What factor 2 does NOT prove, stated rather than implied: THIS ENDPOINT
-// binds no IdP nonce — VerifyOpts carries MaxAge and nothing else — so "fresh"
-// means the token was minted within the window, not that it was minted FOR
-// this action. A token captured inside that window satisfies it. The window is
-// what bounds the exposure until a nonce is bound here.
+// # Factor 2 used to be an ID token, and could not be satisfied by anyone
 //
-// Address rotation is the same ceremony and DOES bind one, because its
-// challenge is issued before the token exists (addresses.go). Deletion could
-// take the same step, and should: the nonce it already issues is an Ed25519
-// challenge for factor 3, and passing it as VerifyOpts.Nonce as well would cost
-// nothing here. It is not done in this commit because no client sends it yet —
-// Task 26 builds this screen — and a server that began requiring a nonce no
-// client supplies would make in-app account deletion impossible, which is the
-// one thing App Review 5.1.1(v) will not accept. When that client lands, this
-// is a one-line change and the per-provider hashing is already handled:
-// auth.nonceClaimFor applies Apple's hex-SHA-256 rule inside the verifier, so
-// the caller passes the raw challenge exactly as rotation does.
+// This endpoint originally required a fresh ID token from the account's IdP.
+// v2 is passkeys-only — apple_client_ids and google_client_ids are both empty,
+// because dropping the native client removed the App Store rule that forced
+// Sign in with Apple, and v2 never had passwords. With no verifier configured
+// the factor could never be presented, so the endpoint answered 403 to
+// everybody. It was not a policy; it was a path left behind when the identity
+// providers were removed.
+//
+// The replacement is strictly stronger, and the old header said so about the
+// old scheme's weakness: an ID token binds no nonce unless the flow arranges
+// one, so "fresh" meant "minted inside the window", not "minted FOR this
+// action" — a token captured inside that window satisfied it. A WebAuthn
+// assertion signs a challenge THIS server minted for THIS deletion, so it is
+// bound to the action by construction and is worthless anywhere else.
+//
+// (For the record, because the previous version of this comment was wrong
+// about it: auth.VerifyOpts carries BOTH Nonce and MaxAge, and the rotation
+// and deletion paths were both passing a Nonce. The paragraph claiming
+// "VerifyOpts carries MaxAge and nothing else" predated commit e03e264 and was
+// never updated. It is moot now — no verifier is consulted here at all.)
+//
+// The challenge is REUSED, not doubled: one nonce is the assertion's challenge
+// and the device key's message. Two challenges would be two expiries collected
+// in one user gesture, and a flow where one dies while the other is still good
+// fails halfway for a reason the user cannot see.
 //
 // # An account with no device key cannot delete itself here
 //
@@ -54,12 +62,22 @@ package api
 // lost every device re-enrolls one (POST /api/v1/writers/register, which is
 // trust-on-first-use for an account with no live key) or asks the operator.
 //
+// # A deployment with no relying party answers 503, not 403
+//
+// s.Passkeys is nil when no rp_id is configured, and factor 2 then cannot be
+// presented by anybody. That is a fact about the SERVER — exactly the case the
+// ID-token path answered 503 for — and it must not be a 403, which would send
+// every user off to re-authenticate against a ceremony this process would
+// refuse again. It is also precisely the shape of the defect that made this
+// endpoint unusable for months, so it is loud.
+//
 // # What the answer says
 //
 // Every authorization failure is the SAME 403 with the SAME empty body: a
-// spent nonce, an unenrolled key, a stale token, a token naming a different
-// account. Distinguishing them tells a caller who could not prove key
-// possession which factor they still need.
+// missing assertion, an assertion over a challenge this server did not mint,
+// an assertion from another account's credential, a spent nonce, an unenrolled
+// or revoked device key. Distinguishing them tells a caller who could not
+// prove key possession which factor they still need.
 //
 // A failure that is NOT a rejection is loud and different. Nothing is dropped
 // silently: a purge that could not complete answers 500 and says the account
@@ -67,40 +85,56 @@ package api
 // over a failed purge would be the worst possible outcome of this endpoint.
 
 import (
-	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"ledger/internal/v2/auth"
 	"ledger/internal/v2/purge"
 )
 
-// reauthMaxAge is how recently the ID token must have been minted to count as
-// "fresh IdP re-authentication" (spec §3.4). Five minutes: long enough for a
+// reauthMaxAge is how recently an IdP ID token must have been minted to count
+// as fresh re-authentication (spec §3.4). Five minutes: long enough for a
 // provider round trip on a bad connection plus the confirmation the client
 // shows, short enough that a token captured from a log is worthless by the
 // time anyone reads it.
 //
-// It is the same window purge.ChallengeTTL uses, and deliberately so — both
-// factors are collected in one user gesture, and a design where one expires
-// while the other is still good produces a flow that fails halfway for reasons
-// the user cannot see.
+// DELETION NO LONGER USES IT. Its factor 2 is a passkey assertion, whose
+// freshness is the challenge's own TTL and nothing else — one window for one
+// gesture. It stays here because POST /api/v1/address/rotate still takes an ID
+// token and reads this constant (addresses.go), and it is the same window
+// purge.ChallengeTTL uses so that rotation's two factors cannot expire apart.
 const reauthMaxAge = 5 * time.Minute
 
 // DeleteAccountRequest is DELETE /api/v1/account.
 //
-// IdP/IDToken are the fresh re-authentication; Nonce/Sig are the proof of key
-// possession, the signature being over purge.DeletionMessage(nonce, user_id).
+// There is ONE window in this flow and it is purge.ChallengeTTL. The freshness
+// of the re-authentication is not a second, independently-checked age: the
+// assertion is over the challenge, and the challenge dies on its own clock.
 type DeleteAccountRequest struct {
-	IdP     string `json:"idp"`
-	IDToken string `json:"id_token"`
-	Nonce   string `json:"nonce"` // base64
-	Sig     string `json:"sig"`   // base64
+	// Assertion is the browser's PublicKeyCredential for a
+	// navigator.credentials.get() over Nonce, forwarded to go-webauthn's own
+	// parser untouched — this package never has to agree with the library
+	// about the shape of an authenticator response.
+	Assertion json.RawMessage `json:"assertion"`
+	// Nonce is the challenge from POST /api/v1/account/challenge (base64). It
+	// is BOTH the assertion's challenge and the device key's message.
+	Nonce string `json:"nonce"`
+	// Sig is the Ed25519 signature over purge.DeletionMessage(nonce, user_id)
+	// by an enrolled device writer (base64).
+	Sig string `json:"sig"`
+}
+
+// AccountChallengeResponse carries the deletion nonce plus the relying-party id
+// the caller's passkeys live under, so a client-built assertion targets the same
+// rpId sign-in does rather than the app origin.
+type AccountChallengeResponse struct {
+	Nonce string `json:"nonce"`
+	RPID  string `json:"rp_id,omitempty"`
 }
 
 // handleAccountChallenge mints a single-use deletion nonce.
@@ -119,7 +153,17 @@ func (s *Server) handleAccountChallenge(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, ChallengeResponse{Nonce: base64.StdEncoding.EncodeToString(nonce)})
+	// rp_id rides with the nonce because the deletion ceremony builds its own
+	// WebAuthn assertion options client-side (it does not go through a
+	// begin-endpoint that would carry them). Omitting it made the browser
+	// default rpId to the app origin, where no credential is registered, so it
+	// offered to CREATE a passkey instead of asserting with one. Empty when no
+	// relying party is configured — deletion cannot proceed then anyway.
+	resp := AccountChallengeResponse{Nonce: base64.StdEncoding.EncodeToString(nonce)}
+	if s.Passkeys != nil {
+		resp.RPID = s.Passkeys.RPID()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDeleteAccount purges the caller's account once all three factors are
@@ -127,8 +171,7 @@ func (s *Server) handleAccountChallenge(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	// Attempts need their own cap, not just challenge minting: a failed attempt
 	// spends a challenge, a caller can always mint another, and every attempt
-	// costs a signature verification, a roster read and (for a real verifier) a
-	// JWKS lookup.
+	// costs two signature verifications, a credential read and a roster read.
 	if !s.AccountPerUser.Allow(userID.String()) {
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many account requests; try again shortly")
 		return
@@ -143,12 +186,6 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, use
 	// it is a failure to present a factor, and it falls through to the same 403
 	// as presenting a wrong one, so a caller cannot learn which of the three
 	// they are missing by watching the status code change.
-	if req.IdP != "" {
-		if v, ok := s.Verifiers[req.IdP]; !ok || v == nil {
-			writeErr(w, http.StatusBadRequest, "bad_request", "unsupported idp")
-			return
-		}
-	}
 	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "nonce is not base64")
@@ -160,76 +197,37 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	verifier := s.Verifiers[req.IdP]
-	if verifier == nil || req.IDToken == "" {
-		s.logf("api: delete account %s: no re-authentication presented", userID)
-		writeDeletionRejected(w)
+	if s.Passkeys == nil {
+		// A fact about the server, not about the caller. See the file header.
+		s.logf("api: delete account %s: no relying party is configured, so the "+
+			"re-authentication factor cannot be presented by anyone", userID)
+		writeErr(w, http.StatusServiceUnavailable, "unavailable",
+			"this server cannot verify a passkey re-authentication")
 		return
 	}
 
-	// Factor 2: fresh IdP re-authentication, bound to the session's account.
+	// Factor 2: a fresh passkey assertion over THIS server's challenge, by an
+	// enrolled credential of the account the session names.
 	//
-	// MaxAge goes to the verifier because that is where it can be checked
-	// against the AUTHENTICATED payload; it is re-checked below against the
-	// Identity, so a Verifier implementation that ignored the option cannot
-	// silently turn this endpoint back into a session-plus-key one.
-	// Bind the fresh provider credential to the server-issued deletion
-	// challenge. The challenge is consumed below, so a caller cannot choose a
-	// nonce that merely happens to match their own token.
-	id, err := verifier.Verify(r.Context(), req.IDToken, auth.VerifyOpts{Nonce: req.Nonce, MaxAge: reauthMaxAge})
-	if err != nil {
-		if errors.Is(err, auth.ErrNotConfigured) || errors.Is(err, auth.ErrKeySetUnavailable) {
-			// A fact about the server, not the credential. Answering 403 would
-			// send the user to re-authenticate against a provider whose next
-			// token we still could not verify.
-			s.logf("api: delete account %s: %v", userID, err)
-			writeErr(w, http.StatusServiceUnavailable, "unavailable", "identity provider is unavailable")
-			return
-		}
-		s.logf("api: delete account %s: id token rejected: %v", userID, err)
-		writeDeletionRejected(w)
-		return
-	}
-	if id.IssuedAt.IsZero() || s.now().Sub(id.IssuedAt) > reauthMaxAge {
-		s.logf("api: delete account %s: id token is not fresh (iat %s)", userID, id.IssuedAt.UTC())
-		writeDeletionRejected(w)
-		return
-	}
-	// The binding is the load-bearing half: verifying a token and not checking
-	// WHO it names would accept any valid Apple or Google token from anyone as
-	// re-authentication for this session's account.
+	// The account binding is inside VerifyAssertion and is the load-bearing
+	// half: verifying an assertion without checking whose credential signed it
+	// would accept anybody's passkey as re-authentication for this session.
 	//
-	// It is a COMPARISON, never auth.UpsertUser. Upserting here — which an
-	// earlier version of this handler did, copying the rotation path — resolves
-	// the identity by CREATING it when the subject is unknown, so a caller
-	// holding one valid session plus any Apple or Google token could mint a
-	// `users` row on every rejected delete. A row-creation primitive on the
-	// endpoint whose entire job is destruction, reached on the path that
-	// answers 403. Each stray account then sits in the retention sweep's
-	// WithoutConsentRecord list for ever, because nobody ever signed anything
-	// for it.
-	//
-	// Comparing the subject hash needs no write at all: users.idp_sub_hash is
-	// exactly SubjectHash(idp, subject), and constant-time comparison keeps
-	// this from being an oracle for which hashes exist.
-	var want []byte
-	if err := s.Pool.QueryRow(r.Context(),
-		`SELECT idp_sub_hash FROM users WHERE id = $1 AND idp = $2`,
-		userID, id.IdP).Scan(&want); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The session's account does not exist under this provider — a
-			// deleted account with a live token, or a token from the other IdP.
-			s.logf("api: delete account %s: no %s identity for this account", userID, id.IdP)
+	// Nothing is written on this path and nothing may be. The IdP version of
+	// this handler resolved its identity with auth.UpsertUser and therefore
+	// CREATED a users row for an unknown subject on the way to answering 403 —
+	// a row-creation primitive on the endpoint whose whole job is destruction.
+	// An assertion cannot create anything: an unknown credential is a
+	// rejection, never a first enrolment (auth.Passkeys.VerifyAssertion).
+	if err := s.Passkeys.VerifyAssertion(r.Context(), userID, nonce, req.Assertion); err != nil {
+		if errors.Is(err, auth.ErrPasskeyRejected) {
+			// The reason is logged, never returned.
+			s.logf("api: delete account %s: re-authentication rejected: %v", userID, err)
 			writeDeletionRejected(w)
 			return
 		}
-		s.logf("api: delete account %s: read identity: %v", userID, err)
+		s.logf("api: delete account %s: verify assertion: %v", userID, err)
 		writeErr(w, http.StatusInternalServerError, "internal", "")
-		return
-	}
-	if subtle.ConstantTimeCompare(want, auth.SubjectHash(id.IdP, id.Subject)) != 1 {
-		s.logf("api: delete account %s: re-auth names a different account", userID)
-		writeDeletionRejected(w)
 		return
 	}
 

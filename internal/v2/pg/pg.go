@@ -54,6 +54,27 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return goose.UpContext(ctx, db, "migrations")
 }
 
+// MigrateTo applies migrations up to and including version, leaving anything
+// later unapplied.
+//
+// It exists for one reason: a migration that BACKFILLS can only be observed
+// against rows that existed before it ran, and Migrate applies the whole set in
+// one call, so by the time a test can insert anything the backfill has already
+// happened over an empty database. MigrateTo lets a test stop one version
+// short, seed, and then step forward — which is the only way the backfill in
+// 00031_account_budgets.sql is exercised by anything other than production.
+func MigrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+	goose.SetBaseFS(migrations)
+	if err := goose.SetDialect("postgres"); err != nil {
+		return err
+	}
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	return goose.UpToContext(ctx, db, "migrations", version)
+}
+
 // MigrateDown reverses every migration. Used only by tests; a Down block that
 // nobody runs is a rollback that does not work.
 func MigrateDown(ctx context.Context, pool *pgxpool.Pool) error {

@@ -1,27 +1,28 @@
 /**
- * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the five
+ * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the
  * screens on the other, and nothing else.
  *
  * # There is exactly one routing mechanism, and it is not here
  *
  * `screenFor(stepFor(facts))` decides what is on the glass. This component
  * holds no step number, no `next()` and no ordering of its own — every screen
- * reports a FACT (`banks_declared`, `address_issued`, …) and the position falls out
- * of the milestone table. That is what makes a force-quit free: nothing here is
- * a resume cursor that could disagree with what the log and the server say.
+ * reports a FACT (`address_issued`, `forwarding_configured`, …) and the position
+ * falls out of the milestone table. That is what makes a force-quit free: nothing
+ * here is a resume cursor that could disagree with what the log and the server say.
  *
  * The boot gate owns the layer above: it decides signed-out vs onboarding vs
  * ready, and re-derives the facts from scratch every time `done` is called. So
  * `done` is the only exit, and it is called once — when the machine reaches
  * `done`, which needs `setupSeen`, which the finish screen sets.
  *
- * # The device-local half is one field wide, and it is written on every change
+ * # The device-local record is written on every change
  *
  * `saveLocalRecord` runs from an effect on the facts, so a tab closed between
- * two steps keeps the address it was given. Everything else a resumed walk needs
- * — the banks, the currency, whether mail has arrived — is in the log and on the
- * server, which is what makes a SECOND device resume at the same place rather
- * than at the beginning (`v2/onboarding.ts`'s header).
+ * two steps keeps the address it was given and every answer already given —
+ * the skips, the forwarding declaration, the finish time. Everything else a
+ * resumed walk needs — the banks, the currency, whether mail has arrived — is
+ * in the log and on the server, which is what makes a SECOND device resume at
+ * the same place rather than at the beginning (`v2/onboarding.ts`'s header).
  *
  * # Ops go through `emitMany`, and the outbox is the receipt
  *
@@ -40,26 +41,27 @@ import type { SecretStore } from "@ledger/client/store/store";
 import type { SqlDriver } from "@ledger/client/store/driver";
 
 import {
-  firstMailAt,
   onboardingReducer,
   saveLocalRecord,
   screenFor,
   stepFor,
   type OnboardingFacts,
   type OpSpec,
+  type SkippableStep,
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
-import { bankDeclaredOps } from "../../v2/sources/banks";
 import { sqlBudgetSource, type BudgetSource } from "../../v2/sources/budget";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { browserKeyVault, keyStatus, type KeyStatus, type KeyVault } from "../../v2/keys";
 import { Address } from "./Address";
 import { RecoveryPhrase } from "./RecoveryPhrase";
-import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
-import { Verification } from "./Verification";
+import { Card } from "../../components/ui/Card";
+import { Dialog } from "../../components/ui/Dialog";
+import { ImportFile } from "../ImportFile";
+import type { Writer } from "../../v2/writer";
 
 export interface OnboardingProps {
   handle: V2Handle;
@@ -67,16 +69,10 @@ export interface OnboardingProps {
   facts: OnboardingFacts;
   /** The boot gate's `again`. Called once the machine reaches `done`. */
   done: () => void;
-  /**
-   * The gate's coordinator, as a pull. Only the verification step uses it, and
-   * that step cannot finish without it — see `Verification.tsx`'s header.
-   */
-  sync?: () => Promise<void>;
   /** Injected by tests. */
   fetch?: typeof fetch;
   secrets?: SecretStore;
   server?: string;
-  pollMs?: number;
   /** Injected by tests. Defaults to the browser's IndexedDB key vault. */
   vault?: KeyVault;
   /**
@@ -91,35 +87,41 @@ export function Onboarding({
   handle,
   facts: initial,
   done,
-  sync,
   fetch: doFetch,
   secrets,
   server = SERVER,
-  pollMs,
   vault,
   budgetSource,
 }: OnboardingProps) {
   const [facts, dispatch] = useReducer(onboardingReducer, initial);
   const step = stepFor(facts);
   /**
-   * Whether the verification step should offer a confirmation-code reader.
+   * The forwarding claim, and the flag this walk no longer keeps.
    *
-   * Component state, and deliberately NOT a fact: it decides copy and one
-   * control, so it has no business in the milestone table, in the op log or in
-   * `LocalOnboardingRecord` — a durable field would make a UI preference look
-   * like something the machine reasons about, which is how a "which provider"
-   * value ends up read by something that matters.
-   *
-   * The cost is that a reload during setup forgets it and the step opens in its
-   * default, confirmation-expecting form. That is the safe direction: the code
-   * reader is offered to someone who does not need it, rather than withheld from
-   * someone who does, and either way the gate is the same transaction in the log.
+   * `Address` still reports whether the chosen provider is expected to email a
+   * confirmation code, because that decides what its own screen says. Nothing
+   * downstream reads it any more: the step that used to — a wait for the code
+   * and then for a bank alert — is gone, and the provider's confirmation is now
+   * a task the user does from Held mail whenever it turns up. A value with no
+   * reader is dropped here rather than carried as state that looks meaningful.
    */
-  const [expectConfirmation, setExpectConfirmation] = useState(true);
-
-  const declareForwarding = useCallback((expect: boolean) => {
-    setExpectConfirmation(expect);
+  const declareForwarding = useCallback((_expectConfirmation: boolean) => {
     dispatch({ type: "forwarding_declared" });
+  }, []);
+
+  /**
+   * "Set this up later", from whichever step asked.
+   *
+   * The one piece of policy: **skipping the address skips the forwarding step
+   * too.** They are one subject — here is your address, now send mail to it —
+   * and the forwarding screen with no address on it is a page of instructions
+   * pointing at nothing. Keeping the rule here rather than in `Address` means
+   * the two steps' relationship is stated once, next to the table it is derived
+   * from.
+   */
+  const skip = useCallback((step: SkippableStep) => {
+    dispatch({ type: "step_skipped", step });
+    if (step === "address_issued") dispatch({ type: "step_skipped", step: "forwarding_configured" });
   }, []);
 
   useEffect(() => {
@@ -158,21 +160,6 @@ export function Onboarding({
         />
       );
 
-    case "bank":
-      return (
-        <Bank
-          client={handle.client}
-          onDeclared={(banks) => {
-            // The ops FIRST, then the fact. The log is what a second device
-            // reads — a fact dispatched without them would advance this walk and
-            // leave the next phone at the bank step.
-            commit(banks.flatMap((bank) => bankDeclaredOps(bank, true)));
-            dispatch({ type: "banks_declared", banks });
-          }}
-          {...io}
-        />
-      );
-
     case "address":
       return (
         <Address
@@ -181,6 +168,7 @@ export function Onboarding({
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
           onForwardingDeclared={declareForwarding}
+          onSkip={skip}
           {...io}
         />
       );
@@ -193,19 +181,7 @@ export function Onboarding({
           known={facts.inboundAddress}
           onIssued={(address) => dispatch({ type: "address_issued", address })}
           onForwardingDeclared={declareForwarding}
-          {...io}
-        />
-      );
-
-    case "verification":
-      return (
-        <Verification
-          client={handle.client}
-          firstMailAt={() => firstMailAt(handle.client.state())}
-          onConfirmed={(at) => dispatch({ type: "first_mail_confirmed", at })}
-          expectConfirmation={expectConfirmation}
-          {...(sync === undefined ? {} : { sync })}
-          {...(pollMs === undefined ? {} : { pollMs })}
+          onSkip={skip}
           {...io}
         />
       );
@@ -216,6 +192,7 @@ export function Onboarding({
           commit={commit}
           onSet={(currency) => dispatch({ type: "home_currency_set", currency })}
           existing={facts.homeCurrency}
+          onSkip={() => skip("home_currency_set")}
         />
       );
 
@@ -226,7 +203,11 @@ export function Onboarding({
           commit={commit}
           driver={handle.driver}
           {...(budgetSource === undefined ? {} : { budgetSource })}
-          onFinish={() => dispatch({ type: "finished" })}
+          // The dispatch flows through the same effect that persists every
+          // other answer (`saveLocalRecord` above), and that effect runs
+          // before the `done` hand-off — so the finish time is on disk before
+          // the walk unmounts.
+          onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })}
         />
       );
 
@@ -274,6 +255,16 @@ function RecoveryStep({
 }) {
   const [status, setStatus] = useState<KeyStatus | null>(null);
   const [failed, setFailed] = useState(false);
+  /**
+   * Bumped by "Try again", and a dependency of the read below.
+   *
+   * Explicit, rather than resting on the effect happening to re-run: `vault`
+   * defaults to `browserKeyVault()` called inline in the JSX, so it is a new
+   * object on every render and the read already re-fires more often than it
+   * looks like it does. Depending on that accident to drive a retry would be a
+   * retry that stops working the day someone memoises the prop.
+   */
+  const [attempt, setAttempt] = useState(0);
   const io = useMemo(
     () => ({
       sessionToken: handle.client.sessionToken,
@@ -288,6 +279,11 @@ function RecoveryStep({
     void keyStatus(handle.client.userId, vault, io).then(
       (s) => {
         if (!live) return;
+        // A read that lands clears the wall. Without this the screen was
+        // one-way: `failed` was only ever set to true, so a device that came
+        // back online — and whose next read succeeded — kept the "could not
+        // reach the server" notice on the glass with nothing behind it.
+        setFailed(false);
         if (s.kind === "ready") onSecured();
         else setStatus(s);
       },
@@ -298,15 +294,40 @@ function RecoveryStep({
     return () => {
       live = false;
     };
-  }, [handle, vault, io, onSecured]);
+  }, [handle, vault, io, onSecured, attempt]);
 
   if (failed) {
     return (
-      <Step title="Setting up encryption" testId="onboarding-recovery-unavailable">
+      /*
+       * A refusal with a way out of it, on the same screen.
+       *
+       * This branch used to render a title and a `Notice` and nothing else — no
+       * footer, no skip (the recovery step is deliberately not skippable), no
+       * sign-out. The only escape was force-quitting the app, which is what the
+       * copy asked for. The product principles name this exact shape: "Never let
+       * a security rule become a dead end. Every refusal needs a next action on
+       * the same screen." The sibling ceremony in `RecoveryPhrase` already gives
+       * the identical failure a "Try again"; this is the same button.
+       */
+      <Step
+        title="Setting up encryption"
+        testId="onboarding-recovery-unavailable"
+        footer={
+          <Button
+            variant="primary"
+            onClick={() => {
+              setFailed(false);
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </Button>
+        }
+      >
         <Notice tone="danger" announce title="ledger could not reach the server">
           <p>
             Setting up encryption needs one call to the server, and this device could not make it. Nothing is lost —
-            reopen ledger when you have a connection and this step will pick up where it left off.
+            try again when you have a connection, or reopen ledger later and this step will pick up where it left off.
           </p>
         </Notice>
       </Step>
@@ -402,6 +423,56 @@ function Finish({
           MET — see `BudgetSplitStep`'s header. "Open ledger" above is a complete
           answer to it, and an account that ignores it keeps 50/30/20. */}
       <BudgetSplitStep commit={commit} currency={facts.homeCurrency ?? null} source={source} />
+
+      {/* Same argument, for the same reason: a new account's ledger is empty
+          until its bank sends its first alert, and the user has a statement they
+          could import right now. It is an offer on the last screen, never a
+          milestone — nothing here has to be met to leave. */}
+      <ImportOffer commit={commit} />
     </Step>
+  );
+}
+
+/**
+ * "You can bring your history with you", on the last screen of the walk.
+ *
+ * # Why the walk and not only Settings
+ *
+ * A new account's ledger is empty, and stays empty until the user's bank sends
+ * its first alert — which may be days. The one thing that fills it today is a
+ * statement the user can already download. Burying that in Settings means the
+ * app's first impression is a screen with nothing on it.
+ *
+ * # It authors through the SAME outbox as everything else here
+ *
+ * `commit` is `Client.emitMany`, which is what the bank step and the currency
+ * step append with; it commits before it returns, so the ops are durable the
+ * moment they are queued and the sync coordinator drains them. The adapter
+ * below is the `Writer` shape {@link ImportFile} expects — `pending` is empty
+ * because nothing on this screen reads it, and `flush` is a no-op because there
+ * is no outbox to drain yet: the coordinator picks the ops up on boot.
+ */
+function ImportOffer({ commit }: { commit: (ops: readonly OpSpec[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const writer = useMemo<Writer>(
+    () => ({ pending: [], enqueueMany: (specs) => commit(specs), flush: async () => undefined }),
+    [commit],
+  );
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-fg">Bring your history with you</h2>
+      <p className="mt-1 text-sm leading-relaxed text-muted">
+        If your bank lets you export a CSV, you can add those transactions now. The file is read on this device and
+        never uploaded. You can also do this later, in Settings.
+      </p>
+      <Button variant="secondary" className="mt-3" onClick={() => setOpen(true)}>
+        Import a statement
+      </Button>
+      {open && (
+        <Dialog title="Import a statement" onClose={() => setOpen(false)}>
+          <ImportFile writer={writer} />
+        </Dialog>
+      )}
+    </Card>
   );
 }

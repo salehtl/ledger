@@ -17,40 +17,59 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SqlDriver } from "@ledger/client/store/driver";
+
+import type { ReactNode } from "react";
 
 import { MotionProvider } from "./MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { fakeRuntime, WithV2 } from "../test/v2Runtime";
-import { AppShell } from "./AppShell";
+import type { V2Runtime } from "../v2/BootGate";
+import type { OnboardingFacts } from "../v2/onboarding";
+import { AppShell, type AppShellProps } from "./AppShell";
 
 let db: SqlDriver;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   sessionStorage.clear();
+  // The shell's default setup-list dismissal store is localStorage; a
+  // dismissal leaked from one test would blank the list in the next.
+  localStorage.clear();
   fetchMock = vi.fn(async () => new Response(JSON.stringify({ address: "u-abc@in.sirdab.ae" })));
   vi.stubGlobal("fetch", fetchMock);
   db = await projectionWith();
 });
 
-function wrap() {
-  const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
+function wrap(shellProps: AppShellProps = {}, facts: Partial<OnboardingFacts> = {}) {
+  const { runtime, runs } = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae", ...facts } });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MotionProvider>
       <QueryClientProvider client={qc}>
         <ToastProvider>
           <WithV2 runtime={runtime}>
-            <AppShell />
+            <AppShell {...shellProps} />
           </WithV2>
         </ToastProvider>
       </QueryClientProvider>
     </MotionProvider>,
   );
   return { ...view, runs };
+}
+
+/** A durable-enough store for one test: the same shape the shell defaults to. */
+function memorySecrets() {
+  const held = new Map<string, string>();
+  return {
+    get: (k: string) => held.get(k) ?? null,
+    set: (k: string, v: string | null) => {
+      if (v === null) held.delete(k);
+      else held.set(k, v);
+    },
+  };
 }
 
 describe("AppShell", () => {
@@ -79,6 +98,46 @@ describe("AppShell", () => {
   it("switches screens when a tab is tapped", async () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    expect(await screen.findByRole("heading", { name: /^transactions$/i })).toBeInTheDocument();
+  });
+
+  /**
+   * The four tabs share ONE `<main>` scroller and their children swap without a
+   * key, so the offset belonged to the shell rather than to any screen: scroll
+   * down Transactions, tap Home, and Home opened part-way down. jsdom has no
+   * layout, so the scroller is driven directly — what is under test is whether
+   * anything resets it, not how tall the content is.
+   */
+  it("opens each tab at its own top instead of inheriting the last screen's scroll", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    await screen.findByRole("heading", { name: /^transactions$/i });
+
+    const main = document.querySelector("main");
+    if (main === null) throw new Error("no main scroller");
+    main.scrollTop = 420;
+
+    fireEvent.click(screen.getByRole("button", { name: /^home$/i }));
+    await screen.findByRole("heading", { name: /^home$/i });
+    expect(main.scrollTop).toBe(0);
+  });
+
+  it("scrolls back to the top when the tab you are already on is tapped", async () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    await screen.findByRole("heading", { name: /^transactions$/i });
+
+    const main = document.querySelector("main");
+    if (main === null) throw new Error("no main scroller");
+    // jsdom does not implement scrollTo; record the call the same way a browser
+    // would act on it, so the assertion is about the shell asking, not about
+    // jsdom scrolling.
+    const asked: unknown[] = [];
+    main.scrollTo = ((opts: unknown) => asked.push(opts)) as typeof main.scrollTo;
+
+    fireEvent.click(screen.getByRole("button", { name: /^transactions$/i }));
+    expect(asked).toEqual([{ top: 0, behavior: expect.stringMatching(/^(smooth|auto)$/) }]);
+    // And it stays where it was — the tap is a scroll, not a remount.
     expect(await screen.findByRole("heading", { name: /^transactions$/i })).toBeInTheDocument();
   });
 
@@ -125,7 +184,12 @@ describe("AppShell", () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
     expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
-    expect(await screen.findByTestId("settings-inbound-address")).toHaveTextContent("u-abc@in.sirdab.ae");
+    // The address, on the row that summarises it. It used to be asserted by the
+    // `settings-inbound-address` testid, which now lives inside the "Your
+    // address" drill-in — Settings is a list of one-line rows, and the address
+    // is the row's value. Still the same proof this is v2's surface: v1's hub
+    // has no inbound address at all.
+    expect(await screen.findByRole("button", { name: /Your address.*u-abc@in\.sirdab\.ae/ })).toBeInTheDocument();
     // v1's hub rows must not be here: every one of them reads a route ledgerd
     // does not serve.
     expect(screen.queryByText(/budget & income/i)).toBeNull();
@@ -150,6 +214,160 @@ describe("AppShell", () => {
     await screen.findByText("174.99");
     const urls = fetchMock.mock.calls.map(([u]) => String(u));
     expect(urls.filter((u) => !u.startsWith("/api/v1/"))).toEqual([]);
+  });
+
+  it("carries the setup list on the home screen, and its mail line opens held mail", async () => {
+    wrap({ secrets: memorySecrets() });
+    // The fixture facts leave banks and forwarding undone and mail unarrived,
+    // so the list and the quiet waiting line are both on home.
+    expect(await screen.findByText(/finish setting up/i)).toBeInTheDocument();
+    expect(screen.getByText(/waiting for your first bank email/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /see what is waiting/i }));
+    expect(await screen.findByRole("heading", { name: /held mail/i })).toBeInTheDocument();
+  });
+
+  it("opens Settings from a setup task — where every skipped step is finishable", async () => {
+    // The forwarding task: the fixture facts leave it undone. (There is no
+    // bank task any more — the bank question left the walk.)
+    wrap({ secrets: memorySecrets() });
+    fireEvent.click(await screen.findByTestId("setup-task-forwarding_configured"));
+    expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+  });
+
+  it("surfaces the provider's held confirmation as one tap on home", async () => {
+    // The held lane, as `quarantine.go` sends it: the live Gmail row's shape,
+    // blob included because the shell asks with `include_blob=1`.
+    const blob = Buffer.from(
+      "Confirmation code: 123456789\nhttps://mail-settings.google.com/mail/vf-abc",
+      "utf8",
+    ).toString("base64");
+    fetchMock.mockImplementation(async (url: unknown) =>
+      String(url).includes("/api/v1/quarantine")
+        ? new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: "q1",
+                  ingest_id: "i1",
+                  received_at: "2026-08-09T15:15:34Z",
+                  expires_at: "2026-09-08T15:15:34Z",
+                  outer_domain: "google.com",
+                  inner_domain: "",
+                  attested: false,
+                  attested_by: "",
+                  dkim: "pass",
+                  arc: "pass",
+                  size_bucket: 1,
+                  blob,
+                },
+              ],
+              action_needed: 1,
+              expiring_soon: 0,
+            }),
+          )
+        : new Response(JSON.stringify({ address: "u-abc@in.sirdab.ae" })),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    wrap({ secrets: memorySecrets() });
+    expect(await screen.findByText("One tap to start forwarding")).toBeInTheDocument();
+    expect(screen.getByTestId("setup-confirmation-domain")).toHaveTextContent("google.com");
+    fireEvent.click(screen.getByRole("button", { name: "Open the confirmation" }));
+    // The default seam: a new tab, no opener, and only the domain-pinned link.
+    expect(open).toHaveBeenCalledWith("https://mail-settings.google.com/mail/vf-abc", "_blank", "noopener");
+    open.mockRestore();
+  });
+
+  it("spends nothing on held mail once bank mail has arrived", async () => {
+    wrap({ secrets: memorySecrets() }, { firstMailConfirmedAt: "2026-08-01T00:00:00Z" });
+    await screen.findByText("174.99");
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.filter((u) => u.includes("/api/v1/quarantine"))).toEqual([]);
+  });
+
+  it("polls held mail while waiting, and stops once mail has arrived", async () => {
+    // The held-mail query has no test seam, so the poll is observed on the wire:
+    // every tick is one more fetch of the quarantine route.
+    const quarantineReads = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/v1/quarantine")).length;
+
+    const waiting = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
+    const arrived = fakeRuntime({
+      driver: db,
+      facts: { inboundAddress: "u-abc@in.sirdab.ae", firstMailConfirmedAt: "2026-08-01T00:00:00Z" },
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (rt: V2Runtime): ReactNode => (
+      <MotionProvider>
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <WithV2 runtime={rt}>
+              <AppShell secrets={memorySecrets()} />
+            </WithV2>
+          </ToastProvider>
+        </QueryClientProvider>
+      </MotionProvider>
+    );
+
+    // Drive the poll directly rather than advancing a fake clock: faking global
+    // timers freezes jsdom's timer-backed rAF, which strands Framer's shared
+    // frame loop mid-animation for the next test in this single fork. react-query
+    // arms the poll through the global setInterval (query-core's timeoutManager
+    // calls the global at call-time, on purpose so it stays spyable), so a spy
+    // captures the callback and invoking it is one tick. Focus forced on, since
+    // the poll fires only for a focused tab.
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    focusManager.setFocused(true);
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const armedPoll = (): (() => void) | null => {
+      for (let i = setIntervalSpy.mock.calls.length - 1; i >= 0; i--) {
+        const [cb, delay] = setIntervalSpy.mock.calls[i];
+        if (delay === 5000) return cb as () => void;
+      }
+      return null;
+    };
+
+    try {
+      const view = render(tree(waiting.runtime));
+      // Mail is still on its way: the query is enabled and arms a 5s poll.
+      await waitFor(() => {
+        expect(quarantineReads()).toBeGreaterThan(0);
+        expect(armedPoll()).not.toBeNull();
+      });
+
+      // A tick fires the poll → the held lane is read again, so the confirmation
+      // card can appear as the mail lands rather than on the next refocus.
+      const before = quarantineReads();
+      armedPoll()?.();
+      await waitFor(() => expect(quarantineReads()).toBeGreaterThan(before));
+      await flush(); // let that read settle and the interval re-arm
+
+      // Mail has arrived: the query disables and no new poll is armed.
+      setIntervalSpy.mockClear();
+      view.rerender(tree(arrived.runtime));
+      await flush();
+      expect(setIntervalSpy.mock.calls.filter(([, delay]) => delay === 5000)).toHaveLength(0);
+    } finally {
+      setIntervalSpy.mockRestore();
+      focusManager.setFocused(undefined);
+    }
+  });
+
+  it("dismisses the setup list for good — closing Settings does not bring it back", async () => {
+    wrap({ secrets: memorySecrets() });
+    await screen.findByText(/finish setting up/i);
+    fireEvent.click(screen.getByRole("button", { name: /hide this/i }));
+    expect(screen.queryByText(/finish setting up/i)).toBeNull();
+    // The shell remounts the list when an overlay closes (so a dismissal made
+    // in Settings lands here too) — a dismissal must survive that remount, or
+    // it was never a dismissal.
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    await screen.findByRole("heading", { name: /^settings$/i });
+    fireEvent.click(screen.getByRole("button", { name: /back from settings/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: /^settings$/i })).toBeNull();
+    });
+    expect(screen.queryByText(/finish setting up/i)).toBeNull();
   });
 
   it("refuses to render outside the gate rather than degrading to v1", () => {
