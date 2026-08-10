@@ -110,9 +110,6 @@ func checkNotLive(path string) error {
 // Close releases the database handle.
 func (d *DB) Close() error { return d.db.Close() }
 
-// Path is the snapshot this handle was opened from.
-func (d *DB) Path() string { return d.path }
-
 // Count returns the number of rows in ingest_log.
 //
 // Callers must not hard-code the result: the live corpus grows every time the

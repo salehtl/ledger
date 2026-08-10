@@ -849,17 +849,6 @@ func (r *Report) readRejections(ctx context.Context, pool *pgxpool.Pool, from, t
 	return nil
 }
 
-// heldExpectedSQL counts the distinct message identities the diagnostics ledger
-// says are in quarantine. Identity, not row: quarantine.Hold is ON CONFLICT DO
-// NOTHING per (user, ingest id), so two arrival rows for the same bytes are one
-// held message.
-const heldExpectedSQL = `
-SELECT count(*) FROM (
-  SELECT DISTINCT user_id, ingest_id FROM parse_diagnostics
-   WHERE event = 'arrival' AND user_id IS NOT NULL
-     AND (outcome = 'quarantined' OR (outcome = 'rejected' AND reject_reason = ANY($1)))
-) t`
-
 // storedIdentitiesSQL is every (user, ingest id) this server can still show
 // somebody, from the diagnostics ledger and the quarantine tables together.
 //

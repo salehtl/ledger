@@ -220,14 +220,6 @@ func NonceOf(b []byte) ([]byte, error) {
 	return b[off : off+NonceSize], nil
 }
 
-// TagOf returns the authentication tag slot. Zero in v1.
-func TagOf(b []byte) ([]byte, error) {
-	if _, _, err := SealedRegionV(b); err != nil {
-		return nil, err
-	}
-	return b[len(b)-TagSize:], nil
-}
-
 func frameHeader(b []byte) (FrameLayout, int, error) {
 	if _, _, err := SealedRegionV(b); err != nil {
 		return FrameLayout{}, 0, err
