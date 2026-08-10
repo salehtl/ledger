@@ -1,5 +1,8 @@
 # Handoff: running ledger v2 on a Mac + iOS simulator
 
+> **SUPERSEDED 2026-08-10:** the Expo app this handoff targets is retired; see
+> `specs/2026-08-07-v2-pwa-direction.md`.
+
 Written 2026-08-05 for a Claude instance running **on Saleh's Mac**. The main
 development session runs on `dinosaur` (Linux), which has no Xcode and no
 simulator — that is why this exists.
