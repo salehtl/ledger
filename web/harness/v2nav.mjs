@@ -125,14 +125,31 @@ export async function ceremony(page, invite, { onStep = async () => {}, skip = f
   await onStep("onb-recovery", page);
   await page.getByRole("button", { name: /^I have written these down$/i }).click();
 
-  await page.getByTestId("bank").waitFor({ timeout: 60_000 });
-  await onStep("onb-bank", page);
-  if (skip) {
-    await page.getByRole("button", { name: /^Set this up later$/i }).click();
-  } else {
-    await page.getByTestId("bank-row-dib").click();
-    await page.getByTestId("bank-row-enbd").click();
-    await page.getByRole("button", { name: /^Continue$/ }).click();
+  /*
+   * The bank step, IF the walk still has one.
+   *
+   * It was removed on 2026-08-10: templates key on the message's verified
+   * sending domain, so arriving mail proves the bank and asking was a question
+   * the app could answer itself. Banks moved to Settings. The step is waited for
+   * conditionally rather than deleted outright because this walk is also the
+   * only automated route through onboarding — if it comes back, or if a runner
+   * is pointed at an older build, a hard `waitFor` here would fail for sixty
+   * seconds and blame the wrong screen.
+   */
+  const bank = page.getByTestId("bank");
+  await Promise.race([
+    bank.waitFor({ timeout: 15_000 }).catch(() => {}),
+    page.getByTestId("inbound-address").waitFor({ timeout: 15_000 }).catch(() => {}),
+  ]);
+  if ((await bank.count()) > 0) {
+    await onStep("onb-bank", page);
+    if (skip) {
+      await page.getByRole("button", { name: /^Set this up later$/i }).click();
+    } else {
+      await page.getByTestId("bank-row-dib").click();
+      await page.getByTestId("bank-row-enbd").click();
+      await page.getByRole("button", { name: /^Continue$/ }).click();
+    }
   }
 
   // `address` and `forwarding` are one component in two phases; whichever this
@@ -143,7 +160,10 @@ export async function ceremony(page, invite, { onStep = async () => {}, skip = f
   if (skip) {
     await page.getByRole("button", { name: /^Set this up later$/i }).click();
   } else {
-    await page.getByRole("button", { name: /^Gmail$/ }).click();
+    // "Gmail" became "Show the Gmail steps" in the 2026-08-10 rework, which is
+    // the better label — it says what the press does rather than naming a thing.
+    // Matched loosely so the walk survives the next rewording too.
+    await page.getByRole("button", { name: /Gmail/ }).first().click();
     await settle(page, 300);
     await onStep("onb-forwarding-steps", page);
     await page.getByRole("button", { name: /^I have set up forwarding$/i }).click();
