@@ -9,25 +9,29 @@ design choice in it favours checkability over the things a real client needs.
 ### What Phase 2 reuses, and what it replaces
 
 An earlier revision of this file said the Expo app "must not be built by growing
-this one", and gave three reasons. **The three reasons were about the store and
-the instrument, and Task 5 addressed two of them; the sentence was not about the
-protocol logic, which the app does reuse and must not reimplement.** Precisely:
+this one", and gave three reasons. That Expo app (`app/`) was later retired in
+favor of a PWA — see `specs/2026-08-07-v2-pwa-direction.md` — and its code is
+preserved at tag `app-expo-final`, not in the tree; `web/` is Phase 2's actual
+consumer of this library now. **The three reasons were about the store and the
+instrument, and Task 5 addressed two of them; the sentence was not about the
+protocol logic, which `web/` does reuse and must not reimplement.** Precisely:
 
-| | Phase 2 |
+| | `web/` |
 |---|---|
-| `wire/` (op, blob, chain), `replay/` (the fold and FX), `invariants/` (the seventeen), `norm/`, `tmpl/` | **Reused as-is.** `app/` imports them. |
+| `wire/` (op, blob, chain), `replay/` (the fold and FX), `invariants/` (the seventeen), `norm/`, `tmpl/` | **Reused as-is.** `web/` imports them via the `@ledger/client` alias in `web/vite.config.ts`. |
 | `net/client.ts`'s **protocol logic** — the `pull → verify → pin → fold → attest → push` ordering | **Reused.** See below. |
 | *"It re-folds its entire op log on every command"* | **Still true, and still deliberate** — that is what keeps I9/I10 from comparing the fold against itself. What changed is that the fold now READS the log a chunk at a time (`eachRowChunk`, 250) instead of holding it in one array, and `save()` no longer WRITES it: `ClientState` lost its `rows`, and the log lives in a `RowStore`. |
 | *"It keeps every verified row on disk"* | **Still true, and NOT yet fixed.** `sqliteStore`'s `wire_rows` grows with the log. `RowStore.prune` is the mechanism; Task 10's rolling window is the policy for cold, and hot is an open question (spec §3.3:73 defers compaction to ~50k ops). |
-| *"It holds its writer key in a plain file"* | **Replaced.** `sqliteStore` takes a `SecretStore`; on a device the session token and the Ed25519 private half go to the Keychain (`expo-secure-store`) and are provably absent from the database. `fileStore` still holds them in its 0600 state file, because the CLI has no keystore. |
+| *"It holds its writer key in a plain file"* | **Replaced.** `sqliteStore` takes a `SecretStore`; in the browser, `webSecretStore` (`web/src/v2/session.ts`) keeps the session token and the Ed25519 private half in `localStorage`, namespaced per driver so two databases in one origin can't read each other's session, with an in-memory `Map` fallback for when `localStorage` throws (Safari private browsing). That is not a hardware keystore the way `expo-secure-store` was, but the keys are still provably absent from the SQLite database. `fileStore` still holds them in its 0600 state file, because the CLI has no keystore. |
 
 **The one thing not to reimplement is the protocol ordering.** Phase 1's ledger
 records four review rounds establishing it: the checkpoint must be built from
 PINNED heads (one built from unpinned heads claims genesis for chains that are
 merely un-pinned rather than empty), the I11 sync deadlock needs its escape
 hatch, and the hot/cold pin interaction makes a hot head pinned from the hash
-list an unclearable chain break on the next pull. A second implementation in
-`app/` re-opens every one of those. Import `Client`; do not fork it.
+list an unclearable chain break on the next pull. A second implementation —
+`app/`, before it was retired, or any future one — re-opens every one of those.
+`web/` imports `Client`; do not fork it.
 
 ## The commands
 
@@ -282,7 +286,7 @@ product client puts its key in the platform keystore instead — which is what
 |---|---|
 | `memStore()` | Unit tests. Loses everything on exit, so a CLI could never use it: a run that lost its cursor would re-pull from 0 and could never detect a re-serving server. |
 | `fileStore(dir, profile)` | The CLI instrument, above. Holds the whole log in memory once read — which is exactly what a phone must not do. |
-| `sqliteStore(driver, { secrets })` | The device. `client_state` is one row; `wire_rows` is the append-only log, read only by `range()`. Takes any `SqlDriver` — `bunDriver` here, `expoDriver` in `app/`. |
+| `sqliteStore(driver, { secrets })` | The device. `client_state` is one row; `wire_rows` is the append-only log, read only by `range()`. Takes any `SqlDriver` — `bunDriver` here, the sql.js-backed `openBrowserDriver` in `web/src/v2/db/driver.ts`. |
 
 **There is deliberately no `all(stream)` on a `RowStore`.** Loading 3,683 blobs
 into one JS array is the shape that took the Phase 0 build past 500 MB RSS and
