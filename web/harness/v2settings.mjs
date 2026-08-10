@@ -3,13 +3,14 @@
  *
  * # Why this file had to exist
  *
- * `shoot.mjs` and `probe.mjs` next door are v1's harness, forked with the tree:
- * `stack.sh` still runs vite in `$REPO/frontend` and `nav.mjs` still taps v1's
- * Settings hub rows. Neither ever loads `web/src`, so pointing them at a v2
- * change "verifies" a screen they cannot reach. The v2 app cannot be driven
- * without an account either — `BootGate` is in front of every screen — so the
- * only way to a laid-out v2 Settings is the ceremony `recovery.mjs` performs.
- * This does that, then audits the screen and every dialog on it.
+ * `web/harness/` used to also hold a v1 fork — `shoot.mjs`, `probe.mjs`,
+ * `stack.sh`, `nav.mjs` — that ran vite in `$REPO/frontend` and tapped v1's
+ * Settings hub rows, never loading `web/src`, so pointing it at a v2 change
+ * "verified" a screen it could not reach. Those files are gone now (v1's real
+ * harness lives in `frontend/harness/`); the v2 app still cannot be driven
+ * without an account, though — `BootGate` is in front of every screen — so
+ * the only way to a laid-out v2 Settings is the ceremony `recovery.mjs`
+ * performs. This does that, then audits the screen and every dialog on it.
  *
  * Settings is the screen this matters most on: it is the longest in the app,
  * and a control that has slipped under the fixed bottom nav or past the right
@@ -23,8 +24,10 @@
  *
  * Chromium only, and the limits that come with it are real: `env(safe-area-inset-*)`
  * is 0, there is no software keyboard, and `dvh` never shrinks. It also runs
- * with motion left ALONE — `shoot.mjs` sets `reducedMotion: "reduce"` for stable
- * captures, which makes `SettingsPage` skip its slide entirely.
+ * with motion left ALONE — no script in this directory sets `reducedMotion`,
+ * unlike v1's `shoot.mjs` (`frontend/harness/`), which sets
+ * `reducedMotion: "reduce"` for stable captures and would make `SettingsPage`
+ * skip its slide entirely if the habit were copied here.
  */
 
 import { execFileSync } from "node:child_process";
@@ -79,7 +82,8 @@ function report(label, result) {
  * The first version of this took the FIRST scrollable element it found, which
  * was an inner 816px one; both "segments" then came out byte-identical and the
  * scrolled-to-the-end audit re-measured the top of the screen. A check that
- * cannot fail is worse than no check, so this is `shoot.mjs`'s rule verbatim.
+ * cannot fail is worse than no check, so this follows the same rule v1's
+ * `shoot.mjs` (`frontend/harness/`) applies.
  */
 async function scrollInfo(page) {
   return page.evaluate(() => {
@@ -111,7 +115,7 @@ async function scrollTo(page, kind, y) {
   await page.waitForTimeout(300);
 }
 
-/** Capture the scrolling container in viewport-sized segments, as shoot.mjs does. */
+/** Capture the scrolling container in viewport-sized segments, the way v1's shoot.mjs (frontend/harness/) does. */
 async function capture(page, name) {
   const info = await scrollInfo(page);
   const segments = info.kind === "none" ? 1 : Math.ceil(info.total / info.height);

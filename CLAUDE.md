@@ -255,14 +255,15 @@ harness/stack.sh reset       # restore fixture data between rounds
 
 **v2 has only partial harness coverage, and this is a real gap.** The nine v1
 forks that used to sit in `web/harness/` are gone — that directory is v2-only
-now. Four runners reach the real product, each walking the real sign-in
+now. Four runners reach the real product. Three walk the real sign-in
 ceremony (BootGate is the only door): `v2settings.mjs` covers Settings,
-`recovery.mjs` covers fresh-device recovery, `vault.mjs` covers the key vault
-round trip in both Chromium and WebKit, and `operator.mjs` covers the
-operator's own WebKit-only path. Screens beyond those four rest on vitest
-alone. If you build a v2 runner, `v2stack.sh` must pass `--dns-fixtures`, or
-every message the harness posts is `unauthenticated` and no script can reach
-the product at all.
+`recovery.mjs` covers fresh-device recovery, and `operator.mjs` covers the
+operator's own WebKit-only path. `vault.mjs` covers the key vault round trip
+in both Chromium and WebKit and is the exception — it needs no server, invite
+or passkey, only a page on the origin. Screens beyond those four rest on
+vitest alone. If you build a v2 runner, `v2stack.sh` must pass
+`--dns-fixtures`, or every message the harness posts is `unauthenticated` and
+no script can reach the product at all.
 
 Never point a harness at production: scratch ports and a scratch DB, never
 `:8080`, never `:443`, never `/var/lib/ledger`.

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # v2stack.sh — the scratch v2 stack `recovery.mjs` needs, in one command.
 #
-# `stack.sh` next door builds the V1 stack: the single-user Go binary and a
-# scratch SQLite file. This is the v2 one, and it is a different set of moving
-# parts entirely — a throwaway Postgres cluster, `ledgerd`, and a vite dev
-# server proxied at it — which is why `recovery.mjs` went unrun by its own code
-# reviewer until this existed.
+# v1 had its own `stack.sh`, in `frontend/harness/`, building the single-user
+# Go binary and a scratch SQLite file. This is the v2 one, and it is a
+# different set of moving parts entirely — a throwaway Postgres cluster,
+# `ledgerd`, and a vite dev server proxied at it — which is why `recovery.mjs`
+# went unrun by its own code reviewer until this existed.
 #
 #   harness/v2stack.sh up      # cluster + database + ledgerd + vite, then print an invite
 #   harness/v2stack.sh invite  # another single-use invite code

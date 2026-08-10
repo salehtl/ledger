@@ -377,8 +377,8 @@ export async function audit(page) {
     // `initial`. `LazyMotion` resolves its feature bundle in an effect, so
     // until that chunk lands the element renders straight from `initial` with
     // no animator to clear it, and above-the-fold content paints invisible.
-    // jsdom cannot see it (no opacity), and the screenshots cannot either —
-    // `shoot.mjs` waits for load, by which time it has resolved.
+    // jsdom cannot see it (no opacity), and a screenshot taken after load
+    // cannot either, by which time it has resolved.
     //
     // Reported only for elements that actually contain text, and only for the
     // outermost one in a zero-opacity chain, so a faded container yields one

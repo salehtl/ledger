@@ -41,16 +41,17 @@ opens neither `/var/lib/ledger` nor `/etc/ledger-v2` nor the running
 
 ## The four runners
 
-`BootGate` sits in front of every v2 screen, so each runner below performs a
-real sign-in or recovery ceremony first — there is no way past it but a real
-account.
+Three of the four walk the real sign-in or recovery ceremony — `BootGate` is
+in front of every v2 screen, and there is no way past it but a real account.
+`vault.mjs` is the exception: it needs no server, no invite and no passkey,
+only a page on the origin.
 
 | script | proves |
 | --- | --- |
 | `v2settings.mjs <invite>` | Settings — the longest screen in the app — laid out, screenshotted, geometry-audited |
 | `recovery.mjs <invite>` | a browser with its site data cleared, given twelve words, gets its keys back |
-| `vault.mjs` | the key vault round trip, in Chromium **and** WebKit |
-| `operator.mjs signup\|recover <invite>` | the whole sign-up → phrase → reload path, in WebKit |
+| `vault.mjs` | the key vault round trip, in Chromium **and** WebKit — no server, invite or passkey needed |
+| `operator.mjs signup <invite> \| recover` | the whole sign-up → phrase → reload path, in WebKit |
 
 **Screens beyond Settings, recovery, the vault and the operator path rest on
 vitest alone.** That coverage gap is real and tracked in `CLAUDE.md`, not
@@ -89,7 +90,7 @@ segments it fails, because the first version of this file picked an inner
 816px scroller and reported a clean 2983px screen it had never scrolled.
 
 Screenshots land in `harness/shots/` with a machine-readable
-`harness/shots/report.settings.json`.
+`harness/shots/v2-settings.report.json`.
 
 ### The automated audit — `audit.mjs`
 
@@ -207,10 +208,12 @@ the note names this specific failure rather than a generic one.
 
 ## Two traps worth knowing
 
-- **Do not set `reducedMotion: "reduce"` when testing animation.**
-  `v2settings.mjs` sets it for stable captures, and it makes `Dialog` /
-  `SettingsPage` skip their slide entirely — which hides any bug in the slide
-  itself.
+- **`v2settings.mjs` runs with motion left ALONE — no script in this
+  directory sets `reducedMotion`.** `reducedMotion: "reduce"` makes `Dialog` /
+  `SettingsPage` skip their slide entirely, which would hide any bug in the
+  slide itself. That flag belongs to v1's `shoot.mjs` (`frontend/harness/`),
+  which sets it for stable screenshot captures — don't carry the habit over
+  here.
 - **Check which tree vite is serving** (`ls -l /proc/<vite-pid>/cwd`).
   `v2stack.sh` resolves the repo from its own location, so running it from a
   stale checkout serves that checkout — it is easy to "verify a fix" against a
