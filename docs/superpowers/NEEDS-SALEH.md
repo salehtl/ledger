@@ -252,7 +252,7 @@ up to date while you get on with your day.
   account and transfer alerts still need confirming. Closing that means adding
   a positive Arabic literal to a published template — a version bump plus a
   corpus-gate re-run — so it is a second decision rather than a follow-up.
-  See `.superpowers/sdd/2026-08-02-v2-phase2-client/fe-dib-guardrail-report.md`.
+  See `docs/superpowers/sdd/2026-08-02-v2-phase2-client/fe-dib-guardrail-report.md`.
 
 I would not make this call for you. It trades a real, demonstrated integrity
 risk against the core daily experience of the product, and which way that goes
