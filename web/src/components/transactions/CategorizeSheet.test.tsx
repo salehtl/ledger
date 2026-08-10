@@ -44,7 +44,7 @@ describe("CategorizeSheet", () => {
   });
 
   it("paints each picker dot with the category's own colour, not its bucket", () => {
-    // Same shape as CategoryManager's CategoryRow test, and it works for the
+    // Same shape as FilterBar's category-chip test, and it works for the
     // same reason: bucketColor can only ever return --color-need/want/save/
     // transfer/muted, so teal and orchid are unreachable through it. A
     // regression to bucketColor(c.Bucket) fails here rather than shipping

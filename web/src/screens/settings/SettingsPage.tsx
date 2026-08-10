@@ -6,9 +6,10 @@ import { SHEET_ENTER, SHEET_EXIT } from "../../lib/motion";
 import { inEdgeZone, shouldGoBack } from "../../lib/edgeBack";
 
 /**
- * Shared full-screen drill-in shell for a Settings subpage. Matches the
- * CategoryManager / RulesManager panel: a back-arrow header over a scrolling
- * body. `headerRight` hosts the page's autosave feedback.
+ * Shared full-screen drill-in shell for a Settings subpage: a back-arrow
+ * header over a scrolling body, the same shape v1's Settings drill-ins used
+ * before that cluster was retired (2026-08-10; git history has it).
+ * `headerRight` hosts the page's autosave feedback.
  *
  * The shell slides in from the right and supports iOS-style edge-swipe-back:
  * a drag starting in the 24px left-edge strip tracks the finger and reveals

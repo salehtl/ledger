@@ -79,7 +79,7 @@ describe("PALETTE_DISPLAY_ORDER", () => {
     expect([...PALETTE_DISPLAY_ORDER].sort()).toEqual([...PALETTE_NAMES].sort());
   });
 
-  // Six per row is what 320px fits (see the picker in CategoryManager), so
+  // Six per row is what 320px fits (see the picker in ProjectForm), so
   // "base above its own deep" only holds if the halves stay aligned.
   it("puts every base step directly above its own deep step in a six-wide grid", () => {
     const half = PALETTE_DISPLAY_ORDER.length / 2;

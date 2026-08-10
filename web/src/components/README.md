@@ -174,7 +174,7 @@ All motion in the app is Framer Motion (npm package `motion`, imported from
   bug in the making (a hand-rolled version is how the swipe card's 800px
   fly-out came to ignore the preference entirely). The **one** exception is a
   non-transform property Framer's policy doesn't cover — `clipPath`, which
-  `ProgressBar` and `BudgetPage` gate by hand with `useReducedMotion()`.
+  `ProgressBar` gates by hand with `useReducedMotion()`.
 - **Gesture decisions are pure functions in `lib/`.** `sheetDrag`, `edgeBack`,
   `rowSwipe`, `swipe`, `toastSwipe` each take `(offset, velocity)` straight
   from Framer's `onDragEnd` info and return a decision, with co-located tests.
@@ -274,7 +274,7 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 
 ### IconButton
 - **Purpose:** icon-only action with a required accessible `label`. 44px
-  default; `size="sm"` (36px) only in dense stacked rows (e.g. TransactionRow's action column, CategoryManager's list rows).
+  default; `size="sm"` (36px) only in dense stacked rows (e.g. TransactionRow's action column, V2CategoriesPanel's list rows).
   Tones: `muted` (default), `accent` (positive/primary row action),
   `danger` (delete).
 - **Don't use when:** the action fits a text label (→ `Button`).
@@ -419,8 +419,9 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
 - **Purpose:** full-screen drill-in shell — back arrow, title, optional
   `headerRight` (autosave flash), scrolling body, iOS edge-swipe back.
-  CategoryManager and RulesManager use it too. Since the v3 IA it is also the
-  shell for AppShell-level overlays: Settings itself (TopBar gear), Accounts,
+  `AccountDetail`, `ProjectForm` and `BulkBackfill` nest inside it too, one
+  drill-in level deeper. Since the v3 IA it is also the shell for
+  AppShell-level overlays: Settings itself (TopBar gear), Accounts,
   Recurring and Reports all mount inside one, stacked in DOM order like
   ProjectsFlow so backing out reveals the real parent.
 - **Don't:** hand-roll a `fixed inset-0 z-40 bg-bg` overlay.
@@ -596,9 +597,9 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   unknown value degrades to the neutral instead of vanishing.
 - **Not for pickers.** A swatch grid you choose *from* shows the colour itself,
   solid — the hatch is the project mark's identity, and hatching a picker would
-  say "these 24 squares are all projects". Both pickers (`ProjectForm`,
-  `CategoryManager`'s row editor) render a plain span in the hue inside a
-  `w-11 h-11 -m-1` target: 44px to tap, a smaller mark to look at, the negative
+  say "these 24 squares are all projects". `ProjectForm`'s picker renders a
+  plain span in the hue inside a `w-11 h-11 -m-1` target: 44px to tap, a
+  smaller mark to look at, the negative
   margin pulling the padding back out so the grid still reads as a grid.
 
 ### PixelSpinner
@@ -773,14 +774,20 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 Domain components live beside their feature (`transactions/`, `swipe/`,
 `insights/`, `charts/`) and compose the primitives above. Notable:
 
-- `CategoryManager` — category inventory where the sections ARE the taxonomy
-  (Needs / Wants / Savings / Income / Excluded). Each section header carries
-  its own `+` that births an inline row knowing its kind and bucket; rows are
-  one line always — tap the name to rename in place (Enter/blur saves, Escape
-  cancels), bucket dots swap into the row while editing, delete is always
-  visible and usage-guarded. No per-row accordions.
-- `RulesManager` — searchable learned-rule inventory with active rules first,
-  explicit active/paused state, and confirmation before permanent deletion.
+- `V2CategoriesPanel` (`screens/settings/`) — category inventory where the
+  sections ARE the taxonomy (Needs / Wants / Savings / Income / Excluded).
+  Each section header carries its own `+` that births an inline row knowing
+  its kind and bucket; existing rows are Retire-only — v2 has no delete, so a
+  retired category keeps its name and keeps counting wherever it already
+  filed, and a separate Retired section offers "Bring back". This replaced
+  v1's `CategoryManager`, which supported rename-in-place and a
+  usage-guarded delete; neither carried over. Git history has the original.
+- v1's `RulesManager` — a searchable learned-rule inventory with active rules
+  first, explicit active/paused state, and confirmation before permanent
+  deletion — has no v2 counterpart. v2 authors `rule_added` only as a side
+  effect of categorizing a transaction (`v2/sources/review.ts`'s
+  `categorizeOps`); there is no standalone screen to browse or edit rules.
+  Removed 2026-08-10 (cca2da8); git history has it.
 
 - `TransactionRow` — one calm, tap-only list line (merchant wraps to two lines
   beside the amount, then

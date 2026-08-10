@@ -275,13 +275,17 @@ harness/stack.sh reset       # restore fixture data between rounds
 
 **v2 has only partial harness coverage, and this is a real gap.** The nine v1
 forks that used to sit in `web/harness/` are gone — that directory is v2-only
-now. Four runners reach the real product. Three walk the real sign-in
-ceremony (BootGate is the only door): `v2settings.mjs` covers Settings,
-`recovery.mjs` covers fresh-device recovery, and `operator.mjs` covers the
-operator's own WebKit-only path. `vault.mjs` covers the key vault round trip
-in both Chromium and WebKit and is the exception — it needs no server, invite
-or passkey, only a page on the origin. Screens beyond those four rest on
-vitest alone. If you build a v2 runner, `v2stack.sh` must pass
+now. Four pass/fail runners reach the real product, plus one committed repro.
+Three of the four walk the real sign-in ceremony (BootGate is the only door):
+`v2settings.mjs` covers Settings, `recovery.mjs` covers fresh-device recovery,
+and `operator.mjs` covers the operator's own WebKit-only path. `vault.mjs`
+covers the key vault round trip in both Chromium and WebKit and is the
+exception — it needs no server, invite or passkey, only a page on the origin.
+`addpasskey-repro.mjs` is the fifth file: it drives adding a second passkey
+and prints what happened, but it is a targeted repro, not a pass/fail
+runner — it asserts nothing automatically, so its output has to be read by
+hand. Screens beyond those four runners rest on vitest alone, with that one
+add-passkey exception. If you build a v2 runner, `v2stack.sh` must pass
 `--dns-fixtures`, or every message the harness posts is `unauthenticated` and
 no script can reach the product at all.
 
@@ -293,7 +297,9 @@ and **the files named below are `frontend/harness/` (v1) files** unless the text
 says otherwise: `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do
 not exist in `web/harness/`. Two exceptions — `audit.mjs` exists in both trees,
 and `v2stack.sh` is v2's only. If you arrived here from the v2 paragraph, the v2
-runners are the four named there:
+pass/fail runners are the four named there (`addpasskey-repro.mjs` is the
+fifth file in that directory, but it is a repro, not a runner, so it has no
+place in this yield-ordered list):
 
 1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant name wider than the viewport, a 250,000 amount, an unset FX rate, a negative envelope. Bugs hide in the happy path.
 2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page and reports elements past the viewport, controls whose centre point hits a *different* element, sub-44px targets, sub-16px inputs, unreachable `overflow-hidden` content.

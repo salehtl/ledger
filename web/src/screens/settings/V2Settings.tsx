@@ -2,15 +2,16 @@
  * Settings, in v2: the facts about this account, and the controls that are not
  * reachable anywhere else.
  *
- * # This is a NEW screen, and `screens/Settings.tsx` is untouched
+ * # This screen replaced `screens/Settings.tsx` — it did not sit beside it
  *
- * v1's Settings hub reads `/api/budget`, `/api/settings`, `/api/categories`,
+ * v1's Settings hub read `/api/budget`, `/api/settings`, `/api/categories`,
  * `/api/rules`, `/api/rates`, `/api/health`, `/api/accounts`, `/api/projects`,
  * `/api/scheduled` and `/api/settings/notifications`. `ledgerd` serves none of
- * them, and every one of those queries would sit `isPending` forever behind a
- * row that looked like it was loading. It is unrouted rather than rewritten
- * because most of those pages come back the moment their data grows a
- * projection; deleting them would throw away work that is only early.
+ * them, and every one of those queries would have sat `isPending` forever
+ * behind a row that looked like it was loading. It was left unrouted while
+ * this screen (and `V2CategoriesPanel` for categories) grew a projection to
+ * read instead, then deleted on 2026-08-10 (cca2da8) once they covered the
+ * same ground — git history has the original.
  *
  * # Why "add another passkey" is the most important control on this screen
  *

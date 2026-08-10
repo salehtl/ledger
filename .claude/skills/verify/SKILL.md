@@ -82,6 +82,9 @@ can reach the product. Any new v2 runner or stack script must pass it too.
 
 Screens beyond Settings, recovery, the vault (`vault.mjs`) and the operator
 sign-up/recover path (`operator.mjs`) rest on vitest alone — a real gap, not
-a choice. Never point a v2 harness run at production: scratch ports (8123
-API, 5177 UI) against a throwaway Postgres cluster under `/tmp`, never `:443`
-and never the running `ledgerd` service.
+a choice. The one exception is adding a second passkey: `addpasskey-repro.mjs`
+drives that flow, but it is a targeted repro, not a pass/fail runner — it
+asserts nothing automatically, so its output (`addPasskey() =>` and the
+on-screen note) has to be read by hand. Never point a v2 harness run at
+production: scratch ports (8123 API, 5177 UI) against a throwaway Postgres
+cluster under `/tmp`, never `:443` and never the running `ledgerd` service.

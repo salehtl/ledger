@@ -5,7 +5,10 @@ Updated 2026-08-01. Ordered by how long the clock runs *after* you start them.
 > **HISTORICAL RECORD, 2026-08-10.** The native-track sections — 1, 1b, 2, and
 > the iOS-specific parts of 5 and 8 — are superseded by
 > `specs/2026-08-07-v2-pwa-direction.md`, which replaced the Expo app with a
-> PWA. Still-live items: 4 (relay), 5b (dictionary HMAC key window), 6 (the
+> PWA. So is the Apple App ID / bundle-ID action item in the DECIDED block
+> just below (registering an App ID and binding a Google iOS OAuth client for
+> `app/`, which no longer exists — see that spec's "Status of the Expo work").
+> Still-live items: 4 (relay), 5b (dictionary HMAC key window), 6 (the
 > Phase 3 cutover promise), 7 (the `enc`-slot gap). The sections below are kept
 > verbatim as the reasoning of record; this note does not rewrite them.
 

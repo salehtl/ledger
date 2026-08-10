@@ -114,10 +114,13 @@ revert. Two failure classes recur in this codebase and both defeat a green run:
 vitest cannot see a control under the bottom nav or a sheet behind the keyboard.
 v1 has `frontend/harness/` for that. **v2's coverage is partial**: the nine v1
 forks were deleted from `web/harness/` on 2026-08-10, so that directory is
-v2-only, but only four runners reach the product — `v2settings.mjs` (Settings),
-`recovery.mjs` (fresh-device recovery), `operator.mjs` (the WebKit-only operator
-path) and `vault.mjs` (the key vault in both engines, and the only one needing
-no sign-in). Every other v2 screen rests on vitest alone. A new v2 runner must
+v2-only, but only four pass/fail runners reach the product — `v2settings.mjs`
+(Settings), `recovery.mjs` (fresh-device recovery), `operator.mjs` (the
+WebKit-only operator path) and `vault.mjs` (the key vault in both engines, and
+the only one needing no sign-in) — plus one committed repro,
+`addpasskey-repro.mjs`, which drives adding a second passkey but asserts
+nothing automatically; read its output by hand. Every other v2 screen rests on
+vitest alone. A new v2 runner must
 start the stack through `v2stack.sh`, which passes `--dns-fixtures`; without it
 every message the harness posts is `unauthenticated`. Never point a harness at
 production.

@@ -144,9 +144,9 @@
    as `.stagger-item` / `.row-in` — six `:nth-child` delay rules plus a capped
    seventh, and a second `@keyframes` block to strip the translate under
    reduced motion. All of it is now three props on an `m.li`/`m.div`
-   (screens/Home.tsx, screens/Transactions.tsx, screens/CategoryManager.tsx);
-   the cap survives as `Math.min(i * 0.04, 0.24)` and the reduced-motion
-   override is handled globally by `MotionConfig reducedMotion="user"`. */
+   (screens/Home.tsx, screens/Transactions.tsx); the cap survives as
+   `Math.min(i * 0.04, 0.24)` and the reduced-motion override is handled
+   globally by `MotionConfig reducedMotion="user"`. */
 
 /* Pixel-art spinner — see components/ui/PixelSpinner.tsx.
 

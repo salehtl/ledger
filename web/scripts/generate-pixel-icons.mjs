@@ -57,8 +57,10 @@ const ICONS = {
   "arrow-up": ["ArrowUp", "TrendingUp"],
   "arrow-down": ["ArrowDown"],
   "arrow-left": ["ArrowLeft"],
-  // ArrowRight has no lucide call site today, but SwipePage's four direction
-  // glyphs need all four arrows, and the app had been rendering "→" as text.
+  // ArrowRight has no call site today. It existed for SwipePage's four
+  // direction glyphs; SwipePage was removed 2026-08-10 (cca2da8) with the
+  // rest of v1's Settings cluster, and there is no v2 replacement to point
+  // at. Kept mapped since it costs nothing to leave in the pack.
   "arrow-right": ["ArrowRight"],
   "arrows-horizontal": ["ArrowLeftRight"],
   "chevron-left": ["ChevronLeft"],

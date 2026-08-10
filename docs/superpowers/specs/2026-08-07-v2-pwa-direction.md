@@ -117,7 +117,9 @@ driver; the store interface was already abstracted for this.
 
 ## Status of the Expo work
 
-`app/` stays on the `v2-wip-2026-08-05` branch and is not carried forward here.
-It is not deleted on this branch yet — Task 1b's fold harness and the on-device
-test vectors in `app/test/device/` are the only known-good measurement rig, and
-the browser equivalents should be written against them before it goes.
+`app/` was removed from the tree on 2026-08-10 (commit 0c582bd) — abandoned in
+favor of this PWA and nothing was building or testing it in the meantime. It is
+preserved at the `app-expo-final` tag (pushed to origin), so Task 1b's fold
+harness and the on-device test vectors that lived in `app/test/device/` are
+still recoverable from that tag if the browser equivalents need something to
+measure against.

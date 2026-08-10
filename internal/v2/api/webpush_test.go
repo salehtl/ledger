@@ -289,7 +289,7 @@ func TestTheSubscriptionCapEvictsTheOldest(t *testing.T) {
 	// subscribes this test has to make to reach the cap. Widened here rather
 	// than skipped: a t.Skip on a rate limit is a test that reports success
 	// while asserting nothing, and this branch has shipped enough of those.
-	// The limiter itself is covered by TestPushRoutesAreRateLimited.
+	// The limiter itself is covered by TestPushSubscriptionRoutesAreRateLimited.
 	h.srv.PushPerUser = NewLimiter(1000, 1000, 64, nil)
 	total := pushv2.MaxDevicesPerUser + 2
 	for i := range total {
