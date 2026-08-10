@@ -18,8 +18,8 @@ const COLOR_PRESETS = PALETTE_NAMES;
 
 /**
  * Create-or-edit drill-in for a project. Budget is entered in AED and
- * converted to fils on save (dirhamsToFils/filsToDirhams, the same pair
- * ScheduleForm's save path uses); an empty budget field means no budget
+ * converted to fils on save (dirhamsToFils/filsToDirhams — ScheduleForm uses
+ * the same pair, save path and load path); an empty budget field means no budget
  * (`budget_fils: null`), not zero. `count_in_monthly` defaults off so project
  * spend stays out of the 50/30/20 plan unless explicitly opted in.
  */

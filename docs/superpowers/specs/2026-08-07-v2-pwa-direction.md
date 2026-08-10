@@ -120,6 +120,7 @@ driver; the store interface was already abstracted for this.
 `app/` was removed from the tree on 2026-08-10 (commit 0c582bd) — abandoned in
 favor of this PWA and nothing was building or testing it in the meantime. It is
 preserved at the `app-expo-final` tag (pushed to origin), so Task 1b's fold
-harness and the on-device test vectors that lived in `app/test/device/` are
+harness and the on-device measurement rig that lived in `app/src/bench/`
+(digest.ts, frame.ts, noble.ts, protocol.ts, vectors.ts, verdict.ts) are
 still recoverable from that tag if the browser equivalents need something to
 measure against.

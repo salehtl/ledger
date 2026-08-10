@@ -274,7 +274,8 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 
 ### IconButton
 - **Purpose:** icon-only action with a required accessible `label`. 44px
-  default; `size="sm"` (36px) only in dense stacked rows (e.g. TransactionRow's action column, V2CategoriesPanel's list rows).
+  default; `size="sm"` (36px) only in dense stacked rows (e.g. `SplitSheet`'s
+  per-line Remove, `IngestHealthBanner`'s dismiss).
   Tones: `muted` (default), `accent` (positive/primary row action),
   `danger` (delete).
 - **Don't use when:** the action fits a text label (→ `Button`).

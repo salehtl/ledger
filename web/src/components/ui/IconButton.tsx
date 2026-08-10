@@ -8,7 +8,7 @@ type Tone = "muted" | "accent" | "danger";
 
 const SIZES: Record<Size, string> = {
   md: "min-w-11 min-h-11", // 44px — the default touch target (Apple HIG)
-  sm: "w-9 h-9",           // 36px — ONLY inside dense stacked rows (V2CategoriesPanel)
+  sm: "w-9 h-9",           // 36px — ONLY inside dense stacked rows (SplitSheet, IngestHealthBanner)
 };
 const TONES: Record<Tone, string> = {
   muted: "text-muted hover:bg-surface-2",
@@ -17,7 +17,7 @@ const TONES: Record<Tone, string> = {
 };
 
 /** Icon-only button. `label` is required — it is the accessible name.
- *  `size="sm"` (36px) is for dense stacked rows only (e.g. V2CategoriesPanel). */
+ *  `size="sm"` (36px) is for dense stacked rows only (e.g. SplitSheet). */
 export function IconButton(
   { label, size = "md", tone = "muted", className = "", children, onClick, ...rest }:
   // PressableProps, not ButtonHTMLAttributes: see the same note in Button.tsx.
