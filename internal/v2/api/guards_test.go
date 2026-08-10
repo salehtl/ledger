@@ -56,7 +56,7 @@ func TestASuspendedAccountIsRefusedOnEveryWriteMethod(t *testing.T) {
 		{http.MethodPost, "/api/v1/sync", UploadRequest{WriterID: "w1", Stream: "hot"}},
 		{http.MethodPost, "/api/v1/writers/challenge", nil},
 		{http.MethodPut, "/api/v1/keys", map[string]any{}},
-		{http.MethodDelete, "/api/v1/push/tokens", nil},
+		{http.MethodDelete, "/api/v1/push/subscriptions", nil},
 	} {
 		w := h.req(tc.method, tc.path, tok, tc.body)
 		if w.Code != http.StatusForbidden {
@@ -83,7 +83,7 @@ func TestASuspendedAccountCanStillRead(t *testing.T) {
 		"/api/v1/sync?stream=hot",
 		"/api/v1/sync/hashes?stream=hot",
 		"/api/v1/writers",
-		"/api/v1/push/tokens",
+		"/api/v1/push/subscriptions",
 	} {
 		if w := h.req(http.MethodGet, p, tok, nil); w.Code != http.StatusOK {
 			t.Errorf("GET %s while suspended: %d, want 200 (body %s)", p, w.Code, w.Body)
@@ -198,7 +198,7 @@ func TestTheHeadroomFuseRefusesWritesAndPermitsReads(t *testing.T) {
 	}{
 		{http.MethodPost, "/api/v1/sync", tok, UploadRequest{WriterID: "w1", Stream: "hot"}},
 		{http.MethodPost, "/api/v1/writers/challenge", tok, nil},
-		{http.MethodDelete, "/api/v1/push/tokens", tok, nil},
+		{http.MethodDelete, "/api/v1/push/subscriptions", tok, nil},
 		// UNAUTHENTICATED, and the case that matters most: signing in writes a
 		// session row, so it is a durable write and it stops with the others.
 		// headroom's package doc states this outright so it is never filed as a
