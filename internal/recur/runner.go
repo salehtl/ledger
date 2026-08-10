@@ -207,39 +207,7 @@ func (r *Runner) rescuePass(schedules []Schedule, taken map[int64]bool) (int, er
 	if !any {
 		return 0, nil
 	}
-	txns, err := r.st.SelectRecurTxnsBetween(from, to)
-	if err != nil {
-		return 0, err
-	}
-	rescued := 0
-	for _, t := range txns {
-		if taken[t.ID] {
-			continue
-		}
-		sid, ok := MatchRescue(Txn{
-			ID:         t.ID,
-			PostedAt:   t.PostedAt,
-			AmountFils: t.AmountFils,
-			Merchant:   t.Merchant,
-			Direction:  t.Direction,
-		}, schedules)
-		if !ok {
-			continue
-		}
-		if err := r.st.MarkScheduledMatched(sid, t.ID, t.PostedAt, t.AmountFils); err != nil {
-			return rescued, err
-		}
-		taken[t.ID] = true
-		rescued++
-		for i := range schedules {
-			if schedules[i].ID == sid {
-				schedules[i].NextDue = dayOf(t.PostedAt).AddDate(0, 0, int(schedules[i].IntervalDays))
-				schedules[i].Missed = false
-				break
-			}
-		}
-	}
-	return rescued, nil
+	return r.runPass(from, to, schedules, taken, MatchRescue)
 }
 
 // matchPass fetches the candidate transactions spanning every schedule's
@@ -258,16 +226,26 @@ func (r *Runner) matchPass(schedules []Schedule, taken map[int64]bool) (int, err
 			to = hi
 		}
 	}
+	return r.runPass(from, to, schedules, taken, Match)
+}
+
+// runPass fetches the candidate transactions spanning [from, to], matches
+// them via matcher (Match or MatchRescue), and advances the matched
+// schedules both in the store and in the in-memory slice (so the caller's
+// next pass and the final sweep see post-match due dates). Returns how many
+// matches it made. Shared body for matchPass and rescuePass, which differ
+// only in their window math and which matcher they pass in.
+func (r *Runner) runPass(from, to time.Time, schedules []Schedule, taken map[int64]bool, matcher func(Txn, []Schedule) (int64, bool)) (int, error) {
 	txns, err := r.st.SelectRecurTxnsBetween(from, to)
 	if err != nil {
 		return 0, err
 	}
-	matched := 0
+	count := 0
 	for _, t := range txns {
 		if taken[t.ID] {
 			continue
 		}
-		sid, ok := Match(Txn{
+		sid, ok := matcher(Txn{
 			ID:         t.ID,
 			PostedAt:   t.PostedAt,
 			AmountFils: t.AmountFils,
@@ -278,10 +256,10 @@ func (r *Runner) matchPass(schedules []Schedule, taken map[int64]bool) (int, err
 			continue
 		}
 		if err := r.st.MarkScheduledMatched(sid, t.ID, t.PostedAt, t.AmountFils); err != nil {
-			return matched, err
+			return count, err
 		}
 		taken[t.ID] = true
-		matched++
+		count++
 		for i := range schedules {
 			if schedules[i].ID == sid {
 				schedules[i].NextDue = dayOf(t.PostedAt).AddDate(0, 0, int(schedules[i].IntervalDays))
@@ -290,7 +268,7 @@ func (r *Runner) matchPass(schedules []Schedule, taken map[int64]bool) (int, err
 			}
 		}
 	}
-	return matched, nil
+	return count, nil
 }
 
 // DetectAndPropose mines confirmed history and inserts any new patterns as
