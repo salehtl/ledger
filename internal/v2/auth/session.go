@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/pgtx"
 )
 
 // sessionTokenBytes is the entropy in a session token, before encoding. 32
@@ -431,22 +432,18 @@ func upsertUser(ctx context.Context, pool *pgxpool.Pool, id Identity, invite *[]
 	}
 	hash := SubjectHash(id.IdP, id.Subject)
 
-	// Pinned rather than inherited, for the same reason the oplog appender pins it:
-	// default_transaction_isolation is settable per database, per role and by
-	// a pooler, and the insert-then-select below relies on READ COMMITTED
-	// taking a fresh snapshot for the second statement. Under REPEATABLE READ
-	// the SELECT would run against the snapshot from before the concurrent
-	// inserter committed, find nothing, and turn a routine concurrent
-	// first-login into an error.
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	// Pinned rather than inherited, for the same reason the oplog appender
+	// pins it; see pgtx.BeginReadCommitted for why. Specifically here: the
+	// insert-then-select below relies on READ COMMITTED taking a fresh
+	// snapshot for the second statement. Under REPEATABLE READ the SELECT
+	// would run against the snapshot from before the concurrent inserter
+	// committed, find nothing, and turn a routine concurrent first-login
+	// into an error.
+	tx, err := pgtx.BeginReadCommitted(ctx, pool)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("auth: UpsertUser: begin: %w", err)
 	}
-	defer func() {
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = tx.Rollback(rbCtx)
-	}()
+	defer pgtx.Rollback(ctx, tx)
 
 	// Two statements, not one ON CONFLICT DO UPDATE: DO NOTHING suppresses
 	// RETURNING on the conflict path (so the returning-only form fails with

@@ -54,11 +54,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 #
 # `go list -deps` walks each binary's actual BUILD graph, which is exactly
 # the thing that matters and exactly why the three `internal/parse` imports
-# inside internal/v2/corpus's _test.go files (the sanctioned parse-equivalence
-# gate, comparing v2's corpus tooling against v1's own parser) need no special
-# case below: `go list -deps` (without `-test`) never follows a _test.go
-# file's imports at all, so a sanctioned test-only import cannot even reach
-# this list, whether or not anyone remembers it is sanctioned.
+# inside internal/v2/norm/corpus_test.go, internal/v2/norm/corpus_probe_test.go
+# and internal/v2/tmpl/seed/corpus_gate_test.go (the sanctioned
+# parse-equivalence gate, comparing v2's corpus tooling against v1's own
+# parser) need no special case below: `go list -deps` (without `-test`) never
+# follows a _test.go file's imports at all, so a sanctioned test-only import
+# cannot even reach this list, whether or not anyone remembers it is
+# sanctioned.
 #
 # PIPEFAIL TRAP: this script runs `set -euo pipefail`, so a `grep` with no
 # match anywhere in a pipeline kills the whole script. The naive spelling of

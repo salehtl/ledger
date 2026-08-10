@@ -203,7 +203,7 @@ func EnsureSeqRow(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 //     specifically: a blocked UPDATE re-evaluates `next_seq + $n` against the
 //     row version the winner committed (EvalPlanQual), rather than against the
 //     stale version it first read. That is why the isolation level is pinned
-//     below instead of inherited — see BeginTx.
+//     below instead of inherited — see pgtx.BeginReadCommitted.
 //   - A crash cannot punch a hole either. The counter update and the row
 //     inserts are one transaction, so one commit record covers both; commit-LSN
 //     order equals commit order equals seq order, and recovery replays a WAL

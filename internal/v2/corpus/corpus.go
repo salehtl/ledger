@@ -58,8 +58,7 @@ type Message struct {
 
 // DB is a read-only handle on a corpus snapshot.
 type DB struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 // Open opens a snapshot of the v1 database read-only.
@@ -79,7 +78,7 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("corpus: open %s: %w", path, err)
 	}
-	return &DB{db: db, path: path}, nil
+	return &DB{db: db}, nil
 }
 
 // checkNotLive rejects paths inside the production data directory.

@@ -4,16 +4,15 @@
  *
  * # The coordinator is a port, and deliberately thin
  *
- * {@link SyncCoordinator} is `app/src/sync/coordinator.ts` almost verbatim — the
- * retired Expo client, removed 2026-08-10 and preserved at tag
- * `app-expo-final`. It
- * holds no policy: {@link SyncEngine} already owns the `isRunning` guard that
- * turns five taps into one page sequence (rule 3 of its module doc), and a
- * coordinator that re-implemented debouncing on top would be a second guard
- * that can disagree with the first. What it adds is a *vocabulary* — a
- * {@link SyncTrigger} names why a sync is happening — so every call site in the
- * app goes through one door and a future per-trigger policy has somewhere to
- * live.
+ * {@link SyncCoordinator} was `app/src/sync/coordinator.ts` almost verbatim —
+ * the retired Expo client, removed 2026-08-10 and preserved at tag
+ * `app-expo-final`. It holds no policy: {@link SyncEngine} already owns the
+ * `isRunning` guard that turns five taps into one page sequence (rule 3 of
+ * its module doc), and a coordinator that re-implemented debouncing on top
+ * would be a second guard that can disagree with the first. What it adds is
+ * a *vocabulary* — a {@link SyncTrigger} names why a sync is happening — so
+ * every call site in the app goes through one door and a future per-trigger
+ * policy has somewhere to live.
  *
  * Two deliberate additions over the native port:
  *

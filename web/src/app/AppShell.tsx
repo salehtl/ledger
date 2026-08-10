@@ -1,5 +1,5 @@
 /**
- * The shell: three tabs, one gear, two drill-ins, and nothing that talks to v1.
+ * The shell: four tabs, one gear, two drill-ins, and nothing that talks to v1.
  *
  * # What came out of the nav in Task 10, and why most of it was not deleted
  *

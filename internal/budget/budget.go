@@ -33,9 +33,9 @@ var bucketOrder = []string{"need", "want", "saving"}
 
 // ComputeRange rolls jars for a multi-month span. The caller has already summed
 // spend + income across the span; period labels it (e.g. "2026-03..2026-06") and
-// progress is the fraction of the span elapsed (1.0 once it is wholly past). The
-// jar math is identical to Compute — a target is income×pct regardless of span
-// length, because the caller's summed income already scales with the months.
+// progress is the fraction of the span elapsed (1.0 once it is wholly past). A
+// target is always income×pct regardless of span length, because the caller's
+// summed income already scales with the months.
 func ComputeRange(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, period string, progress float64, projectExcluded int64) Summary {
 	return computeJars(cfg, income, spend, recent, period, progress, projectExcluded)
 }

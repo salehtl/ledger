@@ -383,14 +383,13 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
 
   Separately, several components tint `bg-accent` at low alpha (`/10`, `/15`,
   `/30`) to mark *selected* filter state instead of full-opacity fill:
-  `FilterBar`'s chips and active-filter tokens, `FilterChips`'s dimension
-  buttons, `SegmentedControl`'s badge, and `Transactions`'s filter-toggle
-  button. This is a second, unreconciled convention for "selected," not a
-  sixth sanctioned full-opacity use — `BottomNav` deliberately rejected a
-  tinted pill for its active tab in favor of a 2px tick (see below), so the
-  two patterns disagree about whether a tint should mean "selected" at all.
-  Recorded here as a known inconsistency to resolve later, not as settled
-  guidance to copy.
+  `FilterBar`'s chips and active-filter tokens, `SegmentedControl`'s badge, and
+  `Transactions`'s filter-toggle button. This is a second, unreconciled
+  convention for "selected," not a sixth sanctioned full-opacity use —
+  `BottomNav` deliberately rejected a tinted pill for its active tab in favor
+  of a 2px tick (see below), so the two patterns disagree about whether a tint
+  should mean "selected" at all. Recorded here as a known inconsistency to
+  resolve later, not as settled guidance to copy.
 - **Don't use when:** the badge is a count overlay (BottomNav's tiny badge is
   a deliberate exception) or needs custom glyphs (→ `insights/DeltaBadge`).
 
@@ -663,6 +662,8 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
 - `FilterBar` — inline, in-place filtering for the Transactions page: bucket /
   type / category / source as direct toggle chips (no per-dimension sheet),
   with removable active-filter tokens. Also used by the Insights `SearchSheet`.
+  It replaced `FilterChips`, the older sheet-per-dimension picker, which is
+  gone (git history has it).
 - `SubcategoryPanel` — the swipe deck's post-swipe picker (a `Dialog`): bucket
   categories as tap targets, optional project chips with date-window matches
   surfaced first as suggestions (project rides along with the categorize call),

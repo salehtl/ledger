@@ -21,10 +21,10 @@ import (
 // configured there. Several v2 stores use a `SELECT ... FOR UPDATE` (with or
 // without SKIP LOCKED) or an equivalent row lock to serialize concurrent
 // writers — a concurrent sweep, registration, rotation, cutover or append.
-// Under REPEATABLE READ that lock raises a serialization failure instead of
-// blocking (or, for SKIP LOCKED, instead of skipping), turning a routine
-// concurrent operation into an error whose text says nothing about what
-// actually happened.
+// Under REPEATABLE READ that lock can raise a serialization failure instead
+// of doing its job — blocking, or for SKIP LOCKED, skipping — turning a
+// routine concurrent operation into an error whose text says nothing about
+// what actually happened.
 //
 // The returned error is unwrapped — pool.BeginTx's error verbatim — so a
 // caller can prefix it with its own package/operation tag without producing
@@ -34,9 +34,10 @@ func BeginReadCommitted(ctx context.Context, pool *pgxpool.Pool) (pgx.Tx, error)
 }
 
 // Rollback rolls tx back on a context detached from ctx's cancellation,
-// bounded at 5s, so cleanup still runs when the request context is gone. A
-// cancelled caller request still releases the transaction's locks cleanly
-// this way, instead of leaving pgx to destroy the connection.
+// bounded at 5s — the timeout stops a wedged server from pinning the
+// connection forever — so cleanup still runs when the request context is
+// gone. A cancelled caller request still releases the transaction's locks
+// cleanly this way, instead of leaving pgx to destroy the connection.
 func Rollback(ctx context.Context, tx pgx.Tx) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()

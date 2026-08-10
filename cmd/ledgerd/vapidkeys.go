@@ -11,10 +11,10 @@ package main
 // share a module and a git history and almost nothing else, and a v2
 // deployment that has never built the v1 binary — or has decommissioned it —
 // had no way to mint its own web push keys. Key generation is one call to
-// pushv2.GenerateVAPIDKeys, the same function internal/v2/pushv2's Web sender
-// and its own tests already go through — see that function's doc comment for
-// why it, and not a second direct call into webpush-go here, is the single
-// source of the key format.
+// pushv2.GenerateVAPIDKeys — the same function pushv2's tests mint with, and
+// the same library its Web sender signs with — see that function's doc
+// comment for why it, and not a second direct call into webpush-go here, is
+// the single source of the key format.
 //
 // # Why it is dispatched before config.Load, not through modeHandlers
 //

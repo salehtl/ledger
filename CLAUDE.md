@@ -239,7 +239,7 @@ go test ./... -race                        # race detector
 cd web && bun run test                     # v2 frontend (vitest)
 cd frontend && bun run test                # v1 frontend (vitest)
 cd client && bun test                      # the shared TS library
-bash scripts/v2-check.sh                   # the v2 gate — v2 packages only
+bash scripts/v2-check.sh                   # the v2 gate — v2 packages only, never all of v1
 ```
 
 Go tests live beside the code (`*_test.go`). Frontend tests are `*.test.ts(x)` next to components, run with jsdom.
