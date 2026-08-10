@@ -69,7 +69,7 @@ export const TAG_SIZE = 16;
  * RawBody record with the mail base64'd inside it: a legal 1 MiB message becomes
  * ~1.37 MB of plaintext and would be permanently unopenable under a 1 MB cap.
  */
-export const MAX_PLAINTEXT = 2 << 20;
+const MAX_PLAINTEXT = 2 << 20;
 
 /** The size ladder every blob is padded up to, in bytes. Seven rungs, frozen. */
 export const BUCKETS: readonly number[] = [1 << 10, 4 << 10, 16 << 10, 64 << 10, 256 << 10, 512 << 10, 1024 << 10];
@@ -111,7 +111,7 @@ const NIL_UUID = "00000000-0000-0000-0000-000000000000";
  * would produce a DIFFERENT AAD for the same user — a blob no other device
  * could open at the position it occupies.
  */
-export function validateEnvelope(e: Envelope): void {
+function validateEnvelope(e: Envelope): void {
   const id = typeof e.userId === "string" ? e.userId.toLowerCase() : "";
   if (!CANONICAL_UUID.test(id)) {
     throw new InvalidEnvelopeError(`user_id ${JSON.stringify(e.userId)} is not a canonical UUID`);

@@ -138,7 +138,7 @@ export const ACCOUNT_KEY_VERSION = 1;
  * nothing ever wrote would be untested code on the recovery path, so a body
  * that is not version 2 is refused by name.
  */
-export const KEY_SET_VERSION = 2;
+const KEY_SET_VERSION = 2;
 
 /** The only KDF identifier this build writes or accepts. */
 export const KDF_ARGON2ID = 1;

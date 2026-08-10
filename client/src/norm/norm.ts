@@ -46,7 +46,6 @@ import {
 import { parseForwardDate, trimExplicit, unwrapForward } from "./unwrap.ts";
 
 export { UnsupportedCharsetError } from "./charset.ts";
-export { trimExplicit } from "./unwrap.ts";
 
 /** The newest normalizer algorithm. */
 export const CURRENT_VERSION = 1;
@@ -61,8 +60,8 @@ export function versions(): number[] {
   return [1];
 }
 
-export type PartUsed = "html" | "plain" | "raw";
-export type DateSource = "forward_header" | "received";
+type PartUsed = "html" | "plain" | "raw";
+type DateSource = "forward_header" | "received";
 
 /** Thrown for a version this build cannot run. */
 export class UnknownVersionError extends Error {

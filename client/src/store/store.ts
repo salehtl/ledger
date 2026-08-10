@@ -73,7 +73,7 @@ import { parseDecimal, type Op } from "../wire/op";
  * notice. Refusing it is the only safe reading; the recovery is to delete the
  * profile and re-pull, which costs nothing but time.
  */
-export const STATE_VERSION = 2;
+const STATE_VERSION = 2;
 
 /**
  * How many rows a full pass reads at a time.

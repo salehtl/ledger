@@ -1,10 +1,10 @@
 import type { RawRow } from "./csv";
 import { parseAmount, parseImportDate, validateMap, type ImportMap } from "./map";
 
-export interface NormalizedImportRow { rowIndex: number; postedAt: string; merchantRaw: string; amountMinor: bigint; currency: string; direction: "debit" | "credit"; category: string | null }
+interface NormalizedImportRow { rowIndex: number; postedAt: string; merchantRaw: string; amountMinor: bigint; currency: string; direction: "debit" | "credit"; category: string | null }
 export type NormalizeResult = { ok: true; row: NormalizedImportRow } | { ok: false; rowIndex: number; error: string };
 
-export function normalizeRow(raw: RawRow, map: ImportMap, rowIndex: number): NormalizeResult {
+function normalizeRow(raw: RawRow, map: ImportMap, rowIndex: number): NormalizeResult {
   const configErrors = validateMap(map); if (configErrors.length) return { ok: false, rowIndex, error: configErrors.join(" ") };
   try {
     const date = (raw[map.columns.date] ?? "").trim(); if (!date) throw new Error(`date column ${JSON.stringify(map.columns.date)} is empty`);

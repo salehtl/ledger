@@ -84,9 +84,9 @@ export const PROJECTION_VERSION = 7;
  * different things — that one is op-log rows read, this one is projected rows
  * written — and a future tuning of one must not silently retune the other.
  */
-export const PROJECT_CHUNK = 250;
+const PROJECT_CHUNK = 250;
 
-export const PROJECTION_SCHEMA = `
+const PROJECTION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS txn (
   id                    TEXT    PRIMARY KEY,
   ingest_id             TEXT    NOT NULL,

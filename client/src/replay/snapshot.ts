@@ -148,7 +148,7 @@ export const SNAPSHOT_VERSION = 4;
 export const SNAPSHOT_MAX_BYTES = 6_000_000;
 
 /** The fold-cache tables. Created idempotently, like `PROJECTION_SCHEMA`. */
-export const SNAPSHOT_SCHEMA = `
+const SNAPSHOT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS fold_snapshot (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   version     INTEGER NOT NULL,
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS fold_event (
 `;
 
 /** How many {@link readEvents} rows are kept. Bookkeeping must not grow with the log. */
-export const EVENT_HISTORY = 64;
+const EVENT_HISTORY = 64;
 
 /** Canonical encoding of the delivery-only cursor set omitted by serializeState. */
 export function serializeAppliedAtCursor(applied: ReadonlySet<string>): string {
@@ -230,7 +230,7 @@ export interface LogBinding {
  * contain one (they are hex, decimal or a stream name), so no two distinct rows
  * can produce the same string by re-splitting.
  */
-export function rowIdentity(row: WireRow): string {
+function rowIdentity(row: WireRow): string {
   return [row.seq, row.stream, row.writer_id, row.writer_counter, row.blob_hash, row.prev_hash].join("\u0000");
 }
 
@@ -288,7 +288,7 @@ export function rowStoreBinding(rows: RowStore): LogBinding {
  */
 let foldPrint: string | null = null;
 
-export function foldFingerprint(): string {
+function foldFingerprint(): string {
   if (foldPrint !== null) return foldPrint;
   const serialized = serializeState(fold(CANARY()));
   const p = platform();
@@ -421,7 +421,7 @@ function CANARY(): LogEntry[] {
 // ---------------------------------------------------------------------------
 
 /** {@link saveSnapshot} was handed a state it cannot honestly describe. */
-export class SnapshotBindingError extends Error {
+class SnapshotBindingError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SnapshotBindingError";
@@ -429,7 +429,7 @@ export class SnapshotBindingError extends Error {
 }
 
 /** A stored snapshot could not be read back as a {@link State}. */
-export class SnapshotDecodeError extends Error {
+class SnapshotDecodeError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SnapshotDecodeError";

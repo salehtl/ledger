@@ -49,7 +49,7 @@
  */
 
 import type { Platform } from "../platform";
-import { WORDLIST, WORD_PREFIX_LENGTH } from "./wordlist";
+import { WORDLIST } from "./wordlist";
 
 /** Bits of entropy in a phrase. */
 export const PHRASE_ENTROPY_BITS = 128;
@@ -140,7 +140,7 @@ export function entropyToPhrase(entropy: Uint8Array, p: Platform): string {
 }
 
 /** Why a phrase was refused. Each arm is a different thing to tell the person. */
-export type PhraseRejection =
+type PhraseRejection =
   | { ok: false; reason: "length"; message: string; count: number }
   | { ok: false; reason: "unknown_word"; message: string; index: number; word: string }
   | { ok: false; reason: "checksum"; message: string };
@@ -225,9 +225,6 @@ export function suggestWords(prefix: string): string[] {
   if (p === "") return [];
   return WORDLIST.filter((w) => w.startsWith(p));
 }
-
-/** Re-exported so a caller does not have to know which module owns it. */
-export { WORD_PREFIX_LENGTH, WORDLIST };
 
 // ---------------------------------------------------------------------------
 // The bit packing

@@ -24,7 +24,7 @@
  */
 
 /** Where in the conversation a reply came from. */
-export type SMTPStage = "GREETING" | "EHLO" | "MAIL" | "RCPT" | "DATA" | "BODY" | "QUIT";
+type SMTPStage = "GREETING" | "EHLO" | "MAIL" | "RCPT" | "DATA" | "BODY" | "QUIT";
 
 export interface SMTPReply {
   /** The three-digit code. */
@@ -75,7 +75,7 @@ const DOT = 0x2e;
  * corpus is already CRLF throughout; this exists so a fixture that is not
  * cannot fail as a signature error.
  */
-export function toCRLF(raw: Uint8Array): Uint8Array {
+function toCRLF(raw: Uint8Array): Uint8Array {
   const out = new Uint8Array(raw.length * 2);
   let n = 0;
   for (let i = 0; i < raw.length; i++) {
@@ -102,7 +102,7 @@ export function toCRLF(raw: Uint8Array): Uint8Array {
  * delivered message equals the sha256 of the file on disk — but a unit-visible
  * function makes a failure readable instead of arriving as "DKIM broke".
  */
-export function dotStuff(raw: Uint8Array): Uint8Array {
+function dotStuff(raw: Uint8Array): Uint8Array {
   const crlf = toCRLF(raw);
   // Worst case: every byte is a lone `.` on its own line.
   const out = new Uint8Array(crlf.length * 2 + 2);
@@ -144,7 +144,7 @@ function bytesToString(b: Uint8Array): string {
 }
 
 /** The `Return-Path` of a message, without the angle brackets, or "". */
-export function returnPath(raw: Uint8Array): string {
+function returnPath(raw: Uint8Array): string {
   // Header block only: a body line that happens to start with `Return-Path:`
   // is body text, and reading it would let message CONTENT choose the envelope.
   const text = bytesToString(raw);

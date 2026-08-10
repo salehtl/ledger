@@ -57,7 +57,7 @@ export const SECRET_SESSION = "session_token";
 /** The secret store key prefix for a writer's Ed25519 private half. */
 export const SECRET_WRITER = "writer_key:";
 
-export const SCHEMA = `
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS client_state (
   id   INTEGER PRIMARY KEY CHECK (id = 1),
   json TEXT NOT NULL
@@ -89,7 +89,7 @@ const COLUMNS = "stream, seq, writer_id, writer_counter, type_flag, size_bucket,
  * seq written with a leading zero cannot occupy a second row at the same
  * position.
  */
-export function seqKey(seq: bigint): string {
+function seqKey(seq: bigint): string {
   const digits = seq.toString(10);
   if (digits.length > 99) throw new Error(`seq ${digits.slice(0, 20)}… has more digits than this schema can order`);
   return `${digits.length.toString(10).padStart(2, "0")}${digits}`;

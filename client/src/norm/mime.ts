@@ -159,7 +159,7 @@ const startsWithAt = (hay: Uint8Array, needle: Uint8Array, at: number): boolean 
 // Header parsing — a port of go-message/textproto.ReadHeader
 // ---------------------------------------------------------------------------
 
-export interface HeaderField {
+interface HeaderField {
   /** Lower-cased field name, for lookup. */
   readonly key: string;
   /** The unfolded value, with newlines and the spaces around them collapsed. */
@@ -477,7 +477,7 @@ export function parseMediaType(v: string): MediaType | null {
  * "text/plain" with NO parameters, and an unparseable one yields the raw field
  * value as the type.
  */
-export function contentTypeOf(h: ParsedHeader): MediaType {
+function contentTypeOf(h: ParsedHeader): MediaType {
   const v = headerGet(h, "content-type");
   if (v === "") return { type: "text/plain", params: {} };
   return parseMediaType(v) ?? { type: v, params: {} };
@@ -652,13 +652,13 @@ export function decodeQuotedPrintable(body: Uint8Array): Uint8Array {
  * undecoded, and that error is tolerated on the top-level entity and fatal to a
  * sub-part.
  */
-export function transferDecode(cte: string, body: Uint8Array): Uint8Array | null {
+function transferDecode(cte: string, body: Uint8Array): Uint8Array | null {
   const d = transferDecoderFor(cte);
   return d === null ? null : d(body);
 }
 
 /** The decoder for this encoding, or null when Go would report it unknown. */
-export function transferDecoderFor(cte: string): ((b: Uint8Array) => Uint8Array) | null {
+function transferDecoderFor(cte: string): ((b: Uint8Array) => Uint8Array) | null {
   // go-message lower-cases the raw field value and matches exactly; it does not
   // trim, but the header reader already removed surrounding whitespace.
   switch (cte.toLowerCase()) {
@@ -1171,4 +1171,4 @@ export function rawBodyAfterHeaders(raw: Uint8Array): Uint8Array {
   return raw;
 }
 
-export { ascii as asciiOfBytes, bytesOfASCII, binaryToUTF8, trimExplicitBinary };
+export { ascii as asciiOfBytes, trimExplicitBinary };

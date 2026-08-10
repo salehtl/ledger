@@ -269,7 +269,7 @@ const BY_ID: Record<string, HaltKind> = {
  * reads is the same as no invariants. So the screen shows categories with counts
  * and expands to detail.
  */
-export interface NoticeGroup {
+interface NoticeGroup {
   /** The invariant id, so the detail view can link to what it means. */
   id: string;
   /** The condition under that id, where the checker named one. */
@@ -306,7 +306,7 @@ const NOTICE_TITLES: Record<string, string> = {
 };
 
 /** At most this many detail lines are kept per group; the count is always exact. */
-export const DETAILS_PER_GROUP = 20;
+const DETAILS_PER_GROUP = 20;
 
 // ---------------------------------------------------------------------------
 // The unreadable lane
@@ -320,7 +320,7 @@ export const DETAILS_PER_GROUP = 20;
  * the count reappears on the Integrity screen, which is where the positions
  * live.
  */
-export interface UnreadableNotice {
+interface UnreadableNotice {
   count: number;
   /** `(writer, stream, counter) at seq N`, one per set-aside blob, for the detail view. */
   positions: readonly string[];

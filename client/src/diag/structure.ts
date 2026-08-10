@@ -1,7 +1,7 @@
 /** Content-free layout fingerprint, byte-for-byte compatible with Go diag.StructureSig. */
 import { platform } from "../platform.registry";
 
-export const STRUCTURE_SHAPE_BYTES = 4 << 10;
+const STRUCTURE_SHAPE_BYTES = 4 << 10;
 
 const digit = /^\p{Nd}$/u;
 const letterOrNumber = /^(?:\p{L}|\p{N})$/u;

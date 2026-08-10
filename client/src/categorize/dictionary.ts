@@ -73,7 +73,7 @@ import {
 /** Rows read per page, and per yield. `projection.ts`'s `PROJECT_CHUNK`. */
 export const CANDIDATE_CHUNK = 250;
 
-export const DICTIONARY_SCHEMA = `
+const DICTIONARY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS dict_entry (
   pattern  TEXT NOT NULL,
   match    TEXT NOT NULL,

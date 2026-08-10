@@ -81,7 +81,7 @@ import {
   type Txn,
 } from "./state";
 
-export { emptyState, fingerprint } from "./state";
+export { emptyState } from "./state";
 
 /**
  * The writer id the server's own ingest pipeline writes under. Mirrors

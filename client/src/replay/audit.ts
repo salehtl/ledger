@@ -94,7 +94,7 @@ export const AUDIT_EVERY_LAUNCHES = 20;
  * anyone last checked. 2,000 is roughly half the operator's three-year corpus,
  * so a fresh install's backfill is audited once shortly after it lands.
  */
-export const AUDIT_EVERY_SEQS = 2_000n;
+const AUDIT_EVERY_SEQS = 2_000n;
 
 /** Wall time since the last successful audit that makes one due. Seven days. */
 export const AUDIT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -107,7 +107,7 @@ export const AUDIT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  * the eligibility gate below is unfalsifiable: a build in which the audit never
  * ran once would look exactly like a build in which it ran and passed.
  */
-export const AUDIT_OVERDUE_MS = 21 * 24 * 60 * 60 * 1000;
+const AUDIT_OVERDUE_MS = 21 * 24 * 60 * 60 * 1000;
 
 /**
  * The whole run's budget.
@@ -123,10 +123,10 @@ export const AUDIT_OVERDUE_MS = 21 * 24 * 60 * 60 * 1000;
 export const AUDIT_BUDGET_MS = 180_000;
 
 /** Rows per chunk, and per yield. The same 250 as everywhere else in this pipeline. */
-export const AUDIT_CHUNK = 250;
+const AUDIT_CHUNK = 250;
 
 /** `expo-battery` / `expo-device` thermal levels, narrowed to what this needs. */
-export type ThermalState = "nominal" | "fair" | "serious" | "critical";
+type ThermalState = "nominal" | "fair" | "serious" | "critical";
 
 /**
  * What the device is doing right now. Re-read at **every chunk boundary**, not
@@ -170,7 +170,7 @@ export function auditBlocked(c: DeviceConditions): AuditBlock | null {
 }
 
 /** The persisted scheduler state. One row. */
-export const AUDIT_SCHEMA = `
+const AUDIT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS fold_audit (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
   launches     INTEGER NOT NULL,
@@ -279,7 +279,7 @@ export function auditOverdue(db: SqlDriver, now: number): boolean {
   return s.dueSince !== 0 && now - s.dueSince >= AUDIT_OVERDUE_MS;
 }
 
-export interface AuditProgress {
+interface AuditProgress {
   chunk: number;
   rows: number;
   /** Rows the re-fold expects to walk, when the caller knows. */
@@ -288,7 +288,7 @@ export interface AuditProgress {
 }
 
 /** Thrown inside {@link AuditOptions.refold}'s `between` to abandon cleanly. */
-export class AuditAbandoned extends Error {
+class AuditAbandoned extends Error {
   constructor(readonly why: string) {
     super(`integrity re-fold abandoned: ${why}`);
     this.name = "AuditAbandoned";

@@ -99,7 +99,7 @@ import {
 import { canonical, runeLength, truncateRunes } from "./canon";
 
 /** How a pattern is matched. The dictionary may only ever use the first two. */
-export type MatchKind = "exact" | "contains" | "regex";
+type MatchKind = "exact" | "contains" | "regex";
 
 const MATCH_KINDS: ReadonlySet<string> = new Set<MatchKind>(["exact", "contains", "regex"]);
 
@@ -130,7 +130,7 @@ export const MAX_CATEGORY_RUNES = 32;
  * dialect's own pattern ceiling, so a regex rule cannot be bounded here more
  * loosely than the validator that accepts it.
  */
-export const MAX_RULE_PATTERN_RUNES = 512;
+const MAX_RULE_PATTERN_RUNES = 512;
 
 /**
  * The bound every pattern is matched against, in RUNES — the load-bearing half
@@ -148,7 +148,7 @@ export const MAX_SUBJECT_RUNES = 512;
  * by `dialect.compile`, and not optional — it is what makes case folding agree
  * across engines).
  */
-export const REGEX_FLAGS: readonly string[] = ["i"];
+const REGEX_FLAGS: readonly string[] = ["i"];
 
 /** One of the user's own rules, as `replay.ts` materializes it. */
 export interface UserRule {
@@ -171,7 +171,7 @@ export interface DictEntry {
  * `PreparedRules.defects` — because a rule that quietly does nothing is a
  * support ticket that cannot be answered.
  */
-export type DefectCode =
+type DefectCode =
   | "empty_pattern"
   | "empty_category"
   | "contains_too_short"
@@ -197,7 +197,7 @@ export interface Defect {
 }
 
 /** A rule or entry that passed validation, with its pattern canonicalized. */
-export interface Prepared {
+interface Prepared {
   id: string;
   pattern: string;
   match: MatchKind;

@@ -54,26 +54,26 @@ import { compile, groupNames, validatePattern } from "./dialect.ts";
 // ---------------------------------------------------------------------------
 
 /** Bounds the normalized text, in UTF-8 BYTES (2x the raw SMTP cap, because normalization can inflate). */
-export const MAX_BODY_BYTES = 2_000_000;
+const MAX_BODY_BYTES = 2_000_000;
 /** Bounds the effective subject, in UTF-8 BYTES. */
-export const MAX_SUBJECT_BYTES = 64_000;
+const MAX_SUBJECT_BYTES = 64_000;
 /** Bounds one captured group, in RUNES. */
-export const MAX_CAPTURE_RUNES = 512;
+const MAX_CAPTURE_RUNES = 512;
 /** Bounds the empty-group diagnostic; more would make the diagnostics row unstorable, losing the WHOLE diagnostic. */
-export const MAX_EMPTY_GROUPS = 32;
+const MAX_EMPTY_GROUPS = 32;
 
 // ---------------------------------------------------------------------------
 // the format
 // ---------------------------------------------------------------------------
 
-export interface Match {
+interface Match {
   sender_domain: string[];
   subject_contains?: string[];
   body_contains?: string[];
   body_not_contains?: string[];
 }
 
-export interface Extract {
+interface Extract {
   field: string;
   type: string;
   source: string;
@@ -98,7 +98,7 @@ export interface Definition {
   required: string[];
 }
 
-export const Field = {
+const Field = {
   Amount: "amount",
   Date: "date",
   Merchant: "merchant",
@@ -107,7 +107,7 @@ export const Field = {
   IsTransfer: "is_transfer",
 } as const;
 
-export const Type = {
+const Type = {
   Amount: "amount",
   Date: "date",
   Text: "text",
@@ -117,7 +117,7 @@ export const Type = {
 } as const;
 
 /** The three date layouts. A CLOSED enum: a layout one executor understands and the other does not is a silent per-device date difference. */
-export const Layout = {
+const Layout = {
   DDMMYYYY: "DD-MM-YYYY",
   DDMonYYYYHHMMA: "DD/Mon/YYYY hh:mm A",
   DDMonYYYY: "DD/Mon/YYYY",
@@ -163,7 +163,7 @@ const EMPTY_GROUP_LABEL_RE = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
  * which is why this field is here even though the brief's `Extraction` did not
  * name it.
  */
-export type ExecError = "" | "no_match" | "missing_field" | "too_large";
+type ExecError = "" | "no_match" | "missing_field" | "too_large";
 
 /**
  * What one template read out of one message.
@@ -191,12 +191,12 @@ export interface Extraction {
 }
 
 /** A definition this executor cannot run. The publish gate refuses these, so one here means a template reached the device without passing it. */
-export class DefinitionError extends Error {
+class DefinitionError extends Error {
   override readonly name = "DefinitionError";
 }
 
 /** A pattern that violates the dialect. Thrown at LOAD time, which is the whole point of validating on the client. */
-export class DialectError extends Error {
+class DialectError extends Error {
   override readonly name = "DialectError";
   readonly codes: string[];
   constructor(message: string, codes: string[]) {
@@ -607,7 +607,7 @@ function byCodeUnit(a: string, b: string): number {
  * Returning false makes that fail closed, and `compileDefinition` refuses to
  * load such a template in the first place.
  */
-export function produced(e: Extraction, field: string): boolean {
+function produced(e: Extraction, field: string): boolean {
   switch (field) {
     case Field.Amount:
       return e.currency !== "";
@@ -633,7 +633,7 @@ export function produced(e: Extraction, field: string): boolean {
  * coherent; a state no correct executor produces means something upstream is
  * wrong and the transaction must not be written.
  */
-export function validateExtraction(e: Extraction, d: Definition): ExecError {
+function validateExtraction(e: Extraction, d: Definition): ExecError {
   for (const f of d.required ?? []) {
     if (FIELD_TYPES[f] === undefined) throw new DefinitionError(`required names ${JSON.stringify(f)}, which is not a field`);
     if (f === Field.IsTransfer) throw new DefinitionError("is_transfer cannot be required");
@@ -690,7 +690,7 @@ const INT64_MAX = 9223372036854775807n;
  * that, and accepting two spellings of the same thing would mean two
  * implementations of it in two languages.
  */
-export function convertAmount(
+function convertAmount(
   amt: string,
   ccy: string | undefined,
   defaultCurrency: string,
@@ -731,7 +731,7 @@ function asciiUpper(s: string): string {
  * Every layout failing on both attempts is a conversion failure — never a zero
  * time presented as a date.
  */
-export function convertDate(text: string, layouts: string[]): string | null {
+function convertDate(text: string, layouts: string[]): string | null {
   const trimmed = trimCapture(text);
   if (runeCountExceeds(trimmed, MAX_CAPTURE_RUNES)) return null;
   for (const l of layouts) {
@@ -862,7 +862,7 @@ function pad(n: number, width: number): string {
 }
 
 /** Trims a capture and refuses an empty or oversized one. An empty capture is not a value: it falls through to the next pattern. */
-export function convertText(s: string): string | null {
+function convertText(s: string): string | null {
   const t = trimCapture(s);
   return t === "" || runeCountExceeds(t, MAX_CAPTURE_RUNES) ? null : t;
 }
@@ -877,7 +877,7 @@ export function convertText(s: string): string | null {
  * two executors' notions of a digit the difference between one card and
  * another.
  */
-export function convertLast4(s: string): string | null {
+function convertLast4(s: string): string | null {
   if (runeCountExceeds(s, MAX_CAPTURE_RUNES)) return null;
   let digits = "";
   for (let i = 0; i < s.length; i++) {

@@ -39,7 +39,7 @@ import { ChainBreakError } from "../wire/chain";
 import type { EntityRef, Op } from "../wire/op";
 
 /** Why a flush stopped. */
-export type FlushStop = "drained" | "offline";
+type FlushStop = "drained" | "offline";
 
 export interface FlushResult {
   /** Ops the server is holding as a result of this flush. */

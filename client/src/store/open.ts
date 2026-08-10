@@ -41,7 +41,7 @@ import { sqliteStore } from "./sqlite";
 import { memSecretStore, memStore, type Store } from "./store";
 
 /** `sqlite` swaps every store below for {@link sqliteStore}. Anything else is the default. */
-export function sqliteMode(): boolean {
+function sqliteMode(): boolean {
   return process.env["LEDGER_CLIENT_STORE"] === "sqlite";
 }
 

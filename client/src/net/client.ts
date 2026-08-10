@@ -281,7 +281,7 @@ export const MAX_UPLOAD_BYTES = 12 << 20;
  * and not a bound on the memory — the bound is the server's, and this loop
  * follows `next` rather than assuming the page it asked for is the page it got.
  */
-export const COLD_RANGE_ROWS = 16;
+const COLD_RANGE_ROWS = 16;
 
 /** `oplog.TypeFlagEdit` — the only type flag a device may submit. */
 const TYPE_FLAG_EDIT = "edit";
@@ -2312,7 +2312,7 @@ function newWriterKey(): WriterKey {
   return { x: bytesToB64url(pub), d: bytesToB64url(priv) };
 }
 
-export function publicKeyBytes(k: WriterKey): Uint8Array {
+function publicKeyBytes(k: WriterKey): Uint8Array {
   // Read out of `x`, exactly as the `createPublicKey` round-trip this replaced
   // did — it consulted `x` alone and never `d`. Deriving from the private half
   // instead would additionally catch an x/d mismatch, which is a real

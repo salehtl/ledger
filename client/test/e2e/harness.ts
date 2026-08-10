@@ -79,7 +79,7 @@ export function fixtureFile(name: string): string {
  * failure. `--dns-fixtures` is refused off a loopback listener
  * (`config.EnableTestOnly`), which is what keeps it a test-only switch.
  */
-export const DNS_FIXTURES = fixtureFile("dns.json");
+const DNS_FIXTURES = fixtureFile("dns.json");
 
 const ADMIN_DSN = process.env["LEDGER_TEST_POSTGRES_URL"] ?? "";
 
@@ -791,8 +791,6 @@ export function clientFor(s: Stack, profile: string): Client {
 // ---------------------------------------------------------------------------
 // Mail
 // ---------------------------------------------------------------------------
-
-export type { SMTPReply, SMTPStage } from "./smtp";
 
 /**
  * Delivers one message to this stack's SMTP receiver.

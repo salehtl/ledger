@@ -50,7 +50,7 @@
  */
 
 /** AES-256. The only key size this seam admits. */
-export const AES_KEY_BYTES = 32;
+const AES_KEY_BYTES = 32;
 
 /** The 96-bit nonce GCM is specified for, and the only length accepted here. */
 export const AES_NONCE_BYTES = 12;
