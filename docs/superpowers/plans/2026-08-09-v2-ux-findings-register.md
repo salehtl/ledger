@@ -66,21 +66,25 @@ unmet, it was not in `skipped` either, and `stepFor` walled on it. This directly
 contradicts the product principle that a refusal must never be a dead end, and the
 spec that onboarding proposes and never blocks.
 
-**Fix:** a second device-local list beside `skipped` — `answered`, the steps the
-user says they have *done* where doing it leaves no evidence until later. It never
-makes anything true: the milestone stays unmet, `remainingSetup` still lists the
-step, and Home still shows the task until real mail arrives. It only stops the
-walk treating an unverifiable claim as a wall. Nothing is recorded once mail has
-proved it, because then the milestone is met by evidence and a claim adds nothing.
+**Fix — and whose fix it ended up being.** This branch added a device-local
+`answered` list beside `skipped`: the steps a user says they have *done*, where
+doing it leaves no evidence until later. It worked (5 tests, two mutations proved
+they bite, and the harness stopped reporting the bounce it had reported on every
+prior run).
 
-**Evidence:** 5 new tests in `src/v2/onboarding.test.ts`, including one that pins
-the *old* behaviour so the regression stays visible. Proved to bite by mutation:
-dropping the `isAnswered` check in `stepFor` fails "lets the walk continue once the
-declaration is recorded"; dropping the field from `decodeLocal` fails that plus
-"filters an answered step by the same rule as a skipped one". Restored: 52/52 pass.
-End to end, `harness/v2shoot.mjs` no longer reports
-`onboarding sent the walk back to "Send your bank mail here"` — 0 occurrences,
-where every prior run had one.
+**It is not what shipped.** The parallel branch found the same loop on the same
+day and fixed it twice over, more generally: it persists `forwardingDeclared` in
+the local record directly — a question answered must stay answered — and adds
+`finishedAt`, after which a device never re-enters the walk at all, so *any*
+future fact that regresses is prevented from dragging a finished user back. That
+covers every skippable step rather than the one in front of me. Two mechanisms
+for one bug is worse than either, so at the merge `answered` was removed and
+`onboarding.ts` taken wholesale from `origin/main`.
+
+Recorded rather than quietly dropped, because the useful part is the pattern:
+**two independent readings of the same product found the same defect within
+hours**, which says the defect was findable and says something about how long it
+had been there.
 
 ---
 
