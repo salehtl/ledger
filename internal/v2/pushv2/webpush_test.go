@@ -308,6 +308,17 @@ func TestARealSendIsEncryptedAndVAPIDSigned(t *testing.T) {
 	}
 }
 
+// TestDisabledIsTheDefaultAndDoesNothing: cfg.Push.WebEnabled defaults to false,
+// so Disabled is what cmd/ledgerd actually wires on a fresh deployment. Two
+// lines, but they cover the one pusher that runs in production by default — a
+// Notify that returned an error here would fail every ingest append with push
+// switched off.
+func TestDisabledIsTheDefaultAndDoesNothing(t *testing.T) {
+	if err := (Disabled{}).Notify(bg, uuid.New()); err != nil {
+		t.Fatalf("Disabled.Notify returned %v", err)
+	}
+}
+
 // TestMultiNotifiesEveryChannelEvenWhenOneFails. Multi's senders are
 // independent audiences, so one must not go unnotified because another failed.
 // Only [Web] ships today, so this drives stand-ins — which is the point: the

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -373,5 +374,67 @@ func TestUnsubscribingEverythingIsOneCall(t *testing.T) {
 	}
 	if got := subscriptionsOf(t, h, u); len(got) != 0 {
 		t.Fatalf("delete-all left %v", got)
+	}
+}
+
+// TestPushSubscriptionRoutesAreRateLimited pins s.PushPerUser on every write it
+// guards, and pins the ONE route deliberately left off the budget.
+//
+// Ported from TestPushRoutesAreRateLimited, which drove the same limiter
+// through the native push-token routes and was deleted with them on 2026-08-10.
+// Losing it would have left the guard unpinned on a PUBLIC listener: these were
+// the session-authenticated writes that had no limiter at all until api.go's
+// pushRate block was added — one session could write unbounded
+// push_subscriptions rows, each a permanent notification target — and with no
+// test asserting 429, deleting the Allow call would keep the whole gate green.
+//
+// All three guarded handlers are asserted, not just the first, so that removing
+// any single Allow call fails here rather than only the one a reader happened to
+// think of.
+func TestPushSubscriptionRoutesAreRateLimited(t *testing.T) {
+	h := webPushHarness(t)
+	u := h.user("u")
+	sess := h.session(u)
+	w := enrolled(t, h, u, "browser")
+	h.srv.PushPerUser = NewLimiter(0, 2, 16, time.Now) // no refill, two tokens
+
+	if rec := subscribe(t, h, sess, w, "https://push.example.test/first"); rec.Code != http.StatusNoContent {
+		t.Fatalf("first subscribe: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := h.req(http.MethodDelete, "/api/v1/push/subscriptions", sess, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete all: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The budget is shared across all three writes, as the address and account
+	// budgets are: a caller who can subscribe without limit is not limited by a
+	// bounded delete. Two tokens are now spent, so every one of them must
+	// refuse.
+	one := "/api/v1/push/subscriptions/" + url.PathEscape("https://push.example.test/first")
+	for _, c := range []struct {
+		name string
+		rec  func() *httptest.ResponseRecorder
+	}{
+		{"subscribe", func() *httptest.ResponseRecorder {
+			return subscribe(t, h, sess, w, "https://push.example.test/second")
+		}},
+		{"delete one", func() *httptest.ResponseRecorder {
+			return h.req(http.MethodDelete, one, sess, nil)
+		}},
+		{"delete all", func() *httptest.ResponseRecorder {
+			return h.req(http.MethodDelete, "/api/v1/push/subscriptions", sess, nil)
+		}},
+	} {
+		if rec := c.rec(); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s past the budget: %d %s, want 429", c.name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Reading the list is NOT on the budget, and that exemption is load-bearing
+	// rather than an oversight: the list is the only way a user learns which
+	// browsers are notified, so it is what makes the delete reachable at all. A
+	// user who has just been rate limited must still be able to SEE their
+	// devices, or the limiter would lock them out of stopping the notifications.
+	if rec := h.req(http.MethodGet, "/api/v1/push/subscriptions", sess, nil); rec.Code != http.StatusOK {
+		t.Fatalf("list while rate limited: %d %s, want 200", rec.Code, rec.Body.String())
 	}
 }
