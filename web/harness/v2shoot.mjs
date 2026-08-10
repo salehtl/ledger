@@ -238,7 +238,15 @@ try {
     if (only === null || only.includes("settings")) {
       await gotoTab(page, "Home");
       await openSettings(page);
-      for (const { id: dialogId, match, optional = false } of SETTINGS_DIALOGS) {
+      for (const { id: dialogId, match, via, optional = false } of SETTINGS_DIALOGS) {
+        // Walk into the drill-in that holds this control, if it is behind one.
+        if (via !== undefined) {
+          const row = page.getByRole("button", { name: via }).first();
+          if ((await row.count()) > 0) {
+            await row.click();
+            await settle(page, 500);
+          }
+        }
         // Re-assert Settings before every opener. Closing a sheet can take the
         // panel underneath with it — Escape reaches more than one listener, and
         // the tip inside a sheet has its own — and the symptom is six rows in a
@@ -279,6 +287,9 @@ try {
         await tipsOn(page, pass.id, `dialog: ${dialogId}`);
         await page.keyboard.press("Escape");
         await settle(page, 400);
+        // Back out of the drill-in this control lived in, so the next opener
+        // looks for its row on Settings rather than on the screen above it.
+        if (via !== undefined) await closeOverlay(page);
       }
       await closeOverlay(page);
     }

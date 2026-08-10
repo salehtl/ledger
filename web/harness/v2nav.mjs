@@ -473,16 +473,17 @@ export const SETTINGS_DIALOGS = [
   { id: "import", match: /Import a statement/ },
   { id: "export", match: /Download my data/ },
   { id: "categories", match: /Your categories/ },
-  // Not "Is your mail arriving?" and not "Home currency": those are `Panel`
-  // TITLES, and a panel's opener is a `Button` inside it with its own words.
-  // Matching the heading found nothing, and the sweep skipped both screens.
-  { id: "mail-check", match: /^Check my mail setup$/ },
+  // `via` walks a drill-in first. Settings became a list of one-line rows on
+  // 2026-08-10, so a control that used to sit in an expanded panel now lives one
+  // screen in — the sweep has to make the same two taps a person makes, and
+  // reported "no row matching" until it did.
+  { id: "mail-check", match: /^Check my mail setup$/, via: /^Is mail arriving\?/ },
   { id: "forwarding", match: /Forwarding instructions/ },
   // Only rendered while no home currency is set — it is a one-shot ceremony and
   // the row is gone once it has been used. `optional` says so, rather than the
   // sweep reporting a missing row every run against a configured account.
-  { id: "home-currency", match: /^Set my home currency$/, optional: true },
-  { id: "add-device", match: /Add a device/ },
+  { id: "home-currency", match: /^Set my home currency$/, via: /^Home currency/, optional: true },
+  { id: "add-device", match: /Add a device/, via: /^Other devices/ },
   { id: "delete-account", match: /Delete account/ },
   { id: "sign-out", match: /^Sign out/ },
 ];

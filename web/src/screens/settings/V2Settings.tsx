@@ -55,13 +55,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { SecretStore } from "@ledger/client/store/store";
 
 import { Button } from "../../components/ui/Button";
 import { ExportData } from "../ExportData";
 import { ImportFile } from "../ImportFile";
 import { Card } from "../../components/ui/Card";
-import { InfoTip } from "../../components/ui/InfoTip";
 import { Dialog, DialogFooter } from "../../components/ui/Dialog";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
@@ -93,12 +91,9 @@ import {
   CONFIRMATION_TASK_COPY,
   firstMailAt,
   RECOVERY_WARNING,
-  type OnboardingFacts,
 } from "../../v2/onboarding";
-import { webSecretStore } from "../../v2/session";
 import { Address } from "../onboarding/Address";
 import { HomeCurrency } from "../onboarding/HomeCurrency";
-import { SetupStatus } from "../onboarding/SetupStatus";
 import { Verification } from "../onboarding/Verification";
 import { addPasskey } from "../../v2/passkeyAdd";
 import { passkeyFailureCopy } from "../../v2/passkeyCopy";
@@ -114,7 +109,8 @@ import { BudgetSplitPicker, completeSplit, type BudgetSplitDraft } from "../../c
 import { MonthlyTotalField } from "../../components/MonthlyTotalField";
 import { formatMoney, minorToDraft, parseMinorDraft } from "../../lib/minorMoney";
 import { activeBanks, bankDeclaredOps } from "../../v2/sources/banks";
-import { isDeclarableBankID } from "../../v2/bank";
+import { bankDisplayName, isDeclarableBankID } from "../../v2/bank";
+import { SettingsPage } from "./SettingsPage";
 import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
 import { budgetSplitOps, DEFAULT_BUDGET_SPLIT, usablePlan } from "../../v2/sources/budget";
 import {
@@ -144,6 +140,16 @@ import { PROFILE, SERVER } from "../../v2/BootGate";
 export interface V2SettingsProps {
   /** Opens the held-mail drill-in. Absent hides the row. */
   onOpenQuarantine?: () => void;
+  /**
+   * Told when one of this screen's own drill-ins opens or closes.
+   *
+   * The panel that HOSTS Settings owns a back arrow this component cannot
+   * reach, and that arrow stayed focusable behind every drill-in — press it
+   * from a covered layer and you close the screen underneath the one you are
+   * looking at. `SettingsPage` already takes `covered` for exactly this; this is
+   * how the host learns to pass it.
+   */
+  onDrillChange?: (open: boolean) => void;
   /** Test seam. Defaults to the real add-passkey ceremony. */
   addAnotherPasskey?: (handle: V2Handle) => Promise<string>;
   /**
@@ -170,8 +176,6 @@ export interface V2SettingsProps {
   writer?: Writer;
   /** Test seam. */
   now?: () => number;
-  /** Test seam: where the setup list's dismissal is kept. */
-  secrets?: Pick<SecretStore, "get" | "set">;
 }
 
 /**
@@ -206,8 +210,17 @@ const PHASE_LABEL: Record<string, string> = {
   projecting: "Rebuilding your ledger…",
 };
 
+/**
+ * The subjects that are a screen rather than a row.
+ *
+ * Each one needs a paragraph, and a paragraph does not belong on a settings
+ * row — see the rule at the top of this component's render.
+ */
+type Sub = "plan" | "banks" | "address" | "mail" | "passkeys" | "devices" | "currency" | null;
+
 export function V2Settings({
   onOpenQuarantine,
+  onDrillChange,
   addAnotherPasskey = (h) => addPasskey({ client: h.client }),
   listPasskeys = (h) => listPasskeysApi({ client: h.client }),
   removePasskey = (h, credentialId) => removePasskeyApi({ client: h.client }, credentialId),
@@ -219,7 +232,6 @@ export function V2Settings({
   approve = (h, request) => h.approveDevice(request),
   writer: injectedWriter,
   now = Date.now,
-  secrets = webSecretStore(PROFILE),
 }: V2SettingsProps) {
   const { handle, sync, coordinator, facts } = useV2OrThrow();
   const qc = useQueryClient();
@@ -456,6 +468,54 @@ export function V2Settings({
   const savedTotal = parseMinorDraft(totalText);
   const currency = budget.data?.homeCurrency ?? null;
 
+  /**
+   * Which drill-in is open over this screen, if any.
+   *
+   * Settings is a list of one-line rows; every subject that needs a paragraph
+   * is one of these. `SettingsPage` nests, so a drill-in renders as a second
+   * full-screen panel over this one with the same back arrow and edge-swipe —
+   * the same stacking AppShell already does for Settings over the tabs.
+   */
+  const [sub, setSub] = useState<Sub>(null);
+  useEffect(() => {
+    onDrillChange?.(sub !== null);
+  }, [sub, onDrillChange]);
+
+  /**
+   * The plan has unsaved edits.
+   *
+   * Compared against what the projection actually holds, not against a snapshot
+   * taken when the screen opened: seeding lands asynchronously, so a snapshot
+   * would read "dirty" for every plan on every open. Before the seeding
+   * finishes there is nothing to lose, hence the `seededSplit` guard.
+   */
+  const planDirty =
+    seededSplit &&
+    heldPlan !== undefined &&
+    (splitDraft.need !== heldPlan.split.need ||
+      splitDraft.want !== heldPlan.split.want ||
+      splitDraft.saving !== heldPlan.split.saving ||
+      totalText !== minorToDraft(heldPlan.monthlyTotal));
+
+  /**
+   * Leaving the plan, with a word first if there is work to lose.
+   *
+   * The plan is the one control on Settings with a Save button, so backing out
+   * of it used to discard silently. `confirm` rather than a second sheet: this
+   * is a rare, recoverable slip on the way out of a screen, and a purpose-built
+   * dialog for it would be more chrome than the case deserves.
+   */
+  const closePlan = useCallback(() => {
+    if (planDirty && !window.confirm("Leave without saving your plan? The changes you made here will be lost.")) {
+      return;
+    }
+    setSub(null);
+  }, [planDirty]);
+
+  /** What the Plan row says without opening it. */
+  const planSummary =
+    savedSplit === null ? "Not set" : `${savedSplit.need} / ${savedSplit.want} / ${savedSplit.saving}`;
+
   const saveSplit = useCallback(async (): Promise<void> => {
     // `seededSplit` is a GUARD here, not bookkeeping: until the projection has
     // been read, these fields hold defaults nobody chose, and writing them would
@@ -542,6 +602,21 @@ export function V2Settings({
     [supported.data],
   );
 
+  /**
+   * What the Banks row says without opening it.
+   *
+   * Naming the banks beats counting them — you recognise your own bank at a
+   * glance, where "2 banks" tells you only that you once answered the question.
+   * So it degrades by how much room a row has: one bank gets its real name, two
+   * get their short ids, and past that only a count fits.
+   */
+  const banksSummary = useMemo(() => {
+    if (declaredActive.length === 0) return "None yet";
+    if (declaredActive.length === 1) return bankDisplayName(declaredActive[0]!);
+    if (declaredActive.length === 2) return declaredActive.map((id) => id.toUpperCase()).join(", ");
+    return `${String(declaredActive.length)} banks`;
+  }, [declaredActive]);
+
   const toggleBank = useCallback(
     (bank: string, next: boolean): void => {
       if (writer === null) return;
@@ -570,24 +645,6 @@ export function V2Settings({
       clearInterval(timer);
     };
   }, [sync.lastCompletedAt]);
-  /**
-   * The setup facts as they are NOW, not as boot found them.
-   *
-   * `facts` is a snapshot taken before this screen existed, and everything on
-   * this screen can change three of them. A list of what is still outstanding
-   * that kept saying "add your banks" after a bank was added would be exactly
-   * the nag the operator has already objected to, so it reads the same live
-   * values the rows above it draw from.
-   */
-  const liveFacts: OnboardingFacts = {
-    ...facts,
-    banks: declaredActive,
-    inboundAddress: shownAddress ?? facts.inboundAddress,
-    homeCurrency: homeCurrency ?? null,
-    // Mail that has arrived is proof a route exists, whatever this device
-    // remembers about a button press.
-    forwardingDeclared: facts.forwardingDeclared || facts.firstMailConfirmedAt !== null,
-  };
 
   /**
    * The home-currency ops, authored the way every other op on this screen is.
@@ -617,6 +674,20 @@ export function V2Settings({
 
   return (
     <div className="space-y-6">
+      {/*
+        Everything on Settings itself goes inert while a drill-in is over it.
+
+        `AppShell` does this for the layers it owns — Settings over the tabs,
+        held mail over Settings — but a drill-in opened from HERE is a sibling it
+        does not know about, so without this each of the seven left nineteen
+        controls behind the panel still focusable, reachable by Tab and by a
+        screen-reader swipe. `audit.mjs` reported it on all seven the first time
+        this restructure was measured.
+
+        `display: contents`, so the wrapper adds no box and the `space-y-6`
+        rhythm above is unchanged.
+      */}
+      <div className="contents" inert={sub !== null}>
       {/* ---- Sync: the state of the ledger, above the settings, not among them ---- */}
       <div data-testid="settings-sync" className="px-1 space-y-1">
         <div className="flex items-center justify-between gap-3">
@@ -665,189 +736,69 @@ export function V2Settings({
         )}
       </div>
 
-      {/* What setup asked for and did not get, and whether mail is arriving.
-          Above the groups because it is not a setting — it is the state of a
-          setup that is allowed to be unfinished. It disappears for good when
-          dismissed, and when there is nothing left to say. */}
-      <SetupStatus facts={liveFacts} secrets={secrets} {...(onOpenQuarantine === undefined ? {} : { onOpenHeldMail: onOpenQuarantine })} />
+      {/*
+        THE RULE THIS SCREEN IS BUILT ON: a settings row is one line, and
+        anything that needs a paragraph is a screen rather than a row.
 
-      <Group label="Plan">
-        {/* The counterpart of the onboarding step: the same control, the same
-            rule that the three percentages must add up to 100, and the same
-            refusal to normalise them. Unlike the home currency, this IS
-            changeable — a plan is a label over money that has already been
-            bucketed, so changing it re-labels and never re-values. */}
-        {/*
-          The paragraph that was here is a definition of what a plan IS, plus
-          the reassurance that ledger only ever watches. Neither changes what
-          the user does — the controls under it are labelled, the plan is
-          changeable, and nothing here is irreversible — so both moved into the
-          tip. The group label and the field labels are what the screen carries.
-        */}
-        <Panel
-          title="Your plan"
-          info={
-            <InfoTip about="your plan" testId="tip-plan">
-              How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you
-              mean to spend in a month. ledger shows your spending against it — it never moves money or blocks a
-              purchase.
-            </InfoTip>
-          }
-        >
-          {/* Locked until the stored plan has been read, because until then
-              these fields hold a placeholder the seeding is about to replace —
-              and a control that discards what you typed is worse than one that
-              would not let you type. The line says which of the two it is. */}
-          <BudgetSplitPicker
-            value={splitDraft}
-            onChange={setSplitDraft}
-            idPrefix="settings-split"
-            disabled={!seededSplit}
-          />
-          <MonthlyTotalField
-            value={totalText}
-            onChange={setTotalText}
-            currency={currency}
-            idPrefix="settings-total"
-            disabled={!seededSplit}
-          />
-          {!seededSplit && (
-            <p data-testid="settings-plan-warming" role="status" className="text-sm text-muted">
-              Reading your plan from this device. It will be ready in a moment — nothing is wrong.
-            </p>
-          )}
-          <Button
-            variant="primary"
-            disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}
-            onClick={() => void saveSplit()}
-          >
-            {splitSaving ? "Saving…" : "Save plan"}
-          </Button>
-          {splitNote !== null && (
-            <p data-testid="settings-split-note" role="status" className="text-sm text-muted">
-              {splitNote}
-            </p>
-          )}
-        </Panel>
+        Before this pass Settings was six full viewport-heights (~4,900px at
+        390px) of expanded panels, each arguing its case before you could act:
+        the Passkeys panel alone ran a screen and a half of prose before its
+        button, the plan editor sat inline with the only Save on the screen, and
+        row labels wrapped to two lines ("Import a / statement") while their
+        values truncated. A settings screen's job is to get you to a decision,
+        not to make the case for it first.
 
-        <Panel title="Your banks">
-          {supported.isPending ? (
-            <div className="flex items-center gap-3 text-muted" role="status">
-              <PixelSpinner size={12} />
-              <span className="text-sm">Checking which banks ledger can read…</span>
-            </div>
-          ) : (
-            <>
-              {supported.isError && (
-                <p className="text-xs text-warn">
-                  ledger could not fetch the list of banks it can read. The banks you added are below and can
-                  still be changed.
-                </p>
-              )}
-              <BankPicker
-                idPrefix="settings-bank"
-                supported={supportedIDs}
-                selected={declaredActive}
-                onToggle={toggleBank}
-              />
-            </>
-          )}
-          {/*
-            Every clause here is one the code honours. Removing a bank writes
-            `bank_declared {active:false}` and NOTHING else: mail keeps arriving
-            at the inbound address, the sender allowlist — a separate, server-side
-            table written by the held-mail decision — is untouched, and no
-            transaction is removed. Saying anything stronger would be describing
-            a feature this product does not have.
-          */}
-          {/*
-            The cut clause said this list "is what it counts when choosing which
-            parser to write next". Nothing counts it: demand is the server-side
-            `waitlist` table, written only by the explicit request button on the
-            setup step. In a note whose whole purpose is to claim only what the
-            code honours, that was the one sentence that did not.
-          */}
-          <p data-testid="settings-banks-note" className="text-xs leading-relaxed text-muted">
-            This is the list ledger asked you for during setup, kept here so you can change it. Taking a bank off
-            it leaves everything else as it is: mail sent to your address is still filed, senders you have already
-            trusted are still trusted, and transactions already recorded are still there.
-          </p>
-        </Panel>
-      </Group>
+        So every paragraph moved to the drill-in it belongs to, where the reader
+        has already chosen to care. **Nothing was deleted** — several of these
+        sentences are load-bearing (the recovery warning, what removing a bank
+        does not do, the home currency's permanence) and they are asserted by
+        `V2Settings.test.tsx` on the screens they now live on.
 
-      <Group label="Automation">
-        <Panel title="Your inbound address">
-          <p className="text-sm leading-relaxed text-muted">
-            Bank mail forwarded here becomes transactions in ledger. Nothing else about your mailbox is read.
-          </p>
-          {inbound.isPending && shownAddress === null && (
-            <div className="flex items-center gap-3 text-muted" role="status">
-              <PixelSpinner size={12} />
-              <span className="text-sm">Getting your address…</span>
-            </div>
-          )}
-          {shownAddress !== null && (
-            <>
-              {/* `select-all` + `break-all`: it is longer than a phone is wide
-                  and it is the one string here somebody may move by hand. */}
-              <p data-testid="settings-inbound-address" className="font-mono text-sm select-all break-all">
-                {shownAddress}
-              </p>
-              <Button variant="secondary" onClick={() => void onCopy(shownAddress)}>
-                {copied === true ? "Copied" : "Copy address"}
-              </Button>
-              {copied === false && (
-                <p role="status" className="text-xs text-bad">
-                  This browser would not let ledger use the clipboard. The address above can be selected by hand.
-                </p>
-              )}
-            </>
-          )}
-          {inbound.isError && (
-            <p role="alert" className="text-sm text-bad">
-              ledger could not read your address just now. Nothing is wrong with the address itself — it is created
-              on the server and it is still there.
-            </p>
-          )}
-        </Panel>
+        The groups are named for what the user owns rather than for the system
+        that serves it: "Automation" and "Library" were our words, not theirs.
+      */}
 
-        {/*
-          The check that used to be a step, and the reason it is here instead.
-          It waited for a real bank alert — an event the user cannot cause
-          without spending money — so it sat between them and the product for as
-          long as their bank felt like it. It is a status now, and it has to be
-          re-runnable at ANY time: a forwarding rule can break, or be re-made,
-          months after setup, and a check that only existed during onboarding is
-          a check nobody can run when that happens.
-        */}
-        <Panel title="Is your mail arriving?">
-          <p className="text-sm leading-relaxed text-muted">
-            ledger checks by looking for mail that actually became a transaction. Run it whenever you like — a
-            forwarding rule can stop working long after you set it up.
-          </p>
-          <Button variant="secondary" onClick={() => setMailCheckOpen(true)}>
-            Check my mail setup
-          </Button>
-          <p data-testid="settings-confirmation-task" className="text-xs leading-relaxed text-muted">
-            {CONFIRMATION_TASK_COPY.body}
-          </p>
-        </Panel>
-
+      <Group label="Your money">
         <RowCard>
-          {/* The forwarding step, whether it was skipped during setup or is
-              being re-done. Same screen, same instructions. */}
+          <HubRow label="Plan" value={planSummary} onClick={() => setSub("plan")} />
           <HubRow
-            label="Forwarding instructions"
-            value="How to send bank mail here"
-            onClick={() => setForwardingOpen(true)}
+            label="Home currency"
+            value={homeCurrency ?? "Not set"}
+            onClick={() => setSub("currency")}
           />
-          {onOpenQuarantine !== undefined && (
-            <HubRow label="Held mail" value="Mail waiting on a decision" onClick={onOpenQuarantine} />
-          )}
+          <HubRow
+            label="Your categories"
+            value={
+              categoryDefs.length === 0
+                ? "The built-in set"
+                : `${categoryDefs.filter((c) => c.active).length} of your own`
+            }
+            onClick={() => setCategoriesOpen(true)}
+          />
         </RowCard>
       </Group>
 
-      <Group label="Device" testID="settings-group-device">
+      <Group label="Bank mail" testID="settings-group-mail">
+        <RowCard>
+          {/* The address is the one value here worth showing on the row: it is
+              read far more often than it is changed, and a truncated copy of it
+              is enough to recognise. The full string, and the one control that
+              matters, are a tap away. */}
+          <HubRow label="Your address" value={shownAddress ?? "Getting it…"} onClick={() => setSub("address")} />
+          <HubRow label="Is mail arriving?" value="Check it now" onClick={() => setSub("mail")} />
+          <HubRow
+            label="Forwarding instructions"
+            value="How to send mail here"
+            onClick={() => setForwardingOpen(true)}
+          />
+          {onOpenQuarantine !== undefined && (
+            <HubRow label="Held mail" value="Waiting on a decision" onClick={onOpenQuarantine} />
+          )}
+          <HubRow label="Your banks" value={banksSummary} onClick={() => setSub("banks")} />
+        </RowCard>
+      </Group>
+
+      <Group label="This device" testID="settings-group-device">
         <RowCard>
           {/* About THIS browser, not the account — which is why it sits with
               the text size and the haptics and not with the plan. */}
@@ -871,56 +822,8 @@ export function V2Settings({
               if (v) fire("selection"); // let the user hear it immediately
             }}
           />
-        </RowCard>
-
-        {/* Passkeys: the only backup this product can offer. */}
-        <Panel title="Passkeys">
-          <div data-testid="settings-recovery-warning" className="space-y-2">
-            <h4 className="text-sm font-semibold text-bad">{RECOVERY_WARNING.title}</h4>
-            <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.body}</p>
-            <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
-          </div>
-          {/* What the account can sign in with, and the way to end one. The
-              last-passkey guard is the SERVER's; the panel also disables the
-              control, with the reason shown. */}
-          <PasskeysPanel list={loadPasskeys} remove={removeOnePasskey} reloadKey={passkeysReload} />
-          <p className="text-sm leading-relaxed text-muted">{ADD_PASSKEY_COPY.body}</p>
-          <p className="text-sm leading-relaxed text-muted">
-            A passkey you already have keeps its old name until you remove and re-add it. Passkeys cannot be
-            renamed.
-          </p>
-          <Button variant="primary" disabled={adding} onClick={() => void addPasskeyNow()}>
-            {adding ? "Waiting for your authenticator…" : ADD_PASSKEY_COPY.action}
-          </Button>
-          {passkeyNote !== null && (
-            <p data-testid="settings-passkey-note" role="status" className="text-sm text-muted">
-              {passkeyNote}
-            </p>
-          )}
-        </Panel>
-
-        <Panel title="Your devices">
-          <p className="text-sm leading-relaxed text-muted">
-            A device that signs in for the first time can read this account, but it cannot make changes until a
-            device that is already signed in approves it. Approving is done here, with a code that device shows
-            you.
-          </p>
-          <Button variant="secondary" onClick={() => setAddDeviceOpen(true)}>
-            Add a device
-          </Button>
-        </Panel>
-
-        {/* Last in the group, after everything a person came here to change:
-            the one control on this screen they must not hit while reaching for
-            another. Library follows it, because a category list is not
-            something anybody scrolls past Sign out to reach by accident. */}
-        <RowCard>
-          <Pressable
-            onClick={() => setSignOutOpen(true)}
-            className="w-full min-h-11 px-4 py-3.5 text-left text-sm font-medium text-bad hover:bg-surface-2/50"
-          >
-            Sign out
-          </Pressable>
+          <HubRow label="Passkeys" value="How you sign in" onClick={() => setSub("passkeys")} />
+          <HubRow label="Other devices" value="Approve a new one" onClick={() => setSub("devices")} />
         </RowCard>
       </Group>
 
@@ -932,75 +835,294 @@ export function V2Settings({
       */}
       <Group label="Your data" testID="settings-group-data">
         <RowCard>
-          <HubRow
-            label="Import a statement"
-            value="Add transactions from a CSV file"
-            onClick={() => setImportOpen(true)}
-          />
+          <HubRow label="Import a statement" value="From a CSV file" onClick={() => setImportOpen(true)} />
           {/* The export half of the alpha consent promise — "access, export and
               delete… all of which are available in the app". It is a row and not
               a buried link because the sentence it satisfies is countersigned. */}
-          <HubRow
-            label="Download my data"
-            value="Your transactions as a CSV file"
-            onClick={() => setExportOpen(true)}
-          />
+          <HubRow label="Download my data" value="As a CSV file" onClick={() => setExportOpen(true)} />
         </RowCard>
       </Group>
 
-      <Group label="Library">
+      {/*
+        Account: leaving, and the one destructive action v2 has. Both are here
+        rather than scattered — sign out used to sit at the bottom of the device
+        group, above a category list, where it was the control you passed while
+        reaching for something else. Deletion stays last.
+      */}
+      <Group label="Account" testID="settings-danger">
         <RowCard>
-          <HubRow
-            label="Your categories"
-            value={
-              categoryDefs.length === 0
-                ? "The built-in set"
-                : `${categoryDefs.filter((c) => c.active).length} of your own`
-            }
-            onClick={() => setCategoriesOpen(true)}
-          />
-        </RowCard>
-
-        {/* Home currency: stated, never CHANGED — and offered exactly once, to
-            an account that skipped it during setup. Those are different things,
-            and conflating them is what would make this row a lie. Setting a
-            currency that has never been set is not a change; the ceremony is
-            the onboarding one, with the same permanence warning in the same
-            three places, and it is unreachable the moment one exists. */}
-        <Panel title="Home currency">
-          <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
-            {homeCurrency ?? "—"}
-          </p>
-          {homeCurrency === null ? (
-            <>
-              <p data-testid="settings-home-currency-unset" className="text-sm leading-relaxed text-muted">
-                You have not set one. Totals stay in the currency each purchase was made in until you do. It is set
-                once and cannot be changed afterwards.
-              </p>
-              <Button variant="secondary" disabled={writer === null} onClick={() => setCurrencyOpen(true)}>
-                Set my home currency
-              </Button>
-            </>
-          ) : (
-            <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
-              ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
-              currency cannot be changed. The only way to a different one is a new account.
-            </p>
-          )}
-        </Panel>
-      </Group>
-
-      {/* The first destructive action v2 has. The settings design said not to
-          invent a Danger zone "to fill the shape" — that instruction was written
-          when there was nothing destructive; deletion is now real, so the group
-          is now correct. Exactly one row, last, below everything reversible. */}
-      <Group label="Danger zone" testID="settings-danger">
-        <RowCard>
+          <Pressable
+            onClick={() => setSignOutOpen(true)}
+            className="w-full min-h-11 px-4 py-3.5 text-left text-sm font-medium text-bad hover:bg-surface-2/50"
+          >
+            Sign out
+          </Pressable>
           <HubRow label="Delete account" onClick={() => setDeleteAccountOpen(true)} />
         </RowCard>
       </Group>
 
       <p className="text-center text-xs text-muted pb-4">Icons by pixelarticons (MIT)</p>
+      </div>
+
+      {/*
+        The drill-ins. Every one of these was an expanded panel on the screen
+        above until this pass, and each is here for the same reason: it needs a
+        paragraph, and a paragraph does not belong on a row.
+
+        `SettingsPage` nests — AppShell already stacks Settings over the tabs and
+        held mail over Settings — so these render as a second panel over this
+        one, with the same back arrow and the same edge-swipe. The state stays
+        in this component rather than moving with the JSX: these subjects share
+        the plan draft, the address read and the passkey list with the rows that
+        summarise them, and prop-drilling that into five files would trade one
+        kind of clutter for another.
+      */}
+      {sub === "plan" && (
+        <SettingsPage title="Your plan" onClose={closePlan}>
+          <div className="space-y-4">
+            {/* The counterpart of the onboarding step: the same control, the same
+                rule that the three percentages must add up to 100, and the same
+                refusal to normalise them. Unlike the home currency, this IS
+                changeable — a plan is a label over money that has already been
+                bucketed, so changing it re-labels and never re-values. */}
+            <p className="text-sm leading-relaxed text-muted">
+              How you mean to divide what you earn: needs, wants, and what is saved or paid down, and what you mean
+              to spend in a month. ledger shows your spending against it — it never moves money or blocks a purchase.
+            </p>
+            {/* Locked until the stored plan has been read, because until then
+                these fields hold a placeholder the seeding is about to replace —
+                and a control that discards what you typed is worse than one that
+                would not let you type. The line says which of the two it is. */}
+            <BudgetSplitPicker
+              value={splitDraft}
+              onChange={setSplitDraft}
+              idPrefix="settings-split"
+              disabled={!seededSplit}
+            />
+            <MonthlyTotalField
+              value={totalText}
+              onChange={setTotalText}
+              currency={currency}
+              idPrefix="settings-total"
+              disabled={!seededSplit}
+            />
+            {!seededSplit && (
+              <p data-testid="settings-plan-warming" role="status" className="text-sm text-muted">
+                Reading your plan from this device. It will be ready in a moment — nothing is wrong.
+              </p>
+            )}
+            <Button
+              variant="primary"
+              disabled={!seededSplit || savedSplit === null || savedTotal.state === "refused" || splitSaving}
+              onClick={() => void saveSplit()}
+            >
+              {splitSaving ? "Saving…" : "Save plan"}
+            </Button>
+            {splitNote !== null && (
+              <p data-testid="settings-split-note" role="status" className="text-sm text-muted">
+                {splitNote}
+              </p>
+            )}
+            {/*
+              The plan is the only thing on Settings with a Save button, which
+              made backing out of it a silent discard — you typed a split, went
+              back, and nothing said the edit had gone. Now leaving with unsaved
+              changes asks first. It is a confirmation on a REVERSIBLE action,
+              which the principles normally forbid; it earns its place because
+              the alternative is losing work with no notice, and it only appears
+              when there is work to lose.
+            */}
+            {planDirty && (
+              <p role="status" className="text-xs text-warn">
+                Not saved yet. Going back will discard this.
+              </p>
+            )}
+          </div>
+        </SettingsPage>
+      )}
+
+      {sub === "banks" && (
+        <SettingsPage title="Your banks" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            {supported.isPending ? (
+              <div className="flex items-center gap-3 text-muted" role="status">
+                <PixelSpinner size={12} />
+                <span className="text-sm">Checking which banks ledger can read…</span>
+              </div>
+            ) : (
+              <>
+                {supported.isError && (
+                  <p className="text-xs text-warn">
+                    ledger could not fetch the list of banks it can read. The banks you added are below and can
+                    still be changed.
+                  </p>
+                )}
+                <BankPicker
+                  idPrefix="settings-bank"
+                  supported={supportedIDs}
+                  selected={declaredActive}
+                  onToggle={toggleBank}
+                />
+              </>
+            )}
+            {/*
+              Every clause here is one the code honours. Removing a bank writes
+              `bank_declared {active:false}` and NOTHING else: mail keeps arriving
+              at the inbound address, the sender allowlist — a separate, server-side
+              table written by the held-mail decision — is untouched, and no
+              transaction is removed. Saying anything stronger would be describing
+              a feature this product does not have.
+            */}
+            <p data-testid="settings-banks-note" className="text-xs leading-relaxed text-muted">
+              This is the list ledger asked you for during setup, kept here so you can change it. Taking a bank off
+              it leaves everything else as it is: mail sent to your address is still filed, senders you have already
+              trusted are still trusted, and transactions already recorded are still there.
+            </p>
+          </div>
+        </SettingsPage>
+      )}
+
+      {sub === "address" && (
+        <SettingsPage title="Your address" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-muted">
+              Bank mail forwarded here becomes transactions in ledger. Nothing else about your mailbox is read.
+            </p>
+            {inbound.isPending && shownAddress === null && (
+              <div className="flex items-center gap-3 text-muted" role="status">
+                <PixelSpinner size={12} />
+                <span className="text-sm">Getting your address…</span>
+              </div>
+            )}
+            {shownAddress !== null && (
+              <>
+                {/* `select-all` + `break-all`: it is longer than a phone is wide
+                    and it is the one string here somebody may move by hand. */}
+                <p data-testid="settings-inbound-address" className="font-mono text-sm select-all break-all">
+                  {shownAddress}
+                </p>
+                <Button variant="secondary" onClick={() => void onCopy(shownAddress)}>
+                  {copied === true ? "Copied" : "Copy address"}
+                </Button>
+                {copied === false && (
+                  <p role="status" className="text-xs text-bad">
+                    This browser would not let ledger use the clipboard. The address above can be selected by hand.
+                  </p>
+                )}
+              </>
+            )}
+            {inbound.isError && (
+              <p role="alert" className="text-sm text-bad">
+                ledger could not read your address just now. Nothing is wrong with the address itself — it is
+                created on the server and it is still there.
+              </p>
+            )}
+          </div>
+        </SettingsPage>
+      )}
+
+      {/*
+        The check that used to be a step, and the reason it is here instead. It
+        waited for a real bank alert — an event the user cannot cause without
+        spending money — so it sat between them and the product for as long as
+        their bank felt like it. It is a status now, and it has to be re-runnable
+        at ANY time: a forwarding rule can break, or be re-made, months after
+        setup, and a check that only existed during onboarding is a check nobody
+        can run when that happens.
+      */}
+      {sub === "mail" && (
+        <SettingsPage title="Is mail arriving?" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-muted">
+              ledger checks by looking for mail that actually became a transaction. Run it whenever you like — a
+              forwarding rule can stop working long after you set it up.
+            </p>
+            <Button variant="secondary" onClick={() => setMailCheckOpen(true)}>
+              Check my mail setup
+            </Button>
+            <p data-testid="settings-confirmation-task" className="text-xs leading-relaxed text-muted">
+              {CONFIRMATION_TASK_COPY.body}
+            </p>
+          </div>
+        </SettingsPage>
+      )}
+
+      {/* Passkeys: the only backup this product can offer. */}
+      {sub === "passkeys" && (
+        <SettingsPage title="Passkeys" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            <div data-testid="settings-recovery-warning" className="space-y-2">
+              <h4 className="text-sm font-semibold text-bad">{RECOVERY_WARNING.title}</h4>
+              <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.body}</p>
+              <p className="text-sm leading-relaxed text-muted">{RECOVERY_WARNING.advice}</p>
+            </div>
+            {/* What the account can sign in with, and the way to end one. The
+                last-passkey guard is the SERVER's; the panel also disables the
+                control, with the reason shown. */}
+            <PasskeysPanel list={loadPasskeys} remove={removeOnePasskey} reloadKey={passkeysReload} />
+            <p className="text-sm leading-relaxed text-muted">{ADD_PASSKEY_COPY.body}</p>
+            <p className="text-sm leading-relaxed text-muted">
+              A passkey you already have keeps its old name until you remove and re-add it. Passkeys cannot be
+              renamed.
+            </p>
+            <Button variant="primary" disabled={adding} onClick={() => void addPasskeyNow()}>
+              {adding ? "Waiting for your authenticator…" : ADD_PASSKEY_COPY.action}
+            </Button>
+            {passkeyNote !== null && (
+              <p data-testid="settings-passkey-note" role="status" className="text-sm text-muted">
+                {passkeyNote}
+              </p>
+            )}
+          </div>
+        </SettingsPage>
+      )}
+
+      {sub === "devices" && (
+        <SettingsPage title="Other devices" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-muted">
+              A device that signs in for the first time can read this account, but it cannot make changes until a
+              device that is already signed in approves it. Approving is done here, with a code that device shows
+              you.
+            </p>
+            <Button variant="secondary" onClick={() => setAddDeviceOpen(true)}>
+              Add a device
+            </Button>
+          </div>
+        </SettingsPage>
+      )}
+
+      {/* Home currency: stated, never CHANGED — and offered exactly once, to an
+          account that skipped it during setup. Those are different things, and
+          conflating them is what would make this row a lie. Setting a currency
+          that has never been set is not a change; the ceremony is the onboarding
+          one, with the same permanence warning in the same three places, and it
+          is unreachable the moment one exists. */}
+      {sub === "currency" && (
+        <SettingsPage title="Home currency" onClose={() => setSub(null)}>
+          <div className="space-y-4">
+            <p data-testid="settings-home-currency" className="font-mono text-2xl tnum">
+              {homeCurrency ?? "—"}
+            </p>
+            {homeCurrency === null ? (
+              <>
+                <p data-testid="settings-home-currency-unset" className="text-sm leading-relaxed text-muted">
+                  You have not set one. Totals stay in the currency each purchase was made in until you do. It is
+                  set once and cannot be changed afterwards.
+                </p>
+                <Button variant="secondary" disabled={writer === null} onClick={() => setCurrencyOpen(true)}>
+                  Set my home currency
+                </Button>
+              </>
+            ) : (
+              <p data-testid="settings-home-currency-note" className="text-sm leading-relaxed text-muted">
+                ledger converts each foreign purchase once, when it arrives, and keeps that figure — so the home
+                currency cannot be changed. The only way to a different one is a new account.
+              </p>
+            )}
+          </div>
+        </SettingsPage>
+      )}
 
       {textSizeOpen && (
         <Dialog title="Text size" onClose={() => setTextSizeOpen(false)}>
@@ -1182,7 +1304,14 @@ function HubRow({ label, value, onClick }: { label: string; value?: string; onCl
       onClick={onClick}
       className="w-full min-h-11 flex items-center justify-between gap-3 px-4 py-3.5 text-sm font-medium text-left hover:bg-surface-2/50"
     >
-      <span>{label}</span>
+      {/* The LABEL does not shrink; the value does.
+          Both sides were shrinkable, so a row with a long value wrapped its
+          label instead of truncating the value — "Import a / statement" and
+          "Forwarding / instructions" on two lines each, beside a value that had
+          room to spare. The label is the row's identity and the only part you
+          scan for; the value is a summary, and a summary is allowed to end in
+          an ellipsis. */}
+      <span className="shrink-0">{label}</span>
       <span className="flex items-center gap-2 text-muted min-w-0">
         {value !== undefined && <span className="truncate text-xs">{value}</span>}
         <ChevronRight size={16} aria-hidden className="shrink-0" />

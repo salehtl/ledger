@@ -53,12 +53,45 @@ function wrap(props: Partial<V2SettingsProps> = {}, rt: Partial<FakeRuntimeOptio
 }
 
 /**
+ * Open one of Settings' drill-ins, the way a person does: by tapping its row.
+ *
+ * Settings is a list of one-line rows now — every subject that needs a
+ * paragraph is a screen behind one — so a test that asserts on a paragraph has
+ * to walk there first. That is not ceremony for its own sake: it is the same
+ * number of taps the user makes, and a row that stopped opening its screen
+ * would fail here rather than passing against markup nobody can reach.
+ */
+async function openSub(row: RegExp): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: row }));
+  // The drill-in slides in; its heading is the signal it is on the glass.
+  await screen.findByRole("heading", { level: 1 });
+}
+
+/**
+ * Wait until Settings has settled.
+ *
+ * The address read is the slowest thing on this screen, so it has always been
+ * the readiness gate here. It used to be waited for by its `data-testid`, which
+ * now lives inside the "Your address" drill-in — so the gate is the row's own
+ * value instead. That is a better gate as well as a working one: it asserts the
+ * summary a row is FOR, which is the thing this restructure could plausibly get
+ * wrong.
+ */
+async function settingsReady(): Promise<void> {
+  await screen.findByRole("button", { name: /Your address.*sirdab/ });
+}
+
+/**
  * The plan's controls are locked until the stored plan has been read — a
  * placeholder is not the user's plan, and a field that discards what you typed
  * is worse than one that would not let you type. Every test that edits the plan
  * waits for that, exactly as a person would.
+ *
+ * It opens the Plan drill-in first, because that is where the fields now live.
  */
 async function planReady(): Promise<HTMLElement> {
+  await openSub(/^Plan/);
   const needs = await screen.findByLabelText(/Needs/);
   await waitFor(() => {
     expect(needs).toBeEnabled();
@@ -71,6 +104,7 @@ describe("V2Settings", () => {
     const user = userEvent.setup();
     const copied: string[] = [];
     wrap({ copy: async (t) => void copied.push(t) });
+    await openSub(/^Your address/);
 
     expect(await screen.findByTestId("settings-inbound-address")).toHaveTextContent("u-abc@in.sirdab.ae");
     await user.click(screen.getByRole("button", { name: /copy address/i }));
@@ -79,6 +113,7 @@ describe("V2Settings", () => {
 
   it("reads the home currency from the log, and says it cannot be changed", async () => {
     wrap();
+    await openSub(/^Home currency/);
     expect(await screen.findByTestId("settings-home-currency")).toHaveTextContent("AED");
     expect(screen.getByTestId("settings-home-currency-note").textContent ?? "").toMatch(/cannot be changed/i);
   });
@@ -87,6 +122,7 @@ describe("V2Settings", () => {
     const user = userEvent.setup();
     const add = vi.fn(async () => "cred-2");
     wrap({ addAnotherPasskey: add });
+    await openSub(/^Passkeys/);
 
     await user.click(await screen.findByRole("button", { name: /add another passkey/i }));
     await waitFor(() => {
@@ -103,6 +139,7 @@ describe("V2Settings", () => {
     const user = userEvent.setup();
     const list = vi.fn(async (): Promise<PasskeySummary[]> => []);
     wrap({ addAnotherPasskey: async () => "cred-2", listPasskeys: list });
+    await openSub(/^Passkeys/);
 
     await screen.findByRole("button", { name: /add another passkey/i });
     await waitFor(() => {
@@ -124,6 +161,7 @@ describe("V2Settings", () => {
         throw new PasskeyError("cancelled", "the passkey prompt was dismissed");
       },
     });
+    await openSub(/^Passkeys/);
 
     await user.click(await screen.findByRole("button", { name: /add another passkey/i }));
     const note = await screen.findByTestId("settings-passkey-note");
@@ -133,6 +171,7 @@ describe("V2Settings", () => {
 
   it("states that there is no recovery, next to the control that is the only answer to it", async () => {
     wrap();
+    await openSub(/^Passkeys/);
     const warning = await screen.findByTestId("settings-recovery-warning");
     expect(warning.textContent ?? "").toMatch(/no password to reset/i);
   });
@@ -158,44 +197,45 @@ describe("V2Settings", () => {
   /**
    * The information architecture, asserted as a whole.
    *
-   * Four eyebrow labels in v1's order, and no fifth. There is deliberately no
-   * Danger zone: v2 has nothing destructive to put under one, and a heading
-   * with nothing under it is worse than no heading.
+   * Five groups, named for what the USER owns rather than for the system that
+   * serves it: "Automation" and "Library" were our words, not theirs, and a
+   * person looking for their categories does not think "library".
    *
-   * "Finish setting up" rides above them and is not a group: it is what is left
-   * of a setup the user was allowed to leave unfinished, it disappears when
-   * there is nothing left to say, and it disappears for good when dismissed.
-   * The fixture has mail that has never arrived, so it is showing here.
+   * The order is what a person reaches for, most often first: their money, then
+   * the mail that feeds it, then this handset, then moving data in and out, then
+   * the account itself. Leaving is last because it is the one group nobody is
+   * browsing for.
+   *
+   * "Finish setting up" is NOT here any more. It was a second copy of Home's
+   * checklist rendered without an `onOpenTask`, so its rows were dead text on
+   * this screen while the live ones sat one tab away.
    */
-  it("groups the settings the way v1 does, with the Danger zone last", async () => {
-    // This test used to assert NO Danger zone existed, per the settings design's
-    // "do not invent one to fill the shape". Account deletion is now real
-    // (2026-08-09), so the zone is no longer invented — it is earned, it comes
-    // last, and it holds exactly one row.
+  it("groups settings by what the user owns, with the account last", async () => {
     wrap();
-    await screen.findByTestId("settings-inbound-address");
+    await settingsReady();
     const groups = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    // "Your data" joined the list on 2026-08-09 with the statement importer:
-    // it is where the user's own ledger moves in and out under their own hand,
-    // and it sits above Library for the same reason Plan sits above Device —
-    // it is about the ledger, not about this browser.
-    expect(groups).toEqual([
-      "Finish setting up",
-      "Plan",
-      "Automation",
-      "Device",
-      "Your data",
-      "Library",
-      "Danger zone",
-    ]);
-    const danger = screen.getByTestId("settings-danger");
-    const rows = within(danger).getAllByRole("button");
-    expect(rows.map((r) => r.textContent)).toEqual(["Delete account"]);
+    expect(groups).toEqual(["Your money", "Bank mail", "This device", "Your data", "Account"]);
+  });
+
+  /**
+   * Both ways out of the account are in one group, and deletion is last.
+   *
+   * Sign out used to sit at the bottom of the device group, directly above a
+   * category list — the control you pass while reaching for something else.
+   * Putting it with deletion means the only group holding an irreversible
+   * action holds nothing anybody browses for.
+   */
+  it("keeps signing out and deleting together, with deletion last", async () => {
+    wrap();
+    await settingsReady();
+    const account = screen.getByTestId("settings-danger");
+    const rows = within(account).getAllByRole("button");
+    expect(rows.map((r) => r.textContent)).toEqual(["Sign out", "Delete account"]);
   });
 
   it("opens the deletion ceremony from the Danger zone row", async () => {
     wrap();
-    await screen.findByTestId("settings-inbound-address");
+    await settingsReady();
     fireEvent.click(within(screen.getByTestId("settings-danger")).getByText("Delete account"));
     expect(await screen.findByRole("heading", { name: "Delete account" })).toBeInTheDocument();
   });
@@ -209,12 +249,21 @@ describe("V2Settings", () => {
     expect(line.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("puts sign out last in the Device group, after everything it could be mistaken for", async () => {
+  /**
+   * Every subject that needs a paragraph is a screen, and the row that opens it
+   * summarises it.
+   *
+   * This is the rule the whole screen is built on, so it is asserted directly:
+   * a row with no summary is a row you have to open to learn anything from, and
+   * six of those in a column is the clutter this pass removed.
+   */
+  it("summarises each drill-in on the row that opens it", async () => {
     wrap();
-    await screen.findByTestId("settings-inbound-address");
-    const device = screen.getByTestId("settings-group-device");
-    const controls = within(device).getAllByRole("button");
-    expect(controls[controls.length - 1]).toHaveTextContent(/^sign out$/i);
+    await settingsReady();
+    // The plan reads out of the projection fixture; the banks name themselves.
+    expect(await screen.findByRole("button", { name: /^Plan.*50 \/ 30 \/ 20/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Home currency.*AED/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Your address.*sirdab/ })).toBeInTheDocument();
   });
 
   /**
@@ -428,6 +477,7 @@ describe("V2Settings", () => {
     // column is TEXT and the read is a bigint.
     db.prepare("INSERT INTO budget_split (id,need,want,saving,monthly_total_minor) VALUES (1,60,20,20,'9007199254740993')").run();
     wrap();
+    await openSub(/^Plan/);
     const field = await screen.findByLabelText(/monthly budget/i);
     await waitFor(() => {
       expect(field).toHaveValue("90071992547409.93");
@@ -489,6 +539,7 @@ describe("V2Settings", () => {
     // Mid-rebuild: the rows are there, the projection is not readable yet.
     db.prepare("UPDATE projection_meta SET complete = 0 WHERE id = 1").run();
     wrap({ writer });
+    await openSub(/^Plan/);
 
     // While it is unusable the plan must not be presented as an answer at all:
     // showing 50/30/20 over a stored 60/20/20 is a wrong number, and the save
@@ -537,6 +588,7 @@ describe("V2Settings", () => {
     // browser's storage.
     db.prepare("INSERT INTO bank (name,ord,active) VALUES (?,?,?)").run("dib", 0, 1);
     wrap({ writer, templates: async () => [{ id: "dib", templates: 2 }, { id: "enbd", templates: 1 }] });
+    await openSub(/^Your banks/);
 
     const dib = await screen.findByTestId("settings-bank-row-dib");
     expect(dib.getAttribute("aria-checked")).toBe("true");
@@ -583,6 +635,7 @@ describe("V2Settings", () => {
     };
     db.prepare("INSERT INTO bank (name,ord,active) VALUES (?,?,?)").run("dib", 0, 1);
     wrap({ writer, templates: async () => [{ id: "dib", templates: 2 }, { id: "enbd", templates: 1 }] });
+    await openSub(/^Your banks/);
 
     const dib = await screen.findByTestId("settings-bank-row-dib");
     expect(dib.getAttribute("aria-checked")).toBe("true");
@@ -610,6 +663,7 @@ describe("V2Settings", () => {
         { id: "DIB", templates: 1 },
       ],
     });
+    await openSub(/^Your banks/);
     expect(await screen.findByTestId("settings-bank-row-dib")).toBeInTheDocument();
     expect(screen.queryByTestId("settings-bank-row-adib_uae")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-bank-row-DIB")).not.toBeInTheDocument();
@@ -620,6 +674,7 @@ describe("V2Settings", () => {
     // written by the quarantine trust decision). This list drives the UI and the
     // waitlist and nothing else, so the copy may not imply otherwise.
     wrap({ templates: async () => [{ id: "dib", templates: 1 }] });
+    await openSub(/^Your banks/);
     const note = (await screen.findByTestId("settings-banks-note")).textContent ?? "";
     expect(note).toMatch(/mail|transactions/i);
     expect(note).toMatch(/still/i);
@@ -677,6 +732,7 @@ describe("V2Settings", () => {
         flush: async () => {},
       };
       wrap({ writer }, { driver: await noCurrency(), facts: { homeCurrency: null } });
+      await openSub(/^Home currency/);
 
       expect((await screen.findByTestId("settings-home-currency-unset")).textContent ?? "").toMatch(
         /cannot be changed/i,
@@ -707,6 +763,7 @@ describe("V2Settings", () => {
 
     it("offers nothing at all once a home currency exists", async () => {
       wrap();
+      await openSub(/^Home currency/);
       await screen.findByTestId("settings-home-currency-note");
       expect(screen.queryByRole("button", { name: /set my home currency/i })).toBeNull();
       expect(screen.queryByTestId("settings-home-currency-unset")).toBeNull();
@@ -715,7 +772,7 @@ describe("V2Settings", () => {
     it("re-opens the forwarding instructions, with the address to send mail to", async () => {
       const user = userEvent.setup();
       wrap();
-      await screen.findByTestId("settings-inbound-address");
+      await settingsReady();
       await user.click(screen.getByRole("button", { name: /forwarding instructions/i }));
       const dialog = await screen.findByRole("dialog");
       // The forwarding instructions themselves, not a route picker: the
@@ -774,7 +831,8 @@ describe("V2Settings", () => {
       );
       const onOpenQuarantine = vi.fn();
       wrap({ onOpenQuarantine });
-      await screen.findByTestId("settings-inbound-address");
+      await openSub(/^Is mail arriving/);
+      await settingsReady();
       await user.click(screen.getByRole("button", { name: /forwarding instructions/i }));
 
       const dialog = await screen.findByRole("dialog");
@@ -793,7 +851,8 @@ describe("V2Settings", () => {
     it("re-runs the mail check at any time, and pulls before it answers", async () => {
       const user = userEvent.setup();
       const { runs } = wrap();
-      await screen.findByTestId("settings-inbound-address");
+      await openSub(/^Is mail arriving/);
+      await settingsReady();
       await user.click(screen.getByRole("button", { name: /check my mail setup/i }));
 
       const dialog = await screen.findByRole("dialog");
@@ -813,7 +872,7 @@ describe("V2Settings", () => {
 
   it("makes no v1 HTTP call — ledgerd does not serve those routes", async () => {
     wrap();
-    await screen.findByTestId("settings-inbound-address");
+    await settingsReady();
     const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(calls.map(([u]) => String(u)).filter((u) => !u.startsWith("/api/v1/"))).toEqual([]);
   });

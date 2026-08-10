@@ -477,6 +477,15 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   shell for AppShell-level overlays: Settings itself (TopBar gear), Accounts,
   Recurring and Reports all mount inside one, stacked in DOM order like
   ProjectsFlow so backing out reveals the real parent.
+- **It nests, and a nested panel must set `covered` on its host.** Settings
+  itself is a list of one-line rows whose drill-ins are more `SettingsPage`s
+  rendered from inside it. The host's own back arrow is outside the nested
+  panel, so without `covered` it stays focusable behind it — press it from a
+  covered layer and you close the screen *under* the one you are looking at.
+  `V2Settings` reports this with `onDrillChange`, which `AppShell` ORs into
+  `covered`. The nested panel's own children go inert through a
+  `<div className="contents" inert>` wrapper. Measured before and after by
+  `harness/v2subs.mjs`: 19 focusable controls behind each drill-in, then 0.
 - **The edge-back gesture is armed from the panel, not from an overlay.** The
   `edge-back-strip` div is `pointer-events-none` and exists only so the harness
   has something to grab. It used to be a real 24px `touch-none` column down the

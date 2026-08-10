@@ -181,7 +181,12 @@ describe("AppShell", () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
     expect(await screen.findByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
-    expect(await screen.findByTestId("settings-inbound-address")).toHaveTextContent("u-abc@in.sirdab.ae");
+    // The address, on the row that summarises it. It used to be asserted by the
+    // `settings-inbound-address` testid, which now lives inside the "Your
+    // address" drill-in — Settings is a list of one-line rows, and the address
+    // is the row's value. Still the same proof this is v2's surface: v1's hub
+    // has no inbound address at all.
+    expect(await screen.findByRole("button", { name: /Your address.*u-abc@in\.sirdab\.ae/ })).toBeInTheDocument();
     // v1's hub rows must not be here: every one of them reads a route ledgerd
     // does not serve.
     expect(screen.queryByText(/budget & income/i)).toBeNull();

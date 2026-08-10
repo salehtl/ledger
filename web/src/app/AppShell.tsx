@@ -97,6 +97,8 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
   const v2 = useV2OrThrow();
   const [tab, setTab] = useState<TabId>("home");
   const [overlays, setOverlays] = useState<Overlay[]>([]);
+  /** Settings has one of its own drill-ins open over it. See its `onDrillChange`. */
+  const [settingsDrill, setSettingsDrill] = useState(false);
   const pushOverlay = (o: Overlay) => setOverlays((s) => [...s, o]);
   const popOverlay = () => setOverlays((s) => s.slice(0, -1));
 
@@ -267,8 +269,15 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
         return (
           <div key={`${o.kind}-${i}`} className="contents" inert={buried}>
             {o.kind === "settings" ? (
-              <SettingsPage title="Settings" onClose={popOverlay} covered={buried}>
-                <V2Settings onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })} />
+              // `covered` is true for a panel buried by the overlay stack AND
+              // for one covered by a drill-in Settings opened itself: the back
+              // arrow up here stayed focusable behind those, and pressing it
+              // closes the screen under the one you are looking at.
+              <SettingsPage title="Settings" onClose={popOverlay} covered={buried || settingsDrill}>
+                <V2Settings
+                  onOpenQuarantine={() => pushOverlay({ kind: "quarantine" })}
+                  onDrillChange={setSettingsDrill}
+                />
               </SettingsPage>
             ) : (
               <SettingsPage title="Held mail" onClose={popOverlay}>
