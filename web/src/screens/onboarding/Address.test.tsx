@@ -13,11 +13,12 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { PROVIDERS } from "../../v2/providers";
+import { enablePush, isPushSubscribed, type PushEnvironment } from "../../v2/webpush";
 import { Address } from "./Address";
 import { OPEN_CONFIRMATION_COPY } from "./SetupStatus";
 
@@ -378,5 +379,94 @@ describe("the held confirmation, as one tap on the forwarding screen", () => {
 
     await user.click(screen.getByRole("button", { name: OPEN_CONFIRMATION_COPY.action }));
     expect(openUrl).toHaveBeenCalledWith(CONFIRM_URL);
+  });
+});
+
+/**
+ * "Get a notification when it arrives" — the optional, skippable opt-in.
+ *
+ * The confirmation can land long after the rule is made, so this offers to buzz
+ * the phone when it does. It gates nothing (the confirmation surfaces in-app
+ * regardless), it is offered only where push can actually work, and it never
+ * re-asks a browser that already holds a subscription. Support and subscription
+ * are probed through the same seams the Settings panel uses, so the control is
+ * exercised here without a real service worker.
+ */
+describe("the optional notification opt-in on the forwarding screen", () => {
+  const NOTIFY_ACTION = /get a notification when it arrives/i;
+
+  /** A supported browser, exactly as `PushNotificationsPanel.test` builds one. */
+  function supportedEnv(permission: NotificationPermission = "default"): PushEnvironment {
+    return {
+      navigator: { serviceWorker: {} } as unknown as Navigator,
+      notification: { permission, requestPermission: vi.fn() },
+      secureContext: true,
+    };
+  }
+
+  function renderNotify(over: {
+    env?: PushEnvironment;
+    enable?: typeof enablePush;
+    subscribed?: typeof isPushSubscribed;
+  }) {
+    render(
+      <MotionProvider>
+        <Address
+          client={{ sessionToken: "tok" }}
+          phase="forwarding"
+          known={ADDRESS}
+          onIssued={vi.fn()}
+          onForwardingDeclared={vi.fn()}
+          copy={async () => {}}
+          // 404s the held-mail read, so no confirmation is in hand and the
+          // opt-in is on screen.
+          fetch={(async () => new Response("no route", { status: 404 })) as unknown as typeof fetch}
+          {...(over.env === undefined ? {} : { env: over.env })}
+          {...(over.enable === undefined ? {} : { enable: over.enable })}
+          {...(over.subscribed === undefined ? {} : { subscribed: over.subscribed })}
+        />
+      </MotionProvider>,
+    );
+  }
+
+  it("offers the control when push is supported and unsubscribed, and tapping it enables push", async () => {
+    vi.stubGlobal("PushManager", function PushManager() {});
+    const user = userEvent.setup();
+    const enable = vi.fn(async () => ({ kind: "on" }) as const);
+    renderNotify({ env: supportedEnv(), enable, subscribed: async () => false });
+
+    const button = await screen.findByRole("button", { name: NOTIFY_ACTION });
+    await user.click(button);
+
+    expect(enable).toHaveBeenCalledTimes(1);
+    // Once it is on, the honest confirmation takes the button's place.
+    await screen.findByTestId("notify-on");
+    expect(screen.queryByRole("button", { name: NOTIFY_ACTION })).toBeNull();
+  });
+
+  it("shows the honest iOS reason instead of a button when push needs a Home Screen install", async () => {
+    // Supported in every other respect, but no PushManager — the iOS-Safari-tab
+    // case, whose fix is the one the reason string names.
+    vi.stubGlobal("PushManager", undefined);
+    const enable = vi.fn(async () => ({ kind: "on" }) as const);
+    renderNotify({ env: supportedEnv(), enable, subscribed: async () => false });
+
+    const reason = await screen.findByTestId("notify-unsupported");
+    expect(reason).toHaveTextContent(/add ledger to your Home Screen/i);
+    expect(screen.queryByRole("button", { name: NOTIFY_ACTION })).toBeNull();
+    expect(enable).not.toHaveBeenCalled();
+  });
+
+  it("stays out of the way when this browser already holds a subscription", async () => {
+    vi.stubGlobal("PushManager", function PushManager() {});
+    renderNotify({ env: supportedEnv(), subscribed: async () => true, enable: vi.fn(async () => ({ kind: "on" }) as const) });
+
+    // The screen is up; the opt-in resolves to nothing — no offer, no reason.
+    await screen.findByTestId("forwarding-generic");
+    await waitFor(() => {
+      expect(screen.queryByTestId("notify-opt-in")).toBeNull();
+      expect(screen.queryByRole("button", { name: NOTIFY_ACTION })).toBeNull();
+      expect(screen.queryByTestId("notify-unsupported")).toBeNull();
+    });
   });
 });
