@@ -150,6 +150,17 @@ func (p *Passkeys) now() time.Time {
 	return time.Now()
 }
 
+// RPID is the relying-party id these credentials were registered under — the
+// PARENT domain (e.g. "sirdab.ae"), not the origin the app is served from
+// (app.sirdab.ae). A ceremony that hand-builds its own assertion options, rather
+// than taking them from a begin-endpoint, MUST pass this: without it the browser
+// defaults rpId to the current origin, finds no credential registered there, and
+// offers to CREATE one instead of asserting with an existing passkey. Account
+// deletion hit exactly that. See internal/v2/api/account.go.
+func (p *Passkeys) RPID() string {
+	return p.WA.Config.RPID
+}
+
 // NewPasskeys builds the relying party from config.
 //
 // It returns an error rather than a Passkeys that rejects everything, which is

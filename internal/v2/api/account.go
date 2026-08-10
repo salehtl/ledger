@@ -129,6 +129,14 @@ type DeleteAccountRequest struct {
 	Sig string `json:"sig"`
 }
 
+// AccountChallengeResponse carries the deletion nonce plus the relying-party id
+// the caller's passkeys live under, so a client-built assertion targets the same
+// rpId sign-in does rather than the app origin.
+type AccountChallengeResponse struct {
+	Nonce string `json:"nonce"`
+	RPID  string `json:"rp_id,omitempty"`
+}
+
 // handleAccountChallenge mints a single-use deletion nonce.
 //
 // Minting is exactly what a session authorizes and nothing more: the nonce is
@@ -145,7 +153,17 @@ func (s *Server) handleAccountChallenge(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, "internal", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, ChallengeResponse{Nonce: base64.StdEncoding.EncodeToString(nonce)})
+	// rp_id rides with the nonce because the deletion ceremony builds its own
+	// WebAuthn assertion options client-side (it does not go through a
+	// begin-endpoint that would carry them). Omitting it made the browser
+	// default rpId to the app origin, where no credential is registered, so it
+	// offered to CREATE a passkey instead of asserting with one. Empty when no
+	// relying party is configured — deletion cannot proceed then anyway.
+	resp := AccountChallengeResponse{Nonce: base64.StdEncoding.EncodeToString(nonce)}
+	if s.Passkeys != nil {
+		resp.RPID = s.Passkeys.RPID()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDeleteAccount purges the caller's account once all three factors are

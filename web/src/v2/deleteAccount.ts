@@ -161,9 +161,15 @@ export async function deleteAccount(deps: DeleteAccountDeps): Promise<void> {
       return text === "" ? null : (JSON.parse(text) as T);
     };
 
-    const challenge = await call<{ nonce: string }>("POST", "/api/v1/account/challenge", {});
+    const challenge = await call<{ nonce: string; rp_id?: string }>("POST", "/api/v1/account/challenge", {});
     const nonceB64 = challenge?.nonce ?? "";
     if (nonceB64 === "") throw new PasskeyError("unavailable", "the server issued no challenge");
+    // The rpId the account's passkeys were registered under — the PARENT domain
+    // (sirdab.ae), not the app origin (app.sirdab.ae). Without it the browser
+    // asserts against the origin, finds no matching credential, and offers to
+    // create a new passkey. Sign-in avoids this because its options come from
+    // login/begin already carrying rpId; this ceremony builds its own.
+    const rpId = challenge?.rp_id ?? "";
     // Standard base64 on the wire (every binary field in this API is), and
     // base64url inside a WebAuthn challenge. One conversion, used for both the
     // bytes signed by the device key and the challenge handed to the browser,
@@ -173,7 +179,13 @@ export async function deleteAccount(deps: DeleteAccountDeps): Promise<void> {
 
     const assertion = await credentials.get({
       publicKey: publicKeyRequestOptions({
-        publicKey: { challenge: nonceB64Url, userVerification: "preferred" },
+        publicKey: {
+          challenge: nonceB64Url,
+          userVerification: "preferred",
+          // Only when the server supplied it; an empty rpId would be worse than
+          // omitting the key (the browser rejects "" rather than defaulting).
+          ...(rpId === "" ? {} : { rpId }),
+        },
       }),
     });
     if (assertion === null) throw new PasskeyError("cancelled", "no passkey was used");

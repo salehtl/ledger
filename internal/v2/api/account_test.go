@@ -146,6 +146,26 @@ type deleteBody struct {
 // The three factors
 // ---------------------------------------------------------------------------
 
+// The deletion ceremony builds its WebAuthn assertion client-side, so the
+// challenge must carry the relying-party id the account's passkeys live under.
+// Without it the browser asserts against the app origin, finds no credential,
+// and offers to CREATE a passkey — the failure the operator hit. rp_id is the
+// parent domain, not the origin, and it must be the same one sign-in uses.
+func TestAccountChallengeCarriesTheRelyingPartyID(t *testing.T) {
+	h := newHarness(t).passkeys()
+	acc := h.deletable(t, "alice")
+
+	w := h.req("POST", "/api/v1/account/challenge", acc.tok, struct{}{})
+	wantStatus(t, w, http.StatusOK)
+	resp := decodeJSON[AccountChallengeResponse](t, w)
+	if resp.RPID != authtest.RPID {
+		t.Fatalf("challenge rp_id = %q, want %q", resp.RPID, authtest.RPID)
+	}
+	if resp.Nonce == "" {
+		t.Fatal("challenge carried no nonce")
+	}
+}
+
 // Spec §3.4: a stolen session token must not be able to destroy a life's
 // financial history. This is the whole reason the endpoint takes a body at all.
 func TestDeleteAccountRefusesASessionTokenAlone(t *testing.T) {
