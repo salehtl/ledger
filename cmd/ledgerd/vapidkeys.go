@@ -10,9 +10,11 @@ package main
 // cross-app coupling CLAUDE.md's "two apps" section warns against: v2 and v1
 // share a module and a git history and almost nothing else, and a v2
 // deployment that has never built the v1 binary — or has decommissioned it —
-// had no way to mint its own web push keys. Key generation is a handful of
-// lines over the same webpush-go library internal/v2/pushv2 already imports,
-// so there is no reason for it to live anywhere else.
+// had no way to mint its own web push keys. Key generation is one call to
+// pushv2.GenerateVAPIDKeys, the same function internal/v2/pushv2's Web sender
+// and its own tests already go through — see that function's doc comment for
+// why it, and not a second direct call into webpush-go here, is the single
+// source of the key format.
 //
 // # Why it is dispatched before config.Load, not through modeHandlers
 //
@@ -49,16 +51,19 @@ package main
 import (
 	"fmt"
 
-	webpush "github.com/SherClockHolmes/webpush-go"
+	"ledger/internal/v2/pushv2"
 )
 
 // runVAPIDKeys generates a new VAPID key pair and prints it in the exact
 // LEDGER_VAPID_PUBLIC / LEDGER_VAPID_PRIVATE form internal/v2/config reads
 // (config.go :457/:460) — the same env-var names v1's `ledger vapid-keys`
 // uses, because both binaries' Web Push senders read the same names and
-// nothing gains from inventing a v2-specific pair.
+// nothing gains from inventing a v2-specific pair. Key generation itself goes
+// through pushv2.GenerateVAPIDKeys rather than a second direct call into
+// webpush-go, so this command and the sender that actually uses the keys
+// share one source of the key format.
 func runVAPIDKeys() error {
-	priv, pub, err := webpush.GenerateVAPIDKeys()
+	priv, pub, err := pushv2.GenerateVAPIDKeys()
 	if err != nil {
 		return fmt.Errorf("ledgerd vapid-keys: %w", err)
 	}

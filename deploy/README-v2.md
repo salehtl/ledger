@@ -571,13 +571,13 @@ v2 list, confirmed from `internal/v2/config`:
 | `LEDGER_VAPID_PRIVATE` | Web Push application server key, private half — it signs the JWT that authorizes every send. Required when `push.web_enabled = true` |
 | `LEDGER_PG_DSN` | not tagged as a secret in the code, but it carries the database password — treat it as one |
 
-**Minting the VAPID pair.** `ledgerd` has no key-minting subcommand on purpose —
-one sitting next to a running server is an invitation to run it twice, and the
-second run silently invalidates every browser subscription with nothing telling
-the users. Use the v1 binary, which encodes through the same library:
+**Minting the VAPID pair.** `ledgerd vapid-keys` mints one, needs no config file
+and no database, and prints a warning against regenerating on every run —
+because regenerating is exactly what silently invalidates every browser
+subscription, with nothing telling the users:
 
 ```
-./ledger vapid-keys      # prints LEDGER_VAPID_PUBLIC / LEDGER_VAPID_PRIVATE
+./ledgerd vapid-keys      # prints LEDGER_VAPID_PUBLIC / LEDGER_VAPID_PRIVATE
 ```
 
 Run it **once** per deployment and keep the output. The public half is what every

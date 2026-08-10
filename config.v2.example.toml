@@ -104,7 +104,7 @@ web_enabled   = false             # serve the VAPID key and send browser notific
 vapid_subject = ""                # REQUIRED when web_enabled: "mailto:you@example.com" or an https URL
 # Secrets, never stored here: LEDGER_VAPID_PUBLIC and LEDGER_VAPID_PRIVATE.
 # BOTH are required when web_enabled = true and the config load refuses
-# otherwise. Mint the pair ONCE with `ledger vapid-keys` and never regenerate
+# otherwise. Mint the pair ONCE with `ledgerd vapid-keys` and never regenerate
 # it: the public half is what every browser already subscribed under, so a new
 # pair silently kills every existing subscription with nothing telling the user.
 #

@@ -275,16 +275,19 @@ func (w *Web) sendWebPush(ctx context.Context, sub *webpush.Subscription, payloa
 
 // GenerateVAPIDKeys mints an application server key pair, base64url-encoded.
 //
-// Nothing in cmd/ledgerd calls it, and that is deliberate: a key-minting
-// subcommand next to a running server is an invitation to run it twice, and the
-// second run silently invalidates every row in push_subscriptions — the public
-// half is what every browser subscribed under — with nothing telling the users
-// to subscribe again. The operator mints ONE pair with the v1 binary's
-// `ledger vapid-keys`, which encodes through this same library.
+// cmd/ledgerd's `vapid-keys` mode is the one production caller, and it is a
+// deliberately separate, config-free mode rather than something runServe
+// offers: a key-minting path next to a running server is an invitation to run
+// it twice, and a second run silently invalidates every row in
+// push_subscriptions — the public half is what every browser subscribed under
+// — with nothing telling the users to subscribe again. The operator mints ONE
+// pair and never regenerates it; that mode's own output says so on every run.
 //
-// It is exported here so the format this package SENDS with and the format the
-// tests generate under have one source; TestARealSendIsEncryptedAndVAPIDSigned
-// signs with a pair from this function.
+// It is exported here, rather than left as a call to webpush-go inline at
+// each call site, so the format this package SENDS with, the format
+// `vapid-keys` MINTS with, and the format the tests generate under all come
+// from one source; TestARealSendIsEncryptedAndVAPIDSigned signs with a pair
+// from this function.
 func GenerateVAPIDKeys() (private, public string, err error) {
 	return webpush.GenerateVAPIDKeys()
 }
