@@ -45,6 +45,50 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# --- v1/v2 binary dependency-graph fence ------------------------------------
+# The two binaries share a module, a go.mod and a git history, and are meant
+# to share almost nothing else (see CLAUDE.md's "two apps" section): a v2
+# change never belongs in internal/parse, and a v1 change never belongs in
+# internal/v2. This asserts that boundary holds by construction — every task
+# from here on, not just the ones that remember to check by hand.
+#
+# `go list -deps` walks each binary's actual BUILD graph, which is exactly
+# the thing that matters and exactly why the three `internal/parse` imports
+# inside internal/v2/corpus's _test.go files (the sanctioned parse-equivalence
+# gate, comparing v2's corpus tooling against v1's own parser) need no special
+# case below: `go list -deps` (without `-test`) never follows a _test.go
+# file's imports at all, so a sanctioned test-only import cannot even reach
+# this list, whether or not anyone remembers it is sanctioned.
+#
+# PIPEFAIL TRAP: this script runs `set -euo pipefail`, so a `grep` with no
+# match anywhere in a pipeline kills the whole script. The naive spelling of
+# this check — `go list -deps ./cmd/ledgerd | grep internal/parse` — treats
+# "found nothing" (the passing case, every clean run) as a pipeline failure,
+# so it would fail the gate every time the boundary holds. Patching that with
+# `|| true` "fixes" the crash but throws away the exit status entirely, so the
+# check can never fail again even the day someone actually adds the import —
+# a check that cannot fail is worse than no check, per the standing rule.
+# `comm -12` on two sorted, file-backed lists sidesteps both failure modes:
+# it exits 0 whether or not the intersection is empty, so the pass/fail
+# decision below is an explicit string test on its captured output, never a
+# pipeline's aggregate exit code.
+v2_deps="$(go list -deps ./cmd/ledgerd)"
+v1_deps="$(go list -deps ./cmd/ledger)"
+v2_deps_file="$(mktemp)"
+v1_deps_file="$(mktemp)"
+grep '^ledger/' <<<"$v2_deps" | sort >"$v2_deps_file"
+grep '^ledger/' <<<"$v1_deps" | sort >"$v1_deps_file"
+shared_deps="$(comm -12 "$v2_deps_file" "$v1_deps_file")"
+rm -f "$v2_deps_file" "$v1_deps_file"
+if [[ -n "$shared_deps" ]]; then
+	echo "v2-check: cmd/ledgerd and cmd/ledger share package(s) in their binary" >&2
+	echo "dependency graphs. These are supposed to be DISJOINT (see CLAUDE.md's" >&2
+	echo "\"two apps\" section); a v2 change must never reach into a v1 package" >&2
+	echo "and a v1 change must never reach into internal/v2. Shared package(s):" >&2
+	echo "$shared_deps" >&2
+	exit 1
+fi
+
 PG_STOP=""
 # The scratch bundle directory the web guards build into (see the bottom of this
 # script). Cleaned up on any exit, including a failing one, so a gate that stops
@@ -85,6 +129,8 @@ export LEDGER_TEST_POSTGRES_URL
 # unnoticed on every one of those tasks.
 go vet ./internal/v2/... ./cmd/ledgerd
 go test -count=1 ./internal/v2/... ./cmd/ledgerd
+# internal/importer is the Go executor of conformance/import/vectors.json
+# (paired with client/src/importer); it must run in this gate despite being a v1 package.
 go test -count=1 ./internal/importer
 
 # The TypeScript executor. `bun install` is not run here: a gate that mutates
