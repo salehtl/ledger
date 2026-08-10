@@ -90,21 +90,24 @@ If you change one executor, change both, and run the gate.
 
 ### Packages (`internal/v2/`)
 
-All 28 of them: `api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (Postgres
+All 30 of them: `api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (Postgres
 pool + goose migrations), `pgtx` (the two pgx transaction helpers every store
 used to copy; a leaf package that never imports `pg`), `oplog` (the log format),
 `blob` (the on-the-wire envelope, size buckets and chain hash — the Phase 3 swap
 point), `smtpd` + `ingest` + `origin` + `arc` (mail receipt and origin
 verification), `addresses` (the per-user inbound mail slot and its rotation),
-`quarantine`, `norm` + `tmpl` + `heuristic` (parsing), `dict` (merchant
-dictionary), `samples` (the donated-sample queue every publish is regression
-tested against), `diag` (the deliberately unencrypted, non-content parse
-diagnostics), `admin` (the operator console), `pushv2` (Web Push), `purge`
-(account deletion), `relay` (backup MX), `corpus` (read-only streaming over a
-`.backup` snapshot of the v1 SQLite database), `config`, `verify` (a self-audit
-the binary runs on itself), `webui` (the embedded bundle), and two test-only
-packages, `pgtest` (throwaway clusters) and `authtest` (a scriptable software
-WebAuthn authenticator).
+`quarantine`, `budget` (the per-account admission gate — one `Gate.Admit`,
+called inside the op-log append and the quarantine hold rather than from any
+endpoint), `headroom` (the box-level disk fuse: below a free-space floor every
+durable write is refused, sign-in included), `norm` + `tmpl` + `heuristic`
+(parsing), `dict` (merchant dictionary), `samples` (the donated-sample queue
+every publish is regression tested against), `diag` (the deliberately
+unencrypted, non-content parse diagnostics), `admin` (the operator console),
+`pushv2` (Web Push), `purge` (account deletion), `relay` (backup MX), `corpus`
+(read-only streaming over a `.backup` snapshot of the v1 SQLite database),
+`config`, `verify` (a self-audit the binary runs on itself), `webui` (the
+embedded bundle), and two test-only packages, `pgtest` (throwaway clusters) and
+`authtest` (a scriptable software WebAuthn authenticator).
 
 ### Build & run (v2)
 
@@ -273,21 +276,35 @@ node harness/ios.mjs         # WebKit + iPhone keyboard geometry
 harness/stack.sh reset       # restore fixture data between rounds
 ```
 
-**v2 has only partial harness coverage, and this is a real gap.** The nine v1
-forks that used to sit in `web/harness/` are gone — that directory is v2-only
-now. Four pass/fail runners reach the real product, plus one committed repro.
-Three of the four walk the real sign-in ceremony (BootGate is the only door):
-`v2settings.mjs` covers Settings, `recovery.mjs` covers fresh-device recovery,
-and `operator.mjs` covers the operator's own WebKit-only path. `vault.mjs`
-covers the key vault round trip in both Chromium and WebKit and is the
-exception — it needs no server, invite or passkey, only a page on the origin.
-`addpasskey-repro.mjs` is the fifth file: it drives adding a second passkey
-and prints what happened, but it is a targeted repro, not a pass/fail
-runner — it asserts nothing automatically, so its output has to be read by
-hand. Screens beyond those four runners rest on vitest alone, with that one
-add-passkey exception. If you build a v2 runner, `v2stack.sh` must pass
-`--dns-fixtures`, or every message the harness posts is `unauthenticated` and
-no script can reach the product at all.
+**v2's harness is `web/harness/`, and it is v2-only** — the nine v1 forks that
+used to sit there are gone. Since 2026-08-10 a **screen sweep** covers the
+product: `v2nav.mjs` is not a runner but the library the sweep is built on —
+the sign-up ceremony, hostile fixture data authored through the app's own CSV
+import, and `SCREENS`, the literal taps that reach each surface. Four runners
+drive it, all pass/fail: `v2shoot.mjs` (screenshot + geometry-audit every
+screen at two widths and both themes; `--screens a,b` narrows it, `--fast`
+drops to one pass), `v2deck.mjs` (every card in the review deck, not just the
+top one), `v2edge.mjs` (the drill-in left edge: back-arrow tap versus the 24px
+edge-back strip) and `v2subs.mjs` (the seven Settings drill-ins). `v2explore.mjs`
+is the fifth of the family and **reports rather than asserts** — run it to
+rebuild a step table when the flow changes, instead of guessing labels from JSX.
+
+`vault.mjs` (the key vault round trip in Chromium **and** WebKit, needing no
+server, invite or passkey) is current. `addpasskey-repro.mjs` is a targeted
+repro, not a runner — it asserts nothing, so read its output by hand.
+
+**Three older runners cannot finish their walk and must not be trusted:**
+`v2settings.mjs`, `recovery.mjs` and `operator.mjs` all type into the recovery
+type-back quiz that `482d68d` ("onboarding proposes, it never blocks") deleted,
+then wait for a "Finish setting up encryption" button that no longer renders.
+`v2settings.mjs` is doubly outdated — the Settings restructure moved
+`settings-inbound-address` and "Add a device" into drill-ins. Repairing them is
+open work; `v2nav.mjs` holds the current walk in the meantime. Full detail:
+`web/harness/README.md`.
+
+If you build a v2 runner, `v2stack.sh` must pass `--dns-fixtures`, or every
+message the harness posts is `unauthenticated` and no script can reach the
+product at all.
 
 Never point a harness at production: scratch ports and a scratch DB, never
 `:8080`, never `:443`, never `/var/lib/ledger`.
@@ -296,10 +313,10 @@ Never point a harness at production: scratch ports and a scratch DB, never
 and **the files named below are `frontend/harness/` (v1) files** unless the text
 says otherwise: `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do
 not exist in `web/harness/`. Two exceptions — `audit.mjs` exists in both trees,
-and `v2stack.sh` is v2's only. If you arrived here from the v2 paragraph, the v2
-pass/fail runners are the four named there (`addpasskey-repro.mjs` is the
-fifth file in that directory, but it is a repro, not a runner, so it has no
-place in this yield-ordered list):
+and `v2stack.sh` is v2's only. If you arrived here from the v2 paragraph, v2's
+equivalents are `v2nav.mjs`'s `seed` for point 1 and `v2shoot.mjs` for point 2;
+v2 has nothing for point 3 (nothing types into every input) and point 4 applies
+to any tree:
 
 1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant name wider than the viewport, a 250,000 amount, an unset FX rate, a negative envelope. Bugs hide in the happy path.
 2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page and reports elements past the viewport, controls whose centre point hits a *different* element, sub-44px targets, sub-16px inputs, unreachable `overflow-hidden` content.

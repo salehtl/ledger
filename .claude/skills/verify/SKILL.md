@@ -65,13 +65,16 @@ viewport 390×844. Gotchas learned the hard way:
 
 ## v2 (`cmd/ledgerd`, `web/`)
 
-v2 has only partial harness coverage. Full docs: `web/harness/README.md`.
+v2's harness is `web/harness/`. Full docs: `web/harness/README.md`.
 
 ```bash
 cd web
-harness/v2stack.sh up                 # scratch Postgres + ledgerd + vite, prints an invite
-node harness/v2settings.mjs <invite>  # walks sign-in, screenshots + audits Settings
-node harness/recovery.mjs <invite>    # clears site data, restores keys from twelve words
+harness/v2stack.sh up               # scratch Postgres + ledgerd + vite, prints an invite
+node harness/v2shoot.mjs <invite>   # every screen, screenshot + geometry audit
+node harness/v2subs.mjs <invite>    # the seven Settings drill-ins
+node harness/v2deck.mjs <invite>    # every card in the review deck
+node harness/v2edge.mjs <invite>    # drill-in left edge: back arrow vs edge-back strip
+node harness/v2explore.mjs <invite> # REPORTS the walk; use it to rebuild a step table
 harness/v2stack.sh down
 ```
 
@@ -80,11 +83,24 @@ DKIM/ARC records offline so the corpus's signed bank mail verifies — without
 it every message the harness posts reads as `unauthenticated` and no script
 can reach the product. Any new v2 runner or stack script must pass it too.
 
-Screens beyond Settings, recovery, the vault (`vault.mjs`) and the operator
-sign-up/recover path (`operator.mjs`) rest on vitest alone — a real gap, not
-a choice. The one exception is adding a second passkey: `addpasskey-repro.mjs`
-drives that flow, but it is a targeted repro, not a pass/fail runner — it
-asserts nothing automatically, so its output (`addPasskey() =>` and the
-on-screen note) has to be read by hand. Never point a v2 harness run at
-production: scratch ports (8123 API, 5177 UI) against a throwaway Postgres
-cluster under `/tmp`, never `:443` and never the running `ledgerd` service.
+Those runners share `v2nav.mjs` — the ceremony, the hostile fixture data (it
+authors transactions through the app's own CSV import, because v2's screens
+read a local projection of an op log and there is no HTTP seam to write
+through) and the screen map. `vault.mjs` proves the key vault in Chromium
+**and** WebKit and needs no server, invite or passkey.
+
+**Three older runners cannot finish their walk — do not trust them, and do not
+read their failures as product bugs.** `v2settings.mjs`, `recovery.mjs` and
+`operator.mjs` all type into the recovery type-back quiz that `482d68d`
+("onboarding proposes, it never blocks") deleted, then wait for a "Finish
+setting up encryption" button that no longer renders; `v2settings.mjs` also
+predates the Settings restructure that moved `settings-inbound-address` and
+"Add a device" into drill-ins. `v2explore.mjs` is how their step tables get
+rebuilt.
+
+`addpasskey-repro.mjs` drives adding a second passkey, but it is a targeted
+repro, not a pass/fail runner — it asserts nothing automatically, so its output
+(`addPasskey() =>` and the on-screen note) has to be read by hand. Never point
+a v2 harness run at production: scratch ports (8123 API, 5177 UI) against a
+throwaway Postgres cluster under `/tmp`, never `:443` and never the running
+`ledgerd` service.

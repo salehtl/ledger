@@ -1,5 +1,5 @@
 # ledgerd (v2) configuration. Secrets NEVER live here — they come from the
-# environment / systemd credentials only (see deploy/README.md and
+# environment / systemd credentials only (see deploy/README-v2.md §3 and
 # deploy/ledgerd.service). ledgerd.Load rejects the file outright if a
 # secret's key (or any misspelled key) shows up below: BurntSushi/toml would
 # otherwise decode this file and silently ignore an unrecognized key, which
@@ -64,8 +64,10 @@ admin_listen = "127.0.0.1:8079"   # admin console bind address (LEDGER_ADMIN_LIS
                                   # config.CheckAdminBind accepts ONLY a loopback address or one in Tailscale's
                                   # 100.64.0.0/10 (`tailscale ip -4`), and refuses everything else — ":8079",
                                   # "0.0.0.0:8079", a LAN address and a public one all fail at startup. It is
-                                  # checked twice, in validate() and again in runServe immediately before
-                                  # net.Listen. Unlike http_listen's rail this one is NOT lifted by Task D3 —
+                                  # checked THREE times: in validate(), at the top of runServe before any I/O
+                                  # (a Config assembled in code walks past Load entirely), and again
+                                  # immediately before net.Listen so no code added in between can have changed
+                                  # the address. Unlike http_listen's rail this one is NOT lifted by Task D3 —
                                   # setting tls_domains does nothing for it, deliberately and permanently:
                                   # spec §3.1 keeps the console off the internet permanently, because it
                                   # publishes parsers and merchant mappings to every device in the beta and
@@ -76,6 +78,20 @@ dsn          = ""                 # Postgres DSN (LEDGER_PG_DSN) — required; n
 # admin console, compared with subtle.ConstantTimeCompare. When it is UNSET the
 # console is not served at all (ledgerd logs a warning and starts everything
 # else); it is never served unauthenticated.
+#
+# The console's SECOND way to authenticate: the caller identity that
+# `tailscale serve` injects (Tailscale-User-Login), which lets the operator open
+# the panel without fetching a token off the box first. Neither key below
+# loosens the binding — CheckAdminBind is unchanged either way. Both defaults are
+# the posture the deployment wants, so nothing has to be set here.
+# See deploy/README-v2.md §5.3 for what is trusted and what is not.
+admin_token_only     = false  # true IGNORES the identity header entirely (LEDGER_ADMIN_TOKEN_ONLY). Set it when the
+                              # box has no serve mount and the listener is plain loopback, since then any local
+                              # process could send the header itself. LEDGER_ADMIN_TOKEN is still required for the
+                              # console to mount at all, either way.
+admin_tailscale_logins = []   # optional allowlist, e.g. ["salehtl@github"] (LEDGER_ADMIN_TAILSCALE_LOGINS,
+                              # comma-separated). EMPTY — the default — accepts any identity the tailnet vouches
+                              # for, because the tailnet is the boundary. Inert when admin_token_only is set.
 
 [headroom]
 # The box-level disk fuse (P4 of the per-account isolation design). One

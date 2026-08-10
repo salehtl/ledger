@@ -1,12 +1,14 @@
 /**
  * The v2 product, reachable — the ceremony, the fixture data and the screen map.
  *
- * # Why this exists next to `nav.mjs` rather than inside it
+ * # Why this exists rather than a reuse of `nav.mjs`
  *
- * `nav.mjs` is v1's. It taps v1's Settings hub rows against a vite serving
- * `$REPO/frontend`, and it has no idea what a passkey is. Point it at a v2 change
- * and it reports a clean screen it never loaded — the failure mode this whole
- * directory exists to prevent. Nothing here imports it.
+ * `nav.mjs` is v1's, and it no longer sits next door: `web/harness/`'s v1 forks
+ * were deleted on 2026-08-10 and the canonical copy lives in
+ * `frontend/harness/nav.mjs`. It taps v1's Settings hub rows against a vite
+ * serving `$REPO/frontend`, and it has no idea what a passkey is. Point it at a
+ * v2 change and it reports a clean screen it never loaded — the failure mode
+ * this whole directory exists to prevent. Nothing here imports it.
  *
  * `v2settings.mjs` got as far as one screen. Everything it learned that still
  * holds is carried over here; everything it assumed that has since changed is

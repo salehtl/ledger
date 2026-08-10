@@ -23,13 +23,19 @@
  * nothing called it, while Task 7's onboarding already told people they could
  * "add a passkey later from Settings". This is that promise being made true.
  *
- * # Four groups, and sync is not one of them
+ * # A row is one line; anything that needs a paragraph is a screen
  *
- * The screen is v1's information architecture: eyebrow-labelled groups —
- * **Plan**, **Automation**, **Device**, **Library** — over `Card`s, so a person
- * looking for one control scans four words rather than eleven headings. There
- * is no Danger zone: v2 has nothing destructive to put in one, and a group
- * invented to complete the shape would be a heading with nothing under it.
+ * That is the rule the 2026-08-10 restructure imposed, and the long comment
+ * over the groups below records what it replaced. Five eyebrow-labelled groups
+ * — **Your money**, **Bank mail**, **This device**, **Your data**, **Account**
+ * — each a `Card` of one-line rows, named for what the user owns rather than
+ * for the system that serves it. Seven subjects that needed a paragraph became
+ * drill-ins ({@link Sub}); `SettingsPage` nests, so each renders as a second
+ * panel over this one with the same back arrow and edge-swipe.
+ *
+ * **Account** is the last group and it does hold the destructive control:
+ * sign out and delete account, which is why it carries `settings-danger`.
+ * Deletion is the one irreversible thing v2 has, and it stays last.
  *
  * Sync sits ABOVE the groups because it is not a setting — there is nothing to
  * choose. It is the state of the thing the whole screen is about. The projection
@@ -46,11 +52,15 @@
  * screen, whether this device may buzz — not of the account, and an op log
  * carrying them would push one device's screen size onto every other one.
  *
- * # The home currency is shown and NOT offered
+ * # The home currency is stated, never CHANGED — and offered exactly once
  *
- * Spec §3.7: log state, set once, no in-product way to change it. A row with a
- * chevron on it would be a lie, so this one has neither a chevron nor a tap
- * target — just the code and the sentence saying why that is all there is.
+ * Spec §3.7: log state, set once, no in-product way to change it. The row is a
+ * drill-in like any other, and what it opens says which of those two cases the
+ * account is in. With a currency set it shows the code and the sentence saying
+ * why that is all there is. With none set — an account that skipped the step
+ * during setup — it offers the onboarding ceremony, with the same permanence
+ * warning: setting a currency that has never been set is not a change, and the
+ * offer is unreachable the moment one exists.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";

@@ -670,7 +670,7 @@ it audits). Idempotent; a clean no-op against an up-to-date database.
 > `00004` is vacant by ruling — goose hard-fails when a migration appears
 > *below* an already-applied version, so the number can never be claimed again.
 > `00015`'s original cause is unrecorded, but the same rule applies. Numbering
-> runs `00001–00003, 00005–00014, 00016–00029`. The next free number is one past
+> runs `00001–00003, 00005–00014, 00016–00034`. The next free number is one past
 > the highest file on disk — re-run `ls internal/v2/pg/migrations/` at the moment
 > you write one, because sessions run concurrently.
 
@@ -692,6 +692,11 @@ Added 2026-08-09: `users.status`, `account_usage`, `account_limits`,
 `00031` **backfills** `account_usage` from the rows already in the database, so
 the ledger is correct from its first read rather than counting only from
 deployment onward.
+
+`00034` is **not** part of this release and needs none of the steps below: it
+adds a `credential_id` column to `sessions` so the passkey list can mark the
+credential the caller is standing on. It is the highest migration on disk, which
+is why §4's range runs past `00033`.
 
 > ## ⚠ The backfill has a window, and closing it is a deploy step
 >

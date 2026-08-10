@@ -35,13 +35,16 @@ abandoned Expo native client that used to sit in `app/` was deleted on
 
 **v2.** `cmd/ledgerd/` is the entry point and dispatches on `os.Args[1]` **before**
 flag parsing, so the mode always comes first (eleven modes; `serve` is the
-service, `vapid-keys` is the one dispatched before the config loads). The 28
+service, `vapid-keys` is the one dispatched before the config loads). The 30
 backend packages live in `internal/v2/`: `api` (HTTP + sync), `auth` (passkeys,
 sessions), `pg` (pool + goose migrations), `pgtx` (shared pgx transaction
 helpers; a leaf package that never imports `pg`), `oplog`, `blob` (the wire
 envelope, size buckets and chain hash), `smtpd`/`ingest`/`origin`/`arc` (mail
 receipt and origin verification), `addresses` (per-user inbound mail slots),
-`quarantine`, `norm`/`tmpl`/`heuristic` (parsing), `dict`, `samples` (donated
+`quarantine`, `budget` (the per-account admission gate, called from the op-log
+append and the quarantine hold, never from an endpoint), `headroom` (the
+box-level disk fuse that refuses every durable write — sign-in included — below
+a free-space floor), `norm`/`tmpl`/`heuristic` (parsing), `dict`, `samples` (donated
 parse samples), `diag` (non-content parse diagnostics), `admin` (tailnet-only
 operator console), `pushv2` (Web Push), `purge`, `relay`, `corpus` (read-only
 access to a snapshot of v1's SQLite database), `config`, `verify`, `webui` (the
@@ -112,15 +115,19 @@ revert. Two failure classes recur in this codebase and both defeat a green run:
    implementation does not do.
 
 vitest cannot see a control under the bottom nav or a sheet behind the keyboard.
-v1 has `frontend/harness/` for that. **v2's coverage is partial**: the nine v1
-forks were deleted from `web/harness/` on 2026-08-10, so that directory is
-v2-only, but only four pass/fail runners reach the product — `v2settings.mjs`
-(Settings), `recovery.mjs` (fresh-device recovery), `operator.mjs` (the
-WebKit-only operator path) and `vault.mjs` (the key vault in both engines, and
-the only one needing no sign-in) — plus one committed repro,
-`addpasskey-repro.mjs`, which drives adding a second passkey but asserts
-nothing automatically; read its output by hand. Every other v2 screen rests on
-vitest alone. A new v2 runner must
+v1 has `frontend/harness/` for that. v2 has `web/harness/`, v2-only since the
+nine v1 forks were deleted on 2026-08-10. A **screen sweep** added the same day
+covers the product: `v2nav.mjs` is the library (ceremony, hostile fixtures,
+`SCREENS`), and four pass/fail runners drive it — `v2shoot.mjs` (every screen,
+two widths, both themes; `--screens`, `--fast`), `v2deck.mjs` (every review
+card), `v2edge.mjs` (drill-in left edge) and `v2subs.mjs` (the seven Settings
+drill-ins). `v2explore.mjs` reports rather than asserts and is how you rebuild
+a step table. `vault.mjs` (key vault, both engines, no sign-in) is current;
+`addpasskey-repro.mjs` is a repro that asserts nothing — read its output by
+hand. **`v2settings.mjs`, `recovery.mjs` and `operator.mjs` cannot finish their
+walk**: they type into the recovery quiz `482d68d` deleted, and `v2settings.mjs`
+also predates the Settings restructure. Do not read a failure from those three
+as a product bug; see `web/harness/README.md`. A new v2 runner must
 start the stack through `v2stack.sh`, which passes `--dns-fixtures`; without it
 every message the harness posts is `unauthenticated`. Never point a harness at
 production.

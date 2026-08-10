@@ -22,7 +22,7 @@ behind the keyboard.
 ```bash
 cd web
 harness/v2stack.sh up                 # scratch Postgres + ledgerd + vite, prints an invite
-node harness/v2settings.mjs <invite>  # walks sign-in, screenshots + audits Settings
+node harness/v2shoot.mjs <invite>     # walks sign-up, screenshots + audits every screen
 harness/v2stack.sh down
 ```
 
@@ -46,16 +46,38 @@ in front of every v2 screen, and there is no way past it but a real account.
 `vault.mjs` is the exception: it needs no server, no invite and no passkey,
 only a page on the origin.
 
-| script | proves |
-| --- | --- |
-| `v2settings.mjs <invite>` | Settings — the longest screen in the app — laid out, screenshotted, geometry-audited |
-| `recovery.mjs <invite>` | a browser with its site data cleared, given twelve words, gets its keys back |
-| `vault.mjs` | the key vault round trip, in Chromium **and** WebKit — no server, invite or passkey needed |
-| `operator.mjs signup <invite> \| recover` | the whole sign-up → phrase → reload path, in WebKit |
+| script | proves | state |
+| --- | --- | --- |
+| `v2settings.mjs <invite>` | Settings — laid out, screenshotted, geometry-audited | **walk outdated — see below** |
+| `recovery.mjs <invite>` | a browser with its site data cleared, given twelve words, gets its keys back | **walk outdated — see below** |
+| `vault.mjs` | the key vault round trip, in Chromium **and** WebKit — no server, invite or passkey needed | current |
+| `operator.mjs signup <invite> \| recover` | the whole sign-up → phrase → reload path, in WebKit | **walk outdated — see below** |
 
-The ceremony runners prove the flows; the screen sweep below (added
-2026-08-10) reaches the rest of the product, so screens no longer rest on
-vitest alone.
+> ### ⚠ Three of these four cannot finish their walk any more
+>
+> `482d68d` ("onboarding proposes, it never blocks") deleted the **type-back
+> quiz** from the recovery step: there is no "now type three of them back"
+> screen, no `recovery-confirm-<n>` fields and no **"Finish setting up
+> encryption"** button. `RECOVERY_PHRASE_COPY` in `web/src/v2/onboarding.ts`
+> records the removal in its own comment.
+>
+> `v2settings.mjs`, `recovery.mjs` and `operator.mjs` all still fill those
+> fields and then wait for that button, so each stalls at the recovery step
+> against the current tree. `recovery.mjs` says so out loud
+> (`the confirmation asks for three words … it asked for 0`); the other two
+> simply time out. **They are not fixed here — a green run from any of them
+> would be a run that never happened.**
+>
+> `vault.mjs` is unaffected: it walks no ceremony. `addpasskey-repro.mjs` is
+> unaffected too — it stops at account creation, before the recovery step.
+>
+> **`v2nav.mjs` holds the current walk.** It was written after the change and
+> is what the sweep runners below use. Rebuild a step table with
+> `v2explore.mjs`, which asks the running app what it renders instead of
+> assuming.
+
+The screen sweep below (added 2026-08-10) is therefore the part of this
+directory that reaches the product today.
 
 ## The screen sweep — `v2nav.mjs` and the runners built on it
 
@@ -82,16 +104,37 @@ node harness/v2explore.mjs <invite>   # ceremony walker that REPORTS rather than
 `v2shoot.mjs` takes `--screens a,b` to narrow the walk and `--fast` to drop to
 one pass; each runner documents its own flags in its header — read that first.
 
-`sendmail.py` posts a message to the scratch SMTP listener so ingest-path
-screens have data to show. The sweep runners import `audit.mjs` for the
-in-page geometry checks, same as `v2settings.mjs`.
+The sweep runners import `audit.mjs` for the in-page geometry checks. They do
+**not** use `sendmail.py`: `v2nav.mjs`'s `seed` authors its fixtures through
+the app's own CSV import, because v2's screens read a local projection of an
+append-only op log and there is no HTTP seam to write through. `sendmail.py`'s
+only caller is `v2settings.mjs`.
 
-## `v2settings.mjs` — Settings, in the real v2 tree
+## `v2settings.mjs` — Settings, and why its walk no longer completes
 
-It walks the whole ceremony, because `BootGate` is in front of every screen
-and there is no way past it but a real account, then screenshots and audits
-Settings — the longest screen in the app, and so the one where a control ends
-up under the bottom nav.
+> **Outdated by the 2026-08-10 restructure and the onboarding change with it.
+> Do not trust a run from this file, and do not read a failure from it as a
+> product bug.** Four of its assumptions are no longer true:
+>
+> - it fills `[data-testid^="recovery-confirm-"]` and waits for **"Finish
+>   setting up encryption"** — the type-back quiz was deleted in `482d68d`;
+> - it waits for `settings-inbound-address` **on Settings**, where that element
+>   now lives inside the "Your address" drill-in;
+> - it clicks an **"Add a device"** button on Settings, which now sits inside
+>   the "Other devices" drill-in;
+> - Settings is no longer one long screen at all — it is one-line rows over
+>   seven drill-ins, so "the longest screen in the app" is not what it measures.
+>
+> **`v2explore.mjs` is the tool for rebuilding its step table** — it walks one
+> step at a time and prints every visible control, rather than assuming labels
+> the onboarding JSX may have changed. `v2shoot.mjs` already covers Settings
+> and its dialogs, and `v2subs.mjs` covers the seven drill-ins, so nothing is
+> waiting on this file being repaired.
+
+What it was written to do: walk the whole ceremony, because `BootGate` is in
+front of every screen and there is no way past it but a real account, then
+screenshot and audit Settings — the screen where a control ends up under the
+bottom nav.
 
 ```bash
 harness/v2stack.sh up
@@ -123,9 +166,10 @@ Screenshots land in `harness/shots/` with a machine-readable
 
 ### The automated audit — `audit.mjs`
 
-`v2settings.mjs` (and any runner that wants it) imports `audit(page)` from
-`audit.mjs`, which runs inside the page and measures laid-out geometry,
-catching what a screenshot hides:
+Every screenshotting runner here — `v2shoot.mjs`, `v2deck.mjs`, `v2subs.mjs`
+and `v2settings.mjs` — imports `audit(page)` from `audit.mjs`, which runs
+inside the page and measures laid-out geometry, catching what a screenshot
+hides:
 
 - `page-h-overflow` / `element-past-viewport` — content crossing the viewport edge
 - `control-obscured` — a control whose centre point hits a *different*
@@ -151,6 +195,13 @@ deliberate exception to a convention, teach the audit about it in the same
 commit — otherwise the next person learns to skip the output.
 
 ## `recovery.mjs` — the at-rest keys, and a browser with nothing in it
+
+> **Its walk stalls at the recovery step against the current tree** — it
+> requires three `recovery-confirm-<n>` fields and finds none, then waits for
+> a "Finish setting up encryption" button that `482d68d` removed. See the
+> warning under "The ceremony runners". Everything below describes what it
+> was built to prove, which is still worth having; the step table is what
+> needs repairing, and `v2explore.mjs` is how.
 
 This one is about a different kind of claim than layout: **a browser whose
 site data has been cleared, given twelve words, gets its keys back.** Every
@@ -207,6 +258,10 @@ node harness/operator.mjs signup <invite>   # phase one
 node harness/operator.mjs recover           # phase two
 ```
 
+> **Its `signup` phase stalls at the recovery step against the current tree**,
+> for the same reason `recovery.mjs` does — the type-back quiz it confirms
+> through is gone. See the warning under "The ceremony runners".
+
 Sign up, twelve words, confirm, **reload**, and check the next launch does
 not land back on the phrase screen. It uses `webauthn.mjs`, a real ES256
 software authenticator (go-webauthn verifies its signatures like any other),
@@ -237,12 +292,12 @@ the note names this specific failure rather than a generic one.
 
 ## Two traps worth knowing
 
-- **`v2settings.mjs` runs with motion left ALONE — no script in this
-  directory sets `reducedMotion`.** `reducedMotion: "reduce"` makes `Dialog` /
-  `SettingsPage` skip their slide entirely, which would hide any bug in the
-  slide itself. That flag belongs to v1's `shoot.mjs` (`frontend/harness/`),
-  which sets it for stable screenshot captures — don't carry the habit over
-  here.
+- **Every runner here leaves motion ALONE — no script in this directory sets
+  `reducedMotion`** (checked across `web/harness/` on 2026-08-10).
+  `reducedMotion: "reduce"` makes `Dialog` / `SettingsPage` skip their slide
+  entirely, which would hide any bug in the slide itself. That flag belongs to
+  v1's `shoot.mjs` (`frontend/harness/`), which sets it for stable screenshot
+  captures — don't carry the habit over here.
 - **Check which tree vite is serving** (`ls -l /proc/<vite-pid>/cwd`).
   `v2stack.sh` resolves the repo from its own location, so running it from a
   stale checkout serves that checkout — it is easy to "verify a fix" against a
