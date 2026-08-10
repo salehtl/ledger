@@ -62,32 +62,36 @@
  * measures it. Calling the fact `forwardingDeclared` rather than
  * `forwardingConfigured` is the same honesty in the machine.
  *
- * # The instructions are a REGISTRY, and the choice is UI state
+ * # The instructions are a REGISTRY, and nobody is asked to pick from it
  *
  * This half used to be four hardcoded Gmail sentences, which were simply wrong
  * for every other provider — and worst for iCloud, whose flow has no
  * confirmation code at all while the copy told the user to wait for one. The
- * sentences now come from `v2/providers.ts`, which carries instructions and
+ * sentences come from `v2/providers.ts`, which carries instructions and
  * nothing else.
  *
- * The one thing the choice is allowed to decide beyond which sentences render is
- * whether the NEXT screen offers a confirmation-code reader, which travels as
- * the boolean argument to {@link AddressProps.onForwardingDeclared}. It never
- * reaches a trust decision: `providers.test.ts` asserts no module in the trust
- * path can even import the registry.
+ * The first fix made the registry a PICKER — a fork asking "where does your
+ * bank mail arrive?" before any instructions appeared, when the generic set is
+ * true everywhere. So the fork is gone too: {@link GENERIC} leads, and each
+ * provider's exact taps are a collapsed disclosure ({@link ProviderHelp}),
+ * opened only by a user who wants them. Which disclosures are open is UI state
+ * that never leaves this screen; `onForwardingDeclared` carries the registry's
+ * conservative answer (`GENERIC.needsConfirmation`), and it never reaches a
+ * trust decision: `providers.test.ts` asserts no module in the trust path can
+ * even import the registry.
  */
 
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
-import { InfoTip } from "../../components/ui/InfoTip";
+import { ChevronDown, ChevronRight } from "../../components/ui/PixelIcon";
 import { PixelSpinner } from "../../components/ui/PixelSpinner";
 import { Pressable } from "../../components/ui/Pressable";
-import { SectionLabel } from "../../components/ui/SectionLabel";
 import { readAddress } from "../../v2/address";
-import { CONFIRMATION_TASK_COPY } from "../../v2/onboarding";
-import type { TokenSource } from "../../v2/onboardingIO";
-import { GENERIC, PROVIDERS, providerFor, type Provider } from "../../v2/providers";
+import { readQuarantine, type TokenSource } from "../../v2/onboardingIO";
+import { GENERIC, PROVIDERS } from "../../v2/providers";
+import { confirmationTask, type ConfirmationTask } from "../../v2/verificationCode";
+import { OPEN_CONFIRMATION_COPY } from "./SetupStatus";
 import { Notice, SkipStep, Step } from "./Shell";
 
 /**
@@ -113,10 +117,12 @@ export interface AddressProps {
   /**
    * `forwarding_declared`.
    *
-   * `expectConfirmation` says whether the verification step should offer to read
-   * a confirmation code — true unless the chosen provider is known to send none.
-   * It is a hint about which sentences and controls to render, and nothing else
-   * may be decided by it.
+   * `expectConfirmation` says whether a later mail check should offer to read a
+   * confirmation code. No provider is asked for any more, so the forwarding
+   * route always reports {@link GENERIC}'s conservative `true`, and the retired
+   * direct route reports `false` — a bank writing straight to the address has
+   * no forwarder to confirm. It is a hint about which sentences and controls to
+   * render, and nothing else may be decided by it.
    */
   onForwardingDeclared: (expectConfirmation: boolean) => void;
   /**
@@ -145,6 +151,17 @@ export interface AddressProps {
   embedded?: boolean;
   /** Overrides {@link DIRECT_BANK_ROUTE}. Tests only — see that flag. */
   directRoute?: boolean;
+  /**
+   * Opens the held-mail surface. The fallback when the provider's confirmation
+   * is held but no link could be read out of it — a message that exists must
+   * never be a dead end. Same seam `SetupStatus` takes.
+   */
+  onOpenHeldMail?: () => void;
+  /**
+   * Test seam: how the confirmation link opens. Defaults to a new tab with no
+   * opener, so the held page cannot reach back into this one.
+   */
+  openUrl?: (url: string) => void;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -166,17 +183,13 @@ export function Address({
   copy = writeClipboard,
   embedded = false,
   directRoute = DIRECT_BANK_ROUTE,
+  onOpenHeldMail,
+  openUrl,
 }: AddressProps) {
   const [address, setAddress] = useState<string | null>(known);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(known === null);
   const [copied, setCopied] = useState<boolean | null>(null);
-  /**
-   * Which provider's instructions are on screen. `null` is not "unset waiting to
-   * be filled in" — it renders {@link GENERIC}, so there are always instructions
-   * on the glass and no provider is presumed to be the user's.
-   */
-  const [providerId, setProviderId] = useState<string | null>(null);
   /**
    * How mail is going to reach ledger.
    *
@@ -190,6 +203,37 @@ export function Address({
    * what measures whether that is true.
    */
   const [route, setRoute] = useState<"direct" | "forward" | null>(directRoute ? null : "forward");
+  /**
+   * The provider's held confirmation, when one is already in the lane — the
+   * same one-tap task `SetupStatus` shows, surfaced here because this screen is
+   * where the user is when the confirmation arrives. Best-effort: a lane that
+   * cannot be read just means no notice, never a broken screen.
+   */
+  const [confirmation, setConfirmation] = useState<ConfirmationTask | null>(null);
+
+  useEffect(() => {
+    if (phase !== "forwarding") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await readQuarantine(
+          client,
+          { includeBlob: true },
+          {
+            ...(server === undefined ? {} : { server }),
+            ...(doFetch === undefined ? {} : { fetch: doFetch }),
+          },
+        );
+        if (!cancelled) setConfirmation(confirmationTask(page.items));
+      } catch {
+        // The instructions stand on their own; a notice that cannot be built
+        // is simply not shown.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, client, server, doFetch]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -300,7 +344,6 @@ export function Address({
   }
 
   if (phase === "forwarding") {
-    const provider: Provider = providerId === null ? GENERIC : providerFor(providerId);
     return (
       <Step
         testId="forwarding"
@@ -317,7 +360,7 @@ export function Address({
         intro="One forwarding rule in the mailbox your bank already writes to. ledger never sees the rest of that mailbox and never holds a password to it."
         footer={
           <>
-            <Button variant="primary" onClick={() => onForwardingDeclared(provider.needsConfirmation)}>
+            <Button variant="primary" onClick={() => onForwardingDeclared(GENERIC.needsConfirmation)}>
               I have set up forwarding
             </Button>
             {directRoute && (
@@ -330,48 +373,50 @@ export function Address({
       >
         <AddressCard address={address} copied={copied} onCopy={() => void onCopy(address ?? "")} />
 
-        <ProviderPicker selected={providerId} onSelect={setProviderId} />
-
         {/*
-          The caveat is a Notice rather than a numbered step: it is not something
-          to do, it is something that may stop the doing from working — and it is
-          rendered ABOVE the steps, because "before the user tries" is a position
-          on the page and not a tone of voice. Outlook's is the case that settles
-          it: a Microsoft 365 work account may be unable to forward at all, so
-          the list beneath it is not merely incomplete, it is unusable. Under the
-          steps, that read as a footnote to instructions already being followed.
+          The one-tap task, above the instructions: a held confirmation means
+          the rule is already made, and the tap is all that is left. Same words
+          as the setup list — imported, not forked. A status, never an error.
+          The verified domain is shown verbatim, as evidence. No extracted link
+          is not a dead end: the tap opens held mail instead.
         */}
-        {provider.caveat !== undefined && (
-          <Notice announce title={`Before you start with ${provider.label}`} testId="provider-caveat">
-            <p>{provider.caveat}</p>
+        {confirmation !== null && (
+          <Notice title={OPEN_CONFIRMATION_COPY.title} testId="forwarding-confirmation">
+            <p>{OPEN_CONFIRMATION_COPY.body}</p>
+            {(confirmation.url !== null || onOpenHeldMail !== undefined) && (
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (confirmation.url !== null) {
+                    (openUrl ?? ((url: string) => void window.open(url, "_blank", "noopener")))(confirmation.url);
+                  } else {
+                    onOpenHeldMail?.();
+                  }
+                }}
+              >
+                {OPEN_CONFIRMATION_COPY.action}
+              </Button>
+            )}
+            <p data-testid="forwarding-confirmation-domain" className="text-xs text-muted">
+              {confirmation.domain}
+            </p>
           </Notice>
         )}
 
-        <ol data-testid="forwarding-steps" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
-          {provider.steps.map((step) => (
+        {/*
+          The generic instruction set, first and for everyone. It used to sit
+          behind a picker as "Another provider" — a fork the user had to answer
+          before seeing instructions that are true everywhere. Its last step is
+          the whole confirmation story: no promised code, no promised screen,
+          just where the message will be if one comes.
+        */}
+        <ol data-testid="forwarding-generic" className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
+          {GENERIC.steps.map((step) => (
             <li key={step}>{step}</li>
           ))}
         </ol>
-        {/*
-          There is deliberately no closing notice under the steps. It said
-          "forward with a rule, not everything", which every provider's own
-          steps already say in their own words — a paragraph of instructions
-          repeated under the instructions. Its second half ("anything else that
-          reaches this address is held rather than read") is now said by the mail
-          status the app carries, so nothing is lost from the flow either.
-        */}
 
-        {/*
-          The provider's code, said here rather than on a screen of its own —
-          because the screen of its own was a wait for an email the user cannot
-          cause. It is a task with a place to do it, not a gate: the user reaches
-          the app either way, and Held mail is where the message is read.
-        */}
-        {provider.needsConfirmation && (
-          <Notice title={CONFIRMATION_TASK_COPY.title} testId="confirmation-task">
-            <p>{CONFIRMATION_TASK_COPY.body}</p>
-          </Notice>
-        )}
+        <ProviderHelp />
 
         {onSkip !== undefined && <SkipStep step="forwarding_configured" onSkip={() => onSkip("forwarding_configured")} />}
       </Step>
@@ -438,56 +483,67 @@ function RouteRow({ title, detail, onClick }: { title: string; detail: string; o
 }
 
 /**
- * Which provider's instructions to show.
+ * Per-provider steps, offered rather than asked.
  *
- * The same bordered, divided list of `Pressable` rows the bank step uses, rather
- * than a `SegmentedControl`: six labels of this length in one row would either
- * wrap or fall under the 44px target on a narrow phone, which is exactly the
- * case the catalog says to keep out of a segmented control.
+ * This was a picker — a fork titled "Where does your bank mail arrive?" that
+ * stood between the user and any instructions, when the generic set above is
+ * true everywhere. Each provider is now a collapsed disclosure: a 44px
+ * `Pressable` header whose label names exactly what it reveals ("Show the
+ * Gmail steps"), with the chevron state the transaction rows already use, and
+ * content that is conditionally rendered — no animation, matching the
+ * codebase's other disclosures. Several can be open at once, because reading
+ * two providers' steps is not answering a question.
  *
- * `aria-pressed` rather than a radio group: nothing is submitted, and the rows
- * are not a form field — they swap the copy underneath them.
+ * A provider's caveat renders INSIDE its opened disclosure, still a `Notice`,
+ * still above the steps it may invalidate: "before the user tries" is a
+ * position on the page, not a tone of voice. Outlook's is the case that
+ * settles it — a Microsoft 365 work account may be unable to forward at all,
+ * so the list beneath it is not merely incomplete, it is unusable.
  */
-function ProviderPicker({ selected, onSelect }: { selected: string | null; onSelect: (id: string) => void }) {
-  const rows = [...PROVIDERS, GENERIC];
+function ProviderHelp() {
+  const [open, setOpen] = useState<readonly string[]>([]);
+  const toggle = (id: string) =>
+    setOpen((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-1">
-        <SectionLabel as="h2">Where does your bank mail arrive?</SectionLabel>
-        {/*
-          What the list is and is not, moved off the glass.
-
-          It was a paragraph under the picker, and it changes nothing the user
-          does: every row leads to instructions either way, and "Another
-          provider" is right there for anyone not listed. It is a note about the
-          shape of the control, which is exactly what a tip is for.
-
-          It still stops at what is true. "ledger never learns which provider
-          you use" was the sentence this nearly became, and it is false: this
-          choice is never sent anywhere, but the server can see the domain that
-          signed a forwarded message, which is usually the provider.
-        */}
-        <InfoTip about="this list" testId="tip-provider-list">
-          Any provider that can forward mail works. This choice only picks which instructions you see.
-        </InfoTip>
-      </div>
-      <div
-        data-testid="provider-picker"
-        className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border"
-      >
-        {rows.map((p) => (
-          <Pressable
-            key={p.id}
-            aria-pressed={selected === p.id}
-            onClick={() => onSelect(p.id)}
-            className={`min-h-11 px-4 py-3 text-left text-sm font-medium transition-colors ${
-              selected === p.id ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
-            }`}
-          >
-            {p.label}
-          </Pressable>
-        ))}
-      </div>
+    <div
+      data-testid="provider-help"
+      className="flex flex-col rounded-[var(--radius)] border border-border bg-surface divide-y divide-border"
+    >
+      {PROVIDERS.map((p) => {
+        const isOpen = open.includes(p.id);
+        return (
+          <div key={p.id} className="flex flex-col">
+            <Pressable
+              aria-expanded={isOpen}
+              onClick={() => toggle(p.id)}
+              className={`min-h-11 px-4 py-3 text-left text-sm font-medium flex items-center justify-between gap-3 transition-colors ${
+                isOpen ? "text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
+              }`}
+            >
+              <span>{isOpen ? `Hide the ${p.label} steps` : `Show the ${p.label} steps`}</span>
+              {isOpen ? (
+                <ChevronDown size={16} aria-hidden className="shrink-0" />
+              ) : (
+                <ChevronRight size={16} aria-hidden className="shrink-0" />
+              )}
+            </Pressable>
+            {isOpen && (
+              <div data-testid={`provider-steps-${p.id}`} className="px-4 pb-4 flex flex-col gap-3">
+                {p.caveat !== undefined && (
+                  <Notice announce title={`Before you start with ${p.label}`} testId={`provider-caveat-${p.id}`}>
+                    <p>{p.caveat}</p>
+                  </Notice>
+                )}
+                <ol className="flex flex-col gap-3 text-sm leading-relaxed list-decimal pl-5">
+                  {p.steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -27,12 +27,13 @@ function keypair() {
   return { priv, pub };
 }
 
-/** A browser authenticator that records the challenge it was handed. */
-function credentialsThatRecord(seen: { challenge: Uint8Array | null }): CredentialsContainer {
+/** A browser authenticator that records the challenge and rpId it was handed. */
+function credentialsThatRecord(seen: { challenge: Uint8Array | null; rpId?: string }): CredentialsContainer {
   return {
     get: vi.fn(async (opts?: CredentialRequestOptions) => {
       const pk = opts?.publicKey;
       seen.challenge = new Uint8Array(pk?.challenge as ArrayBuffer);
+      seen.rpId = pk?.rpId;
       return {
         id: "cred",
         rawId: new Uint8Array([1, 2, 3]).buffer,
@@ -86,6 +87,34 @@ describe("deleteAccount", () => {
     // And not over anything else: a domain-free or user-free message must not
     // verify, or the signature would be replayable into another flow.
     expect(ed25519.verify(sig, NONCE, pub)).toBe(false);
+  });
+
+  // The bug the operator hit: the assertion must target the account's OWN
+  // relying-party id (the parent domain), not the app origin. With no rpId the
+  // browser finds no credential under the origin and offers to CREATE a passkey
+  // instead of asserting with one. The server carries rp_id in the challenge;
+  // this proves it reaches the get() call.
+  it("asserts against the relying-party id the challenge carries, not the app origin", async () => {
+    const { priv } = keypair();
+    const doFetch = vi.fn(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith("/api/v1/account/challenge")) {
+        return new Response(JSON.stringify({ nonce: webPlatform.toBase64(NONCE), rp_id: "sirdab.ae" }), {
+          status: 200,
+        });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const seen = { challenge: null as Uint8Array | null, rpId: undefined as string | undefined };
+
+    await deleteAccount({
+      client: { sessionToken: "session", userId: ACCOUNT, writerId: WRITER },
+      secrets: { get: (k) => (k === `writer_key:${WRITER}` ? toBase64Url(priv) : null) },
+      fetch: doFetch as unknown as typeof fetch,
+      credentials: credentialsThatRecord(seen),
+    });
+
+    expect(seen.rpId).toBe("sirdab.ae");
   });
 
   it("never asks for a passkey when this device holds no writer key", async () => {

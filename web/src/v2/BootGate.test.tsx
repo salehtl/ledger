@@ -24,7 +24,6 @@ const SETTLED = encodeLocal({
   firstMailConfirmedAt: "2026-08-01T00:00:00Z",
   homeCurrency: "AED",
   skipped: [],
-  answered: [],
   setupSeen: true,
 });
 
@@ -157,8 +156,10 @@ describe("BootGate", () => {
   });
 
   it("resumes onboarding, with the facts, when the ACCOUNT is not set up", async () => {
+    // Short of a LOG fact — the home currency. An empty bank list alone would
+    // not do it: the walk stopped asking which bank, so it cannot reopen on one.
     const seen: string[] = [];
-    mount(rig({ banks: new Map(), local: { inboundAddress: null } }), {
+    mount(rig({ banks: new Map(), homeCurrency: null, local: { inboundAddress: null } }), {
       onboarding: ({ facts }) => {
         seen.push(facts.banks.join(","));
         return <div data-testid="onboarding">onboarding</div>;
@@ -535,6 +536,7 @@ describe("BootGate", () => {
     let halted = false;
     const r = rig({
       banks: new Map(),
+      homeCurrency: null,
       local: { inboundAddress: null },
       sync: async () => (halted ? { pulled: 0, applied: 0, violations: [], halted: true } : CLEAN),
     });

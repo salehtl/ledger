@@ -19,8 +19,10 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { QuarantineItem } from "./onboardingIO";
 import {
   CODE_DIGITS,
+  confirmationTask,
   couldBeConfirmation,
   heldBody,
   linkPattern,
@@ -536,6 +538,79 @@ describe("scanForCode", () => {
       const took = performance.now() - started;
       expect({ name, slow: took > 50 }).toEqual({ name, slow: false });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 — the pieces, composed: which held message, which link, one answer
+// ---------------------------------------------------------------------------
+
+describe("confirmationTask", () => {
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  const GMAIL_CONFIRM_BODY = GMAIL;
+
+  /** A full held row with the live Gmail confirmation's shape as the default. */
+  function heldItem(over: Partial<QuarantineItem>): QuarantineItem {
+    return {
+      id: "held-1",
+      ingestId: "ing-1",
+      receivedAt: "2026-08-09T12:00:00Z",
+      expiresAt: "2026-09-08T12:00:00Z",
+      warnedAt: null,
+      deleteAfter: null,
+      outerDomain: "google.com",
+      innerDomain: "",
+      attested: false,
+      attestedBy: "",
+      dkim: "pass",
+      arc: "pass",
+      sizeBucket: 1,
+      ...over,
+    };
+  }
+
+  it("finds the newest confirmation and its pinned link", () => {
+    const items = [
+      heldItem({ id: "old", receivedAt: "2026-08-09T10:00:00Z", outerDomain: "google.com", dkim: "pass", arc: "pass", blob: b64(GMAIL_CONFIRM_BODY) }),
+      heldItem({ id: "new", receivedAt: "2026-08-09T15:15:34Z", outerDomain: "google.com", dkim: "pass", arc: "pass", blob: b64(GMAIL_CONFIRM_BODY) }),
+      heldItem({ id: "bank", innerDomain: "dib.ae", attested: true }), // never a candidate
+    ];
+    const task = confirmationTask(items);
+    expect(task?.itemId).toBe("new");
+    expect(task?.url).toMatch(/^https:\/\/([a-z0-9-]+\.){0,4}google\.com\//);
+  });
+
+  it("returns null when nothing could be a confirmation", () => {
+    expect(confirmationTask([heldItem({ outerDomain: "gmail.com", dkim: "fail", arc: "none" })])).toBeNull();
+  });
+
+  /**
+   * The scan runs with the item's VERIFIED domain as the pinned host, so an
+   * attacker's link in the same body — even one that comes first — is never the
+   * url. A composition that scanned unpinned would return `evil.example` here.
+   */
+  it("never offers an attacker's link, even when it comes first in the body", () => {
+    const body = [
+      "Confirmation code: 123456",
+      "https://evil.example/mail/steal",
+      "https://mail-settings.google.com/mail/real",
+    ].join("\n");
+    const task = confirmationTask([heldItem({ blob: b64(body) })]);
+    expect(task?.url).toBe("https://mail-settings.google.com/mail/real");
+    expect(task?.code).toBe("123456");
+  });
+
+  /**
+   * A row fetched without its blob still names the task: the screen falls back
+   * to opening held mail, and a null here would be a dead end instead.
+   */
+  it("still names the task when the held row carries no blob", () => {
+    expect(confirmationTask([heldItem({ outerDomain: "Google.COM." })])).toEqual({
+      domain: "google.com",
+      url: null,
+      code: null,
+      itemId: "held-1",
+    });
   });
 });
 

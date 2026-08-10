@@ -1,27 +1,28 @@
 /**
- * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the five
+ * The onboarding walk: the machine in `v2/onboarding.ts` on one side, the
  * screens on the other, and nothing else.
  *
  * # There is exactly one routing mechanism, and it is not here
  *
  * `screenFor(stepFor(facts))` decides what is on the glass. This component
  * holds no step number, no `next()` and no ordering of its own — every screen
- * reports a FACT (`banks_declared`, `address_issued`, …) and the position falls out
- * of the milestone table. That is what makes a force-quit free: nothing here is
- * a resume cursor that could disagree with what the log and the server say.
+ * reports a FACT (`address_issued`, `forwarding_configured`, …) and the position
+ * falls out of the milestone table. That is what makes a force-quit free: nothing
+ * here is a resume cursor that could disagree with what the log and the server say.
  *
  * The boot gate owns the layer above: it decides signed-out vs onboarding vs
  * ready, and re-derives the facts from scratch every time `done` is called. So
  * `done` is the only exit, and it is called once — when the machine reaches
  * `done`, which needs `setupSeen`, which the finish screen sets.
  *
- * # The device-local half is one field wide, and it is written on every change
+ * # The device-local record is written on every change
  *
  * `saveLocalRecord` runs from an effect on the facts, so a tab closed between
- * two steps keeps the address it was given. Everything else a resumed walk needs
- * — the banks, the currency, whether mail has arrived — is in the log and on the
- * server, which is what makes a SECOND device resume at the same place rather
- * than at the beginning (`v2/onboarding.ts`'s header).
+ * two steps keeps the address it was given and every answer already given —
+ * the skips, the forwarding declaration, the finish time. Everything else a
+ * resumed walk needs — the banks, the currency, whether mail has arrived — is
+ * in the log and on the server, which is what makes a SECOND device resume at
+ * the same place rather than at the beginning (`v2/onboarding.ts`'s header).
  *
  * # Ops go through `emitMany`, and the outbox is the receipt
  *
@@ -49,13 +50,11 @@ import {
   type SkippableStep,
 } from "../../v2/onboarding";
 import { PROFILE, SERVER } from "../../v2/BootGate";
-import { bankDeclaredOps } from "../../v2/sources/banks";
 import { sqlBudgetSource, type BudgetSource } from "../../v2/sources/budget";
 import { webSecretStore, type V2Handle } from "../../v2/session";
 import { browserKeyVault, keyStatus, type KeyStatus, type KeyVault } from "../../v2/keys";
 import { Address } from "./Address";
 import { RecoveryPhrase } from "./RecoveryPhrase";
-import { Bank } from "./Bank";
 import { BudgetSplitStep } from "./BudgetSplitStep";
 import { HomeCurrency } from "./HomeCurrency";
 import { Notice, Step } from "./Shell";
@@ -161,22 +160,6 @@ export function Onboarding({
         />
       );
 
-    case "bank":
-      return (
-        <Bank
-          client={handle.client}
-          onDeclared={(banks) => {
-            // The ops FIRST, then the fact. The log is what a second device
-            // reads — a fact dispatched without them would advance this walk and
-            // leave the next phone at the bank step.
-            commit(banks.flatMap((bank) => bankDeclaredOps(bank, true)));
-            dispatch({ type: "banks_declared", banks });
-          }}
-          onSkip={() => skip("banks_declared")}
-          {...io}
-        />
-      );
-
     case "address":
       return (
         <Address
@@ -220,7 +203,11 @@ export function Onboarding({
           commit={commit}
           driver={handle.driver}
           {...(budgetSource === undefined ? {} : { budgetSource })}
-          onFinish={() => dispatch({ type: "finished" })}
+          // The dispatch flows through the same effect that persists every
+          // other answer (`saveLocalRecord` above), and that effect runs
+          // before the `done` hand-off — so the finish time is on disk before
+          // the walk unmounts.
+          onFinish={() => dispatch({ type: "finished", at: new Date().toISOString() })}
         />
       );
 

@@ -1,11 +1,15 @@
 /**
- * The five onboarding screens, driven the way a person drives them.
+ * The onboarding screens, driven the way a person drives them.
  *
  * Everything here mounts a REAL screen against a scripted `fetch` and a stub
  * {@link V2Handle}, because the decisions these screens make are the ones a
  * pure test cannot reach: which path a `not_invited` takes, whether the address
  * a walk lands on is the one the server minted, and whether confirming a
  * currency actually puts ops in the outbox rather than merely advancing a step.
+ *
+ * There is no bank screen: the bank question left the walk (templates key on
+ * the message's verified domain, so mail proves the bank). Banks are managed
+ * in Settings, and `V2Settings.test.tsx` covers that surface.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +21,7 @@ import type { SqlDriver } from "@ledger/client/store/driver";
 
 import { MotionProvider } from "../../app/MotionProvider";
 import { projectionWith } from "../../test/projectionFixture";
-import { emptyFacts, type OnboardingFacts } from "../../v2/onboarding";
+import { emptyFacts, loadLocalRecord, type OnboardingFacts } from "../../v2/onboarding";
 import { AccountMismatchError, EnrollmentError, PasskeyError, type V2Handle } from "../../v2/session";
 import type { SecretStore } from "@ledger/client/store/store";
 
@@ -449,149 +453,21 @@ describe("the recovery step when the server cannot be reached", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bank → Address
+// Address → forwarding
 // ---------------------------------------------------------------------------
 
-describe("the bank and address walk", () => {
-  it("lists the banks the server has templates for, and lands on the minted address", async () => {
-    const user = userEvent.setup();
+describe("the address walk", () => {
+  it("goes straight from the key ceremony to the address — no bank question", async () => {
     const rig = handleRig();
     const { doFetch } = scriptedFetch();
     mount(invited(), rig, doFetch);
 
     await waitFor(() => {
-      expect(screen.getByRole("checkbox", { name: /dubai islamic bank/i })).toBeTruthy();
-    });
-    // Two templates for `dib`, one row.
-    expect(screen.getAllByRole("checkbox", { name: /dubai islamic bank/i })).toHaveLength(1);
-    expect(screen.getByRole("checkbox", { name: /emirates nbd/i })).toBeTruthy();
-
-    await user.click(screen.getByRole("checkbox", { name: /dubai islamic bank/i }));
-    await user.click(screen.getByRole("button", { name: /^continue$/i }));
-
-    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
-    await waitFor(() => {
       expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
     });
-  });
-
-  it("declares SEVERAL banks, one op each, because people bank in more than one place", async () => {
-    // The multi-select. One op per bank rather than one carrying a list: two
-    // devices each adding a different bank offline both survive.
-    const user = userEvent.setup();
-    const rig = handleRig();
-    const { doFetch } = scriptedFetch();
-    mount(invited(), rig, doFetch);
-
-    await user.click(await screen.findByRole("checkbox", { name: /dubai islamic bank/i }));
-    await user.click(screen.getByRole("checkbox", { name: /emirates nbd/i }));
-    await user.click(screen.getByRole("button", { name: /^continue$/i }));
-
-    expect(rig.emitted).toEqual([
-      { type: "bank_declared", payload: { bank: "dib", active: true } },
-      { type: "bank_declared", payload: { bank: "enbd", active: true } },
-    ]);
-    await waitFor(() => {
-      expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
-    });
-  });
-
-  it("does not offer a template id it could not declare, rather than blanking the app on the tap", async () => {
-    // `bankDeclaredOps` throws for a name the grammar cannot store, and there is
-    // no error boundary in web/src — a throw in this onClick unmounts the tree
-    // and the user sees a blank page. The id is left out of the list instead.
-    // "DIB" is the quiet one: it folds to "dib", so declaring it would key a row
-    // the picker cannot then untick.
-    const user = userEvent.setup();
-    const rig = handleRig();
-    const { doFetch } = scriptedFetch({ hostileTemplates: true });
-    mount(invited(), rig, doFetch);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("bank-row-dib")).toBeTruthy();
-    });
-    expect(screen.queryByTestId("bank-row-adib_uae")).toBeNull();
-    expect(screen.queryByTestId("bank-row-DIB")).toBeNull();
-    // One row for `dib`, not two, and it still declares cleanly.
-    expect(screen.getAllByRole("checkbox", { name: /dubai islamic bank/i })).toHaveLength(1);
-    await user.click(screen.getByTestId("bank-row-dib"));
-    await user.click(screen.getByRole("button", { name: /^continue$/i }));
-    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
-  });
-
-  it("ticks the supported bank instead of waitlisting one ledger already reads", async () => {
-    // Typing the display name of a bank on the list used to declare
-    // `dubai islamic bank` — a phantom third row for one bank — and ask the
-    // demand counter for a parser that already exists.
-    const user = userEvent.setup();
-    const rig = handleRig();
-    const { doFetch, calls } = scriptedFetch();
-    mount(invited(), rig, doFetch);
-
-    await user.type(await screen.findByLabelText("Bank name"), "Dubai Islamic Bank");
-    await user.click(screen.getByRole("button", { name: /request support/i }));
-
-    expect(calls.some((c) => c.url.includes("/api/v1/waitlist"))).toBe(false);
-    expect(screen.getByTestId("bank-row-dib").getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByTestId("bank-already-supported").textContent).toMatch(/already reads dubai islamic bank/i);
-
-    await user.click(screen.getByRole("button", { name: /^continue$/i }));
-    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "dib", active: true } }]);
-  });
-
-  it("cannot be left with nothing declared — Continue is dead until a bank is ticked", async () => {
-    const rig = handleRig();
-    const { doFetch } = scriptedFetch();
-    mount(invited(), rig, doFetch);
-    expect(await screen.findByRole("button", { name: /^continue$/i })).toHaveProperty("disabled", true);
-    expect(rig.emitted).toHaveLength(0);
-  });
-
-  it("records an unsupported bank on the waitlist and still lets the user through", async () => {
-    const user = userEvent.setup();
-    const rig = handleRig();
-    const { doFetch, calls } = scriptedFetch();
-    mount(invited(), rig, doFetch);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("Bank name")).toBeTruthy();
-    });
-    await user.type(screen.getByLabelText("Bank name"), "Mashreq");
-    await user.click(screen.getByRole("button", { name: /request support/i }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("waitlist-confirmation")).toBeTruthy();
-    });
-    const posted = calls.find((c) => c.url.includes("/api/v1/waitlist"));
-    expect(posted?.body).toEqual({ bank: "mashreq" });
-    // Stops on the confirmation rather than walking straight on: the point of
-    // the step is that this bank cannot be read yet.
-    expect(screen.queryByTestId("inbound-address")).toBeNull();
-    expect(rig.emitted).toHaveLength(0);
-
-    // Carrying on declares the bank under the name they typed: ledger cannot
-    // read it yet, but it is still where they bank, and Settings lists it.
-    await user.click(screen.getByRole("button", { name: /carry on setting up/i }));
-    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "mashreq", active: true } }]);
-    await waitFor(() => {
-      expect(screen.getByTestId("inbound-address").textContent).toBe(ADDRESS);
-    });
-  });
-
-  it("keeps the grammar refusal from being a dead end, and declares the sentinel on the way past", async () => {
-    const user = userEvent.setup();
-    const rig = handleRig();
-    const { doFetch, calls } = scriptedFetch();
-    mount(invited(), rig, doFetch);
-
-    await user.type(await screen.findByLabelText("Bank name"), "Mashreq (UAE)");
-    await user.click(screen.getByRole("button", { name: /request support/i }));
-    // Refused here, with the rule, rather than as a 400 rendered "Try again."
-    expect(screen.getByTestId("bank-name-rule").textContent).toMatch(/not a name this list can store/i);
-    expect(calls.some((c) => c.url.includes("/api/v1/waitlist"))).toBe(false);
-
-    await user.click(screen.getByRole("button", { name: /continue without adding it/i }));
-    expect(rig.emitted).toEqual([{ type: "bank_declared", payload: { bank: "other", active: true } }]);
+    expect(screen.queryByTestId("bank")).toBeNull();
+    // Nothing was asked, so nothing was authored on the way here.
+    expect(rig.emitted).toEqual([]);
   });
 
   /**
@@ -614,7 +490,7 @@ describe("the bank and address walk", () => {
     const user = userEvent.setup();
     const rig = handleRig();
     const { doFetch } = scriptedFetch();
-    mount({ ...invited(), banks: ["dib"], inboundAddress: ADDRESS }, rig, doFetch);
+    mount({ ...invited(), inboundAddress: ADDRESS }, rig, doFetch);
 
     await user.click(await screen.findByRole("button", { name: /i have set up forwarding/i }));
 
@@ -720,6 +596,33 @@ describe("the finish screen", () => {
       expect(needs.value).toBe("60");
     });
     expect(screen.getByLabelText(/monthly budget/i)).toHaveValue("12000.00");
+  });
+
+  it("puts the finish on disk BEFORE handing back, so no reload can re-enter the walk", async () => {
+    // The hand-off re-runs boot, and boot believes the record. A finish that
+    // reached memory but not disk is a device that "finished" until the next
+    // regressed launch. The spy reads the store AT THE MOMENT `done` fires,
+    // which is what pins the effect order, not just the eventual write.
+    const user = userEvent.setup();
+    let store: SecretStore | undefined;
+    const atHandback: (string | null)[] = [];
+    const done = vi.fn(() => {
+      atHandback.push(store === undefined ? null : (loadLocalRecord(store)?.finishedAt ?? null));
+    });
+    const rig = handleRig();
+    const { doFetch } = scriptedFetch();
+    store = mount(atFinish(), rig, doFetch, done).secrets;
+
+    await screen.findByTestId("onboarding-finish");
+    await user.click(screen.getByRole("button", { name: /open ledger/i }));
+
+    await waitFor(() => {
+      expect(done).toHaveBeenCalled();
+    });
+    expect(atHandback[0]).toBeTruthy(); // on disk before the walk unmounted
+    const record = loadLocalRecord(store);
+    expect(record?.finishedAt).toBeTruthy();
+    expect(record?.forwardingDeclared).toBe(true); // the declaration rode along
   });
 
   it("does not clear a monthly total set on another device", async () => {

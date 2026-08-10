@@ -19,6 +19,7 @@ import {
   isSkipped,
   loadLocalRecord,
   mailStatus,
+  onboardingComplete,
   onboardingReducer,
   remainingSetup,
   resumeFacts,
@@ -39,8 +40,8 @@ function complete(over: Partial<OnboardingFacts> = {}): OnboardingFacts {
     firstMailConfirmedAt: "2026-08-01T00:00:00Z",
     homeCurrency: "AED",
     skipped: [],
-    answered: [],
     setupSeen: true,
+    finishedAt: null,
     ...over,
   };
 }
@@ -72,10 +73,10 @@ describe("stepFor", () => {
 
   it("stops at a GAP rather than at the highest true milestone", () => {
     // A reinstall: the log's facts survive, the device-local ones do not. The
-    // walk must stop at the bank, not skip to the currency — otherwise the
-    // device lands in the product with no forwarding rule set up.
-    const reinstalled = complete({ banks: [], forwardingDeclared: false, setupSeen: false });
-    expect(stepFor(reinstalled)).toBe("keys_secured");
+    // walk must stop at the forwarding step, not skip to the currency —
+    // otherwise the device lands in the product with no forwarding rule set up.
+    const reinstalled = complete({ forwardingDeclared: false, setupSeen: false });
+    expect(stepFor(reinstalled)).toBe("address_issued");
   });
 
   it("walks the declared step order", () => {
@@ -83,7 +84,6 @@ describe("stepFor", () => {
       "signed_in",
       "invited",
       "keys_secured",
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -113,7 +113,7 @@ describe("skipping", () => {
 
   it("walks past a skipped step instead of stopping at it", () => {
     expect(stepFor(fresh())).toBe("keys_secured");
-    expect(stepFor(fresh({ skipped: ["banks_declared"] }))).toBe("banks_declared");
+    expect(stepFor(fresh({ skipped: ["address_issued"] }))).toBe("address_issued");
   });
 
   it("reaches the product with every optional step skipped, and nothing else true", () => {
@@ -132,7 +132,6 @@ describe("skipping", () => {
     // type system; this is the runtime half, and it is what a `skipped` array
     // decoded from an older or hand-edited record would hit.
     expect([...SKIPPABLE_STEPS]).toEqual([
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -144,14 +143,14 @@ describe("skipping", () => {
   });
 
   it("records a skip once, and never un-records one", () => {
-    const once = onboardingReducer(fresh(), { type: "step_skipped", step: "banks_declared" });
-    expect(once.skipped).toEqual(["banks_declared"]);
-    expect(onboardingReducer(once, { type: "step_skipped", step: "banks_declared" })).toBe(once);
+    const once = onboardingReducer(fresh(), { type: "step_skipped", step: "address_issued" });
+    expect(once.skipped).toEqual(["address_issued"]);
+    expect(onboardingReducer(once, { type: "step_skipped", step: "address_issued" })).toBe(once);
   });
 
   it("survives a reload, because nothing else can remember a decision not to act", () => {
     const secrets = memSecretStore();
-    saveLocalRecord(secrets, fresh({ skipped: ["banks_declared", "home_currency_set"] }));
+    saveLocalRecord(secrets, fresh({ skipped: ["home_currency_set"] }));
     const resumed = resumeFacts(
       fromTheLog({
         banks: [],
@@ -161,33 +160,47 @@ describe("skipping", () => {
         local: loadLocalRecord(secrets),
       }),
     );
-    expect(resumed.skipped).toEqual(["banks_declared", "home_currency_set"]);
+    expect(resumed.skipped).toEqual(["home_currency_set"]);
     // Address issued, forwarding not declared and not skipped: the walk stops
     // there, which is the gap rule still doing its job around the skips.
     expect(stepFor(resumed)).toBe("address_issued");
   });
 
   it("refuses a skip an older record could not have written", () => {
+    // `keys_secured` was never skippable, 7 is not a step, and `banks_declared`
+    // stopped being one when the bank question left the walk.
     expect(decodeLocal({ inboundAddress: null, skipped: ["keys_secured", 7, "banks_declared"] })).toEqual({
       inboundAddress: null,
-      skipped: ["banks_declared"],
-      answered: [],
+      skipped: [],
+      forwardingDeclared: false,
+      finishedAt: null,
     });
   });
+});
 
-  it("filters an answered step by the same rule as a skipped one", () => {
-    expect(decodeLocal({ inboundAddress: null, answered: ["keys_secured", 7, "forwarding_configured"] })).toEqual({
-      inboundAddress: null,
-      skipped: [],
-      answered: ["forwarding_configured"],
-    });
+/**
+ * The bank question left the walk. The declared list never reaches parsing —
+ * templates key on the message's verified domain — so the walk stops asking
+ * what mail will prove. Banks stay manageable in Settings.
+ */
+describe("the bank question left the walk", () => {
+  it("never asks which bank", () => {
+    expect(ONBOARDING_STEPS).not.toContain("banks_declared");
+    // A fresh account with keys and nothing else goes straight to the address.
+    const f = { ...emptyFacts(), hasSession: true, accountId: "a", keysReady: true };
+    expect(stepFor(f)).toBe("keys_secured"); // next screen: address, not bank
+  });
+
+  it("an old record that skipped the bank step still decodes and is ignored", () => {
+    const r = decodeLocal({ inboundAddress: null, skipped: ["banks_declared", "home_currency_set"] });
+    expect(r).not.toBeNull();
+    expect(r!.skipped).toEqual(["home_currency_set"]); // unknown steps filtered, not refused
   });
 });
 
 describe("what is still outstanding", () => {
   it("lists every unmet step in the walk's order, skipped or simply not reached", () => {
     expect(remainingSetup(emptyFacts()).map((t) => t.id)).toEqual([
-      "banks_declared",
       "address_issued",
       "forwarding_configured",
       "home_currency_set",
@@ -195,8 +208,10 @@ describe("what is still outstanding", () => {
   });
 
   it("drops a step that was done, whatever was skipped", () => {
-    const f = { ...emptyFacts(), banks: ["dib"], homeCurrency: "AED", skipped: ["banks_declared" as const] };
-    expect(remainingSetup(f).map((t) => t.id)).toEqual(["address_issued", "forwarding_configured"]);
+    // Skipped AND later done (an address minted by a boot read): the list
+    // reads the fact, not the button press, so it drops off on its own.
+    const f = { ...emptyFacts(), inboundAddress: "u-abc@in.sirdab.ae", homeCurrency: "AED", skipped: ["address_issued" as const] };
+    expect(remainingSetup(f).map((t) => t.id)).toEqual(["forwarding_configured"]);
   });
 
   it("reports mail as a status, and separates 'nothing yet' from 'nowhere to arrive'", () => {
@@ -253,6 +268,111 @@ describe("onboardingReducer", () => {
   });
 });
 
+/**
+ * The resume loop, 2026-08-09: the operator declared his forward, reloaded, and
+ * the walk showed "Send your bank mail here" again — `resumeFacts` re-derived
+ * the declaration from mail having arrived, so the user's answer evaporated on
+ * every launch until the world happened to respond.
+ */
+describe("the walk remembers what the user did", () => {
+  it("keeps a declared forward across a reload, before any mail arrives", () => {
+    // The user declares; the device reloads; no mail has ever arrived.
+    const declared = onboardingReducer(emptyFacts(), { type: "forwarding_declared" });
+    const resumed = resumeFacts({
+      hasSession: true,
+      accountId: "acct-1",
+      keysReady: true,
+      banks: [],
+      inboundAddress: "u-x@in.sirdab.ae",
+      firstMailConfirmedAt: null, // Google's confirmation still held; nothing trusted yet
+      homeCurrency: "AED",
+      local: decodeLocal(JSON.parse(JSON.stringify(encodeLocal(declared)))),
+    });
+    expect(resumed.forwardingDeclared).toBe(true);
+    // THE loop: this must never again resolve to the forwarding screen.
+    expect(stepFor({ ...resumed, skipped: resumed.skipped })).not.toBe("address_issued");
+  });
+
+  it("a finished device never re-enters the walk, even if a fact regresses", () => {
+    const finished = resumeFacts({
+      hasSession: true,
+      accountId: "acct-1",
+      keysReady: true,
+      banks: [],
+      inboundAddress: null, // regressed: address fetch failed on this launch
+      firstMailConfirmedAt: null,
+      homeCurrency: null,
+      local: { inboundAddress: null, skipped: [], forwardingDeclared: false, finishedAt: "2026-08-09T18:00:00Z" },
+    });
+    expect(onboardingComplete(finished)).toBe(true);
+  });
+
+  it("a record from the previous build (no new keys) still decodes", () => {
+    const r = decodeLocal({ inboundAddress: "u-x@in.sirdab.ae", skipped: ["home_currency_set"] });
+    expect(r).not.toBeNull();
+    expect(r!.forwardingDeclared).toBe(false);
+    expect(r!.finishedAt).toBeNull();
+  });
+
+  it("holds through the operator's whole sequence: declare, reload, finish, then every later boot regressed", () => {
+    // The adversarial replay, through the REAL seams — reducer events, the
+    // encoder, the store, and boot's own re-save — with mail never arriving.
+    // Arrival must never be what keeps the door shut.
+    const secrets = memSecretStore();
+    const args = (over: Partial<Parameters<typeof resumeFacts>[0]> = {}) =>
+      fromTheLog({ firstMailConfirmedAt: null, homeCurrency: null, banks: [], ...over, local: loadLocalRecord(secrets) });
+
+    // Boot 1: the walk reaches the forwarding screen and the user declares.
+    let facts = resumeFacts(args());
+    expect(screenFor(stepFor(facts))).toBe("forwarding");
+    facts = onboardingReducer(facts, { type: "forwarding_declared" });
+    saveLocalRecord(secrets, facts); // the walk's persistence effect
+
+    // Boot 2, the reload the loop lived in: the next question is the currency,
+    // never the forwarding screen again.
+    facts = resumeFacts(args());
+    saveLocalRecord(secrets, facts); // boot re-persists what it resumed
+    expect(facts.forwardingDeclared).toBe(true);
+    expect(screenFor(stepFor(facts))).toBe("home_currency");
+
+    // The user answers it and taps "Open ledger".
+    facts = onboardingReducer(facts, { type: "home_currency_set", currency: "AED" });
+    facts = onboardingReducer(facts, { type: "finished", at: "2026-08-09T18:00:00Z" });
+    saveLocalRecord(secrets, facts);
+
+    // Boot 3: the projection was evicted and the address read failed — every
+    // account fact regressed at once, still no mail. The record alone holds.
+    facts = resumeFacts(args({ inboundAddress: null }));
+    saveLocalRecord(secrets, facts); // boot re-persists again
+    expect(onboardingComplete(facts)).toBe(true);
+
+    // Boot 4: the re-save above must not have narrowed the record. One good
+    // boot erasing the finish is a belt the next regressed boot reaches for
+    // and does not find.
+    expect(loadLocalRecord(secrets)?.finishedAt).toBe("2026-08-09T18:00:00Z");
+    facts = resumeFacts(args({ inboundAddress: null }));
+    expect(onboardingComplete(facts)).toBe(true);
+  });
+
+  it("does not let a finished record past a hard gate: no keys still means the recovery step", () => {
+    // `finishedAt` passes only the OPTIONAL steps. A wiped browser holds no
+    // keys, and a record saying "this device finished once" must not walk it
+    // into a product it cannot decrypt.
+    const locked = resumeFacts({
+      hasSession: true,
+      accountId: "acct-1",
+      keysReady: false,
+      banks: [],
+      inboundAddress: null,
+      firstMailConfirmedAt: null,
+      homeCurrency: null,
+      local: { inboundAddress: null, skipped: [], forwardingDeclared: false, finishedAt: "2026-08-09T18:00:00Z" },
+    });
+    expect(onboardingComplete(locked)).toBe(false);
+    expect(screenFor(stepFor(locked))).toBe("recovery");
+  });
+});
+
 describe("resumeFacts", () => {
   it("takes the home currency from the log and from nowhere else", () => {
     const f = resumeFacts(
@@ -286,9 +406,10 @@ describe("resumeFacts", () => {
     expect(stepFor(resumeFacts(fromTheLog()))).toBe("done");
   });
 
-  it("treats forwarding as DEMONSTRATED by mail arriving, never as remembered", () => {
-    // Nothing device-local says a forward exists any more, and nothing should:
-    // the only evidence a forward works is a transaction in the log.
+  it("still reads mail arriving as forwarding declared, on a device that remembers nothing", () => {
+    // Mail in the log is evidence a second device has too. The declaration is
+    // remembered where a record exists; where none does, arrival still answers,
+    // and silence on both sides still reads as not declared.
     expect(resumeFacts(fromTheLog()).forwardingDeclared).toBe(true);
     expect(resumeFacts(fromTheLog({ firstMailConfirmedAt: null })).forwardingDeclared).toBe(false);
   });
@@ -373,13 +494,20 @@ describe("the device-local record", () => {
     expect(decodeLocal("{}")).toBeNull();
   });
 
-  it("reads a record written by the build before this one, ignoring the fields it dropped", () => {
+  it("reads a record from the native-port build: the bank is ignored, the answers are honoured", () => {
     // The one live account has a record with `bank`, `forwardingDeclared` and
-    // `finishedAt` in it. Refusing it would cost the cached address, which is
-    // the only thing in there this build still uses.
+    // `finishedAt` in it. The bank is the account's fact now and stays ignored;
+    // the other two are the user's answers, which this build remembers again —
+    // honouring the old record is precisely what ends that account's resume
+    // loop without asking its owner to answer twice.
     expect(
       decodeLocal({ bank: "dib", forwardingDeclared: true, finishedAt: "2026-08-02T00:00:00Z", inboundAddress: "u-abc@in.sirdab.ae" }),
-    ).toEqual({ inboundAddress: "u-abc@in.sirdab.ae", skipped: [], answered: [] });
+    ).toEqual({
+      inboundAddress: "u-abc@in.sirdab.ae",
+      skipped: [],
+      forwardingDeclared: true,
+      finishedAt: "2026-08-02T00:00:00Z",
+    });
   });
 
   it("survives unreadable JSON by re-deriving rather than throwing", () => {
@@ -388,66 +516,19 @@ describe("the device-local record", () => {
     expect(loadLocalRecord(secrets)).toBeNull();
   });
 
-  it("holds the address hint, the skipped steps and the answered steps, and NOTHING else", () => {
-    // The device-local half is three fields wide, and each of the last two
-    // earned its place the same way: a bank, a "finished" flag or a home
-    // currency stored here is a fact a second device cannot see, which is
-    // precisely what made a new device re-run setup. The two that belong are
-    // the two facts NO device can see, because nothing anywhere records what a
-    // person SAID — "I'll do it later", and "I have already done it". Without
-    // them, every launch walks the user back into the step they just answered.
-    expect(Object.keys(encodeLocal(complete())).sort()).toEqual(["answered", "inboundAddress", "skipped"]);
-  });
-});
-
-/**
- * The loop the `answered` field exists to close.
- *
- * Reproduced by `harness/v2shoot.mjs` on 2026-08-09: a user who declared
- * forwarding, finished setup and pressed **Open ledger** was handed back the
- * "Send your bank mail here" step, because `done()` re-runs boot and
- * `forwardingDeclared` is re-derived from `firstMailConfirmedAt` alone.
- */
-describe("declaring forwarding before any mail has arrived", () => {
-  const beforeMail = { firstMailConfirmedAt: null, local: null } as const;
-
-  it("walls the walk when nothing recorded the declaration", () => {
-    // The old behaviour, pinned so the regression is visible if `answered` is
-    // ever dropped: no record, no way past the step.
-    expect(stepFor(resumeFacts(fromTheLog(beforeMail)))).toBe("address_issued");
-  });
-
-  it("lets the walk continue once the declaration is recorded", () => {
-    const declared = onboardingReducer(
-      resumeFacts(fromTheLog(beforeMail)),
-      { type: "forwarding_declared" },
-    );
-    expect(declared.answered).toEqual(["forwarding_configured"]);
-
-    // The whole point: it survives the boot that re-derives every fact.
-    const secrets = memSecretStore();
-    saveLocalRecord(secrets, declared);
-    const relaunched = resumeFacts(fromTheLog({ ...beforeMail, local: loadLocalRecord(secrets) }));
-    expect(relaunched.answered).toEqual(["forwarding_configured"]);
-    expect(stepFor(relaunched)).toBe("done");
-  });
-
-  it("does NOT claim the forwarding works — the milestone stays unmet and the task stays outstanding", () => {
-    const declared = onboardingReducer(resumeFacts(fromTheLog(beforeMail)), { type: "forwarding_declared" });
-    const secrets = memSecretStore();
-    saveLocalRecord(secrets, declared);
-    const relaunched = resumeFacts(fromTheLog({ ...beforeMail, local: loadLocalRecord(secrets) }));
-
-    // Derived from evidence, and there is none yet.
-    expect(relaunched.forwardingDeclared).toBe(false);
-    // So Home still lists it, exactly as it lists a skipped step.
-    expect(remainingSetup(relaunched).map((t) => t.id)).toContain("forwarding_configured");
-  });
-
-  it("records nothing when mail has already proved it", () => {
-    const proved = resumeFacts(fromTheLog({ local: null }));
-    expect(proved.forwardingDeclared).toBe(true);
-    expect(onboardingReducer(proved, { type: "forwarding_declared" })).toBe(proved);
+  it("holds the address hint and the user's answers, and NOTHING else", () => {
+    // Four fields, each one earning its place: the address hint (offline
+    // resume), and three facts that live nowhere but this device — the steps
+    // answered "later", the forwarding declaration, and when this device
+    // finished the walk. What must NEVER return is a fact the ACCOUNT owns: a
+    // bank or a home currency stored here is a browser profile overruling the
+    // log, which is what made a second device re-run setup.
+    expect(Object.keys(encodeLocal(complete())).sort()).toEqual([
+      "finishedAt",
+      "forwardingDeclared",
+      "inboundAddress",
+      "skipped",
+    ]);
   });
 });
 
