@@ -259,11 +259,13 @@ type PushConfig struct {
 	// every send is then rejected by the push service — so the two values must
 	// come from one place.
 	//
-	// The v1 binary's `ledger vapid-keys` mints a pair in exactly this format
-	// (both binaries encode through the same webpush-go). ledgerd deliberately
-	// has no such mode: a key-minting subcommand next to a running server is an
-	// invitation to run it twice, and the second run silently invalidates every
-	// subscription on the deployment with nothing telling the users.
+	// `ledgerd vapid-keys` mints a pair in exactly this format. It is a
+	// deliberately separate, config-free mode rather than something runServe
+	// offers, for the reason the mint-invite command gives for its own secret:
+	// a key-minting path next to a running server is an invitation to run it
+	// twice, and a second run silently invalidates every subscription on the
+	// deployment with nothing telling the users. The command's own warning
+	// line says so; see vapidkeys.go.
 	VAPIDPublic  string `toml:"-"`
 	VAPIDPrivate string `toml:"-"`
 }
@@ -305,7 +307,7 @@ type AuthConfig struct {
 // it cannot itself verify that main's dispatch table actually has an entry
 // for each of these — see the "cross-package coverage" note on
 // modeImplemented below for where that's actually checked.
-var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-templates", "purge-user", "record-consent", "parse-rate", "mint-invite", "load-corpus"}
+var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-templates", "purge-user", "record-consent", "parse-rate", "mint-invite", "load-corpus", "vapid-keys"}
 
 // modeImplemented is this package's own declared expectation of which modes
 // in modeOrder are meant to have a real dispatch entry in cmd/ledgerd.
@@ -326,6 +328,15 @@ var modeOrder = []string{"serve", "relay", "verify", "seed-dictionary", "seed-te
 // modeHandlers map directly, plus a checkModeHandlers() call at the top of
 // main() that panics on the same drift at runtime, every time the binary
 // is invoked. Keep both in sync by hand; nothing here enforces it.
+//
+// "vapid-keys" is implemented differently from every other entry here: it
+// needs no config, no DB and no network, and it is the command an operator
+// reaches for exactly when Load would otherwise fail (push.web_enabled true,
+// LEDGER_VAPID_* unset — see validateWebPush below). So cmd/ledgerd's main()
+// dispatches it BEFORE calling config.Load at all, and modeHandlers still
+// carries an entry for it — one that ignores its config.Config argument —
+// purely so checkModeHandlers' cross-check has something to find; that entry
+// is never actually invoked in the normal run.
 var modeImplemented = map[string]bool{
 	"serve":           true,
 	"relay":           true,
@@ -337,6 +348,7 @@ var modeImplemented = map[string]bool{
 	"parse-rate":      true,
 	"mint-invite":     true,
 	"load-corpus":     true,
+	"vapid-keys":      true,
 }
 
 // Modes returns every mode cmd/ledgerd is meant to dispatch on. cmd/ledgerd
@@ -866,7 +878,7 @@ func (c Config) validateWebPush() error {
 		return fmt.Errorf(
 			"push.web_enabled is true but the VAPID key pair is incomplete: set BOTH " +
 				"LEDGER_VAPID_PUBLIC and LEDGER_VAPID_PRIVATE (mint them ONCE with " +
-				"`ledger vapid-keys`, and never regenerate them — the public half is what " +
+				"`ledgerd vapid-keys`, and never regenerate them — the public half is what " +
 				"every browser already subscribed under). Or set push.web_enabled = false")
 	}
 	sub := c.Push.VAPIDSubject

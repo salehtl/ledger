@@ -77,10 +77,16 @@ func TestModesIsTheExactSetInOrder(t *testing.T) {
 	// only producer, the sync upload caps at 8 blobs, and a client authoring as
 	// `ingest` gets a 403). It is listed here for the same reason as the rest —
 	// so that adding a mode is a decision somebody wrote down.
+	// "vapid-keys" is the fifth: minting a Web Push VAPID pair used to mean
+	// shelling out to the v1 `ledger` binary, which is exactly the kind of
+	// cross-app coupling this tree is trying to remove (see CLAUDE.md's "two
+	// apps" section). It is dispatched before config.Load in cmd/ledgerd's
+	// main() — see modeImplemented's doc comment above — but it still belongs
+	// in this list: Modes() is what cmd/ledgerd's usage text is built from.
 	want := []string{
 		"serve", "relay", "verify", "seed-dictionary", "seed-templates",
 		"purge-user", "record-consent", "parse-rate", "mint-invite",
-		"load-corpus",
+		"load-corpus", "vapid-keys",
 	}
 	got := Modes()
 	if len(got) != len(want) {

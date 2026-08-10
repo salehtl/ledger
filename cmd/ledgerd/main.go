@@ -50,6 +50,14 @@ import (
 // test someone has to remember to run — that this table's key set is
 // exactly config.Modes(): no mode advertised without a handler, and no
 // handler for a mode nothing advertises.
+//
+// "vapid-keys" is the one entry here that main() never actually reaches
+// through this map: it is dispatched before config.Load, in main() itself,
+// because it must work when Load would refuse to run (see vapidkeys.go). The
+// entry below — which ignores the config.Config it is handed — exists only
+// so checkModeHandlers' cross-check against config.Modes() has something to
+// find on every invocation, including ones that never touch vapid-keys at
+// all.
 var modeHandlers = map[string]func(config.Config) error{
 	"serve":           runServe,
 	"relay":           runRelay,
@@ -61,6 +69,7 @@ var modeHandlers = map[string]func(config.Config) error{
 	"parse-rate":      runParseRate,
 	"mint-invite":     runMintInvite,
 	"load-corpus":     runLoadCorpus,
+	"vapid-keys":      func(config.Config) error { return runVAPIDKeys() },
 }
 
 // checkModeHandlers panics if modeHandlers and config.Modes() ever name
@@ -181,6 +190,21 @@ func main() {
 	a, err := parseArgs(os.Args[1:])
 	if err != nil {
 		log.Fatalf("arguments: %v", err)
+	}
+
+	// vapid-keys is dispatched HERE, before config.Load, rather than through
+	// modeHandlers like every other mode. It needs no config, no database and
+	// no network — and it must stay reachable even when Load would fail,
+	// which matters because the one failure mode it exists to fix is exactly
+	// that: push.web_enabled true with LEDGER_VAPID_* unset makes Load refuse
+	// to run, naming this very command in the error. Dispatching after Load,
+	// the way every other mode does, would make the fix unreachable at the
+	// one moment an operator needs it. See vapidkeys.go.
+	if a.mode == "vapid-keys" {
+		if err := runVAPIDKeys(); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 
 	cfg, err := config.Load(a.configPath)
