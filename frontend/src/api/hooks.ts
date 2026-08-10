@@ -53,7 +53,7 @@ export function useCategories(enabled = true) {
 // the fresh summary, which is written straight into the query cache — the
 // screen's numbers move the moment the server answers, no follow-up fetch.
 
-export const envelopesKey = (month: string) => ["envelopes", month] as const;
+const envelopesKey = (month: string) => ["envelopes", month] as const;
 
 export function useEnvelopes(month: string) {
   return useQuery({
@@ -263,8 +263,8 @@ export function useReportsWindowTxns(months = 24, enabled = true) {
 // (day-granular windows, AED convention), so a refetch is the only honest way
 // to show it.
 
-export const accountBalancesKey = ["accounts-balances"] as const;
-export const balanceHistoryKey = (id: number) => ["account-balance-history", id] as const;
+const accountBalancesKey = ["accounts-balances"] as const;
+const balanceHistoryKey = (id: number) => ["account-balance-history", id] as const;
 
 /** GET /api/accounts/balances — the whole accounts screen in one call. */
 export function useAccountBalances() {

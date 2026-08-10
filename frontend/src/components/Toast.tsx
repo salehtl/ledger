@@ -4,7 +4,7 @@ import { toastExitX } from "../lib/toastSwipe";
 import { FADE, SPRING_SNAP } from "../lib/motion";
 import { Pressable } from "./ui/Pressable";
 
-export interface ToastAction { label: string; onAction: () => void; }
+interface ToastAction { label: string; onAction: () => void; }
 export interface Toast {
   id: number;
   message: string;
