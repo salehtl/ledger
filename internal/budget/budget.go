@@ -31,15 +31,6 @@ type Summary struct {
 // buckets are always reported in this fixed order.
 var bucketOrder = []string{"need", "want", "saving"}
 
-// Compute rolls spend rows into jars for the month of now. income is already
-// resolved by the caller (config figure or summed income categories).
-// projectExcluded is the net spend the caller carved out because it belongs to
-// a project with count_in_monthly=0; it is echoed on Summary for display only
-// and does not affect the jar math.
-func Compute(cfg store.BudgetConfig, income int64, spend []store.SpendRow, recent []store.ReviewItem, now time.Time, projectExcluded int64) Summary {
-	return computeJars(cfg, income, spend, recent, now.Format("2006-01"), MonthProgress(now), projectExcluded)
-}
-
 // ComputeRange rolls jars for a multi-month span. The caller has already summed
 // spend + income across the span; period labels it (e.g. "2026-03..2026-06") and
 // progress is the fraction of the span elapsed (1.0 once it is wholly past). The
