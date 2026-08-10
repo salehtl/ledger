@@ -61,8 +61,11 @@ mode always comes first. There are eleven modes: `serve`, `relay`, `verify`,
 bash scripts/v2-check.sh     # this repo has no CI; this script IS the build
 ```
 
-It boots one throwaway Postgres cluster, then runs the Go tests, the `client/`
-tests, the web tests and the cross-executor conformance suites.
+It boots one throwaway Postgres cluster, then runs the v2 Go tests
+(`./internal/v2/...`, `./cmd/ledgerd`, and `./internal/importer` — a v1 package,
+because it is the Go half of the import conformance vectors), the `client/`
+tests, the web tests and the cross-executor conformance suites. It does **not**
+run the rest of v1.
 
 ### Read next
 
@@ -254,7 +257,7 @@ go test ./... -race          # with the race detector
 cd web && bun run test       # v2 frontend (vitest, jsdom)
 cd frontend && bun run test  # v1 frontend (vitest, jsdom)
 cd client && bun test        # the shared TypeScript library
-bash scripts/v2-check.sh     # the v2 gate, everything at once
+bash scripts/v2-check.sh     # the v2 gate — v2 packages only, never all of v1
 ```
 
 Go tests live beside the code (`*_test.go`); frontend tests are `*.test.ts(x)`

@@ -5,8 +5,10 @@ which you use every day. This document assumes you are reading it at 2am because
 something stopped working, so the troubleshooting section is at the bottom and
 is the part worth bookmarking.
 
-Everything here is derived from the code on branch `v2`, not from the plans.
-Where the code and a plan disagree, the code wins and this file says so.
+Everything here is derived from the code on `main`, not from the plans. (It used
+to say "branch `v2`"; that branch last moved on 2026-08-02 and is now an ancestor
+of `main`.) Where the code and a plan disagree, the code wins and this file says
+so.
 
 ---
 
@@ -808,9 +810,9 @@ There is deliberately **no rate limiter** on this listener.
 
 ## 6. Backups
 
-> `ledger_v2` is a live database holding real users' mail. Nothing below has
-> been run in anger yet, so the first run of it is a rehearsal you schedule, not
-> one you discover during an incident.
+> `ledger_v2` is live and accepting mail (verified 2026-08-09 — §0). Nothing
+> below has been run in anger yet, so the first run of it is a rehearsal you
+> schedule, not one you discover during an incident.
 
 v1's runbook learned two things the hard way, and both have Postgres analogues:
 
@@ -868,7 +870,7 @@ Backups contain plaintext financial mail. Encrypt them if they leave the box.
 | `/etc/ledger-v2/ledgerd.env` | secrets, `0600` |
 | `/var/lib/ledger-v2/` | `0700`; autocert cache at `autocert/` |
 | `/var/backups/ledger-v2/` | dumps, root-owned |
-| `deploy/ledgerd.service` | the unit, committed 2026-08-09 and installed: dedicated user, `ProtectSystem=strict`, `NoNewPrivileges`, plus `AmbientCapabilities=CAP_NET_BIND_SERVICE` for `:25`. `systemctl is-enabled ledgerd` → `enabled` |
+| `deploy/ledgerd.service` | the unit, committed 2026-08-07 (`ea1e708`, hardened again in `ede176b`) and installed: dedicated user, `ProtectSystem=strict`, `NoNewPrivileges`, plus `AmbientCapabilities=CAP_NET_BIND_SERVICE` for `:25`. `systemctl is-enabled ledgerd` → `enabled` |
 
 After any restart, confirm the **running process** is the new binary (inode/PID
 check), not merely that health is green — v1's runbook learned that one too.

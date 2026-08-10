@@ -130,8 +130,11 @@ before `config.Load`). The dispatch table is `modeHandlers`, and
 bash scripts/v2-check.sh     # this repo has no CI; this script IS the build
 ```
 
-It boots one throwaway Postgres cluster for the whole run, then runs the Go tests,
-the `client/` tests, the web tests and the cross-executor conformance suites.
+It boots one throwaway Postgres cluster for the whole run, then runs the v2 Go
+tests (`./internal/v2/...`, `./cmd/ledgerd`, and `./internal/importer` — a v1
+package, because it is the Go half of the import conformance vectors), the
+`client/` tests, the web tests and the cross-executor conformance suites. The
+rest of v1 is **not** in this gate; `go test ./...` is.
 
 > **A green gate does NOT mean the deployed UI is current.** `v2-check.sh` builds
 > the web bundle into a **temp directory** by design, so it never refreshes
@@ -236,7 +239,7 @@ go test ./... -race                        # race detector
 cd web && bun run test                     # v2 frontend (vitest)
 cd frontend && bun run test                # v1 frontend (vitest)
 cd client && bun test                      # the shared TS library
-bash scripts/v2-check.sh                   # the v2 gate, everything at once
+bash scripts/v2-check.sh                   # the v2 gate — v2 packages only
 ```
 
 Go tests live beside the code (`*_test.go`). Frontend tests are `*.test.ts(x)` next to components, run with jsdom.
@@ -285,11 +288,12 @@ no script can reach the product at all.
 Never point a harness at production: scratch ports and a scratch DB, never
 `:8080`, never `:443`, never `/var/lib/ledger`.
 
-**The method that actually found bugs**, in order of yield. It was learned on v1
-and it transfers, but **every file named below is a `frontend/harness/` (v1)
-file** — `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do not
-exist in `web/harness/`, and `audit.mjs` is the only one that exists in both. If
-you arrived here from the v2 paragraph, the v2 runners are the four named there:
+**The method that actually found bugs**, in order of yield. It was learned on v1,
+and **the files named below are `frontend/harness/` (v1) files** unless the text
+says otherwise: `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do
+not exist in `web/harness/`. Two exceptions — `audit.mjs` exists in both trees,
+and `v2stack.sh` is v2's only. If you arrived here from the v2 paragraph, the v2
+runners are the four named there:
 
 1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant name wider than the viewport, a 250,000 amount, an unset FX rate, a negative envelope. Bugs hide in the happy path.
 2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page and reports elements past the viewport, controls whose centre point hits a *different* element, sub-44px targets, sub-16px inputs, unreachable `overflow-hidden` content.

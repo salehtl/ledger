@@ -11,9 +11,9 @@ Geist and Geist Mono
 
   Shipped as the .woff2 files in each built bundle, via the npm packages
   @fontsource-variable/geist and @fontsource-variable/geist-mono, which are
-  imported in frontend/src/main.tsx and web/src/main.tsx. The full licence text
-  ships with those packages, at
-  node_modules/@fontsource-variable/geist/LICENSE.
+  imported in frontend/src/main.tsx and web/src/main.tsx. Each of those packages
+  ships the full licence text in its own LICENSE file, under the node_modules of
+  whichever app you are looking at — frontend/ and web/ each install both.
 
 Pixelarticons
   Copyright (c) 2019 Gerrit Halfmann

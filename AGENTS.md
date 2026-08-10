@@ -68,7 +68,7 @@ in both apps.
 - `cd web && bun install`: install pinned dependencies.
 - `cd web && bun run build`: type-check (app and service worker) and build into `internal/v2/webui/dist/`.
 - `CGO_ENABLED=0 go build -o ledgerd ./cmd/ledgerd`: build the binary after the web app.
-- `bash scripts/v2-check.sh`: **the gate**. This repo has no CI service, so this script is the build. It boots one throwaway Postgres cluster, then runs the Go tests, the `client/` tests, the web tests and the cross-executor conformance suites.
+- `bash scripts/v2-check.sh`: **the gate**. This repo has no CI service, so this script is the build. It boots one throwaway Postgres cluster, then runs the v2 Go tests (`./internal/v2/...`, `./cmd/ledgerd`, and `./internal/importer` — a v1 package, because it is the Go half of the import conformance vectors), the `client/` tests, the web tests and the cross-executor conformance suites. The rest of v1 is not in it; that is what `go test ./...` is for.
 - `cd web && bun run test` / `cd client && bun test`: the two suites on their own.
 
 **v1**
