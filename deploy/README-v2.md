@@ -36,20 +36,20 @@ everything below:
   after that — including the admin console — is *not* in the live process until
   you rebuild and restart. A 401 from the console URL is exactly this.
 
-The D-series (§8) is still the open work.
+D1, D4 and D5 are done. D2, D3 and D6 are the open work (§8).
 
-### The live edge you are carrying right now
+### There is deliberately no backup MX
 
-`in.sirdab.ae MX 20 → mx2.sirdab.ae` is published and **does not resolve**
-(verified with `dig` on 2026-08-01: `MX 10 mx1.sirdab.ae → 198.51.100.1`
-answers, `mx2.sirdab.ae` returns nothing). This is harmless while mx1 is up and
-*actively harmful* the moment it is not: a sending MTA that fails over to a
-non-resolving backup retries a dead host instead of deferring cleanly against
-the primary. Today the record is worse than having no backup MX at all.
+`in.sirdab.ae` publishes exactly **one** MX: `10 mx1.sirdab.ae`. Verified with
+`dig +short MX in.sirdab.ae` on 2026-08-10.
 
-Two fixes, either is fine: provision the relay (task D3) or **delete the MX 20
-record** (task D1, one minute, strictly improves things). See
-`docs/superpowers/NEEDS-SALEH.md` item 4.
+The `MX 20 → mx2.sirdab.ae` record that used to sit beside it has been deleted.
+It was published and never resolved, which is worse than having no backup at
+all: a sending MTA that fails over to a non-resolving host retries a dead name
+instead of deferring cleanly against the primary. With one MX, mail simply
+waits in the sender's own queue while mx1 is down — the correct behaviour, and
+the intended state until the relay is provisioned (task D3, deferred by
+decision).
 
 ---
 
@@ -63,9 +63,16 @@ silently drift.
 ```
 serve  relay  verify  seed-dictionary  seed-templates
 purge-user  record-consent  parse-rate  mint-invite
+load-corpus  vapid-keys
 ```
 
-Nine modes. Note two things:
+Eleven modes. Two of them are not production operations: `load-corpus` loads a
+pre-sealed benchmark corpus straight through `oplog.Appender.AppendIngest` and
+**refuses a database holding more than one user**, and `vapid-keys` mints a Web
+Push key pair (§3) and is the one mode dispatched *before* `config.Load`, so it
+works when no config file would load at all.
+
+Note two more things:
 
 - **There is no `ledgerd import`.** CSV/XLSX backfill is a *v1* subcommand
   (`ledger import`). v2 ingests over SMTP only.
@@ -116,10 +123,6 @@ Two **test-only** switches, with no TOML key and no env override, refused unless
 - `--dns-fixtures <dns.json>` — a recorded TXT map served as the DKIM/ARC
   resolver. Loaded and validated at startup, so a bad path fails the process
   rather than surfacing later as a DKIM error that looks like a crypto bug.
-
-> `config.v2.example.toml` still says `--dns-fixtures` is loaded and *nothing
-> consumes it*. That comment is stale — `runServe` now hands the resolver to the
-> ingest pipeline, and Tasks 24/25 landed.
 
 ### `seed-templates`
 
@@ -295,8 +298,8 @@ visible answer.
 not a warning. Findings never echo a value taken from a blob — only the position
 the *row* claims — because this runs against real users' mail.
 
-*Structural* (per user, over both the hot and cold streams). Note the package
-doc still says "four invariants"; there are **five**:
+*Structural* (per user, over both the hot and cold streams). There are **five**,
+and `verify.Structural`'s doc comment names all five:
 
 | ID | Means |
 |---|---|
@@ -498,11 +501,10 @@ than accepts:
 | `mail.max_message_bytes` | **1..`blob.MaxColdMail` (1,000,000), and larger is refused — not clamped.** The default already *is* `MaxColdMail`. Accepting mail at SMTP that the ingest path then cannot store is the worst available failure, so the receiver refuses at DATA instead |
 | any listener ending `:8080` | refused — `:8080` belongs to the running v1 instance |
 | a DSN containing `/var/lib/ledger` | refused — that is v1's data directory |
-| `push.enabled = true` with no `LEDGER_EXPO_ACCESS_TOKEN` | refused. Expo's endpoint accepts unauthenticated POSTs until a project opts into enhanced security, so without the token anyone holding a user's push token can write to that lock screen |
-| `push.expo_url` | must be `https` and an Expo host, checked **whenever set**, not only when push is enabled. It is the only outbound request this server makes and it carries the access token plus the timing of every user's transactions |
+| `push.enabled = true` with no `LEDGER_EXPO_ACCESS_TOKEN` | refused — see the push note below. The key is **inert**: leave it off unless you know why you want it |
+| `push.expo_url` | inert, still railed: must be `https` and an Expo host, checked **whenever set**, not only when push is enabled. A wrong value sitting in a file until somebody flips a boolean is exactly what that rail refuses |
 | `push.web_enabled = true` with half a VAPID pair | refused. Both `LEDGER_VAPID_PUBLIC` and `LEDGER_VAPID_PRIVATE` or neither: a public key with no private half means every subscription is dead on arrival, and every failure on that path is silent — the browser subscribes, the row is stored, and each send is rejected by the push service in a goroutine that logs and swallows |
 | `push.web_enabled = true` with no `push.vapid_subject` | refused, and it must be a `mailto:` or `https:` URL (RFC 8292 §2.1). Push services reject a JWT whose `sub` they cannot act on. Not defaulted, because a default would be a contact address the operator never chose, published to Apple and Google on every send |
-| `push.web_enabled` vs `push.enabled` | **separate switches, not modes of one.** Different audiences (a browser subscription vs an Expo install), different tables, different credentials. The VAPID keys are checked only when `web_enabled` is on — unlike `expo_url`, an unused key in the environment sends nothing anywhere |
 
 Two more behaviours of `Load` worth knowing at 2am:
 
@@ -513,7 +515,25 @@ Two more behaviours of `Load` worth knowing at 2am:
 - **Putting a secret in the TOML fails the same way.** `server.admin_token = "x"`
   is rejected with the message telling you to use the environment.
 
-### The public listener also serves the PWA (Task D4)
+### The push rail: only `web_enabled` does anything
+
+**The native/Expo push half was removed on 2026-08-10, with the Expo client.**
+Web Push is the whole of push now: `push.web_enabled`, the VAPID pair, and
+`/api/v1/push/subscriptions`. There is no push-token endpoint any more.
+
+`push.enabled` and `push.expo_url` are still **parsed and still railed**, and
+they send nothing. They remain fields because `Load` hard-rejects a TOML
+carrying an unknown key, so deleting them would stop `ledgerd` booting against
+any deployed config that still sets them (`config.PushConfig` says so at the
+type).
+
+> **Inherited trap.** `push.enabled = true` with no `LEDGER_EXPO_ACCESS_TOKEN`
+> still **refuses to boot**, with a message about Expo's endpoint that no longer
+> describes anything this binary does. The validator text is deliberately
+> unchanged this branch. Leave `push.enabled` off — it buys nothing — and turn
+> on `push.web_enabled` if you want push.
+
+### The public listener also serves the PWA
 
 `ledgerd` embeds the built PWA (`internal/v2/webui/dist`) and serves it behind
 the API on the **same** listener, so the app and `/api/v1/*` share one origin —
@@ -524,8 +544,8 @@ before a cutover:
   shell). The admin console is on its own tailnet-only listener; the 404 is what
   keeps the gate's "curl the console from off-tailnet, it must fail" step
   meaningful.
-- **⚠ The committed `dist/` must be a build of the finished v2 UI before the
-  public cutover.** It is a committed artifact, so a stale one is completely
+- **⚠ The committed `dist/` must be rebuilt before every deploy.** It is a
+  committed artifact, so a stale one is completely
   silent: the build passes, the tests pass, and the public origin serves a client
   wired to endpoints `ledgerd` does not have. `serve` logs a loud
   `*** the embedded PWA bundle … contains no reference to "/api/v1" ***` when it
@@ -566,7 +586,7 @@ v2 list, confirmed from `internal/v2/config`:
 | `LEDGER_ADMIN_TOKEN` | admin console bearer token. **Unset ⇒ the console is not served at all** |
 | `LEDGER_DICT_HMAC_KEY` | merchant-dictionary submitter HMAC. See the rotation warning below |
 | `LEDGER_RELAY_TOKEN` | relay → primary delivery auth (both hosts) |
-| `LEDGER_EXPO_ACCESS_TOKEN` | Expo push; required when `push.enabled = true` |
+| `LEDGER_EXPO_ACCESS_TOKEN` | **inert** — the Expo sender was removed on 2026-08-10. `config.validatePush` still requires it when `push.enabled = true`, which is a reason to leave `push.enabled` off, not a reason to set this (§2) |
 | `LEDGER_VAPID_PUBLIC` | Web Push application server key, public half. Not a secret in itself; env-only so it cannot drift from the private half. Required when `push.web_enabled = true` |
 | `LEDGER_VAPID_PRIVATE` | Web Push application server key, private half — it signs the JWT that authorizes every send. Required when `push.web_enabled = true` |
 | `LEDGER_PG_DSN` | not tagged as a secret in the code, but it carries the database password — treat it as one |
@@ -595,9 +615,15 @@ subscription.
 
 Non-secret environment overrides: `LEDGER_MAIL_DOMAIN`, `LEDGER_HTTP_LISTEN`,
 `LEDGER_ADMIN_LISTEN`, `LEDGER_SMTP_LISTEN`, `LEDGER_RELAY_PRIMARY_URL`,
-`LEDGER_APPLE_CLIENT_IDS`, `LEDGER_GOOGLE_CLIENT_IDS`. Plus two read outside
-`config`: `LEDGER_CORPUS_DB` (`seed-dictionary`) and `LEDGER_OPERATOR`
-(`parse-rate --adjudicate` audit trail).
+`LEDGER_APPLE_CLIENT_IDS`, `LEDGER_GOOGLE_CLIENT_IDS`, and the three WebAuthn
+relying-party values — `LEDGER_RP_ID` (the bare effective domain),
+`LEDGER_RP_DISPLAY_NAME` (what the platform's passkey prompt shows) and
+`LEDGER_RP_ORIGINS` (comma-separated absolute origins). `rp_id` and `rp_origins`
+are validated together: either both are set or neither, `rp_id` must carry no
+scheme or port, and each origin must have one. **A passkey minted under one
+`rp_id` is unusable under another**, so this is not a value to change casually.
+Plus two read outside `config`: `LEDGER_CORPUS_DB` (`seed-dictionary`) and
+`LEDGER_OPERATOR` (`parse-rate --adjudicate` audit trail).
 
 ### ⚠ `LEDGER_DICT_HMAC_KEY` cannot be rotated once `dict_submissions` is non-empty
 
@@ -639,11 +665,12 @@ it audits). Idempotent; a clean no-op against an up-to-date database.
 > `00004` is vacant by ruling — goose hard-fails when a migration appears
 > *below* an already-applied version, so the number can never be claimed again.
 > `00015`'s original cause is unrecorded, but the same rule applies. Numbering
-> runs `00001–00003, 00005–00014, 00016–00021`. The next free number is one past
+> runs `00001–00003, 00005–00014, 00016–00029`. The next free number is one past
 > the highest file on disk — re-run `ls internal/v2/pg/migrations/` at the moment
 > you write one, because sessions run concurrently.
 
-Production has **two roles** (task D5): `ledger_migrate` owns the schema,
+Production has **two roles**, and both exist on this box (checked 2026-08-10 with
+`sudo -u postgres psql -c '\du'`): `ledger_migrate` owns the schema,
 `ledger_runtime` serves and is never the owner. This is a security requirement,
 not tidiness: `key_history` is append-only by trigger, and `ALTER TABLE …
 DISABLE TRIGGER` needs only *ownership* — a single role that migrates and serves
@@ -781,9 +808,9 @@ There is deliberately **no rate limiter** on this listener.
 
 ## 6. Backups
 
-> Nothing below has been run in anger — v2 has no production database yet. This
-> is the procedure to establish as part of D5, written now so it is not invented
-> under pressure.
+> `ledger_v2` is a live database holding real users' mail. Nothing below has
+> been run in anger yet, so the first run of it is a rehearsal you schedule, not
+> one you discover during an incident.
 
 v1's runbook learned two things the hard way, and both have Postgres analogues:
 
@@ -833,7 +860,7 @@ Backups contain plaintext financial mail. Encrypt them if they leave the box.
 
 ---
 
-## 7. Where things live (once D4/D5 land)
+## 7. Where things live
 
 | Path | Contents |
 |---|---|
@@ -841,7 +868,7 @@ Backups contain plaintext financial mail. Encrypt them if they leave the box.
 | `/etc/ledger-v2/ledgerd.env` | secrets, `0600` |
 | `/var/lib/ledger-v2/` | `0700`; autocert cache at `autocert/` |
 | `/var/backups/ledger-v2/` | dumps, root-owned |
-| `deploy/ledgerd.service` | **not written yet** — model it on `deploy/ledger.service`: dedicated user, `ProtectSystem=strict`, `NoNewPrivileges`, plus `AmbientCapabilities=CAP_NET_BIND_SERVICE` for `:25` |
+| `deploy/ledgerd.service` | the unit, committed 2026-08-09 and installed: dedicated user, `ProtectSystem=strict`, `NoNewPrivileges`, plus `AmbientCapabilities=CAP_NET_BIND_SERVICE` for `:25`. `systemctl is-enabled ledgerd` → `enabled` |
 
 After any restart, confirm the **running process** is the new binary (inode/PID
 check), not merely that health is green — v1's runbook learned that one too.
@@ -852,12 +879,12 @@ check), not merely that health is green — v1's runbook learned that one too.
 
 | Task | Blocks | State |
 |---|---|---|
-| **D1** domain + DNS | — | domain chosen (`sirdab.ae`), MX 10 / api records live. **Outstanding: delete the MX 20 record or do D3** |
+| **D1** domain + DNS | — | **done.** `sirdab.ae`, `MX 10 mx1` plus the `app`/`api` records; the dangling MX 20 is deleted (§0) |
 | **D2** probe port 25 on the relay provider | D3 | not done; `spike/phase0/RESULTS.md` covers the primary only |
 | **D3** provision + deploy the relay | backup MX | deferred by decision |
-| **D4** TLS, firewall, systemd unit | public access | not done. Adds autocert to `runServe` and is the commit that lifts the loopback rail on `http_listen`. Until then the device reaches ledgerd over Tailscale, as v1 does |
-| **D5** PostgreSQL on the primary | everything | not done. Cluster is down; two roles, `C.UTF-8` locale, backups |
-| **D6** alpha onboarding + the two-week measurement | Phase 1 exit | not started. Needs the consent document, which **does not exist and no task writes it** |
+| **D4** TLS, firewall, systemd unit | public access | **done.** `runServe` terminates TLS with autocert on `:443` for `app.sirdab.ae` / `api.sirdab.ae`; `deploy/ledgerd.service` is committed, installed and enabled |
+| **D5** PostgreSQL on the primary | everything | **done.** Cluster `16/main` is up, `ledger_v2` is live, and both `ledger_migrate` and `ledger_runtime` exist. Backups (§6) have not been rehearsed |
+| **D6** alpha onboarding + the two-week measurement | Phase 1 exit | not started. The consent document it was blocked on now exists: `docs/alpha-consent.md`, v1.0 of 2026-08-07. Record a signature with `ledgerd record-consent` — nothing writes `user_consent` automatically (§1) |
 
 ---
 
@@ -905,33 +932,52 @@ an `arrival` row means we got it and the problem is downstream of SMTP.
 
 ### "Everything is in the review queue."
 
-**For DIB, this is currently expected and correct.** DKIM at DIB does not cover
-`Content-Type`. That header decides how the signed body *bytes* are decoded —
-charset, transfer encoding, which MIME part is the text — so somebody holding one
-genuine DIB message can rewrite it in place, leave the signature valid, and
-change what the parser reads out of bytes the bank really signed. It was proved
-by construction: a body containing `Amount =31=30=30.00` matches as **900.00**
-under quoted-printable and **100.00** as raw text.
+**For DIB account mail, this is expected and correct.** DKIM at DIB does not
+cover `Content-Type`. That header decides how the signed body *bytes* are
+decoded — charset, transfer encoding, which MIME part is the text — so somebody
+holding one genuine DIB message can rewrite it in place, leave the signature
+valid, and change what the parser reads out of bytes the bank really signed. It
+was proved by construction: a body containing `Amount =31=30=30.00` matches as
+**900.00** under quoted-printable and **100.00** as raw text.
 
 The response is not refusal — refusing would quarantine every message from a
 bank that simply does not sign the header. What is denied is **auto-trust**: the
 transaction is extracted and appended exactly as before, and it lands in the
 review queue. So the symptom is "everything needs confirming", never "nothing
-arrives". In code this is `needsReview: unattestedForward || unsignedDecoding` in
-`internal/v2/ingest/pipeline.go`.
+arrives".
 
-The cost is real: six of seven corpus fixtures lose auto-trust, and **a DIB user
-confirms every transaction by hand.** Only ENBD's Proofpoint mail, which signs
-both headers, stays automatic.
+**Unless the decoded text witnesses its own decode.** That is
+`decodeWitnessed` in `internal/v2/ingest/pipeline.go` — the narrow guardrail
+chosen on 2026-08-05 (`docs/superpowers/NEEDS-SALEH.md` item 0, now decided) over
+the two blunt alternatives. It auto-trusts a template hit whose decoding header
+went unsigned only when all three hold:
 
-**The lever is one line** — drop `"Content-Type"` from `origin.DecodingHeaders`
-in `internal/v2/origin/dkim.go`; two tests fail loudly so it cannot happen by
-accident. This is a product decision, not a bug: see
-`docs/superpowers/NEEDS-SALEH.md` **item 0**, which lays out the three options
-(keep it safe / restore auto-trust for DIB / gate DIB auto-trust on the Arabic
-literal surviving the decode) and is explicitly waiting on your call.
+1. the transfer decoding *was* signed (`origin.Origin.TransferDecodingSigned`) —
+   `d=dib.ae` names `content-transfer-encoding` in its `h=`, which is what makes
+   the exception possible at all;
+2. the winning template declares at least one **witness literal** — a
+   `match.body_contains` literal carrying a non-ASCII rune, which no other
+   charset or transfer decoding can reproduce (`tmpl.Definition.DecodeWitnesses`);
+3. every one of those literals is present in the exact decoded text the
+   extraction read.
 
-If it is *not* DIB, the other cause of the same symptom is
+So the split, per template, is:
+
+| Template | Auto-trust | Why |
+|---|---|---|
+| `dib.card.v1` | yes, when the literal survives | it gates on the Arabic `إشعار مشتريات`, which is a witness |
+| `dib.account.v1` | no — every one goes to review | it gates on the **absence** of that same literal (`body_not_contains`), and an absence is exactly what a mis-decode manufactures, so it can never witness anything |
+| `enbd.transfer.v1`, `enbd.alert.v1` | yes | ENBD's Proofpoint signer covers both decoding headers, so the question never arises |
+
+Fail-closed is the default: a template with no witness literal is exactly as
+reviewed as it was before the guardrail existed.
+
+**The blunt lever still exists** — drop `"Content-Type"` from
+`origin.DecodingHeaders` in `internal/v2/origin/dkim.go` — and it is the option
+that was *not* chosen, because it accepts the constructed attack. Two tests fail
+loudly, so it cannot happen by accident.
+
+If it is *not* DIB account mail, the other cause of the same symptom is
 `unattestedForward` — a forwarded message with no attestable forwarder.
 
 ### "A sender's mail is quarantined."
