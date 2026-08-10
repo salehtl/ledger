@@ -17,13 +17,16 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SqlDriver } from "@ledger/client/store/driver";
+
+import type { ReactNode } from "react";
 
 import { MotionProvider } from "./MotionProvider";
 import { ToastProvider } from "../components/Toast";
 import { projectionWith } from "../test/projectionFixture";
 import { fakeRuntime, WithV2 } from "../test/v2Runtime";
+import type { V2Runtime } from "../v2/BootGate";
 import type { OnboardingFacts } from "../v2/onboarding";
 import { AppShell, type AppShellProps } from "./AppShell";
 
@@ -279,6 +282,75 @@ describe("AppShell", () => {
     await screen.findByText("174.99");
     const urls = fetchMock.mock.calls.map(([u]) => String(u));
     expect(urls.filter((u) => u.includes("/api/v1/quarantine"))).toEqual([]);
+  });
+
+  it("polls held mail while waiting, and stops once mail has arrived", async () => {
+    // The held-mail query has no test seam, so the poll is observed on the wire:
+    // every tick is one more fetch of the quarantine route.
+    const quarantineReads = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/v1/quarantine")).length;
+
+    const waiting = fakeRuntime({ driver: db, facts: { inboundAddress: "u-abc@in.sirdab.ae" } });
+    const arrived = fakeRuntime({
+      driver: db,
+      facts: { inboundAddress: "u-abc@in.sirdab.ae", firstMailConfirmedAt: "2026-08-01T00:00:00Z" },
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (rt: V2Runtime): ReactNode => (
+      <MotionProvider>
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <WithV2 runtime={rt}>
+              <AppShell secrets={memorySecrets()} />
+            </WithV2>
+          </ToastProvider>
+        </QueryClientProvider>
+      </MotionProvider>
+    );
+
+    // Drive the poll directly rather than advancing a fake clock: faking global
+    // timers freezes jsdom's timer-backed rAF, which strands Framer's shared
+    // frame loop mid-animation for the next test in this single fork. react-query
+    // arms the poll through the global setInterval (query-core's timeoutManager
+    // calls the global at call-time, on purpose so it stays spyable), so a spy
+    // captures the callback and invoking it is one tick. Focus forced on, since
+    // the poll fires only for a focused tab.
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    focusManager.setFocused(true);
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const armedPoll = (): (() => void) | null => {
+      for (let i = setIntervalSpy.mock.calls.length - 1; i >= 0; i--) {
+        const [cb, delay] = setIntervalSpy.mock.calls[i];
+        if (delay === 5000) return cb as () => void;
+      }
+      return null;
+    };
+
+    try {
+      const view = render(tree(waiting.runtime));
+      // Mail is still on its way: the query is enabled and arms a 5s poll.
+      await waitFor(() => {
+        expect(quarantineReads()).toBeGreaterThan(0);
+        expect(armedPoll()).not.toBeNull();
+      });
+
+      // A tick fires the poll → the held lane is read again, so the confirmation
+      // card can appear as the mail lands rather than on the next refocus.
+      const before = quarantineReads();
+      armedPoll()?.();
+      await waitFor(() => expect(quarantineReads()).toBeGreaterThan(before));
+      await flush(); // let that read settle and the interval re-arm
+
+      // Mail has arrived: the query disables and no new poll is armed.
+      setIntervalSpy.mockClear();
+      view.rerender(tree(arrived.runtime));
+      await flush();
+      expect(setIntervalSpy.mock.calls.filter(([, delay]) => delay === 5000)).toHaveLength(0);
+    } finally {
+      setIntervalSpy.mockRestore();
+      focusManager.setFocused(undefined);
+    }
   });
 
   it("dismisses the setup list for good — closing Settings does not bring it back", async () => {

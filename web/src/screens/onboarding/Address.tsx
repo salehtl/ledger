@@ -91,6 +91,14 @@ import { readAddress } from "../../v2/address";
 import { readQuarantine, type TokenSource } from "../../v2/onboardingIO";
 import { GENERIC, PROVIDERS } from "../../v2/providers";
 import { confirmationTask, type ConfirmationTask } from "../../v2/verificationCode";
+import {
+  enablePush,
+  isPushSubscribed,
+  pushUnsupportedReason,
+  type PushEnvironment,
+  type PushUnsupportedReason,
+  type WebPushDeps,
+} from "../../v2/webpush";
 import { OPEN_CONFIRMATION_COPY } from "./SetupStatus";
 import { Notice, SkipStep, Step } from "./Shell";
 
@@ -162,6 +170,18 @@ export interface AddressProps {
    * opener, so the held page cannot reach back into this one.
    */
   openUrl?: (url: string) => void;
+  /**
+   * Test seams for the "notify me when it arrives" opt-in, mirroring the ones
+   * `PushNotificationsPanel` takes. `env` probes support, `enable` runs the
+   * subscription, `subscribed` reports whether this browser already holds one —
+   * each defaulting to the real browser + webpush, so production needs no extra
+   * wiring for the control to work.
+   */
+  env?: PushEnvironment;
+  enable?: typeof enablePush;
+  subscribed?: typeof isPushSubscribed;
+  /** Namespaces the push writer id; defaults to the app profile. */
+  profile?: string;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -185,6 +205,10 @@ export function Address({
   directRoute = DIRECT_BANK_ROUTE,
   onOpenHeldMail,
   openUrl,
+  env,
+  enable = enablePush,
+  subscribed = isPushSubscribed,
+  profile,
 }: AddressProps) {
   const [address, setAddress] = useState<string | null>(known);
   const [failed, setFailed] = useState(false);
@@ -418,6 +442,25 @@ export function Address({
 
         <ProviderHelp />
 
+        {/*
+          The optional "tell me when it arrives", offered only where a user is
+          actually waiting: on the onboarding surface, not the Settings re-open
+          (`embedded`), and only while no confirmation is already in hand — a
+          notification for a message that has landed is noise. It blocks
+          nothing; the confirmation surfaces in-app regardless.
+        */}
+        {!embedded && confirmation === null && (
+          <NotifyOptIn
+            client={client}
+            server={server}
+            fetch={doFetch}
+            profile={profile}
+            env={env}
+            enable={enable}
+            subscribed={subscribed}
+          />
+        )}
+
         {onSkip !== undefined && <SkipStep step="forwarding_configured" onSkip={() => onSkip("forwarding_configured")} />}
       </Step>
     );
@@ -576,6 +619,171 @@ function AddressCard({
           This browser would not let ledger use the clipboard. The address above can be selected by hand.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The opt-in's words. Honest about a content-free push: it can say a thing
+ * arrived, and no more — the server payload carries nothing and the service
+ * worker renders its own constant. The unsupported strings are the Settings
+ * panel's own, mirrored here; the iOS one is the sole actionable reason.
+ */
+const NOTIFY_COPY = {
+  body: "The confirmation can take a while to arrive. ledger can tell you the moment it does — it says only that something arrived, never what.",
+  action: "Get a notification when it arrives",
+  on: "ledger will let you know when it arrives.",
+  blockedTitle: "Notifications are blocked for ledger in this browser.",
+  blockedHelp: "Only you can undo that, in your browser's settings for this site.",
+} as const;
+
+const NOTIFY_UNSUPPORTED_COPY: Record<PushUnsupportedReason, string> = {
+  browser: "This browser can't show notifications.",
+  insecure: "Notifications need a secure connection.",
+  install: "On iPhone and iPad, add ledger to your Home Screen first. Then notifications can be turned on.",
+};
+
+type NotifyState =
+  | { kind: "checking" }
+  | { kind: "unsupported"; reason: PushUnsupportedReason }
+  | { kind: "offer" }
+  | { kind: "hidden" }
+  | { kind: "on" }
+  | { kind: "blocked" };
+
+/**
+ * The optional, skippable "tell me when it arrives".
+ *
+ * The provider's confirmation can land minutes or hours after the rule is made,
+ * and nothing makes the user sit on this screen until it does — so this offers,
+ * once, to have ledger buzz the phone when it comes. It gates nothing: the
+ * confirmation still surfaces in the app the moment it lands (the notice above,
+ * and `SetupStatus` on the home screen), taken or not. Skipping is the default.
+ *
+ * A notification says only what it ever says — that something arrived, never
+ * what. So no copy here promises more than "it's here".
+ *
+ * Support and subscription are probed through the same seams the Settings panel
+ * uses, so an environment that cannot show a notification is told the honest
+ * reason (the iOS one is the actionable one — add to the Home Screen) rather
+ * than handed a button that cannot work, and a browser already subscribed is
+ * never asked again.
+ */
+function NotifyOptIn({
+  client,
+  server,
+  fetch: doFetch,
+  profile,
+  env,
+  enable,
+  subscribed,
+}: {
+  client: TokenSource;
+  server?: string;
+  fetch?: typeof fetch;
+  profile?: string;
+  env?: PushEnvironment;
+  enable: typeof enablePush;
+  subscribed: typeof isPushSubscribed;
+}) {
+  const [state, setState] = useState<NotifyState>({ kind: "checking" });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    // The one guard: an unsupported environment is told the honest reason and
+    // never probed further. Dropping this line is what would put a dead button
+    // on iOS — the test holds it shut.
+    const reason = pushUnsupportedReason(env);
+    if (reason !== null) {
+      setState({ kind: "unsupported", reason });
+      return;
+    }
+    let cancelled = false;
+    void subscribed(env)
+      .then((on) => {
+        if (!cancelled) setState({ kind: on ? "hidden" : "offer" });
+      })
+      .catch(() => {
+        // A browser that will not say whether it is subscribed is not one to
+        // pester with an offer; stay quiet.
+        if (!cancelled) setState({ kind: "hidden" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [env, subscribed]);
+
+  const run = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const deps: WebPushDeps = {
+        client,
+        ...(profile === undefined ? {} : { profile }),
+        ...(server === undefined ? {} : { server }),
+        ...(doFetch === undefined ? {} : { fetch: doFetch }),
+        ...env,
+      };
+      const outcome = await enable(deps);
+      switch (outcome.kind) {
+        case "on":
+          setState({ kind: "on" });
+          break;
+        case "denied":
+          setState({ kind: "blocked" });
+          break;
+        case "unavailable":
+          // This deployment has no push to subscribe to. Nothing to offer, and
+          // nothing gone wrong — fold the control away.
+          setState({ kind: "hidden" });
+          break;
+        case "dismissed":
+        case "failed":
+          // A closed prompt or a transient failure both leave the offer
+          // standing: the browser will ask again, and this blocks nothing.
+          setState({ kind: "offer" });
+          break;
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.kind === "checking" || state.kind === "hidden") return null;
+
+  if (state.kind === "unsupported") {
+    return (
+      <p data-testid="notify-unsupported" className="text-xs leading-relaxed text-muted">
+        {NOTIFY_UNSUPPORTED_COPY[state.reason]}
+      </p>
+    );
+  }
+
+  if (state.kind === "on") {
+    return (
+      <p data-testid="notify-on" className="text-xs leading-relaxed text-muted">
+        {NOTIFY_COPY.on}
+      </p>
+    );
+  }
+
+  if (state.kind === "blocked") {
+    return (
+      <div data-testid="notify-blocked" className="space-y-1">
+        <p className="text-xs leading-relaxed">{NOTIFY_COPY.blockedTitle}</p>
+        <p className="text-xs leading-relaxed text-muted">{NOTIFY_COPY.blockedHelp}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="notify-opt-in"
+      className="flex flex-col gap-3 p-4 rounded-[var(--radius)] border border-border bg-surface"
+    >
+      <p className="text-xs leading-relaxed text-muted">{NOTIFY_COPY.body}</p>
+      <Button variant="secondary" disabled={busy} onClick={() => void run()}>
+        {NOTIFY_COPY.action}
+      </Button>
     </div>
   );
 }

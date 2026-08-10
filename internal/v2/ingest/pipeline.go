@@ -32,7 +32,10 @@
 //     the client's fingerprint index raises that as a review item, and this
 //     package appends both.
 //   - Heuristic results are never auto-trusted (spec §3.2).
-//   - Quarantined mail never pushes.
+//   - Quarantined mail never pushes — with ONE deliberate exception: a verified
+//     mail-provider forwarding confirmation, arriving for a user who has not yet
+//     confirmed any sender, fires the content-free push once. hold documents why
+//     that narrow relaxation does not reopen the abuse the rule closed.
 package ingest
 
 import (
@@ -479,12 +482,37 @@ func (p *Pipeline) alreadyHandled(ctx context.Context, userID uuid.UUID, ingestI
 // 3-4. Quarantine
 // ---------------------------------------------------------------------------
 
-// hold stores a message in the quarantine lane and records the arrival.
+// hold stores a message in the quarantine lane, records the arrival, and — for
+// exactly ONE shape of message — fires the content-free confirmation push.
 //
-// It never pushes. A notification for held mail would tell a stranger who
-// guessed an inbound address that they can make a user's phone buzz, and it
-// would tell the user that something arrived that they cannot see until they
-// confirm a sender.
+// That one shape is a mail provider's own forwarding-confirmation email arriving
+// for a user who has not yet confirmed any sender: isProviderConfirmation over
+// the origin AND HasConfirmedAnySender false. Everything else held is silent,
+// which is the rule the package doc's "quarantined mail never pushes" states in
+// full. The push exists so a user still wiring up forwarding learns their
+// confirmation landed instead of having to know to open Held mail.
+//
+// # Why this one relaxation does not reopen the abuse it closed
+//
+// The rule was there because a notification for held mail would let a stranger
+// who guessed an inbound address make a user's phone buzz. Four things bound
+// this push to the onboarding confirmation and nothing else, and each closes a
+// way the others could be satisfied:
+//
+//   - A VERIFIED PROVIDER SIGNATURE (isProviderConfirmation 1-2): the message is
+//     signed — DKIM or ARC passed — by a known forwarder domain. An attacker
+//     cannot forge that signature, so cannot forge this shape; an envelope claim
+//     never qualifies.
+//   - THE PROVIDER'S OWN MAIL (condition 3): no attested inner origin, so a bank
+//     seen behind the forwarder — a transaction from a sender the user has not
+//     confirmed — stays silent, which is precisely the case the rule was about.
+//   - THE PRE-FIRST-CONFIRMATION WINDOW (HasConfirmedAnySender): the moment the
+//     user confirms a first sender, held mail goes silent again forever. The
+//     push lives only in the narrow window the feature is for — a brand-new
+//     account still setting up — which bounds the surface to accounts that have
+//     received nothing yet.
+//   - CONTENT-FREE, ONCE: the wire is still Notify(userID) and nothing more, and
+//     a confirmation arrives once.
 func (p *Pipeline) hold(ctx context.Context, d smtpd.Delivery, ingestID []byte, receivedAt time.Time,
 	o origin.Origin, rec diag.Record, outcome, reason string) error {
 	it := quarantine.Item{
@@ -512,7 +540,49 @@ func (p *Pipeline) hold(ctx context.Context, d smtpd.Delivery, ingestID []byte, 
 	rec.Outcome = outcome
 	rec.RejectReason = reason
 	p.recordAfterStore(ctx, rec)
+
+	// The one push the hold lane fires, AFTER the message is durably held. See
+	// the doc comment. Ordered cheap-to-expensive: the pure shape test rejects
+	// every bank alert and unsigned message before the store is asked anything,
+	// so the pre-first-confirmation query runs only for a message already shaped
+	// like a provider confirmation.
+	if p.Push != nil && isProviderConfirmation(o) {
+		confirmed, err := p.Quarantine.HasConfirmedAnySender(ctx, d.UserID)
+		if err != nil {
+			// Swallowed like every other post-store failure here: the message is
+			// durably held, and asking the sender to redeliver over a failed gate
+			// read would hold it a second time. The whole cost is one missed
+			// confirmation push, and Layer 1's held-mail poll still surfaces it.
+			p.logf("ingest: confirmation-push gate for user %s: %v", d.UserID, err)
+			return nil
+		}
+		if !confirmed {
+			p.notify(ctx, d.UserID)
+		}
+	}
 	return nil
+}
+
+// isProviderConfirmation reports whether a held message is a mail provider's own
+// forwarding-confirmation email — the one shape hold is allowed to push for. It
+// is the signature/shape half of that decision (conditions 1-3); hold adds the
+// pre-first-confirmation gate (condition 4), which needs the store.
+//
+//  1. The outer signing domain is a known forwarder, not a bank
+//     (origin.IsForwarderDomain over o.Outer). A confirmation comes FROM the
+//     provider the user just pointed their forwarding at.
+//  2. A signature verified the message — DKIM or ARC passed. An envelope claim
+//     is never enough: without a passing signature anyone could spoof the
+//     provider's address, so this is the condition that keeps the push
+//     unforgeable.
+//  3. It is the provider's OWN mail: no attested inner origin
+//     (o.Inner == "" && !o.Attested). A bank seen behind the forwarder has an
+//     inner origin and is a TRANSACTION from a still-unconfirmed sender — exactly
+//     what the hold lane must stay silent about — not a confirmation.
+func isProviderConfirmation(o origin.Origin) bool {
+	return origin.IsForwarderDomain(o.Outer) &&
+		(o.DKIM == origin.SigPass || o.ARC == origin.SigPass) &&
+		o.Inner == "" && !o.Attested
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,9 +1119,12 @@ func (p *Pipeline) recordAfterStore(ctx context.Context, rec diag.Record) {
 	}
 }
 
-// notify fires the one push this system sends. Hot-stream appends only: there
-// is no other caller, and every path that does not append reaches its return
-// without passing through here.
+// notify fires the content-free push this system sends. It has two callers: the
+// append path fires it for every hot-stream append, and hold fires it for the
+// one narrow shape it is allowed to (a provider's forwarding confirmation during
+// onboarding — see hold). Both hand it a user id and nothing else; there is
+// deliberately no parameter through which content could pass. Every path that
+// does neither reaches its return without passing through here.
 func (p *Pipeline) notify(ctx context.Context, userID uuid.UUID) {
 	if p.Push == nil {
 		return

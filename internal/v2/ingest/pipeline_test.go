@@ -510,11 +510,143 @@ func TestUntrustedSenderIsQuarantinedNotAppended(t *testing.T) {
 	}
 }
 
+// TestQuarantinedMailNeverPushes is the abuse guard for the one relaxation in
+// hold. The confirmation push is allowed for a verified provider confirmation
+// during onboarding and NOTHING else; these three held shapes — a bank alert, a
+// forwarder-shaped message that carried no verified signature, and a genuine
+// provider confirmation for a user who has ALREADY confirmed a sender — must all
+// stay silent, because each is a way the push would otherwise be an amplifier a
+// stranger could point at a phone.
 func TestQuarantinedMailNeverPushes(t *testing.T) {
-	r := newRig(t)
-	r.mustDeliver(r.trusted(templateBody), "alerts@bank.example")
-	if n := r.push.count(); n != 0 {
-		t.Fatalf("quarantined mail fired %d pushes, want 0", n)
+	t.Run("a bank alert, held because the sender is not allowlisted", func(t *testing.T) {
+		r := newRig(t)
+		// Real signature, real resolver: the outer origin is bank.example, which
+		// is not a forwarder, so isProviderConfirmation fails on condition 1.
+		r.mustDeliver(r.trusted(templateBody), "alerts@bank.example")
+		if got := r.heldCount(); got != 1 {
+			t.Fatalf("quarantine holds %d, want 1", got)
+		}
+		if n := r.push.count(); n != 0 {
+			t.Fatalf("a held bank alert fired %d pushes, want 0", n)
+		}
+	})
+
+	t.Run("a forwarder-shaped message with no verified signature", func(t *testing.T) {
+		r := newRig(t)
+		// The outer names a forwarder but nothing signed it, so condition 2 fails.
+		// This is the spoofer who knows the address but cannot forge the signature.
+		r.p.Origin = stubOrigin(origin.Origin{Outer: "google.com", DKIM: origin.SigNone, ARC: origin.SigNone})
+		r.mustDeliver(message("<noreply@google.com>", "Confirm forwarding", "Please confirm.\n"),
+			"noreply@google.com")
+		if got := r.heldCount(); got != 1 {
+			t.Fatalf("quarantine holds %d, want 1", got)
+		}
+		if n := r.push.count(); n != 0 {
+			t.Fatalf("an unsigned held message fired %d pushes, want 0", n)
+		}
+	})
+
+	t.Run("a real provider confirmation after the user already confirmed a sender", func(t *testing.T) {
+		r := newRig(t)
+		// The exact shape that WOULD push on a fresh account — forwarder outer,
+		// signature verified, provider's own mail — but the onboarding window is
+		// closed, so HasConfirmedAnySender shuts it (condition 4).
+		r.p.Origin = stubOrigin(origin.Origin{Outer: "google.com", DKIM: origin.SigPass, ARC: origin.SigNone})
+		r.allow("bank.example", origin.ScopeOuter)
+		r.mustDeliver(message("<noreply@google.com>", "Confirm forwarding", "Please confirm.\n"),
+			"noreply@google.com")
+		if got := r.heldCount(); got != 1 {
+			t.Fatalf("quarantine holds %d, want 1", got)
+		}
+		if n := r.push.count(); n != 0 {
+			t.Fatalf("a post-confirmation held message fired %d pushes, want 0", n)
+		}
+	})
+}
+
+// TestIsProviderConfirmation pins the signature/shape half of the hold-path push
+// gate (conditions 1-3), with no database in the way. hold adds condition 4.
+func TestIsProviderConfirmation(t *testing.T) {
+	cases := []struct {
+		name string
+		o    origin.Origin
+		want bool
+	}{
+		{"forwarder + dkim pass, provider's own mail", origin.Origin{Outer: "google.com", DKIM: origin.SigPass, ARC: origin.SigNone}, true},
+		{"forwarder + arc pass", origin.Origin{Outer: "icloud.com", DKIM: origin.SigNone, ARC: origin.SigPass}, true},
+		{"a forwarder subdomain still counts", origin.Origin{Outer: "mail.google.com", DKIM: origin.SigPass}, true},
+		{"a bank behind the forwarder (attested inner)", origin.Origin{Outer: "google.com", DKIM: origin.SigPass, ARC: origin.SigPass, Inner: "dib.ae", Attested: true, AttestedBy: origin.AttestedByARC}, false},
+		{"a bare bank domain, not a forwarder", origin.Origin{Outer: "dib.ae", DKIM: origin.SigPass}, false},
+		{"a forwarder but nothing verified", origin.Origin{Outer: "google.com", DKIM: origin.SigNone, ARC: origin.SigNone}, false},
+		{"a forwarder whose signatures failed", origin.Origin{Outer: "google.com", DKIM: origin.SigFail, ARC: origin.SigFail}, false},
+		{"an inner set without attestation still disqualifies", origin.Origin{Outer: "google.com", DKIM: origin.SigPass, Inner: "dib.ae"}, false},
+		{"an empty origin", origin.Origin{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isProviderConfirmation(tc.o); got != tc.want {
+				t.Fatalf("isProviderConfirmation(%+v) = %v, want %v", tc.o, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHoldPushesOnlyForAConfirmationDuringOnboarding is the whole gate, over
+// origin shapes crossed with prior-confirmation state: the content-free push
+// fires from the hold path for exactly {forwarder outer, DKIM OR ARC pass, no
+// inner, no prior confirmation} and for no other combination. Each case is
+// quarantined — nothing allowlists the outer — which is the only path that
+// reaches the gate, and none of them ever reaches the op log.
+func TestHoldPushesOnlyForAConfirmationDuringOnboarding(t *testing.T) {
+	cases := []struct {
+		name             string
+		outer            string
+		dkim, arc        origin.SigResult
+		inner            string
+		attested         bool
+		alreadyConfirmed bool
+		wantPush         bool
+	}{
+		{"gmail confirmation, fresh account", "google.com", origin.SigPass, origin.SigNone, "", false, false, true},
+		{"icloud confirmation via ARC, fresh", "icloud.com", origin.SigNone, origin.SigPass, "", false, false, true},
+		{"same confirmation, but user already confirmed a sender", "google.com", origin.SigPass, origin.SigNone, "", false, true, false},
+		{"a bank behind the forwarder (has inner)", "google.com", origin.SigPass, origin.SigPass, "dib.ae", true, false, false},
+		{"a bare bank domain, not a forwarder", "dib.ae", origin.SigPass, origin.SigNone, "", false, false, false},
+		{"an unsigned envelope claim from a forwarder", "google.com", origin.SigNone, origin.SigNone, "", false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			o := origin.Origin{Outer: tc.outer, DKIM: tc.dkim, ARC: tc.arc, Inner: tc.inner, Attested: tc.attested}
+			if tc.attested {
+				// Hold's item validation requires attested_by set and a passing
+				// signature whenever Attested is true; the resolver always sets it.
+				o.AttestedBy = origin.AttestedByARC
+			}
+			r.p.Origin = stubOrigin(o)
+			if tc.alreadyConfirmed {
+				// A confirmed sender on a DIFFERENT, non-forwarder domain: it
+				// closes the onboarding window without trusting this message's
+				// outer, so the message is still held.
+				r.allow("someotherbank.example", origin.ScopeOuter)
+			}
+			r.mustDeliver(message("<noreply@"+tc.outer+">", "Confirm forwarding", "Please confirm.\n"),
+				"noreply@"+tc.outer)
+
+			if got := r.heldCount(); got != 1 {
+				t.Fatalf("quarantine holds %d, want 1: the message must reach the hold path", got)
+			}
+			if got := r.rows(); len(got) != 0 {
+				t.Fatalf("op_log has %d rows; a held message never appends", len(got))
+			}
+			want := 0
+			if tc.wantPush {
+				want = 1
+			}
+			if got := r.push.count(); got != want {
+				t.Fatalf("pushes = %d, want %d", got, want)
+			}
+		})
 	}
 }
 

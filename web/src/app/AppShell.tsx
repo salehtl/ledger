@@ -188,6 +188,11 @@ export function AppShell({ secrets = webSecretStore(PROFILE) }: AppShellProps = 
     enabled: !mailArrived,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
+    // Poll while the forward is still being set up, so the confirmation card
+    // surfaces as the provider's email lands rather than only on the next
+    // refocus. Off the moment mail has arrived — a set-up account has answered
+    // the question this read asks and must not poll forever.
+    refetchInterval: mailArrived ? false : 5000,
   });
   const confirmation = useMemo(
     () => (held.data === undefined ? null : confirmationTask(held.data.items)),
