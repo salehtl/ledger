@@ -1,5 +1,8 @@
 # Phase 0 results
 
+> The spike code this file cites was removed 2026-08-10 (git history preserves
+> it); measurements stand as recorded.
+
 ## Phase 0 verdict (summary)
 
 Phase 0 has two independent exit gates (spec §5). Both are resolved:
