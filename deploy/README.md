@@ -1,4 +1,4 @@
-# Deploying ledger on dinosaur (Milestone 1)
+# Deploying ledger on dinosaur
 
 Single static binary + systemd + Tailscale HTTPS. No Node, no DB server.
 
@@ -69,7 +69,7 @@ To stop serving: `sudo tailscale serve --https=8443 off`.
 ## 4. Verify on a phone
 
 On a phone joined to the tailnet, open `https://dinosaur.<tailnet>.ts.net/`.
-Expect the XP-styled placeholder card showing `health: ok (db: ok)`.
+Expect the app's Home screen.
 
 ## 5. Web Push (VAPID)
 
@@ -102,6 +102,10 @@ journalctl -u ledger -f          # follow logs
 sudo systemctl restart ledger    # restart (sends SIGTERM -> graceful shutdown)
 ```
 
+`scripts/perf-report.sh` reports the v1 PWA's load weight from the committed
+`internal/web/dist` (add a `BASE_URL` argument to also measure on-the-wire
+transfer sizes against a running server).
+
 ## Backups (one file)
 
 ```bash
@@ -115,7 +119,7 @@ Backups contain financial data — encrypt them if they leave the box (Milestone
 ledger reads a **dedicated mailbox** that contains *only* forwarded bank mail, so its
 credential can never reach your personal email (§9). Recommended: a fresh Gmail.
 
-### 5a. Create the mailbox + app password
+### 6a. Create the mailbox + app password
 
 1. Create a new Gmail used for nothing else, e.g. `bank-mail@example.com`.
 2. Enable **2-Step Verification** (Google Account → Security). Use standard 2SV,
@@ -123,7 +127,7 @@ credential can never reach your personal email (§9). Recommended: a fresh Gmail
 3. Generate a 16-character **App Password** (Security → App passwords). Copy it once.
 4. IMAP is on by default for new Gmail accounts; host is `imap.gmail.com:993`.
 
-### 5b. Forward bank mail from your primary inbox
+### 6b. Forward bank mail from your primary inbox
 
 In **iCloud Mail → Settings → Rules** (icloud.com), add one rule per bank sender:
 
@@ -131,7 +135,7 @@ In **iCloud Mail → Settings → Rules** (icloud.com), add one rule per bank se
 
 Repeat for each bank sender. (You can add senders later as you discover them.)
 
-### 5c. Configure ledger on dinosaur
+### 6c. Configure ledger on dinosaur
 
 Point config at the mailbox (no secret here):
 
@@ -161,7 +165,7 @@ sudo systemctl restart ledger
 > protection, switch to systemd's encrypted credential store (`LoadCredential=` /
 > `systemd-creds`) later — the env file is the simplest secure default.
 
-### 5d. Verify ingestion
+### 6d. Verify ingestion
 
 ```bash
 journalctl -u ledger -f          # expect "ingest enabled ..." then "ingest: N new message(s)"
