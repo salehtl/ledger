@@ -25,14 +25,13 @@ poll_interval = "60s"                   # sync cadence; with use_idle=true this 
 
 [ai]
 # Set enabled=true and LEDGER_AI_API_KEY env var to activate AI categorization.
-# AI never auto-confirms without reaching auto_accept_threshold.
-enabled               = false
-model                 = "claude-haiku-4-5-20251001"   # cheapest model; good for single merchants
-auto_accept_threshold = 0.85                           # >= this → confirmed + rule proposed
-auto_rule             = false                          # true = write rule without user tap
-allow_ai_extraction   = true                           # let AI be the last-resort parse tier
+enabled             = false
+model               = "claude-haiku-4-5-20251001"   # cheapest model; good for single merchants
+# Auto-accept thresholds moved into the app: Settings > Categorization.
+allow_ai_extraction = true                           # let AI be the last-resort parse tier
 # Secret: LEDGER_AI_API_KEY=sk-ant-...
 
+# This block never became config — the budget plan lives in the database and is edited in the app.
 # [budget]
 # currency       = "AED"
 # monthly_income = 0
@@ -45,3 +44,4 @@ allow_ai_extraction   = true                           # let AI be the last-reso
 [monitoring]
 drift_window = "7d"   # rolling window for per-sender parse-success tracking
 drift_min    = 0.80   # alert if a sender's parse-success drops below this fraction
+# senders = []         # from_addr substrings to drift-check; empty = all senders

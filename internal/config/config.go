@@ -45,12 +45,10 @@ type IMAPConfig struct {
 // AIConfig holds settings for the Anthropic AI client (categorization + extraction fallback).
 // The API key is NEVER read from TOML; it comes from LEDGER_AI_API_KEY.
 type AIConfig struct {
-	Enabled             bool    `toml:"enabled"`
-	Model               string  `toml:"model"`
-	AutoAcceptThreshold float64 `toml:"auto_accept_threshold"`
-	AutoRule            bool    `toml:"auto_rule"`
-	AllowAIExtraction   bool    `toml:"allow_ai_extraction"`
-	APIKey              string  `toml:"-"` // env only
+	Enabled           bool   `toml:"enabled"`
+	Model             string `toml:"model"`
+	AllowAIExtraction bool   `toml:"allow_ai_extraction"`
+	APIKey            string `toml:"-"` // env only
 }
 
 // MonitoringConfig controls the drift detection window and threshold.
@@ -98,9 +96,8 @@ func defaults() Config {
 			PollInterval: "60s",
 		},
 		AI: AIConfig{
-			Model:               "claude-haiku-4-5-20251001",
-			AutoAcceptThreshold: 0.85,
-			AllowAIExtraction:   true,
+			Model:             "claude-haiku-4-5-20251001",
+			AllowAIExtraction: true,
 		},
 		Monitoring: MonitoringConfig{
 			DriftWindow: "7d",
