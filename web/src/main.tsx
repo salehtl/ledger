@@ -39,7 +39,9 @@ loadSoundEnabled();
  *    a string, or — with a naive reviver — as a lossy `number`.
  *
  * `queryClient.ts` still exports `persister`; it is deliberately unmounted
- * rather than deleted while v1 screens are still routed (Tasks 8-10).
+ * rather than deleted, because the unrouted v1 screens that outlived Tasks 8-10
+ * (Plan, Reports, Accounts, Recurring, Projects) come back on react-query, and
+ * the export is what their offline story would be rebuilt on.
  */
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

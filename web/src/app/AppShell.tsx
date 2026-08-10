@@ -1,10 +1,9 @@
 /**
  * The shell: three tabs, one gear, two drill-ins, and nothing that talks to v1.
  *
- * # What came out of the nav in Task 10, and why nothing was deleted
+ * # What came out of the nav in Task 10, and why most of it was not deleted
  *
- * Plan, Insights, Reports, Accounts, Recurring, Projects, the rules and
- * category managers and v1's Settings hub are all **unrouted, not deleted**.
+ * Plan, Reports, Accounts, Recurring and Projects are **unrouted, not deleted**.
  * Every one of them reads an HTTP route `ledgerd` does not serve, and that is
  * the dangerous kind of broken: the request 404s, react-query holds an error
  * nobody renders, and the screen sits there looking like it is loading. The
@@ -13,6 +12,13 @@
  * `forks` and `anomalies`, and the missing screens are exactly the ones needing
  * an op that does not exist yet. A "coming soon" placeholder would be a promise
  * with no schedule behind it; an absent screen is honest.
+ *
+ * v1's Settings hub, and the rules and category managers behind it, are the one
+ * part that IS deleted (2026-08-10, owner's call). They did not wait for a
+ * projection — they came back on one, as `settings/V2Settings.tsx` and
+ * `settings/V2CategoriesPanel.tsx`, which read the projection instead of
+ * `/api/settings`. Keeping the v1 originals next to their replacements bought
+ * nothing but a second answer to the same question; git history has them.
  *
  * Three things left with them, and their absence is deliberate:
  *
