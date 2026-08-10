@@ -23,7 +23,7 @@ func TestGetRates(t *testing.T) {
 	srv, st := newRatesServer(t)
 	// One unconverted EUR row so "missing" is non-empty.
 	if _, _, err := st.InsertTransaction(store.TransactionRow{
-		PostedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		PostedAt:   time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 		AmountFils: 2412, Currency: "EUR", Direction: "debit",
 		MerchantRaw: "m", Status: "confirmed",
 	}); err != nil {
@@ -56,7 +56,7 @@ func TestGetRates(t *testing.T) {
 func TestPutRateBackfills(t *testing.T) {
 	srv, st := newRatesServer(t)
 	if _, _, err := st.InsertTransaction(store.TransactionRow{
-		PostedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		PostedAt:   time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 		AmountFils: 2412, Currency: "EUR", Direction: "debit",
 		MerchantRaw: "m", Status: "confirmed",
 	}); err != nil {

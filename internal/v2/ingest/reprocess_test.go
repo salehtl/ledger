@@ -1764,7 +1764,7 @@ func TestReprocessSkipsAClientBlobThisBuildCannotRead(t *testing.T) {
 	// The framing version is frozen and still v1 — this is not an unopenable
 	// blob, it is a perfectly stored one whose CONTENTS are a schema newer than
 	// this build. That is the only shape the upload path can produce.
-	r.appendClientBlob("device-ahead", []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[]}`))
+	r.appendClientBlob("device-ahead", []byte(`{"v":`+newerVersion()+`,"kind":"ops","ops":[]}`))
 
 	r.publish(amountTemplate(2, chargedPattern))
 	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})
@@ -1837,7 +1837,7 @@ func TestReprocessFailsOnAServerBlobThisBuildCannotRead(t *testing.T) {
 	raw := r.trusted(reprocessBody)
 	r.mustDeliver(raw, "alerts@bank.example")
 
-	r.rewriteHotBlob(1, []byte(`{"v":` + newerVersion() + `,"kind":"ops","ops":[]}`))
+	r.rewriteHotBlob(1, []byte(`{"v":`+newerVersion()+`,"kind":"ops","ops":[]}`))
 
 	r.publish(amountTemplate(2, chargedPattern))
 	rep, err := r.p.Reprocess(bg, r.user, [][]byte{idOf(raw)})

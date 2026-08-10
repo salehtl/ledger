@@ -186,10 +186,10 @@ type timeCase struct {
 }
 
 type opManifest struct {
-	Note                                string            `json:"note"`
-	SchemaVersion                       int               `json:"schema_version"`
-	Types                               []string          `json:"types"`
-	ParentFree                          []string          `json:"parent_free"`
+	Note          string   `json:"note"`
+	SchemaVersion int      `json:"schema_version"`
+	Types         []string `json:"types"`
+	ParentFree    []string `json:"parent_free"`
 	// MinVersions is each op type's lowest legal schema version. Pinned because
 	// it is the half of forward compatibility that has no other witness: the type
 	// SET drifting is caught by Types, but a configuration op stamped v1 by one
@@ -201,7 +201,7 @@ type opManifest struct {
 	// configuration op. Go never folds these payloads -- only the TypeScript
 	// executor does -- so this fixture is what makes the new types visible to the
 	// shared-bytes half of the contract at all.
-	ConfigOpsBase64 string `json:"config_ops_base64"`
+	ConfigOpsBase64                     string            `json:"config_ops_base64"`
 	GoldenOpsBase64                     string            `json:"golden_ops_base64"`
 	GoldenRawBodyBase64                 string            `json:"golden_raw_body_base64"`
 	GoldenCheckpointBase64              string            `json:"golden_checkpoint_base64"`

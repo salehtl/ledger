@@ -31,9 +31,9 @@ type Message struct {
 // read by /api/health. All state is in-memory: it rebuilds within one poll
 // of a restart, so it is deliberately not persisted.
 type HealthSnapshot struct {
-	StartedAt           time.Time     // when the worker was constructed; anchors the "starting" grace window
-	LastAttemptAt       time.Time     // zero until the first poll completes or fails
-	LastSuccessAt       time.Time     // zero until the first successful poll
+	StartedAt           time.Time // when the worker was constructed; anchors the "starting" grace window
+	LastAttemptAt       time.Time // zero until the first poll completes or fails
+	LastSuccessAt       time.Time // zero until the first successful poll
 	ConsecutiveFailures int
 	LastError           string // "" when the last poll succeeded
 	Interval            time.Duration
