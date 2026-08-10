@@ -1040,6 +1040,20 @@ func (s *Store) Allowlisted(ctx context.Context, userID uuid.UUID, domain, scope
 	return ok, nil
 }
 
+// HasConfirmedAnySender reports whether the user has ever confirmed a sender.
+// It gates the onboarding confirmation push: once true, held mail never pushes
+// again, restoring "quarantined mail never pushes" in full. Before the first
+// confirmation it is the narrow window a provider's forwarding confirmation is
+// allowed to buzz the phone.
+func (s *Store) HasConfirmedAnySender(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var exists bool
+	if err := s.Pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM sender_allowlist WHERE user_id = $1)`, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("quarantine: has-confirmed-any-sender: %w", err)
+	}
+	return exists, nil
+}
+
 // AllowlistEntry is one origin a user has vouched for. It is content-free: a
 // hostname, which scope it was vouched for at, and when.
 type AllowlistEntry struct {

@@ -1099,6 +1099,31 @@ func TestAllowlistedMatchesTheWholeDomain(t *testing.T) {
 	}
 }
 
+func TestHasConfirmedAnySender(t *testing.T) {
+	s, _, pool := newStore(t) // match the existing constructor in this file
+	u := insertUser(t, pool)  // match the helper used by other tests here
+
+	got, err := s.HasConfirmedAnySender(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("a brand-new account reports a confirmed sender")
+	}
+
+	// Insert one allowlist row the way the store's own Allowlist path would.
+	if _, err := pool.Exec(bg, `INSERT INTO sender_allowlist (user_id, domain, scope, created_at) VALUES ($1,'dib.ae','inner',now())`, u); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.HasConfirmedAnySender(bg, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("a user with an allowlist row reports none")
+	}
+}
+
 // TestAllowlistedIsScopedToTheScope: dropping `scope = $3` silently converts an
 // inner confirmation into an outer one, which is §3.2:51's foot-gun reached
 // without the user ever asking for it.
