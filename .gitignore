@@ -2,7 +2,6 @@
 /ledger
 /ledgerd
 /dist
-/web/dist
 
 # Local runtime data (never commit the DB — it holds financial data)
 *.db
@@ -18,7 +17,7 @@ ledger.env
 frontend/node_modules
 
 # Agent worktree scratch space (never commit)
-.claire/
+.claude/worktrees/
 
 # Brainstorming visual companion (local mockups)
 .superpowers/
@@ -37,3 +36,6 @@ node_modules/
 # `harness/shoot.mjs`, not source.
 frontend/harness/shots/
 web/harness/shots/
+
+# gen-phase2-corpus work area: receives real bank data and a private key; never commit
+spike/phase2/
