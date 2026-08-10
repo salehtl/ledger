@@ -64,6 +64,7 @@ import (
 	"ledger/internal/v2/blob"
 	"ledger/internal/v2/diag"
 	"ledger/internal/v2/origin"
+	"ledger/internal/v2/pgtx"
 )
 
 // Store answers the trust lane's one question about a user's allowlist.
@@ -1200,26 +1201,20 @@ func (s *Store) sweepBatch(ctx context.Context, now time.Time, after Cursor) (wa
 // Plumbing
 // ---------------------------------------------------------------------------
 
-// begin pins READ COMMITTED rather than inheriting it, for the same reason
-// oplog.Appender and addresses do: default_transaction_isolation is settable
-// per database, per role and by a pooler, and under REPEATABLE READ the
-// FOR UPDATE SKIP LOCKED that divides concurrent sweeps would raise a
-// serialization failure instead of doing its job.
+// begin pins READ COMMITTED; see pgtx.BeginReadCommitted for why (the FOR
+// UPDATE SKIP LOCKED that divides concurrent sweeps is this package's stake
+// in that rationale).
 func (s *Store) begin(ctx context.Context) (pgx.Tx, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := pgtx.BeginReadCommitted(ctx, s.Pool)
 	if err != nil {
 		return nil, fmt.Errorf("quarantine: begin: %w", err)
 	}
 	return tx, nil
 }
 
-// rollback runs on a context detached from the caller's, so a cancelled request
-// still releases its row locks cleanly instead of leaving pgx to destroy the
-// connection.
+// rollback delegates to pgtx.Rollback.
 func (s *Store) rollback(ctx context.Context, tx pgx.Tx) {
-	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	_ = tx.Rollback(rbCtx)
+	pgtx.Rollback(ctx, tx)
 }
 
 func nullText(s string) any {

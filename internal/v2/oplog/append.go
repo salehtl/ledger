@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ledger/internal/v2/blob"
+	"ledger/internal/v2/pgtx"
 )
 
 // Type flags. This is the whole vocabulary of op_log.type_flag, and it is
@@ -268,30 +269,24 @@ func (a *Appender) appendRows(ctx context.Context, rows []Row, prepare prepareFu
 		}
 	}
 
-	// Pinned, not inherited. default_transaction_isolation is settable per
-	// database, per role and by a pooler's startup parameters, so a plain
-	// Begin() runs at whatever a DBA last configured. Measured under
-	// `repeatable read`: 41 of 60 concurrent appends failed with SQLSTATE 40001,
-	// the first from EnsureSeqRow — the statement that does nothing in steady
-	// state. No holes appeared (a serialization failure is a rollback, and a
-	// rollback restores the counter), so that is an availability failure rather
-	// than corruption; it is still a silent, config-dependent one.
-	tx, err := a.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	// Pinned, not inherited; see pgtx.BeginReadCommitted for why. Measured
+	// under `repeatable read`: 41 of 60 concurrent appends failed with
+	// SQLSTATE 40001, the first from EnsureSeqRow — the statement that does
+	// nothing in steady state. No holes appeared (a serialization failure is
+	// a rollback, and a rollback restores the counter), so that is an
+	// availability failure rather than corruption; it is still a silent,
+	// config-dependent one.
+	tx, err := pgtx.BeginReadCommitted(ctx, a.Pool)
 	if err != nil {
 		return nil, fmt.Errorf("oplog: append: begin: %w", err)
 	}
-	defer func() {
-		// Rolled back on a context detached from the caller's. If ctx is
-		// already cancelled, tx.Rollback(ctx) fails immediately and pgx
-		// destroys the connection; gap-freeness does not depend on this either
-		// way (a destroyed connection makes the server abort the transaction,
-		// which is exactly what restores the counter) but a clean rollback
-		// returns the connection to the pool instead of burning it. The timeout
-		// stops a wedged server from pinning the connection forever.
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = tx.Rollback(rbCtx)
-	}()
+	// Rolled back on a context detached from the caller's via pgtx.Rollback.
+	// If ctx is already cancelled, tx.Rollback(ctx) fails immediately and pgx
+	// destroys the connection; gap-freeness does not depend on this either
+	// way (a destroyed connection makes the server abort the transaction,
+	// which is exactly what restores the counter) but a clean rollback
+	// returns the connection to the pool instead of burning it.
+	defer pgtx.Rollback(ctx, tx)
 
 	seqs, err := a.appendTx(ctx, tx, userID, rows, prepare)
 	if err != nil {

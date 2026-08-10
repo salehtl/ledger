@@ -116,6 +116,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ledger/internal/v2/oplog"
+	"ledger/internal/v2/pgtx"
 )
 
 // Writer kinds and the one reserved writer id. These strings are also the CHECK
@@ -865,25 +866,18 @@ func (w *Writers) checkArgs(userID uuid.UUID, writerID string, nonce, sig []byte
 	return nil
 }
 
-// begin pins READ COMMITTED rather than inheriting it, for the same reason
-// oplog.Appender and UpsertUser do: default_transaction_isolation is settable per
-// database, per role and by a pooler. Under REPEATABLE READ the `SELECT ... FOR
-// UPDATE` that serializes concurrent registrations would raise a serialization
-// failure instead of blocking, turning a routine concurrent enrollment into an
-// error whose text says nothing about what actually happened.
+// begin pins READ COMMITTED; see pgtx.BeginReadCommitted for why (the
+// `SELECT ... FOR UPDATE` that serializes concurrent registrations is this
+// package's stake in that rationale).
 func (w *Writers) begin(ctx context.Context) (pgx.Tx, error) {
-	tx, err := w.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := pgtx.BeginReadCommitted(ctx, w.Pool)
 	if err != nil {
 		return nil, fmt.Errorf("auth: writers: begin: %w", err)
 	}
 	return tx, nil
 }
 
-// rollback runs on a context detached from the caller's, so a cancelled request
-// still releases the user row lock cleanly instead of leaving pgx to destroy
-// the connection.
+// rollback delegates to pgtx.Rollback.
 func (w *Writers) rollback(ctx context.Context, tx pgx.Tx) {
-	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	_ = tx.Rollback(rbCtx)
+	pgtx.Rollback(ctx, tx)
 }

@@ -33,6 +33,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledger/internal/v2/pgtx"
 )
 
 // The four statuses. They are a wire format shared with the admin console and
@@ -544,24 +546,18 @@ func constraintOf(err error) string {
 	return ""
 }
 
-// begin pins READ COMMITTED rather than inheriting it, for the same reason
-// auth.Writers and addresses do: default_transaction_isolation is settable per
-// database, per role and by a pooler, and under REPEATABLE READ the row lock
-// that serializes two concurrent cutovers would raise a serialization failure
-// instead of blocking.
+// begin pins READ COMMITTED; see pgtx.BeginReadCommitted for why (the row
+// lock that serializes two concurrent cutovers is this package's stake in
+// that rationale).
 func (s *Store) begin(ctx context.Context) (pgx.Tx, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := pgtx.BeginReadCommitted(ctx, s.Pool)
 	if err != nil {
 		return nil, fmt.Errorf("tmpl: begin: %w", err)
 	}
 	return tx, nil
 }
 
-// rollback runs on a context detached from the caller's, so a cancelled request
-// still releases its locks cleanly instead of leaving pgx to destroy the
-// connection.
+// rollback delegates to pgtx.Rollback.
 func (s *Store) rollback(ctx context.Context, tx pgx.Tx) {
-	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	_ = tx.Rollback(rbCtx)
+	pgtx.Rollback(ctx, tx)
 }
