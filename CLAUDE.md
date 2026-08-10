@@ -27,9 +27,11 @@ Branches: `main` (both apps, v2 is the product) · `ledger-v1` (the v1 line as i
 stood at the handover) · `v2-wip-2026-08-05` (the v2 integration branch, currently
 the same commit as `main`).
 
-Two other directories are neither app. `app/` is the **abandoned** Expo native
-client — do not extend it. `client/` is the shared TypeScript library that must
-agree byte-for-byte with the Go side (see "Dual executors" below).
+`client/` is neither app: it is the shared TypeScript library that must agree
+byte-for-byte with the Go side (see "Dual executors" below). The abandoned Expo
+native client that used to sit in `app/` was **deleted on 2026-08-10** and is
+kept at the tag `app-expo-final` (pushed to `origin`) — check it out there if you
+ever need it; do not restore it into the tree.
 
 ---
 
@@ -88,13 +90,21 @@ If you change one executor, change both, and run the gate.
 
 ### Packages (`internal/v2/`)
 
-`api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (Postgres pool + goose
-migrations), `oplog` (the log format), `smtpd` + `ingest` + `origin` + `arc`
-(mail receipt and origin verification), `quarantine`, `norm` + `tmpl` + `heuristic`
-(parsing), `dict` (merchant dictionary), `admin` (the operator console),
-`pushv2` (Web Push), `purge` (account deletion), `relay` (backup MX), `config`,
-`verify` (a self-audit the binary runs on itself), `webui` (the embedded bundle),
-`pgtest` (throwaway clusters for tests).
+All 28 of them: `api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (Postgres
+pool + goose migrations), `pgtx` (the two pgx transaction helpers every store
+used to copy; a leaf package that never imports `pg`), `oplog` (the log format),
+`blob` (the on-the-wire envelope, size buckets and chain hash — the Phase 3 swap
+point), `smtpd` + `ingest` + `origin` + `arc` (mail receipt and origin
+verification), `addresses` (the per-user inbound mail slot and its rotation),
+`quarantine`, `norm` + `tmpl` + `heuristic` (parsing), `dict` (merchant
+dictionary), `samples` (the donated-sample queue every publish is regression
+tested against), `diag` (the deliberately unencrypted, non-content parse
+diagnostics), `admin` (the operator console), `pushv2` (Web Push), `purge`
+(account deletion), `relay` (backup MX), `corpus` (read-only streaming over a
+`.backup` snapshot of the v1 SQLite database), `config`, `verify` (a self-audit
+the binary runs on itself), `webui` (the embedded bundle), and two test-only
+packages, `pgtest` (throwaway clusters) and `authtest` (a scriptable software
+WebAuthn authenticator).
 
 ### Build & run (v2)
 
@@ -106,8 +116,13 @@ CGO_ENABLED=0 go build -o ledgerd ./cmd/ledgerd
 ```
 
 `cmd/ledgerd/main.go` dispatches on `os.Args[1]` **before** flag parsing — the mode
-always comes first. Modes: `serve`, `relay`, `verify`, `seed-dictionary`,
-`seed-templates`, `purge-user`, `record-consent`, `parse-rate`, `mint-invite`.
+always comes first. Eleven modes: `serve`, `relay`, `verify`, `seed-dictionary`,
+`seed-templates`, `purge-user`, `record-consent`, `parse-rate`, `mint-invite`,
+`load-corpus` (loads a pre-sealed benchmark corpus; refuses a database with more
+than one user), `vapid-keys` (mints a Web Push key pair; the one mode dispatched
+before `config.Load`). The dispatch table is `modeHandlers`, and
+`checkModeHandlers()` panics on every invocation if it disagrees with
+`config.Modes()`, so the two cannot drift.
 
 ### The gate (v2)
 
@@ -174,6 +189,7 @@ CGO_ENABLED=0 go build -o ledger ./cmd/ledger
 `cmd/ledger/main.go` dispatches on `os.Args[1]` before flag parsing:
 
 - `ledger import --file X.csv --map map.toml [--dry-run]` — historical CSV/XLSX backfill. Honors the global `auto_categorize` setting; rows land in `needs_review` when it's off. See `docs/map.example.toml`.
+- `ledger compact [-config path]` — gzip the raw email bodies in `ingest_log` (`store.CompressRawBodies`), then `VACUUM`. Restartable: a failure reports how many rows converted, and re-running continues.
 - `ledger vapid-keys` — generate a VAPID keypair for Web Push (prints env vars).
 - `ledger [-config path]` — default: run the server + ingest worker.
 
@@ -185,6 +201,7 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 - **`ingest`** — IMAP worker. Opens the mailbox **read-only** (`EXAMINE`), polls on an interval, writes every message to `ingest_log`, then calls a post-process hook to run the parse cascade over unparsed rows. With `use_idle = true` it also parks in IMAP IDLE between polls so new mail triggers an immediate sync; the poll interval remains the fallback heartbeat.
 - **`parse`** — the extraction cascade (`cascade.go`). Tiers: `DIBParser`/`ENBDParser` templates → `HeuristicParser` → AI extractor (`DisabledExtractor` when off). A parser may return `ErrIgnoreEmail`, and the cascade then returns `ignored` **immediately** rather than falling through to the heuristic — that fall-through once laundered a clean template rejection into wrong data. `Processor.ProcessPending` selects ingest rows and writes transactions; `reprocess.go` re-runs over already-seen mail.
 - **`categorize`** — rules-first categorizer. `Categorize` matches rules (`contains`/`exact`/`regex`, by priority) and falls back to the AI categorizer above a confidence threshold; proposes a write-back rule on confident results. `DisabledAI` is the no-op. Behavior is gated at runtime by app settings — see the categorizer-provider closures in `main.go`.
+- **`recur`** — deterministic recurring-charge detection over transaction history. Fixed thresholds (≥3 sightings, ≥4 below a 25-day cadence, nothing tighter than ~weekly, a staleness cut-off), so a re-run over the same history proposes the same schedules. Feeds `/api/scheduled` and `/api/upcoming`; no AI is involved.
 - **`anthropic`** — shared retrying HTTP client for the Anthropic Messages API, used by both `parse/ai.go` and `categorize/ai.go`. `Retrier` honors `Retry-After` on 429/5xx/529 and otherwise backs off exponentially with jitter. This is the one network path that data leaves the box on.
 - **`server`** — stdlib `net/http` with Go 1.22 method+pattern routing. One file per resource. `/api/events` is the SSE stream via `Hub`; unknown `/api/*` returns 404 so the SPA fallback (`spa.go`) never swallows API calls.
 - **`budget`** — 50/30/20 need/want/saving math over confirmed transactions.
@@ -196,7 +213,7 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 
 ### Frontend (`frontend/src/`) — v1
 
-React 19 + TypeScript + Vite. TanStack Router/Query/Table, Tailwind v4, dither-kit (vendored), `vite-plugin-pwa`. `api/` (client + types), `screens/`, `components/` (incl. `swipe/` categorizer deck and `transactions/`), `hooks/`, `app/AppShell.tsx`. State/server-cache via react-query (`queryClient.ts`).
+React 19 + TypeScript + Vite. TanStack Query/Table (there is no router — routing is the `app/nav.ts` tab state), Tailwind v4, dither-kit (vendored), `vite-plugin-pwa`. `api/` (client + types), `screens/`, `components/` (incl. `swipe/` categorizer deck and `transactions/`), `hooks/`, `app/AppShell.tsx`. State/server-cache via react-query (`queryClient.ts`).
 
 `lib/` holds **pure, framework-free helpers** (money/`fils` formatting, scope math, swipe and pull-to-refresh gesture geometry, transaction filtering) each with a co-located `*.test.ts`. The convention: extract decision logic out of components into a pure `lib/` function and unit-test it there, keeping components thin and gesture/format edge cases covered without rendering. Follow this when adding non-trivial UI logic.
 
@@ -268,7 +285,11 @@ no script can reach the product at all.
 Never point a harness at production: scratch ports and a scratch DB, never
 `:8080`, never `:443`, never `/var/lib/ledger`.
 
-**The method that actually found bugs**, in order of yield:
+**The method that actually found bugs**, in order of yield. It was learned on v1
+and it transfers, but **every file named below is a `frontend/harness/` (v1)
+file** — `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do not
+exist in `web/harness/`, and `audit.mjs` is the only one that exists in both. If
+you arrived here from the v2 paragraph, the v2 runners are the four named there:
 
 1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant name wider than the viewport, a 250,000 amount, an unset FX rate, a negative envelope. Bugs hide in the happy path.
 2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page and reports elements past the viewport, controls whose centre point hits a *different* element, sub-44px targets, sub-16px inputs, unreachable `overflow-hidden` content.
@@ -279,7 +300,7 @@ Never point a harness at production: scratch ports and a scratch DB, never
 
 - **`reducedMotion: "reduce"`** (set by `shoot.mjs` for stable captures) makes `Dialog`/`SettingsPage` skip their slide entirely. A green run says nothing about the animation.
 - **Chromium is not Safari.** `env(safe-area-inset-*)` is 0, there is no software keyboard, and `dvh` never shrinks. iOS-only bugs are invisible — use `ios.mjs`.
-- **Check which tree vite serves** (`ls -l /proc/<vite-pid>/cwd`). `stack.sh` resolves the repo from its own path, so running it from the main checkout while editing a worktree "verifies" a fix against code that lacks it.
+- **Check which tree vite serves** (`ls -l /proc/<vite-pid>/cwd`). Both `stack.sh` and `v2stack.sh` resolve the repo from their own path, so running one from the main checkout while editing a worktree "verifies" a fix against code that lacks it.
 - **Cold-start jank looks like a bug.** Discard the first run before drawing conclusions about timing, and A/B under equally warm conditions.
 - **A checker that cries wolf gets ignored.** When you add a deliberate exception to a convention, teach `audit.mjs` about it in the same commit (see `data-dense-target`).
 

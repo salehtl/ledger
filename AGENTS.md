@@ -28,23 +28,32 @@ Branches: `main` (both apps) · `ledger-v1` (the v1 line at handover) ·
 **Shared / neither app.** `client/` is a TypeScript library whose normalizer and
 template executor must produce **byte-identical** output to their Go twins in
 `internal/v2/norm` and `internal/v2/tmpl`; `conformance/` holds the cross-executor
-fixtures that prove it. `app/` is the **abandoned** Expo native client — do not
-extend it. `deploy/` holds runbooks (`README.md` for v1, `README-v2.md` for v2);
-plans and specs live in `docs/superpowers/`.
+fixtures that prove it. `deploy/` holds runbooks (`README.md` for v1,
+`README-v2.md` for v2); plans and specs live in `docs/superpowers/`. The
+abandoned Expo native client that used to sit in `app/` was deleted on
+2026-08-10 and is kept at the tag `app-expo-final` — do not restore it.
 
 **v2.** `cmd/ledgerd/` is the entry point and dispatches on `os.Args[1]` **before**
-flag parsing, so the mode always comes first. Backend packages live in
-`internal/v2/`: `api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (pool +
-goose migrations), `oplog`, `smtpd`/`ingest`/`origin`/`arc` (mail receipt and
-origin verification), `quarantine`, `norm`/`tmpl`/`heuristic` (parsing), `dict`,
-`admin` (tailnet-only operator console), `pushv2`, `purge`, `relay`, `config`,
-`verify`, `webui` (the embedded bundle), `pgtest`. The PWA is `web/src/`, with
-the local-first engine in `web/src/v2/`. Vite writes the committed bundle to
-`internal/v2/webui/dist/`.
+flag parsing, so the mode always comes first (eleven modes; `serve` is the
+service, `vapid-keys` is the one dispatched before the config loads). The 28
+backend packages live in `internal/v2/`: `api` (HTTP + sync), `auth` (passkeys,
+sessions), `pg` (pool + goose migrations), `pgtx` (shared pgx transaction
+helpers; a leaf package that never imports `pg`), `oplog`, `blob` (the wire
+envelope, size buckets and chain hash), `smtpd`/`ingest`/`origin`/`arc` (mail
+receipt and origin verification), `addresses` (per-user inbound mail slots),
+`quarantine`, `norm`/`tmpl`/`heuristic` (parsing), `dict`, `samples` (donated
+parse samples), `diag` (non-content parse diagnostics), `admin` (tailnet-only
+operator console), `pushv2` (Web Push), `purge`, `relay`, `corpus` (read-only
+access to a snapshot of v1's SQLite database), `config`, `verify`, `webui` (the
+embedded bundle), plus the test-only `pgtest` and `authtest`. The PWA is
+`web/src/`, with the local-first engine in `web/src/v2/`. Vite writes the
+committed bundle to `internal/v2/webui/dist/`.
 
-**v1.** `cmd/ledger/` is the entry point. Backend packages live under `internal/`:
-`store` owns SQLite, `ingest` reads IMAP, `parse` extracts transactions,
-`categorize` applies rules and AI fallback, `server` exposes the HTTP/SSE API. The
+**v1.** `cmd/ledger/` is the entry point, and it too dispatches on the first
+argument (`import`, `compact`, `vapid-keys`; no argument runs the server).
+Backend packages live under `internal/`: `store` owns SQLite, `ingest` reads
+IMAP, `parse` extracts transactions, `categorize` applies rules and AI fallback,
+`recur` detects recurring charges, `server` exposes the HTTP/SSE API. The
 React 19/TypeScript PWA is in `frontend/src/`, organized into `screens/`,
 `components/`, `hooks/`, `api/`, and pure helpers in `lib/`. Static assets are in
 `frontend/public/`. Vite writes the committed bundle to `internal/web/dist/`.
@@ -103,10 +112,15 @@ revert. Two failure classes recur in this codebase and both defeat a green run:
    implementation does not do.
 
 vitest cannot see a control under the bottom nav or a sheet behind the keyboard.
-v1 has `frontend/harness/` for that. **v2's coverage is partial**: `web/harness/`
-was forked with the tree and most of it still drives v1, so a naive run there goes
-green against code that was never loaded. `web/harness/v2settings.mjs` is the one
-runner that reaches the v2 product. Never point a harness at production.
+v1 has `frontend/harness/` for that. **v2's coverage is partial**: the nine v1
+forks were deleted from `web/harness/` on 2026-08-10, so that directory is
+v2-only, but only four runners reach the product — `v2settings.mjs` (Settings),
+`recovery.mjs` (fresh-device recovery), `operator.mjs` (the WebKit-only operator
+path) and `vault.mjs` (the key vault in both engines, and the only one needing
+no sign-in). Every other v2 screen rests on vitest alone. A new v2 runner must
+start the stack through `v2stack.sh`, which passes `--dns-fixtures`; without it
+every message the harness posts is `unauthenticated`. Never point a harness at
+production.
 
 ## Commit & Pull Request Guidelines
 
