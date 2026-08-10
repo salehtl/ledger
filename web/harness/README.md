@@ -110,6 +110,52 @@ the app's own CSV import, because v2's screens read a local projection of an
 append-only op log and there is no HTTP seam to write through. `sendmail.py`'s
 only caller is `v2settings.mjs`.
 
+### What the sweep asserts about itself
+
+Both are here because a check that cannot fail is this repo's most repeated
+defect, and both have already caught themselves:
+
+- **The fixtures must be ON A SCREEN before any screen is measured.** The importer
+  reporting success is not the same as the app showing anything: one run imported
+  20 rows that no screen displayed until a relaunch, and every audit in that run
+  came back "clean" because there was nothing on the glass to be wrong.
+- **Two identical scroll segments is a failure**, inherited from `v2settings.mjs`,
+  whose first version picked an inner scroller and reported a clean 2983px screen
+  it had never scrolled.
+
+`v2shoot.mjs` also opens every `InfoTip` and measures the panel against the
+viewport — the check that found the tip opening 170px off the side of the
+forwarding step, a defect no unit test could see because jsdom has no layout.
+
+### The live layer, and why three helpers filter on `[inert]`
+
+Drill-ins **stack** — Held mail opens over Settings — and `AppShell` covers the
+buried layer with `inert` rather than unmounting it. An inert button is still laid
+out and still passes Playwright's `isVisible()`. Three separate helpers had to
+learn this: the scroller picker (it chose the buried screen's scroller and
+"captured" six identical segments), the back-button finder (it clicked the buried
+panel's back arrow and retried for thirty seconds), and the tip crawler (it clicked
+Settings' tip through the panel on top of it).
+
+For dialogs the filter is different, because **`Dialog` does not mark the page
+beneath it inert** — `audit.mjs` reports `background-layer-not-inert` on every one
+— so the tip crawler scopes to inside the open `[role="dialog"]` instead.
+
+### Ports are overridable, because parallel sessions are normal
+
+`v2stack.sh`'s defaults are fixed values and two agents running it at once meant
+the second one's `--strictPort` vite died on the first one's port. Every collidable
+name is an env var:
+
+```bash
+LEDGER_V2_HARNESS_DIR=/tmp/ledger-v2-mine \
+LEDGER_V2_API_PORT=8133 LEDGER_V2_UI_PORT=5187 \
+LEDGER_V2_SMTP_PORT=2536 LEDGER_V2_DB=ledger_v2_mine harness/v2stack.sh up
+```
+
+`sendmail.py` reads `LEDGER_V2_SMTP_PORT` too.
+
+
 ## `v2settings.mjs` — Settings, and why its walk no longer completes
 
 > **Outdated by the 2026-08-10 restructure and the onboarding change with it.

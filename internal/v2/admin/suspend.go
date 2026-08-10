@@ -16,7 +16,7 @@ package admin
 // # Why this is two endpoints and not a role system
 //
 // Authority here is NETWORK POSITION. This console is permanently tailnet-bound
-// (config.CheckAdminBind refuses any other binding, twice) and every route is
+// (config.CheckAdminBind refuses any other binding, three times) and every route is
 // behind the operator token. "Who may suspend" is therefore already answered,
 // and the design says outright that no role system is required. These two
 // handlers write one column.
