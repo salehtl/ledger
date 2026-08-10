@@ -1,7 +1,48 @@
-This product bundles third-party assets:
+Third-party material bundled in the ledger apps.
 
-- Fugue Icons by Yusuke Kamiyamane (https://p.yusukekamiyamane.com/),
-  licensed under Creative Commons Attribution 3.0 (CC BY 3.0).
-  Icons are used in the app UI; attribution is shown in Settings > About.
+Both apps ship the first three items — ledger 1.0 from frontend/, ledger 2.0
+from web/. The fourth ships in ledger 2.0 only. There is no in-app credits
+screen; this file is the attribution.
 
-- XP.css (https://botoxparty.github.io/XP.css/), MIT License.
+Geist and Geist Mono
+  Copyright 2024 The Geist Project Authors
+  (https://github.com/vercel/geist-font)
+  SIL Open Font License, Version 1.1 (http://scripts.sil.org/OFL)
+
+  Shipped as the .woff2 files in each built bundle, via the npm packages
+  @fontsource-variable/geist and @fontsource-variable/geist-mono, which are
+  imported in frontend/src/main.tsx and web/src/main.tsx. The full licence text
+  ships with those packages, at
+  node_modules/@fontsource-variable/geist/LICENSE.
+
+Pixelarticons
+  Copyright (c) 2019 Gerrit Halfmann
+  (https://github.com/halfmage/pixelarticons)
+  MIT License
+
+  Both apps take their icon set from here. The SVG path data is
+  generated into src/components/ui/pixelIcons.ts by
+  scripts/generate-pixel-icons.mjs, from pixelarticons 2.2.0. The npm package
+  is a devDependency, so what ships is the path data rather than the package.
+
+dither-kit 0.1.0
+  https://www.tripwire.sh/dither-kit
+
+  Vendored source under src/components/dither-kit/ in both apps, installed with
+  `shadcn add https://tripwire.sh/r/bar-chart.json` and then modified in place
+  (the changes are listed in that directory's README.md). The registry payload
+  carries no licence file and no licence header, so no licence text is
+  reproduced here — this entry credits where the code came from.
+
+sql.js (ledger 2.0 only)
+  Copyright (c) 2017 sql.js authors
+  MIT License
+
+  Shipped as the sql-wasm .wasm file in web/'s bundle: it is the SQLite engine
+  the browser client runs its local database on. sql.js is SQLite compiled to
+  WebAssembly; SQLite itself is public domain.
+
+The JavaScript bundles also link the npm libraries declared in
+frontend/package.json and web/package.json. React and React DOM, TanStack Query
+and TanStack Table, Tailwind CSS, Motion, clsx and tailwind-merge are all MIT
+licensed; d3-scale and d3-shape are ISC.
