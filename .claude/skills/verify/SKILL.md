@@ -5,6 +5,10 @@ description: Build, launch, and drive the ledger PWA end-to-end on an isolated s
 
 # Verifying ledger changes at runtime
 
+Two apps share this tree (see root `CLAUDE.md`). Everything below "Build"
+through the end of this file is **v1** (`cmd/ledger`, `frontend/`). For **v2**
+(`cmd/ledgerd`, `web/`), skip to the "v2" section at the bottom.
+
 ## Build (frontend must precede Go — the bundle is embedded)
 
 ```bash
@@ -58,3 +62,26 @@ viewport 390×844. Gotchas learned the hard way:
   unreliable), position `{x:10,y:10}`.
 - jsdom tests can't catch pointer-capture click-retargeting bugs — toasts,
   drag surfaces with buttons inside need a real-browser pass.
+
+## v2 (`cmd/ledgerd`, `web/`)
+
+v2 has only partial harness coverage. Full docs: `web/harness/README.md`.
+
+```bash
+cd web
+harness/v2stack.sh up                 # scratch Postgres + ledgerd + vite, prints an invite
+node harness/v2settings.mjs <invite>  # walks sign-in, screenshots + audits Settings
+node harness/recovery.mjs <invite>    # clears site data, restores keys from twelve words
+harness/v2stack.sh down
+```
+
+`v2stack.sh up` starts `ledgerd` with **`--dns-fixtures`**, serving recorded
+DKIM/ARC records offline so the corpus's signed bank mail verifies — without
+it every message the harness posts reads as `unauthenticated` and no script
+can reach the product. Any new v2 runner or stack script must pass it too.
+
+Screens beyond Settings, recovery, the vault (`vault.mjs`) and the operator
+sign-up/recover path (`operator.mjs`) rest on vitest alone — a real gap, not
+a choice. Never point a v2 harness run at production: scratch ports (8123
+API, 5177 UI) against a throwaway Postgres cluster under `/tmp`, never `:443`
+and never the running `ledgerd` service.
