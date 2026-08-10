@@ -89,6 +89,5 @@ export const ChevronDown = makeIcon("ChevronDown");
 export const EyeOff = makeIcon("EyeOff");
 export const AlertTriangle = makeIcon("AlertTriangle");
 export const TriangleAlert = makeIcon("TriangleAlert");
-export const Loader2 = makeIcon("Loader2");
 export const Heart = makeIcon("Heart");
 export const PiggyBank = makeIcon("PiggyBank");

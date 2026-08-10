@@ -662,8 +662,7 @@ Domain components live beside their feature (`transactions/`, `swipe/`,
   decategorizes (back to the review queue, rule toggle disabled).
 - `FilterBar` — inline, in-place filtering for the Transactions page: bucket /
   type / category / source as direct toggle chips (no per-dimension sheet),
-  with removable active-filter tokens. `FilterChips` (the older sheet-per-
-  dimension picker) is still used by the Insights `SearchSheet`.
+  with removable active-filter tokens. Also used by the Insights `SearchSheet`.
 - `SubcategoryPanel` — the swipe deck's post-swipe picker (a `Dialog`): bucket
   categories as tap targets, optional project chips with date-window matches
   surfaced first as suggestions (project rides along with the categorize call),

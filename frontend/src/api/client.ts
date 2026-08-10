@@ -52,14 +52,6 @@ export function getAccounts(): Promise<Account[]> {
   return getJSON("/api/accounts");
 }
 
-export function createAccount(a: { name: string; last4: string; bank?: string }): Promise<{ id: number }> {
-  return postJSON("/api/accounts", a);
-}
-
-export function deleteAccount(id: number): Promise<void> {
-  return del(`/api/accounts/${id}`);
-}
-
 export function sweepTransfers(): Promise<SweepResult> {
   return postJSON("/api/transfers/sweep", {});
 }
@@ -70,10 +62,6 @@ export function getRefundCandidates(id: number): Promise<Txn[]> {
 
 export async function linkRefund(id: number, targetId: number): Promise<void> {
   await postJSON(`/api/transactions/${id}/link-refund`, { target_id: targetId });
-}
-
-export async function unlinkRefund(id: number): Promise<void> {
-  await postJSON(`/api/transactions/${id}/unlink-refund`, {});
 }
 
 export function getAIUsage(): Promise<AIUsage> {
@@ -106,10 +94,6 @@ export function assignTxnProject(txnId: number, projectId: number | null): Promi
 
 export function bulkAssignProject(id: number, ids: number[]): Promise<void> {
   return postJSON(`/api/projects/${id}/assign`, { transaction_ids: ids });
-}
-
-export function bulkUnassignProject(id: number, ids: number[]): Promise<void> {
-  return postJSON(`/api/projects/${id}/unassign`, { transaction_ids: ids });
 }
 
 // ---- envelopes & targets (plan) --------------------------------------------

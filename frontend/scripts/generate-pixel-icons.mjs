@@ -66,7 +66,6 @@ const ICONS = {
   "chevron-down": ["ChevronDown"],
   "eye-off": ["EyeOff"],
   "warning-diamond": ["AlertTriangle", "TriangleAlert"],
-  "loader": ["Loader2"],
   // Not in the brief's table (lucide names beyond the 32 originally audited),
   // found while migrating the swipe deck's category glyphs.
   "heart": ["Heart"],
