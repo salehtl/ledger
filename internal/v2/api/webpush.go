@@ -117,9 +117,9 @@ func (s *Server) handleVAPIDPublicKey(w http.ResponseWriter, _ *http.Request) {
 // session's user.
 //
 // The user comes from the session and is not a field of the request — the same
-// property handleRegisterPushToken has, and for a sharper reason here: a push
-// endpoint is a URL that shows up in logs and proxies, so if a body could name
-// its own user_id, anyone who saw one could point another account's
+// property every write in this package has, and for a sharper reason here: a
+// push endpoint is a URL that shows up in logs and proxies, so if a body could
+// name its own user_id, anyone who saw one could point another account's
 // notifications at a subscription they control.
 //
 // It is an upsert on (user_id, endpoint), because a browser hands back the same

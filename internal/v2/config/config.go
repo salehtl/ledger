@@ -219,8 +219,15 @@ type RelayConfig struct {
 	Token string `toml:"-"`
 }
 
-// PushConfig controls content-free Expo push (Task 29). Enabled defaults to
-// false; Phase 1 wires the Disabled pusher until a client exists.
+// PushConfig controls content-free push. WebEnabled is the live switch: it
+// turns on Web Push (VAPID) for the PWA.
+//
+// Enabled and ExpoURL are INERT since the Expo sender was removed with the
+// native client on 2026-08-10. They are still fields because Load HARD-REJECTS
+// a TOML carrying an unknown key, so deleting them would stop ledgerd booting
+// against any deployed config that still sets them. validatePush still rails
+// both, which is deliberate: a wrong expo_url sitting inert in a file is
+// exactly what that function exists to refuse.
 type PushConfig struct {
 	Enabled bool   `toml:"enabled"`
 	ExpoURL string `toml:"expo_url"`

@@ -1086,7 +1086,8 @@ func TestIngestIDIsTheSHA256OfTheRawBody(t *testing.T) {
 // defines and the implementations pushv2 ships from drifting apart.
 func TestTheShippedPushersSatisfyThePipeline(t *testing.T) {
 	var _ Pusher = pushv2.Disabled{}
-	var _ Pusher = (*pushv2.Expo)(nil)
+	var _ Pusher = (*pushv2.Web)(nil)
+	var _ Pusher = pushv2.Multi(nil)
 }
 
 // TestDeliverIsAnSMTPHandler pins the seam cmd/ledgerd mounts.

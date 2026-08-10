@@ -308,13 +308,14 @@ func TestARealSendIsEncryptedAndVAPIDSigned(t *testing.T) {
 	}
 }
 
-// TestMultiNotifiesEveryChannelEvenWhenOneFails. The Expo audience and the Web
-// Push audience are independent, so a browser subscription must not go
-// unnotified because a token list could not be read.
+// TestMultiNotifiesEveryChannelEvenWhenOneFails. Multi's senders are
+// independent audiences, so one must not go unnotified because another failed.
+// Only [Web] ships today, so this drives stand-ins — which is the point: the
+// joining behaviour has to hold for whatever second channel is added next.
 func TestMultiNotifiesEveryChannelEvenWhenOneFails(t *testing.T) {
 	var reached bool
 	m := Multi{
-		notifierFunc(func(context.Context, uuid.UUID) error { return fmt.Errorf("expo is down") }),
+		notifierFunc(func(context.Context, uuid.UUID) error { return fmt.Errorf("first sender is down") }),
 		notifierFunc(func(context.Context, uuid.UUID) error { reached = true; return nil }),
 		nil,
 	}
@@ -322,7 +323,7 @@ func TestMultiNotifiesEveryChannelEvenWhenOneFails(t *testing.T) {
 	if !reached {
 		t.Fatal("a failing sender short-circuited the one after it")
 	}
-	if err == nil || !strings.Contains(err.Error(), "expo is down") {
+	if err == nil || !strings.Contains(err.Error(), "first sender is down") {
 		t.Fatalf("Multi.Notify returned %v, want the joined failure", err)
 	}
 }

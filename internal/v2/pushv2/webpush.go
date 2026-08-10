@@ -140,8 +140,8 @@ type webSubscription struct {
 }
 
 // webFanoutOrder is the order browsers are notified in, and the order the cap
-// is applied in. DESCENDING by creation, exactly as [fanoutOrder] is and for
-// the same reason: the casualty of the cap must always be a browser the user
+// is applied in. DESCENDING by creation, for the reason the retired Expo
+// fan-out shared: the casualty of the cap must always be a browser the user
 // stopped using, never the one in their hand.
 //
 // api.evictPushSubscriptionsOverCap evicts by the identical expression.
@@ -175,11 +175,12 @@ func (w *Web) Notify(ctx context.Context, userID uuid.UUID) error {
 			w.logf("pushv2: web push to user %s: %v", userID, err)
 		case gone:
 			// 404/410 is the one permanent answer in RFC 8030: the push service
-			// itself says this subscription no longer exists. Unlike the Expo
-			// path — which only learns about a dead device from a RECEIPT it
-			// never fetches — this arrives inline, so a browser that cleared
-			// its site data or revoked permission stops costing a request per
-			// transaction the first time we try it.
+			// itself says this subscription no longer exists. It arrives
+			// inline, so a browser that cleared its site data or revoked
+			// permission stops costing a request per transaction the first time
+			// we try it. (The retired Expo path had no equivalent: a dead
+			// device was only reported in a RECEIPT that nothing ever fetched,
+			// so its rows were never reaped.)
 			if err := w.forget(ctx, userID, s.endpoint); err != nil {
 				w.logf("pushv2: forgetting a gone subscription for user %s: %v", userID, err)
 			}

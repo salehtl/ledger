@@ -372,22 +372,27 @@ func runServe(cfg config.Config) error {
 	// function mounted between Tasks 24 and 29, which answered every message
 	// with a 451 so the sender would keep it.
 	//
-	// pusher is Disabled unless the operator turned push on. The Expo client and
-	// its content-free contract exist either way (pushv2), and the ONE call site
-	// is inside the pipeline, on a hot-stream append.
+	// pusher is Disabled unless the operator turned push on. The content-free
+	// contract exists either way (pushv2), and the ONE call site is inside the
+	// pipeline, on a hot-stream append.
 	//
-	// The two channels are independent audiences — Expo installs and PWA
-	// browser subscriptions — with separate switches, separate tables and
-	// separate credentials, so they are composed rather than chosen between: a
-	// deployment can have both, one, or neither. pushv2.Multi over an empty
-	// slice would be a valid no-op, but Disabled is kept as the zero case so
-	// that "push is off" reads the same in the log and in a stack trace as it
-	// always has.
+	// Senders are COMPOSED rather than chosen between, so a deployment can have
+	// several audiences, one, or none. Only Web Push ships today — the Expo
+	// channel went with the native client on 2026-08-10 — but pushv2.Multi is
+	// the seam a second one is added at, and it is not the pipeline.
+	// pushv2.Multi over an empty slice would be a valid no-op, but Disabled is
+	// kept as the zero case so that "push is off" reads the same in the log and
+	// in a stack trace as it always has.
 	var pusher ingest.Pusher = pushv2.Disabled{}
 	var senders pushv2.Multi
 	if cfg.Push.Enabled {
-		senders = append(senders, &pushv2.Expo{Pool: pool, AccessToken: cfg.Push.AccessToken, Endpoint: cfg.Push.ExpoURL})
-		log.Println("ledgerd serve: content-free Expo push is ENABLED")
+		// push.enabled drove the Expo sender, which no longer exists. The key
+		// still loads — the config loader rejects a TOML with an unknown key,
+		// so removing the field would stop this binary booting against a
+		// deployed config that sets it — and it now does nothing. Said out
+		// loud, because an operator who set it is expecting notifications.
+		log.Println("ledgerd serve: push.enabled is set but INERT — it drove the Expo sender, " +
+			"removed with the native client on 2026-08-10. Set push.web_enabled for the PWA.")
 	}
 	if cfg.Push.WebEnabled {
 		senders = append(senders, &pushv2.Web{

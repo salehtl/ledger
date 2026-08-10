@@ -77,12 +77,13 @@ func tokenHash(token string) []byte {
 }
 
 // SessionHash is tokenHash, exported for the one caller outside this package
-// that legitimately needs it: api's push-token registration stores which
+// that legitimately needs it: api's push-subscription registration stores which
 // session registered a device, so that signing that session out also stops its
-// notifications (00019_push_token_device_link.sql).
+// notifications (00019_push_token_device_link.sql established the pattern;
+// 00029_push_subscriptions.sql repeats it).
 //
 // It is a hash and not the token, which is the point — the API layer never
-// holds a persistable form of a credential, and a push_tokens row leaked to a
+// holds a persistable form of a credential, and a notification row leaked to a
 // log or a backup names a session without being usable as one.
 func SessionHash(token string) []byte { return tokenHash(token) }
 

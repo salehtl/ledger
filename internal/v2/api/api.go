@@ -28,10 +28,6 @@
 //	GET  /api/v1/dictionary?since=                                 -> {version, entries, removed}
 //	POST /api/v1/samples/report {sender_domain, structure_sig}     -> 204
 //	POST /api/v1/samples/donate {ingest_id, consent}               -> 204
-//	POST /api/v1/push/tokens {token, platform, writer_id}          -> 204
-//	GET  /api/v1/push/tokens                                       -> {tokens:[...], max}
-//	DELETE /api/v1/push/tokens                                     -> 204
-//	DELETE /api/v1/push/tokens/{handle}                            -> 204
 //	GET  /api/v1/push/vapid                                        -> {public_key}
 //	POST /api/v1/push/subscriptions {endpoint, p256dh, auth, writer_id} -> 204
 //	GET  /api/v1/push/subscriptions                                -> {subscriptions:[...], max}
@@ -280,16 +276,17 @@ const (
 	dictionaryBurst   = sampleBurst
 	dictionaryMaxKeys = 4096
 
-	// The push budget covers registration, both deletes and nothing else. It
-	// was the ONE session-authenticated write endpoint in this API with no
-	// limiter, which read as a decision and was not one: a single session could
-	// write unbounded 512-byte rows, each a permanent notification target.
+	// The push budget covers subscription registration, both deletes and
+	// nothing else. It was the ONE session-authenticated write endpoint in this
+	// API with no limiter, which read as a decision and was not one: a single
+	// session could write unbounded rows, each a permanent notification target.
 	//
 	// The burst is generous because the legitimate shape is bursty and rare — a
-	// client registers on launch, and a user tidying their device list deletes
+	// client subscribes on launch, and a user tidying their device list deletes
 	// a few rows in a row — while the sustained rate is mean, because nothing
 	// legitimate registers a device once a minute forever. The row cap
-	// (evictPushTokensOverCap) bounds the damage; this bounds the churn.
+	// (evictPushSubscriptionsOverCap) bounds the damage; this bounds the
+	// churn.
 	pushRate    = 1.0 / 60.0 // 1/minute sustained
 	pushBurst   = 20
 	pushMaxKeys = 4096
@@ -450,9 +447,10 @@ type Server struct {
 	SamplesPerUser     *Limiter
 	DictionaryPerUser  *Limiter
 	DictionaryPerEntry *Limiter
-	// PushPerUser covers push-token registration and both deletes on ONE
+	// PushPerUser covers push-subscription registration and both deletes on ONE
 	// budget, for the reason the two above share: they are one flow, and a
-	// caller who can register without limit is not limited by a bounded delete.
+	// caller who can subscribe without limit is not limited by a bounded
+	// delete.
 	PushPerUser *Limiter
 	// PasskeyPerIP and PasskeyGlobal bound all six passkey routes, including the
 	// two that require a session — the limiter runs before the session is
@@ -759,29 +757,28 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/v1/quarantine", s.requireSession(s.handleQuarantine))
 		mux.HandleFunc("POST /api/v1/quarantine/confirm", s.requireSession(s.handleConfirmSender))
 		// The listing is what makes the revocation reachable — see
-		// handleAllowlist, and the same argument above the push token routes.
+		// handleAllowlist, and the same argument above the push routes.
 		mux.HandleFunc("GET /api/v1/quarantine/allowlist", s.requireSession(s.handleAllowlist))
 		mux.HandleFunc("DELETE /api/v1/quarantine/allowlist", s.requireSession(s.handleRevokeSender))
 	}
-	// Push token registration is mounted unconditionally, unlike the two blocks
-	// above. It needs nothing but the pool, and the routes have to work whether
-	// or not push is ENABLED: a deployment that turns push on should find its
-	// users' devices already registered rather than waiting for every client to
-	// launch again.
+	// Push subscription registration is mounted unconditionally, unlike the two
+	// blocks above. It needs nothing but the pool, and the routes have to work
+	// whether or not push is ENABLED: a deployment that turns push on should
+	// find its users' browsers already subscribed rather than waiting for every
+	// client to launch again.
 	//
-	// The LIST route is not a convenience. Without it the delete route was
-	// unreachable to a user — it needs the exact token string, which only the
-	// device itself knows — so a phone that was stolen, signed out or handed on
-	// kept receiving a live "New transaction" per bank alert with nothing the
-	// user could do about it. See push.go and 00019_push_token_device_link.sql.
-	mux.HandleFunc("POST /api/v1/push/tokens", s.requireSession(s.handleRegisterPushToken))
-	mux.HandleFunc("GET /api/v1/push/tokens", s.requireSession(s.handleListPushTokens))
-	mux.HandleFunc("DELETE /api/v1/push/tokens", s.requireSession(s.handleDeleteAllPushTokens))
-	mux.HandleFunc("DELETE /api/v1/push/tokens/{token}", s.requireSession(s.handleDeletePushToken))
-	// Web Push (VAPID) for the PWA — a separate audience and a separate table
-	// from the Expo tokens above, not a replacement for them. The key route
-	// takes no session because the key is public and a client needs it to
-	// decide whether to offer the control at all. See webpush.go.
+	// The native /api/v1/push/tokens routes were removed on 2026-08-10: their
+	// only client was the retired Expo app, and the PWA subscribes through the
+	// Web Push routes below. The push_tokens table and 00019 are untouched —
+	// auth still sweeps it on revocation and sign-out, and purge still deletes
+	// from it — so nothing was orphaned by dropping the HTTP surface.
+	//
+	// Web Push (VAPID) for the PWA. The key route takes no session because the
+	// key is public and a client needs it to decide whether to offer the
+	// control at all. The LIST route is not a convenience: without it the
+	// delete route is unreachable to a user, so a browser that was signed out
+	// or handed on would keep receiving a live signal per bank alert with
+	// nothing the user could do about it. See webpush.go.
 	mux.HandleFunc("GET /api/v1/push/vapid", s.handleVAPIDPublicKey)
 	mux.HandleFunc("POST /api/v1/push/subscriptions", s.requireSession(s.handleSubscribePush))
 	mux.HandleFunc("GET /api/v1/push/subscriptions", s.requireSession(s.handleListPushSubscriptions))

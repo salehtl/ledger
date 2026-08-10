@@ -928,8 +928,8 @@ type AllowlistEntry struct {
 
 // AllowlistedOrigins returns everything this user has confirmed, newest first.
 //
-// It is not a convenience, for the same reason the push-token list route is not
-// one: [Store.Revoke] needs the exact (domain, scope) pair, and a user who
+// It is not a convenience, for the same reason the push-subscription list route
+// is not one: [Store.Revoke] needs the exact (domain, scope) pair, and a user who
 // confirmed a lookalike months ago has no other way to find out what their
 // account currently trusts. An undo nobody can aim is not an undo.
 func (s *Store) AllowlistedOrigins(ctx context.Context, userID uuid.UUID) ([]AllowlistEntry, error) {

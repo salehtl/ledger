@@ -1303,7 +1303,7 @@ func TestRevokeRefusesWhatConfirmRefuses(t *testing.T) {
 }
 
 // TestAllowlistedOriginsIsWhatMakesRevocationReachable. The same argument the
-// push-token list route was added for: a delete that needs a value only the
+// push-subscription list route exists for: a delete that needs a value only the
 // server holds is a delete the user cannot perform.
 func TestAllowlistedOriginsIsWhatMakesRevocationReachable(t *testing.T) {
 	s, now, pool := newStore(t)

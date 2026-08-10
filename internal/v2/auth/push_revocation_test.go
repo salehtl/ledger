@@ -25,7 +25,11 @@ import (
 // transactions, and "the sweep committed with the revocation" is the part that
 // cannot be checked from the other side.
 
-// registerPushToken plants a row exactly as api.handleRegisterPushToken does.
+// registerPushToken plants a row the way the retired native push-token API
+// did. That API was removed on 2026-08-10 with the Expo client it served, but
+// push_tokens and this sweep both stay: rows written before the removal are
+// still on the deployed database, and a revoked device must stop being a
+// notification target whether or not anything can create such a row today.
 func registerPushToken(t *testing.T, pool *pgxpool.Pool, u uuid.UUID, writerID, sessionToken, token string) {
 	t.Helper()
 	if _, err := pool.Exec(bgctx,

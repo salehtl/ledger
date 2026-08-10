@@ -84,8 +84,9 @@ const maxCompiledTemplates = 256
 
 // Pusher is the content-free notification sink. It is defined HERE, with its
 // one caller, rather than in the package that implements it: the interface
-// exists to keep this package from knowing anything about Expo, and pushv2
-// ships [pushv2.Disabled] and [pushv2.Expo] which both satisfy it structurally.
+// exists to keep this package from knowing anything about a push transport, and
+// pushv2 ships [pushv2.Disabled], [pushv2.Web] and [pushv2.Multi], which all
+// satisfy it structurally.
 //
 // Notify is told a user and nothing else. That is not an accident of the
 // signature — there is deliberately no parameter through which an amount, a
