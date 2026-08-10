@@ -1,6 +1,7 @@
 /**
  * The bank-name grammar, on the client, in the same shape the server enforces —
- * ported from `app/src/lib/bank.ts`.
+ * ported from the retired Expo client's `app/src/lib/bank.ts` (removed
+ * 2026-08-10, preserved at tag `app-expo-final`).
  *
  * # Why the client carries a copy at all
  *

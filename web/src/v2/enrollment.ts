@@ -1,6 +1,8 @@
 /**
  * What a person is told when this device could not be registered as one that
- * may make changes. Ported from `app/src/auth/enrollment.ts`.
+ * may make changes. Ported from the retired Expo client's
+ * `app/src/auth/enrollment.ts` (removed 2026-08-10, preserved at tag
+ * `app-expo-final`).
  *
  * Kept out of any screen because two surfaces render it — the boot gate's wall
  * and (Task 7) the sign-in banner — and because the honesty of each sentence is

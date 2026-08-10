@@ -2,10 +2,11 @@
  * The review queue: which rows are in it, what a card says, and what answering
  * one appends to the log.
  *
- * A port of `app/src/db/reviewQueue.ts` (the SQL) together with the half of
- * `app/src/lib/review.ts` this screen actually uses (the decisions), merged into
- * one module for the same reason `sources/transactions.ts` merged its two —
- * `app`'s split existed so the pure half could run under `bun test` without a
+ * A port of the retired Expo client's `app/src/db/reviewQueue.ts` (the SQL)
+ * together with the half of `app/src/lib/review.ts` this screen actually uses
+ * (the decisions), merged into one module for the same reason
+ * `sources/transactions.ts` merged its two — `app`'s split existed so the pure
+ * half could run under `bun test` without a
  * native SQLite, and here both halves run under vitest against the real browser
  * driver, so the split buys nothing and costs a second import path.
  *

@@ -1,7 +1,8 @@
 /**
  * The lane queries, against a real database.
  *
- * A port of `app/src/db/reviewQueue.test.ts`, assertion for assertion. Two
+ * A port of the retired Expo client's `app/src/db/reviewQueue.test.ts` (removed
+ * 2026-08-10, preserved at tag `app-expo-final`), assertion for assertion. Two
  * substitutions and nothing else: `bun:test` became `vitest`, and
  * `bunDriver(":memory:")` became `openBrowserDriver`, the sql.js driver this app
  * actually ships. The second is the point of re-running these here rather than

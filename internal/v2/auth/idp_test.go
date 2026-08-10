@@ -844,10 +844,13 @@ func TestNonceBinding(t *testing.T) {
 }
 
 // abcNonce and appleClaimForABC are a PUBLISHED SHA-256 vector, not a value
-// this package computed. `app/src/auth/idp.test.ts` pins the identical pair for
-// the client's expectedNonceClaim, so the Go and TypeScript halves are shown to
-// agree on a number neither of them produced for the occasion — which is the
-// only way the two can be checked against each other with no device here.
+// this package computed. The retired Expo client's `app/src/auth/idp.test.ts`
+// (preserved at tag app-expo-final) pinned the identical pair for the client's
+// expectedNonceClaim, so the Go and TypeScript halves were shown to agree on a
+// number neither of them produced for the occasion — which was the only way the
+// two could be checked against each other with no device here. The client half
+// went with `app/`; keeping the vector published rather than computed is what
+// lets a future client be checked against this one the same way.
 const (
 	abcNonce         = "abc"
 	appleClaimForABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

@@ -1,10 +1,13 @@
 /**
- * The onboarding machine, ported from `app/src/lib/onboarding.ts`.
+ * The onboarding machine, ported from the retired Expo client's
+ * `app/src/lib/onboarding.ts` (removed 2026-08-10, preserved at tag
+ * `app-expo-final`).
  *
  * Pure, framework-free, and it is the thing the boot gate asks "is this device
- * set up yet?". Ported rather than imported: `app/` is retired from the gate
- * (Task 0), its tests no longer run, and shipping browser code out of a tree
- * nothing checks is how a module rots without anyone noticing.
+ * set up yet?". Ported rather than imported: `app/` was already retired from
+ * the gate (Task 0), its tests no longer ran, and shipping browser code out of
+ * a tree nothing checks is how a module rots without anyone noticing. The tree
+ * is gone now, which is the same argument reaching its conclusion.
  *
  * Task 7 brought over the second half it named: the currency vocabulary
  * (`COMMON_CURRENCIES`, `searchCurrencies`), the op authors (`homeCurrencyOps`,

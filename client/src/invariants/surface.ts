@@ -17,8 +17,9 @@
  *
  * # Why this is a pure module and not a component
  *
- * Everything here is framework-free and returns data. `app/` renders it (see
- * "The component contract" below); `client/src` may not import React, and the
+ * Everything here is framework-free and returns data. A client renders it —
+ * `web/src/v2/halt.ts` and `web/src/v2/BootGate.tsx` today (see "The component
+ * contract" below); `client/src` may not import React, and the
  * decisions — which halt wins, what it says, what is routine — are exactly the
  * part that has to be unit-testable without a renderer. It follows the v1
  * convention `CLAUDE.md` states for `frontend/src/lib`: extract the decision out
@@ -516,18 +517,24 @@ export function escapableDuringPush(stops: readonly Violation[]): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The component contract — `app/` does not exist in this tree yet
+// The component contract — what a client must render from this
 // ---------------------------------------------------------------------------
 
 /*
- * THE COMPONENT CONTRACT — `app/` does not exist in this tree yet.
+ * THE COMPONENT CONTRACT — what a client must render from this.
  *
- * What `app/src/components/HaltBanner.tsx` and
- * `app/src/screens/settings/IntegrityScreen.tsx` must render, stated here
- * because Task 12's screens live in `app/`, which another task is scaffolding.
- * Writing them blind would be the "written, tested green, never wired" defect
- * this project has already paid for six times, so the contract is written and
- * the components are not.
+ * Written here rather than in a client, because when it was written no client
+ * existed to put it in: Task 12's screens were to live in the Expo app, which
+ * another task was still scaffolding, and writing them blind would have been
+ * the "written, tested green, never wired" defect this project has already paid
+ * for six times.
+ *
+ * The PWA is that client now. `web/src/v2/halt.ts` classifies a stop and calls
+ * `surface()` for the copy, and `web/src/v2/BootGate.tsx` renders the wall.
+ * (The Expo client's `app/src/components/HaltBanner.tsx` and
+ * `app/src/screens/settings/IntegrityScreen.tsx` were the original addressees;
+ * `app/` was removed on 2026-08-10 and is preserved at tag app-expo-final.)
+ * The contract below still binds any client that consumes `surface()`.
  *
  * ```tsx
  * const s = surface({ violations, unreadable: state.unreadable, error });

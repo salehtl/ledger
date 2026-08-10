@@ -200,9 +200,10 @@ export function invalidateAfterSync(queryClient: QueryClient): Promise<void> {
  * The transaction source over this device's projection, or `null` with no v2
  * runtime.
  *
- * `injected` is the test seam — the same one `app/src/screens/transactions`
- * uses — so a screen test can hand over a source built on a real in-memory
- * projection rather than standing up the whole boot gate.
+ * `injected` is the test seam — the same one the retired Expo client's
+ * `app/src/screens/transactions` used (removed 2026-08-10, preserved at tag
+ * `app-expo-final`) — so a screen test can hand over a source built on a real
+ * in-memory projection rather than standing up the whole boot gate.
  */
 export function useTxnSource(injected?: TxnSource): TxnSource | null {
   const runtime = useV2();

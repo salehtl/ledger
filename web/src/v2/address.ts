@@ -22,8 +22,9 @@
  * subtlety behind them (the server names only ONE predecessor, so a user who
  * rotated twice inside the grace window has an older address still accepting
  * that the response does not mention). Task 7's address screen is what needs
- * them, and it should port `app/src/lib/address.ts`'s decoder rather than
- * widen this.
+ * them, and it should port the decoder from the retired Expo client's
+ * `app/src/lib/address.ts` (removed 2026-08-10, preserved at tag
+ * `app-expo-final`) rather than widen this.
  */
 
 import { ApiError, NetworkError } from "@ledger/client/net/client";

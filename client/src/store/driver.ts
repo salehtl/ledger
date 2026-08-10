@@ -2,37 +2,27 @@
  * The narrow SQLite surface {@link sqliteStore} is written against, and the Bun
  * implementation of it.
  *
- * # Why the interface lives in `client/` and not in `app/`
+ * # Why the interface lives in `client/` and not in a client app
  *
  * `client/`'s whole test suite runs against the SQLite store (see
- * `LEDGER_CLIENT_STORE=sqlite` in `open.ts`), which is what makes the phone's
+ * `LEDGER_CLIENT_STORE=sqlite` in `open.ts`), which is what makes a device's
  * persistence layer inherit Phase 1's test corpus instead of being a fresh,
- * untested surface. If the interface lived in `app/`, `client/` would have to
- * import from `app/` to run its own tests — the library depending on the
- * application. So the contract and the Bun driver are here, and `app/`
+ * untested surface. If the interface lived in the app, `client/` would have to
+ * import from the app to run its own tests — the library depending on the
+ * application. So the contract and the Bun driver are here, and each client
  * contributes exactly one function.
  *
- * # The React Native implementation
+ * # The client implementations
  *
- * `app/src/db/driver.ts`'s `expoDriver(name)` is that one function. It is NOT
- * written here, because `app/` does not exist yet (Task 3 builds it) and code
- * that cannot be run is the defect shape this project has hit repeatedly. What
- * it has to do is entirely mechanical, and every API it needs is confirmed
- * present in `expo-sqlite@16.0.10`'s own type declarations:
+ * `web/src/v2/db/driver.ts`'s `openBrowserDriver()` is that one function for
+ * the PWA: sql.js (SQLite compiled to WASM) fronted by IndexedDB.
  *
- * | this interface        | `expo-sqlite@16.0.10`                                    |
- * |-----------------------|----------------------------------------------------------|
- * | open                  | `openDatabaseSync(name)` (`build/SQLiteDatabase.d.ts:322`) |
- * | `exec`                | `db.execSync(source)` (`:135`)                             |
- * | `prepare`             | `db.prepareSync(source)` (`:151`)                          |
- * | `SqlStatement.run`    | `stmt.executeSync(params)` / `db.runSync(sql, params)` (`:249`) |
- * | `SqlStatement.all`    | `stmt.executeSync(params).getAllSync()` (`build/SQLiteStatement.d.ts:208`) |
- * | `transaction`         | `db.withTransactionSync(task)` (`:190`)                    |
- * | `close`               | `db.closeSync()`                                           |
- *
- * Two obligations that do not show up in the type signatures: a statement
- * prepared with `prepareSync` must be `finalizeSync()`d (so `close()` finalizes
- * the cache), and exactly ONE `openDatabaseSync` handle may exist per database —
+ * The retired Expo client's `app/src/db/driver.ts` supplied `expoDriver(name)`
+ * over `expo-sqlite` (`app/` was removed on 2026-08-10 and is preserved at tag
+ * app-expo-final). Two obligations it had to meet do not show up in the type
+ * signatures and bind any future driver over a native SQLite handle: a
+ * statement prepared with `prepareSync` must be `finalizeSync()`d (so `close()`
+ * finalizes the cache), and exactly ONE database handle may exist per database —
  * Phase 0's freeze was partly a native connection leaked per button press.
  */
 

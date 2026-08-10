@@ -14,8 +14,10 @@
  * and there is no `Number()` in this file: not on the format path, not on the
  * grouping path.
  *
- * This is a port of the *display* half of `app/src/lib/money.ts` — the same
- * functions, the same output, so the two clients print an amount identically.
+ * This is a port of the *display* half of `app/src/lib/money.ts` (the retired
+ * Expo client, removed 2026-08-10 and preserved at tag `app-expo-final`) — the
+ * same functions, the same output, so the two clients printed an amount
+ * identically.
  * The parse/arithmetic half (`parseAmountDraft`, `divideEvenly`) belongs with
  * the op authors and lands with the write paths, not with a read-only screen.
  */

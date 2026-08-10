@@ -150,7 +150,8 @@ if [[ ! -d client/node_modules ]]; then
 fi
 (cd client && bun run typecheck && bun test src/diag/structure.test.ts && bun test)
 
-# app/ (Expo) is retired on this branch; see docs/superpowers/specs/2026-08-07-v2-pwa-direction.md
+# app/ (Expo) was removed 2026-08-10; preserved at tag app-expo-final. See
+# docs/superpowers/specs/2026-08-07-v2-pwa-direction.md for why.
 
 # The PWA client. Same rule as client/: no `bun install` here, so a missing
 # web/node_modules is a hard failure with the fix named rather than a gate

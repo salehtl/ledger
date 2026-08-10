@@ -345,9 +345,11 @@ export interface Store {
 /**
  * Where the two secrets go when they are not going in the database.
  *
- * On a device this is `expo-secure-store` (the Keychain), wired up in
- * `app/src/auth/keys.ts` for Task 13. `null` means "not present", and setting
- * `null` deletes — signing out has to actually remove the token.
+ * In the PWA this is `webSecretStore` in `web/src/v2/session.ts`. (The retired
+ * Expo client wired it to `expo-secure-store` — the Keychain — in
+ * `app/src/auth/keys.ts`; `app/` was removed on 2026-08-10 and is preserved at
+ * tag app-expo-final.) `null` means "not present", and setting `null` deletes —
+ * signing out has to actually remove the token.
  */
 export interface SecretStore {
   get(name: string): string | null;

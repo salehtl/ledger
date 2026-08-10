@@ -15,12 +15,15 @@
  * `Client.check`/`materialize` changed no result.
  *
  * This module imports `bun:sqlite` (through `./driver`) and `node:fs` (through
- * `./file`), so it is HOST-ONLY. `app/` must not import it; a device builds its
- * store directly:
+ * `./file`), so it is HOST-ONLY. A client app must not import it; a device
+ * builds its store directly, passing its own driver and secret store:
  *
  * ```ts
- * sqliteStore(expoDriver("ledger.db"), { secrets: keychainSecretStore() })
+ * sqliteStore(openBrowserDriver(...), { secrets: webSecretStore(profile) })
  * ```
+ *
+ * The retired Expo client did the same with `expoDriver` over the Keychain
+ * (`app/` was removed 2026-08-10, preserved at tag `app-expo-final`).
  */
 
 import { chmodSync } from "node:fs";

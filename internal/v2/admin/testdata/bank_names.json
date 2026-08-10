@@ -2,7 +2,7 @@
   "why": [
     "The bank-name grammar is enforced in three places: admin.NormalizeBank (Go),",
     "waitlist_bank_is_bounded (the CHECK in 00012_waitlist.sql), and",
-    "app/src/lib/bank.ts (the client, so a user is refused BEFORE the request",
+    "web/src/v2/bank.ts (the client, so a user is refused BEFORE the request",
     "with a message naming the rule instead of after it with a generic 400).",
     "",
     "They disagreed. The client accepted any non-control string of <= 64 CODE",
@@ -10,8 +10,12 @@
     "'Mashreq (UAE)' was a 400 that surfaced as 'Could not add that bank. Try",
     "again.' on a step the user could not get past. This file is what stops the",
     "two drifting again: internal/v2/admin/waitlist_test.go and",
-    "app/src/lib/bank.test.ts both drive every case below, and a grammar change",
+    "web/src/v2/bank.test.ts both drive every case below, and a grammar change",
     "made to one side only fails the other side's suite.",
+    "",
+    "The client half was the retired Expo client's app/src/lib/bank.test.ts",
+    "until app/ was removed on 2026-08-10 (preserved at tag app-expo-final).",
+    "It moved to web/, because the gate has to sit on the client that ships.",
     "",
     "'normalized' is the stored form and is asserted only when ok is true."
   ],

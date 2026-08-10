@@ -560,9 +560,11 @@ export class Client {
    * every write path, so a phone whose device writer had not been enrolled
    * showed a full-screen wall instructing its owner to run a command-line
    * tool they do not have. A product surface must never say that. It now
-   * describes the situation and nothing else — `app/src/auth/enrollment.ts`
-   * turns it into a sentence for a person, and the CLI's own `enroll`
-   * subcommand is documented in `USAGE` where an operator will look for it.
+   * describes the situation and nothing else — `web/src/v2/enrollment.ts`
+   * turns it into a sentence for a person (as the retired Expo client's
+   * `app/src/auth/enrollment.ts` did before it, preserved at tag
+   * app-expo-final), and the CLI's own `enroll` subcommand is documented in
+   * `USAGE` where an operator will look for it.
    */
   get writerId(): string {
     if (this.st.writerId === null) {

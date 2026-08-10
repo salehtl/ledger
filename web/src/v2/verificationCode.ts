@@ -1,6 +1,7 @@
 /**
  * Reading a forward-confirmation code out of a **held, untrusted** message —
- * ported from `app/src/lib/verificationCode.ts`.
+ * ported from the retired Expo client's `app/src/lib/verificationCode.ts`
+ * (removed 2026-08-10, preserved at tag `app-expo-final`).
  *
  * # Why this exists at all
  *

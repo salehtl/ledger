@@ -140,9 +140,13 @@ func TestTheDatabaseRefusesABankNameGoWouldRefuse(t *testing.T) {
 }
 
 // bankNameCase is one row of the shared client/server conformance fixture. Both
-// this package and app/src/lib/bank.test.ts read the SAME file, so a grammar
+// this package and web/src/v2/bank.test.ts read the SAME file, so a grammar
 // change made to one side and not the other fails the other side's suite. See
 // testdata/bank_names.json's own "why" for the defect it closes.
+//
+// The client half used to be the retired Expo client's app/src/lib/bank.test.ts
+// (preserved at tag app-expo-final); it moved to web/ when app/ was removed on
+// 2026-08-10, because the gate has to sit on the client that ships.
 type bankNameCase struct {
 	Name       string `json:"name"`
 	Input      string `json:"input"`

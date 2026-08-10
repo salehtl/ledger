@@ -206,6 +206,11 @@ func writeJSON(path string, v any, mode os.FileMode) error {
 // committed" rule. Real corpora and private keys go to spike/phase2/work, which
 // is gitignored in its entirety; anywhere under conformance/ or docs/ is a
 // committed tree and a mistake worth refusing rather than warning about.
+//
+// `/app/` stays in the list even though `app/` was removed on 2026-08-10 (the
+// retired Expo client, preserved at tag app-expo-final): the check is on the
+// path segment, not on the directory existing, so the entry costs nothing and
+// keeps the rail correct if the name is ever reused.
 func refuseCommittedPath(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {

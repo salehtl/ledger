@@ -76,8 +76,9 @@
  *
  * # Host imports
  *
- * None. `SqlDriver` is a type-only import, so this module is reachable from
- * Hermes; the app supplies `expoDriver`.
+ * None. `SqlDriver` is a type-only import, so this module is reachable from a
+ * browser or from Hermes; the client app supplies the driver
+ * (`openBrowserDriver` in the PWA).
  */
 
 import { Client, HardStopError, type PullReport } from "./client";
@@ -167,11 +168,16 @@ const shared = new Map<string, SqlDriver>();
 /**
  * The one handle for `key`, opening it on first use.
  *
- * `expo-sqlite`'s `openDatabaseSync` has no connection cache: every call is a
+ * `expo-sqlite`'s `openDatabaseSync` had no connection cache: every call was a
  * new native handle, and Phase 0 leaked one per button press. There is no
- * mechanism in the API that prevents that, so the mechanism is this — a module
- * that hands the same object back and a rule that nothing calls `expoDriver`
- * except through it.
+ * mechanism in such an API that prevents that, so the mechanism is this — a
+ * module that hands the same object back and a rule that nothing opens a native
+ * driver except through it.
+ *
+ * The PWA's `openBrowserDriver` is not opened through here (sql.js has one
+ * in-process handle by construction), so today only the tests below exercise
+ * this. It is kept because the constraint returns with any native client; the
+ * retired Expo client is preserved at tag `app-expo-final`.
  *
  * Keyed by database name rather than being a single slot, because a test
  * process legitimately opens several and the rule is *one per database*, not

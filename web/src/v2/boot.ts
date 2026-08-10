@@ -1,8 +1,9 @@
 /**
  * What happens between opening the tab and seeing the app.
  *
- * A port of `app/src/app/bootstrap.ts`, which is the module that learned these
- * orderings the hard way. Framework-free and fully injectable, because the
+ * A port of `app/src/app/bootstrap.ts` (the retired Expo client, removed
+ * 2026-08-10 and preserved at tag `app-expo-final`), which is the module that
+ * learned these orderings the hard way. Framework-free and fully injectable, because the
  * interesting cases here are failures — an enrolment that could not finish, a
  * chain break, an account deleted on another device — and none of them is
  * reachable from a React test that has to stand up a real `Client` first.

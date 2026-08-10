@@ -1,5 +1,7 @@
 /**
- * A port of `app/src/screens/budget/source.test.ts`, assertion for assertion.
+ * A port of the retired Expo client's `app/src/screens/budget/source.test.ts`
+ * (removed 2026-08-10, preserved at tag `app-expo-final`), assertion for
+ * assertion.
  *
  * Two things changed and nothing else: `bun:test` became `vitest`, and
  * `bunDriver(":memory:")` became the browser driver this app actually ships —

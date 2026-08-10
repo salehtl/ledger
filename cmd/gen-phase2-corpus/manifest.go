@@ -51,13 +51,16 @@ type CheckDigests struct {
 	// device's total is lower" into a checkable fact.
 	HomeNullCount int `json:"home_null_count"`
 	// SelfTest is the DUAL-EXECUTOR pin on the digest itself: fabricated inputs
-	// and the digest this Go function produced for them. app/src/bench/digest.ts
-	// recomputes it and must agree byte for byte.
+	// and the digest this Go function produced for them. The retired Expo
+	// client's digest mirror (app/src/bench/digest.ts, preserved at tag
+	// app-expo-final) recomputed it and had to agree byte for byte.
 	//
 	// Without it the two implementations could disagree and nothing would notice
 	// until Task 28 reported a mismatch that looked like a fold bug. The inputs
 	// are invented, so this field is safe in a committed file — which is exactly
-	// why it can be committed at all, unlike the real months above.
+	// why it can be committed at all, unlike the real months above. No second
+	// executor of this digest lives in the tree now, so the field is the
+	// published pin a future one would be checked against.
 	SelfTest DigestSelfTest `json:"self_test"`
 }
 
@@ -223,8 +226,10 @@ func collect(m map[monthBucket]int64, month string) [][2]string {
 	return out
 }
 
-// digestMonth is the preimage the manifest documents, and the one
-// app/src/bench/digest.ts must reproduce byte for byte.
+// digestMonth is the preimage the manifest documents, and the one the retired
+// Expo client's digest mirror (app/src/bench/digest.ts, preserved at tag
+// app-expo-final) had to reproduce byte for byte. Any future second executor of
+// this digest is held to the same preimage, which is why it is spelled out.
 func digestMonth(salt []byte, month string, buckets [][2]string) string {
 	h := sha256.New()
 	h.Write(salt)

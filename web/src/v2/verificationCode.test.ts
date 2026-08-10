@@ -1,8 +1,9 @@
 /**
  * The verification-code reader, pinned against hostile input.
  *
- * Ported from `app/src/lib/verificationCode.test.ts` (the Expo app is retired on
- * this branch) and then extended for the provider-agnostic rework: recognition
+ * Ported from `app/src/lib/verificationCode.test.ts` (the Expo client, removed
+ * 2026-08-10 and preserved at tag `app-expo-final`) and then extended for the
+ * provider-agnostic rework: recognition
  * by user choice rather than by a Google domain list, and a link host taken from
  * the message's own VERIFIED signing domain rather than from a literal in the
  * pattern.

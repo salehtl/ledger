@@ -39,10 +39,11 @@
 
 // The CLI's platform install. `../store/open` would pull this in anyway, but an
 // entrypoint should say which runtime it is rather than inherit one from
-// whichever module it happened to import — `app/src/platform/index.ts` and
-// `web/src/v2/session.ts` both install theirs explicitly at boot, and this is
-// the third entrypoint. See `platform.registry.ts` for why the install stopped
-// being automatic.
+// whichever module it happened to import — `web/src/v2/session.ts` installs
+// its own explicitly at boot, and this is the other entrypoint. (The retired
+// Expo client's `app/src/platform/index.ts` was a third; it went with `app/` on
+// 2026-08-10 and is preserved at tag app-expo-final.) See
+// `platform.registry.ts` for why the install stopped being automatic.
 import "../platform";
 
 import { INVARIANT_IDS, type Violation } from "../invariants/check";

@@ -78,8 +78,8 @@ var ErrBatchedCorpus = errors.New(
 
 // corpusManifest is the committed description of a generated corpus. It carries
 // counts, sizes, public keys and SALTED DIGESTS — never an amount, never a
-// merchant. See cmd/gen-phase2-corpus for how it is produced and
-// conformance/crypto/README.md for why the digests are salted.
+// merchant. See cmd/gen-phase2-corpus for how it is produced, and that
+// package's main.go doc comment for why the digests are salted.
 type corpusManifest struct {
 	Count           int    `json:"count"`
 	RecordSize      int    `json:"record_size"`

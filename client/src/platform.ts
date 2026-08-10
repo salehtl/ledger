@@ -34,10 +34,13 @@
  *
  * {@link bunPlatform} needs `node:zlib` and `node:crypto`, which are imported
  * statically because that is the only form Bun, `tsc` and Metro all agree on.
- * Metro will try to resolve them for the app bundle, so `app/`'s
- * `metro.config.js` must either map them to `{ type: "empty" }` in
+ * Metro will try to resolve them for a React Native bundle, so a native
+ * client's `metro.config.js` must either map them to `{ type: "empty" }` in
  * `resolveRequest`, or shadow this file with a `platform.native.ts` sibling
- * (Metro prefers the `.native` extension automatically).
+ * (Metro prefers the `.native` extension automatically). The retired Expo
+ * client did the former; `app/` was removed on 2026-08-10 and is preserved at
+ * tag `app-expo-final`, which is where a future native client should look
+ * before re-deriving this.
  *
  * Under either arrangement the auto-install below **measures** whether the
  * builtins actually arrived rather than sniffing for a runtime, so a stubbed

@@ -104,7 +104,7 @@ export interface SqliteStoreOptions {
 
 /**
  * A {@link Store} over any {@link SqlDriver} — `bunDriver` in `client/`'s
- * tests, `expoDriver` on the device.
+ * tests, `openBrowserDriver` in the PWA.
  *
  * The {@link SecretStore} is NOT optional. The session token and the Ed25519
  * private key are the two fields that must never reach the database, and an

@@ -1,7 +1,9 @@
 /**
  * The 50/30/20 read, over the local projection.
  *
- * A port of `app/src/screens/budget/source.ts` — the same SQL, the same
+ * A port of the retired Expo client's `app/src/screens/budget/source.ts`
+ * (removed 2026-08-10, preserved at tag `app-expo-final`) — the same SQL, the
+ * same
  * `bigint` totals, the same `usable` gate — with the import paths pointed at
  * the web tree. Framework-free and over a `SqlDriver`, so it is testable
  * without React and without a network.

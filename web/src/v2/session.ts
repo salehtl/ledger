@@ -71,8 +71,10 @@
  * `store/driver.ts` (which is how the child programs `outbox.test.ts` and
  * `engine.test.ts` spawn get one), plus `client/test/preload.ts` for `bun test`.
  * The rule that falls out of it, and the one to keep: AN ENTRYPOINT INSTALLS
- * ITS PLATFORM. `app/src/platform/index.ts` does it for Hermes, `initV2` does
- * it here, and `client/`'s three host doors do it for Bun.
+ * ITS PLATFORM. `initV2` does it here and `client/`'s three host doors do it
+ * for Bun. (The retired Expo client's `app/src/platform/index.ts` did it for
+ * Hermes; `app/` was removed 2026-08-10 and is preserved at tag
+ * `app-expo-final`. Every `app/src` path named below is in that tag.)
  *
  * # Where the secrets go
  *
@@ -84,9 +86,9 @@
  * those two values never enter the SQLite bytes that get exported to IndexedDB
  * (and, in Phase 3, backed up). The key naming is
  * `client/src/store/sqlite.ts`'s `SECRET_SESSION` / `SECRET_WRITER`, imported
- * rather than re-spelled, and `writer_id` matches `app/src/auth/keys.ts`'s
- * {@link SECRET_WRITER_ID} — so a future native client and this PWA agree on
- * what a device's writer identity is called.
+ * rather than re-spelled, and `writer_id` matches the name
+ * `app/src/auth/keys.ts` used for {@link SECRET_WRITER_ID} — so a future native
+ * client and this PWA agree on what a device's writer identity is called.
  */
 
 import { setPlatform } from "@ledger/client/platform.registry";
@@ -127,7 +129,7 @@ export function fromBase64Url(s: string): Uint8Array {
 
 /**
  * Base64url (a WebAuthn field, and a JWK `x`) and standard base64 (this API's
- * own binary fields) compared as bytes — ported from
+ * own binary fields) compared as bytes — ported from the retired Expo client's
  * `app/src/auth/enrollment.ts`.
  */
 function keyFingerprint(value: string): string {
@@ -301,9 +303,10 @@ export type PasskeyFailureKind =
 /**
  * A passkey ceremony that did not establish a session.
  *
- * Matched STRUCTURALLY by {@link isPasskeyError}, for the reason
- * `app/src/auth/session.ts` gives: a bundler that ends up with two copies of a
- * module makes `instanceof` fail silently, and in the wrong direction.
+ * Matched STRUCTURALLY by {@link isPasskeyError}, for the reason the retired
+ * Expo client's `app/src/auth/session.ts` gave: a bundler that ends up with two
+ * copies of a module makes `instanceof` fail silently, and in the wrong
+ * direction.
  * `status`/`code` are copied off the cause so a caller can still see the
  * server's own answer.
  */
@@ -417,8 +420,9 @@ export type EnrollmentKind =
   | "misconfigured";
 
 /**
- * A failure of ENROLMENT, as opposed to of the session — ported from
- * `app/src/auth/enrollment.ts`. Its own class because the two halves of
+ * A failure of ENROLMENT, as opposed to of the session — ported from the
+ * retired Expo client's `app/src/auth/enrollment.ts`. Its own class because the
+ * two halves of
  * "signing in" fail differently, and the session half already succeeded.
  */
 export class EnrollmentError extends Error {
@@ -521,7 +525,8 @@ export function webSecretStore(namespace: string): SecretStore {
 }
 
 // ---------------------------------------------------------------------------
-// Device-writer enrolment (ported from app/src/auth/{keys,enrollment}.ts)
+// Device-writer enrolment (ported from the retired Expo client's
+// app/src/auth/{keys,enrollment}.ts)
 // ---------------------------------------------------------------------------
 
 /**
@@ -667,8 +672,9 @@ export interface V2Handle {
    * `signedIn() === true` and no writer — a state in which every write throws
    * `"this device is not set up to make changes yet"` and which nothing else
    * repairs. That is commit `8365532`'s regression one step removed, and the
-   * repair is the same one `app/src/app/bootstrap.ts` performs: call this at
-   * every boot, before the first sync and before anything that could author.
+   * repair is the same one the retired Expo client's `app/src/app/bootstrap.ts`
+   * performed: call this at every boot, before the first sync and before
+   * anything that could author.
    *
    * Free on the already-enrolled path — {@link ensureDeviceWriter}'s fast path
    * makes no network call — which is what makes an unconditional call at every

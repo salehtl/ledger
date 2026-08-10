@@ -406,6 +406,10 @@ func TestRefuseCommittedPath(t *testing.T) {
 		"conformance/crypto/corpus.bin",
 		"docs/superpowers/specs/corpus.bin",
 		"internal/v2/blob/corpus.bin",
+		// `app/` was removed 2026-08-10 (the retired Expo client, preserved at
+		// tag app-expo-final). The entry stays: refuseCommittedPath rejects on
+		// the path SEGMENT, not on the directory existing, and a target that is
+		// absent today is still one no corpus may ever be written to.
 		"app/src/bench/corpus.bin",
 		"client/src/corpus.bin",
 	} {

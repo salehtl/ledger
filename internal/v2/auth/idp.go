@@ -632,10 +632,12 @@ func (v *oidcVerifier) checkClaims(c idClaims, opts VerifyOpts) error {
 // could never rotate its inbound address, and any later path that binds one —
 // DELETE /api/v1/account is the next, and it is an App Store requirement —
 // would have inherited the same wall. Found by the client leg (Task 13), which
-// recorded it rather than "fixing" it on its own side; see
-// app/src/auth/idp.ts's expectedNonceClaim, which computes the same value from
-// the same rule and is pinned to the same published SHA-256 vector as the test
-// here, so the two implementations are shown to agree.
+// recorded it rather than "fixing" it on its own side: the retired Expo
+// client's expectedNonceClaim (app/src/auth/idp.ts, preserved at tag
+// app-expo-final) computed the same value from the same rule and was pinned to
+// the same published SHA-256 vector as the test here, so the two
+// implementations were shown to agree. No client in this tree carries that
+// mirror today, so the vector below is now the only pin on this rule.
 //
 // # Two things this deliberately is not
 //

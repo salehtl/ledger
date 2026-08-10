@@ -30,8 +30,9 @@
  * `cli/main.ts`; `store/open.ts`, `store/file.ts` and `store/driver.ts` (all
  * host-only already, and the door the child programs `outbox.test.ts` and
  * `engine.test.ts` spawn come in through); `test/preload.ts` for `bun test`;
- * `app/src/platform/index.ts` for Hermes; and `initV2` in
- * `web/src/v2/session.ts` for the browser.
+ * and `initV2` in `web/src/v2/session.ts` for the browser. (The retired Expo
+ * client installed a Hermes one in `app/src/platform/index.ts`; it went with
+ * `app/` on 2026-08-10 and is preserved at tag app-expo-final.)
  *
  * A new entrypoint that forgets gets a runtime "no Platform installed" from the
  * first hash it takes, not a compile error. Nothing enforces this — it is a

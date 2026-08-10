@@ -1,6 +1,7 @@
 /**
- * A port of the read half of `app/src/lib/transactions.test.ts`, over the
- * browser driver this app ships.
+ * A port of the read half of the retired Expo client's
+ * `app/src/lib/transactions.test.ts` (removed 2026-08-10, preserved at tag
+ * `app-expo-final`), over the browser driver this app ships.
  *
  * The rows are NOT inserted into `txn` by hand. Phase 1's exit test went green
  * over a production gap precisely because it performed setup production was

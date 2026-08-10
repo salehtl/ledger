@@ -32,9 +32,10 @@ const root = new URL("../../../", import.meta.url).pathname;
 
 /**
  * The trees a NUL is a defect in. Everything here is hand-written source.
- * `frontend/`, `app/`, `spike/` and `conformance/` are deliberately out of
- * scope: they hold image assets and binary conformance blobs whose whole
- * purpose is to contain arbitrary bytes.
+ * `frontend/`, `spike/` and `conformance/` are deliberately out of scope: they
+ * hold image assets and binary conformance blobs whose whole purpose is to
+ * contain arbitrary bytes. (`app/` was a fourth until it was removed on
+ * 2026-08-10; it is preserved at tag `app-expo-final`.)
  */
 const ROOTS = ["client/src", "web/src", "internal", "cmd"];
 

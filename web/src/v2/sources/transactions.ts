@@ -2,9 +2,10 @@
  * The transaction list: what it asks the local SQLite for, what comes back, and
  * how a row presents itself.
  *
- * A port of the READ half of `app/src/lib/transactions.ts` plus
- * `app/src/screens/transactions/source.ts`'s `sqlTxnSource`, with the import
- * paths pointed at the web tree. Most of the write half of the native source
+ * A port of the READ half of the retired Expo client's
+ * `app/src/lib/transactions.ts` plus `app/src/screens/transactions/source.ts`'s
+ * `sqlTxnSource` (removed 2026-08-10, preserved at tag `app-expo-final`), with
+ * the import paths pointed at the web tree. Most of the write half of the native source
  * (`split`, `recomputeHome`) is still deliberately NOT here: those author ops
  * through an outbox, and a read-only screen that carried half-connected
  * mutation seams would be the worse kind of stub.
