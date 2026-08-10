@@ -758,7 +758,7 @@ func (d *Dict) Since(ctx context.Context, since int64) (Delta, error) {
 		return Delta{}, err
 	}
 	out.Entries = entries
-	out.Version = max64(out.Version, maxVer)
+	out.Version = max(out.Version, maxVer)
 
 	// A retraction may name ONLY an entry that actually shipped once
 	// (published_at is never cleared). Anything else would tell the client
@@ -778,7 +778,7 @@ func (d *Dict) Since(ctx context.Context, since int64) (Delta, error) {
 			return Delta{}, err
 		}
 		out.Removed = removed
-		out.Version = max64(out.Version, maxVer)
+		out.Version = max(out.Version, maxVer)
 	}
 	return out, nil
 }
@@ -1134,19 +1134,12 @@ func scanVersioned(rows pgx.Rows) ([]Entry, int64, error) {
 			return nil, 0, fmt.Errorf("dict: scan: %w", err)
 		}
 		out = append(out, e)
-		maxVer = max64(maxVer, v)
+		maxVer = max(maxVer, v)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("dict: scan: %w", err)
 	}
 	return out, maxVer, nil
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func nullText(s string) any {
