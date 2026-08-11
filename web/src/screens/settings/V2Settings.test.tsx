@@ -602,6 +602,37 @@ describe("V2Settings", () => {
     expect(specs[1]).toEqual({ type: "bank_declared", payload: { bank: "dib", active: false } });
   });
 
+  it("settles behind a bank declaration: the flush buys an 'authored' sync", async () => {
+    const user = userEvent.setup();
+    const writer = { pending: [], enqueueMany: () => {}, flush: async () => {} };
+    db.prepare("INSERT INTO bank (name,ord,active) VALUES (?,?,?)").run("dib", 0, 1);
+    const { runs } = wrap({ writer, templates: async () => [{ id: "dib", templates: 2 }, { id: "enbd", templates: 1 }] });
+    await openSub(/^Your banks/);
+
+    await user.click(await screen.findByTestId("settings-bank-row-enbd"));
+    await waitFor(() => expect(runs).toContain("authored"));
+  });
+
+  it("settles behind the plan save: the flush buys an 'authored' sync so every screen re-reads", async () => {
+    const user = userEvent.setup();
+    let releaseFlush: () => void = () => undefined;
+    const writer = {
+      pending: [],
+      enqueueMany: () => {},
+      flush: () =>
+        new Promise<void>((r) => {
+          releaseFlush = r;
+        }),
+    };
+    const { runs } = wrap({ writer });
+    await planReady();
+    await user.click(screen.getByRole("button", { name: /save plan/i }));
+    // The settle waits for the upload; enqueue alone must not trigger it.
+    expect(runs).not.toContain("authored");
+    releaseFlush();
+    await waitFor(() => expect(runs).toContain("authored"));
+  });
+
   it("shows a second bank as selected the moment it is toggled, before any sync round-trip", async () => {
     // The projection does not move until a sync folds (writer.ts:28-30), so a
     // writer double whose `pending` array only ever grows models the real

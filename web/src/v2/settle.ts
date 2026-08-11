@@ -29,18 +29,53 @@ import { useV2 } from "./BootGate";
 import type { SyncTrigger } from "./engine";
 import { invalidateAfterSync } from "./queries";
 
+/**
+ * Single-flight per QueryClient, with a trailing rerun.
+ *
+ * Two gaps a naive sync-then-invalidate leaves open, both found in review:
+ *  - A settle arriving while another settle's sync is mid-flight would JOIN it
+ *    (`SyncEngine.sync` returns the in-flight promise). A joined run that had
+ *    already passed its pull folds WITHOUT the newly-flushed op. So arrivals
+ *    during a sync set `rerun`, and the loop buys them one more sync.
+ *  - The same join happens against a sync some other trigger started before
+ *    the settle existed — `inFlight()` at entry seeds the same rerun.
+ * One invalidation at the end covers the whole burst: the authoring screens
+ * already invalidated for their overlays; this one is for the fold.
+ */
+const settles = new WeakMap<QueryClient, { current: Promise<void>; rerun: boolean }>();
+
 /** Sync (pull + fold what the server now holds), THEN re-read every projection query. */
-export async function settleAuthored(
+export function settleAuthored(
   run: (trigger: SyncTrigger) => Promise<void>,
   qc: QueryClient,
+  inFlight: () => boolean = () => false,
 ): Promise<void> {
-  try {
-    await run("authored");
-  } catch {
-    // The app-level gate never rejects; a raw coordinator can. Either way the
-    // re-read below must still happen — the authored overlay is on this device.
+  const held = settles.get(qc);
+  if (held !== undefined) {
+    held.rerun = true;
+    return held.current;
   }
-  await invalidateAfterSync(qc);
+  const state = { current: Promise.resolve(), rerun: inFlight() };
+  state.current = (async () => {
+    try {
+      for (;;) {
+        try {
+          await run("authored");
+        } catch {
+          // The app-level gate never rejects; a raw coordinator can. Either
+          // way the re-read below must still happen — the authored overlay is
+          // on this device.
+        }
+        if (!state.rerun) break;
+        state.rerun = false;
+      }
+      await invalidateAfterSync(qc);
+    } finally {
+      settles.delete(qc);
+    }
+  })();
+  settles.set(qc, state);
+  return state.current;
 }
 
 /**
@@ -55,6 +90,10 @@ export function useSettleAuthored(): () => Promise<void> {
   const v2 = useV2();
   return useCallback(() => {
     if (v2 === null) return invalidateAfterSync(qc);
-    return settleAuthored((trigger) => v2.sync.run(trigger), qc);
+    return settleAuthored(
+      (trigger) => v2.sync.run(trigger),
+      qc,
+      () => v2.coordinator.progress.phase !== "idle",
+    );
   }, [v2, qc]);
 }

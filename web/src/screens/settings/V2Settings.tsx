@@ -551,14 +551,20 @@ export function V2Settings({
       );
       await invalidateAfterSync(qc);
       // Not awaited: the op is durable the moment it is queued, and a screen
-      // that stalled on the network would be unusable offline.
-      writer.flush().catch(() => {
-        setSplitNote("Saved on this device — it will sync when you're back online.");
-      });
+      // that stalled on the network would be unusable offline. The settle
+      // matters MOST here of all the authoring paths: `budget_split_set` has
+      // no authored overlay, so until a fold lands, Home and Budget keep
+      // showing the old plan.
+      writer.flush().then(
+        () => void settle(),
+        () => {
+          setSplitNote("Saved on this device — it will sync when you're back online.");
+        },
+      );
     } finally {
       setSplitSaving(false);
     }
-  }, [seededSplit, savedSplit, savedTotal, currency, writer, qc]);
+  }, [seededSplit, savedSplit, savedTotal, currency, writer, qc, settle]);
 
   /**
    * The banks, in two halves that must not be confused: what ledger can READ
