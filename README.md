@@ -1,87 +1,18 @@
 # ledger
 
-Two apps live in this repository, and both run on the same box.
-
-**ledger 2.0** is the product: a self-hosted, multi-user budgeting PWA for a
-small closed beta. **ledger 1.0** is the single-user app that came first. It is
-still deployed and still used every day.
-
-| | **ledger 2.0 (v2)** | **ledger 1.0 (v1)** |
-|---|---|---|
-| Binary | `cmd/ledgerd` | `cmd/ledger` |
-| Backend | `internal/v2/**` | `internal/**` (not `v2`) |
-| Frontend | `web/` | `frontend/` |
-| Embedded bundle | `internal/v2/webui/dist` | `internal/web/dist` |
-| Database | PostgreSQL (`ledger_v2`) | SQLite (`/var/lib/ledger/ledger.db`) |
-| Event source | SMTP on `:25`, users forward mail | IMAP, one mailbox, read-only |
-| Reach | **public**: `app.sirdab.ae`, `api.sirdab.ae` | tailnet only |
-| Service | `ledgerd.service` | `ledger.service` |
-| Gate | `scripts/v2-check.sh` | `go test ./...` + `cd frontend && bun run test` |
-
-Decide which app a change belongs to before you start. The two share a Go
-module, a `go.mod` and a git history, and almost nothing else.
-
-`client/` is neither app. It is the shared TypeScript library whose normalizer
-and template executor must produce **byte-identical** output to their Go twins
-in `internal/v2/norm` and `internal/v2/tmpl`; `conformance/` holds the fixtures
-that prove it, and `scripts/v2-check.sh` is the only thing that runs them.
-
----
-
-## ledger 2.0
-
-Users sign up with a **passkey** and get their own inbound mail address. They
-forward their banks' per-transaction emails to it. `ledgerd` receives that mail
-over SMTP, verifies its origin, parses it, and appends the result to an
-**append-only op log** that syncs to every device the user owns. The React PWA
-in `web/` is embedded in the binary.
-
-The client is the only reader of a user's data. Phase 3 seals the op log: the
-server receives a sealed blob and holds no key, so no feature may depend on the
-server reading a transaction, an amount or a merchant.
-
-### Build & run
-
-The web app builds into the directory Go embeds, so build it **before**
-`go build`.
-
-```bash
-cd web && bun install && bun run build     # writes ../internal/v2/webui/dist/
-CGO_ENABLED=0 go build -o ledgerd ./cmd/ledgerd
-```
-
-`cmd/ledgerd/main.go` dispatches on `os.Args[1]` **before** flag parsing, so the
-mode always comes first. There are eleven modes: `serve`, `relay`, `verify`,
-`seed-dictionary`, `seed-templates`, `purge-user`, `record-consent`,
-`parse-rate`, `mint-invite`, `load-corpus`, `vapid-keys`.
-
-### The gate
-
-```bash
-bash scripts/v2-check.sh     # this repo has no CI; this script IS the build
-```
-
-It boots one throwaway Postgres cluster, then runs the v2 Go tests
-(`./internal/v2/...`, `./cmd/ledgerd`, and `./internal/importer` — a v1 package,
-because it is the Go half of the import conformance vectors), the `client/`
-tests, the web tests and the cross-executor conformance suites. It does **not**
-run the rest of v1.
-
-### Read next
-
-- [`deploy/README-v2.md`](deploy/README-v2.md) — the operator runbook, written to be read at 2am
-- [`docs/superpowers/specs/2026-08-07-v2-pwa-direction.md`](docs/superpowers/specs/2026-08-07-v2-pwa-direction.md) — the PWA direction
-- [`docs/superpowers/plans/`](docs/superpowers/plans/) — the phase plans
-
----
-
-## ledger 1.0
-
 A private, self-hosted, real-time budgeting PWA for one user, reachable only
 over Tailscale. One Go binary watches a dedicated IMAP mailbox, parses each
 transaction email, categorizes it (rules first, AI only as a fallback), stores
 it in SQLite, and serves a mobile React PWA showing live budget state against a
 50/30/20 plan.
+
+> **ledger 2.0 lives at `github.com/salehtl/ledgerd` since 2026-08-11.** The
+> multi-user app used to share this repository until that date. The tag
+> **`ledger-v2-final`** is the split point in both histories: here it marks
+> `c21a1fe`, the last commit that still held v2; in salehtl/ledgerd it marks the
+> filtered rewrite of that same commit, under a different hash, because
+> filtering rewrites every commit it keeps. This repository is ledger 1.0 only
+> now — nothing here builds, tests or deploys v2.
 
 > **Scope:** one user on one box (`dinosaur`). Not multi-tenant, not public.
 > Amounts are AED; money is stored as integer **fils** (AED × 100), never a
@@ -114,7 +45,7 @@ Design principles (the full list lives in [`CLAUDE.md`](CLAUDE.md)):
   only data leaving the box is a bare merchant string sent to the AI, and that
   path is disableable. Secrets come from the environment, never config files.
 
-### Features
+## Features
 
 - 50/30/20 budget (need / want / saving) with envelopes and per-category targets
 - Accounts and balances, with check-ins and manual adjustments
@@ -129,7 +60,7 @@ Design principles (the full list lives in [`CLAUDE.md`](CLAUDE.md)):
 - Parse-success drift monitoring with SSE + Web Push alerts
 - Installable PWA (offline shell, pull-to-refresh)
 
-### Quick start
+## Quick start
 
 The frontend builds to static assets that Go embeds, so **build the frontend
 before `go build`**.
@@ -151,7 +82,7 @@ Open `http://127.0.0.1:8080/` (or the Tailscale HTTPS URL in production).
 `internal/web/dist/` is a **committed build artifact** — rebuild it whenever the
 frontend source changes so the embedded bundle stays in sync.
 
-### CLI
+## CLI
 
 `cmd/ledger/main.go` dispatches on the first argument before flag parsing:
 
@@ -162,7 +93,7 @@ frontend source changes so the embedded bundle stays in sync.
 | `ledger compact [-config path]` | Compress stored raw email bodies, then `VACUUM` the database |
 | `ledger vapid-keys` | Generate a VAPID keypair for Web Push (prints env vars) |
 
-### Configuration
+## Configuration
 
 Non-secret settings come from TOML (`-config path`); **secrets are environment
 only** and are never read from the file. See
@@ -205,7 +136,7 @@ Runtime behaviour — auto-categorize, AI on or off, AI auto-accept and its
 confidence threshold, the AI spend cap — and the budget plan are edited live
 from the PWA Settings screen and stored in the database, not in the TOML.
 
-### HTTP API
+## HTTP API
 
 Standard library routing (Go 1.22 method+pattern). All endpoints are under
 `/api`, and unknown `/api/*` returns 404 so the SPA fallback never swallows API
@@ -213,7 +144,7 @@ calls. There are ~85 of them, one file per resource — read
 [`internal/server/`](internal/server/) rather than a table here, which went
 stale the first week it existed.
 
-### Architecture
+## Architecture
 
 The pipeline is wired in `cmd/ledger/main.go`. Packages under `internal/`:
 
@@ -247,18 +178,15 @@ before building UI.
 cd frontend && bun run dev
 ```
 
----
-
 ## Tests
 
 ```bash
-go test ./...                # every Go package, BOTH apps
+go test ./...                # every Go package
 go test ./... -race          # with the race detector
-cd web && bun run test       # v2 frontend (vitest, jsdom)
-cd frontend && bun run test  # v1 frontend (vitest, jsdom)
-cd client && bun test        # the shared TypeScript library
-bash scripts/v2-check.sh     # the v2 gate — v2 packages only, never all of v1
+cd frontend && bun run test  # the PWA (vitest, jsdom)
 ```
+
+There is no CI service. The gate is `go test ./...` plus the frontend suite.
 
 Go tests live beside the code (`*_test.go`); frontend tests are `*.test.ts(x)`
 next to components. Frontend vitest is pinned to a single non-parallel fork —
@@ -267,17 +195,18 @@ don't switch it back to parallel.
 ## Deployment
 
 `dinosaur` is both the dev box and the production server, so deploy steps run
-locally, and both services run at the same time.
+locally. `ledger.service` binds `127.0.0.1:8080` behind `tailscale serve`, with
+SQLite at `/var/lib/ledger/ledger.db`. Runbook:
+[`deploy/README.md`](deploy/README.md).
 
-- **v2** — `ledgerd.service`, public on `:443` and SMTP `:25`, Postgres
-  `ledger_v2`. Runbook: [`deploy/README-v2.md`](deploy/README-v2.md).
-- **v1** — `ledger.service`, `127.0.0.1:8080` behind `tailscale serve`, SQLite
-  at `/var/lib/ledger/ledger.db`. Runbook: [`deploy/README.md`](deploy/README.md).
+`ledgerd.service` also runs on the same box. It is ledger 2.0 and is built and
+deployed from `github.com/salehtl/ledgerd`, not from here. A deploy from this
+repository must never take it down.
 
 ## Documentation
 
-- [`CLAUDE.md`](CLAUDE.md) — architecture, principles and conventions for both apps (authoritative for contributors)
+- [`CLAUDE.md`](CLAUDE.md) — architecture, principles and conventions (authoritative for contributors)
 - [`AGENTS.md`](AGENTS.md) — the short form of the same
-- [`deploy/README-v2.md`](deploy/README-v2.md) · [`deploy/README.md`](deploy/README.md) — deployment runbooks
+- [`deploy/README.md`](deploy/README.md) — the deployment runbook
 - [`docs/superpowers/`](docs/superpowers/) — specs and per-feature implementation plans
-- [`budgeting-app-build-plan.md`](budgeting-app-build-plan.md) — the historical v1 spec (architecture §3, principles §2, milestones); v2 is specified in `docs/superpowers/specs/`
+- [`budgeting-app-build-plan.md`](budgeting-app-build-plan.md) — the authoritative spec (architecture §3, principles §2, milestones)

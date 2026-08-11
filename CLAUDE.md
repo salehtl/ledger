@@ -2,158 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Read this first: there are TWO apps in this tree
+## Read this first: this is the ledger 1.0 repository
 
-Since 2026-08-09, `main` is **ledger 2.0**, the multi-user app. The v1 single-user
-app did not go away. Both live in this one tree and both run on the box right now.
+**History.** From 2026-08-09 to 2026-08-11 this tree held two apps: ledger 1.0
+and ledger 2.0, the multi-user app. **ledger 2.0 was extracted on 2026-08-11
+into `github.com/salehtl/ledgerd`** (checkout `/root/Coding/ledgerd`, Go module
+`ledgerd`, its `internal/v2/*` flattened to `internal/*`). The tag
+**`ledger-v2-final`** marks the split point here: `c21a1fe`, the last commit
+that still held v2. The same tag exists in salehtl/ledgerd on the filtered
+rewrite of that commit, under a different hash.
 
-| | **ledger 2.0 (v2)** | **ledger 1.0 (v1)** |
-|---|---|---|
-| Binary | `cmd/ledgerd` | `cmd/ledger` |
-| Backend | `internal/v2/**` | `internal/**` (not `v2`) |
-| Frontend | `web/` | `frontend/` |
-| Embedded bundle | `internal/v2/webui/dist` | `internal/web/dist` |
-| Database | PostgreSQL (`ledger_v2`) | SQLite (`/var/lib/ledger/ledger.db`) |
-| Event source | SMTP on `:25`, users forward mail | IMAP, one mailbox, read-only |
-| Reach | **public**: `app.sirdab.ae`, `api.sirdab.ae` | tailnet only |
-| Service | `ledgerd.service` | `ledger.service` |
-| Gate | `scripts/v2-check.sh` | `go test ./...` + `cd frontend && bun run test` |
+So: **v2 work does not belong here.** If a task mentions `ledgerd`, passkeys,
+SMTP ingest, the op log, Postgres, `web/`, `client/` or the conformance suites,
+it belongs in `/root/Coding/ledgerd`. This repository builds one binary,
+`cmd/ledger`, and one frontend, `frontend/`. Both v2's `ledgerd.service` and
+v1's `ledger.service` still run on this box at the same time; a change here can
+only ever affect `ledger.service`.
 
-**Work out which app a task belongs to before you touch anything.** The two share
-a module, a `go.mod` and a git history, and almost nothing else. A v2 change never
-belongs in `internal/parse`, and a v1 change never belongs in `internal/v2`.
-
-Branches: `main` (both apps, v2 is the product) · `ledger-v1` (the v1 line as it
-stood at the handover). Everything else was merged and pruned 2026-08-10; the
-retired Expo client lives at tag `app-expo-final`.
-
-`client/` is neither app: it is the shared TypeScript library that must agree
-byte-for-byte with the Go side (see "Dual executors" below). The abandoned Expo
-native client that used to sit in `app/` was **deleted on 2026-08-10** and is
-kept at the tag `app-expo-final` (pushed to `origin`) — check it out there if you
-ever need it; do not restore it into the tree.
+Branches: `main` (this app) · `ledger-v1` (the v1 line as it stood at the
+2026-08-09 handover, kept as a marker). The retired v2 Expo client lives at tag
+`app-expo-final`, which both repositories carry.
 
 ---
 
-## ledger 2.0 — what it is
-
-A self-hosted, multi-user budgeting PWA for a small closed beta. Users sign up with
-a **passkey**, receive their own inbound mail address, and forward their banks'
-per-transaction emails to it. `ledgerd` receives that mail over SMTP, verifies its
-origin, parses it, and appends the result to an **append-only op log** that syncs to
-every device the user owns. The React PWA is embedded in the binary.
-
-Authoritative reading, in this order: `docs/superpowers/specs/2026-08-07-v2-pwa-direction.md`
-(the PWA direction), then the phase plans in `docs/superpowers/plans/`
-(`2026-08-01-v2-phase1-backend`, `2026-08-02-v2-phase2-client`, `2026-08-08-phase3-crypto`).
-`deploy/README-v2.md` is the operator runbook and is written to be read at 2am.
-Read the relevant plan before you extend a feature area.
-
-### Core principles (do not violate)
-
-- **The client is the only reader of a user's data.** Phase 3 seals the op log:
-  the server receives a **sealed blob** and holds no key. It checks framing, the
-  claimed position and the hash chain, and nothing else. Never write a feature
-  that needs the server to read a transaction, an amount or a merchant. Anything
-  that assumes otherwise breaks the moment sealing lands.
-- **The op log is append-only, and nothing validates its payload server-side.**
-  One client bug is therefore permanent: a malformed op becomes an anomaly on
-  every device, forever. Treat op authoring as the highest-risk code in the repo.
-- **Two roles on the database.** `ledger_migrate` owns the schema; `ledger_runtime`
-  serves and is never the owner. This is a security boundary, not tidiness —
-  `key_history` is append-only by trigger, and disabling a trigger needs only
-  ownership. **Migrations apply out of band as `ledger_migrate`, before the new
-  binary starts.** The running service cannot migrate itself.
-- **Push payloads are content-free.** "New activity" and nothing more. A body
-  composed on the server from user data rebuilds the plaintext path that the
-  encryption removes.
-- **The admin console is tailnet-only, permanently.** It shows operational data
-  only — never transactions, amounts or balances, because after sealing the
-  server cannot read them anyway. `config.CheckAdminBind` and
-  `TestTheAdminConsoleIsNotMountedOnThePublicListener` exist to stop a regression
-  here; both must keep passing, unmodified.
-- **Mail is never silently dropped.** Anything unverified or unparsed is held in
-  `quarantine` and is visible to the user, with the hold announced before expiry.
-- **Money is integer minor units.** `int64` minor units, never a float. Amounts
-  are positive; direction is separate.
-- **Secrets are environment-only** — never in the TOML. `Load` rejects the file
-  if they appear there.
-
-### Dual executors: Go and TypeScript must agree byte-for-byte
-
-The normalizer and the template executor exist **twice** — in `internal/v2/norm`
-and `internal/v2/tmpl` on the Go side, and in `client/src/` on the TypeScript
-side. They must produce identical output. `scripts/v2-check.sh` runs the
-cross-executor conformance suites (`conformance/`), and that is the only thing
-that checks it. `go test` alone passes mutations the conformance runner catches.
-If you change one executor, change both, and run the gate.
-
-### Packages (`internal/v2/`)
-
-All 30 of them: `api` (HTTP + sync), `auth` (passkeys, sessions), `pg` (Postgres
-pool + goose migrations), `pgtx` (the two pgx transaction helpers every store
-used to copy; a leaf package that never imports `pg`), `oplog` (the log format),
-`blob` (the on-the-wire envelope, size buckets and chain hash — the Phase 3 swap
-point), `smtpd` + `ingest` + `origin` + `arc` (mail receipt and origin
-verification), `addresses` (the per-user inbound mail slot and its rotation),
-`quarantine`, `budget` (the per-account admission gate — one `Gate.Admit`,
-called inside the op-log append and the quarantine hold rather than from any
-endpoint), `headroom` (the box-level disk fuse: below a free-space floor every
-durable write is refused, sign-in included), `norm` + `tmpl` + `heuristic`
-(parsing), `dict` (merchant dictionary), `samples` (the donated-sample queue
-every publish is regression tested against), `diag` (the deliberately
-unencrypted, non-content parse diagnostics), `admin` (the operator console),
-`pushv2` (Web Push), `purge` (account deletion), `relay` (backup MX), `corpus`
-(read-only streaming over a `.backup` snapshot of the v1 SQLite database),
-`config`, `verify` (a self-audit the binary runs on itself), `webui` (the
-embedded bundle), and two test-only packages, `pgtest` (throwaway clusters) and
-`authtest` (a scriptable software WebAuthn authenticator).
-
-### Build & run (v2)
-
-The web app builds into the directory Go embeds, so build it **before** `go build`.
-
-```bash
-cd web && bun install && bun run build     # writes ../internal/v2/webui/dist/
-CGO_ENABLED=0 go build -o ledgerd ./cmd/ledgerd
-```
-
-`cmd/ledgerd/main.go` dispatches on `os.Args[1]` **before** flag parsing — the mode
-always comes first. Eleven modes: `serve`, `relay`, `verify`, `seed-dictionary`,
-`seed-templates`, `purge-user`, `record-consent`, `parse-rate`, `mint-invite`,
-`load-corpus` (loads a pre-sealed benchmark corpus; refuses a database with more
-than one user), `vapid-keys` (mints a Web Push key pair; the one mode dispatched
-before `config.Load`). The dispatch table is `modeHandlers`, and
-`checkModeHandlers()` panics on every invocation if it disagrees with
-`config.Modes()`, so the two cannot drift.
-
-### The gate (v2)
-
-```bash
-bash scripts/v2-check.sh     # this repo has no CI; this script IS the build
-```
-
-It boots one throwaway Postgres cluster for the whole run, then runs the v2 Go
-tests (`./internal/v2/...`, `./cmd/ledgerd`, and `./internal/importer` — a v1
-package, because it is the Go half of the import conformance vectors), the
-`client/` tests, the web tests and the cross-executor conformance suites. The
-rest of v1 is **not** in this gate; `go test ./...` is.
-
-> **A green gate does NOT mean the deployed UI is current.** `v2-check.sh` builds
-> the web bundle into a **temp directory** by design, so it never refreshes
-> `internal/v2/webui/dist` and the tree stays clean either way. On 2026-08-09 a
-> fully green gate shipped a binary still serving the previous Settings screen.
-> Before any deploy: `cd web && bun run build`, confirm `git status` shows the
-> change, commit it, then build the binary — and prove it landed in the binary
-> itself, not in the tree:
-> `strings -a ./ledgerd | grep -c '<a-marker-from-the-new-code>'`.
-
----
-
-## ledger 1.0 — still running, still supported
-
-Saleh uses v1 every day as a PWA on his phone, over the tailnet. **It must keep
-working.** Do not delete it, and do not break its build.
+## ledger 1.0 — the app
 
 A private, self-hosted, real-time budgeting PWA for a single user. One Go binary
 watches a dedicated IMAP mailbox, parses each transaction email through a
@@ -161,7 +33,7 @@ resilient extraction cascade, categorizes it (rules first, AI only as fallback),
 stores it in SQLite, and serves a mobile React PWA showing live budget state
 against a 50/30/20 plan.
 
-`budgeting-app-build-plan.md` is the authoritative v1 spec (architecture in §3,
+`budgeting-app-build-plan.md` is the authoritative spec (architecture in §3,
 principles in §2, milestones at the end).
 
 ### Core principles (do not violate)
@@ -173,7 +45,7 @@ principles in §2, milestones at the end).
 - **Single binary, single process.** No microservices, no broker, no external DB server. The one Go binary holds the ingest worker, HTTP API, SSE stream, and embedded PWA. The PWA bundle is embedded via `embed.FS` — the server **never runs Node** at runtime.
 - **Private and least-privilege.** Reachable only over Tailscale, never public. The mailbox is opened read-only (`EXAMINE`). The only data that leaves the box is a bare merchant string to the AI, and that path is disableable. Secrets come from env / systemd, never config files.
 
-### Build & run (v1)
+### Build & run
 
 The frontend builds to static assets that Go embeds, so the frontend must be built **before** `go build`.
 
@@ -188,9 +60,9 @@ CGO_ENABLED=0 go build -o ledger ./cmd/ledger
 ./ledger -config config.toml
 ```
 
-`internal/web/dist/` is a committed build artifact. Because parallel sessions run on `main`, **rebuild the combined dist before finishing or deploying a branch** so the embedded bundle matches the frontend source.
+`internal/web/dist/` is a committed build artifact. Because parallel sessions run on `main`, **rebuild the dist before finishing or deploying a branch** so the embedded bundle matches the frontend source.
 
-### CLI subcommands (v1)
+### CLI subcommands
 
 `cmd/ledger/main.go` dispatches on `os.Args[1]` before flag parsing:
 
@@ -199,7 +71,7 @@ CGO_ENABLED=0 go build -o ledger ./cmd/ledger
 - `ledger vapid-keys` — generate a VAPID keypair for Web Push (prints env vars).
 - `ledger [-config path]` — default: run the server + ingest worker.
 
-### Architecture (v1)
+### Architecture
 
 Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + SSE + Push)**. Wiring lives in `cmd/ledger/main.go`.
 
@@ -217,7 +89,22 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 - **`importer`** — CSV/XLSX reader, column `map.toml` parsing, normalization, dedup.
 - **`web`** — `//go:embed all:dist` of the built PWA.
 
-### Frontend (`frontend/src/`) — v1
+### The importer's frozen vectors are a CONTRACT FORK
+
+`internal/importer` is live code (`ledger import`). Its `conformance_test.go`
+used to read `conformance/import/vectors.json` — the shared contract that kept
+this Go importer and a TypeScript twin byte-identical. `conformance/` left with
+v2 on 2026-08-11, so the vectors now live at
+`internal/importer/testdata/vectors.json` as a **frozen copy**.
+
+Nothing anywhere checks the cross-language agreement any more. salehtl/ledgerd
+tests its TypeScript importer against a byte-frozen copy of this package; this
+repository tests its living importer against the frozen vectors. **The two can
+drift, and no gate will say so.** A change to normalization here is a change to
+v1's importer alone, and the vectors are this repository's own regression net,
+not a contract with another language.
+
+### Frontend (`frontend/src/`)
 
 React 19 + TypeScript + Vite. TanStack Query/Table (there is no router — routing is the `app/nav.ts` tab state), Tailwind v4, dither-kit (vendored), `vite-plugin-pwa`. `api/` (client + types), `screens/`, `components/` (incl. `swipe/` categorizer deck and `transactions/`), `hooks/`, `app/AppShell.tsx`. State/server-cache via react-query (`queryClient.ts`).
 
@@ -234,16 +121,15 @@ React 19 + TypeScript + Vite. TanStack Query/Table (there is no router — routi
 ## Tests
 
 ```bash
-go test ./...                              # every Go package, BOTH apps
-go test ./internal/v2/api/                 # one v2 package
-go test ./internal/parse/ -run TestCascade # one v1 test
+go test ./...                              # every Go package
+go test ./internal/parse/ -run TestCascade # one test
 go test ./... -race                        # race detector
 
-cd web && bun run test                     # v2 frontend (vitest)
-cd frontend && bun run test                # v1 frontend (vitest)
-cd client && bun test                      # the shared TS library
-bash scripts/v2-check.sh                   # the v2 gate — v2 packages only, never all of v1
+cd frontend && bun run test                # the PWA (vitest)
 ```
+
+**The gate is `go test ./... && cd frontend && bun run test`.** This repository
+has no CI service, so that pair is the build.
 
 Go tests live beside the code (`*_test.go`). Frontend tests are `*.test.ts(x)` next to components, run with jsdom.
 
@@ -253,10 +139,10 @@ Every `X.stories.tsx` has a colocated `X.stories.test.tsx` rendering the same st
 
 ### Two failure classes this codebase keeps producing
 
-Both were found repeatedly across the v2 build. Check for them in your own work.
+Both were found repeatedly across the build. Check for them in your own work.
 
 1. **A check that cannot fail.** A test that passes because it never ran; a `grep` that returns nothing because the file contains a literal **NUL byte** (three separate instances — grep prints nothing *and* git diffs the file as binary, so sweeps and code reviews both skip it silently); a test double that publishes nothing. **Prove every test bites**: mutate the implementation, watch it fail, revert.
-2. **A UI sentence the code does not honour.** Copy that promises something the implementation does not do. Found in every review round on the v2 branch.
+2. **A UI sentence the code does not honour.** Copy that promises something the implementation does not do. Found in every review round.
 
 ### UI testing: use the harness, not just vitest
 
@@ -264,8 +150,8 @@ vitest and Storybook test components in isolation. They cannot see a control
 under the bottom nav, a field that refuses to stay empty, or a sheet hidden
 behind the keyboard.
 
-**v1** uses `frontend/harness/`, which drives the real PWA in a real browser
-against the real Go API on a scratch DB. Full docs: `frontend/harness/README.md`.
+`frontend/harness/` drives the real PWA in a real browser against the real Go
+API on a scratch DB. Full docs: `frontend/harness/README.md`.
 
 ```bash
 cd frontend
@@ -276,47 +162,10 @@ node harness/ios.mjs         # WebKit + iPhone keyboard geometry
 harness/stack.sh reset       # restore fixture data between rounds
 ```
 
-**v2's harness is `web/harness/`, and it is v2-only** — the nine v1 forks that
-used to sit there are gone. Since 2026-08-10 a **screen sweep** covers the
-product: `v2nav.mjs` is not a runner but the library the sweep is built on —
-the sign-up ceremony, hostile fixture data authored through the app's own CSV
-import, and `SCREENS`, the literal taps that reach each surface. Four runners
-drive it, all pass/fail: `v2shoot.mjs` (screenshot + geometry-audit every
-screen at two widths and both themes; `--screens a,b` narrows it, `--fast`
-drops to one pass), `v2deck.mjs` (every card in the review deck, not just the
-top one), `v2edge.mjs` (the drill-in left edge: back-arrow tap versus the 24px
-edge-back strip) and `v2subs.mjs` (the seven Settings drill-ins). `v2explore.mjs`
-is the fifth of the family and **reports rather than asserts** — run it to
-rebuild a step table when the flow changes, instead of guessing labels from JSX.
+Never point the harness at production: scratch ports and a scratch DB, never
+`:8080`, never `/var/lib/ledger`.
 
-`vault.mjs` (the key vault round trip in Chromium **and** WebKit, needing no
-server, invite or passkey) is current. `addpasskey-repro.mjs` is a targeted
-repro, not a runner — it asserts nothing, so read its output by hand.
-
-**Three older runners cannot finish their walk and must not be trusted:**
-`v2settings.mjs`, `recovery.mjs` and `operator.mjs` all type into the recovery
-type-back quiz that `482d68d` ("onboarding proposes, it never blocks") deleted,
-then wait for a "Finish setting up encryption" button that no longer renders.
-`v2settings.mjs` is doubly outdated — the Settings restructure moved
-`settings-inbound-address` and "Add a device" into drill-ins. Repairing them is
-open work; `v2nav.mjs` holds the current walk in the meantime. Full detail:
-`web/harness/README.md`.
-
-If you build a v2 runner, `v2stack.sh` must pass `--dns-fixtures`, or every
-message the harness posts is `unauthenticated` and no script can reach the
-product at all.
-
-Never point a harness at production: scratch ports and a scratch DB, never
-`:8080`, never `:443`, never `/var/lib/ledger`.
-
-**The method that actually found bugs**, in order of yield. It was learned on v1,
-and **the files named below are `frontend/harness/` (v1) files** unless the text
-says otherwise: `seed.mjs`, `probe.mjs`, `shoot.mjs`, `ios.mjs` and `stack.sh` do
-not exist in `web/harness/`. Two exceptions — `audit.mjs` exists in both trees,
-and `v2stack.sh` is v2's only. If you arrived here from the v2 paragraph, v2's
-equivalents are `v2nav.mjs`'s `seed` for point 1 and `v2shoot.mjs` for point 2;
-v2 has nothing for point 3 (nothing types into every input) and point 4 applies
-to any tree:
+**The method that actually found bugs**, in order of yield:
 
 1. **Fixture data that is hostile on purpose** — `seed.mjs` contains a merchant name wider than the viewport, a 250,000 amount, an unset FX rate, a negative envelope. Bugs hide in the happy path.
 2. **Measure laid-out geometry, don't eyeball it** — `audit.mjs` runs in-page and reports elements past the viewport, controls whose centre point hits a *different* element, sub-44px targets, sub-16px inputs, unreachable `overflow-hidden` content.
@@ -327,7 +176,7 @@ to any tree:
 
 - **`reducedMotion: "reduce"`** (set by `shoot.mjs` for stable captures) makes `Dialog`/`SettingsPage` skip their slide entirely. A green run says nothing about the animation.
 - **Chromium is not Safari.** `env(safe-area-inset-*)` is 0, there is no software keyboard, and `dvh` never shrinks. iOS-only bugs are invisible — use `ios.mjs`.
-- **Check which tree vite serves** (`ls -l /proc/<vite-pid>/cwd`). Both `stack.sh` and `v2stack.sh` resolve the repo from their own path, so running one from the main checkout while editing a worktree "verifies" a fix against code that lacks it.
+- **Check which tree vite serves** (`ls -l /proc/<vite-pid>/cwd`). `stack.sh` resolves the repo from its own path, so running it from the main checkout while editing a worktree "verifies" a fix against code that lacks it.
 - **Cold-start jank looks like a bug.** Discard the first run before drawing conclusions about timing, and A/B under equally warm conditions.
 - **A checker that cries wolf gets ignored.** When you add a deliberate exception to a convention, teach `audit.mjs` about it in the same commit (see `data-dense-target`).
 
@@ -336,31 +185,16 @@ to any tree:
 ## Deploy
 
 `dinosaur` is both this dev box and the production server, so deploy steps run
-**locally**. Both services run at the same time. `deploy/README-v2.md` is the v2
-runbook; `deploy/README.md` is v1's.
+**locally**. `deploy/README.md` is the runbook.
 
-**v1** — `ledger.service`, binary `/usr/local/bin/ledger`, binds `127.0.0.1:8080`,
+`ledger.service`, binary `/usr/local/bin/ledger`, binds `127.0.0.1:8080`,
 fronted by `tailscale serve /`. Tailnet only. DB `/var/lib/ledger/ledger.db` (0700),
 config `/etc/ledger/config.toml`, secrets `/etc/ledger/ledger.env`.
 
-**v2** — `ledgerd.service`, binary `/usr/local/bin/ledgerd`. **Public**: binds
-`:443` for `app.sirdab.ae` / `api.sirdab.ae` and SMTP on `*:25`. Admin console on
-`127.0.0.1:8079`, reached over the tailnet at
-`https://dinosaur.marmoset-paradise.ts.net:8445/admin/ui/` via `tailscale serve`.
-Config `/etc/ledger-v2/config.toml`, secrets `/etc/ledger-v2/ledgerd.env`,
-Postgres database `ledger_v2`.
+Order: build the frontend, commit `internal/web/dist` if it changed, back up the
+database, build the binary, install, restart. Then verify the **running** binary
+loaded the new build, not just that health is green.
 
-### The v2 deploy order, which is not optional
-
-1. `cd web && bun run build`, then **commit** `internal/v2/webui/dist` if it changed.
-2. Back up: `sudo -u postgres pg_dump -Fc -d ledger_v2 | sudo tee /var/backups/<name>.dump`.
-   `/var/backups` is root-owned, so `sudo -u postgres` alone **cannot write there** —
-   pipe through `sudo tee`. Rehearse a risky migration on a scratch restore first.
-3. **Apply migrations out of band as `ledger_migrate`**, before the new binary. The
-   service connects as `ledger_runtime` and cannot own the schema.
-4. `CGO_ENABLED=0 go build -o ledgerd ./cmd/ledgerd`, install, restart.
-5. Verify the **running** binary, not just that health is green:
-   `sudo sha256sum /proc/$(systemctl show -p MainPID --value ledgerd)/exe /usr/local/bin/ledgerd`.
-   Compare hashes, not inodes — the service's hardened mount namespace reports a
-   different inode for the same file.
-6. Check both apps afterwards. A v2 deploy must never take v1 down.
+`ledgerd.service` (ledger 2.0) runs on the same box from a different repository
+and a different database. Nothing in this repository can deploy it, and a deploy
+from here must not take it down — check both services afterwards.

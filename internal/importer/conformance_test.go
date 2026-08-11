@@ -10,9 +10,26 @@ import (
 	"testing"
 )
 
+// TestImportConformance checks the importer against a frozen copy of the import
+// vectors, held at testdata/vectors.json.
+//
+// CONTRACT FORK. These vectors used to live at conformance/import/vectors.json and
+// were the shared contract between this Go importer and a TypeScript importer. On
+// 2026-08-11 ledger 2.0 moved to its own repository (salehtl/ledgerd), and
+// conformance/ went with it. Nothing anywhere checks the cross-language agreement
+// any more:
+//
+//   - salehtl/ledgerd tests its TypeScript importer (client/src/importer THERE, not
+//     a path in this repository) against a byte-frozen copy of this package, which
+//     never changes again.
+//   - This repository tests its LIVING importer against the frozen vector copy below.
+//
+// So the two executors can drift, and no gate will say so. If you change
+// normalization here, you are changing v1's importer only. The vectors are this
+// repository's own regression net now, not a contract with another language.
 func TestImportConformance(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "conformance", "import", "vectors.json"))
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(file), "testdata", "vectors.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

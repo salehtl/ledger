@@ -2,7 +2,7 @@
 
 Single static binary + systemd + Tailscale HTTPS. No Node, no DB server.
 
-> This runbook covers **v1** (`ledger`). For the v2 multi-user beta (`ledgerd`) — subcommands, config rails, secrets, the admin console and troubleshooting — see [README-v2.md](README-v2.md).
+> This runbook covers this repository's app, `ledger`. The multi-user app `ledgerd` also runs on this box, but it was extracted to `github.com/salehtl/ledgerd` on 2026-08-11 and its runbook went with it. A deploy from here must leave `ledgerd.service` running — check both services afterwards.
 
 ## 1. Build the static binary (build machine)
 

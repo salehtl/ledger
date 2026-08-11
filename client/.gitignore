@@ -1,9 +1,0 @@
-node_modules/
-# Local client state written by the CLI (Task 14): cursors, pinned heads, keys.
-.ledger-client/
-*.tsbuildinfo
-# `.d.ts` output from `composite`/`emitDeclarationOnly`, built so web/'s
-# `tsc -b` project reference can type-check against declarations instead of
-# re-parsing source (see web/tsconfig.json's "references"). client/ itself
-# still type-checks src/ directly (bun run typecheck), never these.
-dist-types/

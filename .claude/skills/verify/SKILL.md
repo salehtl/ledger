@@ -5,9 +5,9 @@ description: Build, launch, and drive the ledger PWA end-to-end on an isolated s
 
 # Verifying ledger changes at runtime
 
-Two apps share this tree (see root `CLAUDE.md`). Everything below "Build"
-through the end of this file is **v1** (`cmd/ledger`, `frontend/`). For **v2**
-(`cmd/ledgerd`, `web/`), skip to the "v2" section at the bottom.
+This repository is ledger 1.0 (`cmd/ledger`, `frontend/`). ledger 2.0 moved to
+`github.com/salehtl/ledgerd` on 2026-08-11 and carries its own verify skill;
+nothing below applies to it.
 
 ## Build (frontend must precede Go — the bundle is embedded)
 
@@ -63,44 +63,7 @@ viewport 390×844. Gotchas learned the hard way:
 - jsdom tests can't catch pointer-capture click-retargeting bugs — toasts,
   drag surfaces with buttons inside need a real-browser pass.
 
-## v2 (`cmd/ledgerd`, `web/`)
-
-v2's harness is `web/harness/`. Full docs: `web/harness/README.md`.
-
-```bash
-cd web
-harness/v2stack.sh up               # scratch Postgres + ledgerd + vite, prints an invite
-node harness/v2shoot.mjs <invite>   # every screen, screenshot + geometry audit
-node harness/v2subs.mjs <invite>    # the seven Settings drill-ins
-node harness/v2deck.mjs <invite>    # every card in the review deck
-node harness/v2edge.mjs <invite>    # drill-in left edge: back arrow vs edge-back strip
-node harness/v2explore.mjs <invite> # REPORTS the walk; use it to rebuild a step table
-harness/v2stack.sh down
-```
-
-`v2stack.sh up` starts `ledgerd` with **`--dns-fixtures`**, serving recorded
-DKIM/ARC records offline so the corpus's signed bank mail verifies — without
-it every message the harness posts reads as `unauthenticated` and no script
-can reach the product. Any new v2 runner or stack script must pass it too.
-
-Those runners share `v2nav.mjs` — the ceremony, the hostile fixture data (it
-authors transactions through the app's own CSV import, because v2's screens
-read a local projection of an op log and there is no HTTP seam to write
-through) and the screen map. `vault.mjs` proves the key vault in Chromium
-**and** WebKit and needs no server, invite or passkey.
-
-**Three older runners cannot finish their walk — do not trust them, and do not
-read their failures as product bugs.** `v2settings.mjs`, `recovery.mjs` and
-`operator.mjs` all type into the recovery type-back quiz that `482d68d`
-("onboarding proposes, it never blocks") deleted, then wait for a "Finish
-setting up encryption" button that no longer renders; `v2settings.mjs` also
-predates the Settings restructure that moved `settings-inbound-address` and
-"Add a device" into drill-ins. `v2explore.mjs` is how their step tables get
-rebuilt.
-
-`addpasskey-repro.mjs` drives adding a second passkey, but it is a targeted
-repro, not a pass/fail runner — it asserts nothing automatically, so its output
-(`addPasskey() =>` and the on-screen note) has to be read by hand. Never point
-a v2 harness run at production: scratch ports (8123 API, 5177 UI) against a
-throwaway Postgres cluster under `/tmp`, never `:443` and never the running
-`ledgerd` service.
+`frontend/harness/` already automates most of this: `harness/stack.sh up` brings
+up a scratch DB, seed data, the Go API on `:8099` and vite on `:5199`, and
+`shoot.mjs`, `probe.mjs`, `ios.mjs` and `gestures.mjs` drive it. Read
+`frontend/harness/README.md` before writing a one-off script.

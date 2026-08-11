@@ -1,5 +1,0 @@
-# `[test]`, never a top-level `preload` — see test/preload.ts for why that
-# distinction is load-bearing (a top-level one would mask the spawned-child
-# tests that are this repo's only proof a fresh process can start).
-[test]
-preload = ["./test/preload.ts"]
