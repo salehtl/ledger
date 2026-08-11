@@ -99,7 +99,14 @@ describe("built output", () => {
   // value for `rose` and all six deep steps: they live only in runtime
   // `var()` strings, so Tailwind tree-shook them out of @theme and those marks
   // rendered as nothing on paper. Asserting on source could never catch that.
-  const distDir = resolve(process.cwd(), "../internal/web/dist/assets");
+  //
+  // v2's OWN bundle. Until 2026-08-11 this literal read
+  // `../internal/web/dist/assets` — v1's committed bundle — so every assertion
+  // below measured the wrong app. v1's entry chunk was 724,554 bytes and sat
+  // under the ceiling, so the suite was green while v2's bundle had never once
+  // been measured. Both apps live in this one tree, which is exactly how a path
+  // like that goes unnoticed.
+  const distDir = resolve(process.cwd(), "../internal/v2/webui/dist/assets");
   const builtCss = () => {
     const dir = readdirSync(distDir).filter((f) => f.endsWith(".css"));
     return dir.map((f) => readFileSync(resolve(distDir, f), "utf8")).join("\n");
@@ -113,6 +120,27 @@ describe("built output", () => {
   // gains ~110KB — no error, no failing test, nothing visible until someone
   // loads the app on mobile data. Assert the shape of the output instead.
   //
+  // THE CEILING IS 1,100,000 BYTES, AND IT IS v2's, MEASURED (2026-08-11).
+  // The old 760,000 was v1's number, calibrated during the Framer migration
+  // against v1's bundle — the only bundle this block ever read. v2 is bigger
+  // for reasons that are the product, not bloat: it carries the
+  // replay/projection engine, sql.js's loader, the key vault and the CSV
+  // importer. Re-pointing the path made the real numbers
+  // visible for the first time:
+  //
+  //   entry chunk, thunk split (correct)   1,035,100 bytes  (gzip 339,101)
+  //   entry chunk, barrel inlined (the bug) 1,144,497 bytes, and no
+  //                                         motionFeatures chunk at all
+  //
+  // Both measured by building this tree, so the ceiling is placed from
+  // evidence rather than taste: 1,100,000 leaves ~65KB of growing room above
+  // today's bundle and still sits 44,497 bytes BELOW the regression it exists
+  // to catch. Raising it past ~1,144,000 would retire the check entirely —
+  // if a change needs that much room, split a chunk instead of moving this.
+  //
+  // The gzip figure is recorded because it is what a phone actually downloads,
+  // and it is the number to argue about if this ever needs re-budgeting.
+  //
   // SCOPE, because this is easy to over-trust: it reads the **committed
   // artifact**, so it only sees a regression once someone has rebuilt the dist.
   // It does NOT detect a stale dist — which is the exact condition that hid the
@@ -125,7 +153,7 @@ describe("built output", () => {
     const entry = js.find((f) => f.startsWith("index-"));
     expect(entry, "no index-*.js in the built assets — is the dist stale?").toBeDefined();
     const bytes = readFileSync(resolve(distDir, entry!)).byteLength;
-    expect(bytes, `entry chunk is ${bytes} bytes`).toBeLessThanOrEqual(760_000);
+    expect(bytes, `entry chunk is ${bytes} bytes`).toBeLessThanOrEqual(1_100_000);
     expect(
       js.some((f) => f.startsWith("motionFeatures-")),
       "domMax is not in its own chunk — the LazyMotion thunk has been inlined back into the entry",

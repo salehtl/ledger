@@ -23,6 +23,17 @@ import type { DitherColor } from "../components/dither-kit/palette";
  * Hue-wheel order would make a nicer swatch grid than append order does; that
  * is the picker's problem to solve at render time, not a reason to renumber the
  * ring the backfill walks.
+ *
+ * THIS PALETTE IS TS-AUTHORITATIVE, AND NOTHING CROSS-CHECKS IT. The guard that
+ * read `internal/store/categories.go` and held that Go list against this one
+ * died with the repo split (2026-08-11): that list, and the backfill and
+ * reject-unknown-colour API guard it served, are v1's. v2 has no cross-language
+ * palette contract to replace it — the client fold accepts any non-empty string
+ * as a category colour (`applyCategoryDefined` in `client/src/replay/replay.ts`),
+ * so an unrecognised name is not refused anywhere; it reaches `categoryColor`
+ * and renders as the neutral. Adding a hue therefore means adding it here, to
+ * `palette.ts` and to `app.css`, with `tokens.test.ts` the only thing checking
+ * the last two.
  */
 export const PALETTE_NAMES = [
   "azure", "amber", "lilac", "sage", "rose", "slate",

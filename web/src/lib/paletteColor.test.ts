@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { projectColor, PALETTE_NAMES, PALETTE_DISPLAY_ORDER, isPaletteName, hueVar } from "./paletteColor";
 
 describe("projectColor", () => {
@@ -88,47 +86,19 @@ describe("PALETTE_DISPLAY_ORDER", () => {
     }
   });
 
-  it("does not reorder PALETTE_NAMES itself — the backfill indexes into it", () => {
-    // store.SeedCategoryColor mirrors this array by index; a reorder here would
-    // silently re-seed every category on the next backfill.
+  it("keeps PALETTE_NAMES in bases-then-deeps order", () => {
+    // This used to say "the backfill indexes into it", meaning v1's
+    // store.SeedCategoryColor, which seeded a category colour from
+    // PALETTE_NAMES[(id * 7) % 24] and would have re-seeded every category on
+    // a reorder. That backfill is v1's and left with the repo split
+    // (2026-08-11); no v2 code maps a stored index back to a name.
+    //
+    // What the order still carries is shape: twelve bases and then their
+    // twelve -deep steps, which is what PALETTE_DISPLAY_ORDER's paired-halves
+    // test above assumes it has to work with, and what the picker's grid
+    // renders. Interleaving them breaks both.
     expect(PALETTE_NAMES[0]).toBe("azure");
     expect(PALETTE_NAMES[6]).toBe("ochre");
     expect(PALETTE_NAMES[12]).toBe("azure-deep");
-  });
-});
-
-describe("the Go mirror", () => {
-  // internal/store/categories.go keeps its own copy of these names: the colour
-  // backfill and the API's reject-unknown-colour guard both run server-side and
-  // cannot import a .ts file. Two hand-maintained lists, and until this test
-  // nothing read one against the other.
-  //
-  // Membership drift fails asymmetrically, and only one direction is loud:
-  //
-  //   name only in TS  -> the user picks it, the API 400s it. Visible.
-  //   name only in Go  -> the backfill assigns it, categoryColor does not
-  //                       recognise it, the dot renders as the neutral forever.
-  //                       Nothing on screen, nothing in the logs, and
-  //                       indistinguishable from a deliberately chosen grey.
-  //
-  // Same shape as tokens.test.ts reading app.css off disk: the other language's
-  // source is the fixture. Vitest runs from the frontend root.
-  const GO_SRC = resolve(process.cwd(), "../internal/store/categories.go");
-  const goPaletteNames = (): string[] => {
-    const src = readFileSync(GO_SRC, "utf8");
-    const block = src.match(/var paletteNames = \[\]string\{([\s\S]*?)\n\}/);
-    if (!block) throw new Error(`no 'var paletteNames = []string{…}' literal in ${GO_SRC}`);
-    return [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  };
-
-  it("finds a non-trivial literal to compare against", () => {
-    // Without this, a rename or a reformat that breaks the regex would leave
-    // the comparison below trivially green — a checker that stops checking is
-    // worse than no checker.
-    expect(goPaletteNames().length).toBeGreaterThanOrEqual(24);
-  });
-
-  it("holds exactly the same names as PALETTE_NAMES, in the same order", () => {
-    expect(goPaletteNames()).toEqual([...PALETTE_NAMES]);
   });
 });
