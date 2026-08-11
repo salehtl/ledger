@@ -18,8 +18,8 @@ history, and little else.
 | Reach | public (`app.sirdab.ae`) | tailnet only |
 | Gate | `scripts/v2-check.sh` | `go test ./...` + frontend vitest |
 
-Branches: `main` (both apps) · `ledger-v1` (the v1 line at handover) ·
-`v2-wip-2026-08-05` (v2 integration, currently equal to `main`).
+Branches: `main` (both apps) · `ledger-v1` (the v1 line at handover). The
+retired Expo client lives at tag `app-expo-final`.
 
 `CLAUDE.md` is the long form of all of this. Read it before a first change.
 

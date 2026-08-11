@@ -3,10 +3,12 @@
  *
  * # Why this exists at all
  *
- * `docs/alpha-consent.md` promises every alpha user the right to *access,
- * export and delete* their data, "all of which are available in the app".
- * Deletion shipped; access exists; export did not exist anywhere. A
- * countersigned promise is repaired by building the thing, not by rewording it.
+ * The product promises every user the right to *access, export and delete*
+ * their data, all of it available in the app. (The promise predates this file:
+ * it was first written into the since-retired alpha consent document, removed
+ * 2026-08-10 — the features it demanded stay.) Deletion shipped; access
+ * exists; export did not exist anywhere. A promise is repaired by building
+ * the thing, not by rewording it.
  *
  * # It is written HERE, and it could not be written anywhere else
  *

@@ -31,8 +31,10 @@ dither-kit 0.1.0
   Vendored source under src/components/dither-kit/ in both apps, installed with
   `shadcn add https://tripwire.sh/r/bar-chart.json` and then modified in place
   (the changes are listed in that directory's README.md). The registry payload
-  carries no licence file and no licence header, so no licence text is
-  reproduced here — this entry credits where the code came from.
+  itself ships no licence file, but dither-kit is built on EvilCharts
+  (https://github.com/legions-developer/evilcharts), which is MIT-licensed:
+  Copyright (c) 2026 Gurbinder. The MIT terms (use, modification and
+  redistribution permitted with this notice) cover the vendored code.
 
 sql.js (ledger 2.0 only)
   Copyright (c) 2017 sql.js authors

@@ -1,9 +1,10 @@
 /**
- * "Download my data" — the export half of the alpha consent promise.
+ * "Download my data" — the export half of the data-rights promise.
  *
- * `docs/alpha-consent.md` tells every alpha user they may access, export and
- * delete their data, "all of which are available in the app". Deletion and
- * access exist. This is export, and until it landed that sentence was not true.
+ * Every user may access, export and delete their data, all of it available in
+ * the app. (The sentence began life in the since-retired alpha consent
+ * document, removed 2026-08-10; the promise outlives it.) Deletion and access
+ * exist. This is export, and until it landed that sentence was not true.
  *
  * # It reads the projection this device holds, and says so
  *

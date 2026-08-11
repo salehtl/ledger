@@ -1070,7 +1070,7 @@ check), not merely that health is green — v1's runbook learned that one too.
 | **D3** provision + deploy the relay | backup MX | deferred by decision |
 | **D4** TLS, firewall, systemd unit | public access | **done.** `runServe` terminates TLS with autocert on `:443` for `app.sirdab.ae` / `api.sirdab.ae`; `deploy/ledgerd.service` is committed, installed and enabled |
 | **D5** PostgreSQL on the primary | everything | **done.** Cluster `16/main` is up, `ledger_v2` is live, and both `ledger_migrate` and `ledger_runtime` exist. Backups (§6) have not been rehearsed |
-| **D6** alpha onboarding + the two-week measurement | Phase 1 exit | not started. The consent document it was blocked on now exists: `docs/alpha-consent.md`, v1.0 of 2026-08-07. Record a signature with `ledgerd record-consent` — nothing writes `user_consent` automatically (§1) |
+| **D6** alpha onboarding + the two-week measurement | Phase 1 exit | not started. The signed-consent-document approach was retired 2026-08-10 (`docs/alpha-consent.md` removed; the in-app access/export/delete rights it promised are all built). `ledgerd record-consent` still records a consent event if one is wanted — nothing writes `user_consent` automatically (§1) |
 
 ---
 

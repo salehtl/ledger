@@ -24,8 +24,8 @@ a module, a `go.mod` and a git history, and almost nothing else. A v2 change nev
 belongs in `internal/parse`, and a v1 change never belongs in `internal/v2`.
 
 Branches: `main` (both apps, v2 is the product) · `ledger-v1` (the v1 line as it
-stood at the handover) · `v2-wip-2026-08-05` (the v2 integration branch, currently
-the same commit as `main`).
+stood at the handover). Everything else was merged and pruned 2026-08-10; the
+retired Expo client lives at tag `app-expo-final`.
 
 `client/` is neither app: it is the shared TypeScript library that must agree
 byte-for-byte with the Go side (see "Dual executors" below). The abandoned Expo
