@@ -11,27 +11,31 @@ import type { DitherColor } from "../components/dither-kit/palette";
  *
  * ORDER IS LOAD-BEARING, in two ways:
  *
- *  1. All twelve base names first, then all twelve `-deep` steps. The category
- *     colour backfill seeds from `PALETTE_NAMES[(id * 7) % 24]` and relies on
- *     walking bases and deeps as one even ring; interleaving them would hand
- *     consecutive ids the same hue at two lightnesses.
+ *  1. All twelve base names first, then all twelve `-deep` steps. v1's category
+ *     colour backfill seeded from `PALETTE_NAMES[(id * 7) % 24]` and needed
+ *     bases and deeps to form one even ring, but that backfill left with the
+ *     repo split (see the note below) and constrains nothing here now. The
+ *     halves stay load-bearing for a v2 reason: `PALETTE_DISPLAY_ORDER` pairs
+ *     each base with its own deep step, and the picker grid renders that
+ *     pairing. Interleaving them breaks it.
  *  2. The first six of each half are the original palette, in their original
- *     positions. Nothing stores an index today — projects store the *name* —
- *     but keeping them put means a diff of this array reads as "six added"
- *     rather than "everything moved".
+ *     positions. Nothing stores an index — projects and categories store the
+ *     *name* — but keeping them put means a diff of this array reads as "six
+ *     added" rather than "everything moved".
  *
  * Hue-wheel order would make a nicer swatch grid than append order does; that
- * is the picker's problem to solve at render time, not a reason to renumber the
- * ring the backfill walks.
+ * is the picker's problem to solve at render time, not a reason to renumber
+ * this array.
  *
- * THIS PALETTE IS TS-AUTHORITATIVE, AND NOTHING CROSS-CHECKS IT. The guard that
- * read `internal/store/categories.go` and held that Go list against this one
- * died with the repo split (2026-08-11): that list, and the backfill and
- * reject-unknown-colour API guard it served, are v1's. v2 has no cross-language
- * palette contract to replace it — the client fold accepts any non-empty string
- * as a category colour (`applyCategoryDefined` in `client/src/replay/replay.ts`),
- * so an unrecognised name is not refused anywhere; it reaches `categoryColor`
- * and renders as the neutral. Adding a hue therefore means adding it here, to
+ * THIS PALETTE IS TS-AUTHORITATIVE, AND NOTHING CROSS-CHECKS IT — and this note
+ * governs every mention of Go, of a backfill, or of a server-side colour check
+ * anywhere above. The guard that read `internal/store/categories.go` and held
+ * that Go list against this one died with the repo split (2026-08-11): that
+ * list, and the backfill and reject-unknown-colour API guard it served, are
+ * v1's. v2 has no cross-language palette contract to replace it — the client
+ * fold accepts any non-empty string as a category colour (`applyCategoryDefined`
+ * in `client/src/replay/replay.ts`), so an unrecognised name is not refused
+ * anywhere; it reaches `categoryColor` and renders as the neutral. Adding a hue therefore means adding it here, to
  * `palette.ts` and to `app.css`, with `tokens.test.ts` the only thing checking
  * the last two.
  */
@@ -47,12 +51,12 @@ export type PaletteName = (typeof PALETTE_NAMES)[number];
 /**
  * The same twenty-four names, ordered around the hue wheel, for a swatch grid.
  *
- * `PALETTE_NAMES` is append order and has to stay that way — the category
- * colour backfill walks it as a ring (see the note above), so renumbering it
- * would re-seed every category. But append order makes a poor picker: the six
- * hues added later all land in a block after the original six, so azure sits
- * beside amber and the grid reads as two unrelated batches rather than a
- * spectrum.
+ * `PALETTE_NAMES` is append order and stays that way — not for v1's backfill,
+ * which is gone (see the note on `PALETTE_NAMES`), but because its
+ * bases-then-deeps halves are exactly what the pairing below relies on. Append
+ * order does make a poor picker, though: the six hues added later all land in a
+ * block after the original six, so azure sits beside amber and the grid reads
+ * as two unrelated batches rather than a spectrum.
  *
  * So the picker sorts a *copy*. Hues run rose (15°) → orchid (337°) with the
  * neutral last, bases first and then the deep steps in the same order. At the

@@ -68,9 +68,11 @@ describe("hueVar", () => {
 });
 
 describe("PALETTE_DISPLAY_ORDER", () => {
-  // The picker renders this list, the backfill walks PALETTE_NAMES. If they
-  // ever stop being the same set, a colour the store can assign becomes one
-  // the user cannot pick — invisible, because the row still renders it fine.
+  // The picker renders this list; PALETTE_NAMES is the set every other palette
+  // list is checked against. If the two ever stop being the same set, a colour
+  // an op can carry becomes one the user cannot pick — invisible, because the
+  // row still renders it fine. (The v1 backfill that used to "walk
+  // PALETTE_NAMES" left with the repo split; see the note in paletteColor.ts.)
   it("is a permutation of PALETTE_NAMES — same names, no dupes, none dropped", () => {
     expect(PALETTE_DISPLAY_ORDER).toHaveLength(PALETTE_NAMES.length);
     expect(new Set(PALETTE_DISPLAY_ORDER).size).toBe(PALETTE_DISPLAY_ORDER.length);
