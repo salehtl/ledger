@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { CategoryDef } from "@ledger/client/replay/state";
@@ -39,6 +39,32 @@ describe("V2CategoriesPanel", () => {
     ]);
     // And that definition is what makes it selectable.
     expect(deckCategories([], [{ ...GYM, id: "c-new" }]).some((c) => c.Name === "Gym" && c.Bucket === "need")).toBe(true);
+  });
+
+  it("fires onFlushed only after the upload lands, so the caller can settle", async () => {
+    const { writer } = recorder();
+    let releaseFlush: () => void = () => undefined;
+    writer.flush = () =>
+      new Promise((resolve) => {
+        releaseFlush = () => resolve(undefined);
+      });
+    const flushed: number[] = [];
+    render(
+      <V2CategoriesPanel
+        defs={[]}
+        writer={writer}
+        newID={() => "c-new"}
+        onFlushed={() => flushed.push(Date.now())}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /add to needs/i }));
+    await userEvent.type(screen.getByLabelText(/new category in needs/i), "Gym");
+    await userEvent.click(screen.getByRole("button", { name: /add gym/i }));
+
+    expect(flushed).toHaveLength(0);
+    releaseFlush();
+    await waitFor(() => expect(flushed).toHaveLength(1));
   });
 
   it("retires by re-defining, never by deleting", async () => {

@@ -61,6 +61,8 @@ export interface HeldMessageSheetProps {
   onClose: () => void;
   /** Called once the op is queued, so the caller can refresh and say so. */
   onAdded: () => void;
+  /** Called once the flush lands, so the caller can settle (sync + re-read). */
+  onFlushed?: () => void;
 }
 
 /**
@@ -86,6 +88,7 @@ export function HeldMessageSheet({
   writer,
   onClose,
   onAdded,
+  onFlushed,
 }: HeldMessageSheetProps) {
   const initial = useMemo<ManualDraft>(() => {
     const filled = prefill?.draft ?? null;
@@ -120,12 +123,16 @@ export function HeldMessageSheet({
         return;
       }
       writer.enqueueMany(built.specs);
-      writer.flush().catch(() => undefined);
+      // Not awaited; once the upload lands the caller settles (sync + re-read).
+      writer.flush().then(
+        () => onFlushed?.(),
+        () => undefined,
+      );
       onAdded();
     } finally {
       setBusy(false);
     }
-  }, [writer, draft, onAdded]);
+  }, [writer, draft, onAdded, onFlushed]);
 
   return (
     <Dialog title="Add a transaction from this message" onClose={onClose}>

@@ -124,6 +124,7 @@ import { bankDisplayName, isDeclarableBankID } from "../../v2/bank";
 import { SettingsPage } from "./SettingsPage";
 import { readSupportedBanks, type SupportedBank } from "../../v2/onboardingIO";
 import { budgetSplitOps, DEFAULT_BUDGET_SPLIT, usablePlan } from "../../v2/sources/budget";
+import { useSettleAuthored } from "../../v2/settle";
 import {
   invalidateAfterSync,
   useBanksSource,
@@ -246,6 +247,7 @@ export function V2Settings({
 }: V2SettingsProps) {
   const { handle, sync, coordinator, facts } = useV2OrThrow();
   const qc = useQueryClient();
+  const settle = useSettleAuthored();
   const homeCurrency = useHomeCurrency(useTxnSource()) ?? facts.homeCurrency;
   const writer = useWriter(injectedWriter);
   const budget = useBudgetSnapshot(useBudgetSource());
@@ -640,10 +642,13 @@ export function V2Settings({
       setPendingTick((n) => n + 1);
       void invalidateAfterSync(qc);
       // Not awaited, for the reason the split's save is not: the op is durable
-      // the moment it is queued.
-      writer.flush().catch(() => {});
+      // the moment it is queued. Once the upload lands, settle (sync + re-read).
+      writer.flush().then(
+        () => void settle(),
+        () => {},
+      );
     },
-    [writer, qc],
+    [writer, qc, settle],
   );
 
   const [tick, setTick] = useState(0);
@@ -671,9 +676,12 @@ export function V2Settings({
       if (writer === null) return;
       writer.enqueueMany(ops);
       void invalidateAfterSync(qc);
-      writer.flush().catch(() => {});
+      writer.flush().then(
+        () => void settle(),
+        () => {},
+      );
     },
-    [writer, qc],
+    [writer, qc, settle],
   );
 
   const lastSynced = useMemo(
@@ -1175,6 +1183,7 @@ export function V2Settings({
             defs={categoryDefs}
             writer={writer}
             onAuthored={() => void invalidateAfterSync(qc)}
+            onFlushed={() => void settle()}
           />
         </Dialog>
       )}

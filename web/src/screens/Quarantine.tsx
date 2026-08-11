@@ -76,6 +76,7 @@ import {
 } from "../v2/onboardingIO";
 import { deckCategories } from "../v2/reviewDeck";
 import { useCategoryChoices, useHomeCurrency, useReviewSource, useTxnFacets, useTxnSource } from "../v2/queries";
+import { useSettleAuthored } from "../v2/settle";
 import { decodeBlob, prefillFromHeld, type Prefill } from "../v2/sources/heldMessage";
 import { useWriter } from "../v2/writer";
 import { HeldMessageSheet } from "./HeldMessageSheet";
@@ -99,6 +100,7 @@ interface Partial {
 export function Quarantine({ client: injected, sync, server, fetch: doFetch, now = Date.now }: QuarantineProps) {
   const runtime = useV2();
   const client = injected ?? runtime?.handle.client ?? null;
+  const settle = useSettleAuthored();
 
   const [items, setItems] = useState<QuarantineItem[]>([]);
   const [busy, setBusy] = useState(true);
@@ -342,6 +344,7 @@ export function Quarantine({ client: injected, sync, server, fetch: doFetch, now
           homeCurrency={homeCurrency ?? "AED"}
           categories={categoryNames}
           currencies={currencyOptions}
+          onFlushed={() => void settle()}
           writer={writer}
           onClose={() => {
             setReviewing(null);

@@ -282,6 +282,39 @@ describe("Review", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("settles behind the flush: a second re-read fires only after the upload lands", async () => {
+    // The immediate invalidation re-reads the OLD projection plus the overlay;
+    // the one that matters for every OTHER screen is the settle that follows
+    // the flush — sync, fold, re-read. With no v2 runtime mounted (this tree),
+    // the settle degrades to the invalidation alone, which is exactly what
+    // makes it observable here: one invalidation before the flush resolves,
+    // a second one after, never before.
+    const user = userEvent.setup();
+    const writer = recorder();
+    let releaseFlush: () => void = () => undefined;
+    writer.flush = () =>
+      new Promise((resolve) => {
+        releaseFlush = () => resolve(undefined);
+      });
+    const { qc } = mount(await projection(), writer);
+    const invalidations: number[] = [];
+    const realInvalidate = qc.invalidateQueries.bind(qc);
+    qc.invalidateQueries = ((filters?: never) => {
+      invalidations.push(Date.now());
+      return realInvalidate(filters);
+    }) as typeof qc.invalidateQueries;
+    await screen.findByText("SPINNEYS");
+
+    await user.click(screen.getByRole("button", { name: /Need — sort this transaction/ }));
+    await user.click(await screen.findByRole("button", { name: "Groceries" }));
+
+    await waitFor(() => expect(writer.queued.length).toBe(2));
+    const beforeFlush = invalidations.length;
+    expect(beforeFlush).toBeGreaterThanOrEqual(1);
+    releaseFlush();
+    await waitFor(() => expect(invalidations.length).toBe(beforeFlush + 1));
+  });
+
   it("undoes a confirm with a compensating op that does not fork against itself", async () => {
     const user = userEvent.setup();
     const writer = recorder();

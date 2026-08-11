@@ -64,7 +64,7 @@ export const IDLE_PROGRESS: SyncProgress = {
   chunk: 0,
 };
 
-export type SyncTrigger = "launch" | "foreground" | "refresh" | "notification" | "retry";
+export type SyncTrigger = "launch" | "foreground" | "refresh" | "notification" | "retry" | "authored";
 
 export interface CoordinatedEngine {
   readonly progress: SyncProgress;

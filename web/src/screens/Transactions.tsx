@@ -51,6 +51,7 @@ import {
   type TxnSource,
 } from "../v2/sources/transactions";
 import { useCategoryChoices, useHomeCurrency, useReviewSource, useTxnFacets, useTxnList, useTxnSource, v2Keys } from "../v2/queries";
+import { useSettleAuthored } from "../v2/settle";
 import { useWriter, type Writer } from "../v2/writer";
 
 /**
@@ -140,6 +141,7 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
   const reviewSource = useReviewSource(injectedReview);
   const writer = useWriter(injectedWriter);
   const qc = useQueryClient();
+  const settle = useSettleAuthored();
   const toast = useToast();
   const choices = useCategoryChoices(reviewSource);
   const [editing, setEditing] = useState<Txn | null>(null);
@@ -305,11 +307,14 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
       // Not awaited: the ops are already durable — `Client.emit` commits before
       // it returns — and a list that stalled on the network would be unusable
       // exactly where this app is used.
-      writer.flush().catch(() => {
-        toast.show({ message: "Saved on this device — it will sync when you're back online" });
-      });
+      writer.flush().then(
+        () => void settle(),
+        () => {
+          toast.show({ message: "Saved on this device — it will sync when you're back online" });
+        },
+      );
     },
-    [reviewSource, writer, authored, knownRules, qc, toast],
+    [reviewSource, writer, authored, knownRules, qc, toast, settle],
   );
 
   /**
@@ -359,11 +364,14 @@ export function Transactions({ from, to, source: injected, reviewSource: injecte
       setManual(null);
       setManualError("");
       await qc.invalidateQueries({ queryKey: v2Keys.all });
-      writer.flush().catch(() => {
-        toast.show({ message: "Saved on this device — it will sync when you're back online" });
-      });
+      writer.flush().then(
+        () => void settle(),
+        () => {
+          toast.show({ message: "Saved on this device — it will sync when you're back online" });
+        },
+      );
     },
-    [writer, authored, reviewSource, qc, toast],
+    [writer, authored, reviewSource, qc, toast, settle],
   );
 
   /**

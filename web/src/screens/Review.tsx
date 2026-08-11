@@ -51,6 +51,7 @@ import { loadSwipeConfig } from "../lib/swipe";
 import { formatMinor } from "../lib/minorMoney";
 import { cardIdSource, deckCategories, deckRows, type DeckRow } from "../v2/reviewDeck";
 import { useHomeCurrency, useReviewFeed, useReviewSource, useTxnSource, v2Keys } from "../v2/queries";
+import { useSettleAuthored } from "../v2/settle";
 import {
   categorizeOps,
   DECK_LANES,
@@ -75,6 +76,7 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
   const source = useReviewSource(injectedSource);
   const writer = useWriter(injectedWriter);
   const qc = useQueryClient();
+  const settle = useSettleAuthored();
   const toast = useToast();
   const homeCurrency = useHomeCurrency(useTxnSource());
 
@@ -180,12 +182,16 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
       writer.enqueueMany(specs);
       await qc.invalidateQueries({ queryKey: v2Keys.all });
       // Not awaited: the ops are already durable, and a deck that stalled on the
-      // network would be unusable exactly where this queue is used.
-      writer.flush().catch(() => {
-        toast.show({ message: "Saved on this device — it will sync when you're back online" });
-      });
+      // network would be unusable exactly where this queue is used. Once the
+      // upload lands, the settle folds it and every screen re-reads.
+      writer.flush().then(
+        () => void settle(),
+        () => {
+          toast.show({ message: "Saved on this device — it will sync when you're back online" });
+        },
+      );
     },
-    [byCard, source, writer, feed.data, qc, toast],
+    [byCard, source, writer, feed.data, qc, toast, settle],
   );
 
   const undo = useCallback(
@@ -204,9 +210,12 @@ export function Review({ onOpenQuarantine, source: injectedSource, writer: injec
         }),
       );
       await qc.invalidateQueries({ queryKey: v2Keys.all });
-      writer.flush().catch(() => undefined);
+      writer.flush().then(
+        () => void settle(),
+        () => undefined,
+      );
     },
-    [byCard, source, writer, qc],
+    [byCard, source, writer, qc, settle],
   );
 
   const counts = feed.data?.counts;

@@ -96,6 +96,47 @@ async function openAddSheet() {
 }
 
 describe("adding a transaction by hand", () => {
+  it("settles behind the flush: a second re-read fires only after the upload lands", async () => {
+    // Same contract as Review's settle test: the immediate invalidation shows
+    // the overlay; the settle behind the flush is what re-reads for every
+    // other screen once the fold moved the projection. No v2 runtime is
+    // mounted here, so the settle degrades to exactly one more invalidation.
+    const writer = recorder();
+    let releaseFlush: () => void = () => undefined;
+    writer.flush = () =>
+      new Promise((resolve) => {
+        releaseFlush = () => resolve(undefined);
+      });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const db = await projectionWith();
+    render(
+      <MotionProvider>
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <Transactions source={sqlTxnSource(db)} reviewSource={sqlReviewSource(db)} writer={writer} />
+          </ToastProvider>
+        </QueryClientProvider>
+      </MotionProvider>,
+    );
+    const invalidations: number[] = [];
+    const realInvalidate = qc.invalidateQueries.bind(qc);
+    qc.invalidateQueries = ((filters?: never) => {
+      invalidations.push(Date.now());
+      return realInvalidate(filters);
+    }) as typeof qc.invalidateQueries;
+    const user = await openAddSheet();
+
+    await user.type(screen.getByLabelText("Amount"), "12.50");
+    await user.type(screen.getByLabelText("Merchant"), "CORNER COFFEE");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(writer.queued).toHaveLength(1));
+    const beforeFlush = invalidations.length;
+    expect(beforeFlush).toBeGreaterThanOrEqual(1);
+    releaseFlush();
+    await waitFor(() => expect(invalidations.length).toBe(beforeFlush + 1));
+  });
+
   it("authors a client-side txn_ingested with a random 64-hex ingest id and no origin claim", async () => {
     const writer = recorder();
     mount(await projectionWith(), writer);

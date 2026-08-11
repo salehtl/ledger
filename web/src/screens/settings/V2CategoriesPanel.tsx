@@ -58,11 +58,13 @@ export interface V2CategoriesPanelProps {
   writer: Writer | null;
   /** Called after ops are queued, so the caller can invalidate its queries. */
   onAuthored?: () => void;
+  /** Called once the flush lands, so the caller can settle (sync + re-read). */
+  onFlushed?: () => void;
   /** Test seam. */
   newID?: () => string;
 }
 
-export function V2CategoriesPanel({ defs, writer, onAuthored, newID = newEntityID }: V2CategoriesPanelProps) {
+export function V2CategoriesPanel({ defs, writer, onAuthored, onFlushed, newID = newEntityID }: V2CategoriesPanelProps) {
   const [addingIn, setAddingIn] = useState<string | null>(null);
 
   const append = useCallback(
@@ -71,10 +73,14 @@ export function V2CategoriesPanel({ defs, writer, onAuthored, newID = newEntityI
       writer.enqueueMany(specs);
       onAuthored?.();
       // Not awaited: the ops are durable the moment they are queued, and a
-      // screen that stalled on the network would be unusable offline.
-      writer.flush().catch(() => {});
+      // screen that stalled on the network would be unusable offline. Once the
+      // upload lands the caller settles — sync, fold, re-read everywhere.
+      writer.flush().then(
+        () => onFlushed?.(),
+        () => {},
+      );
     },
-    [writer, onAuthored],
+    [writer, onAuthored, onFlushed],
   );
 
   const define = useCallback(
