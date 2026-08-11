@@ -86,7 +86,7 @@ func TestMonitor_AllowlistSkipsUnlistedSenders(t *testing.T) {
 	fake := &fakeDriftStore{stats: []store.DriftStat{
 		{FromAddr: "OnlineBanking@emiratesnbd.com", Total: 10, Parsed: 0}, // bank, below threshold → alert
 		{FromAddr: "no-reply@accounts.google.com", Total: 10, Parsed: 0},  // noise, not in allowlist → skipped
-		{FromAddr: "owner@example.com", Total: 10, Parsed: 0},            // noise → skipped
+		{FromAddr: "owner@example.com", Total: 10, Parsed: 0},             // noise → skipped
 	}}
 	m := monitor.New(fake, time.Hour, 0.80, []string{"dib.ae", "emiratesnbd.com"}, nil)
 	alerts := m.Check()
