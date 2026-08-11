@@ -14,10 +14,17 @@ import type { DitherColor } from "../components/dither-kit/palette";
  *  1. All twelve base names first, then all twelve `-deep` steps. v1's category
  *     colour backfill seeded from `PALETTE_NAMES[(id * 7) % 24]` and needed
  *     bases and deeps to form one even ring, but that backfill left with the
- *     repo split (see the note below) and constrains nothing here now. The
- *     halves stay load-bearing for a v2 reason: `PALETTE_DISPLAY_ORDER` pairs
- *     each base with its own deep step, and the picker grid renders that
- *     pairing. Interleaving them breaks it.
+ *     repo split (see the note below) and constrains nothing here now.
+ *
+ *     Be precise about what still depends on the halves, because it is less
+ *     than it used to be: no v2 code renders them as halves. The one surviving
+ *     picker (`screens/projects/ProjectForm.tsx`) maps THIS array into a
+ *     `flex flex-wrap` container, so order decides only the sequence swatches
+ *     appear in, not any row structure. What the halves feed is
+ *     `PALETTE_DISPLAY_ORDER`, whose base/deep pairing is derived from them and
+ *     asserted in `paletteColor.test.ts` — and that array is itself currently
+ *     unrendered (see its own note). So: keep the shape, but keep it for the
+ *     reason in point 2, not because a grid depends on it.
  *  2. The first six of each half are the original palette, in their original
  *     positions. Nothing stores an index — projects and categories store the
  *     *name* — but keeping them put means a diff of this array reads as "six
@@ -33,11 +40,11 @@ import type { DitherColor } from "../components/dither-kit/palette";
  * that Go list against this one died with the repo split (2026-08-11): that
  * list, and the backfill and reject-unknown-colour API guard it served, are
  * v1's. v2 has no cross-language palette contract to replace it — the client
- * fold accepts any non-empty string as a category colour (`applyCategoryDefined`
- * in `client/src/replay/replay.ts`), so an unrecognised name is not refused
- * anywhere; it reaches `categoryColor` and renders as the neutral. Adding a hue therefore means adding it here, to
- * `palette.ts` and to `app.css`, with `tokens.test.ts` the only thing checking
- * the last two.
+ * fold accepts any non-empty string as a category colour
+ * (`applyCategoryDefined` in `client/src/replay/replay.ts`), so an unrecognised
+ * name is not refused anywhere; it reaches `categoryColor` and renders as the
+ * neutral. Adding a hue therefore means adding it here, to `palette.ts` and to
+ * `app.css`, with `tokens.test.ts` the only thing checking the last two.
  */
 export const PALETTE_NAMES = [
   "azure", "amber", "lilac", "sage", "rose", "slate",
@@ -51,21 +58,32 @@ export type PaletteName = (typeof PALETTE_NAMES)[number];
 /**
  * The same twenty-four names, ordered around the hue wheel, for a swatch grid.
  *
- * `PALETTE_NAMES` is append order and stays that way — not for v1's backfill,
- * which is gone (see the note on `PALETTE_NAMES`), but because its
- * bases-then-deeps halves are exactly what the pairing below relies on. Append
- * order does make a poor picker, though: the six hues added later all land in a
- * block after the original six, so azure sits beside amber and the grid reads
- * as two unrelated batches rather than a spectrum.
+ * NOTHING RENDERS THIS ARRAY TODAY. Its only consumer was `CategoryManager`,
+ * which mapped it at line 367 and was deleted on 2026-08-10 (`cca2da8`, the
+ * removal of the v1 Settings cluster that `V2Settings` superseded). It survives
+ * in v1's tree, where that screen still lives. Outside its own declaration and
+ * `paletteColor.test.ts` it now has no reader in `web/src` — verified by grep,
+ * and worth re-checking before trusting any sentence below.
  *
- * So the picker sorts a *copy*. Hues run rose (15°) → orchid (337°) with the
- * neutral last, bases first and then the deep steps in the same order. At the
- * six-per-row the 320px viewport allows, that puts each row on a contiguous
- * arc and stacks each base directly above its own deep step.
+ * It is kept rather than deleted because the ordering problem it solves is real
+ * and will recur the moment v2 grows a category-colour picker. `PALETTE_NAMES`
+ * is append order: the six hues added later all land in a block after the
+ * original six, so azure sits beside amber and a grid of it reads as two
+ * unrelated batches rather than a spectrum. This array is the sorted copy —
+ * hues running rose (15°) → orchid (337°) with the neutral last, bases first
+ * and then the deep steps in the same order. Rendered six-per-row, which is
+ * what a 320px viewport fits, that puts each row on a contiguous arc and stacks
+ * each base directly above its own deep step.
+ *
+ * That last property is a claim about a grid nobody currently draws. The
+ * surviving picker, `screens/projects/ProjectForm.tsx`, maps `PALETTE_NAMES`
+ * into a `flex flex-wrap` container instead, so it shows neither the hue-wheel
+ * order nor the base-above-deep pairing. A future picker wanting either should
+ * render THIS array in a six-wide grid.
  *
  * Kept honest by `paletteColor.test.ts`, which asserts this is a permutation of
  * `PALETTE_NAMES` — adding a hue to one without the other fails there rather
- * than silently dropping a colour the user can no longer pick.
+ * than silently dropping a colour a picker could never offer.
  */
 export const PALETTE_DISPLAY_ORDER = [
   "rose", "ochre", "amber", "moss", "sage", "teal",

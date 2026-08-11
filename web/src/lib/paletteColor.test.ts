@@ -68,19 +68,24 @@ describe("hueVar", () => {
 });
 
 describe("PALETTE_DISPLAY_ORDER", () => {
-  // The picker renders this list; PALETTE_NAMES is the set every other palette
-  // list is checked against. If the two ever stop being the same set, a colour
-  // an op can carry becomes one the user cannot pick — invisible, because the
-  // row still renders it fine. (The v1 backfill that used to "walk
-  // PALETTE_NAMES" left with the repo split; see the note in paletteColor.ts.)
+  // PALETTE_DISPLAY_ORDER has no renderer in web/src today — CategoryManager
+  // mapped it and was deleted 2026-08-10 (cca2da8); see the note on the array.
+  // These two tests are therefore guarding it for the picker that reintroduces
+  // it, which is worth doing precisely because an unrendered array drifts
+  // silently: if it stops being the same set as PALETTE_NAMES, a colour an op
+  // can carry becomes one that future picker can never offer, and nothing on
+  // screen says so today. (The v1 backfill that used to "walk PALETTE_NAMES"
+  // left with the repo split; see the note in paletteColor.ts.)
   it("is a permutation of PALETTE_NAMES — same names, no dupes, none dropped", () => {
     expect(PALETTE_DISPLAY_ORDER).toHaveLength(PALETTE_NAMES.length);
     expect(new Set(PALETTE_DISPLAY_ORDER).size).toBe(PALETTE_DISPLAY_ORDER.length);
     expect([...PALETTE_DISPLAY_ORDER].sort()).toEqual([...PALETTE_NAMES].sort());
   });
 
-  // Six per row is what 320px fits (see the picker in ProjectForm), so
-  // "base above its own deep" only holds if the halves stay aligned.
+  // Six per row is what a 320px viewport fits, and at that width the pairing
+  // below puts each base directly above its own deep step. No screen draws
+  // that grid at the moment — ProjectForm renders PALETTE_NAMES in a flex-wrap
+  // instead — so this pins the property for whoever builds the next picker.
   it("puts every base step directly above its own deep step in a six-wide grid", () => {
     const half = PALETTE_DISPLAY_ORDER.length / 2;
     for (let i = 0; i < half; i++) {
@@ -97,8 +102,9 @@ describe("PALETTE_DISPLAY_ORDER", () => {
     //
     // What the order still carries is shape: twelve bases and then their
     // twelve -deep steps, which is what PALETTE_DISPLAY_ORDER's paired-halves
-    // test above assumes it has to work with, and what the picker's grid
-    // renders. Interleaving them breaks both.
+    // test above assumes it has to work with. Nothing renders the halves as
+    // halves today, so this is a shape guard and a diff-readability one, not a
+    // guard on anything currently on screen.
     expect(PALETTE_NAMES[0]).toBe("azure");
     expect(PALETTE_NAMES[6]).toBe("ochre");
     expect(PALETTE_NAMES[12]).toBe("azure-deep");
