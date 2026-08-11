@@ -8,9 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 and ledger 2.0, the multi-user app. **ledger 2.0 was extracted on 2026-08-11
 into `github.com/salehtl/ledgerd`** (checkout `/root/Coding/ledgerd`, Go module
 `ledgerd`, its `internal/v2/*` flattened to `internal/*`). The tag
-**`ledger-v2-final`** marks the split point here: `c21a1fe`, the last commit
-that still held v2. The same tag exists in salehtl/ledgerd on the filtered
-rewrite of that commit, under a different hash.
+**`ledger-v2-final`** marks the split point here: `c21a1fe`, the commit the
+split was taken from. Three doc-only commits followed it before the prune, so
+the tree still carried v2 up to `817e5b6`. The same tag exists in
+salehtl/ledgerd on the filtered rewrite of `c21a1fe`, under a different hash.
 
 So: **v2 work does not belong here.** If a task mentions `ledgerd`, passkeys,
 SMTP ingest, the op log, Postgres, `web/`, `client/` or the conformance suites,
@@ -25,7 +26,12 @@ Branches: `main` (this app) · `ledger-v1` (the v1 line as it stood at the
 
 ---
 
-## ledger 1.0 — the app
+## ledger 1.0 — the app, in daily use
+
+**Saleh uses this every day as a PWA on his phone, over the tailnet. It must keep
+working.** This is not a retired app kept for history: `dinosaur` is both the dev
+box and the production server, so a build you break here is a build that ships
+from here, and `/var/lib/ledger/ledger.db` holds real financial data.
 
 A private, self-hosted, real-time budgeting PWA for a single user. One Go binary
 watches a dedicated IMAP mailbox, parses each transaction email through a
