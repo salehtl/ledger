@@ -5,8 +5,10 @@
 It held two apps between 2026-08-09 and 2026-08-11. **ledger 2.0 was extracted
 on 2026-08-11 into `github.com/salehtl/ledgerd`** (checkout
 `/root/Coding/ledgerd`). The tag `ledger-v2-final` marks the split point here:
-`c21a1fe`, the commit the split was taken from — three doc-only commits followed
-it, so the tree still carried v2 up to `817e5b6`.
+`6c3ee1b`, the commit the split was taken from — three doc-only commits followed
+it, so the tree still carried v2 up to `a9b85a6`. Both hashes are post-rewrite:
+this history was rewritten on 2026-08-12 to purge real transaction data, so any
+hash quoted before that date is dead. Prefer the tag name.
 
 v2 work belongs in the other repository — anything about `ledgerd`, passkeys,
 SMTP ingest, the op log, Postgres or the cross-executor conformance suites. This

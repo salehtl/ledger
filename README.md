@@ -9,11 +9,12 @@ it in SQLite, and serves a mobile React PWA showing live budget state against a
 > **ledger 2.0 lives at `github.com/salehtl/ledgerd` since 2026-08-11.** The
 > multi-user app used to share this repository until that date. The tag
 > **`ledger-v2-final`** is the split point in both histories: here it marks
-> `c21a1fe`, the commit the split was taken from — three doc-only commits
-> followed it before the prune, so the tree still carried v2 up to `817e5b6`. In
-> salehtl/ledgerd the same tag marks the filtered rewrite of `c21a1fe`, under a
-> different hash, because filtering rewrites every commit it keeps. This repository is ledger 1.0 only
-> now — nothing here builds, tests or deploys v2.
+> `6c3ee1b`, the commit the split was taken from — three doc-only commits
+> followed it before the prune, so the tree still carried v2 up to `a9b85a6`. In
+> salehtl/ledgerd the same tag marks the filtered rewrite of that same split
+> commit, under a different hash, because filtering rewrites every commit it
+> keeps. This repository is ledger 1.0 only now — nothing here builds, tests or
+> deploys v2.
 
 > **Scope:** one user on one box (`dinosaur`). Not multi-tenant, not public.
 > Amounts are AED; money is stored as integer **fils** (AED × 100), never a

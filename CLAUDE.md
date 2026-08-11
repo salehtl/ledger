@@ -8,10 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 and ledger 2.0, the multi-user app. **ledger 2.0 was extracted on 2026-08-11
 into `github.com/salehtl/ledgerd`** (checkout `/root/Coding/ledgerd`, Go module
 `ledgerd`, its `internal/v2/*` flattened to `internal/*`). The tag
-**`ledger-v2-final`** marks the split point here: `c21a1fe`, the commit the
+**`ledger-v2-final`** marks the split point here: `6c3ee1b`, the commit the
 split was taken from. Three doc-only commits followed it before the prune, so
-the tree still carried v2 up to `817e5b6`. The same tag exists in
-salehtl/ledgerd on the filtered rewrite of `c21a1fe`, under a different hash.
+the tree still carried v2 up to `a9b85a6`. The same tag exists in
+salehtl/ledgerd on the filtered rewrite of that same split commit, under a
+different hash. Prefer the tag name over either hash: this history was rewritten
+on 2026-08-12 to purge real transaction data, so every hash quoted before that
+date is dead and the ones above are the post-rewrite replacements.
 
 So: **v2 work does not belong here.** If a task mentions `ledgerd`, passkeys,
 SMTP ingest, the op log, Postgres, `web/`, `client/` or the conformance suites,
