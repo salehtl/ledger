@@ -149,6 +149,21 @@ describe("deckCategories", () => {
     expect(cats[0]!.Name).toBe("Gym");
   });
 
+  it("offers a re-added name even though an older def of the same name is retired", () => {
+    // Add "Gym", retire it, add "Gym" again: the panel mints a NEW id, so the
+    // log holds one inactive def and one active def with the same name. The
+    // withheld-names set must not let the corpse outvote the living: a name
+    // with ANY active def is offered. Found in the field 2026-08-11 — two
+    // user categories invisible in every picker on every screen, forever.
+    const cats = deckCategories([], [
+      { id: "old", name: "Gym", kind: "spending", bucket: "need", color: null, active: false },
+      { id: "new", name: "Gym", kind: "spending", bucket: "need", color: null, active: true },
+    ]);
+    expect(cats.map((c) => c.Name)).toContain("Gym");
+    // And in the bucket the ACTIVE def declares, not the retired one's.
+    expect(cats.find((c) => c.Name === "Gym")?.Bucket).toBe("need");
+  });
+
   it("stops offering a retired one, even where the user has already used it", () => {
     const retired = [
       { id: "c1", name: "Gym", kind: "spending", bucket: "need", color: null, active: false } as const,

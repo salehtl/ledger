@@ -199,8 +199,15 @@ export function deckCategories(names: readonly string[], defs: readonly Category
   const seen = new Set<string>();
   // A retirement has to be able to withhold a name the grid would otherwise
   // supply itself — from the user's own history, or from the built-in seed —
-  // so the refusal is by NAME and is applied to every source below.
-  const retired = new Set(defs.filter((c) => !c.active).map((c) => c.name.toLowerCase()));
+  // so the refusal is by NAME and is applied to every source below. But only
+  // for names with NO living def: retire "Gym", then add "Gym" again, and the
+  // panel mints a fresh id — one inactive def and one active def share the
+  // name, and the corpse must not outvote the living. (It did, once: two
+  // re-added categories were invisible in every picker on every screen.)
+  const living = new Set(defs.filter((c) => c.active).map((c) => c.name.toLowerCase()));
+  const retired = new Set(
+    defs.filter((c) => !c.active && !living.has(c.name.toLowerCase())).map((c) => c.name.toLowerCase()),
+  );
   const add = (name: string, kind: string, bucket: string, color = ""): void => {
     const key = name.toLowerCase();
     if (name === "" || seen.has(key) || retired.has(key)) return;
