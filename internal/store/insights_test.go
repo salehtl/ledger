@@ -65,37 +65,41 @@ func TestSelectMonthlyTotals(t *testing.T) {
 	if sid == 0 {
 		t.Fatal("seed no longer contains a Salary income category — update this test's fixture lookup")
 	}
-	spend := func(ts string, fils int64) {
+	// SelectMonthlyTotals windows on time.Now(), so the fixture lives in the
+	// previous calendar month rather than on a fixed date that ages out.
+	now := time.Now().UTC()
+	prev := time.Date(now.Year(), now.Month(), 1, 9, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	spend := func(day int, fils int64) {
 		tid, _, _ := st.InsertTransaction(TransactionRow{
-			PostedAt: mustTime(ts), AmountFils: fils, Currency: "AED",
+			PostedAt: prev.AddDate(0, 0, day-1), AmountFils: fils, Currency: "AED",
 			Direction: "debit", MerchantRaw: "X", Status: "confirmed", Source: "email",
 		})
 		st.UpdateTransactionCategory(tid, gid, "confirmed")
 	}
-	income := func(ts string, fils int64) {
+	income := func(day int, fils int64) {
 		tid, _, _ := st.InsertTransaction(TransactionRow{
-			PostedAt: mustTime(ts), AmountFils: fils, Currency: "AED",
+			PostedAt: prev.AddDate(0, 0, day-1), AmountFils: fils, Currency: "AED",
 			Direction: "credit", MerchantRaw: "PAY", Status: "confirmed", Source: "email",
 		})
 		st.UpdateTransactionCategory(tid, sid, "confirmed")
 	}
-	spend("2026-06-05T09:00:00Z", 5000)
-	spend("2026-06-20T09:00:00Z", 3000)
-	income("2026-06-01T09:00:00Z", 100000)
+	spend(5, 5000)
+	spend(20, 3000)
+	income(1, 100000)
 
 	rows, err := st.SelectMonthlyTotals(3)
 	if err != nil {
 		t.Fatalf("monthly totals: %v", err)
 	}
-	// Find the 2026-06 bucket.
-	var june MonthlyTotalRow
+	want := prev.Format("2006-01")
+	var got MonthlyTotalRow
 	for _, r := range rows {
-		if r.Period == "2026-06" {
-			june = r
+		if r.Period == want {
+			got = r
 		}
 	}
-	if june.SpentFils != 8000 || june.IncomeFils != 100000 {
-		t.Fatalf("june = %+v, want spent 8000 income 100000", june)
+	if got.SpentFils != 8000 || got.IncomeFils != 100000 {
+		t.Fatalf("%s = %+v, want spent 8000 income 100000", want, got)
 	}
 }
 
