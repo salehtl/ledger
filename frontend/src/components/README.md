@@ -287,7 +287,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   `text-sm` on a control. Add `inputMode="decimal"` for money,
   `inputMode="numeric"` for integers, `enterKeyHint`/`autoCapitalize`/
   `autoCorrect` where the keyboard matters.
-- With `icon`, `className` lands on the inner input (not the wrapper) — apply margins to a wrapping element, not via `className`.
+- **`onClear`** adds the clear button: a 44px X inside the right edge, shown
+  only while the controlled `value` has text. The parent empties its state in
+  the callback. **Every search field passes it** — the native WebKit cancel
+  glyph is hidden in `app.css`, so without `onClear` a search field has no
+  way to be emptied in one tap.
+- With `icon` or `onClear`, `className` lands on the inner input (not the wrapper) — apply margins to a wrapping element, not via `className`.
 
 ### NumberField (`Field.tsx`)
 - **Purpose:** every numeric entry — amounts, percentages, counts.

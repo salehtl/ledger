@@ -36,6 +36,7 @@ export function SearchSheet({ txns, categories, onClose }: {
           placeholder="Search merchant…"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
+          onClear={() => setTerm("")}
         />
       </div>
       <FilterBar filters={filters} categories={categories} txns={txns} open onChange={setFilters} />

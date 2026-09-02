@@ -83,7 +83,8 @@ func (s *Server) handleRefundCandidates(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	items, err := s.catStore.SelectRefundCandidates(txID, 20)
+	// ?q= is the picker's merchant search; blank means the newest page.
+	items, err := s.catStore.SelectRefundCandidates(txID, r.URL.Query().Get("q"), 50)
 	if err != nil {
 		writeRefundErr(w, err)
 		return

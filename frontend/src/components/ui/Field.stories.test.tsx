@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { composeStories } from "@storybook/react-vite";
 import * as stories from "./Field.stories";
 
-const { TextInput, SearchInput, InsetInput, CategorySelect } = composeStories(stories);
+const { TextInput, SearchInput, SearchInputClearable, InsetInput, CategorySelect } = composeStories(stories);
 
 describe("Field stories", () => {
   it("input is 16px text on a 44px control (iOS zoom guard)", () => {
@@ -15,6 +15,10 @@ describe("Field stories", () => {
   it("icon variant pads for the leading glyph", () => {
     render(<SearchInput />);
     expect(screen.getByPlaceholderText("Search merchants…").className).toContain("pl-9");
+  });
+  it("clearable variant shows the Clear button while it has text", () => {
+    render(<SearchInputClearable />);
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
   });
   it("inset variant swaps to the dialog surface", () => {
     render(<InsetInput />);

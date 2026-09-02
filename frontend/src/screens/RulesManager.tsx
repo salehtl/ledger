@@ -57,7 +57,7 @@ export function RulesManager({ onClose }: { onClose: () => void }) {
         {!rules.isPending && <p className="mt-1 text-xs text-muted tnum">{active} active · {list.length - active} paused</p>}
       </div>
 
-      <Input icon={Search} type="search" aria-label="Search rules" placeholder="Search merchants or categories…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <Input icon={Search} type="search" aria-label="Search rules" placeholder="Search merchants or categories…" value={query} onChange={(e) => setQuery(e.target.value)} onClear={() => setQuery("")} />
 
       {rules.isPending ? <Skeleton rows={6} /> : list.length === 0 ? (
         <div className="py-10 text-center">

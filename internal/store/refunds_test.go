@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -203,12 +204,12 @@ func TestSelectRefundCandidatesRanksExactAmountFirst(t *testing.T) {
 	nearWrongAmt := seedTxn(t, st, "debit", "Noon", 7000, "2026-07-02T10:00:00Z", "Shopping")
 	exact := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-06-20T10:00:00Z", "Groceries")
 	// Excluded rows:
-	old := seedTxn(t, st, "debit", "Old buy", 5000, "2026-03-01T10:00:00Z", "Groceries")       // >90 days before
+	old := seedTxn(t, st, "debit", "Old buy", 5000, "2025-05-01T10:00:00Z", "Groceries")       // >1 year before
 	future := seedTxn(t, st, "debit", "Future buy", 5000, "2026-07-20T10:00:00Z", "Groceries") // after credit+1d
 	pending := seedTxn(t, st, "debit", "Pending buy", 5000, "2026-07-01T10:00:00Z", "")        // uncategorized
 	credit := seedTxn(t, st, "credit", "Refund", 5000, "2026-07-03T10:00:00Z", "")
 
-	items, err := st.SelectRefundCandidates(credit, 20)
+	items, err := st.SelectRefundCandidates(credit, "", 20)
 	if err != nil {
 		t.Fatalf("SelectRefundCandidates: %v", err)
 	}
@@ -237,10 +238,10 @@ func TestSelectRefundCandidatesRanksExactAmountFirst(t *testing.T) {
 func TestSelectRefundCandidatesRejectsNonCredit(t *testing.T) {
 	st := openTestStore(t)
 	debitID := seedTxn(t, st, "debit", "Carrefour", 5000, "2026-07-01T10:00:00Z", "Groceries")
-	if _, err := st.SelectRefundCandidates(debitID, 20); !errors.Is(err, ErrRefundBadLink) {
+	if _, err := st.SelectRefundCandidates(debitID, "", 20); !errors.Is(err, ErrRefundBadLink) {
 		t.Errorf("SelectRefundCandidates(debit) = %v, want ErrRefundBadLink", err)
 	}
-	if _, err := st.SelectRefundCandidates(99999, 20); !errors.Is(err, ErrRefundNotFound) {
+	if _, err := st.SelectRefundCandidates(99999, "", 20); !errors.Is(err, ErrRefundNotFound) {
 		t.Errorf("SelectRefundCandidates(missing) = %v, want ErrRefundNotFound", err)
 	}
 }
@@ -267,7 +268,7 @@ func TestRefundMachinerySurvivesSplit(t *testing.T) {
 	}
 
 	credit := seedTxn(t, st, "credit", "Amazon refund", 10000, "2026-07-05T10:00:00Z", "")
-	items, err := st.SelectRefundCandidates(credit, 20)
+	items, err := st.SelectRefundCandidates(credit, "", 20)
 	if err != nil {
 		t.Fatalf("candidates: %v", err)
 	}
@@ -343,5 +344,66 @@ func TestLinkRefundRejectsSplitCredit(t *testing.T) {
 	}
 	if err := st.LinkRefund(creditID, debitID); err != nil {
 		t.Fatalf("LinkRefund after un-split: %v", err)
+	}
+}
+
+// The window is one year, not a page of the newest rows: a purchase four
+// months back must still be offered, and a merchant search must reach past
+// whatever the limit would have cut off.
+func TestSelectRefundCandidatesWindowAndSearch(t *testing.T) {
+	st := openTestStore(t)
+	fourMonths := seedTxn(t, st, "debit", "Woodford CPT Airport", 3045326, "2026-05-01T10:00:00Z", "Shopping")
+	tooOld := seedTxn(t, st, "debit", "Woodford old", 100, "2025-08-01T10:00:00Z", "Shopping")
+	// More newer rows than the limit, so the old purchase falls off the
+	// unsearched page.
+	for i := 0; i < 5; i++ {
+		seedTxn(t, st, "debit", fmt.Sprintf("Noon %d", i), 7000+int64(i), fmt.Sprintf("2026-08-2%dT10:00:00Z", i), "Shopping")
+	}
+	credit := seedTxn(t, st, "credit", "VISA CARD SETTLEMENT", 725561, "2026-09-01T10:00:00Z", "")
+
+	has := func(items []ReviewItem, id int64) bool {
+		for _, it := range items {
+			if it.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Unsearched, limit 3: only the three newest Noon rows.
+	page, err := st.SelectRefundCandidates(credit, "", 3)
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	if len(page) != 3 || has(page, fourMonths) {
+		t.Fatalf("unsearched page = %d rows (has old purchase: %v), want 3 newest without it", len(page), has(page, fourMonths))
+	}
+
+	// Unsearched, generous limit: the four-month-old purchase is in the window.
+	all, err := st.SelectRefundCandidates(credit, "", 50)
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if !has(all, fourMonths) {
+		t.Errorf("four-month-old purchase missing from the one-year window")
+	}
+	if has(all, tooOld) {
+		t.Errorf("purchase older than a year offered as a candidate")
+	}
+
+	// Search is a case-insensitive merchant substring and ignores the page cut.
+	found, err := st.SelectRefundCandidates(credit, "  woodFORD ", 3)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != fourMonths {
+		t.Fatalf("search = %v, want only %d", found, fourMonths)
+	}
+	none, err := st.SelectRefundCandidates(credit, "zzz", 3)
+	if err != nil {
+		t.Fatalf("no-match search: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("no-match search returned %d rows", len(none))
 	}
 }

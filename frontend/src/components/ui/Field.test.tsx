@@ -42,6 +42,51 @@ it("spreads native props through (type, inputMode)", () => {
   expect(el.inputMode).toBe("decimal");
 });
 
+describe("Input clear button", () => {
+  function Host({ initial = "", onClear }: { initial?: string; onClear?: () => void }) {
+    const [v, setV] = useState(initial);
+    return (
+      <Input
+        aria-label="Search"
+        icon={Search}
+        type="search"
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onClear={onClear ? () => { setV(""); onClear(); } : undefined}
+      />
+    );
+  }
+
+  it("shows a Clear button only while the field has text, and clears on tap", () => {
+    const onClear = vi.fn();
+    render(<Host initial="wood" onClear={onClear} />);
+    const btn = screen.getByRole("button", { name: "Clear" });
+    // A real 44px target, not a tiny glyph.
+    expect(btn.className).toContain("min-w-11");
+    fireEvent.click(btn);
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText("Search") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
+  it("renders no Clear button without onClear, even with text", () => {
+    render(<Host initial="wood" />);
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
+  it("pads the text clear of the button on the right and the icon on the left", () => {
+    render(<Host initial="wood" onClear={() => {}} />);
+    const el = screen.getByLabelText("Search");
+    expect(el.className).toContain("pl-9");
+    expect(el.className).toContain("pr-11");
+  });
+
+  it("keeps the normal right padding while empty, so the placeholder is not squeezed", () => {
+    render(<Host onClear={() => {}} />);
+    expect(screen.getByLabelText("Search").className).toContain("pr-3");
+  });
+});
+
 describe("NumberField", () => {
   /**
    * A controlled host. `keepNull` is the difference between the two ways a

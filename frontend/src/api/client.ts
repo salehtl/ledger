@@ -56,8 +56,9 @@ export function sweepTransfers(): Promise<SweepResult> {
   return postJSON("/api/transfers/sweep", {});
 }
 
-export function getRefundCandidates(id: number): Promise<Txn[]> {
-  return getJSON<Txn[]>(`/api/transactions/${id}/refund-candidates`);
+export function getRefundCandidates(id: number, q = ""): Promise<Txn[]> {
+  const qs = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : "";
+  return getJSON<Txn[]>(`/api/transactions/${id}/refund-candidates${qs}`);
 }
 
 export async function linkRefund(id: number, targetId: number): Promise<void> {

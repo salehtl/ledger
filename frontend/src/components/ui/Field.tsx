@@ -1,5 +1,6 @@
 import { useState, type InputHTMLAttributes, type SelectHTMLAttributes } from "react";
-import type { PixelIconType } from "./PixelIcon";
+import { X, type PixelIconType } from "./PixelIcon";
+import { IconButton } from "./IconButton";
 import {
   clampNumber,
   formatNumericValue,
@@ -11,19 +12,44 @@ import {
 // focused control whose font-size is below 16px. Never swap it for text-sm.
 // `inset` (bg-surface-2) is for fields inside a Dialog, whose panel is
 // already bg-surface; the default bg-surface is for fields on the page (bg-bg).
-const BASE = "w-full min-h-11 py-2 pr-3 rounded-[var(--radius)] border border-border text-base";
+const BASE = "w-full min-h-11 py-2 rounded-[var(--radius)] border border-border text-base";
 const bg = (inset: boolean) => (inset ? "bg-surface-2" : "bg-surface");
 
-export function Input({ inset = false, icon: Icon, className = "", ...rest }:
-  { inset?: boolean; icon?: PixelIconType; className?: string } & InputHTMLAttributes<HTMLInputElement>) {
+/**
+ * `onClear` turns on the clear button: a full 44px X inside the right edge,
+ * shown only while the (controlled) `value` has text. The parent empties its
+ * own state in the callback — the button never fakes a change event. Every
+ * search field passes it; a plain text field usually should not.
+ */
+export function Input({ inset = false, icon: Icon, onClear, className = "", ...rest }:
+  { inset?: boolean; icon?: PixelIconType; onClear?: () => void; className?: string }
+  & InputHTMLAttributes<HTMLInputElement>) {
+  const showClear = onClear !== undefined && typeof rest.value === "string" && rest.value.length > 0;
   const control = (
-    <input className={`${BASE} ${Icon ? "pl-9" : "pl-3"} ${bg(inset)} ${className}`} {...rest} />
+    <input
+      className={`${BASE} ${Icon ? "pl-9" : "pl-3"} ${showClear ? "pr-11" : "pr-3"} ${bg(inset)} ${className}`}
+      {...rest}
+    />
   );
-  if (!Icon) return control;
+  if (!Icon && !showClear) return control;
   return (
     <div className="relative">
-      <Icon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
+      {Icon && (
+        <Icon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden />
+      )}
       {control}
+      {showClear && (
+        <IconButton
+          label="Clear"
+          type="button"
+          className="absolute right-0 top-1/2 -translate-y-1/2"
+          // Fire before the input loses focus on touch, so the keyboard stays up.
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={onClear}
+        >
+          <X size={16} aria-hidden />
+        </IconButton>
+      )}
     </div>
   );
 }

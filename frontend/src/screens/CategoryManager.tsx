@@ -75,7 +75,7 @@ export function CategoryManager({ onClose }: { onClose: () => void }) {
         {cats.data && <p className="mt-1 text-xs text-muted tnum">{total} categor{total === 1 ? "y" : "ies"}</p>}
       </div>
 
-      <Input icon={Search} type="search" aria-label="Search categories" placeholder="Search categories…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <Input icon={Search} type="search" aria-label="Search categories" placeholder="Search categories…" value={query} onChange={(e) => setQuery(e.target.value)} onClear={() => setQuery("")} />
 
       {cats.isPending ? <Skeleton rows={6} /> : searching && visible === 0 ? (
         <p className="py-8 text-center text-sm text-muted">No categories match “{query.trim()}”.</p>

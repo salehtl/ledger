@@ -63,7 +63,7 @@ type CategoryStore interface {
 	InsertManualTransaction(store.ManualTxn) (int64, error)
 	LinkRefund(creditID, debitID int64) error
 	UnlinkRefund(txID int64) error
-	SelectRefundCandidates(creditID int64, limit int) ([]store.ReviewItem, error)
+	SelectRefundCandidates(creditID int64, q string, limit int) ([]store.ReviewItem, error)
 }
 
 // PushStore is the subset of the store needed by push-subscription handlers.

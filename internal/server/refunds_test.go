@@ -177,3 +177,27 @@ func TestLinkRefundSplitCreditConflict(t *testing.T) {
 		t.Fatalf("refund_of_id = %v after refused link, want NULL", *refundOf)
 	}
 }
+
+// ?q= reaches the store as a merchant search, so the picker can find a
+// purchase the newest-first page would have cut off.
+func TestRefundCandidatesEndpointSearch(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	target := seedServerTxn(t, st, "debit", "Woodford CPT Airport", 3045326, "2026-05-01T10:00:00Z", "Groceries")
+	seedServerTxn(t, st, "debit", "Carrefour", 5000, "2026-08-30T10:00:00Z", "Groceries")
+	creditID := seedServerTxn(t, st, "credit", "VISA CARD SETTLEMENT", 725561, "2026-09-01T10:00:00Z", "")
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/transactions/%d/refund-candidates?q=woodford", creditID), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, fmt.Sprintf(`"ID":%d`, target)) {
+		t.Errorf("search missing Woodford purchase: %s", body)
+	}
+	if strings.Contains(body, "Carrefour") {
+		t.Errorf("search returned a non-matching merchant: %s", body)
+	}
+}

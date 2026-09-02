@@ -3,6 +3,7 @@ import { X } from "../ui/PixelIcon";
 import { EMPTY_FILTERS, filtersActive, sourceLabel, type TxnFilters } from "../../lib/transactions";
 import { SectionLabel } from "../ui/SectionLabel";
 import { Pressable } from "../ui/Pressable";
+import { Input } from "../ui/Field";
 import { bucketColor } from "../../lib/insights";
 import { categoryColor } from "../../lib/categoryColor";
 import type { Category, Txn } from "../../api/types";
@@ -144,15 +145,18 @@ export function FilterBar({ filters, categories, txns, open, onChange }: {
             <section>
               <SectionLabel className="mb-2">Category</SectionLabel>
               {activeCats.length > 8 && (
-                <input
-                  type="search"
-                  enterKeyHint="search"
-                  autoCorrect="off"
-                  placeholder="Filter categories…"
-                  value={catQuery}
-                  onChange={(e) => setCatQuery(e.target.value)}
-                  className="w-full min-h-11 mb-2 px-3 rounded-[var(--radius)] border border-border bg-surface-2 text-base"
-                />
+                <div className="mb-2">
+                  <Input
+                    inset
+                    type="search"
+                    enterKeyHint="search"
+                    autoCorrect="off"
+                    placeholder="Filter categories…"
+                    value={catQuery}
+                    onChange={(e) => setCatQuery(e.target.value)}
+                    onClear={() => setCatQuery("")}
+                  />
+                </div>
               )}
               <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto overscroll-contain">
                 {shownCats.map((c) => (

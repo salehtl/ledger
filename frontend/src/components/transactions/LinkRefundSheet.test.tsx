@@ -53,10 +53,47 @@ describe("LinkRefundSheet", () => {
     );
   });
 
+  it("searches by merchant through ?q= and clears back to the full page", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify([candidate])))  // initial page
+      .mockResolvedValueOnce(new Response(JSON.stringify([txn({          // search hit
+        ID: 11, Direction: "debit", MerchantRaw: "Woodford CPT Airport", Status: "confirmed",
+        CategoryID: 3, CategoryName: "Shopping", Kind: "spending", PostedAt: "2026-05-01T10:00:00Z",
+      })])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([candidate])));  // back to the page
+    renderSheet();
+    await screen.findByText("Carrefour");
+
+    const box = screen.getByLabelText("Search purchases");
+    fireEvent.change(box, { target: { value: "wood" } });
+    await screen.findByText("Woodford CPT Airport");
+    expect(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[0]).toBe("/api/transactions/7/refund-candidates?q=wood");
+    expect(screen.queryByText("Carrefour")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect((box as HTMLInputElement).value).toBe("");
+    await screen.findByText("Carrefour");
+    vi.useRealTimers();
+  });
+
+  it("tells the difference between no purchases at all and no search match", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify([candidate])))
+      .mockResolvedValueOnce(new Response("[]"));
+    renderSheet();
+    await screen.findByText("Carrefour");
+    fireEvent.change(screen.getByLabelText("Search purchases"), { target: { value: "zzz" } });
+    expect(await screen.findByText(/No purchases match/)).toBeInTheDocument();
+    expect(screen.queryByText(/No categorized purchases/)).toBeNull();
+    vi.useRealTimers();
+  });
+
   it("shows an empty state when there are no candidates", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("[]"));
     renderSheet();
-    expect(await screen.findByText(/No categorized purchases/)).toBeInTheDocument();
+    expect(await screen.findByText(/No categorized purchases in the year before/)).toBeInTheDocument();
     // The empty-state copy and a candidate list are mutually exclusive states;
     // guard against both rendering at once.
     expect(screen.queryByRole("button", { name: /Carrefour/ })).toBeNull();

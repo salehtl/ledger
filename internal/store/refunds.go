@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -137,13 +138,15 @@ func (s *Store) UnlinkRefund(txID int64) error {
 }
 
 // SelectRefundCandidates lists confirmed spending debits the credit could
-// plausibly refund: posted between 90 days before and 1 day after the credit.
-// Split parents (category NULL, lines spending-categorized) stay findable —
-// splitting never removes a purchase's refund machinery. Exact
+// plausibly refund: posted between one year before and 1 day after the
+// credit. q, when non-blank, is a case-insensitive merchant substring — the
+// picker's search — so a purchase the newest-first page cut off is still
+// reachable. Split parents (category NULL, lines spending-categorized) stay
+// findable — splitting never removes a purchase's refund machinery. Exact
 // amount+currency matches rank first, then newest.
-func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem, error) {
+func (s *Store) SelectRefundCandidates(creditID int64, q string, limit int) ([]ReviewItem, error) {
 	if limit <= 0 {
-		limit = 20
+		limit = 50
 	}
 	var postedAt, currency, direction string
 	var amount int64
@@ -163,8 +166,11 @@ func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem,
 	if err != nil {
 		return nil, fmt.Errorf("parse posted_at %q: %w", postedAt, err)
 	}
-	lower := posted.UTC().AddDate(0, 0, -90).Format(time.RFC3339Nano)
+	lower := posted.UTC().AddDate(-1, 0, 0).Format(time.RFC3339Nano)
 	upper := posted.UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	// LIKE is case-insensitive for ASCII in SQLite; the merchant search is a
+	// plain substring, with the LIKE wildcards escaped so "50%" means "50%".
+	needle := "%" + escapeLike(strings.TrimSpace(q)) + "%"
 	rows, err := s.DB.Query(
 		`SELECT `+reviewItemColumns+`
 		   FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
@@ -173,9 +179,10 @@ func (s *Store) SelectRefundCandidates(creditID int64, limit int) ([]ReviewItem,
 		         OR (t.category_id IS NULL
 		             AND EXISTS (SELECT 1 FROM transaction_splits sp WHERE sp.transaction_id = t.id)))
 		    AND t.posted_at >= ? AND t.posted_at <= ?
+		    AND t.merchant_raw LIKE ? ESCAPE '\'
 		  ORDER BY CASE WHEN t.amount = ? AND t.currency = ? THEN 0 ELSE 1 END, t.posted_at DESC
 		  LIMIT ?`,
-		lower, upper, amount, currency, limit,
+		lower, upper, needle, amount, currency, limit,
 	)
 	if err != nil {
 		return nil, err

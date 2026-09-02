@@ -344,3 +344,10 @@ input, select, textarea { font-size: max(16px, 1rem); }
     --color-popover-foreground: #ecebe8;
   }
 }
+
+/* Search fields draw their own clear button (Input onClear). Hide WebKit's
+   native cancel glyph so a field never shows two X marks. */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}

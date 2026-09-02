@@ -103,16 +103,18 @@ export function CategorizeSheet({ txn, categories, onSubmit, onClose, onLinkRefu
         </label>
       )}
 
-      <Input
-        inset
-        type="search"
-        enterKeyHint="search"
-        autoCorrect="off"
-        placeholder="Search categories…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        className="mb-3"
-      />
+      <div className="mb-3">
+        <Input
+          inset
+          type="search"
+          enterKeyHint="search"
+          autoCorrect="off"
+          placeholder="Search categories…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onClear={() => setQuery("")}
+        />
+      </div>
 
       <div className="space-y-4">
         {groups.map(([bucket, list]) => (

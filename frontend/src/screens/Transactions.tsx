@@ -199,6 +199,7 @@ export function Transactions({ from, to }: { from?: string; to?: string }) {
             placeholder="Search merchant…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onClear={() => setSearch("")}
           />
         </div>
         <Pressable

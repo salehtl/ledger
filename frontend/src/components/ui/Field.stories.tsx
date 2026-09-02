@@ -21,6 +21,24 @@ type Story = StoryObj<typeof meta>;
 
 export const TextInput: Story = { args: { placeholder: "Merchant contains…" } };
 export const SearchInput: Story = { args: { placeholder: "Search merchants…", icon: Search } };
+
+/** A search field with text shows the clear button; emptying it hides the button again. */
+export const SearchInputClearable: Story = {
+  render: () => {
+    const [q, setQ] = useState("woodford");
+    return (
+      <Input
+        aria-label="Search merchants"
+        icon={Search}
+        type="search"
+        placeholder="Search merchants…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onClear={() => setQ("")}
+      />
+    );
+  },
+};
 export const InsetInput: Story = { args: { placeholder: "0.00", inset: true, inputMode: "decimal" } };
 export const CategorySelect: Story = {
   render: () => (

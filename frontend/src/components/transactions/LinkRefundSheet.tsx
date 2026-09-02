@@ -1,18 +1,22 @@
 // frontend/src/components/transactions/LinkRefundSheet.tsx
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { PixelSpinner } from "../ui/PixelSpinner";
+import { Search } from "../ui/PixelIcon";
 import { getRefundCandidates, linkRefund } from "../../api/client";
 import type { Txn } from "../../api/types";
 import { Dialog, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { Input } from "../ui/Field";
 import { Pressable } from "../ui/Pressable";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { Money } from "../Money";
 import { aedFils, nativeAmountTag } from "../../lib/money";
 
 /** Pick the original purchase a refund credit belongs to. Linking copies the
  *  purchase's category onto the credit so it offsets that category instead of
- *  looking like income. */
+ *  looking like income. The server offers the newest page from the year before
+ *  the credit; the search box reaches anything that page cut off. */
 export function LinkRefundSheet({ txn, onLinked, onClose }: {
   txn: Txn;
   onLinked: () => void;
@@ -20,10 +24,16 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const q = useDebouncedValue(query.trim(), 200);
   const candidates = useQuery({
-    queryKey: ["refund-candidates", txn.ID],
-    queryFn: () => getRefundCandidates(txn.ID),
+    queryKey: ["refund-candidates", txn.ID, q],
+    queryFn: () => getRefundCandidates(txn.ID, q),
+    // Keep the last list on screen while a new search is in flight, so
+    // typing does not flash the spinner on every keystroke.
+    placeholderData: keepPreviousData,
   });
+  const searching = q !== "";
 
   const pick = async (target: Txn) => {
     setBusy(true);
@@ -43,6 +53,20 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
         {txn.MerchantRaw || "—"} · <Money fils={aedFils(txn) ?? txn.AmountFils} />
         {" — pick the purchase this refunds."}
       </p>
+      <div className="mb-3">
+        <Input
+          inset
+          icon={Search}
+          type="search"
+          enterKeyHint="search"
+          autoCorrect="off"
+          aria-label="Search purchases"
+          placeholder="Search purchases…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onClear={() => setQuery("")}
+        />
+      </div>
       {candidates.isPending && (
         <div className="flex justify-center py-8">
           <PixelSpinner size={24} role="status" aria-label="Loading" className="text-muted" />
@@ -51,7 +75,9 @@ export function LinkRefundSheet({ txn, onLinked, onClose }: {
       {candidates.isError && <p className="text-sm text-bad py-4">Couldn't load purchases.</p>}
       {candidates.data && candidates.data.length === 0 && (
         <p className="text-sm text-muted py-4">
-          No categorized purchases found in the 90 days before this credit.
+          {searching
+            ? "No purchases match. Try a shorter part of the merchant name."
+            : "No categorized purchases in the year before this credit."}
         </p>
       )}
       {candidates.data && candidates.data.length > 0 && (
