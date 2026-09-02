@@ -50,10 +50,18 @@ let iosSwitch: HTMLLabelElement | null = null;
 /** Lazily create (once) the hidden iOS switch and return it, or null if no DOM. */
 function ensureIosSwitch(): HTMLLabelElement | null {
   if (typeof document === "undefined" || !document.body) return null;
-  if (iosSwitch) return iosSwitch;
+  if (iosSwitch) {
+    // Re-attach if something replaced the body's children under us; a
+    // detached switch clicks silently.
+    if (!iosSwitch.isConnected) document.body.appendChild(iosSwitch);
+    return iosSwitch;
+  }
   const label = document.createElement("label");
   label.setAttribute("data-haptic-switch", "");
   label.setAttribute("aria-hidden", "true");
+  // Out of the tab order and the accessibility tree: it is a haptics shim,
+  // not a control. The UI harness skips inert / aria-hidden subtrees.
+  label.setAttribute("inert", "");
   label.style.cssText = "position:fixed;left:-9999px;pointer-events:none;";
   const input = document.createElement("input");
   input.type = "checkbox";

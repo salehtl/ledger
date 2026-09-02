@@ -106,7 +106,14 @@ export async function audit(page) {
       }
     }
 
-    const all = [...(layerRoot === document.body ? document.body : layerRoot).querySelectorAll("*")].filter(inLayer);
+    // An inert or aria-hidden subtree is not part of the UI a person can reach:
+    // covered layers, and shims like the haptics switch in lib/haptics.ts.
+    // Geometry and control checks skip it; the inert check above is what
+    // polices whether the covered layer was actually marked.
+    const hiddenFromUsers = (el) => !!el.closest('[inert], [aria-hidden="true"]');
+    const all = [...(layerRoot === document.body ? document.body : layerRoot).querySelectorAll("*")]
+      .filter(inLayer)
+      .filter((el) => !hiddenFromUsers(el));
 
     /** The nearest ancestor that scrolls or clips, and whether el is inside its visible box. */
     const clippedOutOfView = (el) => {
@@ -185,6 +192,7 @@ export async function audit(page) {
       'button, a[href], input, select, textarea, [role="button"], [role="switch"], [role="tab"], [tabindex]:not([tabindex="-1"])';
     const controls = [...(layerRoot === document.body ? document.body : layerRoot).querySelectorAll(INTERACTIVE)]
       .filter(inLayer)
+      .filter((el) => !hiddenFromUsers(el))
       .filter(visible);
 
     for (const el of controls) {
@@ -257,7 +265,19 @@ export async function audit(page) {
       const cy = r.top + r.height / 2;
       if (cx < 0 || cx > vw || cy < 0 || cy > vh) continue;
       const hit = document.elementFromPoint(cx, cy);
-      if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
+      // A row half under a sheet's sticky footer is not covered for good: the
+      // list scrolls and brings it out. Only a footer over a list that can
+      // still scroll is excused — a footer over a list that cannot scroll is
+      // hiding a control for real.
+      const underScrollableFooter = (() => {
+        if (!hit?.closest?.("[data-dialog-footer]")) return false;
+        for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+          const ps = getComputedStyle(p);
+          if (["auto", "scroll"].includes(ps.overflowY) && p.scrollHeight > p.clientHeight + 1) return true;
+        }
+        return false;
+      })();
+      if (hit && hit !== el && !el.contains(hit) && !hit.contains(el) && !underScrollableFooter) {
         issues.push({
           kind: "control-obscured",
           severity: "high",

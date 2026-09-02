@@ -346,6 +346,12 @@ shipped stylesheet and guarded by a test in `styles/tokens.test.ts`.
   to its DOM ancestor — `<main>`'s `overscroll-contain` never sees the gesture.
   Don't build an overlay outside Dialog; it will let the page slide behind it.
 - **Don't use when:** the destination is a full screen task (→ `SettingsPage`).
+- **Inert behind it.** While a sheet is mounted, `useInertOthers` marks every
+  sibling on the path from the sheet to the document root `inert`, so Tab and
+  VoiceOver cannot reach the page under the scrim. Nested sheets ref-count.
+  A layer that must stay live over a sheet opts out with `data-inert-exempt`
+  (only the toast region does). The harness check `background-layer-not-inert`
+  enforces this.
 
 ### SettingsPage (`screens/settings/SettingsPage.tsx`)
 - **Purpose:** full-screen drill-in shell — back arrow, title, optional

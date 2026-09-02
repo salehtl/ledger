@@ -55,3 +55,15 @@ describe("enabled flag", () => {
     expect(loadHapticsEnabled()).toBe(true);
   });
 });
+
+describe("iOS switch shim", () => {
+  it("is hidden from assistive tech and the tab order, so it is never a control", () => {
+    delete nav.vibrate;
+    fire("selection");
+    const label = document.querySelector("[data-haptic-switch]");
+    expect(label).not.toBeNull();
+    expect(label!.getAttribute("aria-hidden")).toBe("true");
+    expect(label!.hasAttribute("inert")).toBe(true);
+    expect((label!.querySelector("input") as HTMLInputElement).tabIndex).toBe(-1);
+  });
+});

@@ -223,7 +223,9 @@ async function inspectOverlay(page, ctx) {
     // Primary actions the user must be able to reach.
     for (const b of dialog.querySelectorAll("button")) {
       const t = (b.textContent || "").trim();
-      if (!/save|add|create|update|apply|done|assign|move|set|confirm/i.test(t)) continue;
+      // Whole words only: a merchant row reading "VISA CARD SETTLEMENT" is a
+      // list item, not a "set" action.
+      if (!/\b(save|add|create|update|apply|done|assign|move|set|confirm)\b/i.test(t)) continue;
       const r = b.getBoundingClientRect();
       if (r.height === 0) continue;
       if (r.bottom > vh + 1 || r.top < 0) {

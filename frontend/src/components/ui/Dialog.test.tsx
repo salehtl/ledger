@@ -95,6 +95,22 @@ describe("Dialog", () => {
     host.remove();
   });
 
+  it("inerts the page behind the sheet while it is up, and restores it when the sheet is gone", () => {
+    const { unmount } = render(
+      <MotionProvider>
+        <div>
+          <button data-testid="behind">behind</button>
+          <Dialog title="T" onClose={() => {}}><button>inside</button></Dialog>
+        </div>
+      </MotionProvider>,
+    );
+    const behind = screen.getByTestId("behind");
+    expect(behind.hasAttribute("inert")).toBe(true);
+    expect(screen.getByRole("button", { name: "inside" }).closest("[inert]")).toBeNull();
+    unmount();
+    expect(behind.hasAttribute("inert")).toBe(false);
+  });
+
   it("makes the scrim swallow touch gestures rather than pass them to the page", () => {
     renderInMotion(<Dialog title="T" onClose={() => {}}>x</Dialog>);
     expect(screen.getByTestId("dialog-scrim")).toHaveClass("touch-none");

@@ -5,6 +5,7 @@ import { X } from "./PixelIcon";
 import { SHEET_ENTER, SHEET_EXIT, FADE } from "../../lib/motion";
 import { shouldDismissSheet } from "../../lib/sheetDrag";
 import { useVisualViewport } from "../../hooks/useVisualViewport";
+import { useInertOthers } from "../../hooks/useInertOthers";
 import { IconButton } from "./IconButton";
 
 /**
@@ -82,6 +83,9 @@ export function Dialog({ title, titleAdornment, titleStyle, onClose, children }:
   const titleId = useId();
   const viewport = useVisualViewport();
   useScrollLock(rootRef);
+  // Everything beside the sheet goes inert while it is up: Tab and VoiceOver
+  // stay inside the panel instead of wandering onto the page behind the scrim.
+  useInertOthers(rootRef);
 
   // The sheet owns its own exit: `open` drives AnimatePresence, and the
   // parent is only told to unmount once the exit has actually finished.
