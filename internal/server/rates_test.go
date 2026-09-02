@@ -116,3 +116,45 @@ func TestDeleteRate(t *testing.T) {
 		t.Fatal("EUR rate should be deleted")
 	}
 }
+
+// Saving a corrected rate must rewrite the rows already converted with the
+// wrong one, not only the rows that were still unconverted.
+func TestPutRateReconvertsExistingSnapshots(t *testing.T) {
+	srv, st := newRatesServer(t)
+	// Wrong rate first: 2.0 AED per ZAR.
+	if err := st.UpsertFXRate("ZAR", 2_000_000); err != nil {
+		t.Fatalf("UpsertFXRate: %v", err)
+	}
+	if _, _, err := st.InsertTransaction(store.TransactionRow{
+		PostedAt:   time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
+		AmountFils: 3_000_000, Currency: "ZAR", Direction: "debit",
+		MerchantRaw: "Woodford", Status: "confirmed",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var aed int64
+	if err := st.DB.QueryRow(`SELECT amount_aed FROM transactions WHERE currency='ZAR'`).Scan(&aed); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if aed != 6_000_000 {
+		t.Fatalf("precondition: amount_aed = %d, want 6000000 at the wrong rate", aed)
+	}
+
+	req := httptest.NewRequest("PUT", "/api/rates/ZAR", strings.NewReader(`{"rate":0.2}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["converted"] != float64(1) {
+		t.Fatalf("converted = %v, want 1", got["converted"])
+	}
+	if err := st.DB.QueryRow(`SELECT amount_aed FROM transactions WHERE currency='ZAR'`).Scan(&aed); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if aed != 600_000 {
+		t.Fatalf("amount_aed = %d, want 600000 after the corrected rate", aed)
+	}
+}

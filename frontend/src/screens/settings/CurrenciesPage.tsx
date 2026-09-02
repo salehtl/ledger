@@ -78,7 +78,7 @@ export function CurrenciesPage({ onClose }: { onClose: () => void }) {
     <SettingsPage title="Currencies" onClose={onClose} headerRight={<SavedFlash saved={saved} />}>
       <div>
         <p className="text-xs text-muted mb-4">
-          AED per 1 unit. Snapshots are taken when a transaction arrives; changing a rate only affects future and unconverted transactions.
+          AED per 1 unit. Saving a rate reconverts every transaction in that currency, past and future.
         </p>
         <div className="space-y-3">
           {(rates.data?.rates ?? []).map((r) => (

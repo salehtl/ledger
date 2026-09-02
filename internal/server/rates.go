@@ -16,6 +16,7 @@ type RatesStore interface {
 	DeleteFXRate(currency string) error
 	UnconvertedCurrencies() ([]string, error)
 	ConvertUnconverted() (int64, error)
+	ReconvertCurrency(currency string, rateMicro int64) (int64, error)
 }
 
 // SetRatesStore wires the fx-rate store. Required for /api/rates.
@@ -89,7 +90,10 @@ func (s *Server) handlePutRate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return
 	}
-	converted, err := s.ratesStore.ConvertUnconverted()
+	// Rewrite every row in this currency, not only the unconverted ones: a
+	// rate saved here may be a correction of a wrong earlier value, and the
+	// snapshot carries no date that would let an older rate stay valid.
+	converted, err := s.ratesStore.ReconvertCurrency(currency, rateMicro)
 	if err != nil {
 		http.Error(w, `{"error":"db error"}`, http.StatusInternalServerError)
 		return

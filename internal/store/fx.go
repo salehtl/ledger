@@ -61,6 +61,25 @@ func (s *Store) UpsertFXRate(currency string, rateMicro int64) error {
 	return err
 }
 
+// ReconvertCurrency rewrites amount_aed for every transaction in one currency
+// using rateMicro, including rows that already had a snapshot. There is one
+// undated rate per currency, so a corrected rate can only mean every row
+// converted with the old one is wrong; rows the old rate never reached
+// (amount_aed NULL) are filled the same way. Split lines are scaled from the
+// parent at query time, so they follow without a write.
+func (s *Store) ReconvertCurrency(currency string, rateMicro int64) (int64, error) {
+	if currency == "" || currency == "AED" {
+		return 0, nil
+	}
+	res, err := s.DB.Exec(
+		`UPDATE transactions SET amount_aed = (amount * ? + 500000) / 1000000 WHERE currency = ?`,
+		rateMicro, currency)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DeleteFXRate removes a rate. Existing amount_aed snapshots are untouched.
 func (s *Store) DeleteFXRate(currency string) error {
 	_, err := s.DB.Exec(`DELETE FROM fx_rates WHERE currency=?`, currency)
@@ -121,7 +140,8 @@ func (s *Store) UnconvertedCurrencies() ([]string, error) {
 
 // ConvertUnconverted fills amount_aed for rows that lack it: identity for AED,
 // the current fx rate otherwise. Rows whose currency has no rate stay NULL.
-// Existing snapshots are never rewritten (WHERE amount_aed IS NULL).
+// Existing snapshots are never rewritten here (WHERE amount_aed IS NULL); a
+// rate correction goes through ReconvertCurrency instead.
 func (s *Store) ConvertUnconverted() (int64, error) {
 	res1, err := s.DB.Exec(
 		`UPDATE transactions SET amount_aed = amount WHERE amount_aed IS NULL AND currency IN ('AED', '')`)
