@@ -1,8 +1,8 @@
 // Package anthropic provides a small retrying HTTP client for the Anthropic
-// Messages API. It cooperates with rate limits: on 429 (and 5xx/529) it honors
-// the server's Retry-After header, falling back to capped exponential backoff
-// with jitter. This lets bulk categorization back off instead of hammering the
-// API when it's told to slow down.
+// Messages API and the TypeSafe System One API. It cooperates with rate limits:
+// on 429 (and 5xx/529) it honors the server's Retry-After header, falling back
+// to capped exponential backoff with jitter. This lets bulk categorization back
+// off instead of hammering the API when it's told to slow down.
 package anthropic
 
 import (
@@ -33,6 +33,9 @@ type Retrier struct {
 	// or sent. A non-nil return aborts the call with no network I/O. This is the
 	// single choke point that makes "AI off" mean zero egress.
 	Gate func() error
+	// SetHeaders, if non-nil, sets auth and content headers on each attempt in
+	// place of the Anthropic ones. The TypeSafe client uses it for Bearer auth.
+	SetHeaders func(req *http.Request, apiKey string)
 }
 
 // New returns a Retrier with sane defaults: 3 retries, a 30s per-attempt
@@ -70,9 +73,13 @@ func (r *Retrier) Post(ctx context.Context, endpoint, apiKey string, body []byte
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("anthropic-version", apiVersion)
-		req.Header.Set("content-type", "application/json")
+		if r.SetHeaders != nil {
+			r.SetHeaders(req, apiKey)
+		} else {
+			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set("anthropic-version", apiVersion)
+			req.Header.Set("content-type", "application/json")
+		}
 
 		resp, err := r.HTTP.Do(req)
 		last := i == attempts-1

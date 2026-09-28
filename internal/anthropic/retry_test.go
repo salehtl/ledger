@@ -181,3 +181,30 @@ func TestPostGateAllowsWhenNil(t *testing.T) {
 		t.Fatalf("server received %d requests, want 1", hits)
 	}
 }
+
+func TestPostUsesCustomHeaders(t *testing.T) {
+	var gotAuth, gotXKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotXKey = r.Header.Get("x-api-key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := New(srv.Client())
+	r.SetHeaders = func(req *http.Request, key string) {
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := r.Post(context.Background(), srv.URL, "ts-key", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotAuth != "Bearer ts-key" {
+		t.Errorf("Authorization = %q, want Bearer ts-key", gotAuth)
+	}
+	if gotXKey != "" {
+		t.Errorf("x-api-key leaked to a non-Anthropic endpoint: %q", gotXKey)
+	}
+}
