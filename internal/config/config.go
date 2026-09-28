@@ -42,13 +42,26 @@ type IMAPConfig struct {
 	AppPassword  string `toml:"-"` // secret — env only, never from TOML
 }
 
-// AIConfig holds settings for the Anthropic AI client (categorization + extraction fallback).
-// The API key is NEVER read from TOML; it comes from LEDGER_AI_API_KEY.
+// AIConfig holds settings for the AI clients: Anthropic (extraction fallback,
+// and categorization by default) and optionally TypeSafe (categorization only).
+// API keys are NEVER read from TOML; they come from LEDGER_AI_API_KEY and
+// LEDGER_TYPESAFE_API_KEY.
 type AIConfig struct {
-	Enabled           bool   `toml:"enabled"`
-	Model             string `toml:"model"`
-	AllowAIExtraction bool   `toml:"allow_ai_extraction"`
-	APIKey            string `toml:"-"` // env only
+	Enabled            bool   `toml:"enabled"`
+	Model              string `toml:"model"`
+	AllowAIExtraction  bool   `toml:"allow_ai_extraction"`
+	CategorizeProvider string `toml:"categorize_provider"` // "anthropic" | "typesafe"
+	TypeSafeModel      string `toml:"typesafe_model"`
+	APIKey             string `toml:"-"` // env only
+	TypeSafeAPIKey     string `toml:"-"` // env only
+}
+
+// CategorizeKey is the API key the configured categorization provider needs.
+func (c AIConfig) CategorizeKey() string {
+	if c.CategorizeProvider == "typesafe" {
+		return c.TypeSafeAPIKey
+	}
+	return c.APIKey
 }
 
 // MonitoringConfig controls the drift detection window and threshold.
@@ -96,8 +109,10 @@ func defaults() Config {
 			PollInterval: "60s",
 		},
 		AI: AIConfig{
-			Model:             "claude-haiku-4-5-20251001",
-			AllowAIExtraction: true,
+			Model:              "claude-haiku-4-5-20251001",
+			AllowAIExtraction:  true,
+			CategorizeProvider: "anthropic",
+			TypeSafeModel:      "jev-1.13.0",
 		},
 		Monitoring: MonitoringConfig{
 			DriftWindow: "7d",
@@ -136,6 +151,9 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("LEDGER_AI_API_KEY"); v != "" {
 		cfg.AI.APIKey = v
 	}
+	if v := os.Getenv("LEDGER_TYPESAFE_API_KEY"); v != "" {
+		cfg.AI.TypeSafeAPIKey = v
+	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -170,8 +188,22 @@ func (c Config) validate() error {
 			return fmt.Errorf("imap.poll_interval invalid: %w", err)
 		}
 	}
-	if c.AI.Enabled && c.AI.APIKey == "" {
-		return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
+	if c.AI.Enabled {
+		switch c.AI.CategorizeProvider {
+		case "anthropic":
+			if c.AI.APIKey == "" {
+				return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
+			}
+		case "typesafe":
+			if c.AI.TypeSafeAPIKey == "" {
+				return fmt.Errorf("ai.categorize_provider = \"typesafe\" requires LEDGER_TYPESAFE_API_KEY env var")
+			}
+			if c.AI.AllowAIExtraction && c.AI.APIKey == "" {
+				return fmt.Errorf("ai.allow_ai_extraction requires LEDGER_AI_API_KEY env var (extraction always uses Anthropic)")
+			}
+		default:
+			return fmt.Errorf("ai.categorize_provider must be \"anthropic\" or \"typesafe\" (got %q)", c.AI.CategorizeProvider)
+		}
 	}
 	if _, err := c.Monitoring.ParseDriftWindow(); err != nil {
 		return fmt.Errorf("monitoring.drift_window invalid: %w", err)

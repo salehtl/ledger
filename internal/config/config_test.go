@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func clearLedgerEnv(t *testing.T) {
 		// keep in lockstep with the os.Getenv calls in config.go
 		"LEDGER_LISTEN", "LEDGER_DATA_DIR",
 		"LEDGER_IMAP_HOST", "LEDGER_IMAP_USERNAME", "LEDGER_IMAP_APP_PASSWORD",
-		"LEDGER_AI_API_KEY",
+		"LEDGER_AI_API_KEY", "LEDGER_TYPESAFE_API_KEY",
 	} {
 		t.Setenv(k, "")
 	}
@@ -221,5 +222,57 @@ enabled = true
 	_, err := Load(f)
 	if err == nil {
 		t.Error("expected error when AI enabled but no API key")
+	}
+}
+
+func TestAIProviderDefaults(t *testing.T) {
+	clearLedgerEnv(t)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.CategorizeProvider != "anthropic" || cfg.AI.TypeSafeModel != "jev-1.13.0" {
+		t.Errorf("defaults = %q %q", cfg.AI.CategorizeProvider, cfg.AI.TypeSafeModel)
+	}
+}
+
+func TestTypeSafeProviderNeedsTypeSafeKey(t *testing.T) {
+	clearLedgerEnv(t)
+	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"typesafe\"\nallow_ai_extraction = false\n")
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "LEDGER_TYPESAFE_API_KEY") {
+		t.Errorf("err = %v, want a LEDGER_TYPESAFE_API_KEY error", err)
+	}
+	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
+	if _, err := Load(p); err != nil {
+		t.Errorf("typesafe key alone, no extraction: err = %v, want nil", err)
+	}
+}
+
+func TestTypeSafeWithExtractionStillNeedsAnthropicKey(t *testing.T) {
+	clearLedgerEnv(t)
+	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
+	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"typesafe\"\nallow_ai_extraction = true\n")
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "LEDGER_AI_API_KEY") {
+		t.Errorf("err = %v, want a LEDGER_AI_API_KEY error", err)
+	}
+}
+
+func TestUnknownProviderRejected(t *testing.T) {
+	clearLedgerEnv(t)
+	t.Setenv("LEDGER_AI_API_KEY", "a")
+	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"openai\"\n")
+	if _, err := Load(p); err == nil {
+		t.Error("want an error for an unknown provider")
+	}
+}
+
+func TestCategorizeKey(t *testing.T) {
+	a := AIConfig{CategorizeProvider: "typesafe", APIKey: "a", TypeSafeAPIKey: "t"}
+	if a.CategorizeKey() != "t" {
+		t.Errorf("typesafe key = %q", a.CategorizeKey())
+	}
+	a.CategorizeProvider = "anthropic"
+	if a.CategorizeKey() != "a" {
+		t.Errorf("anthropic key = %q", a.CategorizeKey())
 	}
 }
