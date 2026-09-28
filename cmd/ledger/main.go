@@ -134,7 +134,8 @@ func main() {
 	srv.SetRatesStore(st)
 	srv.SetAccountsStore(st)
 	srv.SetTransfersStore(st)
-	srv.SetAIKeyPresent(cfg.AI.APIKey != "")
+	srv.SetAIKeyPresent(cfg.AI.CategorizeKey() != "")
+	srv.SetAIProvider(cfg.AI.CategorizeProvider)
 	srv.SetRuleActiveStore(st)
 	srv.SetRuleDisplayStore(st)
 	srv.SetBudgetStore(st)
@@ -171,23 +172,27 @@ func main() {
 		log.Printf("push: disabled (set LEDGER_VAPID_PRIVATE + LEDGER_VAPID_PUBLIC to enable)")
 	}
 
-	// Live gate: the single authority over whether any Anthropic call may leave the
-	// box. Consulted at the HTTP boundary (anthropic.Retrier.Post) before every call.
-	keyPresent := cfg.AI.APIKey != ""
-	aiGate := func() error {
-		if !keyPresent {
-			return anthropic.ErrAIDisabled
+	// Live gate: the single authority over whether any AI call may leave the
+	// box. Consulted at the HTTP boundary (anthropic.Retrier.Post) before every
+	// call, for both Anthropic and TypeSafe. keyPresent is per provider.
+	gateFor := func(keyPresent bool) func() error {
+		return func() error {
+			if !keyPresent {
+				return anthropic.ErrAIDisabled
+			}
+			s, err := st.SelectAppSettings()
+			if err != nil {
+				// Fail closed: if we can't read settings, don't spend money.
+				return anthropic.ErrAIDisabled
+			}
+			if !s.AIEnabled || s.CapLatched {
+				return anthropic.ErrAIDisabled
+			}
+			return nil
 		}
-		s, err := st.SelectAppSettings()
-		if err != nil {
-			// Fail closed: if we can't read settings, don't spend money.
-			return anthropic.ErrAIDisabled
-		}
-		if !s.AIEnabled || s.CapLatched {
-			return anthropic.ErrAIDisabled
-		}
-		return nil
 	}
+	anthropicGate := gateFor(cfg.AI.APIKey != "")
+	categorizeGate := gateFor(cfg.AI.CategorizeKey() != "")
 
 	// Recorder: persist each call's tokens+cost; on cap latch, notify via push.
 	aiRecorder := func(u anthropic.Usage) {
@@ -207,7 +212,7 @@ func main() {
 				subs, _ := st.SelectPushSubs()
 				payload, _ := json.Marshal(map[string]string{
 					"title": "AI auto-disabled",
-					"body":  "Monthly Anthropic spend cap reached. Re-enable in Settings.",
+					"body":  "Monthly AI spend cap reached. Re-enable in Settings.",
 				})
 				for _, sub := range subs {
 					go func(sb store.PushSubRow) {
@@ -222,18 +227,27 @@ func main() {
 	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
 	var aiExt parse.Extractor = parse.DisabledExtractor{}
 	if cfg.AI.Enabled {
+		var inner categorize.AICategorizer
+		switch cfg.AI.CategorizeProvider {
+		case "typesafe":
+			inner = categorize.NewTypeSafeCategorizer(cfg.AI.TypeSafeAPIKey, cfg.AI.TypeSafeModel, categorizeGate, aiRecorder)
+		default:
+			inner = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, categorizeGate, aiRecorder)
+		}
 		// Memo wrapper: a merchant the AI has already categorized is answered
-		// from the ai_suggestions table, not paid for again.
-		aiCat = categorize.MemoAI{
-			Inner: categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder),
-			Store: st,
-		}
+		// from the ai_suggestions table, not paid for again — whichever
+		// provider answered it first.
+		aiCat = categorize.MemoAI{Inner: inner, Store: st}
 		if cfg.AI.AllowAIExtraction {
-			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
+			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, anthropicGate, aiRecorder)
 		}
-		log.Printf("ai: clients wired (model=%s); runtime master switch + cap now govern calls", cfg.AI.Model)
+		log.Printf("ai: clients wired (categorize=%s, extract model=%s); runtime master switch + cap now govern calls",
+			cfg.AI.CategorizeProvider, cfg.AI.Model)
+		if cfg.AI.CategorizeProvider == "typesafe" && anthropic.CostMuUSD(cfg.AI.TypeSafeModel, 1, 0) == 0 {
+			log.Printf("ai: WARNING no price for %s — the spend cap will not count its calls", cfg.AI.TypeSafeModel)
+		}
 	} else {
-		log.Printf("ai: disabled (set ai.enabled=true + LEDGER_AI_API_KEY to activate)")
+		log.Printf("ai: disabled (set ai.enabled=true + the provider's API key env var to activate)")
 	}
 
 	cascade := &parse.Cascade{

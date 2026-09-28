@@ -74,6 +74,22 @@ func TestGetSettingsReportsAIKeyPresent(t *testing.T) {
 	}
 }
 
+func TestSettingsReportsAIProvider(t *testing.T) {
+	srv, st := newTestServer(t) // defined in budget_test.go
+	if err := st.EnsureAppSettings(); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetSettingsStore(st)
+	srv.SetAIProvider("typesafe")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/api/settings", nil))
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["ai_provider"] != "typesafe" {
+		t.Errorf("ai_provider = %v, want typesafe", got["ai_provider"])
+	}
+}
+
 func TestPutSettings(t *testing.T) {
 	stub := &stubSettings{s: store.AppSettings{AutoCategorize: true}}
 	srv := New(nil, fstest())

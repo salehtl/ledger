@@ -23,9 +23,13 @@ type settingsDTO struct {
 	AIAutoAccept      bool    `json:"ai_auto_accept"`
 	AIThreshold       float64 `json:"ai_threshold"`
 	IngestSilenceDays int     `json:"ingest_silence_days"`
-	// AIKeyPresent is read-only output: whether an Anthropic key is loaded
-	// (env-only). It is ignored on PUT.
+	// AIKeyPresent is read-only output: whether the key for the categorization
+	// provider is loaded (env-only). It is ignored on PUT.
 	AIKeyPresent bool `json:"ai_key_present"`
+	// AIProvider is read-only output: which provider ("anthropic" |
+	// "typesafe") answers categorization calls. It comes from config, never
+	// from the client, and is ignored on PUT.
+	AIProvider string `json:"ai_provider"`
 	// AISpendCapMuUSD is the monthly AI spend cap in micro-USD (0 = no cap).
 	// A pointer so PUT can tell "omitted" from an explicit 0: this endpoint
 	// takes the whole settings object, so any client that forgot this field
@@ -60,6 +64,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		AIAutoAccept: a.AIAutoAccept, AIThreshold: a.AIThreshold,
 		IngestSilenceDays: a.IngestSilenceDays,
 		AIKeyPresent:      s.aiKeyPresent,
+		AIProvider:        s.aiProvider,
 		AISpendCapMuUSD:   &a.SpendCapMuUSD,
 		AICapLatched:      a.CapLatched,
 		BudgetMode:        &a.BudgetMode,
