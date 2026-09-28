@@ -8,6 +8,7 @@ import "errors"
 var ErrAIDisabled = errors.New("anthropic: AI disabled")
 
 // Usage is one recorded Anthropic call. Path is "extract" or "categorize".
+// Model may be a TypeSafe id.
 type Usage struct {
 	Path         string
 	Model        string
@@ -29,11 +30,22 @@ var PriceMuUSD = map[string]struct{ In, Out int64 }{
 	"claude-sonnet-5":           {In: 3, Out: 15}, // $3 / $15 per Mtok
 }
 
-// CostMuUSD computes exact integer micro-USD cost for a call. Unknown model -> 0.
+// PriceMilliMuUSD is milli-µUSD (1e-9 USD) per token, for models priced below
+// one µUSD per token. $0.042/Mtok input == 42 milli-µUSD/token.
+var PriceMilliMuUSD = map[string]struct{ In, Out int64 }{
+	"jev-1.13.0": {In: 42, Out: 0}, // TypeSafe Jev 1.13: $0.042/Mtok input, output free
+}
+
+// CostMuUSD computes exact integer micro-USD cost for a call. Sub-µUSD models
+// round up to a whole µUSD so every call counts toward the spend cap.
+// Unknown model -> 0.
 func CostMuUSD(model string, inTok, outTok int64) int64 {
-	p, ok := PriceMuUSD[model]
-	if !ok {
-		return 0
+	if p, ok := PriceMuUSD[model]; ok {
+		return inTok*p.In + outTok*p.Out
 	}
-	return inTok*p.In + outTok*p.Out
+	if p, ok := PriceMilliMuUSD[model]; ok {
+		milli := inTok*p.In + outTok*p.Out
+		return (milli + 999) / 1000
+	}
+	return 0
 }

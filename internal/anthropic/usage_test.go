@@ -22,3 +22,24 @@ func TestCostMuUSD(t *testing.T) {
 		})
 	}
 }
+
+func TestCostMuUSDJevRoundsUp(t *testing.T) {
+	// $0.042/Mtok = 42 milli-µUSD per token. 400 tokens = 16800 milli = 16.8 µUSD → 17.
+	if got := CostMuUSD("jev-1.13.0", 400, 65); got != 17 {
+		t.Errorf("jev 400 in = %d µUSD, want 17", got)
+	}
+	// One token still costs one whole µUSD, so the cap counts every call.
+	if got := CostMuUSD("jev-1.13.0", 1, 0); got != 1 {
+		t.Errorf("jev 1 in = %d, want 1", got)
+	}
+	if got := CostMuUSD("jev-1.13.0", 0, 0); got != 0 {
+		t.Errorf("jev 0 in = %d, want 0", got)
+	}
+}
+
+// Documents the known gap: a Jev version not in the table records cost 0.
+func TestCostMuUSDUnknownJevIsZero(t *testing.T) {
+	if got := CostMuUSD("jev-9.0.0", 1000, 0); got != 0 {
+		t.Errorf("unknown jev = %d, want 0", got)
+	}
+}
