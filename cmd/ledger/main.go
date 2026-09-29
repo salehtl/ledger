@@ -693,7 +693,7 @@ func runCategorizeEval(args []string) {
 	}
 	labels := make([]categorize.Labeled, len(rows))
 	for i, r := range rows {
-		labels[i] = categorize.Labeled{Merchant: r.Merchant, Want: r.Category}
+		labels[i] = categorize.Labeled{Merchant: r.Raw, Want: r.Category}
 	}
 	ai := categorize.NewTypeSafeCategorizer(key, *model, nil, nil)
 	rep := categorize.Evaluate(context.Background(), labels, cats, ai)

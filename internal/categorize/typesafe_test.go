@@ -23,10 +23,17 @@ var tsCats = []Category{
 
 func newTestTS(t *testing.T, h http.HandlerFunc) (*TypeSafeCategorizer, *[]anthropic.Usage) {
 	t.Helper()
+	return newTestTSGated(t, nil, h)
+}
+
+// newTestTSGated passes gate through the constructor, so a test proves the
+// constructor wires it (setting retry.Gate afterwards would not).
+func newTestTSGated(t *testing.T, gate func() error, h http.HandlerFunc) (*TypeSafeCategorizer, *[]anthropic.Usage) {
+	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	var rec []anthropic.Usage
-	ts := NewTypeSafeCategorizer("ts-key", "jev-1.13.0", nil, func(u anthropic.Usage) { rec = append(rec, u) })
+	ts := NewTypeSafeCategorizer("ts-key", "jev-1.13.0", gate, func(u anthropic.Usage) { rec = append(rec, u) })
 	ts.endpoint = srv.URL + "/v1/systemone"
 	ts.retry.HTTP = srv.Client()
 	ts.retry.Backoff = func(int) time.Duration { return 0 }
@@ -162,8 +169,8 @@ func TestTypeSafeCategorizerRejectsTooManyCategories(t *testing.T) {
 
 func TestTypeSafeCategorizerGateBlocksEgress(t *testing.T) {
 	var calls atomic.Int32
-	ts, rec := newTestTS(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
-	ts.retry.Gate = func() error { return anthropic.ErrAIDisabled }
+	ts, rec := newTestTSGated(t, func() error { return anthropic.ErrAIDisabled },
+		func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
 	_, _, err := ts.Categorize(t.Context(), "X", tsCats)
 	if !errors.Is(err, anthropic.ErrAIDisabled) {
 		t.Errorf("err = %v, want ErrAIDisabled", err)
@@ -179,5 +186,36 @@ func TestTypeSafeCategorizerMissingAnswer(t *testing.T) {
 	})
 	if _, _, err := ts.Categorize(t.Context(), "X", tsCats); err == nil {
 		t.Error("want an error when the answer is missing")
+	}
+}
+
+// The spend cap prices usage by model id, and startup checks only the
+// configured id. A response naming another id (an alias, a patch bump) must
+// not make every call cost 0.
+func TestTypeSafeCategorizerRecordsRequestedModel(t *testing.T) {
+	ts, rec := newTestTS(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"jev-1.13","answers":{"category":{"type":"choice","choice":"Dining","confidence":0.9,"probabilities":{"Dining":1}}},"usage":{"input_tokens":300,"output_tokens":0}}`))
+	})
+	if _, _, err := ts.Categorize(t.Context(), "X", tsCats); err != nil {
+		t.Fatal(err)
+	}
+	if len(*rec) != 1 || (*rec)[0].Model != "jev-1.13.0" {
+		t.Fatalf("usage = %+v, want one record priced as jev-1.13.0", *rec)
+	}
+	if c := anthropic.CostMuUSD((*rec)[0].Model, 300, 0); c == 0 {
+		t.Errorf("recorded call costs 0; the spend cap would not count it")
+	}
+}
+
+// A no-fit answer with no usable probabilities has no best category. Picking
+// the first one would be cached in ai_suggestions for good.
+func TestTypeSafeCategorizerNoFitWithoutProbabilitiesErrors(t *testing.T) {
+	for _, probs := range []string{``, `,"probabilities":{"__no_fit__":1,"Dining":0}`} {
+		ts, _ := newTestTS(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"category":{"type":"choice","choice":"__no_fit__","confidence":0.9` + probs + `}},"usage":{}}`))
+		})
+		if name, _, err := ts.Categorize(t.Context(), "X", tsCats); err == nil {
+			t.Errorf("probs %q: got %q, want an error", probs, name)
+		}
 	}
 }

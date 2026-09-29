@@ -1,9 +1,12 @@
 package store
 
 // MerchantLabel is a normalized merchant and the category most often
-// confirmed for it. Used only by the offline categorize-eval command.
+// confirmed for it. Raw is one real (trimmed) spelling from that group: the
+// eval sends Raw, because production sends the raw merchant, not the key.
+// Used only by the offline categorize-eval command.
 type MerchantLabel struct {
 	Merchant string
+	Raw      string
 	Category string
 	N        int
 }
@@ -12,7 +15,7 @@ type MerchantLabel struct {
 // most-confirmed category. Read-only.
 func (s *Store) SelectMerchantLabels() ([]MerchantLabel, error) {
 	rows, err := s.DB.Query(`
-		SELECT lower(trim(t.merchant_raw)) AS m, c.name, COUNT(*) AS n
+		SELECT lower(trim(t.merchant_raw)) AS m, MAX(trim(t.merchant_raw)), c.name, COUNT(*) AS n
 		FROM transactions t JOIN categories c ON c.id = t.category_id
 		WHERE t.status = 'confirmed' AND trim(coalesce(t.merchant_raw, '')) <> ''
 		GROUP BY m, c.name
@@ -24,7 +27,7 @@ func (s *Store) SelectMerchantLabels() ([]MerchantLabel, error) {
 	var out []MerchantLabel
 	for rows.Next() {
 		var l MerchantLabel
-		if err := rows.Scan(&l.Merchant, &l.Category, &l.N); err != nil {
+		if err := rows.Scan(&l.Merchant, &l.Raw, &l.Category, &l.N); err != nil {
 			return nil, err
 		}
 		if len(out) > 0 && out[len(out)-1].Merchant == l.Merchant {

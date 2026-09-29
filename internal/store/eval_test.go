@@ -44,7 +44,9 @@ func TestSelectMerchantLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectMerchantLabels: %v", err)
 	}
-	want := []MerchantLabel{{"carrefour moe", "Groceries", 2}, {"talabat", "Dining", 1}}
+	// Raw is a real spelling from the winning group, so the eval sends what
+	// production sends, not the lowercased grouping key.
+	want := []MerchantLabel{{"carrefour moe", "Carrefour MOE", "Groceries", 2}, {"talabat", "Talabat", "Dining", 1}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("labels = %+v, want %+v", got, want)
 	}

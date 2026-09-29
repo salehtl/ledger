@@ -134,12 +134,11 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 		return "", 0, fmt.Errorf("categorize: decode response: %w", err)
 	}
 	if t.rec != nil {
-		model := tr.Model
-		if model == "" {
-			model = t.model
-		}
+		// Record the requested (pinned) model, not tr.Model: cost is looked up
+		// by this id, and startup checks only the configured one. A response
+		// naming an alias would otherwise price every call at 0.
 		t.rec(anthropic.Usage{
-			Path: "categorize", Model: model,
+			Path: "categorize", Model: t.model,
 			InputTokens: tr.Usage.InputTokens, OutputTokens: tr.Usage.OutputTokens,
 			OK: true, Detail: merchant,
 		})
@@ -156,6 +155,11 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 			if p := ans.Probabilities[c.Name]; p > bestP {
 				best, bestP = c.Name, p
 			}
+		}
+		if bestP <= 0 {
+			// No real category has any weight. A guess would be cached in
+			// ai_suggestions for good, so fail and leave the row in review.
+			return "", 0, fmt.Errorf("categorize: typesafe answered no fit with no usable probabilities")
 		}
 		return best, 0, nil
 	}
