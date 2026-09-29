@@ -177,3 +177,41 @@ sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
 Send a test email from one of the configured bank senders (or wait for a real
 transaction alert) and confirm `ingest_log` grows. Because the mailbox is opened
 read-only (`EXAMINE`), ledger can never delete or modify the mail.
+
+## Switching categorization to TypeSafe
+
+Optional. The default provider is Anthropic, and nothing changes until steps 3–5
+are done. AI extraction stays on Anthropic either way: TypeSafe cannot read an
+email body.
+
+1. Get a key at https://console.typesafe.ai/keys.
+2. Measure first, on a copy. The binary must already carry `categorize-eval`.
+   This sends every confirmed merchant string (and the category names) to
+   TypeSafe. A full run costs well under one US cent.
+
+   ```bash
+   sudo mkdir -p /root/ts-eval
+   sudo sqlite3 /var/lib/ledger/ledger.db ".backup /root/ts-eval/ledger.db"
+   sudo LEDGER_TYPESAFE_API_KEY=… /usr/local/bin/ledger categorize-eval --data-dir /root/ts-eval
+   ```
+
+   The report gives accuracy per confidence band. Pick the lowest band whose
+   accuracy you accept. `first error:` names the cause when calls fail (a 401
+   is a bad key).
+3. Set that band as the auto-accept threshold. There is no control for it in
+   the app, so set it through the local API (read, change one field, write):
+
+   ```bash
+   curl -s http://127.0.0.1:8080/api/settings \
+     | python3 -c 'import json,sys; s=json.load(sys.stdin); s["ai_threshold"]=0.9; print(json.dumps(s))' \
+     | curl -s -X PUT -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:8080/api/settings
+   ```
+
+   The threshold matters only while "AI auto-accept" is on.
+4. Add `LEDGER_TYPESAFE_API_KEY=…` to `/etc/ledger/ledger.env`.
+5. In `/etc/ledger/config.toml`, under `[ai]`: `categorize_provider = "typesafe"`.
+6. `sudo systemctl restart ledger`. The log must say `categorize=typesafe`:
+   `journalctl -u ledger -n 50 | grep categorize=`. Settings → AI & API usage
+   then names TypeSafe.
+7. Roll back: set `categorize_provider = "anthropic"` and restart. Answers
+   cached in `ai_suggestions` stay valid under either provider.
