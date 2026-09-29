@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -78,6 +79,9 @@ func main() {
 			return
 		case "compact":
 			runCompact(os.Args[2:])
+			return
+		case "categorize-eval":
+			runCategorizeEval(os.Args[2:])
 			return
 		case "vapid-keys":
 			priv, pub, err := push.GenerateKeys()
@@ -629,5 +633,77 @@ func prunePush(st *store.Store, sender *push.Sender, sub store.PushSubRow, paylo
 		} else {
 			log.Printf("push: pruned dead subscription %.40s...", sub.Endpoint)
 		}
+	}
+}
+
+// runCategorizeEval measures TypeSafe against confirmed history. It requires an
+// explicit --data-dir so it can never open the production DB by default; point
+// it at a restored backup copy. It bypasses the memo and the live gate and
+// records no usage (a full run costs well under one US cent).
+func runCategorizeEval(args []string) {
+	fs := flag.NewFlagSet("categorize-eval", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "directory holding a COPY of ledger.db (required)")
+	model := fs.String("model", "jev-1.13.0", "TypeSafe model id")
+	limit := fs.Int("limit", 0, "evaluate at most N merchants (0 = all)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("categorize-eval flags: %v", err)
+	}
+	if *dataDir == "" {
+		log.Fatalf("categorize-eval: --data-dir is required (a directory holding a copy of ledger.db)")
+	}
+	// Resolve relative paths and symlinks first, so neither can reach the
+	// live DB past the prefix check.
+	dir, err := filepath.Abs(*dataDir)
+	if err == nil {
+		dir, err = filepath.EvalSymlinks(dir)
+	}
+	if err != nil {
+		log.Fatalf("categorize-eval: --data-dir: %v", err)
+	}
+	if dir == "/var/lib/ledger" || strings.HasPrefix(dir, "/var/lib/ledger/") {
+		log.Fatalf("categorize-eval: --data-dir must point at a scratch copy, not the live DB")
+	}
+	// store.Open creates a missing DB, which would evaluate zero merchants.
+	if _, err := os.Stat(filepath.Join(dir, "ledger.db")); err != nil {
+		log.Fatalf("categorize-eval: no ledger.db in %s: %v", dir, err)
+	}
+	key := os.Getenv("LEDGER_TYPESAFE_API_KEY")
+	if key == "" {
+		log.Fatalf("categorize-eval: set LEDGER_TYPESAFE_API_KEY")
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+	storeCats, err := st.SelectCategories()
+	if err != nil {
+		log.Fatalf("categories: %v", err)
+	}
+	cats := make([]categorize.Category, len(storeCats))
+	for i, c := range storeCats {
+		cats[i] = categorize.Category{ID: c.ID, Name: c.Name, Kind: c.Kind, Bucket: c.Bucket}
+	}
+	rows, err := st.SelectMerchantLabels()
+	if err != nil {
+		log.Fatalf("labels: %v", err)
+	}
+	if *limit > 0 && len(rows) > *limit {
+		rows = rows[:*limit]
+	}
+	labels := make([]categorize.Labeled, len(rows))
+	for i, r := range rows {
+		labels[i] = categorize.Labeled{Merchant: r.Merchant, Want: r.Category}
+	}
+	ai := categorize.NewTypeSafeCategorizer(key, *model, nil, nil)
+	rep := categorize.Evaluate(context.Background(), labels, cats, ai)
+	fmt.Printf("merchants %d  correct %d (%.1f%%)  errors %d\n",
+		rep.Total, rep.Correct, 100*float64(rep.Correct)/float64(max(rep.Total, 1)), rep.Errors)
+	if rep.FirstErr != nil {
+		fmt.Printf("  first error: %v\n", rep.FirstErr)
+	}
+	for _, b := range rep.Bands {
+		fmt.Printf("  conf >= %.2f: %4d answers, %5.1f%% correct\n",
+			b.Min, b.N, 100*float64(b.Correct)/float64(max(b.N, 1)))
 	}
 }
