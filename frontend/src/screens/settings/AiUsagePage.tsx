@@ -14,6 +14,7 @@ import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import { formatMuUSD, dollarsToMuUSD, muUSDToDollars } from "../../lib/aiCost";
+import { aiProviderInfo } from "../../lib/aiProvider";
 
 export function AiUsagePage({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -22,6 +23,10 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
   const usage = useQuery({ queryKey: ["ai-usage"], queryFn: getAIUsage });
   const s = settings.data;
+  const prov = aiProviderInfo(s?.ai_provider);
+  // "a TypeSafe key", "an Anthropic key" — the brief's template always says
+  // "a", which reads as "a Anthropic key" for the default provider.
+  const provArticle = /^[aeiou]/i.test(prov.name) ? "an" : "a";
   const [capInput, setCapInput] = useState<string>("");
 
   const save = async (next: AppSettings) => {
@@ -56,8 +61,8 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
                 AI features
                 <span className="block text-xs text-muted">
                   {s.ai_key_present
-                    ? "When off, the app makes zero calls to Anthropic."
-                    : "Add an Anthropic API key to the env file and restart to turn this on."}
+                    ? "When off, the app makes no AI calls."
+                    : `Add ${provArticle} ${prov.name} API key to the env file. Then restart.`}
                 </span>
               </span>
               {/* Without a key this switch turns on, saves, and changes
@@ -69,10 +74,10 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
                 onChange={(e) => save({ ...s, ai_enabled: e.target.checked })} />
             </label>
             <div className="flex items-center justify-between gap-3 pt-1">
-              <span className="text-sm">Anthropic API key</span>
+              <span className="text-sm">{prov.name} API key</span>
               {s.ai_key_present
                 ? <span className="text-xs font-medium text-good">Loaded</span>
-                : <span className="text-xs text-muted text-right">Not set · add LEDGER_AI_API_KEY to the env file and restart</span>}
+                : <span className="text-xs text-muted text-right">Not set · add {prov.envVar} to the env file and restart</span>}
             </div>
           </section>
 

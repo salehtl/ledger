@@ -126,6 +126,15 @@ describe("Settings categorization", () => {
     expect(screen.getByText(/AI suggestions need the Anthropic API key/i)).toBeInTheDocument();
   });
 
+  it("names TypeSafe and its env var when the server categorizes with TypeSafe", async () => {
+    appSettings = { ...defaultSettings, ai_enabled: true, ai_key_present: false, ai_provider: "typesafe" };
+    wrap();
+    await openCategorization();
+    expect(await screen.findByText(/AI suggestions need the TypeSafe API key\. Add LEDGER_TYPESAFE_API_KEY/)).toBeInTheDocument();
+    expect(screen.getByText("TypeSafe API key")).toBeInTheDocument();
+    expect(screen.queryByText(/Anthropic/)).not.toBeInTheDocument();
+  });
+
   it("keeps Run enabled for a rules-only run with no API key", async () => {
     appSettings = { ...defaultSettings, ai_enabled: false, ai_key_present: false };
     wrap();

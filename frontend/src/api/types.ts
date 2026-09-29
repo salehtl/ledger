@@ -12,8 +12,10 @@ export interface AppSettings {
   ai_auto_accept: boolean;
   ai_threshold: number;
   ingest_silence_days: number;
-  /** Read-only: whether an Anthropic key is loaded (env-only). Not sent on save. */
+  /** Read-only: whether the categorization provider's key is loaded (env-only). Not sent on save. */
   ai_key_present?: boolean;
+  /** Read-only: which AI provider the server uses for categorization. */
+  ai_provider?: "anthropic" | "typesafe";
   ai_spend_cap_musd?: number;
   /** Read-only: AI auto-disabled because the monthly cap was hit. */
   ai_cap_latched?: boolean;

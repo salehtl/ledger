@@ -14,6 +14,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
+import { aiProviderInfo } from "../../lib/aiProvider";
 
 /** Setting row: label + explanation on the left, a control on the right. */
 function ToggleRow({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
@@ -60,12 +61,13 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
   // built), and the AI tier fails on every merchant when AI is on but no API key
   // is loaded. In both cases there's nothing useful to do, so Run is disabled
   // with a reason. Rules-only runs (AI off) still work without a key.
+  const prov = aiProviderInfo(settings.data?.ai_provider);
   const aiNeedsKey = !!settings.data?.ai_enabled && !settings.data?.ai_key_present;
   const runDisabled = !settings.data?.auto_categorize || aiNeedsKey;
   const runDisabledReason = !settings.data?.auto_categorize
     ? "Turn on Auto-categorize to run categorization."
     : aiNeedsKey
-      ? "AI suggestions need the Anthropic API key — add LEDGER_AI_API_KEY to the env file and restart."
+      ? `AI suggestions need the ${prov.name} API key. Add ${prov.envVar} to the env file and restart.`
       : "";
 
   const runCategorization = async () => {
@@ -101,7 +103,7 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
                 checked={s.auto_categorize}
                 onChange={(e) => saveSettings({ ...s, auto_categorize: e.target.checked })} />
             </ToggleRow>
-            <ToggleRow title="AI features (master switch)" hint="Off = zero calls to Anthropic. Manage usage & spend cap under AI & API usage.">
+            <ToggleRow title="AI features (master switch)" hint="Off = no AI calls. Manage usage & spend cap under AI & API usage.">
               <Switch aria-label="AI features"
                 checked={s.ai_enabled}
                 onChange={(e) => saveSettings({ ...s, ai_enabled: e.target.checked })} />
@@ -113,10 +115,10 @@ export function CategorizationPage({ scope, onClose }: { scope?: Scope; onClose:
                 onChange={(e) => saveSettings({ ...s, ai_auto_accept: e.target.checked })} />
             </ToggleRow>
             <div className="flex items-center justify-between gap-3 pt-2">
-              <span className="text-sm">Anthropic API key</span>
+              <span className="text-sm">{prov.name} API key</span>
               {s.ai_key_present
                 ? <span className="text-xs font-medium text-good">Loaded</span>
-                : <span className="text-xs text-muted text-right">Not set · add LEDGER_AI_API_KEY to the env file and restart</span>}
+                : <span className="text-xs text-muted text-right">Not set · add {prov.envVar} to the env file and restart</span>}
             </div>
           </section>
 
