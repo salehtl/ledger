@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { derivePushState, subscriptionPayload, urlBase64ToUint8Array } from "./push";
+import { derivePushState, subscriptionPayload, testPushMessage, urlBase64ToUint8Array } from "./push";
 
 describe("derivePushState", () => {
   it("reports unsupported before anything else — a denied permission is moot without an API", () => {
@@ -65,5 +65,20 @@ describe("subscriptionPayload", () => {
       toJSON: () => ({ endpoint: "https://push.example.com/xyz" }),
     } as unknown as PushSubscription;
     expect(subscriptionPayload(sub)).toBeNull();
+  });
+});
+
+describe("testPushMessage", () => {
+  // The server answers {devices: n}. With 0 the test reached nobody, and the
+  // old toast still said "Test notification sent" — a sentence the code broke.
+  it("says nothing was sent, and how to fix it, when no device is registered", () => {
+    expect(testPushMessage(0)).toEqual({
+      message: "No device is registered. Tap Disable, then Enable on this device.",
+      tone: "error",
+    });
+  });
+  it("counts the devices the test went to", () => {
+    expect(testPushMessage(1)).toEqual({ message: "Test sent to 1 device" });
+    expect(testPushMessage(3)).toEqual({ message: "Test sent to 3 devices" });
   });
 });

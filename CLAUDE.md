@@ -96,7 +96,7 @@ Pipeline: **Ingest → Parse cascade → Categorize → SQLite → (HTTP API + S
 - **`server`** — stdlib `net/http` with Go 1.22 method+pattern routing. One file per resource. `/api/events` is the SSE stream via `Hub`; unknown `/api/*` returns 404 so the SPA fallback (`spa.go`) never swallows API calls.
 - **`budget`** — 50/30/20 need/want/saving math over confirmed transactions.
 - **`monitor`** — rolling per-sender parse-success drift detection; emits `drift_alert` events when a sender drops below `drift_min`. An `ignored` email counts as a parse **success**, not a failure.
-- **`push`** — Web Push (VAPID). Active only when `LEDGER_VAPID_PRIVATE`/`LEDGER_VAPID_PUBLIC` are set.
+- **`push`** — Web Push (VAPID). Active only when `LEDGER_VAPID_PRIVATE`/`LEDGER_VAPID_PUBLIC` are set. A 404/410 from a push service prunes the subscription and records the endpoint in `push_gone`. The PWA re-sends its subscription on every open (`hooks/usePushResync.ts`, `resync: true`); the server refuses a gone endpoint with 410 and the app then drops it locally, so Settings offers "Enable on this device" instead of a false "Enabled". `POST /api/push/test` returns `{"devices": n}`. (On 2026-09-23 Apple returned 410 for the iPhone, and push stayed dead for a week because nothing re-registered.)
 - **`config`** — TOML load + env overrides. **Secrets are env-only**, never in the TOML.
 - **`importer`** — CSV/XLSX reader, column `map.toml` parsing, normalization, dedup.
 - **`web`** — `//go:embed all:dist` of the built PWA.

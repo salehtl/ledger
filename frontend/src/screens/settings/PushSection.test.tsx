@@ -139,6 +139,24 @@ describe("PushSection", () => {
     });
   });
 
+  // On 23 Sep the server pruned the phone's dead subscription, yet "Send test"
+  // still toasted "Test notification sent" to zero devices.
+  it("says no device is registered when the test reached nobody", async () => {
+    stubPush({ permission: "granted", sub: { endpoint: "https://push.example.com/old" } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ devices: 0 }), { status: 200 })));
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /send test/i }));
+    expect(await screen.findByText("No device is registered. Tap Disable, then Enable on this device.")).toBeInTheDocument();
+  });
+
+  it("says how many devices the test went to", async () => {
+    stubPush({ permission: "granted", sub: { endpoint: "https://push.example.com/old" } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ devices: 1 }), { status: 200 })));
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /send test/i }));
+    expect(await screen.findByText("Test sent to 1 device")).toBeInTheDocument();
+  });
+
   it("surfaces a failure instead of claiming success when subscribe() rejects", async () => {
     stubPush({
       permission: "granted",

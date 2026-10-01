@@ -6,6 +6,7 @@ import {
   derivePushState,
   pushSupported,
   subscriptionPayload,
+  testPushMessage,
   urlBase64ToUint8Array,
   type PushState,
 } from "../../lib/push";
@@ -102,8 +103,8 @@ export function PushSection() {
   const sendTest = async () => {
     setBusy(true);
     try {
-      await postJSON("/api/push/test", {});
-      show({ message: "Test notification sent" });
+      const res = await postJSON<{ devices?: number } | null>("/api/push/test", {});
+      show(testPushMessage(res?.devices ?? 0));
     } catch {
       show({ message: "Couldn't send the test notification", tone: "error" });
     } finally {

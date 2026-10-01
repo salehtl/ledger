@@ -9,6 +9,7 @@ import { type Scope, scopeBounds } from "../lib/scope";
 import { currentPeriod } from "../lib/insights";
 import { useOnline } from "../hooks/useOnline";
 import { useLiveEvents } from "../hooks/useLiveEvents";
+import { usePushResync } from "../hooks/usePushResync";
 import { usePullToRefresh } from "../hooks/usePullToRefresh";
 import { PullToRefreshIndicator } from "../components/PullToRefreshIndicator";
 import { Home } from "../screens/Home";
@@ -66,6 +67,8 @@ export function AppShell() {
   const [scope, setScope] = useState<Scope>(() => ({ kind: "month", period: currentPeriod() }));
   const online = useOnline();
   useLiveEvents();
+  // Re-registers this device's push subscription on every open; see the hook.
+  usePushResync();
 
   const qc = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);

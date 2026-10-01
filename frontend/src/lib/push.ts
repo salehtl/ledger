@@ -69,6 +69,17 @@ export function subscriptionPayload(sub: PushSubscription): PushSubPayload | nul
   return { endpoint: json.endpoint, keys: { p256dh, auth } };
 }
 
+/**
+ * The toast after "Send test". The server answers with how many devices the
+ * test went to; with 0 it reached nobody, so the toast must not say "sent".
+ */
+export function testPushMessage(devices: number): { message: string; tone?: "error" } {
+  if (devices <= 0) {
+    return { message: "No device is registered. Tap Disable, then Enable on this device.", tone: "error" };
+  }
+  return { message: `Test sent to ${devices} device${devices === 1 ? "" : "s"}` };
+}
+
 /** True when this browser can actually do Web Push. */
 export function pushSupported(): boolean {
   return (
