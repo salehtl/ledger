@@ -84,6 +84,9 @@ func main() {
 		case "categorize-eval":
 			runCategorizeEval(os.Args[2:])
 			return
+		case "txncheck-eval":
+			runTxnCheckEval(os.Args[2:])
+			return
 		case "vapid-keys":
 			priv, pub, err := push.GenerateKeys()
 			if err != nil {
@@ -656,25 +659,7 @@ func runCategorizeEval(args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("categorize-eval flags: %v", err)
 	}
-	if *dataDir == "" {
-		log.Fatalf("categorize-eval: --data-dir is required (a directory holding a copy of ledger.db)")
-	}
-	// Resolve relative paths and symlinks first, so neither can reach the
-	// live DB past the prefix check.
-	dir, err := filepath.Abs(*dataDir)
-	if err == nil {
-		dir, err = filepath.EvalSymlinks(dir)
-	}
-	if err != nil {
-		log.Fatalf("categorize-eval: --data-dir: %v", err)
-	}
-	if dir == "/var/lib/ledger" || strings.HasPrefix(dir, "/var/lib/ledger/") {
-		log.Fatalf("categorize-eval: --data-dir must point at a scratch copy, not the live DB")
-	}
-	// store.Open creates a missing DB, which would evaluate zero merchants.
-	if _, err := os.Stat(filepath.Join(dir, "ledger.db")); err != nil {
-		log.Fatalf("categorize-eval: no ledger.db in %s: %v", dir, err)
-	}
+	dir := evalDataDir("categorize-eval", *dataDir)
 	key := os.Getenv("LEDGER_TYPESAFE_API_KEY")
 	if key == "" {
 		log.Fatalf("categorize-eval: set LEDGER_TYPESAFE_API_KEY")
@@ -713,5 +698,78 @@ func runCategorizeEval(args []string) {
 	for _, b := range rep.Bands {
 		fmt.Printf("  conf >= %.2f: %4d answers, %5.1f%% correct\n",
 			b.Min, b.N, 100*float64(b.Correct)/float64(max(b.N, 1)))
+	}
+}
+
+// evalDataDir resolves --data-dir for an offline eval command. It refuses the
+// live DB (after resolving relative paths and symlinks) and a directory with
+// no ledger.db, and exits on failure.
+func evalDataDir(cmd, dataDir string) string {
+	if dataDir == "" {
+		log.Fatalf("%s: --data-dir is required (a directory holding a copy of ledger.db)", cmd)
+	}
+	dir, err := filepath.Abs(dataDir)
+	if err == nil {
+		dir, err = filepath.EvalSymlinks(dir)
+	}
+	if err != nil {
+		log.Fatalf("%s: --data-dir: %v", cmd, err)
+	}
+	if dir == "/var/lib/ledger" || strings.HasPrefix(dir, "/var/lib/ledger/") {
+		log.Fatalf("%s: --data-dir must point at a scratch copy, not the live DB", cmd)
+	}
+	// store.Open creates a missing DB, which would evaluate nothing.
+	if _, err := os.Stat(filepath.Join(dir, "ledger.db")); err != nil {
+		log.Fatalf("%s: no ledger.db in %s: %v", cmd, dir, err)
+	}
+	return dir
+}
+
+// runTxnCheckEval measures the AI check against emails the parsers already
+// labelled. It sends each sample's sender, subject and up to 8 KB of text to
+// TypeSafe; it bypasses the gate and records no usage. Point it at a copy.
+func runTxnCheckEval(args []string) {
+	fs := flag.NewFlagSet("txncheck-eval", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "directory holding a COPY of ledger.db (required)")
+	model := fs.String("model", "jev-1.13.0", "TypeSafe model id")
+	perClass := fs.Int("per-class", 200, "emails per label: transactions, and non-transactions")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("txncheck-eval flags: %v", err)
+	}
+	dir := evalDataDir("txncheck-eval", *dataDir)
+	key := os.Getenv("LEDGER_TYPESAFE_API_KEY")
+	if key == "" {
+		log.Fatalf("txncheck-eval: set LEDGER_TYPESAFE_API_KEY")
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+	rows, err := st.SelectTxnCheckSamples(*perClass)
+	if err != nil {
+		log.Fatalf("samples: %v", err)
+	}
+	samples := make([]parse.TxnSample, 0, len(rows))
+	unreadable := 0
+	for _, r := range rows {
+		text, err := parse.BodyText(r.RawBody)
+		if err != nil {
+			unreadable++
+			continue
+		}
+		from, subject, _, text := parse.Unwrap(r.FromAddr, r.Subject, text)
+		samples = append(samples, parse.TxnSample{From: from, Subject: subject, Body: text, IsTxn: r.IsTxn})
+	}
+	chk := parse.NewClassifierTxnChecker(classify.NewTypeSafe(key, *model, nil, nil))
+	rep := parse.EvaluateTxnCheck(context.Background(), samples, chk)
+	fmt.Printf("emails %d (%d transactions, %d not)  errors %d  unreadable %d\n",
+		rep.Total, rep.Txns, rep.NonTxns, rep.Errors, unreadable)
+	if rep.FirstErr != nil {
+		fmt.Printf("  first error: %v\n", rep.FirstErr)
+	}
+	for _, c := range rep.Cuts {
+		fmt.Printf("  set aside at >= %.2f: %d of %d non-transactions, hides %d of %d transactions\n",
+			c.Min, c.SetAside, rep.NonTxns, c.Hidden, rep.Txns)
 	}
 }
