@@ -156,15 +156,15 @@ func (s *Server) SetCategoryStore(cs CategoryStore) { s.catStore = cs }
 // SetRecategorizeFn wires the bulk-categorize function used by POST /api/categorize/run.
 func (s *Server) SetRecategorizeFn(fn CategorizeFunc) { s.recatFn = fn }
 
-// SetAIKeyPresent records whether the key for the categorization provider was
-// loaded at startup. It is reported (as a bool, never the value) by GET
-// /api/settings so the UI can show whether AI categorization can run. The key
-// itself stays env-only.
+// SetAIKeyPresent records whether the key for the AI provider was loaded at
+// startup. It is reported (as a bool, never the value) by GET /api/settings so
+// the UI can show whether the AI features can run. The key itself stays
+// env-only.
 func (s *Server) SetAIKeyPresent(present bool) { s.aiKeyPresent = present }
 
-// SetAIProvider records which provider ("anthropic" | "typesafe") answers
-// categorization calls. Read-only output on GET /api/settings; the value
-// comes from config, never from a client request.
+// SetAIProvider records which provider ("typesafe" | "anthropic") answers
+// every AI question: categorization and the AI check. Read-only output on GET
+// /api/settings; the value comes from config, never from a client request.
 func (s *Server) SetAIProvider(p string) { s.aiProvider = p }
 
 // DriftStatusProvider surfaces the monitor's current alert list for /api/health.

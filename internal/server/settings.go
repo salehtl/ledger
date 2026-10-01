@@ -23,12 +23,12 @@ type settingsDTO struct {
 	AIAutoAccept      bool    `json:"ai_auto_accept"`
 	AIThreshold       float64 `json:"ai_threshold"`
 	IngestSilenceDays int     `json:"ingest_silence_days"`
-	// AIKeyPresent is read-only output: whether the key for the categorization
-	// provider is loaded (env-only). It is ignored on PUT.
+	// AIKeyPresent is read-only output: whether the key for the AI provider is
+	// loaded (env-only). It is ignored on PUT.
 	AIKeyPresent bool `json:"ai_key_present"`
-	// AIProvider is read-only output: which provider ("anthropic" |
-	// "typesafe") answers categorization calls. It comes from config, never
-	// from the client, and is ignored on PUT.
+	// AIProvider is read-only output: which provider ("typesafe" |
+	// "anthropic") answers every AI question, categorization and the AI check.
+	// It comes from config, never from the client, and is ignored on PUT.
 	AIProvider string `json:"ai_provider"`
 	// AISpendCapMuUSD is the monthly AI spend cap in micro-USD (0 = no cap).
 	// A pointer so PUT can tell "omitted" from an explicit 0: this endpoint

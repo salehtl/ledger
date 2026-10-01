@@ -105,7 +105,7 @@ func (s *Store) SetIngestVerdict(ingestID int64, verdict string, conf float64) e
 // emails the AI check set aside as not transactions.
 type VerdictCounts struct {
 	Transaction    int // unparsed; the AI says it is a transaction
-	NotTransaction int // unparsed; the AI says not, below the set-aside threshold
+	NotTransaction int // unparsed; the AI says not a transaction (below the threshold, or kept because the row owns a transaction)
 	Unchecked      int // unparsed; no verdict yet
 	SetAside       int // ignored by the AI check (parse_tier 'ai_check')
 }

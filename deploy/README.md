@@ -178,40 +178,141 @@ Send a test email from one of the configured bank senders (or wait for a real
 transaction alert) and confirm `ingest_log` grows. Because the mailbox is opened
 read-only (`EXAMINE`), ledger can never delete or modify the mail.
 
-## Switching categorization to TypeSafe
+## AI provider (TypeSafe; Anthropic is sunset)
 
-Optional. The default provider is Anthropic, and nothing changes until steps 3–5
-are done. AI extraction stays on Anthropic either way: TypeSafe cannot read an
-email body.
+TypeSafe's Jev answers both AI questions: "which category?" and "is this unread
+email a transaction?". The second one is the **AI check**. It never writes a
+transaction. A confident "not a transaction" sets the email aside (`ignored`,
+raw body kept). Anything else stays unparsed, with its verdict stored.
 
-1. Get a key at https://console.typesafe.ai/keys.
-2. Measure first, on a copy. The binary must already carry `categorize-eval`.
-   This sends every confirmed merchant string (and the category names) to
-   TypeSafe. A full run costs well under one US cent.
+### Config keys
+
+Under `[ai]` in `/etc/ledger/config.toml`:
+
+- `provider`: `"typesafe"` (default) or `"anthropic"`. A bad value stops the
+  service at start-up.
+- `categorize_provider`: the old name for `provider`. It is still read, but only
+  when `provider` is not set.
+- `typesafe_model`: the TypeSafe model id. Default `jev-1.13.0`.
+- `txn_ignore_threshold`: a "not a transaction" answer at or above this sets the
+  email aside. Default `0.97`. It must be above 0.5 and at most 1.
+- `model` and `allow_ai_extraction`: used only when `provider = "anthropic"`.
+
+The keys are secrets, so they live in `/etc/ledger/ledger.env`, never in the
+TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
+`anthropic`.
+
+### Roll out (from categorize_provider)
+
+1. Back up the DB as root:
+   `sudo sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F-%H%M).db'"`
+   If **AI features** is on in Settings → AI & API usage, turn it off now.
+   Otherwise the AI check starts at the default threshold when the new binary
+   starts, before you have measured.
+2. Deploy the binary (sections 1–2). The old `categorize_provider = "typesafe"`
+   still works. For clarity, rename it to `provider = "typesafe"` in
+   `/etc/ledger/config.toml` under `[ai]`. `LEDGER_TYPESAFE_API_KEY` must be in
+   `/etc/ledger/ledger.env` first (keys: https://console.typesafe.ai/keys).
+   With `enabled = true` and no key, the service refuses to start:
+   `ai.provider = "typesafe" requires LEDGER_TYPESAFE_API_KEY env var`.
+3. Measure the AI check on a copy. This sends each sample's sender, subject and
+   up to 8 KB of text to TypeSafe (about 400 emails, a few US cents):
 
    ```bash
    sudo mkdir -p /root/ts-eval
    sudo sqlite3 /var/lib/ledger/ledger.db ".backup /root/ts-eval/ledger.db"
-   sudo LEDGER_TYPESAFE_API_KEY=… /usr/local/bin/ledger categorize-eval --data-dir /root/ts-eval
+   sudo sh -c 'set -a; . /etc/ledger/ledger.env; /usr/local/bin/ledger txncheck-eval --data-dir /root/ts-eval'
    ```
 
-   The report gives accuracy per confidence band. Pick the lowest band whose
-   accuracy you accept. `first error:` names the cause when calls fail (a 401
-   is a bad key).
-3. Set that band as the auto-accept threshold. There is no control for it in
-   the app, so set it through the local API (read, change one field, write):
+   Options: `--per-class N` (emails per label, default 200) and `--model id`.
+   It prints one summary line, then one line per threshold. The numbers here
+   are an example:
+
+   ```text
+   emails 400 (200 transactions, 200 not)  errors 0  unreadable 0
+     set aside at >= 0.99: 31 of 200 non-transactions, hides 0 of 200 transactions
+     set aside at >= 0.97: 52 of 200 non-transactions, hides 0 of 200 transactions
+     set aside at >= 0.95: 66 of 200 non-transactions, hides 1 of 200 transactions
+     set aside at >= 0.90: 91 of 200 non-transactions, hides 3 of 200 transactions
+     set aside at >= 0.80: 118 of 200 non-transactions, hides 7 of 200 transactions
+   ```
+
+   If any email got no answer, it adds two lines after the summary (a 401 is
+   a bad key):
+
+   ```text
+     first error: …
+     K of N emails got no answer; the counts below cover only the answered ones.
+   ```
+
+   Fix the cause (key, rate limit) and rerun before you choose. If no email got
+   an answer, the command exits with status 1 and logs:
+
+   ```text
+   txncheck-eval: no email got an answer; do not choose a threshold from this run
+   ```
+
+   Pick the lowest threshold whose "hides" count is 0. If two thresholds give
+   the same counts, take the higher one. The eval samples mail the parsers
+   already read (parsed, and ignored by a template). It does not sample the
+   unread mail the check will see. So "hides 0" is a lower bound, not proof.
+   Set the threshold under `[ai]` as `txn_ignore_threshold = 0.97` (the default;
+   valid range above 0.5 up to 1).
+4. `sudo systemctl restart ledger`. The log must say `provider=typesafe` and
+   `txn check=true`: `journalctl -u ledger -n 50 | grep 'clients wired'`
+   prints
+
+   ```text
+   ai: clients wired (provider=typesafe, model=jev-1.13.0, txn check=true, set aside at >= 0.97); runtime master switch + cap now govern calls
+   ```
+
+   with your threshold in place of 0.97. If the log says `ai: disabled`
+   instead, set `enabled = true` under `[ai]`.
+5. Turn on **AI features** in Settings → AI & API usage.
+6. Sort the backlog. Old unread emails have used up their automatic retries,
+   so only a manual reprocess reaches them. It runs one call per unread email
+   and can take a few minutes:
+   `curl -s --max-time 1800 -X POST http://127.0.0.1:8080/api/reprocess`
+   Then check the counts: `curl -s http://127.0.0.1:8080/api/health` has
+   `ingest.unread` with `transaction`, `not_transaction`, `unchecked` and
+   `set_aside`. Settings → Email ingest shows the same numbers as "Emails no
+   parser read". An email in "Look like transactions" needs a parser update,
+   because the AI check never writes a transaction.
+
+### Undo set-asides
+
+A set-aside row has `parse_status='ignored'` and `parse_tier='ai_check'`. Its
+verdict is in `ingest_log.ai_verdict` and `ai_verdict_conf`. To look at the
+rows first:
+
+```bash
+sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
+  "SELECT id, from_addr, subject, ai_verdict_conf FROM ingest_log WHERE parse_status='ignored' AND parse_tier='ai_check' ORDER BY id DESC LIMIT 30"
+```
+
+If the threshold hid real transactions, return them to unparsed and reprocess.
+Stored verdicts are replayed under the threshold that is live, with no new
+calls. So the order matters: the ingest poll replays them too. If you reset the
+rows before the new threshold is live, the next poll can set them aside again.
+`/api/reprocess` never selects `ignored` rows, so that undo is lost silently.
+
+1. Raise `txn_ignore_threshold` in `/etc/ledger/config.toml`, then
+   `sudo systemctl restart ledger`.
+2. Return the rows to unparsed. Run the SQL as the `ledger` user, so no
+   root-owned WAL files appear:
 
    ```bash
-   curl -s http://127.0.0.1:8080/api/settings \
-     | python3 -c 'import json,sys; s=json.load(sys.stdin); s["ai_threshold"]=0.9; print(json.dumps(s))' \
-     | curl -s -X PUT -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:8080/api/settings
+   sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
+     "UPDATE ingest_log SET parse_status='unparsed', parse_tier=NULL WHERE parse_status='ignored' AND parse_tier='ai_check'"
    ```
 
-   The threshold matters only while "AI auto-accept" is on.
-4. Add `LEDGER_TYPESAFE_API_KEY=…` to `/etc/ledger/ledger.env`.
-5. In `/etc/ledger/config.toml`, under `[ai]`: `categorize_provider = "typesafe"`.
-6. `sudo systemctl restart ledger`. The log must say `categorize=typesafe`:
-   `journalctl -u ledger -n 50 | grep categorize=`. Settings → AI & API usage
-   then names TypeSafe.
-7. Roll back: set `categorize_provider = "anthropic"` and restart. Answers
-   cached in `ai_suggestions` stay valid under either provider.
+3. Reprocess:
+   `curl -s --max-time 1800 -X POST http://127.0.0.1:8080/api/reprocess`
+
+### Bring Anthropic back
+
+Set `provider = "anthropic"` under `[ai]`, keep `LEDGER_AI_API_KEY` in
+`/etc/ledger/ledger.env`, and restart. That restores Anthropic categorization,
+and Anthropic extraction while `allow_ai_extraction` is true. The AI check is
+off under that provider. Answers cached in `ai_suggestions` stay valid under
+either provider.

@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS ingest_log (
   subject       TEXT,
   bank_detected TEXT,
   parse_status  TEXT NOT NULL,                 -- 'parsed' | 'unparsed' | 'low_confidence' | 'ignored'
-  parse_tier    TEXT,                          -- 'template' | 'heuristic' | 'ai' | null
+  parse_tier    TEXT,                          -- 'template' | 'heuristic' | 'ai' | 'ai_check' | null
   parse_error   TEXT,
   structure_sig TEXT,
   raw_body      TEXT,
