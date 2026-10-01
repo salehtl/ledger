@@ -1,13 +1,13 @@
-package anthropic
+package aihttp
 
 import "errors"
 
 // ErrAIDisabled is returned by Retrier.Post when the gate refuses a call. Callers
 // treat it like any other Post failure (extraction skips its tier; categorization
 // surfaces the error and the transaction stays in the review queue).
-var ErrAIDisabled = errors.New("anthropic: AI disabled")
+var ErrAIDisabled = errors.New("ai: disabled")
 
-// Usage is one recorded Anthropic call. Path is "extract" or "categorize".
+// Usage is one recorded AI call. Path is "categorize", "txn_check", or (sunset) "extract".
 // Model may be a TypeSafe id.
 type Usage struct {
 	Path         string

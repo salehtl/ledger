@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 func TestAnthropicCategorizerSuccess(t *testing.T) {
@@ -33,7 +33,7 @@ func TestAnthropicCategorizerSuccess(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	cats := []Category{
@@ -69,7 +69,7 @@ func TestAnthropicCategorizerToleratesFencedJSONAndClampsConfidence(t *testing.T
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 	name, conf, err := ac.Categorize(t.Context(), "AMAZON.AE", []Category{{ID: 1, Name: "Shopping"}})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestAnthropicCategorizerSendsOnlyMerchant(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	cats := []Category{
@@ -150,7 +150,7 @@ func TestAnthropicCategorizerHTTPError(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	cats := []Category{
@@ -169,13 +169,13 @@ func TestCategorizerTransportFailureRecordsOnce(t *testing.T) {
 	srv.Close() // now unreachable: connections fail immediately
 
 	var records int
-	var got anthropic.Usage
+	var got aihttp.Usage
 	ac := &AnthropicCategorizer{
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5",
 		endpoint: deadURL,
-		retry:    &anthropic.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
-		rec:      func(u anthropic.Usage) { records++; got = u },
+		retry:    &aihttp.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
+		rec:      func(u aihttp.Usage) { records++; got = u },
 	}
 
 	cats := []Category{{ID: 1, Name: "Shopping"}}
@@ -183,7 +183,7 @@ func TestCategorizerTransportFailureRecordsOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for transport failure, got nil")
 	}
-	if errors.Is(err, anthropic.ErrAIDisabled) {
+	if errors.Is(err, aihttp.ErrAIDisabled) {
 		t.Fatal("transport failure should not look like the gated error")
 	}
 	if records != 1 {
@@ -202,8 +202,8 @@ func TestCategorizerRecordsUsage(t *testing.T) {
 		w.Write([]byte(`{"model":"claude-haiku-4-5","content":[{"type":"text","text":"{\"category\":\"Groceries\",\"confidence\":0.9}"}],"usage":{"input_tokens":120,"output_tokens":8}}`))
 	}))
 	defer srv.Close()
-	var got anthropic.Usage
-	c := NewAnthropicCategorizer("key", "claude-haiku-4-5", nil, func(u anthropic.Usage) { got = u })
+	var got aihttp.Usage
+	c := NewAnthropicCategorizer("key", "claude-haiku-4-5", nil, func(u aihttp.Usage) { got = u })
 	c.endpoint = srv.URL
 	if _, _, err := c.Categorize(context.Background(), "TESCO", []Category{{ID: 1, Name: "Groceries"}}); err != nil {
 		t.Fatal(err)

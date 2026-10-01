@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 var tsCats = []Category{
@@ -21,19 +21,19 @@ var tsCats = []Category{
 	{ID: 3, Name: "Salary", Kind: "income", Bucket: ""},
 }
 
-func newTestTS(t *testing.T, h http.HandlerFunc) (*TypeSafeCategorizer, *[]anthropic.Usage) {
+func newTestTS(t *testing.T, h http.HandlerFunc) (*TypeSafeCategorizer, *[]aihttp.Usage) {
 	t.Helper()
 	return newTestTSGated(t, nil, h)
 }
 
 // newTestTSGated passes gate through the constructor, so a test proves the
 // constructor wires it (setting retry.Gate afterwards would not).
-func newTestTSGated(t *testing.T, gate func() error, h http.HandlerFunc) (*TypeSafeCategorizer, *[]anthropic.Usage) {
+func newTestTSGated(t *testing.T, gate func() error, h http.HandlerFunc) (*TypeSafeCategorizer, *[]aihttp.Usage) {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	var rec []anthropic.Usage
-	ts := NewTypeSafeCategorizer("ts-key", "jev-1.13.0", gate, func(u anthropic.Usage) { rec = append(rec, u) })
+	var rec []aihttp.Usage
+	ts := NewTypeSafeCategorizer("ts-key", "jev-1.13.0", gate, func(u aihttp.Usage) { rec = append(rec, u) })
 	ts.endpoint = srv.URL + "/v1/systemone"
 	ts.retry.HTTP = srv.Client()
 	ts.retry.Backoff = func(int) time.Duration { return 0 }
@@ -169,10 +169,10 @@ func TestTypeSafeCategorizerRejectsTooManyCategories(t *testing.T) {
 
 func TestTypeSafeCategorizerGateBlocksEgress(t *testing.T) {
 	var calls atomic.Int32
-	ts, rec := newTestTSGated(t, func() error { return anthropic.ErrAIDisabled },
+	ts, rec := newTestTSGated(t, func() error { return aihttp.ErrAIDisabled },
 		func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
 	_, _, err := ts.Categorize(t.Context(), "X", tsCats)
-	if !errors.Is(err, anthropic.ErrAIDisabled) {
+	if !errors.Is(err, aihttp.ErrAIDisabled) {
 		t.Errorf("err = %v, want ErrAIDisabled", err)
 	}
 	if calls.Load() != 0 || len(*rec) != 0 {
@@ -202,7 +202,7 @@ func TestTypeSafeCategorizerRecordsRequestedModel(t *testing.T) {
 	if len(*rec) != 1 || (*rec)[0].Model != "jev-1.13.0" {
 		t.Fatalf("usage = %+v, want one record priced as jev-1.13.0", *rec)
 	}
-	if c := anthropic.CostMuUSD((*rec)[0].Model, 300, 0); c == 0 {
+	if c := aihttp.CostMuUSD((*rec)[0].Model, 300, 0); c == 0 {
 		t.Errorf("recorded call costs 0; the spend cap would not count it")
 	}
 }

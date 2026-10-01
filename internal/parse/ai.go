@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 // ErrAIUnavailable means no AI extractor is configured/enabled. The cascade
@@ -94,16 +94,16 @@ type AnthropicExtractor struct {
 	apiKey   string
 	model    string
 	endpoint string
-	retry    *anthropic.Retrier
+	retry    *aihttp.Retrier
 	gate     func() error
-	rec      anthropic.Recorder
+	rec      aihttp.Recorder
 }
 
 // NewAnthropicExtractor builds the real AI extractor. gate is consulted by the
 // Retrier before any network I/O; rec records usage for each call that
 // actually left the box (nil means "don't record").
-func NewAnthropicExtractor(apiKey, model string, gate func() error, rec anthropic.Recorder) *AnthropicExtractor {
-	r := anthropic.New(nil)
+func NewAnthropicExtractor(apiKey, model string, gate func() error, rec aihttp.Recorder) *AnthropicExtractor {
+	r := aihttp.New(nil)
 	r.Gate = gate
 	return &AnthropicExtractor{
 		apiKey:   apiKey,
@@ -129,8 +129,8 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 
 	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, body)
 	if err != nil {
-		if !errors.Is(err, anthropic.ErrAIDisabled) && a.rec != nil {
-			a.rec(anthropic.Usage{Path: "extract", Model: a.model, OK: false})
+		if !errors.Is(err, aihttp.ErrAIDisabled) && a.rec != nil {
+			a.rec(aihttp.Usage{Path: "extract", Model: a.model, OK: false})
 		}
 		return ParsedTxn{}, fmt.Errorf("ai: http request: %w", err)
 	}
@@ -138,7 +138,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 
 	if resp.StatusCode != http.StatusOK {
 		if a.rec != nil {
-			a.rec(anthropic.Usage{Path: "extract", Model: a.model, OK: false})
+			a.rec(aihttp.Usage{Path: "extract", Model: a.model, OK: false})
 		}
 		return ParsedTxn{}, fmt.Errorf("ai: unexpected status %d", resp.StatusCode)
 	}
@@ -153,7 +153,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 		if model == "" {
 			model = a.model
 		}
-		a.rec(anthropic.Usage{
+		a.rec(aihttp.Usage{
 			Path: "extract", Model: model,
 			InputTokens: apiResp.Usage.InputTokens, OutputTokens: apiResp.Usage.OutputTokens,
 			OK: true, Detail: "",
@@ -165,7 +165,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 	}
 
 	var et extractedTxn
-	if err := json.Unmarshal([]byte(anthropic.ExtractJSON(apiResp.Content[0].Text)), &et); err != nil {
+	if err := json.Unmarshal([]byte(aihttp.ExtractJSON(apiResp.Content[0].Text)), &et); err != nil {
 		return ParsedTxn{}, fmt.Errorf("ai: unmarshal extracted txn: %w", err)
 	}
 
@@ -181,7 +181,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, textBody string) (Pars
 		Direction:   et.Direction,
 		MerchantRaw: et.MerchantRaw,
 		Last4:       et.Last4,
-		Confidence:  anthropic.Clamp01(et.Confidence),
+		Confidence:  aihttp.Clamp01(et.Confidence),
 		Tier:        TierAI,
 	}, nil
 }

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 // MaxTypeSafeCategories is the most categories one Choice can carry: the API
@@ -24,14 +24,14 @@ type TypeSafeCategorizer struct {
 	apiKey   string
 	model    string
 	endpoint string // defaults to "https://api.typesafe.ai/v1/systemone"
-	retry    *anthropic.Retrier
-	rec      anthropic.Recorder
+	retry    *aihttp.Retrier
+	rec      aihttp.Recorder
 }
 
 // NewTypeSafeCategorizer builds the TypeSafe categorizer. gate is consulted by
 // the Retrier before any network I/O; rec records usage (nil = don't record).
-func NewTypeSafeCategorizer(apiKey, model string, gate func() error, rec anthropic.Recorder) *TypeSafeCategorizer {
-	r := anthropic.New(nil)
+func NewTypeSafeCategorizer(apiKey, model string, gate func() error, rec aihttp.Recorder) *TypeSafeCategorizer {
+	r := aihttp.New(nil)
 	r.Gate = gate
 	r.SetHeaders = func(req *http.Request, key string) {
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -115,8 +115,8 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 
 	resp, err := t.retry.Post(ctx, t.endpoint, t.apiKey, body)
 	if err != nil {
-		if !errors.Is(err, anthropic.ErrAIDisabled) && t.rec != nil {
-			t.rec(anthropic.Usage{Path: "categorize", Model: t.model, OK: false, Detail: merchant})
+		if !errors.Is(err, aihttp.ErrAIDisabled) && t.rec != nil {
+			t.rec(aihttp.Usage{Path: "categorize", Model: t.model, OK: false, Detail: merchant})
 		}
 		return "", 0, fmt.Errorf("categorize: http request: %w", err)
 	}
@@ -124,7 +124,7 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 
 	if resp.StatusCode != http.StatusOK {
 		if t.rec != nil {
-			t.rec(anthropic.Usage{Path: "categorize", Model: t.model, OK: false, Detail: merchant})
+			t.rec(aihttp.Usage{Path: "categorize", Model: t.model, OK: false, Detail: merchant})
 		}
 		return "", 0, fmt.Errorf("typesafe API status %d", resp.StatusCode)
 	}
@@ -137,7 +137,7 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 		// Record the requested (pinned) model, not tr.Model: cost is looked up
 		// by this id, and startup checks only the configured one. A response
 		// naming an alias would otherwise price every call at 0.
-		t.rec(anthropic.Usage{
+		t.rec(aihttp.Usage{
 			Path: "categorize", Model: t.model,
 			InputTokens: tr.Usage.InputTokens, OutputTokens: tr.Usage.OutputTokens,
 			OK: true, Detail: merchant,
@@ -163,5 +163,5 @@ func (t *TypeSafeCategorizer) Categorize(ctx context.Context, merchant string, c
 		}
 		return best, 0, nil
 	}
-	return ans.Choice, anthropic.Clamp01(ans.Confidence), nil
+	return ans.Choice, aihttp.Clamp01(ans.Confidence), nil
 }

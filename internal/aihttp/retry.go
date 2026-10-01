@@ -1,9 +1,8 @@
-// Package anthropic provides a small retrying HTTP client for the Anthropic
-// Messages API and the TypeSafe System One API. It cooperates with rate limits:
-// on 429 (and 5xx/529) it honors the server's Retry-After header, falling back
-// to capped exponential backoff with jitter. This lets bulk categorization back
-// off instead of hammering the API when it's told to slow down.
-package anthropic
+// Package aihttp is the shared HTTP plumbing for every AI provider: a retrying
+// POST client that honors Retry-After on 429 and 5xx (529 included), the live
+// gate that makes "AI off" mean zero egress, and usage and cost accounting. It
+// holds no provider logic; adapters set auth headers through SetHeaders.
+package aihttp
 
 import (
 	"bytes"

@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 	"ledger/internal/categorize"
 	"ledger/internal/config"
 	"ledger/internal/importer"
@@ -177,20 +177,20 @@ func main() {
 	}
 
 	// Live gate: the single authority over whether any AI call may leave the
-	// box. Consulted at the HTTP boundary (anthropic.Retrier.Post) before every
+	// box. Consulted at the HTTP boundary (aihttp.Retrier.Post) before every
 	// call, for both Anthropic and TypeSafe. keyPresent is per provider.
 	gateFor := func(keyPresent bool) func() error {
 		return func() error {
 			if !keyPresent {
-				return anthropic.ErrAIDisabled
+				return aihttp.ErrAIDisabled
 			}
 			s, err := st.SelectAppSettings()
 			if err != nil {
 				// Fail closed: if we can't read settings, don't spend money.
-				return anthropic.ErrAIDisabled
+				return aihttp.ErrAIDisabled
 			}
 			if !s.AIEnabled || s.CapLatched {
-				return anthropic.ErrAIDisabled
+				return aihttp.ErrAIDisabled
 			}
 			return nil
 		}
@@ -199,11 +199,11 @@ func main() {
 	categorizeGate := gateFor(cfg.AI.CategorizeKey() != "")
 
 	// Recorder: persist each call's tokens+cost; on cap latch, notify via push.
-	aiRecorder := func(u anthropic.Usage) {
+	aiRecorder := func(u aihttp.Usage) {
 		latched, err := st.RecordAIUsage(store.AIUsageRow{
 			Path: u.Path, Model: u.Model,
 			InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-			CostMuUSD: anthropic.CostMuUSD(u.Model, u.InputTokens, u.OutputTokens),
+			CostMuUSD: aihttp.CostMuUSD(u.Model, u.InputTokens, u.OutputTokens),
 			OK:        u.OK, Detail: u.Detail,
 		})
 		if err != nil {
@@ -247,7 +247,7 @@ func main() {
 		}
 		log.Printf("ai: clients wired (categorize=%s, extract model=%s); runtime master switch + cap now govern calls",
 			cfg.AI.CategorizeProvider, cfg.AI.Model)
-		if cfg.AI.CategorizeProvider == "typesafe" && anthropic.CostMuUSD(cfg.AI.TypeSafeModel, 1, 0) == 0 {
+		if cfg.AI.CategorizeProvider == "typesafe" && aihttp.CostMuUSD(cfg.AI.TypeSafeModel, 1, 0) == 0 {
 			log.Printf("ai: WARNING no price for %s — the spend cap will not count its calls", cfg.AI.TypeSafeModel)
 		}
 	} else {

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 // AnthropicCategorizer calls the Anthropic Messages API to suggest a category
@@ -18,16 +18,16 @@ type AnthropicCategorizer struct {
 	apiKey   string
 	model    string
 	endpoint string // defaults to "https://api.anthropic.com/v1/messages"
-	retry    *anthropic.Retrier
+	retry    *aihttp.Retrier
 	gate     func() error
-	rec      anthropic.Recorder
+	rec      aihttp.Recorder
 }
 
 // NewAnthropicCategorizer builds the real AI categorizer. gate is consulted by
 // the Retrier before any network I/O; rec records usage for each call that
 // actually left the box (nil means "don't record").
-func NewAnthropicCategorizer(apiKey, model string, gate func() error, rec anthropic.Recorder) *AnthropicCategorizer {
-	r := anthropic.New(nil)
+func NewAnthropicCategorizer(apiKey, model string, gate func() error, rec aihttp.Recorder) *AnthropicCategorizer {
+	r := aihttp.New(nil)
 	r.Gate = gate
 	return &AnthropicCategorizer{
 		apiKey:   apiKey,
@@ -98,8 +98,8 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 
 	resp, err := a.retry.Post(ctx, a.endpoint, a.apiKey, bodyBytes)
 	if err != nil {
-		if !errors.Is(err, anthropic.ErrAIDisabled) && a.rec != nil {
-			a.rec(anthropic.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
+		if !errors.Is(err, aihttp.ErrAIDisabled) && a.rec != nil {
+			a.rec(aihttp.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
 		}
 		return "", 0, fmt.Errorf("categorize: http request: %w", err)
 	}
@@ -107,7 +107,7 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 
 	if resp.StatusCode != http.StatusOK {
 		if a.rec != nil {
-			a.rec(anthropic.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
+			a.rec(aihttp.Usage{Path: "categorize", Model: a.model, OK: false, Detail: merchant})
 		}
 		return "", 0, fmt.Errorf("anthropic API status %d", resp.StatusCode)
 	}
@@ -122,7 +122,7 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 		if model == "" {
 			model = a.model
 		}
-		a.rec(anthropic.Usage{
+		a.rec(aihttp.Usage{
 			Path: "categorize", Model: model,
 			InputTokens: ar.Usage.InputTokens, OutputTokens: ar.Usage.OutputTokens,
 			OK: true, Detail: merchant,
@@ -134,9 +134,9 @@ func (a *AnthropicCategorizer) Categorize(ctx context.Context, merchant string, 
 	}
 
 	var result categResult
-	if err := json.Unmarshal([]byte(anthropic.ExtractJSON(ar.Content[0].Text)), &result); err != nil {
+	if err := json.Unmarshal([]byte(aihttp.ExtractJSON(ar.Content[0].Text)), &result); err != nil {
 		return "", 0, fmt.Errorf("categorize: parse result JSON: %w", err)
 	}
 
-	return result.Category, anthropic.Clamp01(result.Confidence), nil
+	return result.Category, aihttp.Clamp01(result.Confidence), nil
 }

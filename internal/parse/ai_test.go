@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"ledger/internal/anthropic"
+	"ledger/internal/aihttp"
 )
 
 func TestAnthropicExtractorSuccess(t *testing.T) {
@@ -24,7 +24,7 @@ func TestAnthropicExtractorSuccess(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	p, err := ex.Extract(context.Background(), "some email body")
@@ -65,7 +65,7 @@ func TestAnthropicExtractorNormalizesCurrency(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	p, err := ex.Extract(context.Background(), "some email body")
@@ -98,7 +98,7 @@ func TestAnthropicExtractorToleratesFencedJSONAndClampsConfidence(t *testing.T) 
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 	p, err := ex.Extract(context.Background(), "some email body")
 	if err != nil {
@@ -122,7 +122,7 @@ func TestAnthropicExtractorHTTPError(t *testing.T) {
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5-20251001",
 		endpoint: srv.URL + "/v1/messages",
-		retry:    anthropic.New(srv.Client()),
+		retry:    aihttp.New(srv.Client()),
 	}
 
 	_, err := ex.Extract(context.Background(), "some email body")
@@ -138,8 +138,8 @@ func TestExtractorRecordsUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var got anthropic.Usage
-	ex := NewAnthropicExtractor("key", "claude-haiku-4-5", nil, func(u anthropic.Usage) { got = u })
+	var got aihttp.Usage
+	ex := NewAnthropicExtractor("key", "claude-haiku-4-5", nil, func(u aihttp.Usage) { got = u })
 	ex.endpoint = srv.URL
 	if _, err := ex.Extract(context.Background(), "body"); err != nil {
 		t.Fatal(err)
@@ -155,20 +155,20 @@ func TestExtractorTransportFailureRecordsOnce(t *testing.T) {
 	srv.Close() // now unreachable: connections fail immediately
 
 	var records int
-	var got anthropic.Usage
+	var got aihttp.Usage
 	ex := &AnthropicExtractor{
 		apiKey:   "test-key",
 		model:    "claude-haiku-4-5",
 		endpoint: deadURL,
-		retry:    &anthropic.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
-		rec:      func(u anthropic.Usage) { records++; got = u },
+		retry:    &aihttp.Retrier{HTTP: &http.Client{Timeout: 200 * time.Millisecond}, MaxRetries: 0},
+		rec:      func(u aihttp.Usage) { records++; got = u },
 	}
 
 	_, err := ex.Extract(context.Background(), "some email body")
 	if err == nil {
 		t.Fatal("expected error for transport failure, got nil")
 	}
-	if errors.Is(err, anthropic.ErrAIDisabled) {
+	if errors.Is(err, aihttp.ErrAIDisabled) {
 		t.Fatal("transport failure should not look like the gated error")
 	}
 	if records != 1 {
@@ -186,7 +186,7 @@ func TestExtractorGatedDoesNotRecord(t *testing.T) {
 	var hits, records int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
 	defer srv.Close()
-	ex := NewAnthropicExtractor("key", "m", func() error { return anthropic.ErrAIDisabled }, func(u anthropic.Usage) { records++ })
+	ex := NewAnthropicExtractor("key", "m", func() error { return aihttp.ErrAIDisabled }, func(u aihttp.Usage) { records++ })
 	ex.endpoint = srv.URL
 	if _, err := ex.Extract(context.Background(), "body"); err == nil {
 		t.Fatal("expected error when gated")
