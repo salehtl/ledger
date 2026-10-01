@@ -189,6 +189,14 @@ func migrate(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_target_cat_month ON category_targets(category_id, effective_month)`); err != nil {
 		return err
 	}
+	// AI transaction check (2026-10): the classifier's verdict on an email no
+	// parser read. Kept so a reprocess re-applies it without another call.
+	if err := addColumnIfMissing(db, "ingest_log", "ai_verdict", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "ingest_log", "ai_verdict_conf", "REAL"); err != nil {
+		return err
+	}
 	return nil
 }
 

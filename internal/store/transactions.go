@@ -129,12 +129,14 @@ func nullableID(id int64) any {
 
 // IngestForParse is one ingest_log row the processor will run the cascade over.
 type IngestForParse struct {
-	ID          int64
-	FromAddr    string
-	Subject     string
-	ParseStatus string
-	ReceivedAt  time.Time
-	RawBody     []byte
+	ID            int64
+	FromAddr      string
+	Subject       string
+	ParseStatus   string
+	ReceivedAt    time.Time
+	RawBody       []byte
+	AIVerdict     string // "" when the AI check has not answered
+	AIVerdictConf float64
 }
 
 // SelectForParseOpts filters which ingest rows to (re)process.
@@ -151,7 +153,9 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 	if opts.OnlyUnparsed {
 		statuses = "('unparsed')"
 	}
-	q := `SELECT id, from_addr, subject, parse_status, received_at, raw_body FROM ingest_log WHERE parse_status IN ` + statuses
+	q := `SELECT id, from_addr, subject, parse_status, received_at, raw_body,
+	             COALESCE(ai_verdict,''), COALESCE(ai_verdict_conf,0)
+	        FROM ingest_log WHERE parse_status IN ` + statuses
 	args := []any{}
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"
@@ -172,7 +176,7 @@ func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error
 		var r IngestForParse
 		var raw []byte
 		var recv sql.NullString
-		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &recv, &raw); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromAddr, &r.Subject, &r.ParseStatus, &recv, &raw, &r.AIVerdict, &r.AIVerdictConf); err != nil {
 			return nil, err
 		}
 		if recv.Valid && recv.String != "" {

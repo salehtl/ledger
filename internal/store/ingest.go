@@ -94,3 +94,30 @@ func (s *Store) LastIngestAt() (time.Time, bool, error) {
 	}
 	return t, true, nil
 }
+
+// SetIngestVerdict stores the AI transaction check's answer for one row.
+func (s *Store) SetIngestVerdict(ingestID int64, verdict string, conf float64) error {
+	_, err := s.DB.Exec(`UPDATE ingest_log SET ai_verdict=?, ai_verdict_conf=? WHERE id=?`, verdict, conf, ingestID)
+	return err
+}
+
+// VerdictCounts summarizes emails no parser read, by AI verdict, plus the
+// emails the AI check set aside as not transactions.
+type VerdictCounts struct {
+	Transaction    int // unparsed; the AI says it is a transaction
+	NotTransaction int // unparsed; the AI says not, below the set-aside threshold
+	Unchecked      int // unparsed; no verdict yet
+	SetAside       int // ignored by the AI check (parse_tier 'ai_check')
+}
+
+// UnparsedVerdictCounts returns VerdictCounts over all of ingest_log.
+func (s *Store) UnparsedVerdictCounts() (VerdictCounts, error) {
+	var v VerdictCounts
+	err := s.DB.QueryRow(`SELECT
+		COALESCE(SUM(parse_status='unparsed' AND ai_verdict='transaction'),0),
+		COALESCE(SUM(parse_status='unparsed' AND ai_verdict='not_transaction'),0),
+		COALESCE(SUM(parse_status='unparsed' AND ai_verdict IS NULL),0),
+		COALESCE(SUM(parse_status='ignored' AND parse_tier='ai_check'),0)
+		FROM ingest_log`).Scan(&v.Transaction, &v.NotTransaction, &v.Unchecked, &v.SetAside)
+	return v, err
+}

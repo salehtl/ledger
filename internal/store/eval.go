@@ -37,3 +37,47 @@ func (s *Store) SelectMerchantLabels() ([]MerchantLabel, error) {
 	}
 	return out, rows.Err()
 }
+
+// TxnCheckSample is one labelled email for the offline txncheck-eval command.
+type TxnCheckSample struct {
+	FromAddr string
+	Subject  string
+	RawBody  []byte
+	IsTxn    bool
+}
+
+// SelectTxnCheckSamples returns up to perClass parsed emails (labelled
+// transactions) and up to perClass emails a parser rejected as
+// non-transactional (labelled not). Rows the AI check set aside are excluded:
+// their label came from the classifier being measured. Rows are picked by a
+// fixed hash of id, so a rerun picks the same ones. Read-only.
+func (s *Store) SelectTxnCheckSamples(perClass int) ([]TxnCheckSample, error) {
+	rows, err := s.DB.Query(`
+		SELECT COALESCE(from_addr,''), COALESCE(subject,''), raw_body, is_txn FROM (
+			SELECT * FROM (SELECT id, from_addr, subject, raw_body, 1 AS is_txn FROM ingest_log
+				WHERE parse_status='parsed' ORDER BY (id*2654435761)%4294967296 LIMIT ?)
+			UNION ALL
+			SELECT * FROM (SELECT id, from_addr, subject, raw_body, 0 AS is_txn FROM ingest_log
+				WHERE parse_status='ignored' AND COALESCE(parse_tier,'')<>'ai_check'
+				ORDER BY (id*2654435761)%4294967296 LIMIT ?))
+		ORDER BY id`, perClass, perClass)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TxnCheckSample
+	for rows.Next() {
+		var smp TxnCheckSample
+		var raw []byte
+		if err := rows.Scan(&smp.FromAddr, &smp.Subject, &raw, &smp.IsTxn); err != nil {
+			return nil, err
+		}
+		body, derr := decodeBody(raw)
+		if derr != nil {
+			body = raw
+		}
+		smp.RawBody = body
+		out = append(out, smp)
+	}
+	return out, rows.Err()
+}
