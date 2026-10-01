@@ -75,21 +75,40 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 			fallback = fd
 		}
 		// A low_confidence row was already extracted by the AI tier once —
-		// re-running AI would just re-bill for the same guess. Reprocess exists
-		// so a *fixed deterministic parser* can upgrade the row; run the cascade
-		// without its AI tier for those rows.
+		// re-running AI would just re-bill for the same guess, and the row
+		// already owns a transaction the AI check must never set aside.
+		// Reprocess exists so a *fixed deterministic parser* can upgrade it;
+		// run the cascade without its AI tiers for those rows.
 		casc := p.cascade
 		if row.ParseStatus == StatusLowConfidence {
 			c := *p.cascade
 			c.AI = nil
+			c.Check = nil
+			casc = &c
+		} else if row.AIVerdict != "" && p.cascade.Check != nil {
+			// Replay the stored verdict under today's threshold, with no
+			// provider call.
+			c := *p.cascade
+			c.Check = storedVerdict{Verdict: row.AIVerdict, Confidence: row.AIVerdictConf}
 			casc = &c
 		}
 		res := casc.Run(ctx, from, subject, text, fallback)
+		if res.Verdict != nil {
+			_ = p.store.SetIngestVerdict(row.ID, res.Verdict.Verdict, res.Verdict.Confidence)
+		}
 		if res.Status == StatusUnparsed {
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", res.Err)
 			continue
 		}
 		if res.Status == StatusIgnored {
+			if res.Tier == TierAICheck {
+				// A row that already produced a transaction (an old AI
+				// extraction, demoted by a failed reprocess) must never be
+				// hidden by a classifier. Leave it as it is.
+				if _, exists, xerr := p.store.TransactionIDByIngest(row.ID); xerr != nil || exists {
+					continue
+				}
+			}
 			// A recognized non-transactional email: no transaction, and the raw
 			// body stays in ingest_log (never deleted). SelectForParse only picks
 			// up unparsed/low_confidence rows, so this status is never revisited.
