@@ -231,27 +231,33 @@ func TestAIProviderDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AI.CategorizeProvider != "anthropic" || cfg.AI.TypeSafeModel != "jev-1.13.0" {
-		t.Errorf("defaults = %q %q", cfg.AI.CategorizeProvider, cfg.AI.TypeSafeModel)
+	if cfg.AI.Provider != "typesafe" || cfg.AI.TypeSafeModel != "jev-1.13.0" || cfg.AI.TxnIgnoreThreshold != 0.97 {
+		t.Errorf("defaults = %q %q %v", cfg.AI.Provider, cfg.AI.TypeSafeModel, cfg.AI.TxnIgnoreThreshold)
 	}
 }
 
 func TestTypeSafeProviderNeedsTypeSafeKey(t *testing.T) {
 	clearLedgerEnv(t)
-	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"typesafe\"\nallow_ai_extraction = false\n")
+	p := writeTOML(t, "[ai]\nenabled = true\nprovider = \"typesafe\"\n")
 	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "LEDGER_TYPESAFE_API_KEY") {
 		t.Errorf("err = %v, want a LEDGER_TYPESAFE_API_KEY error", err)
 	}
+}
+
+// Anthropic is sunset: the TypeSafe provider never needs its key, whatever
+// allow_ai_extraction says.
+func TestTypeSafeNeverNeedsAnthropicKey(t *testing.T) {
+	clearLedgerEnv(t)
 	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
+	p := writeTOML(t, "[ai]\nenabled = true\nprovider = \"typesafe\"\nallow_ai_extraction = true\n")
 	if _, err := Load(p); err != nil {
-		t.Errorf("typesafe key alone, no extraction: err = %v, want nil", err)
+		t.Errorf("err = %v, want nil", err)
 	}
 }
 
-func TestTypeSafeWithExtractionStillNeedsAnthropicKey(t *testing.T) {
+func TestAnthropicProviderNeedsAnthropicKey(t *testing.T) {
 	clearLedgerEnv(t)
-	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
-	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"typesafe\"\nallow_ai_extraction = true\n")
+	p := writeTOML(t, "[ai]\nenabled = true\nprovider = \"anthropic\"\n")
 	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "LEDGER_AI_API_KEY") {
 		t.Errorf("err = %v, want a LEDGER_AI_API_KEY error", err)
 	}
@@ -260,19 +266,76 @@ func TestTypeSafeWithExtractionStillNeedsAnthropicKey(t *testing.T) {
 func TestUnknownProviderRejected(t *testing.T) {
 	clearLedgerEnv(t)
 	t.Setenv("LEDGER_AI_API_KEY", "a")
-	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"openai\"\n")
+	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
+	p := writeTOML(t, "[ai]\nenabled = true\nprovider = \"openai\"\n")
 	if _, err := Load(p); err == nil {
 		t.Error("want an error for an unknown provider")
 	}
 }
 
-func TestCategorizeKey(t *testing.T) {
-	a := AIConfig{CategorizeProvider: "typesafe", APIKey: "a", TypeSafeAPIKey: "t"}
-	if a.CategorizeKey() != "t" {
-		t.Errorf("typesafe key = %q", a.CategorizeKey())
+// Production's /etc/ledger/config.toml as of 2026-10-01, verbatim [ai] block.
+func TestCategorizeProviderAliasStillRead(t *testing.T) {
+	clearLedgerEnv(t)
+	t.Setenv("LEDGER_TYPESAFE_API_KEY", "ts")
+	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"typesafe\"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	a.CategorizeProvider = "anthropic"
-	if a.CategorizeKey() != "a" {
-		t.Errorf("anthropic key = %q", a.CategorizeKey())
+	if cfg.AI.Provider != "typesafe" {
+		t.Errorf("Provider = %q, want typesafe from the old key", cfg.AI.Provider)
+	}
+}
+
+// The alias test above uses the default value, so it would pass even if the
+// old key were ignored. This one uses the other value, so it cannot.
+func TestCategorizeProviderAliasNonDefault(t *testing.T) {
+	clearLedgerEnv(t)
+	t.Setenv("LEDGER_AI_API_KEY", "a")
+	p := writeTOML(t, "[ai]\nenabled = true\ncategorize_provider = \"anthropic\"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic from the old key", cfg.AI.Provider)
+	}
+}
+
+func TestProviderWinsOverAlias(t *testing.T) {
+	clearLedgerEnv(t)
+	t.Setenv("LEDGER_AI_API_KEY", "a")
+	p := writeTOML(t, "[ai]\nenabled = true\nprovider = \"anthropic\"\ncategorize_provider = \"typesafe\"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", cfg.AI.Provider)
+	}
+}
+
+func TestTxnIgnoreThresholdBounds(t *testing.T) {
+	clearLedgerEnv(t)
+	for _, v := range []string{"0.5", "0", "1.01"} {
+		p := writeTOML(t, "[ai]\ntxn_ignore_threshold = "+v+"\n")
+		if _, err := Load(p); err == nil {
+			t.Errorf("threshold %s: want an error", v)
+		}
+	}
+	p := writeTOML(t, "[ai]\ntxn_ignore_threshold = 0.9\n")
+	if cfg, err := Load(p); err != nil || cfg.AI.TxnIgnoreThreshold != 0.9 {
+		t.Errorf("threshold 0.9: cfg %v err %v", cfg.AI.TxnIgnoreThreshold, err)
+	}
+}
+
+func TestProviderKey(t *testing.T) {
+	c := AIConfig{Provider: "typesafe", APIKey: "a", TypeSafeAPIKey: "ts"}
+	if c.ProviderKey() != "ts" {
+		t.Errorf("typesafe key = %q", c.ProviderKey())
+	}
+	c.Provider = "anthropic"
+	if c.ProviderKey() != "a" {
+		t.Errorf("anthropic key = %q", c.ProviderKey())
 	}
 }

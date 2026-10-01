@@ -42,26 +42,32 @@ type IMAPConfig struct {
 	AppPassword  string `toml:"-"` // secret — env only, never from TOML
 }
 
-// AIConfig holds settings for the AI clients: Anthropic (extraction fallback,
-// and categorization by default) and optionally TypeSafe (categorization only).
-// API keys are NEVER read from TOML; they come from LEDGER_AI_API_KEY and
-// LEDGER_TYPESAFE_API_KEY.
+// AIConfig holds settings for the AI provider. API keys are NEVER read from
+// TOML; they come from LEDGER_TYPESAFE_API_KEY and LEDGER_AI_API_KEY.
 type AIConfig struct {
-	Enabled            bool   `toml:"enabled"`
-	Model              string `toml:"model"`
-	AllowAIExtraction  bool   `toml:"allow_ai_extraction"`
-	CategorizeProvider string `toml:"categorize_provider"` // "anthropic" | "typesafe"
+	Enabled bool `toml:"enabled"`
+	// Provider answers every AI question: "typesafe" (default), or "anthropic"
+	// (sunset 2026-10: Anthropic categorization and extraction, kept only so
+	// it can come back).
+	Provider string `toml:"provider"`
+	// CategorizeProvider is the pre-2026-10 name for Provider, still read.
+	CategorizeProvider string `toml:"categorize_provider"`
 	TypeSafeModel      string `toml:"typesafe_model"`
-	APIKey             string `toml:"-"` // env only
-	TypeSafeAPIKey     string `toml:"-"` // env only
+	// TxnIgnoreThreshold: a "not a transaction" verdict at or above this sets
+	// the email aside. Pick it from `ledger txncheck-eval`.
+	TxnIgnoreThreshold float64 `toml:"txn_ignore_threshold"`
+	Model              string  `toml:"model"`               // Anthropic model; sunset path only
+	AllowAIExtraction  bool    `toml:"allow_ai_extraction"` // sunset path only
+	APIKey             string  `toml:"-"`                   // LEDGER_AI_API_KEY, env only
+	TypeSafeAPIKey     string  `toml:"-"`                   // LEDGER_TYPESAFE_API_KEY, env only
 }
 
-// CategorizeKey is the API key the configured categorization provider needs.
-func (c AIConfig) CategorizeKey() string {
-	if c.CategorizeProvider == "typesafe" {
-		return c.TypeSafeAPIKey
+// ProviderKey is the API key the configured provider needs.
+func (c AIConfig) ProviderKey() string {
+	if c.Provider == "anthropic" {
+		return c.APIKey
 	}
-	return c.APIKey
+	return c.TypeSafeAPIKey
 }
 
 // MonitoringConfig controls the drift detection window and threshold.
@@ -111,8 +117,8 @@ func defaults() Config {
 		AI: AIConfig{
 			Model:              "claude-haiku-4-5-20251001",
 			AllowAIExtraction:  true,
-			CategorizeProvider: "anthropic",
 			TypeSafeModel:      "jev-1.13.0",
+			TxnIgnoreThreshold: 0.97,
 		},
 		Monitoring: MonitoringConfig{
 			DriftWindow: "7d",
@@ -154,6 +160,12 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("LEDGER_TYPESAFE_API_KEY"); v != "" {
 		cfg.AI.TypeSafeAPIKey = v
 	}
+	if cfg.AI.Provider == "" {
+		cfg.AI.Provider = cfg.AI.CategorizeProvider
+	}
+	if cfg.AI.Provider == "" {
+		cfg.AI.Provider = "typesafe"
+	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -189,21 +201,21 @@ func (c Config) validate() error {
 		}
 	}
 	if c.AI.Enabled {
-		switch c.AI.CategorizeProvider {
-		case "anthropic":
-			if c.AI.APIKey == "" {
-				return fmt.Errorf("ai.enabled requires LEDGER_AI_API_KEY env var")
-			}
+		switch c.AI.Provider {
 		case "typesafe":
 			if c.AI.TypeSafeAPIKey == "" {
-				return fmt.Errorf("ai.categorize_provider = \"typesafe\" requires LEDGER_TYPESAFE_API_KEY env var")
+				return fmt.Errorf("ai.provider = \"typesafe\" requires LEDGER_TYPESAFE_API_KEY env var")
 			}
-			if c.AI.AllowAIExtraction && c.AI.APIKey == "" {
-				return fmt.Errorf("ai.allow_ai_extraction requires LEDGER_AI_API_KEY env var (extraction always uses Anthropic)")
+		case "anthropic":
+			if c.AI.APIKey == "" {
+				return fmt.Errorf("ai.provider = \"anthropic\" requires LEDGER_AI_API_KEY env var")
 			}
 		default:
-			return fmt.Errorf("ai.categorize_provider must be \"anthropic\" or \"typesafe\" (got %q)", c.AI.CategorizeProvider)
+			return fmt.Errorf("ai.provider must be \"typesafe\" or \"anthropic\" (got %q)", c.AI.Provider)
 		}
+	}
+	if t := c.AI.TxnIgnoreThreshold; t <= 0.5 || t > 1 {
+		return fmt.Errorf("ai.txn_ignore_threshold must be above 0.5 and at most 1 (got %v)", t)
 	}
 	if _, err := c.Monitoring.ParseDriftWindow(); err != nil {
 		return fmt.Errorf("monitoring.drift_window invalid: %w", err)

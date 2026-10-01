@@ -139,8 +139,8 @@ func main() {
 	srv.SetRatesStore(st)
 	srv.SetAccountsStore(st)
 	srv.SetTransfersStore(st)
-	srv.SetAIKeyPresent(cfg.AI.CategorizeKey() != "")
-	srv.SetAIProvider(cfg.AI.CategorizeProvider)
+	srv.SetAIKeyPresent(cfg.AI.ProviderKey() != "")
+	srv.SetAIProvider(cfg.AI.Provider)
 	srv.SetRuleActiveStore(st)
 	srv.SetRuleDisplayStore(st)
 	srv.SetBudgetStore(st)
@@ -178,8 +178,9 @@ func main() {
 	}
 
 	// Live gate: the single authority over whether any AI call may leave the
-	// box. Consulted at the HTTP boundary (aihttp.Retrier.Post) before every
-	// call, for both Anthropic and TypeSafe. keyPresent is per provider.
+	// box. It governs every provider, and is consulted at the HTTP boundary
+	// (aihttp.Retrier.Post) before every call. keyPresent is the configured
+	// provider's key.
 	gateFor := func(keyPresent bool) func() error {
 		return func() error {
 			if !keyPresent {
@@ -196,8 +197,7 @@ func main() {
 			return nil
 		}
 	}
-	anthropicGate := gateFor(cfg.AI.APIKey != "")
-	categorizeGate := gateFor(cfg.AI.CategorizeKey() != "")
+	aiGate := gateFor(cfg.AI.ProviderKey() != "")
 
 	// Recorder: persist each call's tokens+cost; on cap latch, notify via push.
 	aiRecorder := func(u aihttp.Usage) {
@@ -231,26 +231,30 @@ func main() {
 	// Pick AI clients based on config. The gate — not config — is the live on/off.
 	var aiCat categorize.AICategorizer = categorize.DisabledAI{}
 	var aiExt parse.Extractor = parse.DisabledExtractor{}
+	var txnCheck parse.TxnChecker // nil: no AI check tier
 	if cfg.AI.Enabled {
 		var inner categorize.AICategorizer
-		switch cfg.AI.CategorizeProvider {
-		case "typesafe":
-			inner = categorize.NewClassifierCategorizer(
-				classify.NewTypeSafe(cfg.AI.TypeSafeAPIKey, cfg.AI.TypeSafeModel, categorizeGate, aiRecorder))
-		default:
-			inner = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, categorizeGate, aiRecorder)
+		model := cfg.AI.TypeSafeModel
+		switch cfg.AI.Provider {
+		case "anthropic":
+			// Sunset 2026-10. Kept so Anthropic can come back by config alone.
+			model = cfg.AI.Model
+			inner = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
+			if cfg.AI.AllowAIExtraction {
+				aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, aiGate, aiRecorder)
+			}
+		default: // "typesafe"; config validation rejects anything else
+			clf := classify.NewTypeSafe(cfg.AI.TypeSafeAPIKey, cfg.AI.TypeSafeModel, aiGate, aiRecorder)
+			inner = categorize.NewClassifierCategorizer(clf)
+			txnCheck = parse.NewClassifierTxnChecker(clf)
 		}
 		// Memo wrapper: a merchant the AI has already categorized is answered
-		// from the ai_suggestions table, not paid for again — whichever
-		// provider answered it first.
+		// from the ai_suggestions table, not paid for again.
 		aiCat = categorize.MemoAI{Inner: inner, Store: st}
-		if cfg.AI.AllowAIExtraction {
-			aiExt = parse.NewAnthropicExtractor(cfg.AI.APIKey, cfg.AI.Model, anthropicGate, aiRecorder)
-		}
-		log.Printf("ai: clients wired (categorize=%s, extract model=%s); runtime master switch + cap now govern calls",
-			cfg.AI.CategorizeProvider, cfg.AI.Model)
-		if cfg.AI.CategorizeProvider == "typesafe" && aihttp.CostMuUSD(cfg.AI.TypeSafeModel, 1, 0) == 0 {
-			log.Printf("ai: WARNING no price for %s — the spend cap will not count its calls", cfg.AI.TypeSafeModel)
+		log.Printf("ai: clients wired (provider=%s, model=%s, txn check=%t, set aside at >= %.2f); runtime master switch + cap now govern calls",
+			cfg.AI.Provider, model, txnCheck != nil, cfg.AI.TxnIgnoreThreshold)
+		if aihttp.CostMuUSD(model, 1, 0) == 0 {
+			log.Printf("ai: WARNING no price for %s — the spend cap will not count its calls", model)
 		}
 	} else {
 		log.Printf("ai: disabled (set ai.enabled=true + the provider's API key env var to activate)")
@@ -260,6 +264,8 @@ func main() {
 		Parsers:   []parse.BankParser{parse.DIBParser{}, parse.ENBDParser{}, parse.ENBDAlertParser{}},
 		Heuristic: parse.HeuristicParser{},
 		AI:        aiExt,
+		Check:     txnCheck,
+		IgnoreAt:  cfg.AI.TxnIgnoreThreshold,
 	}
 	processor := parse.NewProcessor(st, cascade)
 	processor.SetCategorizerProvider(func(ctx context.Context) (*categorize.Categorizer, bool) {
