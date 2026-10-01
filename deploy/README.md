@@ -226,6 +226,9 @@ TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
    restart (keys: https://console.typesafe.ai/keys). With `enabled = true` and
    no key, the service refuses to start:
    `ai.provider = "typesafe" requires LEDGER_TYPESAFE_API_KEY env var`.
+   Keep `LEDGER_AI_API_KEY` in `/etc/ledger/ledger.env` until a rollback to the
+   previous binary is no longer possible. The previous binary still needs it
+   (extraction defaults to on there) and refuses to start without it.
 3. Measure the AI check on a copy. The new binary must already be installed
    (step 2). An older binary does not know `txncheck-eval`: it starts the
    server instead, as root, with default settings that open the production data

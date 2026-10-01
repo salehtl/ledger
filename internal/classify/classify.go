@@ -4,7 +4,11 @@
 // To add a provider, write one adapter that implements Classifier, add a case
 // to the provider switch in cmd/ledger/main.go, add a case each to
 // Config.validate and AIConfig.ProviderKey in internal/config/config.go, and
-// add a key field with its env var to AIConfig.
+// add a key field with its env var to AIConfig. Also add a model config key to
+// AIConfig, and a price row for the model in aihttp.PriceMuUSD or
+// aihttp.PriceMilliMuUSD: without it, the spend cap does not count the
+// provider's calls. Then update frontend/src/lib/aiProvider.ts, which maps
+// every provider other than "typesafe" to Anthropic's name and env var.
 package classify
 
 import (
