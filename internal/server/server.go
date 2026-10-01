@@ -71,6 +71,8 @@ type PushStore interface {
 	InsertPushSub(store.PushSubRow) error
 	SelectPushSubs() ([]store.PushSubRow, error)
 	DeletePushSub(endpoint string) error
+	PrunePushSub(endpoint string) error
+	PushSubGone(endpoint string) (bool, error)
 }
 
 // PushSender delivers web push notifications.

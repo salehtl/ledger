@@ -13,6 +13,10 @@ type pushSubReq struct {
 		P256dh string `json:"p256dh"`
 		Auth   string `json:"auth"`
 	} `json:"keys"`
+	// Resync marks the PWA's automatic re-send on open, as opposed to an
+	// explicit tap on Enable. A re-sync of an endpoint a push service already
+	// declared gone is refused with 410.
+	Resync bool `json:"resync"`
 }
 
 type deletePushReq struct {
@@ -32,6 +36,17 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint == "" || req.Keys.P256dh == "" || req.Keys.Auth == "" {
 		http.Error(w, "endpoint, keys.p256dh, keys.auth required", http.StatusBadRequest)
 		return
+	}
+	if req.Resync {
+		gone, err := s.pushStore.PushSubGone(req.Endpoint)
+		if err != nil {
+			http.Error(w, "store error", http.StatusInternalServerError)
+			return
+		}
+		if gone {
+			http.Error(w, `{"error":"subscription gone"}`, http.StatusGone)
+			return
+		}
 	}
 	if err := s.pushStore.InsertPushSub(store.PushSubRow{
 		Endpoint: req.Endpoint,
@@ -74,8 +89,11 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "push not configured", http.StatusServiceUnavailable)
 		return
 	}
-	s.pushAll("ledger", "Test notification — push is working.")
-	w.WriteHeader(http.StatusNoContent)
+	n := s.pushAll("ledger", "Test notification — push is working.")
+	// Report how many devices the push went to. With 0 the app must not say
+	// "sent": the push reached nobody.
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"devices": n})
 }
 
 func (s *Server) handleVapidPublicKey(w http.ResponseWriter, r *http.Request) {

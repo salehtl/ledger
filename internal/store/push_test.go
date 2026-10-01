@@ -69,3 +69,53 @@ func TestDeletePushSub(t *testing.T) {
 		t.Errorf("got %d subs after delete, want 0", len(subs))
 	}
 }
+
+// A push service that answered 404/410 has killed the endpoint for good. The
+// store must remember that, so a client re-sync cannot quietly bring it back.
+func TestPrunePushSubRemembersGoneEndpoint(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const ep = "https://push.example.com/dead"
+	if err := st.InsertPushSub(PushSubRow{Endpoint: ep, P256dh: "p", Auth: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := st.PushSubGone(ep); err != nil || gone {
+		t.Fatalf("before prune: gone=%v err=%v, want false nil", gone, err)
+	}
+	if err := st.PrunePushSub(ep); err != nil {
+		t.Fatal(err)
+	}
+	if subs, _ := st.SelectPushSubs(); len(subs) != 0 {
+		t.Errorf("prune left %d subs, want 0", len(subs))
+	}
+	if gone, err := st.PushSubGone(ep); err != nil || !gone {
+		t.Errorf("after prune: gone=%v err=%v, want true nil", gone, err)
+	}
+}
+
+// Tapping Enable is the explicit path: it always registers, and clears the
+// gone mark for that endpoint.
+func TestInsertPushSubClearsGoneMark(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const ep = "https://push.example.com/back"
+	_ = st.InsertPushSub(PushSubRow{Endpoint: ep, P256dh: "p", Auth: "a"})
+	if err := st.PrunePushSub(ep); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertPushSub(PushSubRow{Endpoint: ep, P256dh: "p2", Auth: "a2"}); err != nil {
+		t.Fatal(err)
+	}
+	if gone, _ := st.PushSubGone(ep); gone {
+		t.Error("an explicit subscribe must clear the gone mark")
+	}
+	if subs, _ := st.SelectPushSubs(); len(subs) != 1 {
+		t.Errorf("got %d subs, want 1", len(subs))
+	}
+}

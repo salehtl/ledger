@@ -107,6 +107,14 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at TEXT NOT NULL
 );
 
+-- Endpoints a push service reported permanently gone (404/410). A client
+-- re-sync of one of these is refused, so a dead subscription the phone still
+-- holds locally cannot keep coming back and showing "Enabled".
+CREATE TABLE IF NOT EXISTS push_gone (
+  endpoint TEXT PRIMARY KEY,
+  gone_at  TEXT NOT NULL
+);
+
 -- Bulk import batches, for auditability and resumable seeding (§6.9)
 CREATE TABLE IF NOT EXISTS import_log (
   id           INTEGER PRIMARY KEY,

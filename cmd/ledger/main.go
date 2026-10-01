@@ -639,7 +639,7 @@ func prunePush(st *store.Store, sender *push.Sender, sub store.PushSubRow, paylo
 	}
 	log.Printf("push: send failed for %.40s...: %v", sub.Endpoint, err)
 	if errors.Is(err, push.ErrSubscriptionGone) {
-		if derr := st.DeletePushSub(sub.Endpoint); derr != nil {
+		if derr := st.PrunePushSub(sub.Endpoint); derr != nil {
 			log.Printf("push: pruning %.40s... failed: %v", sub.Endpoint, derr)
 		} else {
 			log.Printf("push: pruned dead subscription %.40s...", sub.Endpoint)

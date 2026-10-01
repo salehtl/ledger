@@ -110,18 +110,19 @@ func (s *Server) notifySettings() (store.AppSettings, bool) {
 
 // pushAll delivers one web-push payload to every subscription, asynchronously,
 // best-effort — the same fire-and-forget the new_transaction path uses. No-op
-// without a configured sender.
-func (s *Server) pushAll(title, body string) {
+// without a configured sender. It returns how many subscriptions it sent to
+// (not how many arrived; the sends finish after it returns).
+func (s *Server) pushAll(title, body string) int {
 	if s.pushSender == nil || s.pushStore == nil {
-		return
+		return 0
 	}
 	subs, err := s.pushStore.SelectPushSubs()
 	if err != nil {
-		return
+		return 0
 	}
 	payload, err := json.Marshal(map[string]string{"title": title, "body": body})
 	if err != nil {
-		return
+		return 0
 	}
 	for _, sub := range subs {
 		go func(p store.PushSubRow) {
@@ -139,7 +140,7 @@ func (s *Server) pushAll(title, body string) {
 			// Any other failure keeps it: a 403 means our VAPID credentials
 			// are wrong, and pruning on that would wipe every device at once.
 			if errors.Is(err, push.ErrSubscriptionGone) {
-				if derr := s.pushStore.DeletePushSub(p.Endpoint); derr != nil {
+				if derr := s.pushStore.PrunePushSub(p.Endpoint); derr != nil {
 					log.Printf("push: pruning %.40s... failed: %v", p.Endpoint, derr)
 				} else {
 					log.Printf("push: pruned dead subscription %.40s...", p.Endpoint)
@@ -147,6 +148,7 @@ func (s *Server) pushAll(title, body string) {
 			}
 		}(sub)
 	}
+	return len(subs)
 }
 
 // filsAED renders int64 fils as a display string ("1,234.50" without the

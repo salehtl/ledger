@@ -129,8 +129,14 @@ func TestHandlePushTest_SendsToEverySubscription(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body: %s", w.Code, w.Body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Devices int `json:"devices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Devices != 2 {
+		t.Errorf("body = %s (err %v), want devices 2", w.Body, err)
 	}
 
 	f.wait(t, 2)
@@ -209,12 +215,19 @@ func TestPushAll_PrunesGoneSubscriptions(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
 	for i := 0; i < 200; i++ {
 		if subCount(t, st) == 0 {
+			// The prune must also remember the endpoints, or the phone's
+			// next re-sync brings a dead subscription straight back.
+			for _, ep := range []string{"https://push.example.com/dead1", "https://push.example.com/dead2"} {
+				if gone, err := st.PushSubGone(ep); err != nil || !gone {
+					t.Errorf("%s: gone=%v err=%v, want true nil", ep, gone, err)
+				}
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -233,12 +246,97 @@ func TestPushAll_KeepsSubscriptionsOnNonGoneFailure(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
 	time.Sleep(200 * time.Millisecond)
 	if n := subCount(t, st); n != 1 {
 		t.Errorf("subscriptions = %d, want 1 kept: a 403 must never prune", n)
+	}
+}
+
+func postSubscribe(t *testing.T, srv *Server, endpoint string, resync bool) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"endpoint": endpoint,
+		"keys":     map[string]string{"p256dh": "p", "auth": "a"},
+		"resync":   resync,
+	})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/subscribe", bytes.NewReader(body)))
+	return w.Code
+}
+
+// The PWA re-sends its subscription on every open, so a server that lost the
+// row (pruned, restored from backup) gets it back without a tap.
+func TestHandlePushSubscribe_ResyncRestoresLiveEndpoint(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	if code := postSubscribe(t, srv, "https://push.example.com/live", true); code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", code)
+	}
+	if n := subCount(t, st); n != 1 {
+		t.Errorf("subscriptions = %d, want 1", n)
+	}
+}
+
+// A dead endpoint the phone still holds must not come back through a re-sync:
+// Settings would show "Enabled" while nothing can ever arrive. 410 tells the
+// app to drop it, so Settings offers "Enable on this device" again.
+func TestHandlePushSubscribe_ResyncOfGoneEndpointReturns410(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	const ep = "https://push.example.com/dead"
+	seedSubs(t, st, ep)
+	if err := st.PrunePushSub(ep); err != nil {
+		t.Fatal(err)
+	}
+	if code := postSubscribe(t, srv, ep, true); code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", code)
+	}
+	if n := subCount(t, st); n != 0 {
+		t.Errorf("subscriptions = %d, want 0", n)
+	}
+}
+
+// Tapping Enable is explicit and always registers, even an endpoint once gone.
+func TestHandlePushSubscribe_ExplicitRegistersGoneEndpoint(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	const ep = "https://push.example.com/again"
+	seedSubs(t, st, ep)
+	if err := st.PrunePushSub(ep); err != nil {
+		t.Fatal(err)
+	}
+	if code := postSubscribe(t, srv, ep, false); code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", code)
+	}
+	if n := subCount(t, st); n != 1 {
+		t.Errorf("subscriptions = %d, want 1", n)
+	}
+}
+
+// With no device registered the test push reaches nobody. The response must
+// say so, so the app does not report "sent".
+func TestHandlePushTest_ReportsZeroDevices(t *testing.T) {
+	st := newTestServerStore(t)
+	srv := newTestServerWithStore(t, st)
+	srv.SetPushStore(st)
+	srv.SetPushSender(&fakeSender{})
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/push/test", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Devices *int `json:"devices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Devices == nil || *resp.Devices != 0 {
+		t.Errorf("body = %s (err %v), want devices 0", w.Body, err)
 	}
 }
