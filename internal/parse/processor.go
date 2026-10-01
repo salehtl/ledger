@@ -59,6 +59,12 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 	catCache := make(map[string]categorize.Result)
 	created := 0
 	for _, row := range rows {
+		// Stop on cancellation (a client timeout, SIGTERM). Otherwise every
+		// remaining row runs with a dead context: each AI call fails, logs a
+		// failed usage row and uses up one automatic attempt.
+		if err := ctx.Err(); err != nil {
+			return created, err
+		}
 		text, berr := BodyText(row.RawBody)
 		if berr != nil {
 			_ = p.store.MarkParsed(row.ID, StatusUnparsed, "", berr.Error())

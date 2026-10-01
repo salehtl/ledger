@@ -3,6 +3,7 @@ package parse
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -845,5 +846,33 @@ func TestProcessorParsesForwardedENBDAlert(t *testing.T) {
 	}
 	if !strings.HasPrefix(postedAt, "2026-07-24T16:11") {
 		t.Errorf("posted_at = %q, want the forwarded Date (16:11), not received_at (13:51)", postedAt)
+	}
+}
+
+// A cancelled run (a client timeout, SIGTERM) must stop at once. Each row it
+// still ran would call the provider with a dead context, log a failed usage
+// row and use up one automatic attempt.
+func TestProcessPendingStopsWhenCancelled(t *testing.T) {
+	st := openStore(t)
+	ids := []int64{addIngest(t, st, "u1", "unparsed"), addIngest(t, st, "u2", "unparsed")}
+	calls := 0
+	p := NewProcessor(st, &Cascade{Heuristic: HeuristicParser{}, IgnoreAt: 0.95,
+		Check: stubCheck{v: TxnVerdict{VerdictTxn, 0.9}, calls: &calls}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.ProcessPending(ctx, manual); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Errorf("checker asked %d times after cancel, want 0", calls)
+	}
+	for _, id := range ids {
+		var attempts int
+		if err := st.DB.QueryRow(`SELECT parse_attempts FROM ingest_log WHERE id=?`, id).Scan(&attempts); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != 0 {
+			t.Errorf("row %d parse_attempts = %d, want 0", id, attempts)
+		}
 	}
 }
