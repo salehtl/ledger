@@ -21,6 +21,13 @@ type TxnVerdict struct {
 	Confidence float64
 }
 
+// setsAside reports whether verdict v sets an email aside under threshold
+// ignoreAt: a "not a transaction" at or above it. ignoreAt 0 never sets aside.
+// The cascade and the eval share it, so the eval measures the live rule.
+func setsAside(v TxnVerdict, ignoreAt float64) bool {
+	return ignoreAt > 0 && v.Verdict == VerdictNotTxn && v.Confidence >= ignoreAt
+}
+
 // TxnChecker answers "is this email a transaction?". It never extracts fields.
 type TxnChecker interface {
 	Check(ctx context.Context, from, subject, body string) (TxnVerdict, error)

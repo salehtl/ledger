@@ -118,7 +118,7 @@ func (c *Cascade) Run(ctx context.Context, from, subject, textBody string, fallb
 	if c.Check != nil {
 		v, err := c.Check.Check(ctx, from, subject, textBody)
 		switch {
-		case err == nil && v.Verdict == VerdictNotTxn && c.IgnoreAt > 0 && v.Confidence >= c.IgnoreAt:
+		case err == nil && setsAside(v, c.IgnoreAt):
 			return Result{Status: StatusIgnored, Tier: TierAICheck, Verdict: &v}
 		case err == nil:
 			fail(TierAICheck, fmt.Errorf("%s (%.2f)", v.Verdict, v.Confidence))

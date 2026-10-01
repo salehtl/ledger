@@ -94,6 +94,15 @@ func TestCascadeAICheckIgnoresConfidentNotTxn(t *testing.T) {
 	}
 }
 
+// The threshold is inclusive: a confidence exactly at IgnoreAt sets aside.
+func TestCascadeAICheckIgnoresAtExactThreshold(t *testing.T) {
+	res := run(&Cascade{Heuristic: HeuristicParser{}, IgnoreAt: 0.95,
+		Check: stubCheck{v: TxnVerdict{VerdictNotTxn, 0.95}}})
+	if res.Status != StatusIgnored || res.Tier != TierAICheck {
+		t.Fatalf("res = %+v, want ignored by ai_check at exactly the threshold", res)
+	}
+}
+
 func TestCascadeAICheckBelowThresholdStaysUnparsed(t *testing.T) {
 	res := run(&Cascade{Heuristic: HeuristicParser{}, IgnoreAt: 0.95,
 		Check: stubCheck{v: TxnVerdict{VerdictNotTxn, 0.9}}})

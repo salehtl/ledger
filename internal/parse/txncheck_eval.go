@@ -57,11 +57,8 @@ func EvaluateTxnCheck(ctx context.Context, samples []TxnSample, chk TxnChecker) 
 		} else {
 			r.NonTxnsAnswered++
 		}
-		if v.Verdict != VerdictNotTxn {
-			continue
-		}
 		for i := range r.Cuts {
-			if v.Confidence >= r.Cuts[i].Min {
+			if setsAside(v, r.Cuts[i].Min) {
 				if s.IsTxn {
 					r.Cuts[i].Hidden++
 				} else {
