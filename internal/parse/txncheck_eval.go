@@ -15,12 +15,15 @@ type TxnCut struct {
 	SetAside, Hidden int
 }
 
-// TxnCheckReport is the outcome of EvaluateTxnCheck. Errors count in Total
-// and in Txns/NonTxns, but in no cut.
+// TxnCheckReport is the outcome of EvaluateTxnCheck. An email whose check
+// failed counts in Total, Txns/NonTxns and Errors, but in no cut and not in
+// TxnsAnswered/NonTxnsAnswered. Read each cut against the answered counts: a
+// cut can only hide or set aside emails that got an answer.
 type TxnCheckReport struct {
-	Total, Txns, NonTxns, Errors int
-	FirstErr                     error
-	Cuts                         []TxnCut
+	Total, Txns, NonTxns, Errors  int
+	TxnsAnswered, NonTxnsAnswered int
+	FirstErr                      error
+	Cuts                          []TxnCut
 }
 
 // txnCutMins are the thresholds the eval reports; 0.97 is the default.
@@ -48,6 +51,11 @@ func EvaluateTxnCheck(ctx context.Context, samples []TxnSample, chk TxnChecker) 
 				r.FirstErr = err
 			}
 			continue
+		}
+		if s.IsTxn {
+			r.TxnsAnswered++
+		} else {
+			r.NonTxnsAnswered++
 		}
 		if v.Verdict != VerdictNotTxn {
 			continue

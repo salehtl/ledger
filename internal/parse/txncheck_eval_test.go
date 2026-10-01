@@ -32,6 +32,11 @@ func TestEvaluateTxnCheckCuts(t *testing.T) {
 	if r.Total != 5 || r.Txns != 3 || r.NonTxns != 2 || r.Errors != 1 || r.FirstErr == nil {
 		t.Fatalf("report = %+v", r)
 	}
+	// "broken" is a transaction whose call failed: it counts in Txns, not in
+	// the answered totals the cut table divides by.
+	if r.TxnsAnswered != 2 || r.NonTxnsAnswered != 2 {
+		t.Fatalf("answered = %d txns, %d non-txns, want 2 and 2", r.TxnsAnswered, r.NonTxnsAnswered)
+	}
 	want := map[float64][2]int{0.99: {1, 0}, 0.97: {1, 0}, 0.95: {1, 1}, 0.9: {2, 1}, 0.8: {2, 1}}
 	if len(r.Cuts) != len(want) {
 		t.Fatalf("cuts = %+v", r.Cuts)

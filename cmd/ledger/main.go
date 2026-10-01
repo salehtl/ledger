@@ -768,8 +768,15 @@ func runTxnCheckEval(args []string) {
 	if rep.FirstErr != nil {
 		fmt.Printf("  first error: %v\n", rep.FirstErr)
 	}
+	if rep.Errors > 0 {
+		fmt.Printf("  %d of %d emails got no answer; the counts below cover only the answered ones.\n",
+			rep.Errors, rep.Total)
+	}
 	for _, c := range rep.Cuts {
 		fmt.Printf("  set aside at >= %.2f: %d of %d non-transactions, hides %d of %d transactions\n",
-			c.Min, c.SetAside, rep.NonTxns, c.Hidden, rep.Txns)
+			c.Min, c.SetAside, rep.NonTxnsAnswered, c.Hidden, rep.TxnsAnswered)
+	}
+	if rep.Total == 0 || rep.Errors == rep.Total {
+		log.Fatalf("txncheck-eval: no email got an answer; do not choose a threshold from this run")
 	}
 }
