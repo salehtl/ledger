@@ -21,6 +21,7 @@ import (
 
 	"ledger/internal/aihttp"
 	"ledger/internal/categorize"
+	"ledger/internal/classify"
 	"ledger/internal/config"
 	"ledger/internal/importer"
 	"ledger/internal/ingest"
@@ -234,7 +235,8 @@ func main() {
 		var inner categorize.AICategorizer
 		switch cfg.AI.CategorizeProvider {
 		case "typesafe":
-			inner = categorize.NewTypeSafeCategorizer(cfg.AI.TypeSafeAPIKey, cfg.AI.TypeSafeModel, categorizeGate, aiRecorder)
+			inner = categorize.NewClassifierCategorizer(
+				classify.NewTypeSafe(cfg.AI.TypeSafeAPIKey, cfg.AI.TypeSafeModel, categorizeGate, aiRecorder))
 		default:
 			inner = categorize.NewAnthropicCategorizer(cfg.AI.APIKey, cfg.AI.Model, categorizeGate, aiRecorder)
 		}
@@ -695,7 +697,7 @@ func runCategorizeEval(args []string) {
 	for i, r := range rows {
 		labels[i] = categorize.Labeled{Merchant: r.Raw, Want: r.Category}
 	}
-	ai := categorize.NewTypeSafeCategorizer(key, *model, nil, nil)
+	ai := categorize.NewClassifierCategorizer(classify.NewTypeSafe(key, *model, nil, nil))
 	rep := categorize.Evaluate(context.Background(), labels, cats, ai)
 	fmt.Printf("merchants %d  correct %d (%.1f%%)  errors %d\n",
 		rep.Total, rep.Correct, 100*float64(rep.Correct)/float64(max(rep.Total, 1)), rep.Errors)
