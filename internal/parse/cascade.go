@@ -3,8 +3,11 @@ package parse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+
+	"ledger/internal/aihttp"
 )
 
 // Status values mirror ingest_log.parse_status.
@@ -30,17 +33,23 @@ var ErrIgnoreEmail = errors.New("parse: known non-transactional email, ignore")
 
 // Result is the outcome of running the cascade over one email.
 type Result struct {
-	Txn    ParsedTxn
-	Status string // parsed | low_confidence | unparsed | ignored
-	Tier   string // template | heuristic | ai | "" (none)
-	Err    string // last tier error, for ingest_log.parse_error (optional)
+	Txn     ParsedTxn
+	Status  string      // parsed | low_confidence | unparsed | ignored
+	Tier    string      // template | heuristic | ai | ai_check | "" (none)
+	Err     string      // last tier error, for ingest_log.parse_error (optional)
+	Verdict *TxnVerdict // the AI check's answer, when it gave one
 }
 
 // Cascade runs the extraction tiers in order. AI may be a DisabledExtractor.
+// Check, when set, classifies an email no tier could read; IgnoreAt is the
+// confidence at or above which a "not a transaction" verdict sets the email
+// aside (0 = never).
 type Cascade struct {
 	Parsers   []BankParser
 	Heuristic HeuristicParser
 	AI        Extractor
+	Check     TxnChecker
+	IgnoreAt  float64
 }
 
 // Run descends the ladder and stops at the first validated, accepted result.
@@ -100,6 +109,21 @@ func (c *Cascade) Run(ctx context.Context, from, subject, textBody string, fallb
 		// A disabled AI tier is a benign skip, not a failure worth recording.
 		if !errors.Is(err, ErrAIUnavailable) {
 			fail(TierAI, err)
+		}
+	}
+	// Tier 4: AI check. It only classifies; it never writes a transaction. A
+	// confident "not a transaction" sets the email aside (ignored; the raw body
+	// stays in ingest_log). Anything else stays unparsed, carrying the verdict.
+	if c.Check != nil {
+		v, err := c.Check.Check(ctx, from, subject, textBody)
+		switch {
+		case err == nil && v.Verdict == VerdictNotTxn && c.IgnoreAt > 0 && v.Confidence >= c.IgnoreAt:
+			return Result{Status: StatusIgnored, Tier: TierAICheck, Verdict: &v}
+		case err == nil:
+			fail(TierAICheck, fmt.Errorf("%s (%.2f)", v.Verdict, v.Confidence))
+			return Result{Status: StatusUnparsed, Err: strings.Join(errs, "; "), Verdict: &v}
+		case !errors.Is(err, aihttp.ErrAIDisabled):
+			fail(TierAICheck, err)
 		}
 	}
 	// Floor: nothing resolved.
