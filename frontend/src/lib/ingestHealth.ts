@@ -1,4 +1,4 @@
-import type { IngestHealth } from "../api/types";
+import type { IngestHealth, UnreadCounts } from "../api/types";
 
 /** Compact relative time for health facts: "just now", "5m ago", "3h ago", "4d ago". */
 export function relTime(iso: string | undefined, now: Date): string {
@@ -55,4 +55,15 @@ export function ingestStatusLabel(status: IngestHealth["status"]): string {
     case "starting": return "Starting…";
     case "off": return "Off";
   }
+}
+
+/** Rows for the "Emails no parser read" card; empty when there is nothing to show. */
+export function unreadRows(u?: UnreadCounts): { label: string; value: number }[] {
+  if (!u || u.transaction + u.not_transaction + u.unchecked + u.set_aside === 0) return [];
+  return [
+    { label: "Look like transactions", value: u.transaction },
+    { label: "Probably not transactions", value: u.not_transaction },
+    { label: "Not checked yet", value: u.unchecked },
+    { label: "Set aside as not transactions", value: u.set_aside },
+  ];
 }

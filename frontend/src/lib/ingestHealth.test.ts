@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { IngestHealth } from "../api/types";
-import { relTime, bannerMessage, dismissKey, ingestStatusLabel, reasonText } from "./ingestHealth";
+import { relTime, bannerMessage, dismissKey, ingestStatusLabel, reasonText, unreadRows } from "./ingestHealth";
 
 const NOW = new Date("2026-07-05T12:00:00Z");
 
@@ -67,5 +67,20 @@ describe("labels", () => {
     expect(reasonText("polls_failing", h)).toContain("5");
     expect(reasonText("poll_stale", h).length).toBeGreaterThan(0);
     expect(reasonText("mail_silent", h)).toContain("3 day");
+  });
+});
+
+describe("unreadRows", () => {
+  it("is empty when the server sends nothing or all zeros", () => {
+    expect(unreadRows(undefined)).toEqual([]);
+    expect(unreadRows({ transaction: 0, not_transaction: 0, unchecked: 0, set_aside: 0 })).toEqual([]);
+  });
+  it("lists every count in a fixed order once any is non-zero", () => {
+    expect(unreadRows({ transaction: 2, not_transaction: 0, unchecked: 7, set_aside: 40 })).toEqual([
+      { label: "Look like transactions", value: 2 },
+      { label: "Probably not transactions", value: 0 },
+      { label: "Not checked yet", value: 7 },
+      { label: "Set aside as not transactions", value: 40 },
+    ]);
   });
 });

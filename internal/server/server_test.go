@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	mapfs "testing/fstest"
 	"time"
+
+	"ledger/internal/store"
 )
 
 // fakeChecker lets us drive the health handler's two branches.
@@ -120,4 +123,44 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+type fakeIngestVerdicts struct {
+	fakeIngest
+	v store.VerdictCounts
+}
+
+func (f fakeIngestVerdicts) UnparsedVerdictCounts() (store.VerdictCounts, error) { return f.v, nil }
+
+func TestHealthReportsUnreadVerdicts(t *testing.T) {
+	srv := New(fakeChecker{err: nil}, testFS())
+	srv.SetIngest(fakeIngestVerdicts{fakeIngest: fakeIngest{count: 9},
+		v: store.VerdictCounts{Transaction: 2, NotTransaction: 3, Unchecked: 4, SetAside: 5}}, true)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	var body struct {
+		Ingest struct {
+			Unread *struct {
+				Transaction    int `json:"transaction"`
+				NotTransaction int `json:"not_transaction"`
+				Unchecked      int `json:"unchecked"`
+				SetAside       int `json:"set_aside"`
+			} `json:"unread"`
+		} `json:"ingest"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	u := body.Ingest.Unread
+	if u == nil || u.Transaction != 2 || u.NotTransaction != 3 || u.Unchecked != 4 || u.SetAside != 5 {
+		t.Errorf("unread = %+v", u)
+	}
+
+	plain := New(fakeChecker{err: nil}, testFS())
+	plain.SetIngest(fakeIngest{count: 9}, true)
+	rec = httptest.NewRecorder()
+	plain.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if strings.Contains(rec.Body.String(), `"unread"`) {
+		t.Error("a store that cannot count must not report unread")
+	}
 }

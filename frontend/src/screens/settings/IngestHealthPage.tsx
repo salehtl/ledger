@@ -10,7 +10,7 @@ import { AlertTriangle } from "../../components/ui/PixelIcon";
 import { SettingsPage } from "./SettingsPage";
 import { SavedFlash, useSavedFlash } from "./SavedFlash";
 import { useIngestHealth } from "../../hooks/useIngestHealth";
-import { ingestStatusLabel, reasonText, relTime } from "../../lib/ingestHealth";
+import { ingestStatusLabel, reasonText, relTime, unreadRows } from "../../lib/ingestHealth";
 
 const DAY_OPTIONS = [1, 2, 3, 5, 7, 14].map((n) => ({ value: String(n), label: `${n}d` }));
 
@@ -31,6 +31,7 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => getJSON<AppSettings>("/api/settings") });
 
   const ih = health.data?.ingest;
+  const unread = unreadRows(ih?.unread);
   const s = settings.data;
   const now = new Date();
 
@@ -93,6 +94,18 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
               <p role="alert" className="text-bad text-xs py-2 break-words">{ih.last_error}</p>
             )}
           </Card>
+
+          {unread.length > 0 && (
+            <section>
+              <p className="text-sm mb-1">Emails no parser read</p>
+              <p className="text-xs text-muted mb-3">
+                AI checks each one once, while AI features are on. A transaction here needs a parser update.
+              </p>
+              <Card className="!py-2 divide-y divide-border">
+                {unread.map((r) => <FactRow key={r.label} label={r.label} value={String(r.value)} />)}
+              </Card>
+            </section>
+          )}
 
           <section>
             <p className="text-sm mb-1">Warn when no email for</p>

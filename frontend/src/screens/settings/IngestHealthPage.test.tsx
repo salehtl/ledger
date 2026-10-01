@@ -17,6 +17,7 @@ const warnHealth = {
     last_poll_success_at: "2026-07-05T11:00:00Z",
     last_poll_attempt_at: "2026-07-05T11:59:00Z",
     consecutive_failures: 0, poll_interval_seconds: 60, silence_days: 3,
+    unread: { transaction: 3, not_transaction: 1, unchecked: 0, set_aside: 12 },
   },
 };
 
@@ -54,6 +55,14 @@ describe("IngestHealthPage", () => {
     expect(screen.getByText(/no bank email/i)).toBeInTheDocument(); // mail_silent reason copy
     expect(screen.getByText(/last email seen/i)).toBeInTheDocument();
     expect(screen.getByText(/last successful check/i)).toBeInTheDocument();
+  });
+
+  it("shows the emails no parser read", async () => {
+    wrap();
+    expect(await screen.findByText("Emails no parser read")).toBeInTheDocument();
+    expect(screen.getByText("Look like transactions")).toBeInTheDocument();
+    expect(screen.getByText("Set aside as not transactions")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
   });
 
   it("saves the silence threshold with all writable fields", async () => {

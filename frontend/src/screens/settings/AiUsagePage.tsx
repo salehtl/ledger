@@ -61,7 +61,7 @@ export function AiUsagePage({ onClose }: { onClose: () => void }) {
                 AI features
                 <span className="block text-xs text-muted">
                   {s.ai_key_present
-                    ? "When off, the app makes no AI calls."
+                    ? "Suggests categories and sorts emails no parser could read. When off, the app makes no AI calls."
                     : `Add ${provArticle} ${prov.name} API key to the env file. Then restart.`}
                 </span>
               </span>

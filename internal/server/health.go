@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"ledger/internal/store"
 )
 
 type healthResponse struct {
@@ -14,17 +16,30 @@ type healthResponse struct {
 }
 
 type ingestHealth struct {
-	Configured          bool     `json:"configured"`
-	Count               int      `json:"count"`
-	LastAt              string   `json:"last_at,omitempty"`
-	Status              string   `json:"status"`
-	Reasons             []string `json:"reasons"`
-	LastPollSuccessAt   string   `json:"last_poll_success_at,omitempty"`
-	LastPollAttemptAt   string   `json:"last_poll_attempt_at,omitempty"`
-	ConsecutiveFailures int      `json:"consecutive_failures"`
-	LastError           string   `json:"last_error,omitempty"`
-	PollIntervalSeconds int      `json:"poll_interval_seconds"`
-	SilenceDays         int      `json:"silence_days"`
+	Configured          bool          `json:"configured"`
+	Count               int           `json:"count"`
+	LastAt              string        `json:"last_at,omitempty"`
+	Status              string        `json:"status"`
+	Reasons             []string      `json:"reasons"`
+	LastPollSuccessAt   string        `json:"last_poll_success_at,omitempty"`
+	LastPollAttemptAt   string        `json:"last_poll_attempt_at,omitempty"`
+	ConsecutiveFailures int           `json:"consecutive_failures"`
+	LastError           string        `json:"last_error,omitempty"`
+	PollIntervalSeconds int           `json:"poll_interval_seconds"`
+	SilenceDays         int           `json:"silence_days"`
+	Unread              *unreadHealth `json:"unread,omitempty"`
+}
+
+type unreadHealth struct {
+	Transaction    int `json:"transaction"`
+	NotTransaction int `json:"not_transaction"`
+	Unchecked      int `json:"unchecked"`
+	SetAside       int `json:"set_aside"`
+}
+
+// verdictCounter is optional: the store has it, test fakes need not.
+type verdictCounter interface {
+	UnparsedVerdictCounts() (store.VerdictCounts, error)
 }
 
 type driftHealth struct {
@@ -46,6 +61,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		ih := &ingestHealth{Configured: s.imapConfigured, Status: "off", Reasons: []string{}}
 		if count, err := s.ingest.CountIngest(); err == nil {
 			ih.Count = count
+		}
+		if vc, ok := s.ingest.(verdictCounter); ok {
+			if v, err := vc.UnparsedVerdictCounts(); err == nil {
+				ih.Unread = &unreadHealth{Transaction: v.Transaction, NotTransaction: v.NotTransaction,
+					Unchecked: v.Unchecked, SetAside: v.SetAside}
+			}
 		}
 		var lastMail time.Time
 		haveMail := false

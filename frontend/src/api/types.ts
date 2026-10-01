@@ -21,7 +21,7 @@ export interface AppSettings {
   ai_cap_latched?: boolean;
 }
 export interface AIUsageRow {
-  at: number; path: "extract" | "categorize"; model: string;
+  at: number; path: "extract" | "categorize" | "txn_check"; model: string;
   input_tokens: number; output_tokens: number; cost_musd: number; ok: boolean; detail: string;
 }
 export interface AIUsage {
@@ -62,6 +62,7 @@ export interface CategorySpend { category_id: number; name: string; bucket: stri
 export interface MonthlyTotal { period: string; spent: number; income: number; }
 export interface CategoryUsage { transactions: number; rules: number; assignments: number; targets: number; }
 export interface CategorizeStatus { status: "idle" | "running"; processed: number; total: number; failed: number; error: string; }
+export interface UnreadCounts { transaction: number; not_transaction: number; unchecked: number; set_aside: number; }
 export interface IngestHealth {
   configured: boolean;
   count: number;
@@ -74,6 +75,7 @@ export interface IngestHealth {
   last_error?: string;
   poll_interval_seconds: number;
   silence_days: number;
+  unread?: UnreadCounts;
 }
 export interface Health { status: string; db: string; ingest?: IngestHealth; }
 
