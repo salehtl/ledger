@@ -72,14 +72,19 @@ func TestSelectForParseSetAsideRows(t *testing.T) {
 }
 
 func TestUnparsedVerdictCounts(t *testing.T) {
+	// Distinct counts per bucket, so a swapped column cannot pass.
 	st := newTestStore(t)
-	a := ingestRow(t, st, "a", "unparsed")
+	a1 := ingestRow(t, st, "a1", "unparsed")
+	a2 := ingestRow(t, st, "a2", "unparsed")
 	b := ingestRow(t, st, "b", "unparsed")
-	ingestRow(t, st, "c", "unparsed") // unchecked
+	ingestRow(t, st, "c1", "unparsed") // unchecked
+	ingestRow(t, st, "c2", "unparsed") // unchecked
+	ingestRow(t, st, "c3", "unparsed") // unchecked
 	d := ingestRow(t, st, "d", "unparsed")
 	e := ingestRow(t, st, "e", "unparsed")
 	ingestRow(t, st, "f", "parsed")
-	_ = st.SetIngestVerdict(a, "transaction", 0.9)
+	_ = st.SetIngestVerdict(a1, "transaction", 0.9)
+	_ = st.SetIngestVerdict(a2, "transaction", 0.7)
 	_ = st.SetIngestVerdict(b, "not_transaction", 0.8)
 	_ = st.SetIngestVerdict(d, "not_transaction", 0.99)
 	_ = st.MarkParsed(d, "ignored", "ai_check", "") // set aside
@@ -88,7 +93,7 @@ func TestUnparsedVerdictCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := VerdictCounts{Transaction: 1, NotTransaction: 1, Unchecked: 1, SetAside: 1}
+	want := VerdictCounts{Transaction: 2, NotTransaction: 1, Unchecked: 3, SetAside: 1}
 	if got != want {
 		t.Errorf("counts = %+v, want %+v", got, want)
 	}
