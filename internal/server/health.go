@@ -42,6 +42,10 @@ type verdictCounter interface {
 	UnparsedVerdictCounts() (store.VerdictCounts, error)
 }
 
+// The health handler finds the counts by a type assertion, which fails
+// silently if the store's method changes. This makes that a build error.
+var _ verdictCounter = (*store.Store)(nil)
+
 type driftHealth struct {
 	FromAddr    string  `json:"from_addr"`
 	SuccessRate float64 `json:"success_rate"`

@@ -736,6 +736,10 @@ func runTxnCheckEval(args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("txncheck-eval flags: %v", err)
 	}
+	// A negative value becomes SQL LIMIT -1, which sends every email to TypeSafe.
+	if *perClass < 1 {
+		log.Fatalf("txncheck-eval: --per-class must be at least 1")
+	}
 	dir := evalDataDir("txncheck-eval", *dataDir)
 	key := os.Getenv("LEDGER_TYPESAFE_API_KEY")
 	if key == "" {
@@ -776,7 +780,13 @@ func runTxnCheckEval(args []string) {
 		fmt.Printf("  set aside at >= %.2f: %d of %d non-transactions, hides %d of %d transactions\n",
 			c.Min, c.SetAside, rep.NonTxnsAnswered, c.Hidden, rep.TxnsAnswered)
 	}
-	if rep.Total == 0 || rep.Errors == rep.Total {
+	// The table means nothing unless both classes got answers.
+	switch {
+	case rep.Total == 0 || rep.Errors == rep.Total:
 		log.Fatalf("txncheck-eval: no email got an answer; do not choose a threshold from this run")
+	case rep.TxnsAnswered == 0:
+		log.Fatalf("txncheck-eval: no transaction email got an answer; do not choose a threshold from this run")
+	case rep.NonTxnsAnswered == 0:
+		log.Fatalf("txncheck-eval: no non-transaction email got an answer; do not choose a threshold from this run")
 	}
 }
