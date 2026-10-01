@@ -23,7 +23,7 @@ it in SQLite, and serves a mobile React PWA showing live budget state against a
 ```
 Email (per-transaction bank alerts)
   → IMAP ingest (read-only)        every email's raw body retained, nothing dropped
-  → Parse cascade                  per-bank template → generic heuristic → AI (only on failure)
+  → Parse cascade                  per-bank template → generic heuristic → AI check (classify only)
   → Categorize                     merchant→category rules first; AI only for unknown merchants
   → SQLite (single file, WAL)
   → HTTP API + SSE live stream + Web Push
@@ -32,9 +32,9 @@ Email (per-transaction bank alerts)
 
 Design principles (the full list lives in [`CLAUDE.md`](CLAUDE.md)):
 
-- **Deterministic-first.** AI is a *fallback* for extraction (and always
-  low-confidence → review queue) and the *primary* tool only for categorizing
-  unknown merchants.
+- **Deterministic-first.** The AI check only classifies: it sets aside an email
+  it is confident is not a transaction, and it never writes a transaction. AI is
+  the *primary* tool only for categorizing unknown merchants.
 - **Nothing is ever silently dropped.** Every email's full raw body is kept in
   `ingest_log`; anything unresolved is tagged `unparsed` and shown in the review
   queue. Fix the parser, reprocess, and missing transactions backfill.
@@ -44,8 +44,10 @@ Design principles (the full list lives in [`CLAUDE.md`](CLAUDE.md)):
   embedded PWA all live in one static Go binary — no Node at runtime, no broker,
   no external DB server.
 - **Private and least-privilege.** Mailbox opened read-only (`EXAMINE`). The
-  only data leaving the box is a bare merchant string sent to the AI, and that
-  path is disableable. Secrets come from the environment, never config files.
+  only data leaving the box goes to the AI provider (TypeSafe by default): a
+  bare merchant string, and an unread email's sender, subject and up to 8 KB of
+  text for the AI check. That path is disableable. Secrets come from the
+  environment, never config files.
 
 ## Features
 
@@ -117,9 +119,10 @@ use_idle      = false
 poll_interval = "60s"
 
 [ai]                         # AI is optional and disableable
-enabled             = true
-model               = "claude-haiku-4-5-20251001"
-allow_ai_extraction = false
+enabled              = true
+provider             = "typesafe"   # default; "anthropic" is sunset
+typesafe_model       = "jev-1.13.0"
+txn_ignore_threshold = 0.97
 
 [monitoring]
 drift_window = "7d"
@@ -131,7 +134,8 @@ Secrets (env / systemd only):
 | Variable | Used for |
 |---|---|
 | `LEDGER_IMAP_APP_PASSWORD` | IMAP login |
-| `LEDGER_AI_API_KEY` | Anthropic API (categorization + extraction fallback) |
+| `LEDGER_TYPESAFE_API_KEY` | TypeSafe API (categorization + AI check); needed when `ai.provider = "typesafe"`, the default |
+| `LEDGER_AI_API_KEY` | Anthropic API; sunset, used only when `ai.provider = "anthropic"` |
 | `LEDGER_VAPID_PRIVATE` / `LEDGER_VAPID_PUBLIC` | Web Push (optional) |
 
 Runtime behaviour — auto-categorize, AI on or off, AI auto-accept and its
@@ -154,10 +158,11 @@ The pipeline is wired in `cmd/ledger/main.go`. Packages under `internal/`:
 |---|---|
 | `store` | Owns the SQLite DB; applies `schema.sql` idempotently (WAL, foreign keys on); additive migrations via an `addColumn` helper |
 | `ingest` | IMAP worker; opens the mailbox read-only, polls, writes every message to `ingest_log` |
-| `parse` | Extraction cascade: bank templates → heuristic → AI extractor; reprocessing |
+| `parse` | Extraction cascade: bank templates → heuristic → AI check (classify only); reprocessing |
 | `categorize` | Rules-first categorizer with AI fallback and rule write-back |
 | `recur` | Deterministic recurring-charge detection over transaction history |
-| `anthropic` | Shared retrying HTTP client for the Anthropic Messages API (the one outbound data path) |
+| `aihttp` | Shared AI plumbing: retrying HTTP client, the live on/off gate, usage and cost (the outbound data path) |
+| `classify` | The AI provider seam (`Classifier`); TypeSafe is the only adapter |
 | `server` | `net/http` API, SSE hub, SPA fallback |
 | `budget` | 50/30/20 need/want/saving math over confirmed transactions |
 | `monitor` | Rolling per-sender parse-success drift detection → alerts |

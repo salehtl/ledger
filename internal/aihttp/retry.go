@@ -19,7 +19,9 @@ const (
 	maxBackoff = 60 * time.Second
 )
 
-// Retrier POSTs JSON to the Anthropic Messages API with bounded retries.
+// Retrier POSTs JSON to an AI provider's API with bounded retries. Auth
+// headers default to Anthropic's; SetHeaders replaces them for another
+// provider.
 type Retrier struct {
 	HTTP       *http.Client
 	MaxRetries int // retries after the first attempt (total attempts = MaxRetries+1)

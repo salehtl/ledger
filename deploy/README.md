@@ -19,6 +19,10 @@ scp ledger dinosaur:/tmp/ledger
 
 ## 2. Install on dinosaur
 
+> First install only. On an existing install this block overwrites the live
+> `/etc/ledger/config.toml` with `config.example.toml`. To update the binary,
+> run only the `install ... /usr/local/bin/ledger` line, then restart.
+
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin ledger || true
 sudo install -m 0755 /tmp/ledger /usr/local/bin/ledger
@@ -209,13 +213,23 @@ TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
    If **AI features** is on in Settings → AI & API usage, turn it off now.
    Otherwise the AI check starts at the default threshold when the new binary
    starts, before you have measured.
-2. Deploy the binary (sections 1–2). The old `categorize_provider = "typesafe"`
-   still works. For clarity, rename it to `provider = "typesafe"` in
-   `/etc/ledger/config.toml` under `[ai]`. `LEDGER_TYPESAFE_API_KEY` must be in
-   `/etc/ledger/ledger.env` first (keys: https://console.typesafe.ai/keys).
-   With `enabled = true` and no key, the service refuses to start:
+2. Build the binary (section 1), then install **only the binary**:
+   `sudo install -m 0755 /tmp/ledger /usr/local/bin/ledger`
+   (section 1 copies the build to `/tmp/ledger`; if you built on dinosaur
+   itself, install `./ledger` instead). Do not re-run section 2 on an existing
+   install. It runs `install ... config.example.toml /etc/ledger/config.toml`,
+   which overwrites the live config and loses `[imap]` and your other settings.
+   The running service keeps the old binary until the restart in step 4.
+   The old `categorize_provider = "typesafe"` still works. For clarity, rename
+   it to `provider = "typesafe"` in `/etc/ledger/config.toml` under `[ai]`.
+   `LEDGER_TYPESAFE_API_KEY` must be in `/etc/ledger/ledger.env` before the
+   restart (keys: https://console.typesafe.ai/keys). With `enabled = true` and
+   no key, the service refuses to start:
    `ai.provider = "typesafe" requires LEDGER_TYPESAFE_API_KEY env var`.
-3. Measure the AI check on a copy. This sends each sample's sender, subject and
+3. Measure the AI check on a copy. The new binary must already be installed
+   (step 2). An older binary does not know `txncheck-eval`: it starts the
+   server instead, as root, with default settings that open the production data
+   in `/var/lib/ledger`. The command sends each sample's sender, subject and
    up to 8 KB of text to TypeSafe (about 400 emails, a few US cents):
 
    ```bash
@@ -252,10 +266,11 @@ TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
    txncheck-eval: no email got an answer; do not choose a threshold from this run
    ```
 
-   Pick the lowest threshold whose "hides" count is 0. If two thresholds give
-   the same counts, take the higher one. The eval samples mail the parsers
-   already read (parsed, and ignored by a template). It does not sample the
-   unread mail the check will see. So "hides 0" is a lower bound, not proof.
+   Take the lowest threshold whose "hides" count is 0, then use the next higher
+   cut as a safety margin. The eval samples mail the parsers already read
+   (parsed, and ignored by a template). It does not sample the unread mail the
+   check will see, so it understates what the check will hide. Example: if 0.95
+   is the lowest clean cut, set 0.97. If the lowest clean cut is 0.99, use 0.99.
    Set the threshold under `[ai]` as `txn_ignore_threshold = 0.97` (the default;
    valid range above 0.5 up to 1).
 4. `sudo systemctl restart ledger`. The log must say `provider=typesafe` and

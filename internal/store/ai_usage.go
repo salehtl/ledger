@@ -1,8 +1,8 @@
 // internal/store/ai_usage.go
 package store
 
-// AIUsageRow is one recorded Anthropic call. At is unix seconds; if zero on insert
-// it defaults to the store clock (s.now()).
+// AIUsageRow is one recorded AI provider call. At is unix seconds; if zero on
+// insert it defaults to the store clock (s.now()).
 type AIUsageRow struct {
 	At           int64
 	Path         string

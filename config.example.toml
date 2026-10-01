@@ -25,12 +25,19 @@ poll_interval = "60s"                   # sync cadence; with use_idle=true this 
 # --- never became config -- see its own note. --------------------------------
 
 [ai]
-# Set enabled=true and LEDGER_AI_API_KEY env var to activate AI categorization.
-enabled             = false
-model               = "claude-haiku-4-5-20251001"   # cheapest model; good for single merchants
+# AI is off until enabled = true. It then needs the provider's key in the
+# environment, never here: LEDGER_TYPESAFE_API_KEY for the default provider.
+enabled              = false
+provider             = "typesafe"     # "typesafe" (default) | "anthropic" (sunset)
+typesafe_model       = "jev-1.13.0"
+# The AI check sets an email aside when it says "not a transaction" with at
+# least this confidence (above 0.5, up to 1). Pick it with `ledger txncheck-eval`.
+txn_ignore_threshold = 0.97
 # Auto-accept moved into the app: Settings > Categorization.
-allow_ai_extraction = true                           # let AI be the last-resort parse tier
-# Secret: LEDGER_AI_API_KEY=sk-ant-...
+# Sunset: the next two keys matter only when provider = "anthropic", which
+# needs LEDGER_AI_API_KEY in the environment. TypeSafe ignores them.
+model                = "claude-haiku-4-5-20251001"
+allow_ai_extraction  = true
 
 # This block never became config — the budget plan lives in the database and is edited in the app.
 # [budget]

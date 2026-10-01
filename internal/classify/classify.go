@@ -1,8 +1,10 @@
 // Package classify is the seam between ledger and an AI classification
 // provider. A provider answers one choice question about a small text state
 // with one of the offered options and a confidence. It never generates text.
-// To add a provider, write one adapter that implements Classifier and add a
-// case to the provider switch in cmd/ledger/main.go.
+// To add a provider, write one adapter that implements Classifier, add a case
+// to the provider switch in cmd/ledger/main.go, add a case each to
+// Config.validate and AIConfig.ProviderKey in internal/config/config.go, and
+// add a key field with its env var to AIConfig.
 package classify
 
 import (
