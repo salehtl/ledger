@@ -37,6 +37,40 @@ func TestIngestVerdictRoundTrip(t *testing.T) {
 	}
 }
 
+// A manual reprocess revisits emails the AI check set aside, so a fixed parser
+// or a raised threshold can bring them back. A parser's own ignore is final,
+// and the periodic hook revisits neither kind.
+func TestSelectForParseSetAsideRows(t *testing.T) {
+	st := newTestStore(t)
+	aside := ingestRow(t, st, "aside", "unparsed")
+	_ = st.MarkParsed(aside, "ignored", "ai_check", "")
+	tmpl := ingestRow(t, st, "tmpl", "unparsed")
+	_ = st.MarkParsed(tmpl, "ignored", "template", "")
+	open := ingestRow(t, st, "open", "unparsed")
+	ids := func(opts SelectForParseOpts) []int64 {
+		t.Helper()
+		rows, err := st.SelectForParse(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	if got := ids(SelectForParseOpts{OnlyUnparsed: false}); len(got) != 2 || got[0] != aside || got[1] != open {
+		t.Errorf("manual = %v, want [%d %d] (the set-aside row and the unparsed one)", got, aside, open)
+	}
+	if got := ids(SelectForParseOpts{OnlyUnparsed: true}); len(got) != 1 || got[0] != open {
+		t.Errorf("periodic = %v, want [%d] only", got, open)
+	}
+	// The sender filter applies to every status, set-aside rows included.
+	if got := ids(SelectForParseOpts{OnlyUnparsed: false, FromLike: "enbd"}); len(got) != 0 {
+		t.Errorf("manual, sender enbd = %v, want none (every row is from dib.ae)", got)
+	}
+}
+
 func TestUnparsedVerdictCounts(t *testing.T) {
 	st := newTestStore(t)
 	a := ingestRow(t, st, "a", "unparsed")

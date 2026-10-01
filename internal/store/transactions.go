@@ -141,21 +141,23 @@ type IngestForParse struct {
 
 // SelectForParseOpts filters which ingest rows to (re)process.
 type SelectForParseOpts struct {
-	OnlyUnparsed bool   // true: only parse_status='unparsed'; false: also 'low_confidence'
+	OnlyUnparsed bool   // true: only parse_status='unparsed'; false: also 'low_confidence' and rows the AI check set aside
 	FromLike     string // optional: restrict to a sender substring (e.g. a bank)
 	MaxAttempts  int    // >0: skip rows already failed this many times (periodic hook); 0: no cap (manual reprocess)
 }
 
 // SelectForParse returns ingest rows for the cascade. Reprocess passes
-// OnlyUnparsed=false to also retry low-confidence rows.
+// OnlyUnparsed=false to also retry low-confidence rows and rows the AI check
+// set aside (ignored, tier ai_check), so a fixed parser or a raised threshold
+// can bring those back. A parser's own ignore (any other tier) is final.
 func (s *Store) SelectForParse(opts SelectForParseOpts) ([]IngestForParse, error) {
-	statuses := "('unparsed','low_confidence')"
+	where := "(parse_status IN ('unparsed','low_confidence') OR (parse_status='ignored' AND parse_tier='ai_check'))"
 	if opts.OnlyUnparsed {
-		statuses = "('unparsed')"
+		where = "parse_status = 'unparsed'"
 	}
 	q := `SELECT id, from_addr, subject, parse_status, received_at, raw_body,
 	             COALESCE(ai_verdict,''), COALESCE(ai_verdict_conf,0)
-	        FROM ingest_log WHERE parse_status IN ` + statuses
+	        FROM ingest_log WHERE ` + where
 	args := []any{}
 	if opts.FromLike != "" {
 		q += " AND from_addr LIKE ?"

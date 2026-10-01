@@ -305,24 +305,19 @@ sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
   "SELECT id, from_addr, subject, ai_verdict_conf FROM ingest_log WHERE parse_status='ignored' AND parse_tier='ai_check' ORDER BY id DESC LIMIT 30"
 ```
 
-If the threshold hid real transactions, return them to unparsed and reprocess.
-Stored verdicts are replayed under the threshold that is live, with no new
-calls. So the order matters: the ingest poll replays them too. If you reset the
-rows before the new threshold is live, the next poll can set them aside again.
-`/api/reprocess` never selects `ignored` rows, so that undo is lost silently.
+If the threshold hid real transactions, raise it and reprocess. No SQL is
+necessary. Do the restart first: a reprocess replays each stored verdict under
+the threshold that is live, so a reprocess before the restart sets the rows
+aside again.
 
 1. Raise `txn_ignore_threshold` in `/etc/ledger/config.toml`, then
    `sudo systemctl restart ledger`.
-2. Return the rows to unparsed. Run the SQL as the `ledger` user, so no
-   root-owned WAL files appear:
-
-   ```bash
-   sudo -u ledger sqlite3 /var/lib/ledger/ledger.db \
-     "UPDATE ingest_log SET parse_status='unparsed', parse_tier=NULL WHERE parse_status='ignored' AND parse_tier='ai_check'"
-   ```
-
-3. Reprocess:
+2. Reprocess:
    `curl -s --max-time 1800 -X POST http://127.0.0.1:8080/api/reprocess`
+
+A row whose stored confidence is below the new threshold returns to unparsed,
+with no new AI check call. A row that a fixed parser now reads gets its
+transaction.
 
 ### Bring Anthropic back
 

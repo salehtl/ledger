@@ -110,8 +110,9 @@ func (p *Processor) ProcessPending(ctx context.Context, opts store.SelectForPars
 				}
 			}
 			// A recognized non-transactional email: no transaction, and the raw
-			// body stays in ingest_log (never deleted). SelectForParse only picks
-			// up unparsed/low_confidence rows, so this status is never revisited.
+			// body stays in ingest_log (never deleted). A template's ignore is
+			// never revisited. A manual reprocess revisits an AI-check set-aside
+			// and replays its stored verdict under the threshold that is live.
 			_ = p.store.MarkParsed(row.ID, StatusIgnored, res.Tier, "")
 			continue
 		}

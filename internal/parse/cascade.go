@@ -18,8 +18,9 @@ const (
 	// StatusIgnored marks a raw email recognized as known non-transactional
 	// content (e.g. a duplicate confirmation of a transfer already recorded
 	// from its sibling notification). The raw body stays in ingest_log —
-	// nothing is ever silently dropped — but no transaction is created and
-	// the row is never reprocessed.
+	// nothing is ever silently dropped — but no transaction is created. A
+	// template's ignore is never reprocessed; an AI-check set-aside is
+	// revisited only by a manual reprocess.
 	StatusIgnored = "ignored"
 )
 

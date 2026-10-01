@@ -42,6 +42,114 @@ func rowState(t *testing.T, st *store.Store, id int64) (status, tier, verdict st
 
 var manual = store.SelectForParseOpts{OnlyUnparsed: false}
 
+// fixedParser stands in for a template fixed after the AI check set an email
+// aside: it now reads the email addIngest writes.
+type fixedParser struct{}
+
+func (fixedParser) Bank() string                      { return "fixed" }
+func (fixedParser) Matches(from, subject string) bool { return from == "x@y.z" }
+func (fixedParser) Parse(string, string) (ParsedTxn, error) {
+	return ParsedTxn{PostedAt: time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC), AmountFils: 1000,
+		Currency: "AED", Direction: DirectionDebit, MerchantRaw: "CARREFOUR", Tier: TierTemplate, Confidence: 0.9}, nil
+}
+
+func txnCount(t *testing.T, st *store.Store, ingestID int64) int {
+	t.Helper()
+	var n int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM transactions WHERE ingest_id=?`, ingestID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// setAside runs the AI check over a fresh row and requires it set aside.
+func setAside(t *testing.T, st *store.Store, check stubCheck) int64 {
+	t.Helper()
+	id := addIngest(t, st, "u1", "unparsed")
+	p := NewProcessor(st, &Cascade{Heuristic: HeuristicParser{}, IgnoreAt: 0.95, Check: check})
+	if _, err := p.ProcessPending(context.Background(), manual); err != nil {
+		t.Fatal(err)
+	}
+	if s, tier, _ := rowState(t, st, id); s != StatusIgnored || tier != TierAICheck {
+		t.Fatalf("setup: row = %s/%s, want ignored/ai_check", s, tier)
+	}
+	return id
+}
+
+// A parser fixed after the set-aside reads the email on a manual reprocess,
+// and the missing transaction backfills.
+func TestReprocessBackfillsSetAsideRowWhenParserFixed(t *testing.T) {
+	st := openStore(t)
+	calls := 0
+	check := stubCheck{v: TxnVerdict{VerdictNotTxn, 0.99}, calls: &calls}
+	id := setAside(t, st, check)
+	fixed := NewProcessor(st, &Cascade{Parsers: []BankParser{fixedParser{}}, Heuristic: HeuristicParser{},
+		IgnoreAt: 0.95, Check: check})
+	n, err := fixed.Reprocess(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || txnCount(t, st, id) != 1 {
+		t.Errorf("created %d, %d transactions for the row; want 1 and 1", n, txnCount(t, st, id))
+	}
+	if s, tier, _ := rowState(t, st, id); s != StatusParsed || tier != TierTemplate {
+		t.Errorf("row = %s/%s, want parsed/template", s, tier)
+	}
+	if calls != 1 {
+		t.Errorf("provider asked %d times, want 1 (the reprocess makes no call)", calls)
+	}
+}
+
+// A set-aside row that already owns a transaction never gets a second one.
+func TestReprocessSetAsideRowWithTransactionGetsNoSecond(t *testing.T) {
+	st := openStore(t)
+	id := setAside(t, st, stubCheck{v: TxnVerdict{VerdictNotTxn, 0.99}})
+	if _, _, err := st.InsertTransaction(store.TransactionRow{
+		PostedAt: time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC), AmountFils: 5000, Currency: "AED",
+		Direction: "debit", MerchantRaw: "SPINNEYS", Status: "needs_review", Source: "email", IngestID: id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixed := NewProcessor(st, &Cascade{Parsers: []BankParser{fixedParser{}}, Heuristic: HeuristicParser{}, IgnoreAt: 0.95})
+	n, err := fixed.Reprocess(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || txnCount(t, st, id) != 1 {
+		t.Errorf("created %d, %d transactions for the row; want 0 and 1", n, txnCount(t, st, id))
+	}
+	if s, _, _ := rowState(t, st, id); s != StatusParsed {
+		t.Errorf("status = %s, want parsed", s)
+	}
+}
+
+// A raised threshold returns a set-aside row to unparsed on a manual
+// reprocess, from the stored verdict alone.
+func TestReprocessReturnsSetAsideRowUnderRaisedThreshold(t *testing.T) {
+	st := openStore(t)
+	id := addIngest(t, st, "u1", "unparsed")
+	calls := 0
+	casc := &Cascade{Heuristic: HeuristicParser{}, IgnoreAt: 0.95,
+		Check: stubCheck{v: TxnVerdict{VerdictNotTxn, 0.96}, calls: &calls}}
+	p := NewProcessor(st, casc)
+	if _, err := p.ProcessPending(context.Background(), manual); err != nil {
+		t.Fatal(err)
+	}
+	if s, tier, _ := rowState(t, st, id); s != StatusIgnored || tier != TierAICheck {
+		t.Fatalf("0.96 under a 0.95 threshold: %s/%s, want ignored/ai_check", s, tier)
+	}
+	casc.IgnoreAt = 0.98
+	if _, err := p.Reprocess(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, v := rowState(t, st, id); s != StatusUnparsed || v != VerdictNotTxn {
+		t.Errorf("0.96 under a 0.98 threshold: %s/%s, want unparsed/not_transaction", s, v)
+	}
+	if calls != 1 {
+		t.Errorf("provider asked %d times, want 1", calls)
+	}
+}
+
 func TestProcessorStoresVerdictAndIgnores(t *testing.T) {
 	st := openStore(t)
 	id := addIngest(t, st, "u1", "unparsed")
