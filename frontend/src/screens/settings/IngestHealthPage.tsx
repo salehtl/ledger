@@ -99,7 +99,7 @@ export function IngestHealthPage({ onClose }: { onClose: () => void }) {
             <section>
               <p className="text-sm mb-1">Emails no parser read</p>
               <p className="text-xs text-muted mb-3">
-                AI checks each one once, while AI features are on. A transaction here needs a parser update.
+                AI checks new emails while AI features are on. Emails that came in while AI was off stay unchecked. A transaction here needs a parser update.
               </p>
               <Card className="!py-2 divide-y divide-border">
                 {unread.map((r) => <FactRow key={r.label} label={r.label} value={String(r.value)} />)}

@@ -31,6 +31,16 @@ describe("AiUsagePage", () => {
     expect(await screen.findByText("$1.90")).toBeInTheDocument();
   });
 
+  it("labels an AI check call in plain words", async () => {
+    vi.mocked(client.getAIUsage).mockResolvedValue({
+      count_30d: 1, cost_30d_musd: 10, count_all: 1, cost_all_musd: 10,
+      recent: [{ path: "txn_check", model: "jev-1.13.0", detail: "Card used", input_tokens: 1, output_tokens: 1, cost_musd: 10 }],
+    } as any);
+    wrap(<AiUsagePage onClose={() => {}} />);
+    expect(await screen.findByText("email check")).toBeInTheDocument();
+    expect(screen.queryByText("txn_check")).toBeNull();
+  });
+
   it("does not wipe the spend cap when Save is tapped with an empty field", async () => {
     wrap(<AiUsagePage onClose={() => {}} />);
     const saveButtons = await screen.findAllByRole("button", { name: "Save" });

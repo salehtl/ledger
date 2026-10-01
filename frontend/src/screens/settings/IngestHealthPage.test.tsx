@@ -22,12 +22,14 @@ const warnHealth = {
 };
 
 let putBodies: string[];
+let health: unknown;
 
 beforeEach(() => {
   putBodies = [];
+  health = warnHealth;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("/api/health")) return new Response(JSON.stringify(warnHealth));
+    if (u.includes("/api/health")) return new Response(JSON.stringify(health));
     if (u.includes("/api/settings")) {
       if (init?.method === "PUT") {
         putBodies.push(String(init.body));
@@ -63,6 +65,19 @@ describe("IngestHealthPage", () => {
     expect(screen.getByText("Look like transactions")).toBeInTheDocument();
     expect(screen.getByText("Set aside as not transactions")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
+    // The periodic hook gives an email 3 attempts, and a check skipped while
+    // AI is off uses one. The hint must not promise every email gets checked.
+    expect(screen.getByText(
+      "AI checks new emails while AI features are on. Emails that came in while AI was off stay unchecked. A transaction here needs a parser update.",
+    )).toBeInTheDocument();
+  });
+
+  it("hides the card when health has no unread counts", async () => {
+    const { unread: _unread, ...ingest } = warnHealth.ingest;
+    health = { ...warnHealth, ingest };
+    wrap();
+    expect(await screen.findByText("Warning")).toBeInTheDocument();
+    expect(screen.queryByText("Emails no parser read")).toBeNull();
   });
 
   it("saves the silence threshold with all writable fields", async () => {
