@@ -1,8 +1,10 @@
 package parse
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 const dibCardPurchase = `معاملة بطاقة ائتمان
@@ -217,5 +219,63 @@ func TestDIBEnglishMoneyTransferReturnsIgnoreError(t *testing.T) {
 	_, err := DIBParser{}.Parse("DIB Notification", dibEnglishMoneyTransfer)
 	if !errors.Is(err, ErrIgnoreEmail) {
 		t.Fatalf("err = %v, want ErrIgnoreEmail", err)
+	}
+}
+
+// DIB's card reversal and card refund notices carry an amount and a card but
+// no date. Both layouts copied from real mail; every value is invented.
+const dibCardReversal = `عزيزي المتعامل,
+A transaction to the value of AED 1,212.50 made at ACME CAFE on your DIB card ending with XX9999 has been reversed.
+في حالة عدم قيامك بهذه المعاملة, يرجي تغيير رقمك السري وإعلامنا عن طريق الاتصال برقم 0097146092222.
+هذا البريد الإلكتروني بالشكل الجديد خاص بالمعاملات المرسلة من بنك دبي الإسلامي.`
+
+const dibCardRefund = `عزيزي المتعامل,
+تم إرجاع مبلغ 34.56 درهم على بطاقة بنك دبي الإسلامي الخاصة بك والمنتهية بالرقم XX9999.
+في حالة عدم قيامك بهذه المعاملة, يرجي تغيير رقمك السري وإعلامنا عن طريق الاتصال برقم 0097146092222.
+هذا البريد الإلكتروني بالشكل الجديد خاص بالمعاملات المرسلة من بنك دبي الإسلامي.`
+
+func TestDIBCardReversalIsCredit(t *testing.T) {
+	got, err := DIBParser{}.Parse("DIB Notification", dibCardReversal)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Direction != DirectionCredit || got.AmountFils != 121250 || got.Currency != "AED" {
+		t.Errorf("direction/amount/currency = %s/%d/%s, want credit/121250/AED", got.Direction, got.AmountFils, got.Currency)
+	}
+	if got.MerchantRaw != "ACME CAFE" || got.Last4 != "9999" {
+		t.Errorf("merchant/last4 = %q/%q, want ACME CAFE/9999", got.MerchantRaw, got.Last4)
+	}
+	if !got.PostedAt.IsZero() || got.IsTransfer || got.Tier != TierTemplate {
+		t.Errorf("got %+v, want zero PostedAt (the cascade fills the email date), not a transfer, template tier", got)
+	}
+}
+
+func TestDIBCardRefundIsCredit(t *testing.T) {
+	got, err := DIBParser{}.Parse("DIB Notification", dibCardRefund)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Direction != DirectionCredit || got.AmountFils != 3456 || got.Currency != "AED" {
+		t.Errorf("direction/amount/currency = %s/%d/%s, want credit/3456/AED", got.Direction, got.AmountFils, got.Currency)
+	}
+	if got.MerchantRaw != "DIB card refund" || got.Last4 != "9999" {
+		t.Errorf("merchant/last4 = %q/%q, want \"DIB card refund\"/9999", got.MerchantRaw, got.Last4)
+	}
+}
+
+// Neither layout has a date, so the transaction must take the email's own
+// date through the cascade, and come out as a parsed credit.
+func TestCascadeDatesDIBRefundFromEmail(t *testing.T) {
+	c := &Cascade{Parsers: []BankParser{DIBParser{}}, Heuristic: HeuristicParser{}}
+	fb := time.Date(2026, 9, 22, 9, 11, 0, 0, time.UTC)
+	for name, body := range map[string]string{"reversal": dibCardReversal, "refund": dibCardRefund} {
+		res := c.Run(context.Background(), "DIB.notification@dib.ae", "DIB Notification", body, fb)
+		if res.Status != StatusParsed || res.Tier != TierTemplate || res.Txn.Direction != DirectionCredit {
+			t.Errorf("%s: status/tier/direction = %s/%s/%s (err %s), want parsed/template/credit",
+				name, res.Status, res.Tier, res.Txn.Direction, res.Err)
+		}
+		if !res.Txn.PostedAt.Equal(fb) {
+			t.Errorf("%s: PostedAt = %v, want the email date %v", name, res.Txn.PostedAt, fb)
+		}
 	}
 }

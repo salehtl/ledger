@@ -7,8 +7,9 @@ import (
 )
 
 // DIBParser parses Dubai Islamic Bank notification emails (Arabic HTML). It
-// handles two layouts: card purchases (إشعار مشتريات) and account transactions
-// (خصم/إيداع/تحويل/سحب). See the plan's "DIB email anatomy" section.
+// handles card purchases (إشعار مشتريات), account transactions
+// (خصم/إيداع/تحويل/سحب), and card reversals and refunds (credits, dated from
+// the email). See the plan's "DIB email anatomy" section.
 type DIBParser struct{}
 
 func (DIBParser) Bank() string { return "dib" }
@@ -25,7 +26,41 @@ var (
 	dibCardRe   = regexp.MustCompile(`رقم البطاقة\s*\n\s*(\S+)`)
 	dibAcctRe   = regexp.MustCompile(`من حساب\s*\n\s*(\S+)`)
 	digitsRe    = regexp.MustCompile(`[0-9]`)
+
+	// Card reversal (English sentence) and card refund (Arabic sentence).
+	// Neither carries a date; the cascade dates them from the email.
+	dibReversalRe = regexp.MustCompile(`A transaction to the value of ([A-Z]{3}\s*[0-9][0-9,]*\.[0-9]{2}) made at\s+([^\n]+?)\s+on your DIB card ending with\s+([X0-9]+)\s+has been reversed`)
+	dibRefundRe   = regexp.MustCompile(`تم إرجاع مبلغ\s*([0-9][0-9,]*\.[0-9]{2})\s*درهم[^\n]*?المنتهية بالرقم\s*([X0-9]+)`)
 )
+
+// dibCardRefundMerchant names an Arabic card refund, which names no merchant.
+const dibCardRefundMerchant = "DIB card refund"
+
+// parseDIBCardRefund reads a card reversal or card refund notice as a credit.
+// ok is false when textBody is neither layout.
+func parseDIBCardRefund(textBody string) (p ParsedTxn, ok bool, err error) {
+	var amount, merchant, card string
+	if m := dibReversalRe.FindStringSubmatch(textBody); m != nil {
+		amount, merchant, card = m[1], strings.TrimSpace(m[2]), m[3]
+	} else if m := dibRefundRe.FindStringSubmatch(textBody); m != nil {
+		amount, merchant, card = m[1], dibCardRefundMerchant, m[2]
+	} else {
+		return ParsedTxn{}, false, nil
+	}
+	fils, currency, err := ParseAEDToFils(amount)
+	if err != nil {
+		return ParsedTxn{}, true, fmt.Errorf("dib refund amount: %w", err)
+	}
+	return ParsedTxn{
+		AmountFils:  fils,
+		Currency:    currency,
+		Direction:   DirectionCredit,
+		MerchantRaw: merchant,
+		Last4:       lastFourDigits(card),
+		Tier:        TierTemplate,
+		Confidence:  0.97,
+	}, true, nil
+}
 
 // isEnglishMoneyTransfer reports whether textBody is DIB's English "Money
 // Transfer" confirmation layout — a second, duplicate notification for a fund
@@ -41,6 +76,9 @@ func isEnglishMoneyTransfer(textBody string) bool {
 func (DIBParser) Parse(subject, textBody string) (ParsedTxn, error) {
 	if isEnglishMoneyTransfer(textBody) {
 		return ParsedTxn{}, ErrIgnoreEmail
+	}
+	if p, ok, err := parseDIBCardRefund(textBody); ok {
+		return p, err
 	}
 	am := dibAmountRe.FindStringSubmatch(textBody)
 	if am == nil {
