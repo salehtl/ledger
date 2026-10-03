@@ -19,9 +19,9 @@ date is dead and the ones above are the post-rewrite replacements.
 So: **v2 work does not belong here.** If a task mentions `ledgerd`, passkeys,
 SMTP ingest, the op log, Postgres, `web/`, `client/` or the conformance suites,
 it belongs in `/root/Coding/ledgerd`. This repository builds one binary,
-`cmd/ledger`, and one frontend, `frontend/`. Both v2's `ledgerd.service` and
-v1's `ledger.service` still run on this box at the same time; a change here can
-only ever affect `ledger.service`.
+`cmd/ledger`, and one frontend, `frontend/`. Since 2026-10-03 ledger runs on
+**kakapo**, not on this box (see Deploy). v2's `ledgerd.service` on dinosaur is
+sunset: stopped and disabled, its data kept.
 
 Branches: `main` (this app) · `ledger-v1` (the v1 line as it stood at the
 2026-08-09 handover, kept as a marker). The retired v2 Expo client lives at tag
@@ -32,9 +32,11 @@ Branches: `main` (this app) · `ledger-v1` (the v1 line as it stood at the
 ## ledger 1.0 — the app, in daily use
 
 **Saleh uses this every day as a PWA on his phone, over the tailnet. It must keep
-working.** This is not a retired app kept for history: `dinosaur` is both the dev
-box and the production server, so a build you break here is a build that ships
-from here, and `/var/lib/ledger/ledger.db` holds real financial data.
+working.** This is not a retired app kept for history. Production is **kakapo**,
+a NixOS home server. It runs the commit of this repository that kakapo's
+`flake.lock` pins, so a build you break on `main` ships at the next lock bump.
+kakapo's `/var/lib/ledger/ledger.db` holds real financial data. `dinosaur` is the
+dev box; its `/var/lib/ledger` is the copy from before the move, kept and unused.
 
 A private, self-hosted, real-time budgeting PWA for a single user. One Go binary
 watches a dedicated IMAP mailbox, parses each transaction email through a
@@ -198,17 +200,28 @@ Never point the harness at production: scratch ports and a scratch DB, never
 
 ## Deploy
 
-`dinosaur` is both this dev box and the production server, so deploy steps run
-**locally**. `deploy/README.md` is the runbook.
+Production is **kakapo** (NixOS, `github.com/salehtl/kakapo`) since 2026-10-03.
+kakapo's `modules/services/ledger.nix` enables this repository's NixOS module
+(`nix/module.nix`) and pins a commit of this repository in its `flake.lock`.
+`deploy/README.md` is the runbook.
 
-`ledger.service`, binary `/usr/local/bin/ledger`, binds `127.0.0.1:8080`,
-fronted by `tailscale serve /`. Tailnet only. DB `/var/lib/ledger/ledger.db` (0700),
-config `/etc/ledger/config.toml`, secrets `/etc/ledger/ledger.env`.
+`ledger.service` binds `127.0.0.1:8090`, fronted by `tailscale serve` at
+`https://kakapo.marmoset-paradise.ts.net/`. Tailnet only: never kakapo's
+Cloudflare Tunnel. DB `/var/lib/ledger/ledger.db` (0700). Config is
+`services.ledger.settings` in kakapo; secrets are kakapo's sops file
+`secrets/ledger.yaml`, decrypted to `/run/secrets/ledger/env`.
 
-Order: build the frontend, commit `internal/web/dist` if it changed, back up the
-database, build the binary, install, restart. Then verify the **running** binary
-loaded the new build, not just that health is green.
+Order: build the frontend, commit `internal/web/dist` if it changed, run the
+gate, push `main`. Then in kakapo: `nix flake update ledger`, `nix flake check`,
+commit, push `master`. kakapo applies it at 04:00 Asia/Dubai, or at once with
+`sudo nixos-rebuild switch --flake github:salehtl/kakapo#kakapo --refresh` on
+kakapo. Claude on dinosaur has no SSH to kakapo, so a deploy that must land now
+needs Saleh. The unit copies the database to `/var/lib/ledger/backups` before a
+new build first opens it, so there is no manual backup step. Then verify the
+**running** binary loaded the new build, not just that health is green:
+`readlink /proc/$(systemctl show -p MainPID --value ledger)/exe` ends in
+`ledger-1.0-<rev>/bin/ledger`.
 
-`ledgerd.service` (ledger 2.0) runs on the same box from a different repository
-and a different database. Nothing in this repository can deploy it, and a deploy
-from here must not take it down — check both services afterwards.
+dinosaur's old `ledger.service` is disabled, and a drop-in keeps it down while
+`/var/lib/ledger/MOVED-TO-KAKAPO` exists. **Never start it:** two ledgers would
+ingest the same mailbox into two databases.

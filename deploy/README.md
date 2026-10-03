@@ -1,10 +1,117 @@
-# Deploying ledger on dinosaur
+# Deploying ledger
+
+Since 2026-10-03 ledger runs on **kakapo**, a NixOS home server. One static
+binary, systemd, Tailscale HTTPS. No Node, no DB server.
+
+The host config lives in `github.com/salehtl/kakapo`.
+`modules/services/ledger.nix` there enables this repository's NixOS module
+(`nix/module.nix`, through the flake's `nixosModules.default`). kakapo's
+`flake.lock` pins the ledger commit that it runs.
+
+| What | Where on kakapo |
+|---|---|
+| Service | `ledger.service`, binds `127.0.0.1:8090` |
+| URL | `https://kakapo.marmoset-paradise.ts.net/`: tailnet only, by `tailscale serve` (unit `ledger-tailscale-serve`) |
+| Database | `/var/lib/ledger/ledger.db` (0700, owner `ledger`) |
+| Before-build copies | `/var/lib/ledger/backups/before-<build>.db`, the newest five |
+| Config | `services.ledger.settings` in kakapo's `modules/services/ledger.nix` |
+| Secrets | `secrets/ledger.yaml` in kakapo (sops) → `/run/secrets/ledger/env` |
+
+ledger is **never** public. Do not route it through kakapo's Cloudflare Tunnel.
+
+## 1. Deploy a new version
+
+1. Here: build the frontend, and commit `internal/web/dist` if it changed. Run
+   the gate (`go test ./... && cd frontend && bun run test`). Push `main`.
+2. In kakapo: `nix flake update ledger`, then `nix flake check`. Commit
+   `flake.lock` and push to `master`.
+3. kakapo applies `master` at 04:00 Asia/Dubai. To apply it now, from a
+   machine with SSH to kakapo (the Mac; Claude on dinosaur has none):
+
+   ```bash
+   ssh saleh@kakapo 'sudo nixos-rebuild switch --flake github:salehtl/kakapo#kakapo --refresh'
+   ```
+
+There is no manual backup step. Before a new build first opens the database,
+the unit copies it to `/var/lib/ledger/backups/before-<build>.db`
+(`ExecStartPre`: once per build, the newest five kept). To roll back, pin the
+older commit in kakapo's `flake.lock`. A schema migration is one-way: if the
+new build changed the schema, also stop ledger and restore that build's
+`before-` copy.
+
+## 2. Verify the running build
+
+Health can be green on the old build. Check the binary of the live process:
+
+```bash
+readlink /proc/$(systemctl show -p MainPID --value ledger)/exe   # …-ledger-1.0-<rev>/bin/ledger
+curl -s http://127.0.0.1:8090/api/health                          # {"status":"ok","db":"ok",…}
+```
+
+Then open the URL on a phone on the tailnet.
+
+## 3. Change the config or a secret
+
+- **Config:** edit `services.ledger.settings` in kakapo's
+  `modules/services/ledger.nix` and push, as for a deploy. The switch restarts
+  ledger, because the path of its config file changes.
+- **Secret:** in kakapo on the Mac (it holds an age key), run
+  `sops secrets/ledger.yaml` and edit the `env` block. Push. sops-nix restarts
+  ledger.
+
+The mailbox address is `LEDGER_IMAP_USERNAME` in the secret, not in the
+config, because kakapo's repository is public.
+
+## 4. Logs and the database
+
+```bash
+journalctl -u ledger -f
+# kakapo has no sqlite3 in PATH:
+sudo -u ledger "$(nix build --no-link --print-out-paths nixpkgs#sqlite.bin)/bin/sqlite3" /var/lib/ledger/ledger.db
+```
+
+## 5. Web Push
+
+The VAPID keys (`LEDGER_VAPID_PRIVATE`, `LEDGER_VAPID_PUBLIC`) are in the
+secret. They came over from dinosaur unchanged. Never generate new ones:
+every stored subscription would stop, and each device would have to enable
+push again by hand.
+
+The move changed the app's origin, so each device enables push once on the
+new URL: delete the old Home Screen app, add
+`https://kakapo.marmoset-paradise.ts.net/` from Safari, then Settings →
+Notifications → "Enable on this device" → "Send test".
+
+## 6. The move from dinosaur (2026-10-03)
+
+`deploy/cutover-kakapo.sh` did it, run from the Mac: `nixos-rebuild test` on
+kakapo, stop ledger on dinosaur, `sqlite3 .backup`, stream the copy to kakapo
+(sha256 checked on both ends), start, verify, then move kakapo `master` to the
+change. On dinosaur the old unit is disabled, and a drop-in
+(`/etc/systemd/system/ledger.service.d/moved-to-kakapo.conf`) keeps it down
+while `/var/lib/ledger/MOVED-TO-KAKAPO` exists. **Never start it:** two
+ledgers would ingest the same mailbox into two databases.
+
+## Before 2026-10-03: dinosaur
+
+Everything below describes the hand-installed setup on dinosaur. It stays for
+reference: the mailbox setup and the AI provider notes still apply. On kakapo,
+read the paths this way:
+
+| dinosaur | kakapo |
+|---|---|
+| `/etc/ledger/config.toml` | `services.ledger.settings` in kakapo's `modules/services/ledger.nix` |
+| `/etc/ledger/ledger.env` | `secrets/ledger.yaml` in kakapo → `/run/secrets/ledger/env` |
+| `127.0.0.1:8080` | `127.0.0.1:8090` |
+| `/usr/local/bin/ledger` | the Nix store (section 2) |
+| `sudo systemctl restart ledger` after a config edit | push, then the switch restarts it (section 3) |
+| `sqlite3` | not installed (section 4) |
 
 Single static binary + systemd + Tailscale HTTPS. No Node, no DB server.
 
 > This runbook covers this repository's app, `ledger`. The multi-user app `ledgerd` also runs on this box, but it was extracted to `github.com/salehtl/ledgerd` on 2026-08-11 and its runbook went with it. A deploy from here must leave `ledgerd.service` running — check both services afterwards.
 
-## 1. Build the static binary (build machine)
+### 1. Build the static binary (build machine)
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ledger ./cmd/ledger
@@ -17,7 +124,7 @@ Copy it to dinosaur:
 scp ledger dinosaur:/tmp/ledger
 ```
 
-## 2. Install on dinosaur
+### 2. Install on dinosaur
 
 > First install only. On an existing install this block overwrites the live
 > `/etc/ledger/config.toml` with `config.example.toml`. To update the binary,
@@ -42,7 +149,7 @@ systemctl status ledger
 curl -s http://127.0.0.1:8080/api/health   # -> {"status":"ok","db":"ok"}
 ```
 
-## 3. HTTPS over Tailscale (required — service workers need HTTPS)
+### 3. HTTPS over Tailscale (required — service workers need HTTPS)
 
 With Tailscale installed and `dinosaur` on your tailnet:
 
@@ -54,7 +161,7 @@ tailscale serve status
 
 The app is now reachable **only** from your tailnet devices, over HTTPS, never publicly.
 
-### 3a. Storybook design-system docs (optional)
+#### 3a. Storybook design-system docs (optional)
 
 The static Storybook build is published on its own port so the PWA's service worker
 (whose scope is `/` on the app origin) can never intercept it:
@@ -70,12 +177,12 @@ Docs live at `https://dinosaur.<tailnet>.ts.net:8443/`. After changing stories o
 `src/docs/Foundations.mdx`, re-run the build + copy (the serve config stays).
 To stop serving: `sudo tailscale serve --https=8443 off`.
 
-## 4. Verify on a phone
+### 4. Verify on a phone
 
 On a phone joined to the tailnet, open `https://dinosaur.<tailnet>.ts.net/`.
 Expect the app's Home screen.
 
-## 5. Web Push (VAPID)
+### 5. Web Push (VAPID)
 
 Push is off until both VAPID vars are set; the server logs which state it is in
 at startup (`push: VAPID enabled` / `push: disabled`).
@@ -99,7 +206,7 @@ matter how the server is configured. Delivery goes via Apple's push service, so
 notifications still arrive when the phone is off the tailnet — but tapping one
 through to the app needs the tailnet.
 
-## Logs & ops
+### Logs & ops
 
 ```bash
 journalctl -u ledger -f          # follow logs
@@ -110,7 +217,7 @@ sudo systemctl restart ledger    # restart (sends SIGTERM -> graceful shutdown)
 `internal/web/dist` (add a `BASE_URL` argument to also measure on-the-wire
 transfer sizes against a running server).
 
-## Backups (one file)
+### Backups (one file)
 
 ```bash
 sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F).db'"
@@ -118,12 +225,12 @@ sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F).db'"
 
 Backups contain financial data — encrypt them if they leave the box (Milestone 8 covers Litestream + encryption).
 
-## 6. Dedicated mailbox (Milestone 2 — ingest)
+### 6. Dedicated mailbox (Milestone 2 — ingest)
 
 ledger reads a **dedicated mailbox** that contains *only* forwarded bank mail, so its
 credential can never reach your personal email (§9). Recommended: a fresh Gmail.
 
-### 6a. Create the mailbox + app password
+#### 6a. Create the mailbox + app password
 
 1. Create a new Gmail used for nothing else, e.g. `bank-mail@example.com`.
 2. Enable **2-Step Verification** (Google Account → Security). Use standard 2SV,
@@ -131,7 +238,7 @@ credential can never reach your personal email (§9). Recommended: a fresh Gmail
 3. Generate a 16-character **App Password** (Security → App passwords). Copy it once.
 4. IMAP is on by default for new Gmail accounts; host is `imap.gmail.com:993`.
 
-### 6b. Forward bank mail from your primary inbox
+#### 6b. Forward bank mail from your primary inbox
 
 In **iCloud Mail → Settings → Rules** (icloud.com), add one rule per bank sender:
 
@@ -139,7 +246,7 @@ In **iCloud Mail → Settings → Rules** (icloud.com), add one rule per bank se
 
 Repeat for each bank sender. (You can add senders later as you discover them.)
 
-### 6c. Configure ledger on dinosaur
+#### 6c. Configure ledger on dinosaur
 
 Point config at the mailbox (no secret here):
 
@@ -169,7 +276,7 @@ sudo systemctl restart ledger
 > protection, switch to systemd's encrypted credential store (`LoadCredential=` /
 > `systemd-creds`) later — the env file is the simplest secure default.
 
-### 6d. Verify ingestion
+#### 6d. Verify ingestion
 
 ```bash
 journalctl -u ledger -f          # expect "ingest enabled ..." then "ingest: N new message(s)"
@@ -182,14 +289,14 @@ Send a test email from one of the configured bank senders (or wait for a real
 transaction alert) and confirm `ingest_log` grows. Because the mailbox is opened
 read-only (`EXAMINE`), ledger can never delete or modify the mail.
 
-## AI provider (TypeSafe; Anthropic is sunset)
+### AI provider (TypeSafe; Anthropic is sunset)
 
 TypeSafe's Jev answers both AI questions: "which category?" and "is this unread
 email a transaction?". The second one is the **AI check**. It never writes a
 transaction. A confident "not a transaction" sets the email aside (`ignored`,
 raw body kept). Anything else stays unparsed, with its verdict stored.
 
-### Config keys
+#### Config keys
 
 Under `[ai]` in `/etc/ledger/config.toml`:
 
@@ -206,7 +313,7 @@ The keys are secrets, so they live in `/etc/ledger/ledger.env`, never in the
 TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
 `anthropic`.
 
-### Roll out (from categorize_provider)
+#### Roll out (from categorize_provider)
 
 1. Back up the DB as root:
    `sudo sqlite3 /var/lib/ledger/ledger.db ".backup '/var/backups/ledger-$(date +%F-%H%M).db'"`
@@ -297,7 +404,7 @@ TOML: `LEDGER_TYPESAFE_API_KEY` for `typesafe`, `LEDGER_AI_API_KEY` for
    parser read". An email in "Look like transactions" needs a parser update,
    because the AI check never writes a transaction.
 
-### Undo set-asides
+#### Undo set-asides
 
 A set-aside row has `parse_status='ignored'` and `parse_tier='ai_check'`. Its
 verdict is in `ingest_log.ai_verdict` and `ai_verdict_conf`. To look at the
@@ -322,7 +429,7 @@ A row whose stored confidence is below the new threshold returns to unparsed,
 with no new AI check call. A row that a fixed parser now reads gets its
 transaction.
 
-### Bring Anthropic back
+#### Bring Anthropic back
 
 Set `provider = "anthropic"` under `[ai]`, keep `LEDGER_AI_API_KEY` in
 `/etc/ledger/ledger.env`, and restart. That restores Anthropic categorization,
