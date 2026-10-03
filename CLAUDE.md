@@ -222,6 +222,9 @@ new build first opens it, so there is no manual backup step. Then verify the
 `readlink /proc/$(systemctl show -p MainPID --value ledger)/exe` ends in
 `ledger-1.0-<rev>/bin/ledger`.
 
-dinosaur's old `ledger.service` is disabled, and a drop-in keeps it down while
-`/var/lib/ledger/MOVED-TO-KAKAPO` exists. **Never start it:** two ledgers would
-ingest the same mailbox into two databases.
+ledger on dinosaur is **sunset**: the old `ledger.service` is disabled, a
+drop-in keeps it down while `/var/lib/ledger/MOVED-TO-KAKAPO` exists, and its
+`tailscale serve` route on 443 is removed. The binary, config, secrets and the
+database as of the move are kept for a rollback (`deploy/README.md` §6).
+**Never start it:** two ledgers would ingest the same mailbox into two
+databases.

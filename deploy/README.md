@@ -92,6 +92,17 @@ change. On dinosaur the old unit is disabled, and a drop-in
 while `/var/lib/ledger/MOVED-TO-KAKAPO` exists. **Never start it:** two
 ledgers would ingest the same mailbox into two databases.
 
+ledger on dinosaur is **sunset**, not deleted. Its `tailscale serve` route on
+443 is removed, so `https://dinosaur.marmoset-paradise.ts.net/` no longer
+answers. Kept for a rollback: the binary (`/usr/local/bin/ledger`), the unit,
+`/etc/ledger/` (config and secrets), `/var/lib/ledger/ledger.db` (the database
+at the moment of the move) and the snapshot
+`/var/backups/ledger-20261003T162815Z-to-kakapo.db`. To run it on dinosaur
+again, first stop it on kakapo. Then remove the drop-in and the marker,
+`systemctl daemon-reload`, `systemctl enable --now ledger`, and
+`tailscale serve --bg 8080`. The database there is from 2026-10-03: copy
+kakapo's database back first, or you lose everything entered since.
+
 ## Before 2026-10-03: dinosaur
 
 Everything below describes the hand-installed setup on dinosaur. It stays for
