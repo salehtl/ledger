@@ -71,6 +71,8 @@ CGO_ENABLED=0 go build -o ledger ./cmd/ledger
 
 `internal/web/dist/` is a committed build artifact. Because parallel sessions run on `main`, **rebuild the dist before finishing or deploying a branch** so the embedded bundle matches the frontend source.
 
+The flake (`flake.nix`, `nix/`) builds the same binary from the committed dist (`nix build`) and exports `nixosModules.default` (`services.ledger`), which kakapo uses. `nix build .#checks.x86_64-linux.module` runs the module's NixOS VM test; dinosaur has no KVM, so QEMU emulates the CPU and a run takes about four minutes. A change to `go.mod`/`go.sum` changes `vendorHash` in `nix/package.nix`: set it to `lib.fakeHash`, build, and copy the `got:` hash.
+
 ### CLI subcommands
 
 `cmd/ledger/main.go` dispatches on `os.Args[1]` before flag parsing:

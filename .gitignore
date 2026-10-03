@@ -41,3 +41,7 @@ frontend/harness/shots/
 # path is unchanged on this box, so the ignore stays: it costs nothing, and
 # removing it is the only way this repository could ever commit that data.
 spike/phase2/
+
+# Nix build output
+/result
+/result-*
